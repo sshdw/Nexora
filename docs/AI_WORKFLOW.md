@@ -12,7 +12,7 @@ Human — Product Owner.
 
 ChatGPT — Project Coordinator.
 
-GLM 5.2 — Software Engineer.
+DeepSeek V4 Flash — Software Engineer.
 
 
 
@@ -56,7 +56,7 @@ identifying dependencies
 
 identifying risks
 
-reviewing GLM's work
+reviewing DeepSeek's work
 
 preventing scope creep
 
@@ -76,7 +76,7 @@ changes project scope
 
 approves incomplete work
 
-GLM 5.2
+DeepSeek V4 Flash
 
 
 
@@ -96,7 +96,7 @@ implementation of assigned tasks
 
 
 
-GLM never:
+DeepSeek never:
 
 
 
@@ -110,7 +110,7 @@ guesses missing behavior
 
 
 
-If requirements are unclear, GLM stops and asks ChatGPT.
+If requirements are unclear, DeepSeek stops and asks ChatGPT.
 
 
 
@@ -124,9 +124,9 @@ ChatGPT splits it into atomic tasks.
 
 ChatGPT defines acceptance criteria.
 
-GLM implements exactly one approved task.
+DeepSeek implements exactly one approved task.
 
-GLM reports completion.
+DeepSeek reports completion.
 
 ChatGPT reviews the implementation.
 
@@ -158,7 +158,7 @@ Definition of Done
 
 
 
-GLM implements only what is inside the task.
+DeepSeek implements only what is inside the task.
 
 
 
@@ -192,7 +192,7 @@ Adding new features requires explicit Human approval.
 
 
 
-Neither ChatGPT nor GLM may silently expand the project.
+Neither ChatGPT nor DeepSeek may silently expand the project.
 
 
 
@@ -230,7 +230,7 @@ ChatGPT
 
 
 
-GLM 5.2
+DeepSeek V4 Flash
 
 
 

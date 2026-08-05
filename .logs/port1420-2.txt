@@ -1,0 +1,7 @@
+﻿
+LocalPort       State OwningProcess
+---------       ----- -------------
+     1420 Established         18184
+     1420      Listen         18184
+
+

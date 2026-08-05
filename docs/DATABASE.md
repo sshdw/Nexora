@@ -28,6 +28,11 @@ SQLite is used as an embedded, serverless, single-file database. This aligns wit
 
 ### WAL Mode
 Write-Ahead Logging is enabled.  
+
+```sql
+PRAGMA journal_mode=WAL;
+```
+
 **Rationale:** WAL allows the UI to read conversation history and perform searches without blocking on write operations (message insertion, settings updates). This is essential for a responsive desktop experience.
 
 ### Foreign Keys
@@ -50,7 +55,7 @@ FTS5 virtual tables are used for full-text search.
 
 ## 4. Schema Versioning
 
-Schema changes are tracked in the `schema_version` table. Each migration inserts a row containing a monotonically increasing version number and an application timestamp. The current schema version is determined by the maximum version number present.
+Schema changes are tracked in the `schema_version` table. Each migration inserts exactly one new row containing a monotonically increasing version number and an application timestamp. Version numbers are unique and strictly increasing. The current schema version is determined by the maximum version number present (`MAX(version)`), which therefore always represents the current schema version.
 
 **Rationale:** This provides an unambiguous, ordered migration path and prevents the application from running against an unrecognized schema version.
 
@@ -94,11 +99,11 @@ Migrations follow a forward-only, incremental philosophy. Each migration is atom
 
 | Field | Purpose | Type | Nullable | Default | CHECK | FK | UNIQUE | Traceability |
 |-------|---------|------|----------|---------|-------|-----|--------|--------------|
-| id | Surrogate primary key | INTEGER | NO | Auto-increment | `id > 0` | None | PK | Implementation Decision. Stable identifier independent of user-editable content. |
+| id | Surrogate primary key | INTEGER | NO | SQLite INTEGER PRIMARY KEY | `id > 0` | None | PK | Implementation Decision. Stable identifier independent of user-editable content. |
 | title | Human-readable name | TEXT | NO | `'Untitled Conversation'` | `length(title) > 0 AND length(title) <= 500` | None | No | FR-002, FR-006 |
 | status | Archive state | TEXT | NO | `'active'` | `status IN ('active', 'archived')` | None | No | FR-006 |
-| created_at | Creation timestamp | INTEGER | NO | Current timestamp | `created_at > 0` | None | No | Implementation Decision. Preserves chronological ordering required by FR-005. |
-| updated_at | Last modification timestamp | INTEGER | NO | Current timestamp | `updated_at >= created_at` | None | No | Implementation Decision. Tracks recency for FR-006 active conversation listing and sorting. |
+| created_at | Creation timestamp | INTEGER | NO | Current Unix timestamp | `created_at > 0` | None | No | Implementation Decision. Preserves chronological ordering required by FR-005. |
+| updated_at | Last modification timestamp | INTEGER | NO | Current Unix timestamp | `updated_at >= created_at` | None | No | Implementation Decision. Tracks recency for FR-006 active conversation listing and sorting. |
 
 ---
 
@@ -118,13 +123,13 @@ Migrations follow a forward-only, incremental philosophy. Each migration is atom
 
 | Field | Purpose | Type | Nullable | Default | CHECK | FK | UNIQUE | Traceability |
 |-------|---------|------|----------|---------|-------|-----|--------|--------------|
-| id | Surrogate primary key | INTEGER | NO | Auto-increment | `id > 0` | None | PK | Implementation Decision. |
+| id | Surrogate primary key | INTEGER | NO | SQLite INTEGER PRIMARY KEY | `id > 0` | None | PK | Implementation Decision. |
 | conversation_id | Owning conversation | INTEGER | NO | None | `conversation_id > 0` | conversations.id CASCADE | No | FR-002, FR-005 |
 | role | Message author type | TEXT | NO | None | `role IN ('user', 'assistant')` | None | No | FR-003 |
 | content | Message text | TEXT | NO | None | `length(content) > 0` | None | No | FR-003 |
 | provider_id | AI provider used | INTEGER | YES | NULL | `provider_id IS NULL OR provider_id > 0` | providers.id SET NULL | No | FR-004 |
-| model_name | Specific model used | INTEGER | YES | NULL | `length(model_name) <= 200` | None | No | FR-004. Implementation Decision: records the selected model in persisted history. |
-| created_at | Creation timestamp | INTEGER | NO | Current timestamp | `created_at > 0` | None | No | Implementation Decision. Preserves strict chronological order within a conversation per FR-005. |
+| model_name | Specific model used | TEXT | YES | NULL | `length(model_name) <= 200` | None | No | FR-004. Implementation Decision: records the selected model in persisted history. |
+| created_at | Creation timestamp | INTEGER | NO | Current Unix timestamp | `created_at > 0` | None | No | Implementation Decision. Preserves strict chronological order within a conversation per FR-005. |
 
 **Note on failed requests:** Failed assistant responses are not persisted as messages. FR-003 requires that failed requests display an error in the UI; this is handled at the application layer. Persisting failed state would require either nullable `content` or an additional status column, both of which introduce unnecessary complexity beyond the MVP requirements.
 
@@ -146,11 +151,11 @@ Migrations follow a forward-only, incremental philosophy. Each migration is atom
 
 | Field | Purpose | Type | Nullable | Default | CHECK | FK | UNIQUE | Traceability |
 |-------|---------|------|----------|---------|-------|-----|--------|--------------|
-| id | Surrogate primary key | INTEGER | NO | Auto-increment | `id > 0` | None | PK | Implementation Decision. |
+| id | Surrogate primary key | INTEGER | NO | SQLite INTEGER PRIMARY KEY | `id > 0` | None | PK | Implementation Decision. |
 | title | Prompt name | TEXT | NO | None | `length(title) > 0 AND length(title) <= 200` | None | No | FR-007 |
 | content | Prompt text | TEXT | NO | None | `length(content) > 0 AND length(content) <= 10000` | None | No | FR-007 |
-| created_at | Creation timestamp | INTEGER | NO | Current timestamp | `created_at > 0` | None | No | Implementation Decision. Supports FR-007 library organization. |
-| updated_at | Last edit timestamp | INTEGER | NO | Current timestamp | `updated_at >= created_at` | None | No | Implementation Decision. Tracks edits per FR-007. |
+| created_at | Creation timestamp | INTEGER | NO | Current Unix timestamp | `created_at > 0` | None | No | Implementation Decision. Supports FR-007 library organization. |
+| updated_at | Last edit timestamp | INTEGER | NO | Current Unix timestamp | `updated_at >= created_at` | None | No | Implementation Decision. Tracks edits per FR-007. |
 
 ---
 
@@ -170,7 +175,7 @@ Migrations follow a forward-only, incremental philosophy. Each migration is atom
 
 | Field | Purpose | Type | Nullable | Default | CHECK | FK | UNIQUE | Traceability |
 |-------|---------|------|----------|---------|-------|-----|--------|--------------|
-| id | Surrogate primary key | INTEGER | NO | Auto-increment | `id > 0` | None | PK | Implementation Decision. |
+| id | Surrogate primary key | INTEGER | NO | SQLite INTEGER PRIMARY KEY | `id > 0` | None | PK | Implementation Decision. |
 | conversation_id | Owning conversation | INTEGER | NO | None | `conversation_id > 0` | conversations.id CASCADE | No | FR-008. Implementation Decision: required to support pre-submission attachment visibility. |
 | message_id | Associated message | INTEGER | YES | NULL | `message_id IS NULL OR message_id > 0` | messages.id CASCADE | No | FR-008. Implementation Decision: `NULL` represents the draft state before submission; set when the message is created. |
 | file_name | Display name | TEXT | NO | None | `length(file_name) > 0 AND length(file_name) <= 255` | None | No | FR-008 |
@@ -196,7 +201,7 @@ Migrations follow a forward-only, incremental philosophy. Each migration is atom
 
 | Field | Purpose | Type | Nullable | Default | CHECK | FK | UNIQUE | Traceability |
 |-------|---------|------|----------|---------|-------|-----|--------|--------------|
-| id | Surrogate primary key | INTEGER | NO | Auto-increment | `id > 0` | None | PK | Implementation Decision. |
+| id | Surrogate primary key | INTEGER | NO | SQLite INTEGER PRIMARY KEY | `id > 0` | None | PK | Implementation Decision. |
 | name | Internal identifier | TEXT | NO | None | `length(name) > 0 AND length(name) <= 100` | None | Yes | Implementation Decision. Used as the keyring entry namespace key and application logic identifier. |
 | display_name | User-facing label | TEXT | NO | None | `length(display_name) > 0` | None | No | FR-004 |
 
@@ -246,7 +251,7 @@ Migrations follow a forward-only, incremental philosophy. Each migration is atom
 | Field | Purpose | Type | Nullable | Default | CHECK | FK | UNIQUE | Traceability |
 |-------|---------|------|----------|---------|-------|-----|--------|--------------|
 | version | Migration number | INTEGER | NO | None | `version > 0` | None | PK | Implementation Decision. |
-| applied_at | Application timestamp | INTEGER | NO | Current timestamp | `applied_at > 0` | None | No | Implementation Decision. |
+| applied_at | Application timestamp | INTEGER | NO | Current Unix timestamp | `applied_at > 0` | None | No | Implementation Decision. |
 
 ---
 
@@ -296,9 +301,10 @@ Migrations follow a forward-only, incremental philosophy. Each migration is atom
 - **Rationale:** FTS5 virtual tables do not auto-update. Triggers are required to keep search results current for FR-009.
 
 **Updated-At Triggers:**
-- **Purpose:** Automatically update `updated_at` timestamps when rows are modified.
+- **Purpose:** Automatically update `updated_at` timestamps when user-editable fields change.
 - **Timing:** AFTER UPDATE.
 - **Tables:** `conversations`, `prompts`.
+- **Fields:** For `conversations`, the trigger executes only when `title` or `status` changes. For `prompts`, the trigger executes only when `title` or `content` changes.
 - **Rationale:** Ensures timestamp accuracy without requiring application-layer logic to manually set the field on every update. Not applied to `messages` (immutable) or `attachments` (only `message_id` is updated once at send time, which does not represent a semantic modification requiring timestamp tracking).
 
 ---
@@ -359,7 +365,7 @@ Migrations follow a forward-only, incremental philosophy. Each migration is atom
 
 **Integrity:** On detection of abnormal termination, `PRAGMA integrity_check` may be run before write operations.
 
-**Corruption:** If the database file is corrupted and cannot be opened, the application creates a new empty database with the current schema and notifies the user that previous data is inaccessible.
+**Corruption:** If the database file is corrupted and cannot be opened, the application must refuse to use the corrupted database and notify the user. Creation of a new empty database with the current schema may occur only after explicit user confirmation.
 
 ---
 
