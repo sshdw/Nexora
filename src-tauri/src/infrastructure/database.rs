@@ -12,8 +12,10 @@
 //!   refuses to start when the database schema version is newer than the
 //!   application's known migration set (DATABASE.md §5).
 //!
-//! Business-table migrations belong to Phase 1 (Database & Persistence) and are
-//! intentionally absent here.
+//! Business-table migrations materialize the DATABASE.md schema (§7–§11) via
+//! [`MIGRATIONS`]: the base tables and their functional indexes (v1), the FTS5
+//! search indexes and their synchronization triggers (v2), and the
+//! `updated_at` maintenance triggers (v3).
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -72,10 +74,180 @@ impl From<rusqlite::Error> for DatabaseError {
 /// Forward-only, ordered database migrations.
 ///
 /// Each entry is `(version, sql)` with monotonically increasing, unique
-/// versions. Business-table migrations are appended here in Phase 1
-/// (ROADMAP.md). The `schema_version` bookkeeping table is created by the
-/// migration runner itself and is never a numbered migration.
-pub(crate) const MIGRATIONS: &[(i64, &str)] = &[];
+/// versions (DATABASE.md §4–§5). The `schema_version` bookkeeping table is
+/// created by the migration runner itself and is never a numbered migration.
+///
+/// The migration set materializes the schema documented in DATABASE.md:
+///
+/// - v1: the base tables — `providers` (§7.5), `conversations` (§7.1),
+///   `messages` (§7.2), `prompts` (§7.3), `attachments` (§7.4), and
+///   `app_settings` (§7.6) — with their documented columns, defaults, CHECK
+///   constraints, and foreign keys, plus the functional indexes of §8.
+/// - v2: the FTS5 search indexes `conversations_fts` / `messages_fts` /
+///   `prompts_fts` (§10) and the synchronization triggers that keep them
+///   current (§11). Update/delete synchronization uses
+///   `DELETE FROM ..._fts WHERE rowid = old.id`; the FTS5 special `'delete'`
+///   command is unsupported for these regular content-storing tables.
+/// - v3: the `updated_at` maintenance triggers (§11) for `conversations`
+///   (title/status) and `prompts` (title/content).
+pub(crate) const MIGRATIONS: &[(i64, &str)] = &[
+    // v1 — base tables and functional indexes (DATABASE.md §7, §8).
+    (
+        1,
+        r"CREATE TABLE providers (
+    id INTEGER PRIMARY KEY CHECK (id > 0),
+    name TEXT NOT NULL UNIQUE CHECK (length(name) > 0 AND length(name) <= 100),
+    display_name TEXT NOT NULL CHECK (length(display_name) > 0)
+);
+
+CREATE TABLE conversations (
+    id INTEGER PRIMARY KEY CHECK (id > 0),
+    title TEXT NOT NULL DEFAULT 'Untitled Conversation'
+        CHECK (length(title) > 0 AND length(title) <= 500),
+    status TEXT NOT NULL DEFAULT 'active'
+        CHECK (status IN ('active', 'archived')),
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()) CHECK (created_at > 0),
+    updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+        CHECK (updated_at >= created_at)
+);
+
+CREATE TABLE messages (
+    id INTEGER PRIMARY KEY CHECK (id > 0),
+    conversation_id INTEGER NOT NULL
+        CHECK (conversation_id > 0)
+        REFERENCES conversations (id) ON DELETE CASCADE,
+    role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+    content TEXT NOT NULL CHECK (length(content) > 0),
+    provider_id INTEGER
+        CHECK (provider_id IS NULL OR provider_id > 0)
+        REFERENCES providers (id) ON DELETE SET NULL,
+    model_name TEXT CHECK (length(model_name) <= 200),
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()) CHECK (created_at > 0)
+);
+
+CREATE TABLE prompts (
+    id INTEGER PRIMARY KEY CHECK (id > 0),
+    title TEXT NOT NULL CHECK (length(title) > 0 AND length(title) <= 200),
+    content TEXT NOT NULL
+        CHECK (length(content) > 0 AND length(content) <= 10000),
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()) CHECK (created_at > 0),
+    updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+        CHECK (updated_at >= created_at)
+);
+
+CREATE TABLE attachments (
+    id INTEGER PRIMARY KEY CHECK (id > 0),
+    conversation_id INTEGER NOT NULL
+        CHECK (conversation_id > 0)
+        REFERENCES conversations (id) ON DELETE CASCADE,
+    message_id INTEGER
+        CHECK (message_id IS NULL OR message_id > 0)
+        REFERENCES messages (id) ON DELETE CASCADE,
+    file_name TEXT NOT NULL
+        CHECK (length(file_name) > 0 AND length(file_name) <= 255),
+    file_path TEXT NOT NULL CHECK (length(file_path) > 0),
+    file_size_bytes INTEGER CHECK (file_size_bytes >= 0),
+    mime_type TEXT CHECK (length(mime_type) <= 127)
+);
+
+CREATE TABLE app_settings (
+    key TEXT PRIMARY KEY CHECK (length(key) > 0 AND length(key) <= 200),
+    value TEXT CHECK (length(value) <= 10000)
+);
+
+CREATE INDEX idx_messages_conversation_created
+    ON messages (conversation_id, created_at);
+
+CREATE INDEX idx_attachments_conversation
+    ON attachments (conversation_id);
+
+CREATE INDEX idx_attachments_message
+    ON attachments (message_id);
+
+CREATE INDEX idx_conversations_status_updated
+    ON conversations (status, updated_at);
+
+CREATE INDEX idx_providers_name
+        ON providers (name);
+",
+    ),
+    // v2 — FTS5 search indexes and their synchronization triggers
+    // (DATABASE.md §10–§11). Update/delete synchronization deletes index rows
+    // by `rowid`; the FTS5 special `'delete'` command is unsupported for these
+    // regular content-storing tables.
+    (
+        2,
+        r"CREATE VIRTUAL TABLE conversations_fts USING fts5(title);
+
+CREATE VIRTUAL TABLE messages_fts USING fts5(content);
+
+CREATE VIRTUAL TABLE prompts_fts USING fts5(title, content);
+
+CREATE TRIGGER conversations_fts_insert AFTER INSERT ON conversations BEGIN
+    INSERT INTO conversations_fts (rowid, title) VALUES (new.id, new.title);
+END;
+
+CREATE TRIGGER conversations_fts_update AFTER UPDATE OF title ON conversations BEGIN
+    DELETE FROM conversations_fts WHERE rowid = old.id;
+    INSERT INTO conversations_fts (rowid, title) VALUES (new.id, new.title);
+END;
+
+CREATE TRIGGER conversations_fts_delete AFTER DELETE ON conversations BEGIN
+    DELETE FROM conversations_fts WHERE rowid = old.id;
+END;
+
+CREATE TRIGGER messages_fts_insert AFTER INSERT ON messages BEGIN
+    INSERT INTO messages_fts (rowid, content) VALUES (new.id, new.content);
+END;
+
+CREATE TRIGGER messages_fts_update AFTER UPDATE OF content ON messages BEGIN
+    DELETE FROM messages_fts WHERE rowid = old.id;
+    INSERT INTO messages_fts (rowid, content) VALUES (new.id, new.content);
+END;
+
+CREATE TRIGGER messages_fts_delete AFTER DELETE ON messages BEGIN
+    DELETE FROM messages_fts WHERE rowid = old.id;
+END;
+
+CREATE TRIGGER prompts_fts_insert AFTER INSERT ON prompts BEGIN
+    INSERT INTO prompts_fts (rowid, title, content)
+        VALUES (new.id, new.title, new.content);
+END;
+
+CREATE TRIGGER prompts_fts_update AFTER UPDATE OF title, content ON prompts BEGIN
+    DELETE FROM prompts_fts WHERE rowid = old.id;
+    INSERT INTO prompts_fts (rowid, title, content)
+        VALUES (new.id, new.title, new.content);
+END;
+
+CREATE TRIGGER prompts_fts_delete AFTER DELETE ON prompts BEGIN
+        DELETE FROM prompts_fts WHERE rowid = old.id;
+END;
+",
+    ),
+    // v3 — `updated_at` maintenance triggers (DATABASE.md §11). Messages and
+    // attachments are excluded: messages are immutable and attachment linking
+    // is not a semantic modification.
+    (
+        3,
+        r"CREATE TRIGGER conversations_touch_updated_at
+AFTER UPDATE OF title, status ON conversations
+BEGIN
+    UPDATE conversations
+        SET updated_at = (unixepoch())
+        WHERE id = old.id;
+END;
+
+CREATE TRIGGER prompts_touch_updated_at
+AFTER UPDATE OF title, content ON prompts
+BEGIN
+    UPDATE prompts
+        SET updated_at = (unixepoch())
+        WHERE id = old.id;
+END;
+",
+    ),
+];
 
 /// Open the SQLite database at `path`, apply connection pragmas, and run any
 /// pending migrations.
@@ -99,12 +271,13 @@ fn configure(conn: &Connection) -> Result<(), DatabaseError> {
     Ok(())
 }
 
-/// Create the `schema_version` bookkeeping table and apply pending migrations.
+/// Create the `schema_version` bookkeeping table (DATABASE.md §7.7) and apply
+/// any pending migrations.
 fn migrate(conn: &mut Connection) -> Result<(), DatabaseError> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_version (\
-             version INTEGER PRIMARY KEY,\
-             applied_at INTEGER NOT NULL\
+             version INTEGER PRIMARY KEY CHECK (version > 0),\
+             applied_at INTEGER NOT NULL CHECK (applied_at > 0)\
          );",
     )?;
 
@@ -126,17 +299,28 @@ fn migrate(conn: &mut Connection) -> Result<(), DatabaseError> {
         if version <= current {
             continue;
         }
-        let applied_at = now_millis();
-        let tx = conn.transaction()?;
-        tx.execute_batch(sql)?;
-        tx.execute(
-            "INSERT INTO schema_version (version, applied_at) VALUES (?1, ?2)",
-            params![version, applied_at],
-        )?;
-        tx.commit()?;
-        log::info!("applied database migration v{version}");
+        apply_migration(conn, version, sql)?;
     }
 
+    Ok(())
+}
+
+/// Execute one migration atomically.
+///
+/// The migration SQL and its `schema_version` bookkeeping insert commit
+/// together and roll back together on failure (DATABASE.md §4–§5), so a
+/// failed migration can never leave a partial schema or a stale version row.
+/// `version` is not validated here; callers apply pending migrations in order.
+fn apply_migration(conn: &mut Connection, version: i64, sql: &str) -> Result<(), DatabaseError> {
+    let applied_at = now_millis();
+    let tx = conn.transaction()?;
+    tx.execute_batch(sql)?;
+    tx.execute(
+        "INSERT INTO schema_version (version, applied_at) VALUES (?1, ?2)",
+        params![version, applied_at],
+    )?;
+    tx.commit()?;
+    log::info!("applied database migration v{version}");
     Ok(())
 }
 
@@ -187,5 +371,546 @@ impl Database {
         self.conn
             .lock()
             .map_err(|err| DatabaseError::Lock(err.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::application::search::LocalSearchService;
+    use crate::infrastructure::repository::conversations::ConversationRepository;
+    use crate::infrastructure::repository::messages::MessageRepository;
+    use crate::infrastructure::repository::prompts::PromptRepository;
+
+    /// Open an in-memory connection with the same pragmas and migrations as a
+    /// production startup ([`open`]).
+    fn in_memory_migrated() -> Connection {
+        let mut conn = Connection::open_in_memory().expect("open in-memory database");
+        configure(&conn).expect("configure connection pragmas");
+        migrate(&mut conn).expect("apply migrations");
+        conn
+    }
+
+    /// Whether `name` exists in `sqlite_master` under the given object type.
+    fn schema_object_exists(conn: &Connection, name: &str, object_type: &str) -> bool {
+        let found: Option<String> = conn
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE name = ?1 AND type = ?2",
+                params![name, object_type],
+                |row| row.get(0),
+            )
+            .ok();
+        found.is_some()
+    }
+
+    /// Applied migration versions in ascending order.
+    fn schema_version_rows(conn: &Connection) -> Vec<i64> {
+        let mut stmt = conn
+            .prepare("SELECT version FROM schema_version ORDER BY version")
+            .expect("prepare schema_version query");
+        let rows = stmt
+            .query_map([], |row| row.get::<_, i64>(0))
+            .expect("query schema_version");
+        rows.collect::<std::result::Result<Vec<i64>, _>>()
+            .expect("collect schema versions")
+    }
+
+    #[test]
+    fn fresh_database_receives_the_complete_documented_schema() {
+        let conn = in_memory_migrated();
+
+        for table in [
+            "app_settings",
+            "attachments",
+            "conversations",
+            "messages",
+            "prompts",
+            "providers",
+        ] {
+            assert!(
+                schema_object_exists(&conn, table, "table"),
+                "missing documented table {table}"
+            );
+        }
+        for index in ["conversations_fts", "messages_fts", "prompts_fts"] {
+            assert!(
+                schema_object_exists(&conn, index, "table"),
+                "missing FTS5 index {index}"
+            );
+        }
+        for index in [
+            "idx_attachments_conversation",
+            "idx_attachments_message",
+            "idx_conversations_status_updated",
+            "idx_messages_conversation_created",
+            "idx_providers_name",
+        ] {
+            assert!(
+                schema_object_exists(&conn, index, "index"),
+                "missing functional index {index}"
+            );
+        }
+        for trigger in [
+            "conversations_fts_delete",
+            "conversations_fts_insert",
+            "conversations_fts_update",
+            "conversations_touch_updated_at",
+            "messages_fts_delete",
+            "messages_fts_insert",
+            "messages_fts_update",
+            "prompts_fts_delete",
+            "prompts_fts_insert",
+            "prompts_fts_update",
+            "prompts_touch_updated_at",
+        ] {
+            assert!(
+                schema_object_exists(&conn, trigger, "trigger"),
+                "missing trigger {trigger}"
+            );
+        }
+
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn migration_state_is_recorded_correctly() {
+        let conn = in_memory_migrated();
+
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3]);
+
+        let applied_at: i64 = conn
+            .query_row(
+                "SELECT applied_at FROM schema_version ORDER BY version DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read newest applied_at");
+        assert!(applied_at > 0, "migration timestamp must be recorded");
+
+        let version_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
+            .expect("count schema_version rows");
+        assert_eq!(version_count, 3, "one row per applied migration");
+    }
+
+    #[test]
+    fn re_running_migrations_is_a_no_op() {
+        let mut conn = in_memory_migrated();
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3]);
+
+        migrate(&mut conn).expect("a second migration run must succeed");
+
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3]);
+        // The no-op run created or dropped nothing.
+        assert!(schema_object_exists(&conn, "conversations", "table"));
+        assert!(schema_object_exists(&conn, "conversations_fts", "table"));
+        assert!(schema_object_exists(
+            &conn,
+            "conversations_fts_insert",
+            "trigger"
+        ));
+    }
+
+    #[test]
+    fn failed_migration_rolls_back_the_whole_transaction() {
+        let mut conn = in_memory_migrated();
+
+        // A single migration batch: one valid statement followed by a syntax
+        // error. Without a transaction the `partial_table` would survive.
+        let err = apply_migration(
+            &mut conn,
+            99,
+            "CREATE TABLE partial_table (id INTEGER PRIMARY KEY);\n\
+             CREATE TABLE broken (oops;",
+        );
+        assert!(err.is_err(), "the failing migration must be reported");
+
+        assert!(
+            !schema_object_exists(&conn, "partial_table", "table"),
+            "the valid part of the failed migration must roll back"
+        );
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn foreign_key_constraints_are_enforced() {
+        let conn = in_memory_migrated();
+
+        let enabled: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .expect("read foreign_keys pragma");
+        assert_eq!(enabled, 1, "foreign key enforcement is enabled");
+
+        // A message must belong to an existing conversation.
+        let orphan_message = conn.execute(
+            "INSERT INTO messages (conversation_id, role, content) VALUES (999, 'user', 'x')",
+            [],
+        );
+        assert!(orphan_message.is_err(), "orphan message must be rejected");
+
+        // An attachment must belong to an existing conversation.
+        let orphan_attachment = conn.execute(
+            "INSERT INTO attachments (conversation_id, file_name, file_path) \
+             VALUES (999, 'f.txt', '/tmp/f.txt')",
+            [],
+        );
+        assert!(
+            orphan_attachment.is_err(),
+            "orphan attachment must be rejected"
+        );
+
+        // A message must not reference a provider that does not exist.
+        let unknown_provider = conn.execute(
+            "INSERT INTO messages (conversation_id, role, content, provider_id) \
+             VALUES (1, 'user', 'x', 500)",
+            [],
+        );
+        assert!(
+            unknown_provider.is_err(),
+            "unknown provider must be rejected"
+        );
+
+        // Valid references are accepted, and deleting a conversation cascades
+        // to its messages and attachments (DATABASE.md §9).
+        conn.execute("INSERT INTO conversations (title) VALUES ('c')", [])
+            .expect("insert conversation");
+        let conv_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO messages (conversation_id, role, content) VALUES (?1, 'user', 'hey')",
+            [conv_id],
+        )
+        .expect("message for an existing conversation is accepted");
+        let msg_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO attachments (conversation_id, message_id, file_name, file_path) \
+             VALUES (?1, ?2, 'f.txt', '/tmp/f.txt')",
+            params![conv_id, msg_id],
+        )
+        .expect("attachment for an existing conversation and message is accepted");
+
+        conn.execute("DELETE FROM conversations WHERE id = ?1", [conv_id])
+            .expect("delete conversation");
+        let messages_left: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1",
+                [conv_id],
+                |row| row.get(0),
+            )
+            .expect("count messages after cascade");
+        let attachments_left: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM attachments WHERE conversation_id = ?1",
+                [conv_id],
+                |row| row.get(0),
+            )
+            .expect("count attachments after cascade");
+        assert_eq!(messages_left, 0, "conversation delete cascades messages");
+        assert_eq!(
+            attachments_left, 0,
+            "conversation delete cascades attachments"
+        );
+    }
+
+    #[test]
+    fn documented_check_constraints_are_enforced() {
+        let conn = in_memory_migrated();
+
+        // conversations: non-empty title within 500 chars, valid status.
+        assert!(conn
+            .execute("INSERT INTO conversations (title) VALUES ('')", [])
+            .is_err());
+        conn.execute("INSERT INTO conversations (title) VALUES ('ok')", [])
+            .expect("valid conversation accepted");
+        let conv_id = conn.last_insert_rowid();
+        assert!(conn
+            .execute(
+                "UPDATE conversations SET status = 'broken' WHERE id = ?1",
+                [conv_id],
+            )
+            .is_err());
+
+        // messages: role enumeration and non-empty content.
+        conn.execute(
+            "INSERT INTO messages (conversation_id, role, content) VALUES (?1, 'user', 'x')",
+            [conv_id],
+        )
+        .expect("valid message accepted");
+        assert!(conn
+            .execute(
+                "INSERT INTO messages (conversation_id, role, content) VALUES (?1, 'system', 'x')",
+                [conv_id],
+            )
+            .is_err());
+        assert!(conn
+            .execute(
+                "INSERT INTO messages (conversation_id, role, content) VALUES (?1, 'user', '')",
+                [conv_id],
+            )
+            .is_err());
+
+        // prompts: non-empty title, content within 10000 chars.
+        assert!(conn
+            .execute("INSERT INTO prompts (title, content) VALUES ('', 'x')", [])
+            .is_err());
+        conn.execute("INSERT INTO prompts (title, content) VALUES ('t', 'y')", [])
+            .expect("valid prompt accepted");
+        let long_content = "x".repeat(10_001);
+        assert!(conn
+            .execute(
+                "INSERT INTO prompts (title, content) VALUES ('t', ?1)",
+                [long_content],
+            )
+            .is_err());
+
+        // attachments: non-empty file_name within 255 chars, non-empty
+        // file_path, non-negative file size, and the documented boundaries.
+        assert!(conn
+            .execute(
+                "INSERT INTO attachments (conversation_id, file_name, file_path) \
+                 VALUES (?1, '', '/tmp/f')",
+                [conv_id],
+            )
+            .is_err());
+        let long_name = "n".repeat(256);
+        assert!(conn
+            .execute(
+                "INSERT INTO attachments (conversation_id, file_name, file_path) \
+                 VALUES (?1, ?2, '/tmp/f')",
+                params![conv_id, long_name],
+            )
+            .is_err());
+        assert!(conn
+            .execute(
+                "INSERT INTO attachments (conversation_id, file_name, file_path, file_size_bytes) \
+                 VALUES (?1, 'f.txt', '', -1)",
+                [conv_id],
+            )
+            .is_err());
+        let boundary_name = "n".repeat(255);
+        conn.execute(
+            "INSERT INTO attachments (conversation_id, file_name, file_path, file_size_bytes) \
+             VALUES (?1, ?2, '/tmp/f', 0)",
+            params![conv_id, boundary_name],
+        )
+        .expect("documented boundary values are accepted");
+
+        // providers: unique name, non-empty display_name.
+        assert!(conn
+            .execute(
+                "INSERT INTO providers (name, display_name) VALUES ('openai', '')",
+                []
+            )
+            .is_err());
+        conn.execute(
+            "INSERT INTO providers (name, display_name) VALUES ('openai', 'OpenAI')",
+            [],
+        )
+        .expect("valid provider accepted");
+        assert!(conn
+            .execute(
+                "INSERT INTO providers (name, display_name) VALUES ('openai', 'Duplicate')",
+                [],
+            )
+            .is_err());
+
+        // app_settings: non-empty key, value within 10000 chars.
+        assert!(conn
+            .execute("INSERT INTO app_settings (key, value) VALUES ('', 'v')", [])
+            .is_err());
+        let long_value = "v".repeat(10_001);
+        assert!(conn
+            .execute(
+                "INSERT INTO app_settings (key, value) VALUES ('k', ?1)",
+                [long_value],
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn conversation_fts_index_stays_in_sync() {
+        let conn = in_memory_migrated();
+        let db = Database::new(conn);
+        let conversations = ConversationRepository::new(&db);
+        let search = LocalSearchService::new(&db);
+
+        let id = conversations
+            .create("Q3 roadmap planning", "active")
+            .expect("create conversation");
+        assert!(
+            search
+                .search("roadmap")
+                .expect("search")
+                .conversations
+                .iter()
+                .any(|c| c.id == id),
+            "inserted conversation is searchable by title"
+        );
+
+        conversations
+            .update(id, "Release logistics", "active")
+            .expect("rename conversation");
+        assert!(
+            !search
+                .search("roadmap")
+                .expect("search")
+                .conversations
+                .iter()
+                .any(|c| c.id == id),
+            "renamed conversation no longer matches its old title"
+        );
+        assert!(
+            search
+                .search("logistics")
+                .expect("search")
+                .conversations
+                .iter()
+                .any(|c| c.id == id),
+            "renamed conversation matches its new title"
+        );
+
+        conversations.delete(id).expect("delete conversation");
+        assert!(
+            !search
+                .search("logistics")
+                .expect("search")
+                .conversations
+                .iter()
+                .any(|c| c.id == id),
+            "deleted conversation is removed from the title index"
+        );
+    }
+
+    #[test]
+    fn message_fts_index_stays_in_sync() {
+        let conn = in_memory_migrated();
+        let db = Database::new(conn);
+        let conversations = ConversationRepository::new(&db);
+        let messages = MessageRepository::new(&db);
+        let search = LocalSearchService::new(&db);
+
+        let conv_id = conversations
+            .create("General", "active")
+            .expect("create conversation");
+        messages
+            .create(
+                conv_id,
+                "user",
+                "the launch strategy needs review",
+                None,
+                None,
+            )
+            .expect("create message");
+
+        let hits = search.search("strategy").expect("search");
+        assert!(
+            hits.message_matches
+                .iter()
+                .any(|m| m.conversation_id == conv_id),
+            "message content is searchable and names its conversation"
+        );
+
+        // Deleting the conversation removes its messages and their index rows.
+        conversations.delete(conv_id).expect("delete conversation");
+        assert!(
+            search
+                .search("strategy")
+                .expect("search")
+                .message_matches
+                .is_empty(),
+            "cascaded message deletion is reflected in the content index"
+        );
+    }
+
+    #[test]
+    fn prompt_fts_index_stays_in_sync() {
+        let conn = in_memory_migrated();
+        let db = Database::new(conn);
+        let prompts = PromptRepository::new(&db);
+        let search = LocalSearchService::new(&db);
+
+        let id = prompts
+            .create("Code review checklist", "Go through the diff.")
+            .expect("create prompt");
+        assert!(
+            search
+                .search("checklist")
+                .expect("search")
+                .prompts
+                .iter()
+                .any(|p| p.id == id),
+            "prompt title is searchable"
+        );
+        assert!(
+            search
+                .search("diff")
+                .expect("search")
+                .prompts
+                .iter()
+                .any(|p| p.id == id),
+            "prompt content is searchable"
+        );
+
+        prompts
+            .update(id, "Code review checklist", "Verify the closing brace")
+            .expect("update prompt");
+        assert!(
+            !search
+                .search("diff")
+                .expect("search")
+                .prompts
+                .iter()
+                .any(|p| p.id == id),
+            "updated prompt no longer matches its old content"
+        );
+        assert!(
+            search
+                .search("closing")
+                .expect("search")
+                .prompts
+                .iter()
+                .any(|p| p.id == id),
+            "updated prompt matches its new content"
+        );
+
+        prompts.delete(id).expect("delete prompt");
+        assert!(
+            search.search("closing").expect("search").prompts.is_empty(),
+            "deleted prompt is removed from the prompt index"
+        );
+    }
+
+    #[test]
+    fn updated_at_trigger_touches_the_timestamp_on_rename() {
+        let conn = in_memory_migrated();
+        conn.execute("INSERT INTO conversations (title) VALUES ('old title')", [])
+            .expect("insert conversation");
+        let id = conn.last_insert_rowid();
+        // Rewind created_at so a successful trigger write is observable while
+        // the `updated_at >= created_at` CHECK remains satisfiable.
+        conn.execute(
+            "UPDATE conversations SET created_at = 1 WHERE id = ?1",
+            [id],
+        )
+        .expect("rewind created_at");
+        conn.execute(
+            "UPDATE conversations SET title = 'new title' WHERE id = ?1",
+            [id],
+        )
+        .expect("rename conversation");
+
+        let (created_at, updated_at): (i64, i64) = conn
+            .query_row(
+                "SELECT created_at, updated_at FROM conversations WHERE id = ?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read timestamps");
+        assert_eq!(created_at, 1);
+        assert!(
+            updated_at > created_at,
+            "rename must refresh updated_at through the trigger"
+        );
     }
 }
