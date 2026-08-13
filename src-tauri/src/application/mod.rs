@@ -18,4 +18,5 @@ pub mod conversations;
 pub mod execution;
 pub mod prompts;
 pub mod providers;
+pub mod search;
 pub mod settings;
