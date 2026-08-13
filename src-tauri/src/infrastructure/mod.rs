@@ -5,5 +5,5 @@
 
 pub mod database;
 pub mod logging;
-
+pub mod providers;
 pub mod repository;
