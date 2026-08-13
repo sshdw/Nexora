@@ -16,6 +16,7 @@
 pub mod attachments;
 pub mod conversations;
 pub mod execution;
+pub mod export;
 pub mod prompts;
 pub mod providers;
 pub mod search;
