@@ -13,6 +13,7 @@
 // Remove this attribute once a consumer references a service.
 #![allow(dead_code)]
 
+pub mod attachments;
 pub mod conversations;
 pub mod execution;
 pub mod prompts;
