@@ -15,6 +15,7 @@
 //! None"). The table has no mutable fields and no `update_at` column, so this
 //! repository exposes no update method.
 
+use serde::Serialize;
 use crate::infrastructure::database::{Database, DatabaseError};
 use crate::infrastructure::repository::{Repository, Result};
 use rusqlite::{params, Error as SqliteError, Transaction};
@@ -22,7 +23,7 @@ use rusqlite::{params, Error as SqliteError, Transaction};
 /// A single `messages` row as persisted, mirroring the columns defined by
 /// DATABASE.md §7.2. It is a plain persistence record and carries no
 /// interpretation or business meaning.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct Message {
     /// Surrogate primary key (`id`).
     pub id: i64,

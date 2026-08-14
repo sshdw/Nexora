@@ -33,6 +33,7 @@
 //! [`ExecutorError`] deliberately carry no secret payload (ARCHITECTURE.md §10:
 //! classified errors).
 
+use serde::Serialize;
 use crate::infrastructure::database::{Database, DatabaseError};
 use crate::infrastructure::providers::anthropic::{
     AnthropicExecutor, PROVIDER_NAME as ANTHROPIC_PROVIDER_NAME,
@@ -91,7 +92,7 @@ pub(crate) enum AiRole {
 /// Carries the assistant's text plus the model that produced it so the caller
 /// can record which model actually responded. No secret or provider-specific
 /// detail is included.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct AiResponse {
     /// Assistant response text.
     pub content: String,

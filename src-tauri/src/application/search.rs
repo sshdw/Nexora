@@ -33,6 +33,7 @@
 //! unchanged to the FTS index; a malformed FTS expression surfaces as a
 //! classified [`SearchError::Database`], never a panic.
 
+use serde::Serialize;
 use crate::infrastructure::database::{Database, DatabaseError};
 use crate::infrastructure::repository::conversations::Conversation;
 use crate::infrastructure::repository::messages::Message;
@@ -47,7 +48,7 @@ pub(crate) type Result<T> = std::result::Result<T, SearchError>;
 ///
 /// Empty groups are empty vectors; a search that matches nothing returns a
 /// value with every group empty, not an error.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub(crate) struct SearchResults {
     /// Conversations whose title matched, ordered by relevance.
     pub conversations: Vec<Conversation>,

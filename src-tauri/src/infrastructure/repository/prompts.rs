@@ -11,6 +11,7 @@
 //! higher application layers, and business rules belong to higher layers; none
 //! of that is enforced here.
 
+use serde::Serialize;
 use crate::infrastructure::database::{Database, DatabaseError};
 use crate::infrastructure::repository::{Repository, Result};
 use rusqlite::{params, Error as SqliteError, Transaction};
@@ -18,7 +19,7 @@ use rusqlite::{params, Error as SqliteError, Transaction};
 /// A single `prompts` row as persisted, mirroring the columns defined by
 /// DATABASE.md §7.3. It is a plain persistence record carrying the raw stored
 /// values only, with no interpretation or business meaning.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct Prompt {
     /// Surrogate primary key (`id`).
     pub id: i64,

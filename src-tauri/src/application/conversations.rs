@@ -42,9 +42,7 @@
 //! network (ROADMAP.md Phase 10).
 
 use crate::infrastructure::database::{Database, DatabaseError};
-#[cfg(test)]
-use crate::infrastructure::repository::conversations::Conversation;
-use crate::infrastructure::repository::conversations::ConversationRepository;
+use crate::infrastructure::repository::conversations::{Conversation, ConversationRepository};
 use crate::infrastructure::repository::messages::{Message, MessageRepository};
 use crate::infrastructure::repository::providers::ProviderRepository;
 
@@ -312,6 +310,19 @@ impl<'a> ConversationService<'a> {
     pub(crate) fn delete(&self, id: i64) -> Result<()> {
         self.conversations.delete(id)?;
         Ok(())
+    }
+
+    /// List every conversation (FR-002, FR-005).
+    ///
+    /// Rows are returned in the repository's persisted order. This is a thin
+    /// pass-through to the existing [`ConversationRepository::list`]; no
+    /// filtering, search, or pagination is applied here.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConversationError::Database`] if listing fails.
+    pub(crate) fn list(&self) -> Result<Vec<Conversation>> {
+        Ok(self.conversations.list()?)
     }
 }
 
