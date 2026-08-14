@@ -105,6 +105,23 @@ impl ConversationRepository<'_> {
         Ok(tx.last_insert_rowid())
     }
 
+    /// Delete **every** `conversations` row (DATABASE.md §7.1).
+    ///
+    /// Linked `messages` and `attachments` — including draft attachments whose
+    /// `message_id` is `NULL` — are removed by the schema's `ON DELETE CASCADE`
+    /// foreign keys, and their FTS index rows by the synchronization triggers
+    /// (DATABASE.md §9, §11). Must be called inside the transaction supplied by
+    /// [`Repository::transaction`] so it participates in an atomic "clear all
+    /// application data" operation (FR-013; ROADMAP.md Phase 9).
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DatabaseError`] if the delete fails.
+    pub(crate) fn clear_in_transaction(tx: &Transaction<'_>) -> Result<()> {
+        tx.execute("DELETE FROM conversations", [])?;
+        Ok(())
+    }
+
     /// Read a conversation by `id`.
     ///
     /// Returns [`Some`] with the matched row, or [`None`] when no conversation

@@ -15,7 +15,7 @@
 
 use crate::infrastructure::database::{Database, DatabaseError};
 use crate::infrastructure::repository::{Repository, Result};
-use rusqlite::{params, Error as SqliteError};
+use rusqlite::{params, Error as SqliteError, Transaction};
 
 /// Repository for the `app_settings` key-value table.
 ///
@@ -139,6 +139,19 @@ impl SettingsRepository<'_> {
             |row| row.get(0),
         )?;
         Ok(count > 0)
+    }
+
+    /// Delete **every** `app_settings` row (DATABASE.md §7.6; user preferences
+    /// cleared by FR-013). Must be called inside the transaction supplied by
+    /// [`Repository::transaction`] so it participates in an atomic "clear all
+    /// application data" operation (FR-013; ROADMAP.md Phase 9).
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DatabaseError`] if the delete fails.
+    pub(crate) fn clear_in_transaction(tx: &Transaction<'_>) -> Result<()> {
+        tx.execute("DELETE FROM app_settings", [])?;
+        Ok(())
     }
 
     /// List all settings as `(key, value)` pairs.

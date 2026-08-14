@@ -15,7 +15,7 @@
 
 use crate::infrastructure::database::{Database, DatabaseError};
 use crate::infrastructure::repository::{Repository, Result};
-use rusqlite::{params, Error as SqliteError};
+use rusqlite::{params, Error as SqliteError, Transaction};
 
 /// A single `providers` row as persisted, mirroring the columns defined by
 /// DATABASE.md §7.5. It is a plain persistence record carrying the raw stored
@@ -170,6 +170,23 @@ impl ProviderRepository<'_> {
     pub(crate) fn delete(&self, id: i64) -> Result<()> {
         let conn = self.conn()?;
         conn.execute("DELETE FROM providers WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// Delete **every** non-sensitive provider-metadata row (DATABASE.md §7.5).
+    ///
+    /// Provider **credentials** are never stored in `SQLite` (ARCHITECTURE.md
+    /// §12; DATABASE.md §14): they belong exclusively to the OS secure keyring
+    /// and are deliberately untouched here. Must be called inside the
+    /// transaction supplied by [`Repository::transaction`] so it participates in
+    /// an atomic "clear all application data" operation (FR-013; ROADMAP.md
+    /// Phase 9).
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DatabaseError`] if the delete fails.
+    pub(crate) fn clear_in_transaction(tx: &Transaction<'_>) -> Result<()> {
+        tx.execute("DELETE FROM providers", [])?;
         Ok(())
     }
 }

@@ -13,7 +13,7 @@
 
 use crate::infrastructure::database::{Database, DatabaseError};
 use crate::infrastructure::repository::{Repository, Result};
-use rusqlite::{params, Error as SqliteError};
+use rusqlite::{params, Error as SqliteError, Transaction};
 
 /// A single `prompts` row as persisted, mirroring the columns defined by
 /// DATABASE.md §7.3. It is a plain persistence record carrying the raw stored
@@ -133,6 +133,20 @@ impl PromptRepository<'_> {
     pub(crate) fn delete(&self, id: i64) -> Result<()> {
         let conn = self.conn()?;
         conn.execute("DELETE FROM prompts WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// Delete **every** `prompts` row (DATABASE.md §7.3) and, through the
+    /// FTS synchronization triggers, their `prompts_fts` index rows (DATABASE.md
+    /// §11). Must be called inside the transaction supplied by
+    /// [`Repository::transaction`] so it participates in an atomic "clear all
+    /// application data" operation (FR-013; ROADMAP.md Phase 9).
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DatabaseError`] if the delete fails.
+    pub(crate) fn clear_in_transaction(tx: &Transaction<'_>) -> Result<()> {
+        tx.execute("DELETE FROM prompts", [])?;
         Ok(())
     }
 

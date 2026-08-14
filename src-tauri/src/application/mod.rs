@@ -19,6 +19,7 @@
 
 pub mod attachments;
 pub mod conversations;
+pub mod data_management;
 pub mod execution;
 pub mod export;
 pub mod import;
