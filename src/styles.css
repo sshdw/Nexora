@@ -1,28 +1,100 @@
-:root {
-  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
-  line-height: 1.5;
-  font-weight: 400;
-  color-scheme: light dark;
-  color: rgba(255, 255, 255, 0.87);
-  background-color: #242424;
+/* ============================================================
+   Nexora Application Shell & Global Layout — Phase 10.3.1 (visual refinement)
+   ============================================================ */
+
+/* ---- App shell: fixed sidebar + main content ---- */
+.nex-app {
+  display: grid;
+  grid-template-columns: var(--sidebar-width) 1fr;
+  width: 100vw;
+  height: 100vh;
+  background: var(--color-bg-app);
+  color: var(--color-text-primary);
+  font-family: var(--font-family);
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-regular);
+  line-height: var(--line-height-normal);
+  overflow: hidden;
 }
 
-body {
-  margin: 0;
+/* ---- Sidebar: one coherent navigation surface ---- */
+.nex-sidebar {
+  width: var(--sidebar-width);
+  min-width: var(--sidebar-width);
+  max-width: var(--sidebar-width);
+  background: var(--color-bg-sidebar);
+  border-right: 1px solid var(--color-border-strong);
   display: flex;
-  place-items: center;
-  min-width: 320px;
-  min-height: 100vh;
+  flex-direction: column;
+  padding: var(--space-sm) 0;
 }
 
-#root {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 2rem;
-  text-align: center;
+.nex-sidebar-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: 0 var(--space-md);
 }
 
-.container h1 {
-  font-size: 3.2em;
-  line-height: 1.1;
+.nex-logo {
+  width: 24px;
+  height: auto;
 }
+
+/* ---- Main content area ---- */
+.nex-main {
+  flex: 1 1 auto;
+  background: var(--color-bg-main);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.nex-main-header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+  padding: 12px var(--space-md);
+  background: var(--color-bg-main);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.nex-main-title {
+  font-size: var(--font-size-title);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+}
+
+.nex-main-title-badge {
+  margin-left: var(--space-xs);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-regular);
+  color: var(--color-text-tertiary);
+}
+
+.nex-main-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---- Typography utilities ---- */
+.nex-text-xs { font-size: var(--font-size-xs); }
+.nex-text-sm { font-size: var(--font-size-sm); }
+.nex-text-base { font-size: var(--font-size-base); }
+.nex-text-md { font-size: var(--font-size-md); }
+.nex-text-lg { font-size: var(--font-size-lg); }
+
+.nex-font-regular { font-weight: var(--font-weight-regular); }
+.nex-font-medium { font-weight: var(--font-weight-medium); }
+.nex-font-semibold { font-weight: var(--font-weight-semibold); }
+
+.nex-text-primary { color: var(--color-text-primary); }
+.nex-text-secondary { color: var(--color-text-secondary); }
+.nex-text-tertiary { color: var(--color-text-tertiary); }
+
+.nex-flex-center { display: flex; align-items: center; justify-content: center; }
+

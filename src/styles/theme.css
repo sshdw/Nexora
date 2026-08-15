@@ -1,0 +1,157 @@
+/* ============================================================
+   Nexora Design Tokens — Warm Minimal
+   Warm-neutral surfaces, warm off-white text, muted amber accent.
+   Tokens are centralized here so the palette can be revised
+   without touching components.
+   ============================================================ */
+
+:root {
+  /* ---- Surfaces (warm-neutral charcoal, subtly stepped for hierarchy) ----
+     Order from deepest (window) to lightest (elevated surfaces). The main
+     content surface sits one step above the sidebar so the workspace reads
+     as the calm, focused canvas. Warm neutrals — not blue-black. */
+  --color-bg-app:       #16151a;   /* window backdrop (deepest) */
+  --color-bg-sidebar:   #1b1a1f;   /* sidebar surface */
+  --color-bg-main:      #1d1c21;   /* main content canvas */
+  --color-bg-content:   #232226;   /* elevated surfaces: menus, modals */
+
+  /* ---- Interaction overlays (neutral lightness shifts only) ----
+     Skill §2/§11: hover +4–6%, selected +8–10%. Clearly perceptible but
+     restrained; selection belongs to the list surface, never color. */
+  --color-bg-hover:     rgba(255, 255, 255, 0.05);
+  --color-bg-selected:  rgba(255, 255, 255, 0.09);
+
+  /* ---- Borders (hairline zone separators only) ---- */
+  --color-border:        rgba(255, 255, 255, 0.06);
+  --color-border-strong: rgba(255, 255, 255, 0.10);
+
+  /* ---- Focus (thin accent ring, no glow) ---- */
+  --color-focus: rgba(201, 166, 107, 0.75);
+  --color-focus-soft: rgba(201, 166, 107, 0.55);   /* search input: subtle hairline, no ring */
+
+  /* ---- Text (warm off-white hierarchy) ---- */
+  --color-text-primary:   #ece9e6;   /* warm off-white — never pure white */
+  --color-text-secondary: #8b8983;   /* warm mid-gray: metadata, labels */
+  --color-text-tertiary:  #79766f;   /* quieter step, used sparingly */
+
+  /* ---- Accent (muted warm amber/ochre — punctuation, not vocabulary) ---- */
+  --color-accent:       #c9a66b;
+  --color-accent-hover: #d6b57e;
+  --color-accent-bg:    rgba(201, 166, 107, 0.12);
+
+  /* ---- Status (muted, calm next to the accent) ---- */
+  --color-error:    #b5675a;
+  --color-error-bg: rgba(181, 103, 90, 0.12);
+
+  /* ---- Spacing (4px base, 8px rhythm) ---- */
+  --space-xxs: 4px;
+  --space-xs:  8px;
+  --space-sm:  12px;
+  --space-md:  16px;
+  --space-lg:  24px;
+  --space-xl:  32px;
+
+  /* ---- Layout ---- */
+  --sidebar-width: 280px;
+
+  /* ---- Radius (moderate; elevated panels top out the range) ---- */
+  --radius-sm:     6px;
+  --radius-md:     10px;
+  --radius-lg:     12px;
+  --radius-full:   999px;
+
+  /* ---- Typography ----
+     One UI sans-serif family throughout (skill §4). Concrete faces first so
+     rendering is deterministic; the generic `sans-serif` fallback guarantees
+     no serif/slab/display face can ever be selected. */
+  --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-size-xs:        11px;
+  --font-size-sm:        13px;
+  --font-size-base:      14px;
+  --font-size-md:        15px;
+  --font-size-lg:        17px;
+  --font-size-title:     18px;   /* conversation header */
+  --font-size-xl:        20px;   /* empty-state heading */
+  --font-size-timestamp: 12px;   /* conversation list timestamps */
+  --font-weight-regular:  400;
+  --font-weight-medium:   500;
+  --font-weight-semibold: 600;
+  --line-height-normal:   1.5;
+}
+
+/* ---- Motion respect ---- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ---- Box model ---- */
+*, *::before, *::after { box-sizing: border-box; }
+
+img, svg { display: block; max-width: 100%; height: auto; }
+
+html, body { margin: 0; padding: 0; height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--color-bg-app);
+  color: var(--color-text-primary);
+  font-family: var(--font-family);
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-regular);
+  line-height: var(--line-height-normal);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-size-adjust: 100%;
+}
+
+#root {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-bg-app);
+}
+
+a { color: var(--color-accent); }
+a:hover { text-decoration: underline; }
+
+/* Buttons reset to a predictable baseline; themed via .nex-btn* classes. */
+button {
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  margin: 0;
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+}
+button:disabled,
+button[disabled] {
+  cursor: default;
+  opacity: 0.5;
+}
+
+ul, ol { margin: 0; padding: 0; list-style: none; }
+
+/* Typography guards (skill §4): every text primitive and form control uses the
+   same UI sans family — no heading or control may fall back to a UA serif. */
+h1, h2, h3, h4, h5, h6, p {
+  margin: 0;
+  font-family: inherit;
+}
+
+input, textarea, select {
+  font-family: inherit;
+}
+
+/* ---- Focus ring (keyboard accessibility) ---- */
+:focus-visible {
+  outline: 1px solid var(--color-focus);
+  outline-offset: 2px;
+}

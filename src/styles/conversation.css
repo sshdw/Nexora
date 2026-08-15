@@ -1,0 +1,368 @@
+/* ============================================================
+   Nexora sidebar primitives, buttons & conversation list — Warm Minimal
+   Flat, single-surface navigation. Selection is carried by a subtle
+   surface-lightness shift — no accent bar, no colour wash.
+   ============================================================ */
+
+/* ---- Shared button primitives ---- */
+.nex-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-medium);
+  border: 1px solid transparent;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  transition: background-color 0.12s ease, border-color 0.12s ease,
+    color 0.12s ease, opacity 0.12s ease;
+}
+.nex-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.nex-btn:disabled:hover {
+  background: inherit;
+}
+
+/* Tonal accent action: accent text on the bare surface — never a solid block. */
+.nex-btn-accent {
+  color: var(--color-accent);
+}
+.nex-btn-accent:hover:not(:disabled) {
+  background: var(--color-bg-hover);
+  color: var(--color-accent-hover);
+}
+.nex-btn-accent:active:not(:disabled) {
+  background: var(--color-bg-selected);
+}
+
+.nex-btn-ghost {
+  color: var(--color-text-secondary);
+}
+.nex-btn-ghost:hover:not(:disabled) {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+
+.nex-btn-sm {
+  padding: 4px 10px;
+  font-size: var(--font-size-sm);
+}
+
+/* ---- New Conversation: a quiet inline row, not a boxed CTA ----
+   The label sits at normal navigation-text weight; only the "+" keeps
+   a restrained accent so the row stays discoverable without shouting. */
+.nex-new-conversation {
+  width: 100%;
+  justify-content: flex-start;
+  gap: var(--space-sm);
+  padding: 8px var(--space-sm);
+  border: none;
+  color: var(--color-text-primary);
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-medium);
+  background: transparent;
+}
+.nex-new-conversation-icon {
+  color: var(--color-accent);
+  flex-shrink: 0;
+}
+.nex-new-conversation:hover:not(:disabled) {
+  background: var(--color-bg-hover);
+}
+.nex-new-conversation:active:not(:disabled) {
+  background: var(--color-bg-selected);
+}
+.nex-new-conversation:focus-visible {
+  outline: 1px solid var(--color-focus);
+  outline-offset: -1px;
+}
+.nex-new-conversation:disabled {
+  color: var(--color-text-secondary);
+  opacity: 0.6;
+  cursor: default;
+}
+.nex-new-conversation:disabled .nex-new-conversation-icon {
+  color: inherit;
+}
+
+/* ---- Search (flat at rest; a thin accent hairline appears only when focused) ---- */
+.nex-search {
+  position: relative;
+}
+.nex-search-icon {
+  position: absolute;
+  left: var(--space-sm);
+  top: 50%;
+  transform: translateY(-50%);
+  width: 16px;
+  height: 16px;
+  color: var(--color-text-secondary);
+  pointer-events: none;
+}
+.nex-search-input {
+  width: 100%;
+  padding: 7px 10px 7px 30px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--color-text-primary);
+  font-size: var(--font-size-sm);
+  outline: none;
+  transition: background-color 0.12s ease;
+}
+.nex-search-input::placeholder {
+  color: var(--color-text-secondary);
+}
+.nex-search-input:hover {
+  background: var(--color-bg-hover);
+}
+.nex-search-input:focus {
+  background: transparent;
+  border-color: var(--color-focus-soft);
+  outline: none;
+}
+
+/* ---- Conversation list scroll container ---- */
+.nex-conversation-nav {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.nex-conversation-nav::-webkit-scrollbar {
+  width: 6px;
+}
+.nex-conversation-nav::-webkit-scrollbar-track {
+  background: transparent;
+}
+.nex-conversation-nav::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: var(--radius-full);
+}
+.nex-conversation-nav::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.nex-conversation-list {
+  width: 100%;
+}
+
+/* Native, flat list rows. No per-row borders, no cards, no accent bars. */
+.nex-conversation-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  width: 100%;
+  min-height: 44px;
+  padding: 6px var(--space-md);
+  border-radius: var(--radius-sm);
+  text-align: left;
+  background: transparent;
+  transition: background-color 0.12s ease;
+}
+.nex-conversation-item:hover {
+  background: var(--color-bg-hover);
+}
+.nex-conversation-item:focus-visible {
+  outline: 1px solid var(--color-focus);
+  outline-offset: -1px;
+}
+.nex-conversation-item.is-selected {
+  background: var(--color-bg-selected);
+}
+.nex-conversation-item.is-selected .nex-conversation-title {
+  color: var(--color-text-primary);
+  font-weight: var(--font-weight-medium);
+}
+/* Archived rows stay visibly quiet — their title never previews selection. */
+.nex-conversation-item.is-archived .nex-conversation-title {
+  color: var(--color-text-secondary);
+}
+.nex-conversation-item.is-archived .nex-conversation-time {
+  color: var(--color-text-tertiary);
+}
+
+.nex-conversation-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-regular);
+  color: var(--color-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.nex-conversation-time {
+  flex-shrink: 0;
+  font-size: var(--font-size-timestamp);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+/* Quiet, sentence-case section labels act as the group dividers. */
+.nex-conversation-group-label {
+  margin-top: var(--space-sm);
+  padding: var(--space-xs) var(--space-md);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  letter-spacing: 0.01em;
+  color: var(--color-text-secondary);
+}
+.nex-conversation-empty-hint {
+  padding: var(--space-md);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+/* ---- Loading skeleton (flat shimmer) ---- */
+.nex-conversation-skeleton-list {
+  width: 100%;
+}
+.nex-conversation-skeleton-row {
+  height: 44px;
+  margin-bottom: 4px;
+  background: var(--color-bg-hover);
+  animation: nex-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes nex-pulse {
+  0% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.42;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+/* ---- Error state ---- */
+.nex-conversation-error {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  align-items: flex-start;
+  padding: var(--space-md);
+}
+.nex-conversation-error-text {
+  font-size: var(--font-size-sm);
+  color: var(--color-error);
+}
+
+/* ---- Settings entry (anchored utility — secondary at rest, primary on hover) ---- */
+.nex-settings-entry {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  width: 100%;
+  min-height: 40px;
+  padding: 8px var(--space-md);
+  margin-top: auto;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-regular);
+  border: none;
+  background: transparent;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+.nex-settings-entry:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+.nex-settings-entry:focus-visible {
+  outline: 1px solid var(--color-focus);
+  outline-offset: -1px;
+}
+.nex-settings-icon {
+  width: 18px;
+  height: 18px;
+  color: var(--color-text-secondary);
+}
+.nex-settings-entry:hover .nex-settings-icon {
+  color: var(--color-text-primary);
+}
+
+/* ---- Empty state & placeholders (quiet, intentional) ---- */
+.nex-empty,
+.nex-main-placeholder,
+.nex-conversation-placeholder {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  padding: var(--space-xl);
+  text-align: center;
+  background: var(--color-bg-main);
+}
+.nex-empty-mark,
+.nex-placeholder-mark {
+  width: 28px;
+  height: auto;
+  opacity: 0.9;
+}
+.nex-empty-title {
+  margin-top: var(--space-sm);
+  font-size: var(--font-size-xl);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-primary);
+}
+.nex-empty-text {
+  max-width: 360px;
+  font-size: var(--font-size-base);
+  color: var(--color-text-secondary);
+}
+.nex-empty-prompt {
+  margin-top: var(--space-sm);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-tertiary);
+}
+.nex-placeholder-title {
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-secondary);
+}
+.nex-placeholder-text {
+  max-width: 360px;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-tertiary);
+}
+
+/* Conversation view: a composed, quiet empty pane for a conversation with no
+   messages yet — small mark, one heading, one supporting line, centered. */
+.nex-conversation-empty-mark {
+  width: 24px;
+  height: auto;
+  opacity: 0.9;
+}
+.nex-conversation-empty-title {
+  margin-top: var(--space-sm);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-primary);
+}
+.nex-conversation-empty-text {
+  max-width: 360px;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+/* ---- Visually hidden (accessibility) ---- */
+.nex-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
