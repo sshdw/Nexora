@@ -1,0 +1,169 @@
+/* ============================================================
+   Settings / provider / model / credential view — Warm Minimal
+   Flat, single-surface layout in the Phase 10.3.1 visual language.
+   Selection and status are carried by quiet text and subtle surface
+   shifts, never colour washes or boxes.
+   ============================================================ */
+
+.nex-settings {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.nex-settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  padding: 12px var(--space-md);
+  background: var(--color-bg-main);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.nex-settings-title {
+  font-size: var(--font-size-title);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+}
+
+.nex-settings-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--space-lg) var(--space-md);
+}
+
+.nex-settings-inner {
+  max-width: 560px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xl);
+}
+
+.nex-settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.nex-settings-heading {
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+}
+
+.nex-settings-hint {
+  max-width: 480px;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.nex-settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  margin-top: var(--space-sm);
+}
+
+.nex-settings-label {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-secondary);
+}
+
+/* ---- Flat native controls (hairline borders, no fill at rest) ---- */
+.nex-select,
+.nex-input {
+  width: 100%;
+  max-width: 560px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border-strong);
+  background: transparent;
+  color: var(--color-text-primary);
+  font-size: var(--font-size-sm);
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.12s ease, background-color 0.12s ease;
+}
+
+.nex-select:hover,
+.nex-input:hover {
+  background: var(--color-bg-hover);
+}
+
+.nex-select:focus,
+.nex-input:focus {
+  border-color: var(--color-focus-soft);
+  background: transparent;
+}
+
+.nex-input::placeholder {
+  color: var(--color-text-tertiary);
+}
+
+.nex-select:disabled,
+.nex-input:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* ---- Provider credential list ---- */
+.nex-provider-list {
+  display: flex;
+  flex-direction: column;
+  margin-top: var(--space-xs);
+}
+
+.nex-provider-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: var(--space-sm) 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.nex-provider-row:last-child {
+  border-bottom: none;
+}
+
+.nex-provider-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+
+.nex-provider-name {
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-primary);
+}
+
+.nex-provider-status {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.nex-provider-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.nex-provider-actions .nex-input {
+  max-width: 320px;
+}
+
+.nex-provider-remove {
+  color: var(--color-error);
+}
+
+.nex-provider-remove:hover:not(:disabled) {
+  color: var(--color-error);
+  background: var(--color-error-bg);
+}

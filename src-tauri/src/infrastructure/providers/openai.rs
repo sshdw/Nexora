@@ -46,7 +46,14 @@ pub(crate) const PROVIDER_NAME: &str = "openai";
 /// User-facing provider label.
 pub(crate) const PROVIDER_DISPLAY_NAME: &str = "OpenAI";
 
-/// Concrete [`ProviderExecutor`] for OpenAI.
+/// OpenAI models currently supported by the provider (DATABASE.md §7.5: model
+/// lists are hardcoded in the MVP and managed by the application layer).
+///
+/// The selected model is passed through unchanged and is never validated
+/// against this list at runtime (never silently substituted, never rejected):
+/// this set documents the currently supported models and anchors the
+/// model-selection surface so the UI can present only supported choices.
+pub(crate) const SUPPORTED_MODELS: &[&str] = &["gpt-4o-mini", "gpt-4o"];
 ///
 /// Stateless over the shared `reqwest` blocking client so it can be shared
 /// across requests; the per-request credential and request payload are passed

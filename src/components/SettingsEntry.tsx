@@ -1,14 +1,19 @@
 import { SettingsIcon } from "./icons";
 
-// Visual navigation entry point only. The full Settings screen is a later
-// Phase 10 task; this is the anchored nav control in the sidebar.
-export default function SettingsEntry() {
+export interface SettingsEntryProps {
+  onClick?: () => void;
+}
+
+// Navigation entry point for the Settings view (Phase 10.3.2: functional
+// provider / model / credential management in the panel it opens).
+export default function SettingsEntry({ onClick }: SettingsEntryProps) {
   return (
     <button
       type="button"
       className="nex-settings-entry"
       aria-label="Settings"
       title="Settings"
+      onClick={onClick}
     >
       <SettingsIcon className="nex-settings-icon" />
       <span>Settings</span>

@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import EmptyState from "./components/EmptyState";
 import NexoraMark from "./components/NexoraMark";
+import SettingsView from "./components/SettingsView";
 import Sidebar from "./components/Sidebar";
 import type { Conversation } from "./lib/tauri";
 import { useConversations } from "./lib/useConversations";
@@ -68,11 +69,13 @@ function App() {
     create,
   } = useConversations();
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const handleNewConversation = async () => {
     const id = await create();
     if (id !== null) {
       setSelectedId(id);
+      setSettingsOpen(false);
     }
   };
 
@@ -89,12 +92,17 @@ function App() {
         onSelect={setSelectedId}
         onNewConversation={handleNewConversation}
         onRetry={reload}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
       <div className="nex-main">
-        <MainContent
-          selected={selected}
-          hasConversations={conversations.length > 0}
-        />
+        {settingsOpen ? (
+          <SettingsView onClose={() => setSettingsOpen(false)} />
+        ) : (
+          <MainContent
+            selected={selected}
+            hasConversations={conversations.length > 0}
+          />
+        )}
       </div>
     </div>
   );

@@ -11,9 +11,19 @@ use tauri::State;
 
 use crate::application::providers::ProviderService;
 use crate::infrastructure::database::Database;
+use crate::infrastructure::providers::SupportedProvider;
 use crate::infrastructure::repository::providers::Provider;
 
 use super::error::CommandError;
+
+/// Return every provider supported by this build, with its supported models
+/// (DATABASE.md §7.5: model lists are hardcoded in the MVP). This is the
+/// read-only source of truth for provider/model selection; the UI never invents
+/// providers or models. Carries metadata only — never a credential.
+#[tauri::command]
+pub(crate) fn supported_providers() -> Vec<SupportedProvider> {
+    crate::infrastructure::providers::supported_providers()
+}
 
 /// List all configured providers (metadata only, ordered by `id`).
 #[tauri::command]

@@ -14,6 +14,7 @@ export interface SidebarProps {
   onSelect: (id: number) => void;
   onNewConversation: () => void;
   onRetry: () => void;
+  onOpenSettings: () => void;
 }
 
 export default function Sidebar({
@@ -25,6 +26,7 @@ export default function Sidebar({
   onSelect,
   onNewConversation,
   onRetry,
+  onOpenSettings,
 }: SidebarProps) {
   return (
     <aside className="nex-sidebar" aria-label="Nexora">
@@ -45,7 +47,7 @@ export default function Sidebar({
         onRetry={onRetry}
       />
 
-      <SettingsEntry />
+      <SettingsEntry onClick={onOpenSettings} />
     </aside>
   );
 }

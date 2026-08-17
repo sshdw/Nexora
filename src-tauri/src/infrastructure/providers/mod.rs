@@ -17,3 +17,63 @@ pub mod anthropic;
 pub mod credentials;
 pub mod gemini;
 pub mod openai;
+
+use serde::Serialize;
+
+/// A supported AI provider definition, exposed for the UI (DATABASE.md §7.5).
+///
+/// Non-sensitive metadata only: the internal `name`, a user-facing label, and
+/// the hardcoded supported model identifiers. Credentials are never included —
+/// they live exclusively in the OS secure keyring (ARCHITECTURE.md §12).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct SupportedProvider {
+    /// Internal provider name; the keyring namespace key.
+    pub name: String,
+    /// User-facing provider label.
+    pub display_name: String,
+    /// Model identifiers supported by this provider, in display order.
+    pub models: Vec<String>,
+}
+
+/// Return every provider supported by this build, with its supported models.
+///
+/// This is the single source of truth for "which providers/models may be
+/// configured" (DATABASE.md §7.5: model lists are hardcoded in the MVP). It is
+/// derived from the registered concrete providers and their hardcoded model
+/// sets, so the UI never invents providers or models.
+pub(crate) fn supported_providers() -> Vec<SupportedProvider> {
+    provider_schemas()
+        .into_iter()
+        .map(|(name, display_name, models)| SupportedProvider {
+            name: name.to_string(),
+            display_name: display_name.to_string(),
+            models: models.iter().map(|model| model.to_string()).collect(),
+        })
+        .collect()
+}
+
+/// Collect `(name, display_name, supported_models)` for each registered
+/// provider. Kept as a small tuple helper so the list stays a single table.
+fn provider_schemas() -> Vec<(
+    &'static str,
+    &'static str,
+    &'static [&'static str],
+)> {
+    vec![
+        (
+            openai::PROVIDER_NAME,
+            openai::PROVIDER_DISPLAY_NAME,
+            openai::SUPPORTED_MODELS,
+        ),
+        (
+            anthropic::PROVIDER_NAME,
+            anthropic::PROVIDER_DISPLAY_NAME,
+            anthropic::SUPPORTED_MODELS,
+        ),
+        (
+            gemini::PROVIDER_NAME,
+            gemini::PROVIDER_DISPLAY_NAME,
+            gemini::SUPPORTED_MODELS,
+        ),
+    ]
+}

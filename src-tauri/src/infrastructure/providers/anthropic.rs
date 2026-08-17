@@ -64,6 +64,15 @@ const ANTHROPIC_VERSION: &str = "2023-06-07";
 /// behavior.
 const DEFAULT_MAX_TOKENS: u32 = 1024;
 
+/// Anthropic models currently supported by the provider (DATABASE.md §7.5:
+/// model lists are hardcoded in the MVP and managed by the application layer).
+///
+/// The selected model is passed through unchanged and is never validated
+/// against this list at runtime (never silently substituted, never rejected):
+/// this set documents the currently supported models and anchors the
+/// model-selection surface so the UI can present only supported choices.
+pub(crate) const SUPPORTED_MODELS: &[&str] = &["claude-3-5-sonnet-20240620"];
+
 /// Concrete [`ProviderExecutor`] for Anthropic.
 ///
 /// Stateless over the shared `reqwest` blocking client so it can be shared
