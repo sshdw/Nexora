@@ -31,6 +31,7 @@ pub fn run() {
             commands::attachments::list_attachments,
             commands::attachments::remove_attachment,
             commands::providers::list_providers,
+            commands::providers::supported_providers,
             commands::providers::list_available_providers,
             commands::providers::is_provider_available,
             commands::providers::create_provider,
