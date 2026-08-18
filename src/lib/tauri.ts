@@ -35,6 +35,24 @@ export function createConversation(title: string): Promise<number> {
   return invoke<number>("create_conversation", { title });
 }
 
+/** One persisted `messages` row (DATABASE.md §7.2). */
+export interface Message {
+  id: number;
+  conversation_id: number;
+  role: "user" | "assistant";
+  content: string;
+  provider_id: number | null;
+  model_name: string | null;
+  created_at: number; // seconds since unix epoch
+}
+
+/** Load a conversation's persisted messages via `conversation_history`, in the
+ * backend's chronological order (`created_at` ascending). The backend is the
+ * only source of history; the UI never invents or reorders messages. */
+export function conversationHistory(conversationId: number): Promise<Message[]> {
+  return invoke<Message[]>("conversation_history", { conversationId });
+}
+
 // ---- Providers -------------------------------------------------------
 // Provider metadata (non-sensitive) and supported-provider/model definitions.
 

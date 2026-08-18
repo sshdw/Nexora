@@ -366,3 +366,150 @@
   white-space: nowrap;
   border: 0;
 }
+
+/* ============================================================
+   Conversation workspace — history thread & composer
+   Flat, calm, desktop-first. The thread carries the messages on the bare
+   main canvas; roles are distinguished by placement and a quiet author
+   label, never by colour blocks.
+   ============================================================ */
+
+.nex-main-conversation {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-bg-main);
+}
+
+/* ---- History thread (scrollable, chronological from the backend) ---- */
+.nex-thread {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  padding: var(--space-md);
+}
+
+.nex-thread-status {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.nex-message {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xxs);
+  max-width: 720px;
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-md);
+}
+
+.nex-message-user {
+  align-self: flex-end;
+  background: var(--color-bg-content);
+}
+
+.nex-message-assistant {
+  align-self: flex-start;
+  background: var(--color-bg-hover);
+}
+
+.nex-message-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-xs);
+}
+
+.nex-message-author {
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-secondary);
+}
+
+.nex-message-assistant .nex-message-author {
+  color: var(--color-accent);
+}
+
+.nex-message-time {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+}
+
+.nex-message-body {
+  font-size: var(--font-size-base);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-primary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ---- Send-failure banner (visible, calm, above the composer) ---- */
+.nex-composer-error {
+  flex-shrink: 0;
+  margin: 0 var(--space-md);
+  padding: var(--space-sm) var(--space-md);
+  font-size: var(--font-size-sm);
+  color: var(--color-error);
+  background: var(--color-error-bg);
+  border-radius: var(--radius-sm);
+}
+
+/* ---- Composer ---- */
+.nex-composer {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  padding: var(--space-sm) var(--space-md);
+  border-top: 1px solid var(--color-border);
+  background: var(--color-bg-main);
+}
+
+.nex-composer-row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-xs);
+}
+
+.nex-composer-input {
+  flex: 1 1 auto;
+  resize: none;
+  min-height: 44px;
+  max-height: 160px;
+  padding: 10px var(--space-sm);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-content);
+  border: 1px solid transparent;
+  color: var(--color-text-primary);
+  font-size: var(--font-size-base);
+  line-height: var(--line-height-normal);
+  outline: none;
+  transition: border-color 0.12s ease, background-color 0.12s ease;
+}
+
+.nex-composer-input::placeholder {
+  color: var(--color-text-secondary);
+}
+
+.nex-composer-input:hover {
+  border-color: var(--color-border-strong);
+}
+
+.nex-composer-input:focus-visible {
+  border-color: var(--color-focus);
+}
+
+.nex-composer-input:disabled {
+  opacity: 0.6;
+}
+
+.nex-composer-hint {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-tertiary);
+}
+

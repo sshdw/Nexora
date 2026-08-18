@@ -1,14 +1,15 @@
 import { useState } from "react";
 
 import type { SupportedProvider } from "../lib/tauri";
-import { useProviders } from "../lib/useProviders";
+import type { ProvidersStore } from "../lib/useProviders";
 
 export interface SettingsViewProps {
   onClose: () => void;
+  /** Shared provider/model/credential store lifted in App (single source). */
+  store: ProvidersStore;
 }
 
-export default function SettingsView({ onClose }: SettingsViewProps) {
-  const store = useProviders();
+export default function SettingsView({ onClose, store }: SettingsViewProps) {
   const [draftKeys, setDraftKeys] = useState<Record<string, string>>({});
 
   const selected = store.providers.find((p) => p.supported.name === store.selectedProvider) ?? null;

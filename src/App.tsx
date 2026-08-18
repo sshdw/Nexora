@@ -1,18 +1,29 @@
 import { useState } from "react";
 
+import ConversationView from "./components/ConversationView";
 import EmptyState from "./components/EmptyState";
 import NexoraMark from "./components/NexoraMark";
 import SettingsView from "./components/SettingsView";
 import Sidebar from "./components/Sidebar";
 import type { Conversation } from "./lib/tauri";
 import { useConversations } from "./lib/useConversations";
+import { useProviders } from "./lib/useProviders";
 
 interface MainContentProps {
   selected: Conversation | undefined;
   hasConversations: boolean;
+  selectedProvider: string | null;
+  selectedModel: string | null;
+  onOpenSettings: () => void;
 }
 
-function MainContent({ selected, hasConversations }: MainContentProps) {
+function MainContent({
+  selected,
+  hasConversations,
+  selectedProvider,
+  selectedModel,
+  onOpenSettings,
+}: MainContentProps) {
   if (!selected) {
     if (!hasConversations) {
       return <EmptyState />;
@@ -42,19 +53,12 @@ function MainContent({ selected, hasConversations }: MainContentProps) {
           )}
         </h2>
       </header>
-      <div className="nex-main-body">
-        <div className="nex-conversation-placeholder">
-          <NexoraMark
-            className="nex-conversation-empty-mark"
-            width={24}
-            height={24}
-          />
-          <h2 className="nex-conversation-empty-title">No messages yet</h2>
-          <p className="nex-conversation-empty-text">
-            Messages in this conversation will appear here.
-          </p>
-        </div>
-      </div>
+      <ConversationView
+        conversationId={selected.id}
+        selectedProvider={selectedProvider}
+        selectedModel={selectedModel}
+        onOpenSettings={onOpenSettings}
+      />
     </>
   );
 }
@@ -68,6 +72,10 @@ function App() {
     reload,
     create,
   } = useConversations();
+  // Single provider/model/credential store shared by the Settings view and the
+  // conversation composer, so the selection made in Settings is the selection
+  // used when sending (FR-004).
+  const providers = useProviders();
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
@@ -96,11 +104,17 @@ function App() {
       />
       <div className="nex-main">
         {settingsOpen ? (
-          <SettingsView onClose={() => setSettingsOpen(false)} />
+          <SettingsView
+            store={providers}
+            onClose={() => setSettingsOpen(false)}
+          />
         ) : (
           <MainContent
             selected={selected}
             hasConversations={conversations.length > 0}
+            selectedProvider={providers.selectedProvider}
+            selectedModel={providers.selectedModel}
+            onOpenSettings={() => setSettingsOpen(true)}
           />
         )}
       </div>
