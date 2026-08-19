@@ -163,6 +163,38 @@ impl MessageRepository<'_> {
         Ok(tx.last_insert_rowid())
     }
 
+    /// Insert a new message with the schema-assigned `id` / `created_at`
+    /// defaults, using the supplied transaction.
+    ///
+    /// This mirrors the transactional `create_with_timestamps` but leaves the
+    /// timestamps to the schema (like the non-transactional [`create`]), so a
+    /// message and its conversation's recency touch can be committed as one
+    /// atomic send operation (DATABASE.md §7.2, §12). Must be called inside
+    /// the transaction supplied by [`Repository::transaction`] so it
+    /// participates in that atomic step.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DatabaseError`] if the insert fails, for example a missing
+    /// `conversation_id` (foreign-key violation) or a `role` / `content` value
+    /// rejected by the table CHECK constraints.
+    pub(crate) fn create_in_transaction(
+        tx: &Transaction<'_>,
+        conversation_id: i64,
+        role: &str,
+        content: &str,
+        provider_id: Option<i64>,
+        model_name: Option<&str>,
+    ) -> Result<i64> {
+        tx.execute(
+            "INSERT INTO messages
+                 (conversation_id, role, content, provider_id, model_name)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![conversation_id, role, content, provider_id, model_name],
+        )?;
+        Ok(tx.last_insert_rowid())
+    }
+
     /// Delete a message by `id`.
     ///
     /// Deleting a non-existent `id` is a no-op. Deleting by primary key only:

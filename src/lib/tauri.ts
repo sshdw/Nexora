@@ -53,6 +53,26 @@ export function conversationHistory(conversationId: number): Promise<Message[]> 
   return invoke<Message[]>("conversation_history", { conversationId });
 }
 
+/** Rename a conversation via `rename_conversation` (FR-002, FR-006). */
+export function renameConversation(id: number, title: string): Promise<void> {
+  return invoke<void>("rename_conversation", { id, title });
+}
+
+/** Archive an active conversation via `archive_conversation` (FR-006). */
+export function archiveConversation(id: number): Promise<void> {
+  return invoke<void>("archive_conversation", { id });
+}
+
+/** Restore an archived conversation to active via `restore_conversation` (FR-006). */
+export function restoreConversation(id: number): Promise<void> {
+  return invoke<void>("restore_conversation", { id });
+}
+
+/** Delete a conversation and cascade its messages/attachments (FR-002). */
+export function deleteConversation(id: number): Promise<void> {
+  return invoke<void>("delete_conversation", { id });
+}
+
 // ---- Providers -------------------------------------------------------
 // Provider metadata (non-sensitive) and supported-provider/model definitions.
 
@@ -135,6 +155,33 @@ export function setSetting(key: string, value: string | null): Promise<void> {
 /** Delete one setting by key, via `delete_setting`. */
 export function deleteSetting(key: string): Promise<void> {
   return invoke<void>("delete_setting", { key });
+}
+
+// ---- Search (FR-006, FR-009) -------------------------------------------
+
+/** One `prompts` row as persisted (DATABASE.md §7.3). */
+export interface Prompt {
+  id: number;
+  title: string;
+  content: string;
+  created_at: number; // seconds since unix epoch
+  updated_at: number; // seconds since unix epoch
+}
+
+/** Grouped results of one `search` call (BACKEND application/search.rs). */
+export interface SearchResults {
+  /** Conversations whose title matched, ordered by relevance. */
+  conversations: Conversation[];
+  /** Messages whose content matched; each opens its `conversation_id`. */
+  message_matches: Message[];
+  /** Prompts whose title/content matched. */
+  prompts: Prompt[];
+}
+
+/** Run the existing local `search` command over conversations, messages, and
+ * prompts. A blank query yields empty results (backend contract). */
+export function search(query: string): Promise<SearchResults> {
+  return invoke<SearchResults>("search", { query });
 }
 
 // ---- AI execution ----------------------------------------------------

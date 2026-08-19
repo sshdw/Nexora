@@ -10,11 +10,16 @@ export interface SidebarProps {
   loading: boolean;
   error: CommandError | null;
   creating: boolean;
+  busy: boolean;
   selectedId: number | null;
   onSelect: (id: number) => void;
   onNewConversation: () => void;
   onRetry: () => void;
   onOpenSettings: () => void;
+  onRename: (id: number, title: string) => Promise<void>;
+  onArchive: (id: number) => void;
+  onRestore: (id: number) => void;
+  onDelete: (id: number) => void;
 }
 
 export default function Sidebar({
@@ -22,11 +27,16 @@ export default function Sidebar({
   loading,
   error,
   creating,
+  busy,
   selectedId,
   onSelect,
   onNewConversation,
   onRetry,
   onOpenSettings,
+  onRename,
+  onArchive,
+  onRestore,
+  onDelete,
 }: SidebarProps) {
   return (
     <aside className="nex-sidebar" aria-label="Nexora">
@@ -35,7 +45,7 @@ export default function Sidebar({
         <NewConversationButton onClick={onNewConversation} disabled={creating}>
           New Conversation
         </NewConversationButton>
-        <SearchBox />
+        <SearchBox conversations={conversations} onSelectResult={onSelect} />
       </div>
 
       <ConversationList
@@ -43,8 +53,13 @@ export default function Sidebar({
         loading={loading}
         error={error}
         selectedId={selectedId}
+        busy={busy}
         onSelect={onSelect}
         onRetry={onRetry}
+        onRename={onRename}
+        onArchive={onArchive}
+        onRestore={onRestore}
+        onDelete={onDelete}
       />
 
       <SettingsEntry onClick={onOpenSettings} />

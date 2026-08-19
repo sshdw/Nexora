@@ -21,6 +21,9 @@ export interface ConversationViewProps {
   /** Selected model for the selected provider, or null if none. */
   selectedModel: string | null;
   onOpenSettings: () => void;
+  /** Called after a send resolves, so the sidebar can refresh ordering by
+   * the backend's recency update (conversation becomes recently active). */
+  onMessageSent?: () => void;
 }
 
 export default function ConversationView({
@@ -28,6 +31,7 @@ export default function ConversationView({
   selectedProvider,
   selectedModel,
   onOpenSettings,
+  onMessageSent,
 }: ConversationViewProps) {
   const { messages, loading, error, sending, send } = useConversation(conversationId);
   const [draft, setDraft] = useState("");
@@ -42,11 +46,12 @@ export default function ConversationView({
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages, loading, sending]);
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     const content = draft.trim();
     if (!canSend || !content || !selectedProvider || !selectedModel) return;
     setDraft("");
-    void send(content, selectedProvider, selectedModel);
+    await send(content, selectedProvider, selectedModel);
+    onMessageSent?.();
   };
 
   return (

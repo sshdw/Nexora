@@ -106,6 +106,28 @@ impl ConversationRepository<'_> {
         Ok(tx.last_insert_rowid())
     }
 
+    /// Advance a conversation's `updated_at` to the current Unix time.
+    ///
+    /// The `conversations_touch_updated_at` trigger only fires on `UPDATE OF
+    /// title, status`; a send inserts a new `messages` row and never changes a
+    /// mutable `conversations` column, so it cannot touch recency through the
+    /// trigger. This explicit write is the send's recency update and is made in
+    /// the same transaction as the message insert so the conversation's recent
+    /// activity is reflected atomically with the message itself (DATABASE.md
+    /// §7.1, §12). Must be called inside the transaction supplied by
+    /// [`Repository::transaction`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DatabaseError`] if the update fails.
+    pub(crate) fn touch_updated_at(tx: &Transaction<'_>, id: i64) -> Result<()> {
+        tx.execute(
+            "UPDATE conversations SET updated_at = (unixepoch()) WHERE id = ?1",
+            [id],
+        )?;
+        Ok(())
+    }
+
     /// Delete **every** `conversations` row (DATABASE.md §7.1).
     ///
     /// Linked `messages` and `attachments` — including draft attachments whose

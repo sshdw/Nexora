@@ -10,8 +10,12 @@ import { useCallback, useEffect, useState } from "react";
 import {
   type CommandError,
   type Conversation,
+  archiveConversation,
   createConversation,
+  deleteConversation,
   listConversations,
+  renameConversation,
+  restoreConversation,
 } from "./tauri";
 
 const DEFAULT_NEW_CONVERSATION_TITLE = "New Conversation";
@@ -21,8 +25,18 @@ export interface ConversationsStore {
   loading: boolean;
   error: CommandError | null;
   creating: boolean;
+  /** Whether a rename/archive/restore/delete operation is in flight. */
+  working: boolean;
   reload: () => Promise<void>;
   create: () => Promise<number | null>;
+  /** Rename a conversation (FR-002, FR-006). */
+  rename: (id: number, title: string) => Promise<void>;
+  /** Archive an active conversation (FR-006). */
+  archive: (id: number) => Promise<void>;
+  /** Restore an archived conversation (FR-006). */
+  restore: (id: number) => Promise<void>;
+  /** Delete a conversation and reload the list (FR-002). */
+  remove: (id: number) => Promise<void>;
 }
 
 export function useConversations(): ConversationsStore {
@@ -30,6 +44,7 @@ export function useConversations(): ConversationsStore {
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<CommandError | null>(null);
   const [creating, setCreating] = useState<boolean>(false);
+  const [working, setWorking] = useState<boolean>(false);
 
   const reload = useCallback(async (): Promise<void> => {
     setLoading(true);
@@ -60,11 +75,50 @@ export function useConversations(): ConversationsStore {
     }
   }, [reload]);
 
+  // Shared runner for the per-conversation management operations: run the
+  // backend command, then refresh the list from the backend so the sidebar
+  // reflects the resulting title/status membership (FR-002, FR-006).
+  const run = useCallback(
+    async (operation: () => Promise<void>): Promise<void> => {
+      setWorking(true);
+      setError(null);
+      try {
+        await operation();
+        await reload();
+      } catch (e) {
+        setError(toCommandError(e));
+      } finally {
+        setWorking(false);
+      }
+    },
+    [reload],
+  );
+
+  const rename = useCallback(
+    (id: number, title: string) => run(() => renameConversation(id, title)),
+    [run],
+  );
+  const archive = useCallback((id: number) => run(() => archiveConversation(id)), [run]);
+  const restore = useCallback((id: number) => run(() => restoreConversation(id)), [run]);
+  const remove = useCallback((id: number) => run(() => deleteConversation(id)), [run]);
+
   useEffect(() => {
     reload();
   }, [reload]);
 
-  return { conversations, loading, error, creating, reload, create };
+  return {
+    conversations,
+    loading,
+    error,
+    creating,
+    working,
+    reload,
+    create,
+    rename,
+    archive,
+    restore,
+    remove,
+  };
 }
 
 function toCommandError(error: unknown): CommandError {

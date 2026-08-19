@@ -25,14 +25,16 @@
 //! FR-003 / DATABASE.md §7.2:
 //!
 //! 1. Require the conversation to exist.
-//! 2. Persist the user message.
+//! 2. Persist the user message **and** update the conversation's recency
+//!    (`updated_at`) in one atomic transaction (DATABASE.md §12).
 //! 3. Load the conversation's persisted history in its existing chronological
 //!    order.
 //! 4. Build the provider-independent [`AiRequest`].
 //! 5. Execute exclusively through the [`AiRequestExecutor`] boundary (the
 //!    existing [`RequestExecutionService`] in production).
 //! 6. Only after a successful execution, persist the normalized [`AiResponse`]
-//!    as an assistant message and return it.
+//!    as an assistant message — again with the conversation's recency touch in
+//!    the same atomic transaction — and return it.
 //!
 //! A failed execution propagates as a classified error: the user message stays
 //! persisted and no fake assistant message is created, so conversation history
@@ -45,6 +47,7 @@ use crate::infrastructure::database::{Database, DatabaseError};
 use crate::infrastructure::repository::conversations::{Conversation, ConversationRepository};
 use crate::infrastructure::repository::messages::{Message, MessageRepository};
 use crate::infrastructure::repository::providers::ProviderRepository;
+use crate::infrastructure::repository::Repository;
 
 use super::execution::{
     self, AiMessage, AiRequest, AiResponse, AiRole, RequestError, RequestExecutionService,
@@ -192,8 +195,7 @@ impl<'a> ConversationService<'a> {
             });
         }
 
-        self.messages
-            .create(conversation_id, ROLE_USER, content, None, None)?;
+        self.persist_message_and_touch(conversation_id, ROLE_USER, content, None, None)?;
 
         let history = self.messages.list_by_conversation(conversation_id)?;
         let request = AiRequest {
@@ -212,7 +214,7 @@ impl<'a> ConversationService<'a> {
         // request is sent). The provider's id is recorded on the assistant
         // message (FR-004; DATABASE.md §7.2 `provider_id`).
         let provider_id = self.providers.read_by_name(provider)?.map(|p| p.id);
-        self.messages.create(
+        self.persist_message_and_touch(
             conversation_id,
             ROLE_ASSISTANT,
             &response.content,
@@ -221,6 +223,44 @@ impl<'a> ConversationService<'a> {
         )?;
 
         Ok(response)
+    }
+
+    /// Persist one message and update the conversation's recency (`updated_at`)
+    /// in a single atomic transaction (DATABASE.md §7.2, §12).
+    ///
+    /// A send never changes a mutable `conversations` column, so recency cannot
+    /// advance through the `conversations_touch_updated_at` trigger; this
+    /// explicit write is sent in the same transaction as the message insert so
+    /// the message and the conversation's `updated_at` either both land or both
+    /// roll back together. The user and assistant messages are each persisted
+    /// in their own atomic step so a failed execution leaves the persisted user
+    /// message with its recency touch and never manufactures an assistant row.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ConversationError::Database`] when either the message insert
+    /// or the recency update fails (the whole transaction rolls back).
+    fn persist_message_and_touch(
+        &self,
+        conversation_id: i64,
+        role: &str,
+        content: &str,
+        provider_id: Option<i64>,
+        model_name: Option<&str>,
+    ) -> Result<()> {
+        self.conversations.transaction(|tx| {
+            MessageRepository::create_in_transaction(
+                tx,
+                conversation_id,
+                role,
+                content,
+                provider_id,
+                model_name,
+            )?;
+            ConversationRepository::touch_updated_at(tx, conversation_id)?;
+            Ok(())
+        })?;
+        Ok(())
     }
 
     /// Retrieve the messages belonging to `conversation_id` (FR-005).
@@ -696,6 +736,55 @@ mod tests {
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].role, ROLE_USER);
         assert_eq!(history[0].content, "hello");
+    }
+
+    #[test]
+    fn send_advances_conversation_recency_atomically() {
+        let db = test_db();
+        let (service, _captured) = succeeding_service(
+            &db,
+            AiResponse {
+                content: "answer".to_string(),
+                model: "gpt-4o-mini".to_string(),
+            },
+        );
+        let conversation_id = service.create("Chat").expect("conversation created");
+        let repo = ConversationRepository::new(&db);
+        let before = repo.read(conversation_id).expect("read conversation").expect("exists");
+
+        service
+            .send_message(conversation_id, "hello", "openai", "gpt-4o-mini")
+            .expect("send succeeds");
+
+        // Sending a message must advance the conversation's recency (DATABASE.md
+        // §12) so the sidebar can order it as recently active.
+        let after = repo.read(conversation_id).expect("read conversation").expect("exists");
+        assert!(after.updated_at > before.updated_at);
+        // The message and the recency touch landed together: no extra message row.
+        let history = service.history(conversation_id).expect("history loads");
+        assert_eq!(history.len(), 2);
+    }
+
+    #[test]
+    fn failed_send_persists_user_message_and_still_advances_recency() {
+        let db = test_db();
+        let (service, _captured) = failing_service(&db, "openai");
+        let conversation_id = service.create("Chat").expect("conversation created");
+        let repo = ConversationRepository::new(&db);
+        let before = repo.read(conversation_id).expect("read exists").expect("insert");
+
+        service
+            .send_message(conversation_id, "hello", "openai", "gpt-4o-mini")
+            .expect_err("execution fails");
+
+        // The user message is persisted, so the conversation is modified even on
+        // a failed execution; the recency touch reflects that and the failed
+        // request leaves no assistant message (DATABASE.md §7.2).
+        let after = repo.read(conversation_id).expect("read conversation").expect("exists");
+        assert!(after.updated_at > before.updated_at);
+        let history = service.history(conversation_id).expect("history loads");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].role, ROLE_USER);
     }
 
     #[test]

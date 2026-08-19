@@ -12,7 +12,7 @@
 //! always reflects persisted state: a failed request keeps the persisted user
 //! message and never manufactures a fake assistant message (DATABASE.md §7.2).
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   type CommandError,
@@ -42,27 +42,43 @@ export function useConversation(conversationId: number | null): ConversationStor
   const [error, setError] = useState<CommandError | null>(null);
   const [sending, setSending] = useState<boolean>(false);
 
+  // The conversation this hook instance currently represents. Responses that
+  // arrive after the selection has moved to another conversation are stale and
+  // must never be applied: a slow history fetch for A cannot overwrite B's
+  // messages when B is selected (rapid conversation switching).
+  const activeConversationRef = useRef<number | null>(null);
+
   const reload = useCallback(async (): Promise<void> => {
     if (conversationId === null) {
       setMessages([]);
       return;
     }
+    const requestedId = conversationId;
     setLoading(true);
     setError(null);
     try {
-      const data = await conversationHistory(conversationId);
+      const data = await conversationHistory(requestedId);
+      // Only the history belonging to the currently selected conversation may
+      // update visible state.
+      if (activeConversationRef.current !== requestedId) return;
       // Replace, never append: reopening/refreshing cannot duplicate messages.
       setMessages(data);
     } catch (e) {
+      if (activeConversationRef.current !== requestedId) return;
       setMessages([]);
       setError(toCommandError(e));
     } finally {
-      setLoading(false);
+      if (activeConversationRef.current === requestedId) {
+        setLoading(false);
+      }
     }
   }, [conversationId]);
 
-  // Load history whenever the conversation is (re)selected.
+  // Load history whenever the conversation is (re)selected. The ref is updated
+  // synchronously here, before the async reload can complete, so any in-flight
+  // response for a previous conversation is detected as stale.
   useEffect(() => {
+    activeConversationRef.current = conversationId;
     setMessages([]);
     setError(null);
     if (conversationId !== null) {

@@ -513,3 +513,140 @@
   color: var(--color-text-tertiary);
 }
 
+/* ============================================================
+   Conversation item management actions & inline rename
+   Actions stay hidden until the row is hovered, focused, or selected —
+   a quiet interaction layer on the flat list.
+   ============================================================ */
+
+.nex-conversation-item-wrap {
+  width: 100%;
+}
+
+.nex-conversation-row {
+  display: flex;
+  align-items: center;
+}
+
+.nex-conversation-row .nex-conversation-item {
+  width: auto;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.nex-conversation-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  padding-right: var(--space-sm);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.nex-conversation-row:hover .nex-conversation-actions,
+.nex-conversation-item-wrap:focus-within .nex-conversation-actions,
+.nex-conversation-row .nex-conversation-item.is-selected ~ .nex-conversation-actions {
+  opacity: 1;
+}
+
+.nex-btn-danger {
+  color: var(--color-error);
+}
+
+.nex-btn-danger:hover:not(:disabled) {
+  background: var(--color-error-bg);
+}
+
+.nex-conversation-rename-input {
+  width: 100%;
+  min-height: 44px;
+  padding: 6px var(--space-md);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-content);
+  border: 1px solid var(--color-focus-soft);
+  color: var(--color-text-primary);
+  font-size: var(--font-size-base);
+  outline: none;
+}
+
+/* ============================================================
+   Search results panel (conversation search, FR-006)
+   Floats over the sidebar below the input; the list regains the
+   default visual when the query is cleared.
+   ============================================================ */
+
+.nex-search-results {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 50;
+  max-height: min(60vh, 320px);
+  overflow-y: auto;
+  background: var(--color-bg-content);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  padding: var(--space-xs);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xxs);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.nex-search-status {
+  padding: var(--space-xs) var(--space-sm);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.nex-search-group {
+  padding: var(--space-xs) var(--space-sm) var(--space-xxs);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-tertiary);
+}
+
+.nex-search-result {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-sm);
+  text-align: left;
+  color: var(--color-text-primary);
+  font-size: var(--font-size-sm);
+}
+
+.nex-search-result:hover {
+  background: var(--color-bg-selected);
+}
+
+.nex-search-result:focus-visible {
+  outline: 1px solid var(--color-focus);
+  outline-offset: -1px;
+}
+
+.nex-search-result-title {
+  font-weight: var(--font-weight-medium);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nex-search-result-meta {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+}
+
+.nex-search-result-snippet {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+

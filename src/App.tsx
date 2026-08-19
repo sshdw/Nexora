@@ -15,6 +15,7 @@ interface MainContentProps {
   selectedProvider: string | null;
   selectedModel: string | null;
   onOpenSettings: () => void;
+  onMessageSent: () => void;
 }
 
 function MainContent({
@@ -23,6 +24,7 @@ function MainContent({
   selectedProvider,
   selectedModel,
   onOpenSettings,
+  onMessageSent,
 }: MainContentProps) {
   if (!selected) {
     if (!hasConversations) {
@@ -58,6 +60,7 @@ function MainContent({
         selectedProvider={selectedProvider}
         selectedModel={selectedModel}
         onOpenSettings={onOpenSettings}
+        onMessageSent={onMessageSent}
       />
     </>
   );
@@ -69,8 +72,13 @@ function App() {
     loading,
     error,
     creating,
+    working,
     reload,
     create,
+    rename,
+    archive,
+    restore,
+    remove,
   } = useConversations();
   // Single provider/model/credential store shared by the Settings view and the
   // conversation composer, so the selection made in Settings is the selection
@@ -96,11 +104,16 @@ function App() {
         loading={loading}
         error={error}
         creating={creating}
+        busy={working}
         selectedId={selectedId}
         onSelect={setSelectedId}
         onNewConversation={handleNewConversation}
         onRetry={reload}
         onOpenSettings={() => setSettingsOpen(true)}
+        onRename={rename}
+        onArchive={(id) => void archive(id)}
+        onRestore={(id) => void restore(id)}
+        onDelete={(id) => void remove(id)}
       />
       <div className="nex-main">
         {settingsOpen ? (
@@ -115,6 +128,7 @@ function App() {
             selectedProvider={providers.selectedProvider}
             selectedModel={providers.selectedModel}
             onOpenSettings={() => setSettingsOpen(true)}
+            onMessageSent={() => void reload()}
           />
         )}
       </div>

@@ -6,8 +6,13 @@ export interface ConversationListProps {
   loading: boolean;
   error: CommandError | null;
   selectedId: number | null;
+  busy?: boolean;
   onSelect: (id: number) => void;
   onRetry: () => void;
+  onRename: (id: number, title: string) => Promise<void>;
+  onArchive: (id: number) => void;
+  onRestore: (id: number) => void;
+  onDelete: (id: number) => void;
 }
 
 export default function ConversationList({
@@ -15,8 +20,13 @@ export default function ConversationList({
   loading,
   error,
   selectedId,
+  busy = false,
   onSelect,
   onRetry,
+  onRename,
+  onArchive,
+  onRestore,
+  onDelete,
 }: ConversationListProps) {
   if (loading) {
     return (
@@ -73,6 +83,11 @@ export default function ConversationList({
             selected={conversation.id === selectedId}
             onSelect={onSelect}
             archived={false}
+            busy={busy}
+            onRename={onRename}
+            onArchive={onArchive}
+            onRestore={onRestore}
+            onDelete={onDelete}
           />
         ))}
 
@@ -86,6 +101,11 @@ export default function ConversationList({
                 selected={conversation.id === selectedId}
                 onSelect={onSelect}
                 archived
+                busy={busy}
+                onRename={onRename}
+                onArchive={onArchive}
+                onRestore={onRestore}
+                onDelete={onDelete}
               />
             ))}
           </>
