@@ -184,6 +184,41 @@ export function search(query: string): Promise<SearchResults> {
   return invoke<SearchResults>("search", { query });
 }
 
+// ---- Prompt Library (FR-007) ---------------------------------------------
+
+/** The confirmation phrase the backend's destructive data-management commands
+ * require. The Prompt Library supplies it internally after the user confirms a
+ * single-prompt deletion in `window.confirm`, so prompt deletion stays a simple
+ * native confirm — no per-operation phrase typing (unlike Clear All data). */
+const PROMPT_DELETE_CONFIRMATION: string = "confirm";
+
+/** List every saved prompt via `list_prompts`. The backend returns rows in
+ * creation order; the Prompt Library screen sorts by `updated_at` locally. */
+export function listPrompts(): Promise<Prompt[]> {
+  return invoke<Prompt[]>("list_prompts");
+}
+
+/** Create a prompt via `create_prompt` and return its schema-assigned id
+ * (FR-007; DATABASE.md §7.3). */
+export function createPrompt(title: string, content: string): Promise<number> {
+  return invoke<number>("create_prompt", { title, content });
+}
+
+/** Update a prompt's `title` / `content` via `update_prompt` (FR-007). */
+export function updatePrompt(id: number, title: string, content: string): Promise<void> {
+  return invoke<void>("update_prompt", { id, title, content });
+}
+
+/** Permanently delete one prompt via `delete_prompt_permanently`. The backend
+ * requires its confirmation phrase; the frontend supplies it after the user
+ * confirms in `window.confirm`, so no phrase typing is surfaced (FR-007). */
+export function deletePrompt(id: number): Promise<void> {
+  return invoke<void>("delete_prompt_permanently", {
+    id,
+    confirmation: PROMPT_DELETE_CONFIRMATION,
+  });
+}
+
 // ---- AI execution ----------------------------------------------------
 
 /** Normalized AI response returned by `send_message`. */

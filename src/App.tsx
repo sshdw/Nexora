@@ -3,6 +3,7 @@ import { useState } from "react";
 import ConversationView from "./components/ConversationView";
 import EmptyState from "./components/EmptyState";
 import NexoraMark from "./components/NexoraMark";
+import PromptLibraryView from "./components/PromptLibraryView";
 import SettingsView from "./components/SettingsView";
 import Sidebar from "./components/Sidebar";
 import type { Conversation } from "./lib/tauri";
@@ -14,6 +15,8 @@ interface MainContentProps {
   hasConversations: boolean;
   selectedProvider: string | null;
   selectedModel: string | null;
+  draft: string;
+  setDraft: (value: string) => void;
   onOpenSettings: () => void;
   onMessageSent: () => void;
 }
@@ -23,6 +26,8 @@ function MainContent({
   hasConversations,
   selectedProvider,
   selectedModel,
+  draft,
+  setDraft,
   onOpenSettings,
   onMessageSent,
 }: MainContentProps) {
@@ -52,7 +57,7 @@ function MainContent({
             <span className="nex-main-title-badge" aria-label="Archived">
               Archived
             </span>
-          )}
+                    )}
         </h2>
       </header>
       <ConversationView
@@ -61,6 +66,8 @@ function MainContent({
         selectedModel={selectedModel}
         onOpenSettings={onOpenSettings}
         onMessageSent={onMessageSent}
+        draft={draft}
+        setDraft={setDraft}
       />
     </>
   );
@@ -86,16 +93,47 @@ function App() {
   const providers = useProviders();
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // The composer draft is lifted here so the Prompt Library screen can stage a
+  // prompt's content into the active conversation's input field (FR-007), and
+  // so it can be reset when the conversation selection changes.
+  const [draft, setDraft] = useState("");
+  const [libraryOpen, setLibraryOpen] = useState(false);
 
   const handleNewConversation = async () => {
     const id = await create();
     if (id !== null) {
       setSelectedId(id);
-      setSettingsOpen(false);
+      setDraft("");
+      setLibraryOpen(false);
     }
   };
 
+  const handleSelect = (id: number) => {
+    setSelectedId(id);
+    setDraft("");
+    setLibraryOpen(false);
+  };
+
+  const openSettings = () => {
+    setSettingsOpen(true);
+    setLibraryOpen(false);
+  };
+  const openLibrary = () => {
+    setLibraryOpen(true);
+    setSettingsOpen(false);
+  };
+  const closeLibrary = () => setLibraryOpen(false);
+
+  // FR-007 "Use": stage the prompt's content into the active conversation's
+  // composer, then return to the conversation so the staged text is visible.
+  const handleUsePrompt = (content: string) => {
+    setDraft(content);
+    setLibraryOpen(false);
+  };
+
   const selected = conversations.find((c) => c.id === selectedId);
+  // A prompt can only be staged when a conversation is open.
+  const hasActiveConversation = selected != null;
 
   return (
     <div className="nex-app">
@@ -106,17 +144,25 @@ function App() {
         creating={creating}
         busy={working}
         selectedId={selectedId}
-        onSelect={setSelectedId}
+        onSelect={handleSelect}
         onNewConversation={handleNewConversation}
         onRetry={reload}
-        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenSettings={openSettings}
+        libraryActive={libraryOpen}
+        onOpenPromptLibrary={openLibrary}
         onRename={rename}
         onArchive={(id) => void archive(id)}
         onRestore={(id) => void restore(id)}
         onDelete={(id) => void remove(id)}
       />
       <div className="nex-main">
-        {settingsOpen ? (
+        {libraryOpen ? (
+          <PromptLibraryView
+            onClose={closeLibrary}
+            hasActiveConversation={hasActiveConversation}
+            onUse={handleUsePrompt}
+          />
+        ) : settingsOpen ? (
           <SettingsView
             store={providers}
             onClose={() => setSettingsOpen(false)}
@@ -127,7 +173,9 @@ function App() {
             hasConversations={conversations.length > 0}
             selectedProvider={providers.selectedProvider}
             selectedModel={providers.selectedModel}
-            onOpenSettings={() => setSettingsOpen(true)}
+            draft={draft}
+            setDraft={setDraft}
+            onOpenSettings={openSettings}
             onMessageSent={() => void reload()}
           />
         )}

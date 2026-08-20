@@ -1,0 +1,287 @@
+/* ============================================================\n   Prompt Library — Warm Minimal (Phase 10.4, FR-007, FR-009)\n   Flat list + modal editor. Reuses the global button primitives\n   and warm-minimal surface stack; only Prompt Library-specific\n   layout and text treatment lives here.\n   ============================================================ */
+
+/* ---- Full surface ---- */
+.nex-prompt-library {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ---- Header: title + back affordance ---- */
+.nex-prompt-library-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  padding: 12px var(--space-md);
+  background: var(--color-bg-main);
+  border-bottom: 1px solid var(--color-border);
+}
+.nex-prompt-library-title {
+  font-size: var(--font-size-title);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+}
+
+/* ---- Toolbar: search + new prompt ---- */
+.nex-prompt-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--color-bg-main);
+  border-bottom: 1px solid var(--color-border);
+}
+
+/* ---- Prompt-local search (flat, mirror of the sidebar search) ---- */
+.nex-prompt-search {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.nex-prompt-search-icon {
+  position: absolute;
+  left: var(--space-sm);
+  top: 50%;
+  transform: translateY(-50%);
+  width: 16px;
+  height: 16px;
+  color: var(--color-text-secondary);
+  pointer-events: none;
+}
+.nex-prompt-search-input {
+  width: 100%;
+  padding: 7px 10px 7px 30px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: 1px solid var(--color-border-strong);
+  color: var(--color-text-primary);
+  font-size: var(--font-size-sm);
+  outline: none;
+  transition: border-color 0.12s ease, background-color 0.12s ease;
+}
+.nex-prompt-search-input::placeholder {
+  color: var(--color-text-tertiary);
+}
+.nex-prompt-search-input:hover {
+  background: var(--color-bg-hover);
+}
+.nex-prompt-search-input:focus {
+  border-color: var(--color-focus-soft);
+  background: transparent;
+}
+
+/* ---- List surface ---- */
+.nex-prompt-library-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.nex-prompt-list {
+  width: 100%;
+}
+.nex-prompt-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  width: 100%;
+  padding: var(--space-sm) var(--space-md);
+  border-bottom: 1px solid var(--color-border);
+}
+.nex-prompt-item-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.nex-prompt-title {
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nex-prompt-preview {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-regular);
+  color: var(--color-text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.nex-prompt-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.nex-prompt-label-muted {
+  font-size: var(--font-size-timestamp);
+  color: var(--color-text-tertiary);
+}
+.nex-prompt-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  flex-shrink: 0;
+  justify-content: flex-end;
+}
+
+/* ---- Status / empty ---- */
+.nex-prompt-status {
+  padding: var(--space-md);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+.nex-prompt-empty {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  padding: var(--space-xl) var(--space-md);
+}
+.nex-prompt-empty-title {
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+}
+.nex-prompt-empty-text {
+  max-width: 420px;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  text-align: center;
+}
+
+/* ---- Modal editor ---- */
+.nex-prompt-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+  padding: var(--space-md);
+}
+.nex-prompt-modal-card {
+  width: 100%;
+  max-width: 560px;
+  max-height: 80vh;
+  background: var(--color-bg-content);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: 0 16px 32px rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  overflow-y: auto;
+  padding: var(--space-md);
+}
+.nex-prompt-modal-title {
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+}
+.nex-prompt-modal-error {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--color-error);
+}
+.nex-prompt-modal-actions {
+  display: inline-flex;
+  justify-content: flex-end;
+  gap: var(--space-xs);
+}
+
+/* ---- Fields reused from Settings ---- */
+.nex-prompt-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+.nex-prompt-label {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-secondary);
+}
+.nex-textarea {
+  width: 100%;
+  max-width: 560px;
+  min-height: 140px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border-strong);
+  background: transparent;
+  color: var(--color-text-primary);
+  font-size: var(--font-size-sm);
+  font-family: inherit;
+  outline: none;
+  resize: vertical;
+  transition: border-color 0.12s ease, background-color 0.12s ease;
+}
+.nex-textarea::placeholder {
+  color: var(--color-text-tertiary);
+}
+.nex-textarea:hover {
+  background: var(--color-bg-hover);
+}
+.nex-textarea:focus {
+  border-color: var(--color-focus-soft);
+  background: transparent;
+}
+.nex-textarea:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.nex-prompt-count {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+  text-align: right;
+}
+
+/* ---- Sidebar nav entry ---- */
+.nex-prompt-library-entry {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  width: 100%;
+  min-height: 40px;
+  padding: 8px var(--space-md);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-regular);
+  border: none;
+  background: transparent;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+.nex-prompt-library-entry:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+.nex-prompt-library-entry:focus-visible {
+  outline: 1px solid var(--color-focus);
+  outline-offset: -1px;
+}
+.nex-prompt-library-entry.is-active {
+  color: var(--color-text-primary);
+  font-weight: var(--font-weight-medium);
+}
+.nex-prompt-library-entry.is-active .nex-prompt-library-icon,
+.nex-prompt-library-entry:hover .nex-prompt-library-icon {
+  color: var(--color-text-primary);
+}
+.nex-prompt-library-icon {
+  width: 18px;
+  height: 18px;
+  color: var(--color-text-secondary);
+  flex-shrink: 0;
+}
+
+

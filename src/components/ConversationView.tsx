@@ -9,7 +9,7 @@
 //! backend, and request failures surface as a visible error without inventing
 //! or corrupting persisted state.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 
 import { formatRelativeTime } from "../lib/format";
 import { useConversation } from "../lib/useConversation";
@@ -24,6 +24,11 @@ export interface ConversationViewProps {
   /** Called after a send resolves, so the sidebar can refresh ordering by
    * the backend's recency update (conversation becomes recently active). */
   onMessageSent?: () => void;
+  /** Current composer draft value (lifted so the Prompt Library can stage a
+   * prompt's content into the active conversation's input field — FR-007). */
+  draft: string;
+  /** Replace the composer draft (FR-007 "Use" insertion). */
+  setDraft: (value: string) => void;
 }
 
 export default function ConversationView({
@@ -32,9 +37,10 @@ export default function ConversationView({
   selectedModel,
   onOpenSettings,
   onMessageSent,
+  draft,
+  setDraft,
 }: ConversationViewProps) {
   const { messages, loading, error, sending, send } = useConversation(conversationId);
-  const [draft, setDraft] = useState("");
   const threadRef = useRef<HTMLDivElement>(null);
 
   const ready = selectedProvider !== null && selectedModel !== null;

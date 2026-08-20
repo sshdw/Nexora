@@ -2,6 +2,7 @@ import type { CommandError, Conversation } from "../lib/tauri";
 import ConversationList from "./ConversationList";
 import NewConversationButton from "./NewConversationButton";
 import NexoraMark from "./NexoraMark";
+import PromptLibraryEntry from "./PromptLibraryEntry";
 import SearchBox from "./SearchBox";
 import SettingsEntry from "./SettingsEntry";
 
@@ -16,6 +17,9 @@ export interface SidebarProps {
   onNewConversation: () => void;
   onRetry: () => void;
   onOpenSettings: () => void;
+  /** Whether the Prompt Library screen is currently shown. */
+  libraryActive: boolean;
+  onOpenPromptLibrary: () => void;
   onRename: (id: number, title: string) => Promise<void>;
   onArchive: (id: number) => void;
   onRestore: (id: number) => void;
@@ -33,6 +37,8 @@ export default function Sidebar({
   onNewConversation,
   onRetry,
   onOpenSettings,
+  libraryActive,
+  onOpenPromptLibrary,
   onRename,
   onArchive,
   onRestore,
@@ -63,6 +69,7 @@ export default function Sidebar({
       />
 
       <SettingsEntry onClick={onOpenSettings} />
+      <PromptLibraryEntry active={libraryActive} onClick={onOpenPromptLibrary} />
     </aside>
   );
 }

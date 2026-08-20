@@ -5,6 +5,7 @@ import "./styles/theme.css";
 import "./styles.css";
 import "./styles/conversation.css";
 import "./styles/settings.css";
+import "./styles/prompts.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
