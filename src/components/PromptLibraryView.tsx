@@ -8,7 +8,7 @@
 //! conversation's composer. Backend commands are used as-is; the presentation
 //! only filters.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { SearchIcon } from "./icons";
 import type { Prompt } from "../lib/tauri";
@@ -25,6 +25,12 @@ export interface PromptLibraryViewProps {
   hasActiveConversation: boolean;
   /** Stage a prompt's content into the active conversation's composer. */
   onUse: (content: string) => void;
+  /**
+   * When set (a prompt search result was chosen), open that prompt's existing
+   * Edit modal once its row is available (FR-009). Consumers reset it between
+   * library sessions so it never re-opens a stale editor.
+   */
+  initialEditId?: number | null;
 }
 
 interface EditorState {
@@ -38,10 +44,25 @@ export default function PromptLibraryView({
   onClose,
   hasActiveConversation,
   onUse,
+  initialEditId = null,
 }: PromptLibraryViewProps) {
   const store = usePrompts();
   const [query, setQuery] = useState("");
   const [editor, setEditor] = useState<EditorState | null>(null);
+  // Remember the prompt already opened through `initialEditId` so the effect
+  // below runs once per requested id and cannot re-open the editor on unrelated
+  // re-renders (list reloads, typing, Cancel, etc.).
+  const [openedInitial, setOpenedInitial] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (initialEditId == null) return;
+    if (openedInitial === initialEditId) return;
+    if (store.loading) return;
+    const target = store.prompts.find((prompt) => prompt.id === initialEditId);
+    if (!target) return;
+    setEditor({ editing: target, title: target.title, content: target.content });
+    setOpenedInitial(initialEditId);
+  }, [initialEditId, openedInitial, store.loading, store.prompts]);
 
   const openCreate = () => {
     setEditor({ editing: null, title: "", content: "" });

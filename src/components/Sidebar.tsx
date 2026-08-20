@@ -20,6 +20,8 @@ export interface SidebarProps {
   /** Whether the Prompt Library screen is currently shown. */
   libraryActive: boolean;
   onOpenPromptLibrary: () => void;
+  /** Open a prompt found by search in the Prompt Library editor. */
+  onSelectPrompt: (promptId: number) => void;
   onRename: (id: number, title: string) => Promise<void>;
   onArchive: (id: number) => void;
   onRestore: (id: number) => void;
@@ -39,6 +41,7 @@ export default function Sidebar({
   onOpenSettings,
   libraryActive,
   onOpenPromptLibrary,
+  onSelectPrompt,
   onRename,
   onArchive,
   onRestore,
@@ -51,7 +54,11 @@ export default function Sidebar({
         <NewConversationButton onClick={onNewConversation} disabled={creating}>
           New Conversation
         </NewConversationButton>
-        <SearchBox conversations={conversations} onSelectResult={onSelect} />
+        <SearchBox
+          conversations={conversations}
+          onSelectResult={onSelect}
+          onSelectPrompt={onSelectPrompt}
+        />
       </div>
 
       <ConversationList

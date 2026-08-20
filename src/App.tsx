@@ -98,6 +98,9 @@ function App() {
   // so it can be reset when the conversation selection changes.
   const [draft, setDraft] = useState("");
   const [libraryOpen, setLibraryOpen] = useState(false);
+  // Prompt Library navigation state. When set from a search result (FR-009), the
+  // Prompt Library screen opens with that prompt's existing Edit modal.
+  const [promptToEditId, setPromptToEditId] = useState<number | null>(null);
 
   const handleNewConversation = async () => {
     const id = await create();
@@ -119,10 +122,23 @@ function App() {
     setLibraryOpen(false);
   };
   const openLibrary = () => {
+    // A fresh entry to the library opens the list, not a previously staged edit.
+    setPromptToEditId(null);
     setLibraryOpen(true);
     setSettingsOpen(false);
   };
-  const closeLibrary = () => setLibraryOpen(false);
+  const closeLibrary = () => {
+    setLibraryOpen(false);
+    setPromptToEditId(null);
+  };
+
+  // Open a prompt found by search: show the Prompt Library and open the selected
+  // prompt (not merely the first prompt) in its existing Edit modal (FR-009).
+  const handleSelectPrompt = (promptId: number) => {
+    setSettingsOpen(false);
+    setLibraryOpen(true);
+    setPromptToEditId(promptId);
+  };
 
   // FR-007 "Use": stage the prompt's content into the active conversation's
   // composer, then return to the conversation so the staged text is visible.
@@ -150,6 +166,7 @@ function App() {
         onOpenSettings={openSettings}
         libraryActive={libraryOpen}
         onOpenPromptLibrary={openLibrary}
+        onSelectPrompt={handleSelectPrompt}
         onRename={rename}
         onArchive={(id) => void archive(id)}
         onRestore={(id) => void restore(id)}
@@ -161,6 +178,7 @@ function App() {
             onClose={closeLibrary}
             hasActiveConversation={hasActiveConversation}
             onUse={handleUsePrompt}
+            initialEditId={promptToEditId}
           />
         ) : settingsOpen ? (
           <SettingsView

@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import type {
   CommandError,
   Conversation,
+  Prompt,
   SearchResults,
 } from "../lib/tauri";
 import { search } from "../lib/tauri";
@@ -11,8 +12,10 @@ import { SearchIcon } from "./icons";
 export interface SearchBoxProps {
   /** Loaded conversations, used to label message hits with their title. */
   conversations: Conversation[];
-  /** Called with the conversation id when a search result is chosen. */
+  /** Called with the conversation id when a conversation/message result is chosen. */
   onSelectResult: (conversationId: number) => void;
+  /** Called with the prompt id when a prompt search result is chosen. */
+  onSelectPrompt: (promptId: number) => void;
 }
 
 // Small settle delay so each keystroke does not fire an FTS query.
@@ -21,6 +24,7 @@ const DEBOUNCE_MS = 250;
 export default function SearchBox({
   conversations,
   onSelectResult,
+  onSelectPrompt,
 }: SearchBoxProps) {
   const [value, setValue] = useState("");
   const [results, setResults] = useState<SearchResults | null>(null);
@@ -53,6 +57,13 @@ export default function SearchBox({
     setResults(null);
   };
 
+  const openPrompt = (promptId: number) => {
+    onSelectPrompt(promptId);
+    // Return the sidebar to the organized list after opening a result.
+    setValue("");
+    setResults(null);
+  };
+
   const titleFor = (conversationId: number): string => {
     const match = conversations.find((c) => c.id === conversationId);
     return match ? match.title : "Conversation";
@@ -61,7 +72,9 @@ export default function SearchBox({
   const showResults = value.trim() !== "";
   const hasResults =
     results !== null &&
-    (results.conversations.length > 0 || results.message_matches.length > 0);
+    (results.conversations.length > 0 ||
+      results.message_matches.length > 0 ||
+      results.prompts.length > 0);
 
   return (
     <div className="nex-search">
@@ -130,6 +143,27 @@ export default function SearchBox({
                       <span className="nex-search-result-snippet">
                         {message.content}
                       </span>
+                    </button>
+                  ))}
+                </>
+              )}
+              {results.prompts.length > 0 && (
+                <>
+                  <p className="nex-search-group">Prompts</p>
+                  {results.prompts.map((prompt: Prompt) => (
+                    <button
+                      key={`prompt-${prompt.id}`}
+                      type="button"
+                      className="nex-search-result"
+                      onClick={() => openPrompt(prompt.id)}
+                    >
+                      <span className="nex-search-result-title">
+                        {prompt.title}
+                      </span>
+                      <span className="nex-search-result-snippet">
+                        {prompt.content}
+                      </span>
+                      <span className="nex-search-result-meta">Prompt</span>
                     </button>
                   ))}
                 </>
