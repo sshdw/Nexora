@@ -79,14 +79,14 @@ export default function SearchBox({
   return (
     <div className="nex-search">
       <label htmlFor="nex-search-input" className="nex-sr-only">
-        Search conversations
+        Search conversations and prompts
       </label>
       <SearchIcon className="nex-search-icon" />
       <input
         id="nex-search-input"
         type="search"
         className="nex-search-input"
-        placeholder="Search conversations"
+        placeholder="Search conversations and prompts"
         value={value}
         onChange={(event) => setValue(event.target.value)}
         autoComplete="off"

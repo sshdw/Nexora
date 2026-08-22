@@ -115,6 +115,8 @@ function App() {
     setSelectedId(id);
     setDraft("");
     setLibraryOpen(false);
+    // Opening a conversation (including from a search result) leaves Settings.
+    setSettingsOpen(false);
   };
 
   const openSettings = () => {
