@@ -33,7 +33,7 @@
 #![allow(clippy::doc_markdown)]
 
 use crate::application::execution::{
-    AiMessage, AiRequest, AiResponse, AiRole, ExecutorError, ProviderExecutor,
+    AiAttachment, AiAttachmentPayload, AiMessage, AiRequest, AiResponse, AiRole, ExecutorError, ProviderExecutor,
 };
 
 use serde::{Deserialize, Serialize};
@@ -110,10 +110,39 @@ struct ChatCompletionRequest {
 }
 
 /// One OpenAI chat message.
+///
+/// `content` is a plain string for the common no-attachment case (byte-for-
+/// byte identical to the pre-FR-008 wire shape) and a parts array only when
+/// the turn carries binary attachments (FR-008).
 #[derive(Debug, Serialize)]
 struct OpenAiMessage {
     role: String,
-    content: String,
+    content: OpenAiContent,
+}
+
+/// OpenAI Chat Completions `content` values: a plain string, or an array of
+/// text/image parts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+enum OpenAiContent {
+    Text(String),
+    Parts(Vec<OpenAiContentPart>),
+}
+/// One OpenAI content part.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum OpenAiContentPart {
+    /// A plain text segment.
+    Text { text: String },
+    /// An image supplied as a base64 data URI (OpenAI has no inline PDF or
+    /// arbitrary-binary input in Chat Completions).
+    ImageUrl { image_url: OpenAiImageUrl },
+}
+
+/// The data-URI wrapper of an OpenAI image part.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct OpenAiImageUrl {
+    url: String,
 }
 
 /// Translate a provider-independent request into an OpenAI request body.
@@ -130,9 +159,37 @@ fn chat_completion_request(request: &AiRequest) -> ChatCompletionRequest {
 
 /// Map one provider-independent message to an OpenAI chat message.
 ///
-// Attachment references (FR-008) are rendered into the text content by the
-// shared [`AiMessage::composed_content`] rendering point.
+// Attachment payloads are rendered per the OpenAI contract: inline text file
+// contents become part of the turn text; base64 images become `image_url`
+// data-URI parts (FR-008).
 fn openai_message(message: &AiMessage) -> OpenAiMessage {
+    let mut parts: Vec<OpenAiContentPart> = Vec::new();
+    for attachment in &message.attachments {
+        if let AiAttachmentPayload::Base64(data) = &attachment.payload {
+            let mime = attachment
+                .mime_type
+                .as_deref()
+                .unwrap_or("application/octet-stream");
+            parts.push(OpenAiContentPart::ImageUrl {
+                image_url: OpenAiImageUrl {
+                    url: format!("data:{mime};base64,{data}"),
+                },
+            });
+        }
+    }
+    // Plain string when there is nothing structural to send: the wire format
+    // of attachment-free requests stays exactly as before.
+    let content = if parts.is_empty() {
+        OpenAiContent::Text(message.composed_content())
+    } else {
+        parts.insert(
+            0,
+            OpenAiContentPart::Text {
+                text: message.composed_content(),
+            },
+        );
+        OpenAiContent::Parts(parts)
+    };
     OpenAiMessage {
         role: match message.role {
             AiRole::System => "system",
@@ -140,7 +197,7 @@ fn openai_message(message: &AiMessage) -> OpenAiMessage {
             AiRole::Assistant => "assistant",
         }
         .to_string(),
-        content: message.composed_content(),
+        content,
     }
 }
 
@@ -275,9 +332,15 @@ mod tests {
         assert_eq!(body.model, "gpt-4o-mini");
         let roles: Vec<&str> = body.messages.iter().map(|m| m.role.as_str()).collect();
         assert_eq!(roles, vec!["system", "user", "assistant"]);
-        assert_eq!(body.messages[0].content, "You are a helpful assistant.");
-        assert_eq!(body.messages[1].content, "Hello");
-        assert_eq!(body.messages[2].content, "Hi there");
+        assert_eq!(
+            body.messages[0].content,
+            OpenAiContent::Text("You are a helpful assistant.".to_string())
+        );
+        assert_eq!(body.messages[1].content, OpenAiContent::Text("Hello".to_string()));
+        assert_eq!(
+            body.messages[2].content,
+            OpenAiContent::Text("Hi there".to_string())
+        );
         // Messages remain in chronological order.
         assert_eq!(body.messages.len(), 3);
     }
@@ -295,7 +358,7 @@ mod tests {
         };
         let body = chat_completion_request(&request);
         assert_eq!(body.messages[0].role, "user");
-        assert_eq!(body.messages[0].content, "ping");
+        assert_eq!(body.messages[0].content, OpenAiContent::Text("ping".to_string()));
     }
 
     #[test]
@@ -358,6 +421,55 @@ mod tests {
         // OpenAI-specific or secret-bearing type.
         let result = executor.execute(&sample_request(), "sk-secret-example");
         assert!(matches!(result, Err(ExecutorError::Failure)));
+    }
+
+    #[test]
+    fn binary_attachments_serialize_as_openai_image_parts() {
+        let mut request = sample_request();
+        request.messages.push(AiMessage {
+            role: AiRole::User,
+            content: "What is in this image?".to_string(),
+            attachments: vec![AiAttachment {
+                file_name: "chart.png".to_string(),
+                file_size_bytes: Some(4),
+                mime_type: Some("image/png".to_string()),
+                payload: AiAttachmentPayload::Base64("cG5nIQ==".to_string()),
+            }],
+        });
+        let json = serde_json::to_string(&chat_completion_request(&request)).expect("serialize");
+
+        // Text part plus an image_url part carrying a base64 data URI, per
+        // the Chat Completions multimodal content contract.
+        assert!(json.contains("\"type\":\"image_url\""));
+        assert!(json.contains("data:image/png;base64,cG5nIQ=="));
+        // No filesystem path can appear: the boundary never carries one.
+        assert!(!json.contains("/tmp/"));
+    }
+
+    #[test]
+    fn text_attachments_are_inlined_into_the_turn_text() {
+        let mut request = sample_request();
+        request.messages.push(AiMessage {
+            role: AiRole::User,
+            content: "Summarize".to_string(),
+            attachments: vec![AiAttachment {
+                file_name: "notes.txt".to_string(),
+                file_size_bytes: Some(5),
+                mime_type: Some("text/plain".to_string()),
+                payload: AiAttachmentPayload::Text("revenue rose 12 percent".to_string()),
+            }],
+        });
+        let body = chat_completion_request(&request);
+        let user = body
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == "user")
+            .expect("user message");
+        let OpenAiContent::Text(text) = &user.content else {
+            panic!("text-only attachments keep the plain string wire shape");
+        };
+        assert!(text.contains("revenue rose 12 percent"));
     }
 
     #[test]

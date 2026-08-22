@@ -47,7 +47,7 @@
 #![allow(clippy::doc_markdown)]
 
 use crate::application::execution::{
-    AiMessage, AiRequest, AiResponse, AiRole, ExecutorError, ProviderExecutor,
+    AiAttachment, AiAttachmentPayload, AiMessage, AiRequest, AiResponse, AiRole, ExecutorError, ProviderExecutor,
 };
 
 use serde::{Deserialize, Serialize};
@@ -156,10 +156,24 @@ struct GeminiContent {
     parts: Vec<GeminiPart>,
 }
 
-/// One text part of a Gemini content entry.
+/// One Gemini content part: either a text segment or an inline base64 data
+/// part (images / PDFs, FR-008). Exactly one field is set per part.
 #[derive(Debug, Serialize)]
 struct GeminiPart {
-    text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<String>,
+    /// Inline base64 payload (serialized as `inlineData`), mirroring the
+    /// generateContent REST contract.
+    #[serde(rename = "inlineData", skip_serializing_if = "Option::is_none")]
+    inline_data: Option<GeminiInlineData>,
+}
+
+/// Inline base64 data of one Gemini part (FR-008).
+#[derive(Debug, Serialize)]
+struct GeminiInlineData {
+    #[serde(rename = "mimeType")]
+    mime_type: String,
+    data: String,
 }
 
 /// Top-level Gemini system instruction (mapped from [`AiRole::System`]).
@@ -193,19 +207,49 @@ fn generate_content_request(request: &AiRequest) -> GenerateContentRequest {
                 AiRole::System => "system",
             }
             .to_string(),
-            // Attachment references (FR-008) are rendered into the text part
-            // by the shared `AiMessage::composed_content` rendering point.
-            parts: vec![GeminiPart {
-                text: message.composed_content(),
-            }],
+            // Attachment payloads are rendered per the Gemini contract: inline
+            // text file contents become a text part; base64 images and PDFs
+            // become `inlineData` parts (FR-008).
+            parts: gemini_parts(message),
         })
         .collect();
     GenerateContentRequest {
         contents,
         system_instruction: system.map(|text| SystemInstruction {
-            parts: vec![GeminiPart { text }],
+            parts: vec![GeminiPart {
+                text: Some(text),
+                inline_data: None,
+            }],
         }),
     }
+}
+
+/// Build the Gemini parts for one message (FR-008).
+///
+/// One text part carries the turn content with inline text-file contents;
+/// each base64 attachment additionally becomes an `inlineData` part.
+fn gemini_parts(message: &AiMessage) -> Vec<GeminiPart> {
+    let mut parts = vec![GeminiPart {
+        text: Some(message.composed_content()),
+        inline_data: None,
+    }];
+    for attachment in &message.attachments {
+        let AiAttachmentPayload::Base64(data) = &attachment.payload else {
+            continue;
+        };
+        parts.push(GeminiPart {
+            text: None,
+            inline_data: Some(GeminiInlineData {
+                mime_type: attachment
+                    .mime_type
+                    .as_deref()
+                    .unwrap_or("application/octet-stream")
+                    .to_string(),
+                data: data.clone(),
+            }),
+        });
+    }
+    parts
 }
 
 /// Aggregate every [`AiRole::System`] message into the Gemini top-level
@@ -417,7 +461,10 @@ mod tests {
             .system_instruction
             .as_ref()
             .expect("a system instruction is present");
-        assert_eq!(instruction.parts[0].text, "You are a helpful assistant.");
+        assert_eq!(
+            instruction.parts[0].text.as_deref(),
+            Some("You are a helpful assistant.")
+        );
         assert!(body.contents.iter().all(|c| c.role != "system"));
     }
 
@@ -439,8 +486,12 @@ mod tests {
         };
         let body = generate_content_request(&request);
         assert_eq!(
-            body.system_instruction.expect("system present").parts[0].text,
-            "First rule.\n\nSecond rule."
+            body.system_instruction
+                .expect("system present")
+                .parts[0]
+                .text
+                .as_deref(),
+            Some("First rule.\n\nSecond rule.")
         );
     }
 
@@ -450,8 +501,8 @@ mod tests {
         let roles: Vec<&str> = body.contents.iter().map(|c| c.role.as_str()).collect();
         // User -> user, assistant -> model, chronological order preserved.
         assert_eq!(roles, vec!["user", "model"]);
-        assert_eq!(body.contents[0].parts[0].text, "Hello");
-        assert_eq!(body.contents[1].parts[0].text, "Hi there");
+        assert_eq!(body.contents[0].parts[0].text.as_deref(), Some("Hello"));
+        assert_eq!(body.contents[1].parts[0].text.as_deref(), Some("Hi there"));
     }
 
     #[test]
@@ -697,6 +748,66 @@ mod tests {
 
         assert_eq!(ai.content, "pong");
         assert_eq!(ai.model, "gemini-2.0-flash");
+    }
+
+    #[test]
+    fn binary_attachments_serialize_as_gemini_inline_data_parts() {
+        let mut request = sample_request();
+        request.messages.push(AiMessage {
+            role: AiRole::User,
+            content: "What is in these files?".to_string(),
+            attachments: vec![
+                AiAttachment {
+                    file_name: "chart.png".to_string(),
+                    file_size_bytes: Some(4),
+                    mime_type: Some("image/png".to_string()),
+                    payload: AiAttachmentPayload::Base64("cG5nIQ==".to_string()),
+                },
+                AiAttachment {
+                    file_name: "paper.pdf".to_string(),
+                    file_size_bytes: Some(5),
+                    mime_type: Some("application/pdf".to_string()),
+                    payload: AiAttachmentPayload::Base64("JVBERi0=".to_string()),
+                },
+            ],
+        });
+        let json = serde_json::to_string(&generate_content_request(&request)).expect("serialize");
+
+        // A text part plus one `inlineData` part per binary attachment,
+        // per the generateContent REST contract (camelCase field names).
+        assert!(json.contains("\"inlineData\":{"));
+        assert!(json.contains("\"mimeType\":\"image/png\""));
+        assert!(json.contains("\"mimeType\":\"application/pdf\""));
+        assert!(json.contains("cG5nIQ=="));
+        // No filesystem path can appear: the boundary never carries one.
+        assert!(!json.contains("/tmp/"));
+    }
+
+    #[test]
+    fn text_attachments_are_inlined_into_the_turn_text() {
+        let mut request = sample_request();
+        request.messages.push(AiMessage {
+            role: AiRole::User,
+            content: "Summarize".to_string(),
+            attachments: vec![AiAttachment {
+                file_name: "notes.txt".to_string(),
+                file_size_bytes: Some(5),
+                mime_type: Some("text/plain".to_string()),
+                payload: AiAttachmentPayload::Text("revenue rose 12 percent".to_string()),
+            }],
+        });
+        let body = generate_content_request(&request);
+        let user = body
+            .contents
+            .iter()
+            .rev()
+            .find(|c| c.role == "user")
+            .expect("user contents");
+        assert!(user.parts.len() == 1);
+        assert_eq!(
+            user.parts[0].text.as_deref(),
+            Some("Summarize\n\n[Attached file: notes.txt]\n--- begin attached file contents ---\nrevenue rose 12 percent\n--- end attached file contents ---")
+        );
     }
 
     /// Spawn a local HTTP server that reads the request headers, returns a

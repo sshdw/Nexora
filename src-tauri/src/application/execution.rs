@@ -82,16 +82,17 @@ pub(crate) struct AiMessage {
 }
 
 impl AiMessage {
-    /// Full textual content for this turn, including any attached-file
-    /// references (FR-008).
+    /// Textual content for this turn, including inline text-file contents
+    /// (FR-008).
     ///
-    /// The MVP providers are text-only Chat Completions-style endpoints
-    /// (`String` content), and the existing attachment model stores a local-
-    /// file *reference* rather than readable content, so attachments reach a
-    /// request as an explicit textual annotation appended to their turn. This
-    /// is the single rendering point shared by every executor; it invents no
-    /// provider-specific structure and never includes the filesystem path or
-    /// file content.
+    /// Text-decoded attachment payloads are inlined between explicit fences so
+    /// the model can actually answer questions about the file. Base64 payloads
+    /// (images / PDFs) are *not* dumped into the text — they are carried as
+    /// provider-native structured parts by each executor — and are only
+    /// acknowledged by name here.
+    ///
+    /// This is the single rendering point shared by every executor; it invents
+    /// no provider-specific structure and never includes a filesystem path.
     pub(crate) fn composed_content(&self) -> String {
         if self.attachments.is_empty() {
             return self.content.clone();
@@ -100,29 +101,44 @@ impl AiMessage {
         for attachment in &self.attachments {
             composed.push_str("\n\n[Attached file: ");
             composed.push_str(&attachment.file_name);
-            if let Some(mime) = &attachment.mime_type {
-                composed.push_str(" (");
-                composed.push_str(mime);
-                if let Some(size) = attachment.file_size_bytes {
-                    composed.push_str(", ");
-                    composed.push_str(&size.to_string());
-                    composed.push_str(" bytes");
-                }
-                composed.push(')');
-            } else if let Some(size) = attachment.file_size_bytes {
-                composed.push_str(" (");
-                composed.push_str(&size.to_string());
-                composed.push_str(" bytes)");
-            }
             composed.push(']');
+            match &attachment.payload {
+                AiAttachmentPayload::Text(text) => {
+                    composed.push_str("\n--- begin attached file contents ---\n");
+                    composed.push_str(text);
+                    composed.push_str("\n--- end attached file contents ---");
+                }
+                AiAttachmentPayload::Base64(_) => {
+                    // Binary payloads travel as provider-native parts; the
+                    // text only acknowledges their presence.
+                    composed.push_str(" (binary content attached)");
+                }
+            }
         }
         composed
     }
 }
 
+/// Processed content of one attached local file, ready for inclusion in a
+/// provider request (FR-008).
+///
+/// Built by the application layer at request-construction time from the
+/// stored `file_path`; the boundary deliberately never sees the path itself,
+/// so no executor can leak it into a payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AiAttachmentPayload {
+    /// The file was valid UTF-8 text; carried decoded for direct inlining.
+    Text(String),
+    /// Raw file bytes, base64-encoded for a provider-native inline part
+    /// (image or PDF document block). The MIME type on [`AiAttachment`]
+    /// identifies the encoded media.
+    Base64(String),
+}
+
 /// A local-file reference attached to an [`AiMessage`] (FR-008; DATABASE.md
-/// §7.4). Metadata only — deliberately no `file_path` and no file content: the
-/// absolute local path is machine-local state that never leaves the device.
+/// §7.4). Carries display metadata plus processed content only — deliberately
+/// no `file_path`: the absolute local path is machine-local state that never
+/// crosses the provider-independent boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AiAttachment {
     /// Display name (`attachments.file_name`).
@@ -131,6 +147,8 @@ pub(crate) struct AiAttachment {
     pub file_size_bytes: Option<i64>,
     /// Media type (`attachments.mime_type`), when recorded.
     pub mime_type: Option<String>,
+    /// Processed file content ready for provider transmission.
+    pub payload: AiAttachmentPayload,
 }
 
 /// Author of an [`AiMessage`], mirroring the `messages.role` domain (DATABASE.md
@@ -521,38 +539,39 @@ mod tests {
             role: AiRole::User,
             content: "Summarize".to_string(),
             attachments: vec![AiAttachment {
-                file_name: "report.pdf".to_string(),
+                file_name: "notes.txt".to_string(),
                 file_size_bytes: Some(2048),
-                mime_type: Some("application/pdf".to_string()),
+                mime_type: Some("text/plain".to_string()),
+                payload: AiAttachmentPayload::Text("file body line".to_string()),
             }],
         };
         assert_eq!(
             message.composed_content(),
-            "Summarize\n\n[Attached file: report.pdf (application/pdf, 2048 bytes)]"
+            "Summarize\n\n[Attached file: notes.txt]\n\
+             --- begin attached file contents ---\n\
+             file body line\n\
+             --- end attached file contents ---"
         );
     }
 
     #[test]
-    fn composed_content_renders_partial_attachment_metadata() {
+    fn composed_content_acknowledges_binary_attachments_without_dumping_them() {
         let message = AiMessage {
             role: AiRole::User,
             content: "Look".to_string(),
-            attachments: vec![
-                AiAttachment {
-                    file_name: "blob.bin".to_string(),
-                    file_size_bytes: Some(7),
-                    mime_type: None,
-                },
-                AiAttachment {
-                    file_name: "mystery".to_string(),
-                    file_size_bytes: None,
-                    mime_type: None,
-                },
-            ],
+            attachments: vec![AiAttachment {
+                file_name: "report.pdf".to_string(),
+                file_size_bytes: Some(7),
+                mime_type: Some("application/pdf".to_string()),
+                payload: AiAttachmentPayload::Base64("Zm9vYmFy".to_string()),
+            }],
         };
+        let composed = message.composed_content();
         assert_eq!(
-            message.composed_content(),
-            "Look\n\n[Attached file: blob.bin (7 bytes)]\n\n[Attached file: mystery]"
+            composed,
+            "Look\n\n[Attached file: report.pdf] (binary content attached)"
         );
+        // The base64 data itself never enters the text channel.
+        assert!(!composed.contains("Zm9vYmFy"));
     }
 }

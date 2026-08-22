@@ -42,7 +42,7 @@
 #![allow(clippy::doc_markdown)]
 
 use crate::application::execution::{
-    AiMessage, AiRequest, AiResponse, AiRole, ExecutorError, ProviderExecutor,
+    AiAttachment, AiAttachmentPayload, AiMessage, AiRequest, AiResponse, AiRole, ExecutorError, ProviderExecutor,
 };
 
 use serde::{Deserialize, Serialize};
@@ -142,10 +142,45 @@ struct AnthropicRequest {
 /// One Anthropic chat message. Only `user` and `assistant` roles are valid
 /// inside `messages`; system instructions are routed to the top-level `system`
 /// field instead.
+///
+/// `content` is a plain string for the common no-attachment case and a block
+/// array only when the turn carries binary attachments (FR-008).
 #[derive(Debug, Serialize)]
 struct AnthropicMessage {
     role: String,
-    content: String,
+    content: AnthropicContent,
+}
+
+/// Anthropic Messages `content` values: a plain string, or an array of
+/// content blocks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+enum AnthropicContent {
+    Text(String),
+    Blocks(Vec<AnthropicBlock>),
+}
+
+/// One Anthropic content block: text, a base64 image, or a base64 PDF
+/// document.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum AnthropicBlock {
+    /// A plain text segment.
+    Text { text: String },
+    /// An image supplied as inline base64 data (FR-008).
+    Image { source: AnthropicSource },
+    /// A PDF document supplied as inline base64 data (FR-008).
+    Document { source: AnthropicSource },
+}
+
+/// The base64 data source shared by image and document blocks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct AnthropicSource {
+    /// Always `"base64"` for this integration (serialized as `"type"`).
+    #[serde(rename = "type")]
+    kind: &'static str,
+    media_type: String,
+    data: String,
 }
 
 /// Translate a provider-independent request into an Anthropic Messages request.
@@ -170,10 +205,10 @@ fn anthropic_request(request: &AiRequest) -> AnthropicRequest {
                 AiRole::System => "system",
             }
             .to_string(),
-            // Attachment references (FR-008) are rendered into the text
-            // content by the shared `AiMessage::composed_content` rendering
-            // point.
-            content: message.composed_content(),
+            // Attachment payloads are rendered per the Anthropic contract:
+            // inline text file contents become part of the turn text; base64
+            // images and PDFs become `image` / `document` blocks (FR-008).
+            content: anthropic_content(message),
         })
         .collect();
     AnthropicRequest {
@@ -181,6 +216,46 @@ fn anthropic_request(request: &AiRequest) -> AnthropicRequest {
         max_tokens: DEFAULT_MAX_TOKENS,
         messages,
         system,
+    }
+}
+
+/// Build the Anthropic `content` value for one message.
+///
+/// Plain string when the turn carries no binary attachments (identical to the
+/// pre-FR-008 wire shape); otherwise a text block followed by one base64
+/// `image` or `document` block per binary attachment.
+fn anthropic_content(message: &AiMessage) -> AnthropicContent {
+    let mut blocks: Vec<AnthropicBlock> = Vec::new();
+    for attachment in &message.attachments {
+        let AiAttachmentPayload::Base64(data) = &attachment.payload else {
+            continue;
+        };
+        let media_type = attachment
+            .mime_type
+            .as_deref()
+            .unwrap_or("application/octet-stream")
+            .to_string();
+        let source = AnthropicSource {
+            kind: "base64",
+            data: data.clone(),
+            media_type: media_type.clone(),
+        };
+        blocks.push(if media_type == "application/pdf" {
+            AnthropicBlock::Document { source }
+        } else {
+            AnthropicBlock::Image { source }
+        });
+    }
+    if blocks.is_empty() {
+        AnthropicContent::Text(message.composed_content())
+    } else {
+        blocks.insert(
+            0,
+            AnthropicBlock::Text {
+                text: message.composed_content(),
+            },
+        );
+        AnthropicContent::Blocks(blocks)
     }
 }
 
@@ -355,7 +430,7 @@ mod tests {
             .iter()
             .find(|m| m.role == "user")
             .expect("a user message is present");
-        assert_eq!(user.content, "Hello");
+        assert_eq!(user.content, AnthropicContent::Text("Hello".to_string()));
     }
 
     #[test]
@@ -366,7 +441,7 @@ mod tests {
             .iter()
             .find(|m| m.role == "assistant")
             .expect("an assistant message is present");
-        assert_eq!(assistant.content, "Hi there");
+        assert_eq!(assistant.content, AnthropicContent::Text("Hi there".to_string()));
     }
 
     #[test]
@@ -543,6 +618,68 @@ mod tests {
         let result = executor.run(&sample_request(), "sk-secret-example");
         assert!(matches!(result, Err(AnthropicError::Provider)));
         server.join().expect("server thread joins");
+    }
+
+    #[test]
+    fn binary_attachments_serialize_as_anthropic_blocks() {
+        let mut request = sample_request();
+        request.messages.push(AiMessage {
+            role: AiRole::User,
+            content: "What is in these files?".to_string(),
+            attachments: vec![
+                AiAttachment {
+                    file_name: "chart.png".to_string(),
+                    file_size_bytes: Some(4),
+                    mime_type: Some("image/png".to_string()),
+                    payload: AiAttachmentPayload::Base64("cG5nIQ==".to_string()),
+                },
+                AiAttachment {
+                    file_name: "paper.pdf".to_string(),
+                    file_size_bytes: Some(5),
+                    mime_type: Some("application/pdf".to_string()),
+                    payload: AiAttachmentPayload::Base64("JVBERi0=".to_string()),
+                },
+            ],
+        });
+        let json = serde_json::to_string(&anthropic_request(&request)).expect("serialize");
+
+        // Text block first, then a base64 image block and a base64 PDF
+        // document block — per the Messages API content-block contract.
+        assert!(json.contains("\"type\":\"text\""));
+        assert!(json.contains("\"type\":\"image\""));
+        assert!(json.contains("\"type\":\"document\""));
+        assert!(json.contains("\"media_type\":\"image/png\""));
+        assert!(json.contains("\"media_type\":\"application/pdf\""));
+        assert!(json.contains("cG5nIQ=="));
+        // No filesystem path can appear: the boundary never carries one.
+        assert!(!json.contains("/tmp/"));
+    }
+
+    #[test]
+    fn text_attachments_are_inlined_into_the_turn_text() {
+        let mut request = sample_request();
+        request.messages.push(AiMessage {
+            role: AiRole::User,
+            content: "Summarize".to_string(),
+            attachments: vec![AiAttachment {
+                file_name: "notes.txt".to_string(),
+                file_size_bytes: Some(5),
+                mime_type: Some("text/plain".to_string()),
+                payload: AiAttachmentPayload::Text("revenue rose 12 percent".to_string()),
+            }],
+        });
+        let body = anthropic_request(&request);
+        let user = body
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == "user")
+            .expect("user message");
+        let AnthropicContent::Text(text) = &user.content else {
+            panic!("text-only attachments keep the plain string wire shape");
+        };
+        assert!(text.contains("begin attached file contents"));
+        assert!(text.contains("revenue rose 12 percent"));
     }
 
     #[test]

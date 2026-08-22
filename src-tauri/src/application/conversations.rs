@@ -50,8 +50,12 @@ use crate::infrastructure::repository::messages::{Message, MessageRepository};
 use crate::infrastructure::repository::providers::ProviderRepository;
 use crate::infrastructure::repository::Repository;
 
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::Engine as _;
+use std::fs;
+
 use super::execution::{
-    self, AiAttachment, AiMessage, AiRequest, AiResponse, AiRole, RequestError,
+    self, AiAttachment, AiAttachmentPayload, AiMessage, AiRequest, AiResponse, AiRole, RequestError,
     RequestExecutionService,
 };
 
@@ -210,8 +214,11 @@ impl<'a> ConversationService<'a> {
             });
         }
 
-        // Validate every draft reference before persisting anything, so a
-        // stale or foreign id aborts the send up front (FR-008).
+        // Validate every draft reference and read each attached file up front,
+        // so a stale id, foreign draft, unreadable file, oversized file, or
+        // provider-unsupported type aborts the send BEFORE anything is
+        // persisted (FR-008 error handling).
+        let mut prepared: Vec<(i64, AiAttachment)> = Vec::with_capacity(attachment_ids.len());
         for &attachment_id in attachment_ids {
             let attachment = self.attachments.read(attachment_id)?.ok_or(
                 ConversationError::UnknownAttachment { id: attachment_id },
@@ -219,6 +226,8 @@ impl<'a> ConversationService<'a> {
             if attachment.conversation_id != conversation_id || attachment.message_id.is_some() {
                 return Err(ConversationError::ForeignAttachment { id: attachment_id });
             }
+            let payload = build_ai_attachment(&attachment, provider)?;
+            prepared.push((attachment_id, payload));
         }
 
         let user_message_id =
@@ -228,15 +237,21 @@ impl<'a> ConversationService<'a> {
         // "UPDATE of `message_id` only"). After this step the attachments are
         // historical: they cascade with their message/conversation per the
         // existing schema foreign keys.
-        for &attachment_id in attachment_ids {
+        for &(attachment_id, _) in &prepared {
             self.attachments
                 .update_message_id(attachment_id, Some(user_message_id))?;
         }
 
+        let current_attachments = prepared.into_iter().map(|(_, payload)| payload).collect();
         let request = AiRequest {
             provider: provider.to_string(),
             model: model.to_string(),
-            messages: self.ai_history(conversation_id)?,
+            messages: self.ai_history(
+                conversation_id,
+                provider,
+                user_message_id,
+                current_attachments,
+            )?,
         };
 
         let response = self.execution.execute(&request)?;
@@ -259,25 +274,44 @@ impl<'a> ConversationService<'a> {
 
     /// Build the provider-independent history for `conversation_id`, mapping
     /// each persisted message to an [`AiMessage`] and attaching each user
-    /// turn's linked local-file references (FR-008).
+    /// turn's linked attachments (FR-008).
+    ///
+    /// The *current* user turn reuses `current_attachments` (already read and
+    /// validated before the message was persisted); older user turns have
+    /// their attachments re-read from disk through their stored `file_path`.
+    /// The filesystem path never crosses into [`AiAttachment`], so it can
+    /// never enter a provider payload.
     ///
     /// # Errors
     ///
     /// Returns [`ConversationError::UnexpectedMessageRole`] for a persisted
-    /// role outside `user` / `assistant`, or [`ConversationError::Database`]
-    /// when any query fails.
-    fn ai_history(&self, conversation_id: i64) -> Result<Vec<AiMessage>> {
+    /// role outside `user` / `assistant`; [`ConversationError::
+    /// AttachmentUnreadable`], [`ConversationError::AttachmentTooLarge`],
+    /// [`ConversationError::AttachmentNotText`], or
+    /// [`ConversationError::AttachmentUnsupported`] when a historical attached
+    /// file can no longer be turned into a provider-safe payload; or
+    /// [`ConversationError::Database`] when any query fails.
+    fn ai_history(
+        &self,
+        conversation_id: i64,
+        provider: &str,
+        current_message_id: i64,
+        current_attachments: Vec<AiAttachment>,
+    ) -> Result<Vec<AiMessage>> {
         let history = self.messages.list_by_conversation(conversation_id)?;
         let mut messages = Vec::with_capacity(history.len());
         for message in &history {
             let mut ai_message = ai_message_from(message)?;
             if ai_message.role == AiRole::User {
-                ai_message.attachments = self
-                    .attachments
-                    .list_by_message(message.id)?
-                    .iter()
-                    .map(ai_attachment_from)
-                    .collect();
+                if message.id == current_message_id {
+                    ai_message.attachments = current_attachments.clone();
+                } else {
+                    for attachment in self.attachments.list_by_message(message.id)? {
+                        ai_message
+                            .attachments
+                            .push(build_ai_attachment(&attachment, provider)?);
+                    }
+                }
             }
             messages.push(ai_message);
         }
@@ -454,17 +488,137 @@ fn ai_message_from(message: &Message) -> Result<AiMessage> {
     })
 }
 
-/// Map a persisted [`Attachment`] to the provider-independent
-/// [`AiAttachment`] reference carried on a user turn (FR-008).
+/// Hard cap for reading one attachment into memory (FR-008). Chosen below the
+/// smallest provider inline limit (Gemini's 20 MB total inline payload) so an
+/// oversized file is rejected before a request is built.
+const MAX_ATTACHMENT_BYTES: i64 = 20 * 1024 * 1024;
+
+/// The media families the registered providers can consume (FR-008).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AttachmentFamily {
+    /// Decodable UTF-8 text, inlined into the turn content.
+    Text,
+    /// `image/png`, `image/jpeg`, `image/webp`, `image/gif` — supported as
+    /// base64 image parts by all three providers.
+    Image,
+    /// `application/pdf` — supported as document/inline parts by Anthropic and
+    /// Gemini; OpenAI Chat Completions has no inline PDF input.
+    Pdf,
+}
+
+/// Classify a declared MIME type into a provider-consumable family.
+/// `None` means "no declared family" — the caller falls back to a UTF-8 text
+/// decode attempt.
+fn attachment_family(mime: Option<&str>) -> Option<AttachmentFamily> {
+    let mime = mime?;
+    let lowered = mime.to_ascii_lowercase();
+    if lowered.starts_with("text/") {
+        return Some(AttachmentFamily::Text);
+    }
+    match lowered.as_str() {
+        "image/png" | "image/jpeg" | "image/webp" | "image/gif" => {
+            Some(AttachmentFamily::Image)
+        }
+        "application/pdf" => Some(AttachmentFamily::Pdf),
+        // Common textual application types are decoded and inlined as text.
+        "application/json"
+        | "application/xml"
+        | "application/javascript"
+        | "application/x-yaml"
+        | "application/yaml"
+        | "application/sql" => Some(AttachmentFamily::Text),
+        _ => None,
+    }
+}
+
+/// Whether `provider`'s existing HTTP contract can carry `family` inline.
+fn provider_supports(provider: &str, family: AttachmentFamily) -> bool {
+    match provider {
+        // Chat Completions carries text parts and base64 `image_url` data
+        // URIs; it defines no inline PDF/document input.
+        "openai" => !matches!(family, AttachmentFamily::Pdf),
+        // Messages API carries base64 `image` and PDF `document` blocks.
+        "anthropic" => true,
+        // generateContent carries `inlineData` images and PDFs.
+        "gemini" => true,
+        // Unknown registered provider: conservative, text-only fallback.
+        _ => matches!(family, AttachmentFamily::Text),
+    }
+}
+
+/// Read one persisted attachment from disk through its stored `file_path` and
+/// convert it into a provider-safe [`AiAttachment`] (FR-008).
 ///
-/// Deliberately drops `file_path`: the absolute local path is machine-local
-/// state and never crosses the provider-independent boundary.
-fn ai_attachment_from(attachment: &Attachment) -> AiAttachment {
-    AiAttachment {
-        file_name: attachment.file_name.clone(),
+/// - A size guard rejects files larger than [`MAX_ATTACHMENT_BYTES`] before
+///   they are read into memory (using the recorded size first, then the real
+///   filesystem metadata).
+/// - Images and PDFs are base64-encoded for provider-native inline parts.
+/// - Text-declared files — and files with no recognized MIME type — must be
+///   valid UTF-8 and travel decoded as text.
+/// - The filesystem path is used **only** to open the file; it is never copied
+///   onto the returned value, so no executor can transmit it.
+fn build_ai_attachment(attachment: &Attachment, provider: &str) -> Result<AiAttachment> {
+    let name = attachment.file_name.clone();
+
+    if let Some(size) = attachment.file_size_bytes {
+        if size > MAX_ATTACHMENT_BYTES {
+            return Err(ConversationError::AttachmentTooLarge {
+                name,
+                size_bytes: size,
+                max_bytes: MAX_ATTACHMENT_BYTES,
+            });
+        }
+    }
+
+    let actual_size = fs::metadata(&attachment.file_path)
+        .map_err(|_| ConversationError::AttachmentUnreadable { name: name.clone() })?
+        .len() as i64;
+    if actual_size > MAX_ATTACHMENT_BYTES {
+        return Err(ConversationError::AttachmentTooLarge {
+            name,
+            size_bytes: actual_size,
+            max_bytes: MAX_ATTACHMENT_BYTES,
+        });
+    }
+
+    let bytes = fs::read(&attachment.file_path)
+        .map_err(|_| ConversationError::AttachmentUnreadable { name: name.clone() })?;
+
+    let declared = attachment_family(attachment.mime_type.as_deref());
+    let is_inline = matches!(
+        declared,
+        Some(AttachmentFamily::Image) | Some(AttachmentFamily::Pdf)
+    );
+
+    if let Some(family) = declared {
+        if !provider_supports(provider, family) {
+            return Err(ConversationError::AttachmentUnsupported {
+                name,
+                provider: provider.to_string(),
+            });
+        }
+    }
+
+    let payload = if is_inline {
+        AiAttachmentPayload::Base64(BASE64_STANDARD.encode(&bytes))
+    } else {
+        // Text-declared or unrecognized media fall back to UTF-8 decoding;
+        // binary data without a supported representation is refused rather
+        // than silently corrupted or ignored.
+        match String::from_utf8(bytes) {
+            Ok(text) => AiAttachmentPayload::Text(text),
+            Err(_) => {
+                return Err(ConversationError::AttachmentNotText { name });
+            }
+        }
+    };
+
+    Ok(AiAttachment {
+        file_name: name,
         file_size_bytes: attachment.file_size_bytes,
         mime_type: attachment.mime_type.clone(),
-    }
+        payload,
+    })
 }
 
 /// Classified errors raised by conversation orchestration.
@@ -494,6 +648,35 @@ pub(crate) enum ConversationError {
         /// The referenced attachment id.
         id: i64,
     },
+    /// The attached file could not be read from disk through its stored path
+    /// (missing, moved, or permission denied).
+    AttachmentUnreadable {
+        /// The attachment's display name.
+        name: String,
+    },
+    /// The attached file exceeds the in-memory size guard for request
+    /// construction.
+    AttachmentTooLarge {
+        /// The attachment's display name.
+        name: String,
+        /// The file's size in bytes.
+        size_bytes: i64,
+        /// The maximum accepted size in bytes.
+        max_bytes: i64,
+    },
+    /// The attached file has no supported provider transmission representation
+    /// (declared text media that is not valid UTF-8).
+    AttachmentNotText {
+        /// The attachment's display name.
+        name: String,
+    },
+    /// The selected provider cannot carry the attached file type inline.
+    AttachmentUnsupported {
+        /// The attachment's display name.
+        name: String,
+        /// The internal provider name.
+        provider: String,
+    },
     /// A persisted `messages.role` value outside `user` / `assistant`, which
     /// the schema's CHECK constraint should prevent.
     UnexpectedMessageRole {
@@ -518,6 +701,22 @@ impl std::fmt::Display for ConversationError {
                 f,
                 "attachment {id} is not a pending draft of this conversation"
             ),
+            Self::AttachmentUnreadable { name } => write!(
+                f,
+                "could not read attached file '{name}' from disk"
+            ),
+            Self::AttachmentTooLarge { name, size_bytes, max_bytes } => write!(
+                f,
+                "attached file '{name}' is too large ({size_bytes} bytes; the limit is {max_bytes} bytes)"
+            ),
+            Self::AttachmentNotText { name } => write!(
+                f,
+                "attached file '{name}' is not decodable text and has no supported representation"
+            ),
+            Self::AttachmentUnsupported { name, provider } => write!(
+                f,
+                "the AI provider '{provider}' cannot accept attached file '{name}' of this type"
+            ),
             Self::UnexpectedMessageRole { role } => {
                 write!(
                     f,
@@ -536,6 +735,10 @@ impl std::error::Error for ConversationError {
             Self::NotFound { .. }
             | Self::UnknownAttachment { .. }
             | Self::ForeignAttachment { .. }
+            | Self::AttachmentUnreadable { .. }
+            | Self::AttachmentTooLarge { .. }
+            | Self::AttachmentNotText { .. }
+            | Self::AttachmentUnsupported { .. }
             | Self::UnexpectedMessageRole { .. } => None,
             Self::Request(err) => Some(err),
             Self::Database(err) => Some(err),
@@ -1106,18 +1309,47 @@ mod tests {
         assert_eq!(history.len(), 2);
     }
 
-    /// Insert a draft attachment row directly through the repository and
-    /// return its schema-assigned `id`.
-    fn draft_attachment(db: &Database, conversation_id: i64, name: &str) -> i64 {
+    /// Create a real temporary file with `contents`, insert a draft attachment
+    /// row pointing at it, and return its schema-assigned `id`.
+    ///
+    /// `size_override` simulates rows whose recorded size differs from the
+    /// real file (for exercising the size guard without writing large files).
+    fn draft_attachment_with(
+        db: &Database,
+        conversation_id: i64,
+        name: &str,
+        mime: Option<&str>,
+        size_override: Option<i64>,
+        contents: &[u8],
+    ) -> i64 {
+        let path = std::env::temp_dir().join(format!("nexora-test-{}-{name}", std::process::id()));
+        fs::write(&path, contents).expect("write temp attachment file");
         AttachmentRepository::new(db)
             .create(
                 conversation_id,
                 name,
-                &format!("/tmp/{name}"),
-                Some(2048),
-                Some("application/pdf"),
+                &path.to_string_lossy(),
+                size_override.or(Some(contents.len() as i64)),
+                mime,
             )
             .expect("draft attachment created")
+    }
+
+    /// Draft attachment backed by a real UTF-8 text file.
+    fn draft_text_attachment(
+        db: &Database,
+        conversation_id: i64,
+        name: &str,
+        contents: &str,
+    ) -> i64 {
+        draft_attachment_with(
+            db,
+            conversation_id,
+            name,
+            Some("text/plain"),
+            None,
+            contents.as_bytes(),
+        )
     }
 
     #[test]
@@ -1131,8 +1363,13 @@ mod tests {
             },
         );
         let conversation_id = service.create("Chat").expect("conversation created");
-        let first = draft_attachment(&db, conversation_id, "report.pdf");
-        let second = draft_attachment(&db, conversation_id, "notes.txt");
+        let first = draft_text_attachment(
+            &db,
+            conversation_id,
+            "report.txt",
+            "quarterly revenue rose 12 percent",
+        );
+        let second = draft_text_attachment(&db, conversation_id, "notes.md", "roadmap notes");
 
         service
             .send_message(
@@ -1163,8 +1400,8 @@ mod tests {
             .expect("list drafts")
             .is_empty());
 
-        // The request's newest user turn carries both attachment references —
-        // metadata only: no filesystem path and no file content.
+        // The request's newest user turn carries both attachments, read from
+        // disk and inlined as decoded text — with no filesystem path anywhere.
         let request = captured.borrow().clone().expect("request executed");
         let turn = request
             .messages
@@ -1173,13 +1410,19 @@ mod tests {
             .find(|m| m.role == AiRole::User)
             .expect("newest user turn");
         assert_eq!(turn.attachments.len(), 2);
-        assert!(turn.attachments.iter().any(|a| a.file_name == "report.pdf"));
-        assert_eq!(turn.attachments[0].file_size_bytes, Some(2048));
+        assert!(turn.attachments.iter().any(|a| a.file_name == "report.txt"));
+        assert_eq!(
+            turn.attachments[0].payload,
+            AiAttachmentPayload::Text("quarterly revenue rose 12 percent".to_string())
+        );
         assert_eq!(
             turn.attachments[0].mime_type.as_deref(),
-            Some("application/pdf")
+            Some("text/plain")
         );
-        assert!(!turn.content.contains("/tmp/"));
+        // The boundary carries the decoded payload; fencing into turn text
+        // happens at wire time in the executors, and no filesystem path is
+        // ever present.
+        assert!(!format!("{turn:?}").contains("nexora-test"));
     }
 
     #[test]
@@ -1222,7 +1465,7 @@ mod tests {
         );
         let conversation_id = service.create("Chat").expect("conversation created");
         let other_conversation = service.create("Other").expect("conversation created");
-        let foreign = draft_attachment(&db, other_conversation, "other.pdf");
+        let foreign = draft_text_attachment(&db, other_conversation, "other.txt", "foreign");
 
         // An attachment belonging to another conversation is rejected.
         let err = service
@@ -1234,7 +1477,7 @@ mod tests {
         ));
 
         // A draft already linked to a sent message can never be re-linked.
-        let own = draft_attachment(&db, conversation_id, "own.pdf");
+        let own = draft_text_attachment(&db, conversation_id, "own.txt", "own content");
         service
             .send_message(conversation_id, "first", "openai", "gpt-4o-mini", &[own])
             .expect("first send succeeds");
@@ -1258,7 +1501,8 @@ mod tests {
             },
         );
         let conversation_id = service.create("Chat").expect("conversation created");
-        let attachment = draft_attachment(&db, conversation_id, "report.pdf");
+        let attachment =
+            draft_text_attachment(&db, conversation_id, "report.pdf.txt", "historical body");
 
         service
             .send_message(
@@ -1271,7 +1515,7 @@ mod tests {
             .expect("first send succeeds");
 
         // A later, attachment-less send still carries the earlier user turn's
-        // attachment reference as part of the conversation context.
+        // attachment (re-read from disk) as part of the conversation context.
         service
             .send_message(conversation_id, "second", "openai", "gpt-4o-mini", &[])
             .expect("second send succeeds");
@@ -1282,7 +1526,11 @@ mod tests {
         assert_eq!(request.messages.len(), 3);
         let first_turn = &request.messages[0];
         assert_eq!(first_turn.attachments.len(), 1);
-        assert_eq!(first_turn.attachments[0].file_name, "report.pdf");
+        assert_eq!(first_turn.attachments[0].file_name, "report.pdf.txt");
+        assert_eq!(
+            first_turn.attachments[0].payload,
+            AiAttachmentPayload::Text("historical body".to_string())
+        );
         // The newest user turn has no attachments of its own.
         let newest_user = request
             .messages
@@ -1305,7 +1553,7 @@ mod tests {
         );
         let conversation_id = service.create("Chat").expect("conversation created");
         // Drafts exist but are not referenced by this send.
-        let _unrelated = draft_attachment(&db, conversation_id, "ignored.pdf");
+        let _unrelated = draft_text_attachment(&db, conversation_id, "ignored.txt", "unused");
 
         service
             .send_message(conversation_id, "plain", "openai", "gpt-4o-mini", &[])
@@ -1321,5 +1569,154 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn pdf_attachment_to_openai_is_rejected_before_execution() {
+        let db = test_db();
+        let (service, captured) = succeeding_service(
+            &db,
+            AiResponse {
+                content: "unused".to_string(),
+                model: "unused".to_string(),
+            },
+        );
+        let conversation_id = service.create("Chat").expect("conversation created");
+        // OpenAI Chat Completions has no inline PDF input; the send must fail
+        // with a classified error before anything is persisted or executed.
+        let pdf = draft_attachment_with(
+            &db,
+            conversation_id,
+            "paper.pdf",
+            Some("application/pdf"),
+            None,
+            b"%PDF-1.7 fake bytes",
+        );
+
+        let err = service
+            .send_message(conversation_id, "hello", "openai", "gpt-4o-mini", &[pdf])
+            .expect_err("openai cannot carry a PDF");
+
+        assert!(matches!(
+            err,
+            ConversationError::AttachmentUnsupported { ref name, ref provider }
+                if name == "paper.pdf" && provider == "openai"
+        ));
+        assert!(captured.borrow().is_none());
+        assert!(MessageRepository::new(&db)
+            .list_by_conversation(conversation_id)
+            .expect("list messages")
+            .is_empty());
+    }
+
+    #[test]
+    fn pdf_attachment_to_anthropic_travels_as_base64_document_payload() {
+        let db = test_db();
+        let (service, captured) = succeeding_service(
+            &db,
+            AiResponse {
+                content: "ok".to_string(),
+                model: "m".to_string(),
+            },
+        );
+        let conversation_id = service.create("Chat").expect("conversation created");
+        let pdf = draft_attachment_with(
+            &db,
+            conversation_id,
+            "paper.pdf",
+            Some("application/pdf"),
+            None,
+            b"%PDF-1.7 fake bytes",
+        );
+
+        service
+            .send_message(conversation_id, "read this", "anthropic", "claude", &[pdf])
+            .expect("send succeeds");
+
+        let request = captured.borrow().clone().expect("request executed");
+        let turn = request
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == AiRole::User)
+            .expect("user turn");
+        assert_eq!(
+            turn.attachments[0].payload,
+            AiAttachmentPayload::Base64(BASE64_STANDARD.encode(b"%PDF-1.7 fake bytes"))
+        );
+    }
+
+    #[test]
+    fn unreadable_attachment_aborts_the_send() {
+        let db = test_db();
+        let (service, captured) = succeeding_service(
+            &db,
+            AiResponse {
+                content: "unused".to_string(),
+                model: "unused".to_string(),
+            },
+        );
+        let conversation_id = service.create("Chat").expect("conversation created");
+        // A row whose stored path does not exist on disk (file moved/deleted).
+        let ghost = AttachmentRepository::new(&db)
+            .create(
+                conversation_id,
+                "ghost.txt",
+                std::env::temp_dir()
+                    .join(format!("nexora-missing-{}.txt", std::process::id()))
+                    .to_str()
+                    .expect("temp path"),
+                Some(3),
+                Some("text/plain"),
+            )
+            .expect("draft attachment row created");
+
+        let err = service
+            .send_message(conversation_id, "hello", "openai", "gpt-4o-mini", &[ghost])
+            .expect_err("unreadable attachment");
+
+        assert!(matches!(
+            err,
+            ConversationError::AttachmentUnreadable { ref name } if name == "ghost.txt"
+        ));
+        assert!(captured.borrow().is_none());
+        assert!(MessageRepository::new(&db)
+            .list_by_conversation(conversation_id)
+            .expect("list messages")
+            .is_empty());
+    }
+
+    #[test]
+    fn oversized_attachment_is_rejected_before_reading_the_file() {
+        let db = test_db();
+        let (service, captured) = succeeding_service(
+            &db,
+            AiResponse {
+                content: "unused".to_string(),
+                model: "unused".to_string(),
+            },
+        );
+        let conversation_id = service.create("Chat").expect("conversation created");
+        // The recorded size exceeds the guard, so the file is rejected without
+        // being read into memory (the real temp file is tiny).
+        let huge = draft_attachment_with(
+            &db,
+            conversation_id,
+            "huge.bin",
+            None,
+            Some(MAX_ATTACHMENT_BYTES + 1),
+            b"tiny",
+        );
+
+        let err = service
+            .send_message(conversation_id, "hello", "openai", "gpt-4o-mini", &[huge])
+            .expect_err("oversized attachment");
+
+        assert!(matches!(
+            err,
+            ConversationError::AttachmentTooLarge { max_bytes, .. }
+                if max_bytes == MAX_ATTACHMENT_BYTES
+        ));
+        assert!(captured.borrow().is_none());
     }
 }

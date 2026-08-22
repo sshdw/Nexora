@@ -163,6 +163,26 @@ impl From<ConversationError> for CommandError {
                 ErrorKind::InvalidInput,
                 format!("attachment {id} is not a pending draft of this conversation"),
             ),
+            ConversationError::AttachmentUnreadable { name } => Self::new(
+                ErrorKind::InvalidInput,
+                format!("could not read attached file '{name}' from disk"),
+            ),
+            ConversationError::AttachmentTooLarge { name, size_bytes, max_bytes } => Self::new(
+                ErrorKind::InvalidInput,
+                format!(
+                    "attached file '{name}' is too large ({size_bytes} bytes; the limit is {max_bytes} bytes)"
+                ),
+            ),
+            ConversationError::AttachmentNotText { name } => Self::new(
+                ErrorKind::InvalidInput,
+                format!(
+                    "attached file '{name}' is not decodable text and has no supported representation"
+                ),
+            ),
+            ConversationError::AttachmentUnsupported { name, provider } => Self::new(
+                ErrorKind::InvalidInput,
+                format!("the AI provider '{provider}' cannot accept attached file '{name}' of this type"),
+            ),
             ConversationError::UnexpectedMessageRole { role } => {
                 log::error!("conversation history contains invalid message role '{role}'");
                 Self::new(
