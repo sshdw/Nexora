@@ -73,6 +73,64 @@ pub(crate) struct AiMessage {
     pub role: AiRole,
     /// The message text.
     pub content: String,
+    /// Local-file references attached to this turn (FR-008; DATABASE.md
+    /// §7.4). Metadata only: no file path and no file content is carried —
+    /// the existing attachment model is a local-file reference, so only the
+    /// display name, size, and media type cross the provider-independent
+    /// boundary.
+    pub attachments: Vec<AiAttachment>,
+}
+
+impl AiMessage {
+    /// Full textual content for this turn, including any attached-file
+    /// references (FR-008).
+    ///
+    /// The MVP providers are text-only Chat Completions-style endpoints
+    /// (`String` content), and the existing attachment model stores a local-
+    /// file *reference* rather than readable content, so attachments reach a
+    /// request as an explicit textual annotation appended to their turn. This
+    /// is the single rendering point shared by every executor; it invents no
+    /// provider-specific structure and never includes the filesystem path or
+    /// file content.
+    pub(crate) fn composed_content(&self) -> String {
+        if self.attachments.is_empty() {
+            return self.content.clone();
+        }
+        let mut composed = self.content.clone();
+        for attachment in &self.attachments {
+            composed.push_str("\n\n[Attached file: ");
+            composed.push_str(&attachment.file_name);
+            if let Some(mime) = &attachment.mime_type {
+                composed.push_str(" (");
+                composed.push_str(mime);
+                if let Some(size) = attachment.file_size_bytes {
+                    composed.push_str(", ");
+                    composed.push_str(&size.to_string());
+                    composed.push_str(" bytes");
+                }
+                composed.push(')');
+            } else if let Some(size) = attachment.file_size_bytes {
+                composed.push_str(" (");
+                composed.push_str(&size.to_string());
+                composed.push_str(" bytes)");
+            }
+            composed.push(']');
+        }
+        composed
+    }
+}
+
+/// A local-file reference attached to an [`AiMessage`] (FR-008; DATABASE.md
+/// §7.4). Metadata only — deliberately no `file_path` and no file content: the
+/// absolute local path is machine-local state that never leaves the device.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AiAttachment {
+    /// Display name (`attachments.file_name`).
+    pub file_name: String,
+    /// File size in bytes (`attachments.file_size_bytes`), when recorded.
+    pub file_size_bytes: Option<i64>,
+    /// Media type (`attachments.mime_type`), when recorded.
+    pub mime_type: Option<String>,
 }
 
 /// Author of an [`AiMessage`], mirroring the `messages.role` domain (DATABASE.md
@@ -445,5 +503,56 @@ mod tests {
         assert!(service.executors.resolve(PROVIDER_NAME).is_some());
         // ...and an unknown provider name does not resolve to a silent fallback.
         assert!(service.executors.resolve("ghost").is_none());
+    }
+
+    #[test]
+    fn composed_content_without_attachments_is_unchanged() {
+        let message = AiMessage {
+            role: AiRole::User,
+            content: "plain text".to_string(),
+            attachments: Vec::new(),
+        };
+        assert_eq!(message.composed_content(), "plain text");
+    }
+
+    #[test]
+    fn composed_content_appends_attachment_references() {
+        let message = AiMessage {
+            role: AiRole::User,
+            content: "Summarize".to_string(),
+            attachments: vec![AiAttachment {
+                file_name: "report.pdf".to_string(),
+                file_size_bytes: Some(2048),
+                mime_type: Some("application/pdf".to_string()),
+            }],
+        };
+        assert_eq!(
+            message.composed_content(),
+            "Summarize\n\n[Attached file: report.pdf (application/pdf, 2048 bytes)]"
+        );
+    }
+
+    #[test]
+    fn composed_content_renders_partial_attachment_metadata() {
+        let message = AiMessage {
+            role: AiRole::User,
+            content: "Look".to_string(),
+            attachments: vec![
+                AiAttachment {
+                    file_name: "blob.bin".to_string(),
+                    file_size_bytes: Some(7),
+                    mime_type: None,
+                },
+                AiAttachment {
+                    file_name: "mystery".to_string(),
+                    file_size_bytes: None,
+                    mime_type: None,
+                },
+            ],
+        };
+        assert_eq!(
+            message.composed_content(),
+            "Look\n\n[Attached file: blob.bin (7 bytes)]\n\n[Attached file: mystery]"
+        );
     }
 }

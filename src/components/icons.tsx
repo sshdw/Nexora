@@ -127,3 +127,48 @@ export function SettingsIcon(props: ComponentPropsWithoutRef<"svg">) {
     </svg>
   );
 }
+
+export function PaperclipIcon(props: ComponentPropsWithoutRef<"svg">) {
+  return (
+    <svg
+      aria-hidden="true"
+      focusable="false"
+      width="16"
+      height="16"
+      viewBox="0 0 16 16"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      {...props}
+    >
+      <path
+        d="M13.2 7.6l-4.9 4.9a3.4 3.4 0 01-4.8-4.8l5.3-5.3a2.3 2.3 0 013.2 3.2L6.7 10.9a1.15 1.15 0 01-1.6-1.6l4.5-4.5"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+export function CloseIcon(props: ComponentPropsWithoutRef<"svg">) {
+  return (
+    <svg
+      aria-hidden="true"
+      focusable="false"
+      width="12"
+      height="12"
+      viewBox="0 0 16 16"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      {...props}
+    >
+      <path
+        d="M4 4l8 8M12 4l-8 8"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}

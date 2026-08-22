@@ -44,13 +44,15 @@
 //! network (ROADMAP.md Phase 10).
 
 use crate::infrastructure::database::{Database, DatabaseError};
+use crate::infrastructure::repository::attachments::{Attachment, AttachmentRepository};
 use crate::infrastructure::repository::conversations::{Conversation, ConversationRepository};
 use crate::infrastructure::repository::messages::{Message, MessageRepository};
 use crate::infrastructure::repository::providers::ProviderRepository;
 use crate::infrastructure::repository::Repository;
 
 use super::execution::{
-    self, AiMessage, AiRequest, AiResponse, AiRole, RequestError, RequestExecutionService,
+    self, AiAttachment, AiMessage, AiRequest, AiResponse, AiRole, RequestError,
+    RequestExecutionService,
 };
 
 /// Application-layer result shared by conversation operations, unifying
@@ -102,6 +104,7 @@ pub(crate) struct ConversationService<'a> {
     conversations: ConversationRepository<'a>,
     messages: MessageRepository<'a>,
     providers: ProviderRepository<'a>,
+    attachments: AttachmentRepository<'a>,
     execution: Box<dyn AiRequestExecutor + 'a>,
 }
 
@@ -114,6 +117,7 @@ impl<'a> ConversationService<'a> {
             conversations: ConversationRepository::new(db),
             messages: MessageRepository::new(db),
             providers: ProviderRepository::new(db),
+            attachments: AttachmentRepository::new(db),
             execution,
         }
     }
@@ -129,6 +133,7 @@ impl<'a> ConversationService<'a> {
             conversations: ConversationRepository::new(db),
             messages: MessageRepository::new(db),
             providers: ProviderRepository::new(db),
+            attachments: AttachmentRepository::new(db),
             execution,
         }
     }
@@ -150,20 +155,27 @@ impl<'a> ConversationService<'a> {
     }
 
     /// Persist `content` as a user message in the conversation
-    /// `conversation_id` and execute the AI request through the execution
-    /// boundary (FR-003, FR-004).
+    /// `conversation_id`, link the supplied draft attachments to it, and
+    /// execute the AI request through the execution boundary (FR-003, FR-004,
+    /// FR-008).
     ///
     /// The flow is:
     ///   1. Require the conversation to exist.
-    ///   2. Persist the user message.
-    ///   3. Load the conversation's persisted history in its existing
-    ///      chronological order (DATABASE.md §7.2), including the message just
-    ///      persisted.
-    ///   4. Build the [`AiRequest`] from that history.
-    ///   5. Execute exclusively through the [`AiRequestExecutor`] (the
+    ///   2. Require every referenced attachment to be a draft (`message_id`
+    ///      is `NULL`) of *this* conversation — before anything is persisted,
+    ///      so a bad id can never leave a half-sent message behind.
+    ///   3. Persist the user message.
+    ///   4. Link each draft attachment to the created user message
+    ///      (`attachments.message_id` update only, DATABASE.md §7.4), so the
+    ///      association survives as history and cascade deletion follows the
+    ///      existing schema rules.
+    ///   5. Load the conversation's persisted history (including the new
+    ///      user turn) with its linked attachment references.
+    ///   6. Build the [`AiRequest`] from that history.
+    ///   7. Execute exclusively through the [`AiRequestExecutor`] (the
     ///      existing [`RequestExecutionService`] in production); no provider
     ///      is called from this layer.
-    ///   6. On success, persist the normalized [`AiResponse`] as an assistant
+    ///   8. On success, persist the normalized [`AiResponse`] as an assistant
     ///      message and return it.
     ///
     /// `provider` and `model` are passed through unchanged to the execution
@@ -171,16 +183,18 @@ impl<'a> ConversationService<'a> {
     /// performs no provider-specific branching.
     ///
     /// A failed execution propagates as an error: the persisted user message
-    /// is kept and no assistant message is created (FR-003 error handling;
-    /// DATABASE.md §7.2).
+    /// (with its now-linked attachments) is kept and no assistant message is
+    /// created (FR-003 error handling; DATABASE.md §7.2).
     ///
     /// # Errors
     ///
     /// Returns [`ConversationError::NotFound`] when no conversation with
-    /// `conversation_id` exists; [`ConversationError::UnexpectedMessageRole`]
-    /// when the persisted history contains a `role` outside `user` /
-    /// `assistant`; [`ConversationError::Request`] when AI execution fails
-    /// (unknown provider, missing credentials, provider failure, ...); or
+    /// `conversation_id` exists; [`ConversationError::UnknownAttachment`] or
+    /// [`ConversationError::ForeignAttachment`] when a referenced attachment
+    /// does not exist or is not a draft of this conversation;
+    /// [`ConversationError::UnexpectedMessageRole`] when the persisted history
+    /// contains a `role` outside `user` / `assistant`;
+    /// [`ConversationError::Request`] when AI execution fails; or
     /// [`ConversationError::Database`] when any persistence step fails.
     pub(crate) fn send_message(
         &self,
@@ -188,6 +202,7 @@ impl<'a> ConversationService<'a> {
         content: &str,
         provider: &str,
         model: &str,
+        attachment_ids: &[i64],
     ) -> Result<AiResponse> {
         if !self.conversations.exists(conversation_id)? {
             return Err(ConversationError::NotFound {
@@ -195,16 +210,33 @@ impl<'a> ConversationService<'a> {
             });
         }
 
-        self.persist_message_and_touch(conversation_id, ROLE_USER, content, None, None)?;
+        // Validate every draft reference before persisting anything, so a
+        // stale or foreign id aborts the send up front (FR-008).
+        for &attachment_id in attachment_ids {
+            let attachment = self.attachments.read(attachment_id)?.ok_or(
+                ConversationError::UnknownAttachment { id: attachment_id },
+            )?;
+            if attachment.conversation_id != conversation_id || attachment.message_id.is_some() {
+                return Err(ConversationError::ForeignAttachment { id: attachment_id });
+            }
+        }
 
-        let history = self.messages.list_by_conversation(conversation_id)?;
+        let user_message_id =
+            self.persist_message_and_touch(conversation_id, ROLE_USER, content, None, None)?;
+
+        // Associate the drafts with the created message (DATABASE.md §7.4:
+        // "UPDATE of `message_id` only"). After this step the attachments are
+        // historical: they cascade with their message/conversation per the
+        // existing schema foreign keys.
+        for &attachment_id in attachment_ids {
+            self.attachments
+                .update_message_id(attachment_id, Some(user_message_id))?;
+        }
+
         let request = AiRequest {
             provider: provider.to_string(),
             model: model.to_string(),
-            messages: history
-                .iter()
-                .map(ai_message_from)
-                .collect::<Result<Vec<_>>>()?,
+            messages: self.ai_history(conversation_id)?,
         };
 
         let response = self.execution.execute(&request)?;
@@ -225,6 +257,33 @@ impl<'a> ConversationService<'a> {
         Ok(response)
     }
 
+    /// Build the provider-independent history for `conversation_id`, mapping
+    /// each persisted message to an [`AiMessage`] and attaching each user
+    /// turn's linked local-file references (FR-008).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConversationError::UnexpectedMessageRole`] for a persisted
+    /// role outside `user` / `assistant`, or [`ConversationError::Database`]
+    /// when any query fails.
+    fn ai_history(&self, conversation_id: i64) -> Result<Vec<AiMessage>> {
+        let history = self.messages.list_by_conversation(conversation_id)?;
+        let mut messages = Vec::with_capacity(history.len());
+        for message in &history {
+            let mut ai_message = ai_message_from(message)?;
+            if ai_message.role == AiRole::User {
+                ai_message.attachments = self
+                    .attachments
+                    .list_by_message(message.id)?
+                    .iter()
+                    .map(ai_attachment_from)
+                    .collect();
+            }
+            messages.push(ai_message);
+        }
+        Ok(messages)
+    }
+
     /// Persist one message and update the conversation's recency (`updated_at`)
     /// in a single atomic transaction (DATABASE.md §7.2, §12).
     ///
@@ -235,6 +294,9 @@ impl<'a> ConversationService<'a> {
     /// roll back together. The user and assistant messages are each persisted
     /// in their own atomic step so a failed execution leaves the persisted user
     /// message with its recency touch and never manufactures an assistant row.
+    ///
+    /// Returns the schema-assigned `id` of the created message so the caller
+    /// can link draft attachments to the user turn (FR-008).
     ///
     /// # Errors
     ///
@@ -247,9 +309,9 @@ impl<'a> ConversationService<'a> {
         content: &str,
         provider_id: Option<i64>,
         model_name: Option<&str>,
-    ) -> Result<()> {
-        self.conversations.transaction(|tx| {
-            MessageRepository::create_in_transaction(
+    ) -> Result<i64> {
+        let message_id = self.conversations.transaction(|tx| {
+            let id = MessageRepository::create_in_transaction(
                 tx,
                 conversation_id,
                 role,
@@ -258,9 +320,9 @@ impl<'a> ConversationService<'a> {
                 model_name,
             )?;
             ConversationRepository::touch_updated_at(tx, conversation_id)?;
-            Ok(())
+            Ok(id)
         })?;
-        Ok(())
+        Ok(message_id)
     }
 
     /// Retrieve the messages belonging to `conversation_id` (FR-005).
@@ -386,7 +448,23 @@ fn ai_message_from(message: &Message) -> Result<AiMessage> {
     Ok(AiMessage {
         role,
         content: message.content.clone(),
+        // Historical attachments are joined by `ai_history`; the plain
+        // per-row mapping starts from no attachment references.
+        attachments: Vec::new(),
     })
+}
+
+/// Map a persisted [`Attachment`] to the provider-independent
+/// [`AiAttachment`] reference carried on a user turn (FR-008).
+///
+/// Deliberately drops `file_path`: the absolute local path is machine-local
+/// state and never crosses the provider-independent boundary.
+fn ai_attachment_from(attachment: &Attachment) -> AiAttachment {
+    AiAttachment {
+        file_name: attachment.file_name.clone(),
+        file_size_bytes: attachment.file_size_bytes,
+        mime_type: attachment.mime_type.clone(),
+    }
 }
 
 /// Classified errors raised by conversation orchestration.
@@ -402,6 +480,18 @@ pub(crate) enum ConversationError {
     /// No conversation with the referenced `id` exists.
     NotFound {
         /// The requested conversation id.
+        id: i64,
+    },
+    /// A referenced attachment id does not exist (FR-008 draft validation).
+    UnknownAttachment {
+        /// The referenced attachment id.
+        id: i64,
+    },
+    /// A referenced attachment exists but is not an unsent draft of this
+    /// conversation — it belongs to another conversation or is already linked
+    /// to a sent message (FR-008 draft validation).
+    ForeignAttachment {
+        /// The referenced attachment id.
         id: i64,
     },
     /// A persisted `messages.role` value outside `user` / `assistant`, which
@@ -421,6 +511,13 @@ impl std::fmt::Display for ConversationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotFound { id } => write!(f, "conversation {id} does not exist"),
+            Self::UnknownAttachment { id } => {
+                write!(f, "attachment {id} does not exist")
+            }
+            Self::ForeignAttachment { id } => write!(
+                f,
+                "attachment {id} is not a pending draft of this conversation"
+            ),
             Self::UnexpectedMessageRole { role } => {
                 write!(
                     f,
@@ -436,7 +533,10 @@ impl std::fmt::Display for ConversationError {
 impl std::error::Error for ConversationError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::NotFound { .. } | Self::UnexpectedMessageRole { .. } => None,
+            Self::NotFound { .. }
+            | Self::UnknownAttachment { .. }
+            | Self::ForeignAttachment { .. }
+            | Self::UnexpectedMessageRole { .. } => None,
             Self::Request(err) => Some(err),
             Self::Database(err) => Some(err),
         }
@@ -547,7 +647,21 @@ mod tests {
                  created_at INTEGER NOT NULL DEFAULT 1 CHECK(created_at > 0)
              );
              CREATE INDEX messages_conversation_order
-                 ON messages (conversation_id, created_at);",
+                 ON messages (conversation_id, created_at);
+             CREATE TABLE attachments (
+                 id INTEGER PRIMARY KEY,
+                 conversation_id INTEGER NOT NULL CHECK(conversation_id > 0)
+                     REFERENCES conversations(id) ON DELETE CASCADE,
+                 message_id INTEGER
+                     REFERENCES messages(id) ON DELETE CASCADE,
+                 file_name TEXT NOT NULL
+                     CHECK(length(file_name) > 0 AND length(file_name) <= 255),
+                 file_path TEXT NOT NULL CHECK(length(file_path) > 0),
+                 file_size_bytes INTEGER
+                     CHECK(file_size_bytes IS NULL OR file_size_bytes >= 0),
+                 mime_type TEXT
+                     CHECK(mime_type IS NULL OR length(mime_type) <= 127)
+             );",
         )
         .expect("create test schema");
         Database::new(conn)
@@ -625,7 +739,7 @@ mod tests {
         let conversation_id = service.create("Chat").expect("conversation created");
 
         let response = service
-            .send_message(conversation_id, "hello", "openai", "gpt-4o-mini")
+            .send_message(conversation_id, "hello", "openai", "gpt-4o-mini", &[])
             .expect("send succeeds");
 
         assert_eq!(response.content, "response text");
@@ -656,7 +770,7 @@ mod tests {
             .expect("prior assistant message persisted");
 
         service
-            .send_message(conversation_id, "question two", "openai", "gpt-4o-mini")
+            .send_message(conversation_id, "question two", "openai", "gpt-4o-mini", &[])
             .expect("send succeeds");
 
         let request = captured
@@ -694,7 +808,7 @@ mod tests {
         let conversation_id = service.create("Chat").expect("conversation created");
 
         service
-            .send_message(conversation_id, "hello", "openai", "gpt-4o-mini")
+            .send_message(conversation_id, "hello", "openai", "gpt-4o-mini", &[])
             .expect("send succeeds");
 
         let history = service.history(conversation_id).expect("history loads");
@@ -719,7 +833,7 @@ mod tests {
         let conversation_id = service.create("Chat").expect("conversation created");
 
         let err = service
-            .send_message(conversation_id, "hello", "openai", "gpt-4o-mini")
+            .send_message(conversation_id, "hello", "openai", "gpt-4o-mini", &[])
             .expect_err("execution fails");
 
         // The execution error is propagated through the application layer,
@@ -753,7 +867,7 @@ mod tests {
         let before = repo.read(conversation_id).expect("read conversation").expect("exists");
 
         service
-            .send_message(conversation_id, "hello", "openai", "gpt-4o-mini")
+            .send_message(conversation_id, "hello", "openai", "gpt-4o-mini", &[])
             .expect("send succeeds");
 
         // Sending a message must advance the conversation's recency (DATABASE.md
@@ -774,7 +888,7 @@ mod tests {
         let before = repo.read(conversation_id).expect("read exists").expect("insert");
 
         service
-            .send_message(conversation_id, "hello", "openai", "gpt-4o-mini")
+            .send_message(conversation_id, "hello", "openai", "gpt-4o-mini", &[])
             .expect_err("execution fails");
 
         // The user message is persisted, so the conversation is modified even on
@@ -794,7 +908,7 @@ mod tests {
             let (service, _captured) = failing_service(&db, "openai");
             let id = service.create("Chat").expect("conversation created");
             service
-                .send_message(id, "question", "openai", "gpt-4o-mini")
+                .send_message(id, "question", "openai", "gpt-4o-mini", &[])
                 .expect_err("first attempt fails");
             id
         };
@@ -807,7 +921,7 @@ mod tests {
         );
 
         service
-            .send_message(id, "retry", "openai", "gpt-4o-mini")
+            .send_message(id, "retry", "openai", "gpt-4o-mini", &[])
             .expect("retry succeeds");
 
         let history = service.history(id).expect("history loads");
@@ -900,7 +1014,7 @@ mod tests {
         // An arbitrary provider/model flows through the request unchanged; the
         // conversation layer never branches on a specific provider.
         service
-            .send_message(conversation_id, "hi", "custom-provider", "custom-model")
+            .send_message(conversation_id, "hi", "custom-provider", "custom-model", &[])
             .expect("send succeeds");
 
         let request = captured
@@ -924,7 +1038,7 @@ mod tests {
         );
 
         let err = service
-            .send_message(42, "hello", "openai", "gpt-4o-mini")
+            .send_message(42, "hello", "openai", "gpt-4o-mini", &[])
             .expect_err("unknown conversation");
 
         assert!(matches!(err, ConversationError::NotFound { id: 42 }));
@@ -976,7 +1090,7 @@ mod tests {
         }
 
         let err = service
-            .send_message(conversation_id, "hello", "openai", "gpt-4o-mini")
+            .send_message(conversation_id, "hello", "openai", "gpt-4o-mini", &[])
             .expect_err("unexpected role");
 
         assert!(matches!(
@@ -990,5 +1104,222 @@ mod tests {
             .list_by_conversation(conversation_id)
             .expect("list messages");
         assert_eq!(history.len(), 2);
+    }
+
+    /// Insert a draft attachment row directly through the repository and
+    /// return its schema-assigned `id`.
+    fn draft_attachment(db: &Database, conversation_id: i64, name: &str) -> i64 {
+        AttachmentRepository::new(db)
+            .create(
+                conversation_id,
+                name,
+                &format!("/tmp/{name}"),
+                Some(2048),
+                Some("application/pdf"),
+            )
+            .expect("draft attachment created")
+    }
+
+    #[test]
+    fn send_message_links_draft_attachments_and_carries_them_into_the_request() {
+        let db = test_db();
+        let (service, captured) = succeeding_service(
+            &db,
+            AiResponse {
+                content: "ok".to_string(),
+                model: "m".to_string(),
+            },
+        );
+        let conversation_id = service.create("Chat").expect("conversation created");
+        let first = draft_attachment(&db, conversation_id, "report.pdf");
+        let second = draft_attachment(&db, conversation_id, "notes.txt");
+
+        service
+            .send_message(
+                conversation_id,
+                "summarize",
+                "openai",
+                "gpt-4o-mini",
+                &[first, second],
+            )
+            .expect("send succeeds");
+
+        // Both drafts are now linked to the persisted user message.
+        let history = MessageRepository::new(&db)
+            .list_by_conversation(conversation_id)
+            .expect("list messages");
+        let user_message = history
+            .iter()
+            .find(|m| m.role == ROLE_USER)
+            .expect("user message persisted");
+        let linked = AttachmentRepository::new(&db)
+            .list_by_message(user_message.id)
+            .expect("list by message");
+        assert_eq!(linked.len(), 2);
+        assert!(linked.iter().all(|a| a.message_id == Some(user_message.id)));
+        // No drafts remain for the conversation.
+        assert!(AttachmentRepository::new(&db)
+            .list_by_conversation(conversation_id)
+            .expect("list drafts")
+            .is_empty());
+
+        // The request's newest user turn carries both attachment references —
+        // metadata only: no filesystem path and no file content.
+        let request = captured.borrow().clone().expect("request executed");
+        let turn = request
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == AiRole::User)
+            .expect("newest user turn");
+        assert_eq!(turn.attachments.len(), 2);
+        assert!(turn.attachments.iter().any(|a| a.file_name == "report.pdf"));
+        assert_eq!(turn.attachments[0].file_size_bytes, Some(2048));
+        assert_eq!(
+            turn.attachments[0].mime_type.as_deref(),
+            Some("application/pdf")
+        );
+        assert!(!turn.content.contains("/tmp/"));
+    }
+
+    #[test]
+    fn send_message_rejects_an_unknown_attachment_before_persisting() {
+        let db = test_db();
+        let (service, captured) = succeeding_service(
+            &db,
+            AiResponse {
+                content: "unused".to_string(),
+                model: "unused".to_string(),
+            },
+        );
+        let conversation_id = service.create("Chat").expect("conversation created");
+
+        let err = service
+            .send_message(conversation_id, "hello", "openai", "gpt-4o-mini", &[42])
+            .expect_err("unknown attachment id");
+
+        assert!(matches!(
+            err,
+            ConversationError::UnknownAttachment { id: 42 }
+        ));
+        // Nothing was persisted and execution was never reached.
+        assert!(captured.borrow().is_none());
+        assert!(MessageRepository::new(&db)
+            .list_by_conversation(conversation_id)
+            .expect("list messages")
+            .is_empty());
+    }
+
+    #[test]
+    fn send_message_rejects_foreign_and_already_linked_attachments() {
+        let db = test_db();
+        let (service, _captured) = succeeding_service(
+            &db,
+            AiResponse {
+                content: "ok".to_string(),
+                model: "m".to_string(),
+            },
+        );
+        let conversation_id = service.create("Chat").expect("conversation created");
+        let other_conversation = service.create("Other").expect("conversation created");
+        let foreign = draft_attachment(&db, other_conversation, "other.pdf");
+
+        // An attachment belonging to another conversation is rejected.
+        let err = service
+            .send_message(conversation_id, "hello", "openai", "gpt-4o-mini", &[foreign])
+            .expect_err("foreign attachment");
+        assert!(matches!(
+            err,
+            ConversationError::ForeignAttachment { .. }
+        ));
+
+        // A draft already linked to a sent message can never be re-linked.
+        let own = draft_attachment(&db, conversation_id, "own.pdf");
+        service
+            .send_message(conversation_id, "first", "openai", "gpt-4o-mini", &[own])
+            .expect("first send succeeds");
+        let err = service
+            .send_message(conversation_id, "again", "openai", "gpt-4o-mini", &[own])
+            .expect_err("already linked attachment");
+        assert!(matches!(
+            err,
+            ConversationError::ForeignAttachment { id } if id == own
+        ));
+    }
+
+    #[test]
+    fn historical_attachments_reappear_in_later_requests() {
+        let db = test_db();
+        let (service, captured) = succeeding_service(
+            &db,
+            AiResponse {
+                content: "ok".to_string(),
+                model: "m".to_string(),
+            },
+        );
+        let conversation_id = service.create("Chat").expect("conversation created");
+        let attachment = draft_attachment(&db, conversation_id, "report.pdf");
+
+        service
+            .send_message(
+                conversation_id,
+                "first",
+                "openai",
+                "gpt-4o-mini",
+                &[attachment],
+            )
+            .expect("first send succeeds");
+
+        // A later, attachment-less send still carries the earlier user turn's
+        // attachment reference as part of the conversation context.
+        service
+            .send_message(conversation_id, "second", "openai", "gpt-4o-mini", &[])
+            .expect("second send succeeds");
+
+        let request = captured.borrow().clone().expect("request executed");
+        // History at second-execution time: user, assistant, new user (the
+        // second assistant turn is only persisted after execution).
+        assert_eq!(request.messages.len(), 3);
+        let first_turn = &request.messages[0];
+        assert_eq!(first_turn.attachments.len(), 1);
+        assert_eq!(first_turn.attachments[0].file_name, "report.pdf");
+        // The newest user turn has no attachments of its own.
+        let newest_user = request
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == AiRole::User)
+            .expect("newest user turn");
+        assert!(newest_user.attachments.is_empty());
+    }
+
+    #[test]
+    fn send_without_attachments_keeps_the_request_unchanged() {
+        let db = test_db();
+        let (service, captured) = succeeding_service(
+            &db,
+            AiResponse {
+                content: "ok".to_string(),
+                model: "m".to_string(),
+            },
+        );
+        let conversation_id = service.create("Chat").expect("conversation created");
+        // Drafts exist but are not referenced by this send.
+        let _unrelated = draft_attachment(&db, conversation_id, "ignored.pdf");
+
+        service
+            .send_message(conversation_id, "plain", "openai", "gpt-4o-mini", &[])
+            .expect("send succeeds");
+
+        let request = captured.borrow().clone().expect("request executed");
+        assert!(request.messages.iter().all(|m| m.attachments.is_empty()));
+        // The unreferenced draft stays in the draft state untouched.
+        assert_eq!(
+            AttachmentRepository::new(&db)
+                .list_by_conversation(conversation_id)
+                .expect("list drafts")
+                .len(),
+            1
+        );
     }
 }

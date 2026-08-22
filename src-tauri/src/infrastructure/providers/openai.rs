@@ -129,6 +129,9 @@ fn chat_completion_request(request: &AiRequest) -> ChatCompletionRequest {
 }
 
 /// Map one provider-independent message to an OpenAI chat message.
+///
+// Attachment references (FR-008) are rendered into the text content by the
+// shared [`AiMessage::composed_content`] rendering point.
 fn openai_message(message: &AiMessage) -> OpenAiMessage {
     OpenAiMessage {
         role: match message.role {
@@ -137,7 +140,7 @@ fn openai_message(message: &AiMessage) -> OpenAiMessage {
             AiRole::Assistant => "assistant",
         }
         .to_string(),
-        content: message.content.clone(),
+        content: message.composed_content(),
     }
 }
 
@@ -249,14 +252,17 @@ mod tests {
                 AiMessage {
                     role: AiRole::System,
                     content: "You are a helpful assistant.".to_string(),
+                    attachments: Vec::new(),
                 },
                 AiMessage {
                     role: AiRole::User,
                     content: "Hello".to_string(),
+                    attachments: Vec::new(),
                 },
                 AiMessage {
                     role: AiRole::Assistant,
                     content: "Hi there".to_string(),
+                    attachments: Vec::new(),
                 },
             ],
         }
@@ -284,6 +290,7 @@ mod tests {
             messages: vec![AiMessage {
                 role: AiRole::User,
                 content: "ping".to_string(),
+                attachments: Vec::new(),
             }],
         };
         let body = chat_completion_request(&request);

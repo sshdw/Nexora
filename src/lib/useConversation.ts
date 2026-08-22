@@ -32,8 +32,14 @@ export interface ConversationStore {
   sending: boolean;
   /** Refresh the message list from the backend. */
   reload: () => Promise<void>;
-  /** Send `content` with the selected provider/model and refresh history. */
-  send: (content: string, provider: string, model: string) => Promise<void>;
+  /** Send `content` with the selected provider/model and refresh history.
+   * `attachmentIds` names the draft attachments to link to this message. */
+  send: (
+    content: string,
+    provider: string,
+    model: string,
+    attachmentIds: number[],
+  ) => Promise<void>;
 }
 
 export function useConversation(conversationId: number | null): ConversationStore {
@@ -87,12 +93,17 @@ export function useConversation(conversationId: number | null): ConversationStor
   }, [conversationId, reload]);
 
   const send = useCallback(
-    async (content: string, provider: string, model: string): Promise<void> => {
+    async (
+      content: string,
+      provider: string,
+      model: string,
+      attachmentIds: number[],
+    ): Promise<void> => {
       if (conversationId === null) return;
       setSending(true);
       setError(null);
       try {
-        await sendMessage(conversationId, content, provider, model);
+        await sendMessage(conversationId, content, provider, model, attachmentIds);
         // Success: reflect the persisted user + assistant messages.
         await reload();
       } catch (e) {

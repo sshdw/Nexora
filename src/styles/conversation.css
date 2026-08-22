@@ -1,7 +1,8 @@
 /* ============================================================
    Nexora sidebar primitives, buttons & conversation list — Warm Minimal
-   Flat, single-surface navigation. Selection is carried by a subtle
-   surface-lightness shift — no accent bar, no colour wash.
+   (Phase 10.4.1 Kimi integration). Flat, single-surface navigation.
+   Selection is carried by a subtle surface-lightness shift — no accent
+   bar, no colour wash. Primary actions use the solid accent fill.
    ============================================================ */
 
 /* ---- Shared button primitives ---- */
@@ -9,16 +10,17 @@
   display: inline-flex;
   align-items: center;
   gap: var(--space-xs);
-  border-radius: var(--radius-sm);
-  padding: 6px 10px;
-  font-size: var(--font-size-base);
+  border-radius: var(--radius-md);
+  padding: 7px var(--space-sm);
+  font-size: var(--font-size-sm);
   font-weight: var(--font-weight-medium);
   border: 1px solid transparent;
   background: transparent;
   color: inherit;
   cursor: pointer;
-  transition: background-color 0.12s ease, border-color 0.12s ease,
-    color 0.12s ease, opacity 0.12s ease;
+  transition: background-color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out), opacity var(--duration-fast) var(--ease-out);
 }
 .nex-btn:disabled {
   opacity: 0.5;
@@ -28,7 +30,27 @@
   background: inherit;
 }
 
-/* Tonal accent action: accent text on the bare surface — never a solid block. */
+/* Primary action: solid accent fill, dark warm text on it (Kimi button rule).
+   Accent is punctuation reserved for the primary action of each surface. */
+.nex-btn-primary {
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  border-color: transparent;
+}
+.nex-btn-primary:hover:not(:disabled) {
+  background: var(--color-accent-hover);
+  color: var(--color-on-accent);
+}
+.nex-btn-primary:active:not(:disabled) {
+  background: var(--color-accent);
+}
+.nex-btn-primary:focus-visible {
+  outline: 1.5px solid var(--color-focus);
+  outline-offset: 1px;
+}
+
+/* Tonal accent action: accent text on the bare surface — used for quiet
+   secondary actions that still carry the accent (e.g. Open Settings link). */
 .nex-btn-accent {
   color: var(--color-accent);
 }
@@ -38,6 +60,16 @@
 }
 .nex-btn-accent:active:not(:disabled) {
   background: var(--color-bg-selected);
+}
+
+/* Outline action: hairline border, no fill (Kimi secondary). */
+.nex-btn-outline {
+  color: var(--color-text-primary);
+  border-color: var(--color-border-strong);
+}
+.nex-btn-outline:hover:not(:disabled) {
+  background: var(--color-bg-hover);
+  border-color: var(--color-border-strong);
 }
 
 .nex-btn-ghost {
@@ -50,47 +82,49 @@
 
 .nex-btn-sm {
   padding: 4px 10px;
-  font-size: var(--font-size-sm);
+  font-size: var(--font-size-xs);
+  border-radius: var(--radius-sm);
 }
 
-/* ---- New Conversation: a quiet inline row, not a boxed CTA ----
-   The label sits at normal navigation-text weight; only the "+" keeps
-   a restrained accent so the row stays discoverable without shouting. */
+/* ---- New Conversation: the sidebar's primary action.
+   A full-width solid accent button (Kimi sidebar pattern). */
 .nex-new-conversation {
   width: 100%;
-  justify-content: flex-start;
+  justify-content: center;
   gap: var(--space-sm);
   padding: 8px var(--space-sm);
+  border-radius: var(--radius-md);
+  background: var(--color-accent);
   border: none;
-  color: var(--color-text-primary);
-  font-size: var(--font-size-base);
+  color: var(--color-on-accent);
+  font-size: var(--font-size-sm);
   font-weight: var(--font-weight-medium);
-  background: transparent;
 }
 .nex-new-conversation-icon {
-  color: var(--color-accent);
+  color: inherit;
   flex-shrink: 0;
 }
 .nex-new-conversation:hover:not(:disabled) {
-  background: var(--color-bg-hover);
+  background: var(--color-accent-hover);
 }
 .nex-new-conversation:active:not(:disabled) {
-  background: var(--color-bg-selected);
+  background: var(--color-accent);
 }
 .nex-new-conversation:focus-visible {
-  outline: 1px solid var(--color-focus);
-  outline-offset: -1px;
+  outline: 1.5px solid var(--color-focus);
+  outline-offset: 1px;
 }
 .nex-new-conversation:disabled {
-  color: var(--color-text-secondary);
-  opacity: 0.6;
+  color: var(--color-on-accent);
+  opacity: 0.5;
   cursor: default;
 }
 .nex-new-conversation:disabled .nex-new-conversation-icon {
   color: inherit;
 }
 
-/* ---- Search (flat at rest; a thin accent hairline appears only when focused) ---- */
+/* ---- Search: a quiet full-width control; hairline border at rest, accent
+   hairline while focused (Kimi input discipline). ---- */
 .nex-search {
   position: relative;
 }
@@ -101,22 +135,23 @@
   transform: translateY(-50%);
   width: 16px;
   height: 16px;
-  color: var(--color-text-secondary);
+  color: var(--color-text-faint);
   pointer-events: none;
 }
 .nex-search-input {
   width: 100%;
-  padding: 7px 10px 7px 30px;
-  border-radius: var(--radius-sm);
+  padding: 7px 10px 7px 32px;
+  border-radius: var(--radius-md);
   background: transparent;
-  border: 1px solid transparent;
+  border: 1px solid var(--color-border-strong);
   color: var(--color-text-primary);
   font-size: var(--font-size-sm);
   outline: none;
-  transition: background-color 0.12s ease;
+  transition: border-color var(--duration-fast) var(--ease-out),
+    background-color var(--duration-fast) var(--ease-out);
 }
 .nex-search-input::placeholder {
-  color: var(--color-text-secondary);
+  color: var(--color-text-faint);
 }
 .nex-search-input:hover {
   background: var(--color-bg-hover);
@@ -190,7 +225,7 @@
 .nex-conversation-title {
   flex: 1 1 auto;
   min-width: 0;
-  font-size: var(--font-size-base);
+  font-size: var(--font-size-sm);
   font-weight: var(--font-weight-regular);
   color: var(--color-text-primary);
   white-space: nowrap;
@@ -200,7 +235,7 @@
 .nex-conversation-time {
   flex-shrink: 0;
   font-size: var(--font-size-timestamp);
-  color: var(--color-text-secondary);
+  color: var(--color-text-faint);
   white-space: nowrap;
 }
 
@@ -255,6 +290,17 @@
   color: var(--color-error);
 }
 
+/* ---- Sidebar footer (Workspace nav: group label + entries, anchored) ---- */
+.nex-sidebar-footer {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  padding-top: var(--space-sm);
+}
+.nex-sidebar-footer .nex-conversation-group-label {
+  margin-top: 0;
+}
+
 /* ---- Settings entry (anchored utility — secondary at rest, primary on hover) ---- */
 .nex-settings-entry {
   display: flex;
@@ -263,13 +309,13 @@
   width: 100%;
   min-height: 40px;
   padding: 8px var(--space-md);
-  margin-top: auto;
   color: var(--color-text-secondary);
   font-size: var(--font-size-sm);
   font-weight: var(--font-weight-regular);
   border: none;
   background: transparent;
-  transition: background-color 0.12s ease, color 0.12s ease;
+  transition: background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
 }
 .nex-settings-entry:hover {
   background: var(--color-bg-hover);
@@ -310,8 +356,9 @@
 }
 .nex-empty-title {
   margin-top: var(--space-sm);
-  font-size: var(--font-size-xl);
+  font-size: var(--font-size-lg);   /* view/empty-state headings: 17–18 */
   font-weight: var(--font-weight-medium);
+  line-height: var(--line-height-tight);
   color: var(--color-text-primary);
 }
 .nex-empty-text {
@@ -382,7 +429,8 @@
   background: var(--color-bg-main);
 }
 
-/* ---- History thread (scrollable, chronological from the backend) ---- */
+/* ---- History thread (scrollable, chronological from the backend) ----
+   A centered reading column (max 780px), calm and desktop-first. */
 .nex-thread {
   flex: 1 1 auto;
   min-height: 0;
@@ -390,8 +438,9 @@
   overflow-x: hidden;
   display: flex;
   flex-direction: column;
-  gap: var(--space-md);
-  padding: var(--space-md);
+  align-items: stretch;
+  gap: var(--space-5);
+  padding: var(--space-xl) var(--space-md) var(--space-md);
 }
 
 .nex-thread-status {
@@ -399,23 +448,22 @@
   color: var(--color-text-secondary);
 }
 
+/* ---- Messages: no chat bubbles. A full-width role label with origin
+   metadata and a right-aligned time; the body reads across the column. */
 .nex-message {
   display: flex;
   flex-direction: column;
   gap: var(--space-xxs);
-  max-width: 720px;
-  padding: var(--space-sm) var(--space-md);
-  border-radius: var(--radius-md);
+  width: 100%;
+  max-width: var(--content-max-width);
+  margin-inline: auto;
+  padding: var(--space-xs) 0;
 }
 
-.nex-message-user {
-  align-self: flex-end;
-  background: var(--color-bg-content);
-}
-
+.nex-message-user,
 .nex-message-assistant {
-  align-self: flex-start;
-  background: var(--color-bg-hover);
+  /* No bubble surface: the message column itself is the reading surface. */
+  background: transparent;
 }
 
 .nex-message-meta {
@@ -435,65 +483,123 @@
   color: var(--color-accent);
 }
 
+.nex-message-origin {
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-faint);
+}
+
 .nex-message-time {
   font-size: var(--font-size-xs);
-  color: var(--color-text-tertiary);
+  color: var(--color-text-faint);
 }
 
 .nex-message-body {
   font-size: var(--font-size-base);
-  line-height: var(--line-height-normal);
+  line-height: var(--line-height-relaxed);
   color: var(--color-text-primary);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
-/* ---- Send-failure banner (visible, calm, above the composer) ---- */
+/* ---- Assistant three-dot typing pulse (loading brace, not a skeleton) ---- */
+.nex-sending {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: var(--content-max-width);
+  margin-inline: auto;
+  padding: var(--space-xs) 0;
+}
+.nex-sending-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+  opacity: 0.4;
+  animation: nex-typing var(--duration-normal) var(--ease-out) infinite;
+}
+.nex-sending-dot:nth-child(2) {
+  animation-delay: 0.12s;
+}
+.nex-sending-dot:nth-child(3) {
+  animation-delay: 0.24s;
+}
+@keyframes nex-typing {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+  50% {
+    opacity: 0.9;
+    transform: translateY(-2px);
+  }
+}
+
+/* ---- Send-failure strip (calm, inline, above the composer; user data is
+   already persisted server-side, so the note stays restrained) ---- */
 .nex-composer-error {
   flex-shrink: 0;
-  margin: 0 var(--space-md);
+  width: 100%;
+  max-width: var(--content-max-width);
+  margin: 0 auto;
   padding: var(--space-sm) var(--space-md);
   font-size: var(--font-size-sm);
   color: var(--color-error);
   background: var(--color-error-bg);
-  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-error-border);
+  border-radius: var(--radius-md);
+  text-align: left;
 }
 
-/* ---- Composer ---- */
+/* ---- Composer: shared with the reading column (780px), an elevated
+   hairline surface with a rounded 16px editor (Kimi composer). ---- */
 .nex-composer {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
   gap: var(--space-xs);
-  padding: var(--space-sm) var(--space-md);
-  border-top: 1px solid var(--color-border);
+  padding: var(--space-md) var(--space-md) var(--space-5);
   background: var(--color-bg-main);
+}
+
+.nex-composer-inner {
+  width: 100%;
+  max-width: var(--content-max-width);
+  margin-inline: auto;
 }
 
 .nex-composer-row {
   display: flex;
   align-items: flex-end;
-  gap: var(--space-xs);
+  gap: var(--space-sm);
+}
+
+.nex-composer-input-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .nex-composer-input {
-  flex: 1 1 auto;
+  width: 100%;
   resize: none;
-  min-height: 44px;
+  min-height: 52px;
   max-height: 160px;
-  padding: 10px var(--space-sm);
-  border-radius: var(--radius-md);
+  padding: 12px var(--space-md);
+  border-radius: var(--radius-xl);
   background: var(--color-bg-content);
-  border: 1px solid transparent;
+  border: 1px solid var(--color-border-strong);
   color: var(--color-text-primary);
   font-size: var(--font-size-base);
   line-height: var(--line-height-normal);
   outline: none;
-  transition: border-color 0.12s ease, background-color 0.12s ease;
+  transition: border-color var(--duration-fast) var(--ease-out),
+    background-color var(--duration-fast) var(--ease-out);
 }
 
 .nex-composer-input::placeholder {
-  color: var(--color-text-secondary);
+  color: var(--color-text-faint);
 }
 
 .nex-composer-input:hover {
@@ -502,15 +608,153 @@
 
 .nex-composer-input:focus-visible {
   border-color: var(--color-focus);
+  outline: none;
 }
 
 .nex-composer-input:disabled {
   opacity: 0.6;
 }
 
+.nex-composer-send {
+  align-self: stretch;
+  min-height: 52px;
+  padding: 0 var(--space-lg);
+  border-radius: var(--radius-md);
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  outline: none;
+}
+
+.nex-composer-send:hover:not(:disabled) {
+  background: var(--color-accent-hover);
+}
+
+.nex-composer-send:focus-visible {
+  outline: 1.5px solid var(--color-focus);
+  outline-offset: 1px;
+}
+
 .nex-composer-hint {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-faint);
+}
+
+.nex-composer-hint .nex-composer-model {
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+}
+
+.nex-composer-hint .nex-composer-shortcut {
+  color: var(--color-text-faint);
+}
+
+/* ---- Attachments (FR-008): draft file chips above the input row and the
+    quiet paperclip action. Reuses the existing hairline/radius/typography
+    tokens; no new visual language. ---- */
+.nex-composer-attach {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  align-self: stretch;
+  width: 44px;
+  min-height: 52px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+.nex-composer-attach:hover:not(:disabled) {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+.nex-composer-attach:focus-visible {
+  outline: 1.5px solid var(--color-focus);
+  outline-offset: 1px;
+}
+.nex-composer-attach:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.nex-composer-attachments {
+  list-style: none;
+  margin: 0 0 var(--space-xs);
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+}
+
+.nex-attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  max-width: 320px;
+  padding: 6px var(--space-sm);
+  background: var(--color-bg-content);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+}
+
+.nex-attachment-icon {
+  color: var(--color-text-secondary);
+  flex-shrink: 0;
+}
+
+.nex-attachment-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.nex-attachment-name {
   font-size: var(--font-size-sm);
-  color: var(--color-text-tertiary);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nex-attachment-size {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-faint);
+}
+
+.nex-attachment-remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+.nex-attachment-remove:hover:not(:disabled) {
+  background: var(--color-error-bg);
+  color: var(--color-error);
+}
+.nex-attachment-remove:focus-visible {
+  outline: 1px solid var(--color-focus);
+  outline-offset: -1px;
+}
+.nex-attachment-remove:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* ============================================================
@@ -591,7 +835,7 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-xxs);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--shadow-menu);
 }
 
 .nex-search-status {

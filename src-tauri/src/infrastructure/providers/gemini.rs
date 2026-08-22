@@ -193,8 +193,10 @@ fn generate_content_request(request: &AiRequest) -> GenerateContentRequest {
                 AiRole::System => "system",
             }
             .to_string(),
+            // Attachment references (FR-008) are rendered into the text part
+            // by the shared `AiMessage::composed_content` rendering point.
             parts: vec![GeminiPart {
-                text: message.content.clone(),
+                text: message.composed_content(),
             }],
         })
         .collect();
@@ -384,15 +386,15 @@ mod tests {
             messages: vec![
                 AiMessage {
                     role: AiRole::System,
-                    content: "You are a helpful assistant.".to_string(),
+                    content: "You are a helpful assistant.".to_string(),                    attachments: Vec::new(),
                 },
                 AiMessage {
                     role: AiRole::User,
-                    content: "Hello".to_string(),
+                    content: "Hello".to_string(),                    attachments: Vec::new(),
                 },
                 AiMessage {
                     role: AiRole::Assistant,
-                    content: "Hi there".to_string(),
+                    content: "Hi there".to_string(),                    attachments: Vec::new(),
                 },
             ],
         }
@@ -427,11 +429,11 @@ mod tests {
             messages: vec![
                 AiMessage {
                     role: AiRole::System,
-                    content: "First rule.".to_string(),
+                    content: "First rule.".to_string(),                    attachments: Vec::new(),
                 },
                 AiMessage {
                     role: AiRole::System,
-                    content: "Second rule.".to_string(),
+                    content: "Second rule.".to_string(),                    attachments: Vec::new(),
                 },
             ],
         };
@@ -459,7 +461,7 @@ mod tests {
             model: "gemini-2.0-flash".to_string(),
             messages: vec![AiMessage {
                 role: AiRole::User,
-                content: "Hello".to_string(),
+                content: "Hello".to_string(),                attachments: Vec::new(),
             }],
         };
         let body = generate_content_request(&request);

@@ -170,7 +170,10 @@ fn anthropic_request(request: &AiRequest) -> AnthropicRequest {
                 AiRole::System => "system",
             }
             .to_string(),
-            content: message.content.clone(),
+            // Attachment references (FR-008) are rendered into the text
+            // content by the shared `AiMessage::composed_content` rendering
+            // point.
+            content: message.composed_content(),
         })
         .collect();
     AnthropicRequest {
@@ -321,15 +324,15 @@ mod tests {
             messages: vec![
                 AiMessage {
                     role: AiRole::System,
-                    content: "You are a helpful assistant.".to_string(),
+                    content: "You are a helpful assistant.".to_string(),                    attachments: Vec::new(),
                 },
                 AiMessage {
                     role: AiRole::User,
-                    content: "Hello".to_string(),
+                    content: "Hello".to_string(),                    attachments: Vec::new(),
                 },
                 AiMessage {
                     role: AiRole::Assistant,
-                    content: "Hi there".to_string(),
+                    content: "Hi there".to_string(),                    attachments: Vec::new(),
                 },
             ],
         }
@@ -409,7 +412,7 @@ mod tests {
             model: "claude-3-5-sonnet-20240620".to_string(),
             messages: vec![AiMessage {
                 role: AiRole::User,
-                content: "Hello".to_string(),
+                content: "Hello".to_string(),                attachments: Vec::new(),
             }],
         };
         let body = anthropic_request(&request);

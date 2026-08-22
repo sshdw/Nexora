@@ -221,6 +221,50 @@ export function deletePrompt(id: number): Promise<void> {
 
 // ---- AI execution ----------------------------------------------------
 
+/** One persisted `attachments` row (DATABASE.md §7.4). A draft attachment has
+ * `message_id: null`; a sent attachment carries the user message it belongs
+ * to. The absolute `file_path` is backend bookkeeping and is never rendered. */
+export interface Attachment {
+  id: number;
+  conversation_id: number;
+  message_id: number | null;
+  file_name: string;
+  file_path: string;
+  file_size_bytes: number | null;
+  mime_type: string | null;
+}
+
+/** Attach a local-file reference to the conversation as a draft attachment via
+ * the existing `attach_file` command (FR-008). No content is uploaded; only
+ * metadata (name, path, size, media type) is persisted locally. */
+export function attachFile(
+  conversationId: number,
+  fileName: string,
+  filePath: string,
+  fileSizeBytes: number | null,
+  mimeType: string | null,
+): Promise<Attachment> {
+  return invoke<Attachment>("attach_file", {
+    conversationId,
+    fileName,
+    filePath,
+    fileSizeBytes,
+    mimeType,
+  });
+}
+
+/** List the conversation's draft attachments (`message_id` IS NULL) via
+ * `list_attachments`. Historical, message-linked rows are not included. */
+export function listAttachments(conversationId: number): Promise<Attachment[]> {
+  return invoke<Attachment[]>("list_attachments", { conversationId });
+}
+
+/** Hard-delete one draft attachment via `remove_attachment`. Other rows,
+ * messages, and the conversation are untouched. */
+export function removeAttachment(id: number): Promise<void> {
+  return invoke<void>("remove_attachment", { id });
+}
+
 /** Normalized AI response returned by `send_message`. */
 export interface AiResponse {
   content: string;
@@ -228,12 +272,21 @@ export interface AiResponse {
 }
 
 /** Send a user message and return/ persist the AI response.
+ * `attachmentIds` names the draft attachments to link to the created user
+ * message; they become part of the AI request context (FR-008).
  * The backend enforces the 40-per-minute outbound rate cap. */
 export function sendMessage(
   conversationId: number,
   content: string,
   provider: string,
   model: string,
+  attachmentIds: number[],
 ): Promise<AiResponse> {
-  return invoke<AiResponse>("send_message", { conversationId, content, provider, model });
+  return invoke<AiResponse>("send_message", {
+    conversationId,
+    content,
+    provider,
+    model,
+    attachmentIds,
+  });
 }

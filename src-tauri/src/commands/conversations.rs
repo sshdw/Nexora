@@ -92,16 +92,25 @@ pub(crate) fn delete_conversation(
 }
 
 /// Send a user message to a conversation and return the normalized AI
-/// response, which is also persisted as the assistant message.
+/// response, which is also persisted as the assistant message. Any draft
+/// attachment ids supplied are linked to the created user message before the
+/// request is executed (FR-008).
 #[tauri::command]
 pub(crate) fn send_message(
     conversation_id: i64,
     content: String,
     provider: String,
     model: String,
+    attachment_ids: Vec<i64>,
     db: State<'_, Database>,
 ) -> Result<AiResponse, CommandError> {
     ConversationService::new(db.inner())
-        .send_message(conversation_id, &content, &provider, &model)
+        .send_message(
+            conversation_id,
+            &content,
+            &provider,
+            &model,
+            &attachment_ids,
+        )
         .map_err(Into::into)
 }

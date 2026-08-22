@@ -11,8 +11,10 @@
 
 import { useEffect, useRef } from "react";
 
-import { formatRelativeTime } from "../lib/format";
+import { formatBytes, formatRelativeTime } from "../lib/format";
+import { useAttachments } from "../lib/useAttachments";
 import { useConversation } from "../lib/useConversation";
+import { CloseIcon, PaperclipIcon } from "./icons";
 
 export interface ConversationViewProps {
   conversationId: number;
@@ -41,10 +43,19 @@ export default function ConversationView({
   setDraft,
 }: ConversationViewProps) {
   const { messages, loading, error, sending, send } = useConversation(conversationId);
+  const {
+    attachments,
+    error: attachmentError,
+    busy: attachmentsBusy,
+    pickAndAttach,
+    remove,
+    refresh: refreshAttachments,
+  } = useAttachments(conversationId);
   const threadRef = useRef<HTMLDivElement>(null);
 
   const ready = selectedProvider !== null && selectedModel !== null;
-  const canSend = ready && draft.trim() !== "" && !sending;
+  const canSend =
+    ready && draft.trim() !== "" && !sending && !attachmentsBusy;
 
   // Keep the newest message in view as history loads and responses arrive.
   useEffect(() => {
@@ -55,8 +66,13 @@ export default function ConversationView({
   const handleSubmit = async () => {
     const content = draft.trim();
     if (!canSend || !content || !selectedProvider || !selectedModel) return;
+    const attachmentIds = attachments.map((attachment) => attachment.id);
     setDraft("");
-    await send(content, selectedProvider, selectedModel);
+    await send(content, selectedProvider, selectedModel, attachmentIds);
+    // The backend is the source of truth: on success the drafts are now
+    // message-linked and disappear; on failure they remain drafts and
+    // reappear unchanged (FR-008 draft lifecycle).
+    await refreshAttachments();
     onMessageSent?.();
   };
 
@@ -87,8 +103,16 @@ export default function ConversationView({
                 <span className="nex-message-author">
                   {message.role === "user"
                     ? "You"
-                    : (message.model_name ?? "Assistant")}
+                    : "Assistant"}
                 </span>
+                {message.role === "assistant" && message.model_name && (
+                  <span
+                    className="nex-message-origin"
+                    title="Provider and model used for this message"
+                  >
+                    {message.model_name}
+                  </span>
+                )}
                 <time
                   className="nex-message-time"
                   dateTime={new Date(message.created_at * 1000).toISOString()}
@@ -100,7 +124,20 @@ export default function ConversationView({
             </article>
           ))
         )}
+        {sending && (
+          <div className="nex-sending" aria-label="Assistant is responding">
+            <span className="nex-sending-dot" />
+            <span className="nex-sending-dot" />
+            <span className="nex-sending-dot" />
+          </div>
+        )}
       </div>
+
+      {attachmentError && (
+        <div className="nex-composer-error" role="alert">
+          {attachmentError.message}
+        </div>
+      )}
 
       {error && (
         <div className="nex-composer-error" role="alert">
@@ -109,45 +146,92 @@ export default function ConversationView({
       )}
 
       <div className="nex-composer">
-        <div className="nex-composer-row">
-          <textarea
-            className="nex-composer-input"
-            rows={1}
-            placeholder="Message"
-            aria-label="Message"
-            value={draft}
-            disabled={sending}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault();
-                handleSubmit();
-              }
-            }}
-          />
-          <button
-            type="button"
-            className="nex-btn nex-btn-accent"
-            onClick={handleSubmit}
-            disabled={!canSend}
-          >
-            {sending ? "Sending…" : "Send"}
-          </button>
-        </div>
-        {ready ? (
-          <p className="nex-composer-hint">{selectedModel}</p>
-        ) : (
-          <p className="nex-composer-hint">
-            Choose a provider and model in Settings to send messages.{" "}
+        <div className="nex-composer-inner">
+          {attachments.length > 0 && (
+            <ul className="nex-composer-attachments" aria-label="Attached files">
+              {attachments.map((attachment) => (
+                <li key={attachment.id} className="nex-attachment-chip">
+                  <PaperclipIcon className="nex-attachment-icon" />
+                  <span className="nex-attachment-text">
+                    <span className="nex-attachment-name" title={attachment.file_name}>
+                      {attachment.file_name}
+                    </span>
+                    {formatBytes(attachment.file_size_bytes) !== null && (
+                      <span className="nex-attachment-size">
+                        {formatBytes(attachment.file_size_bytes)}
+                      </span>
+                    )}
+                  </span>
+                  <button
+                    type="button"
+                    className="nex-attachment-remove"
+                    aria-label={`Remove ${attachment.file_name}`}
+                    disabled={attachmentsBusy || sending}
+                    onClick={() => void remove(attachment.id)}
+                  >
+                    <CloseIcon />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="nex-composer-row">
             <button
               type="button"
-              className="nex-btn nex-btn-accent nex-btn-sm"
-              onClick={onOpenSettings}
+              className="nex-composer-attach"
+              aria-label="Add file"
+              title="Add file"
+              disabled={sending || attachmentsBusy}
+              onClick={() => void pickAndAttach()}
             >
-              Open Settings
+              <PaperclipIcon />
             </button>
-          </p>
-        )}
+            <div className="nex-composer-input-wrap">
+              <textarea
+                className="nex-composer-input"
+                rows={1}
+                placeholder="Message"
+                aria-label="Message"
+                value={draft}
+                disabled={sending}
+                onChange={(event) => setDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    handleSubmit();
+                  }
+                }}
+              />
+            </div>
+            <button
+              type="button"
+              className="nex-composer-send"
+              onClick={handleSubmit}
+              disabled={!canSend}
+            >
+              {sending ? "Sending…" : "Send"}
+            </button>
+          </div>
+          {ready ? (
+            <p className="nex-composer-hint">
+              <span className="nex-composer-model">{selectedModel}</span>
+              <span className="nex-composer-shortcut">
+                Enter to send · Shift+Enter for a new line
+              </span>
+            </p>
+          ) : (
+            <p className="nex-composer-hint">
+              Choose a provider and model in Settings to send messages.{" "}
+              <button
+                type="button"
+                className="nex-btn nex-btn-accent nex-btn-sm"
+                onClick={onOpenSettings}
+              >
+                Open Settings
+              </button>
+            </p>
+          )}
+        </div>
       </div>
     </div>
   );

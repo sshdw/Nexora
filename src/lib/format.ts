@@ -41,3 +41,47 @@ export function formatRelativeTime(seconds: number): string {
   }
   return formatLocale(date, { month: "short", day: "numeric", year: "numeric" });
 }
+
+/** Format a byte count as a compact human label ("1.2 MB"); returns null for
+ * unknown sizes so callers can omit the line entirely. */
+export function formatBytes(bytes: number | null): string | null {
+  if (bytes === null || bytes < 0) return null;
+  if (bytes < 1_000) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unit = -1;
+  do {
+    value /= 1_000;
+    unit += 1;
+  } while (value >= 1_000 && unit < units.length - 1);
+  return `${value >= 100 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
+}
+
+/** Best-effort media type for a file name, used only as optional attachment
+ * metadata (DATABASE.md §7.4 `mime_type` is nullable). This is NOT an
+ * allowlist: any file type can be attached; unknown extensions yield null. */
+const MIME_BY_EXTENSION: Record<string, string> = {
+  pdf: "application/pdf",
+  txt: "text/plain",
+  md: "text/markdown",
+  csv: "text/csv",
+  json: "application/json",
+  xml: "application/xml",
+  html: "text/html",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  svg: "image/svg+xml",
+  zip: "application/zip",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+};
+
+export function guessMimeType(fileName: string): string | null {
+  const dot = fileName.lastIndexOf(".");
+  if (dot < 0 || dot === fileName.length - 1) return null;
+  return MIME_BY_EXTENSION[fileName.slice(dot + 1).toLowerCase()] ?? null;
+}

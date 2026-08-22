@@ -155,6 +155,14 @@ impl From<ConversationError> for CommandError {
                 ErrorKind::NotFound,
                 format!("conversation {id} does not exist"),
             ),
+            ConversationError::UnknownAttachment { id } => Self::new(
+                ErrorKind::InvalidInput,
+                format!("attachment {id} does not exist"),
+            ),
+            ConversationError::ForeignAttachment { id } => Self::new(
+                ErrorKind::InvalidInput,
+                format!("attachment {id} is not a pending draft of this conversation"),
+            ),
             ConversationError::UnexpectedMessageRole { role } => {
                 log::error!("conversation history contains invalid message role '{role}'");
                 Self::new(

@@ -17,6 +17,8 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 log = "0.4"
 keyring = "4"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "rustls"] }
+tauri-plugin-dialog = "2.7.2"
+tauri-plugin-fs = "2.5.1"
 
 [lints.rust]
 unsafe_code = "forbid"
