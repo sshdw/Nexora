@@ -96,8 +96,18 @@ export function useProviders(): ProvidersStore {
       );
       setCredentialedNames(credentialed);
 
-      setSelectedProvider(providerSetting);
-      setSelectedModel(modelSetting);
+      // FR-012: a persisted selection only becomes active state if it still
+      // belongs to the supported provider/model domains; anything else (a
+      // stale or hand-edited value) falls back to the default (no selection).
+      const validProvider =
+        defs.some((provider) => provider.name === providerSetting) ? providerSetting : null;
+      const validModel = defs.some((provider) =>
+        modelSetting === null ? false : provider.models.includes(modelSetting),
+      )
+        ? modelSetting
+        : null;
+      setSelectedProvider(validProvider);
+      setSelectedModel(validModel);
     } catch (e) {
       setError(toCommandError(e));
     } finally {

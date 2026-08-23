@@ -67,7 +67,7 @@ pub(crate) struct CommandError {
 
 impl CommandError {
     /// Build a classified command error with a curated `message`.
-    fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
+    pub(crate) fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
         Self {
             kind,
             message: message.into(),
