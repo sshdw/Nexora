@@ -7,7 +7,9 @@
 //! selected provider/model (FR-004). User and assistant messages are kept
 //! visually distinguishable by role, chronological order comes from the
 //! backend, and request failures surface as a visible error without inventing
-//! or corrupting persisted state.
+//! or corrupting persisted state. A failed AI request additionally restores
+//! the sent text into the composer so it can be resent without retyping —
+//! frontend draft state only; persisted history is never modified.
 
 import { useEffect, useRef } from "react";
 
@@ -68,7 +70,18 @@ export default function ConversationView({
     if (!canSend || !content || !selectedProvider || !selectedModel) return;
     const attachmentIds = attachments.map((attachment) => attachment.id);
     setDraft("");
-    await send(content, selectedProvider, selectedModel, attachmentIds);
+    const failure = await send(content, selectedProvider, selectedModel, attachmentIds);
+    // A failed AI request keeps the persisted user message and creates no
+    // assistant message (DATABASE.md §7.2). Offline/network failures arrive
+    // classified under the backend's "request" kind (commands/error.rs maps
+    // every provider execution failure there), so the exact sent text is
+    // restored into the composer: the user can edit or resend it once
+    // connectivity returns without retyping. Restoration is frontend state
+    // only — nothing is written to or removed from history, so resending
+    // goes through the normal single-turn send flow.
+    if (failure !== null && failure.kind === "request") {
+      setDraft(content);
+    }
     // The backend is the source of truth: on success the drafts are now
     // message-linked and disappear; on failure they remain drafts and
     // reappear unchanged (FR-008 draft lifecycle).

@@ -11,6 +11,12 @@
 //! success **or** failure the local list is refreshed from the backend so it
 //! always reflects persisted state: a failed request keeps the persisted user
 //! message and never manufactures a fake assistant message (DATABASE.md §7.2).
+//!
+//! `send` resolves with the classified [`CommandError`] of a failed send
+//! (`null` on success) so the caller can react — e.g. restore the sent text
+//! into the composer after an offline/network failure — without this hook
+//! owning composer state. Restoration is purely frontend state: it persists
+//! nothing and never touches conversation history (DATABASE.md §7.2).
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -33,13 +39,14 @@ export interface ConversationStore {
   /** Refresh the message list from the backend. */
   reload: () => Promise<void>;
   /** Send `content` with the selected provider/model and refresh history.
-   * `attachmentIds` names the draft attachments to link to this message. */
+   * `attachmentIds` names the draft attachments to link to this message.
+   * Resolves with the classified error of a failed send (`null` on success). */
   send: (
     content: string,
     provider: string,
     model: string,
     attachmentIds: number[],
-  ) => Promise<void>;
+  ) => Promise<CommandError | null>;
 }
 
 export function useConversation(conversationId: number | null): ConversationStore {
@@ -98,20 +105,25 @@ export function useConversation(conversationId: number | null): ConversationStor
       provider: string,
       model: string,
       attachmentIds: number[],
-    ): Promise<void> => {
-      if (conversationId === null) return;
+    ): Promise<CommandError | null> => {
+      if (conversationId === null) return null;
       setSending(true);
       setError(null);
       try {
         await sendMessage(conversationId, content, provider, model, attachmentIds);
         // Success: reflect the persisted user + assistant messages.
         await reload();
+        return null;
       } catch (e) {
         // The backend persisted the user message but produced no assistant
         // message. Refresh so the UI shows the persisted user message, then
-        // surface the classified error (FR-003; DATABASE.md §7.2).
+        // surface the classified error (FR-003; DATABASE.md §7.2). The error
+        // is also returned so the caller can restore the composer draft —
+        // frontend state only; nothing here writes or removes history.
+        const failure = toCommandError(e);
         await reload();
-        setError(toCommandError(e));
+        setError(failure);
+        return failure;
       } finally {
         setSending(false);
       }

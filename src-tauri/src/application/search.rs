@@ -81,27 +81,60 @@ impl<'a> LocalSearchService<'a> {
     ///
     /// A blank `query` (empty or whitespace only) returns empty
     /// [`SearchResults`] without querying the database. Otherwise the trimmed
-    /// query is matched against the conversation-title, message-content, and
-    /// prompt-title/content FTS indexes (DATABASE.md §10), and the matches are
-    /// returned grouped in [`SearchResults`].
+    /// query is first converted into a safe FTS5 `MATCH` expression by
+    /// [`sanitize_fts_query`] — so operator/syntax characters typed by the user
+    /// can never form an invalid expression — and then matched against the
+    /// conversation-title, message-content, and prompt-title/content indexes
+    /// (DATABASE.md §10), with the matches returned grouped in
+    /// [`SearchResults`].
     ///
     /// # Errors
     ///
     /// Returns [`SearchError::Database`] if any index query fails, for example
-    /// because the query is not a valid FTS expression or because the
-    /// `conversations_fts` / `messages_fts` / `prompts_fts` indexes cannot be
-    /// queried.
+    /// because the `conversations_fts` / `messages_fts` / `prompts_fts` indexes
+    /// cannot be queried.
     pub(crate) fn search(&self, query: &str) -> Result<SearchResults> {
         let query = query.trim();
         if query.is_empty() {
             return Ok(SearchResults::default());
         }
+        let expression = sanitize_fts_query(query);
+        if expression.is_empty() {
+            return Ok(SearchResults::default());
+        }
         Ok(SearchResults {
-            conversations: self.search.search_conversations(query)?,
-            message_matches: self.search.search_messages(query)?,
-            prompts: self.search.search_prompts(query)?,
+            conversations: self.search.search_conversations(&expression)?,
+            message_matches: self.search.search_messages(&expression)?,
+            prompts: self.search.search_prompts(&expression)?,
         })
     }
+}
+
+/// Convert a raw user query into a safe FTS5 `MATCH` expression (FR-009).
+///
+/// Every whitespace-separated token is wrapped in double quotes with any
+/// embedded quote doubled, which makes every other character inside the token
+/// literal — including the FTS operators and syntax characters (`(`, `)`, `+`,
+/// `-`, `:`, `^`, ...) a user may type. A single trailing `*` on a token is
+/// preserved *outside* the closing quote (`"run"*`) so prefix searches keep
+/// working; tokens made up solely of `*` characters carry no searchable text
+/// and are dropped. Tokens are joined with spaces, which FTS5 treats as an
+/// implicit AND — exactly the semantics plain multi-word queries had before
+/// sanitization existed.
+///
+/// The result is empty only when the query contained no searchable tokens, in
+/// which case the caller short-circuits to empty results instead of issuing a
+/// meaningless empty MATCH.
+fn sanitize_fts_query(query: &str) -> String {
+    query
+        .split_whitespace()
+        .filter(|token| !token.chars().all(|c| c == '*'))
+        .map(|token| match token.strip_suffix('*') {
+            Some(stem) => format!("\"{}\"*", stem.replace('"', "\"\"")),
+            None => format!("\"{}\"", token.replace('"', "\"\"")),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Errors raised by the local search service.
@@ -357,6 +390,80 @@ mod tests {
     }
 
     #[test]
+    fn sanitizer_quotes_tokens_and_preserves_trailing_prefix_star() {
+        // Operator/syntax characters become literal inside quoted tokens.
+        assert_eq!(sanitize_fts_query("function()"), "\"function()\"");
+        assert_eq!(sanitize_fts_query("C++"), "\"C++\"");
+        // Multi-token queries keep implicit-AND semantics.
+        assert_eq!(sanitize_fts_query("foo + bar"), "\"foo\" \"+\" \"bar\"");
+        // A trailing wildcard stays outside the quotes (prefix search).
+        assert_eq!(sanitize_fts_query("run*"), "\"run\"*");
+        // Embedded quotes are doubled; bare wildcard-only tokens are dropped.
+        assert_eq!(
+            sanitize_fts_query("say \"hi\" *"),
+            "\"say\" \"\"\"hi\"\"\""
+        );
+        assert_eq!(sanitize_fts_query("* ** *"), "");
+    }
+
+    #[test]
+    fn fts_syntax_characters_search_without_errors() {
+        let db = test_db();
+        let service = LocalSearchService::new(&db);
+        let parens = create_conversation(&db, "function() notes");
+        insert_message(&db, parens, "user", "def helper(): return 1");
+        let plus = create_conversation(&db, "C++ study group");
+
+        // Previously these formed invalid MATCH expressions and surfaced as
+        // raw database errors; they must now behave like ordinary queries.
+        let results = service.search("function()").expect("no error for ()");
+        assert_eq!(results.conversations.len(), 1);
+        assert_eq!(results.conversations[0].id, parens);
+
+        let results = service.search("C++").expect("no error for ++");
+        assert_eq!(results.conversations.len(), 1);
+        assert_eq!(results.conversations[0].id, plus);
+
+        let results = service.search("foo + bar").expect("no error for +");
+        assert!(results.conversations.is_empty());
+        assert!(results.message_matches.is_empty());
+        assert!(results.prompts.is_empty());
+    }
+
+    #[test]
+    fn prefix_wildcard_queries_still_match() {
+        let db = test_db();
+        let service = LocalSearchService::new(&db);
+        let running = create_conversation(&db, "Running plans");
+
+        let results = service.search("runn*").expect("prefix search succeeds");
+        assert_eq!(results.conversations.len(), 1);
+        assert_eq!(results.conversations[0].id, running);
+    }
+
+    #[test]
+    fn plain_multi_word_and_quoted_queries_keep_prior_semantics() {
+        let db = test_db();
+        let service = LocalSearchService::new(&db);
+        let chat = create_conversation(&db, "Release plan");
+        insert_message(&db, chat, "user", "the launch strategy needs review");
+
+        // Implicit AND across tokens, as before sanitization existed.
+        let results = service.search("launch strategy").expect("search succeeds");
+        assert_eq!(results.message_matches.len(), 1);
+        let results = service
+            .search("launch unrelated")
+            .expect("search succeeds");
+        assert!(results.message_matches.is_empty());
+
+        // A query containing a double quote is still a valid expression.
+        let results = service.search("say \"hi\"").expect("quoted query ok");
+        assert!(results.conversations.is_empty());
+        assert!(results.message_matches.is_empty());
+        assert!(results.prompts.is_empty());
+    }
+
+    #[test]
     fn search_with_blank_query_returns_empty_results_without_error() {
         let db = test_db();
         let service = LocalSearchService::new(&db);
@@ -451,16 +558,19 @@ mod tests {
     }
 
     #[test]
-    fn malformed_fts_query_is_a_classified_error_not_a_panic() {
+    fn malformed_fts_query_is_sanitized_into_a_valid_expression() {
+        // Before sanitization existed, an unterminated quote reached FTS5 as a
+        // malformed MATCH expression and surfaced as a raw database error
+        // (BUG-001). The sanitizer now quotes every token, so the same input is
+        // a valid literal search that simply matches nothing.
         let db = test_db();
         let service = LocalSearchService::new(&db);
         create_conversation(&db, "Roadmap");
 
-        let err = service
-            .search("\"unterminated")
-            .expect_err("malformed query");
-
-        assert!(matches!(err, SearchError::Database(_)));
+        let results = service.search("\"unterminated").expect("sanitized query ok");
+        assert!(results.conversations.is_empty());
+        assert!(results.message_matches.is_empty());
+        assert!(results.prompts.is_empty());
     }
 
     #[test]

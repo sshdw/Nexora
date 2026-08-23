@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import ConversationView from "./components/ConversationView";
 import EmptyState from "./components/EmptyState";
@@ -123,12 +123,22 @@ function App() {
     setSettingsOpen(false);
   };
 
+  // Leading-edge guard for conversation creation: synchronous rapid clicks on
+  // "New Conversation" all land before the button's disabled state re-renders,
+  // so re-entrant calls are dropped here until the in-flight create resolves.
+  const creatingInFlight = useRef(false);
   const handleNewConversation = async () => {
-    const id = await create();
-    if (id !== null) {
-      setSelectedId(id);
-      setDraft("");
-      setLibraryOpen(false);
+    if (creatingInFlight.current) return;
+    creatingInFlight.current = true;
+    try {
+      const id = await create();
+      if (id !== null) {
+        setSelectedId(id);
+        setDraft("");
+        setLibraryOpen(false);
+      }
+    } finally {
+      creatingInFlight.current = false;
     }
   };
 

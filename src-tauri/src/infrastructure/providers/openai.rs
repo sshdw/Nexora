@@ -1,5 +1,5 @@
 //! OpenAI provider integration: a concrete [`ProviderExecutor`] (ROADMAP.md
-//! Phase 3 — AI Providers; ARCHITECTURE.md §7).
+//! Phase 3 вЂ” AI Providers; ARCHITECTURE.md В§7).
 //!
 //! This is the first concrete provider implementation behind the
 //! provider-independent execution boundary. It translates a provider-agnostic
@@ -13,7 +13,7 @@
 //! boundary can later host Anthropic, Gemini, DeepSeek, Kimi, or Grok without
 //! touching this contract.
 //!
-//! # Security (ARCHITECTURE.md §9, §11, §12)
+//! # Security (ARCHITECTURE.md В§9, В§11, В§12)
 //!
 //! - The credential is supplied by the caller from the [`CredentialStore`] for
 //!   the duration of the call only; it is never persisted, logged, or returned.
@@ -41,19 +41,29 @@ use serde::{Deserialize, Serialize};
 /// OpenAI's Chat Completions endpoint.
 const ENDPOINT: &str = "https://api.openai.com/v1/chat/completions";
 
-/// Internal provider name (DATABASE.md §7.5); the keyring namespace key.
+/// Internal provider name (DATABASE.md В§7.5); the keyring namespace key.
 pub(crate) const PROVIDER_NAME: &str = "openai";
 /// User-facing provider label.
 pub(crate) const PROVIDER_DISPLAY_NAME: &str = "OpenAI";
 
-/// OpenAI models currently supported by the provider (DATABASE.md §7.5: model
+/// OpenAI models currently supported by the provider (DATABASE.md В§7.5: model
 /// lists are hardcoded in the MVP and managed by the application layer).
 ///
 /// The selected model is passed through unchanged and is never validated
 /// against this list at runtime (never silently substituted, never rejected):
 /// this set documents the currently supported models and anchors the
 /// model-selection surface so the UI can present only supported choices.
-pub(crate) const SUPPORTED_MODELS: &[&str] = &["gpt-4o-mini", "gpt-4o"];
+///
+/// Ordered per Nexora-AI-Model-Catalog-August-2026.md В§10/В§11; the first entry
+/// is the provider default consumed as `models[0]` by the selection surface.
+pub(crate) const SUPPORTED_MODELS: &[&str] = &[
+    // Default: best balance of cost and capability.
+    "gpt-5.6-terra",
+    // Fast/cheap tier.
+    "gpt-5.6-luna",
+    // Best-quality flagship tier.
+    "gpt-5.6-sol",
+];
 ///
 /// Stateless over the shared `reqwest` blocking client so it can be shared
 /// across requests; the per-request credential and request payload are passed
@@ -69,9 +79,10 @@ impl OpenAiExecutor {
         Self::with_endpoint(ENDPOINT.to_string())
     }
 
-    /// Create an executor targeting an explicit `endpoint` (used by tests to
-    /// exercise the full request/response path without a live OpenAI service).
-    fn with_endpoint(endpoint: String) -> Self {
+    /// Create an executor targeting an explicit `endpoint` (used by tests,
+    /// including the command-layer threading regression test, to exercise
+    /// the full request/response path without a live OpenAI service).
+    pub(crate) fn with_endpoint(endpoint: String) -> Self {
         Self {
             client: reqwest::blocking::Client::new(),
             endpoint,
@@ -95,7 +106,7 @@ impl ProviderExecutor for OpenAiExecutor {
             Ok(response) => Ok(response),
             Err(error) => {
                 // Record only the classification category; never the credential
-                // or request payload (ARCHITECTURE.md §9, §11).
+                // or request payload (ARCHITECTURE.md В§9, В§11).
                 log::warn!("openai request failed: {error}");
                 Err(ExecutorError::Failure)
             }
@@ -147,7 +158,7 @@ struct OpenAiImageUrl {
 
 /// Translate a provider-independent request into an OpenAI request body.
 ///
-/// The selected model is passed through unchanged — it is never silently
+/// The selected model is passed through unchanged вЂ” it is never silently
 /// substituted (FR-004). System, user, and assistant messages map to the
 /// corresponding OpenAI `role`.
 fn chat_completion_request(request: &AiRequest) -> ChatCompletionRequest {
@@ -272,7 +283,7 @@ fn classify_status(status: u16) -> OpenAiError {
 ///
 /// These identify only the failure *category*; no credential, authorization
 /// header, or request payload is ever stored. The provider-independent boundary
-/// exposes only [`ExecutorError::Failure`] — this richer classification exists
+/// exposes only [`ExecutorError::Failure`] вЂ” this richer classification exists
 /// so diagnostics can distinguish failure classes in the logs.
 #[derive(Debug)]
 enum OpenAiError {
@@ -304,7 +315,7 @@ mod tests {
     fn sample_request() -> AiRequest {
         AiRequest {
             provider: PROVIDER_NAME.to_string(),
-            model: "gpt-4o-mini".to_string(),
+            model: "gpt-5.6-terra".to_string(),
             messages: vec![
                 AiMessage {
                     role: AiRole::System,
@@ -329,7 +340,7 @@ mod tests {
     fn request_translates_roles_and_model() {
         let body = chat_completion_request(&sample_request());
         // The selected model is passed through unchanged, never substituted.
-        assert_eq!(body.model, "gpt-4o-mini");
+        assert_eq!(body.model, "gpt-5.6-terra");
         let roles: Vec<&str> = body.messages.iter().map(|m| m.role.as_str()).collect();
         assert_eq!(roles, vec!["system", "user", "assistant"]);
         assert_eq!(
@@ -349,7 +360,7 @@ mod tests {
     fn maps_user_and_assistant_roles_without_system() {
         let request = AiRequest {
             provider: PROVIDER_NAME.to_string(),
-            model: "gpt-4o".to_string(),
+            model: "gpt-5.6-sol".to_string(),
             messages: vec![AiMessage {
                 role: AiRole::User,
                 content: "ping".to_string(),
@@ -364,7 +375,7 @@ mod tests {
     #[test]
     fn response_maps_to_ai_response() {
         let response = ChatCompletionResponse {
-            model: "gpt-4o-mini".to_string(),
+            model: "gpt-5.6-terra".to_string(),
             choices: vec![Choice {
                 message: ResponseMessage {
                     content: Some("Hello to you too.".to_string()),
@@ -373,13 +384,13 @@ mod tests {
         };
         let ai = to_ai_response(response).expect("valid response maps");
         assert_eq!(ai.content, "Hello to you too.");
-        assert_eq!(ai.model, "gpt-4o-mini");
+        assert_eq!(ai.model, "gpt-5.6-terra");
     }
 
     #[test]
     fn response_without_content_is_unexpected() {
         let response = ChatCompletionResponse {
-            model: "gpt-4o-mini".to_string(),
+            model: "gpt-5.6-terra".to_string(),
             choices: vec![Choice {
                 message: ResponseMessage { content: None },
             }],
@@ -393,7 +404,7 @@ mod tests {
     #[test]
     fn response_without_choices_is_unexpected() {
         let response = ChatCompletionResponse {
-            model: "gpt-4o-mini".to_string(),
+            model: "gpt-5.6-terra".to_string(),
             choices: vec![],
         };
         assert!(matches!(
@@ -496,7 +507,7 @@ mod tests {
                 }
             }
             // A minimal valid OpenAI-style success body.
-            let body = r#"{"model":"gpt-4o-mini","choices":[{"message":{"content":"pong"}}]}"#;
+            let body = r#"{"model":"gpt-5.6-terra","choices":[{"message":{"content":"pong"}}]}"#;
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                 body.len(),
@@ -515,6 +526,6 @@ mod tests {
         server.join().expect("server thread joins");
 
         assert_eq!(ai.content, "pong");
-        assert_eq!(ai.model, "gpt-4o-mini");
+        assert_eq!(ai.model, "gpt-5.6-terra");
     }
 }
