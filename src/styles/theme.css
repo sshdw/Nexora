@@ -78,6 +78,49 @@
   --font-weight-medium:   500;
   --font-weight-semibold: 600;
   --line-height-normal:   1.5;
+/* ---- Provisional light theme (Phase 10.8 — SRS §11 "Appearance") ----
+   Token-driven override of the same structure (kimi-design-reference/
+   Nexora Design System.md §2). Warm paper surfaces, dark warm text,
+   deepened accent. Switched via `data-theme="light"` on <html>; every
+   component references tokens only, so this block alone retints the app. */
+[data-theme="light"] {
+  --color-bg-app:       #efedea;
+  --color-bg-sidebar:   #eae8e4;
+  --color-bg-main:      #f4f2ef;
+  --color-bg-content:   #ffffff;
+
+  --color-bg-hover:     rgba(0, 0, 0, 0.045);
+  --color-bg-selected:  rgba(0, 0, 0, 0.075);
+
+  --color-border:        rgba(0, 0, 0, 0.08);
+  --color-border-strong: rgba(0, 0, 0, 0.14);
+
+  --color-focus: rgba(169, 130, 74, 0.7);
+  --color-focus-soft: rgba(169, 130, 74, 0.45);
+
+  --color-text-primary:   #262420;
+  --color-text-secondary: #5f5b54;
+  --color-text-tertiary:  #85807a;
+
+  --color-accent:       #a9824a;
+  --color-accent-hover: #97743f;
+  --color-accent-bg:    rgba(169, 130, 74, 0.12);
+
+  --color-error:    #a8503f;
+  --color-error-bg: rgba(168, 80, 63, 0.10);
+
+  color-scheme: light;
+}
+
+/* The brand assets are white-on-transparent; invert them for legibility on
+   paper surfaces (Design System §7). */
+[data-theme="light"] .nex-logo,
+[data-theme="light"] .nex-empty-mark,
+[data-theme="light"] .nex-placeholder-mark {
+  filter: invert(1);
+}
+
+/* ---- Motion respect ---- */
 }
 
 /* ---- Motion respect ---- */

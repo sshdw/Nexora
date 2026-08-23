@@ -112,6 +112,154 @@
   cursor: default;
 }
 
+.nex-settings-layout {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* ---- Compact section navigation (Phase 10: quiet list rows) ---- */
+.nex-settings-nav {
+  width: 180px;
+  flex-shrink: 0;
+  padding: var(--space-lg) var(--space-sm);
+  border-right: 1px solid var(--color-border);
+  background: var(--color-bg-sidebar);
+  overflow-y: auto;
+}
+
+.nex-settings-nav-group {
+  margin-bottom: var(--space-md);
+}
+
+.nex-settings-nav-label {
+  margin: 0 0 var(--space-xs);
+  padding-left: var(--space-sm);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-tertiary);
+}
+
+.nex-settings-nav-item {
+  display: block;
+  width: 100%;
+  padding: 6px var(--space-sm);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.nex-settings-nav-item:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+
+.nex-settings-nav-item.is-active {
+  background: var(--color-bg-selected);
+  color: var(--color-text-primary);
+}
+
+/* The scrolling content pane sits right of the nav. */
+.nex-settings .nex-settings-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.nex-settings .nex-settings-inner {
+  max-width: 560px;
+  margin: 0;
+}
+
+/* ---- Segmented control (Appearance theme) ---- */
+.nex-seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border-strong);
+}
+
+.nex-seg button {
+  padding: 5px 14px;
+  border: none;
+  border-radius: calc(var(--radius-sm) - 1px);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.nex-seg button:hover {
+  color: var(--color-text-primary);
+}
+
+.nex-seg button.is-active {
+  background: var(--color-accent-bg);
+  color: var(--color-accent);
+  font-weight: var(--font-weight-medium);
+}
+
+/* ---- Danger zone (Data management — FR-013 explicit confirmation) ---- */
+.nex-danger-zone {
+  margin-top: var(--space-md);
+  padding: var(--space-md);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+}
+
+.nex-danger-title {
+  margin: 0 0 var(--space-xs);
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-error);
+}
+
+.nex-danger-text {
+  margin: 0 0 var(--space-sm);
+  max-width: 480px;
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-secondary);
+}
+
+.nex-danger-button {
+  color: var(--color-error);
+}
+
+.nex-danger-button:hover:not(:disabled),
+.nex-danger-button:focus-visible:not(:disabled) {
+  color: var(--color-error);
+  background: var(--color-error-bg);
+}
+
+.nex-danger-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  align-items: flex-start;
+}
+
+.nex-danger-confirm .nex-input {
+  max-width: 240px;
+}
+
+/* ---- Inline validation / command errors (FR-012 invalid values rejected) ---- */
+.nex-settings-error {
+  margin: var(--space-xs) 0 0;
+  font-size: var(--font-size-sm);
+  color: var(--color-error);
+}
+
 /* ---- Provider credential list ---- */
 .nex-provider-list {
   display: flex;

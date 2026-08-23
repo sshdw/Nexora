@@ -157,6 +157,18 @@ export function deleteSetting(key: string): Promise<void> {
   return invoke<void>("delete_setting", { key });
 }
 
+// ---- Data management (FR-013) ------------------------------------------
+
+/** Clear ALL local application data (conversations, messages, attachments,
+ * prompts, provider metadata, settings) via the existing Phase 9
+ * `clear_application_data` command. The backend refuses to run unless
+ * `confirmation` equals its exact confirmation phrase, so the explicit-
+ * confirmation behavior is preserved unchanged. Keyring credentials are not
+ * touched (they never lived in SQLite). */
+export function clearApplicationData(confirmation: string): Promise<void> {
+  return invoke<void>("clear_application_data", { confirmation });
+}
+
 // ---- Search (FR-006, FR-009) -------------------------------------------
 
 /** One `prompts` row as persisted (DATABASE.md §7.3). */

@@ -8,6 +8,7 @@ import PromptLibraryView from "./components/PromptLibraryView";
 import SettingsView from "./components/SettingsView";
 import Sidebar from "./components/Sidebar";
 import type { Conversation } from "./lib/tauri";
+import { useAppearance } from "./lib/useAppearance";
 import { useConversations } from "./lib/useConversations";
 import { useImportExport } from "./lib/useImportExport";
 import { useProviders } from "./lib/useProviders";
@@ -93,6 +94,9 @@ function App() {
   // conversation composer, so the selection made in Settings is the selection
   // used when sending (FR-004).
   const providers = useProviders();
+  // Appearance preference is loaded once here so the persisted theme applies
+  // at startup, not only while Settings is open (FR-012 persistence).
+  const appearance = useAppearance();
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   // The composer draft is lifted here so the Prompt Library screen can stage a
@@ -204,7 +208,9 @@ function App() {
         ) : settingsOpen ? (
           <SettingsView
             store={providers}
+            appearance={appearance}
             onClose={() => setSettingsOpen(false)}
+            onDataCleared={() => void reload()}
           />
         ) : (
           <MainContent
