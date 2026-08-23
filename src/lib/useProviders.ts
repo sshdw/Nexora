@@ -57,8 +57,10 @@ export interface ProvidersStore {
   selectProvider: (name: string) => Promise<void>;
   /** Persist the selected model for the current provider (FR-004). */
   selectModel: (model: string) => Promise<void>;
-  /** Register the provider definition (if needed) and store its credential. */
-  connect: (name: string, displayName: string, credential: string) => Promise<void>;
+  /** Register the provider definition (if needed) and store its credential.
+   * Resolves `true` only when the operation succeeded, so the caller can
+   * safely discard transient input; failures surface through `error`. */
+  connect: (name: string, displayName: string, credential: string) => Promise<boolean>;
   /** Remove the provider definition and its keyring credential. */
   disconnect: (name: string) => Promise<void>;
 }
@@ -151,7 +153,7 @@ export function useProviders(): ProvidersStore {
     }
   }, []);
 const connect = useCallback(
-    async (name: string, displayName: string, credential: string): Promise<void> => {
+    async (name: string, displayName: string, credential: string): Promise<boolean> => {
       setWorking(true);
       setError(null);
       try {
@@ -165,8 +167,10 @@ const connect = useCallback(
           await addProviderCredential(name, credential);
         }
         await reload();
+        return true;
       } catch (e) {
         setError(toCommandError(e));
+        return false;
       } finally {
         setWorking(false);
       }

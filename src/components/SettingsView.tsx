@@ -71,7 +71,8 @@ export default function SettingsView({
   const handleConnect = async (definition: SupportedProvider) => {
     const credential = draftKeys[definition.name]?.trim() ?? "";
     if (!credential) return;
-    await store.connect(definition.name, definition.display_name, credential);
+    const succeeded = await store.connect(definition.name, definition.display_name, credential);
+    if (!succeeded) return; // Keep the typed key for correction; error is shown.
     // Never keep the secret in component state after it is stored.
     setDraftKeys((prev) => ({ ...prev, [definition.name]: "" }));
   };
@@ -150,6 +151,11 @@ export default function SettingsView({
 
         <div className="nex-settings-body">
           <div className="nex-settings-inner">
+            {store.error && (
+              <p className="nex-settings-error" role="alert">
+                {store.error.message}
+              </p>
+            )}
             {section === "appearance" && (
               <section className="nex-settings-section" aria-labelledby="appearance-heading">
                 <h3 id="appearance-heading" className="nex-settings-heading">
@@ -194,8 +200,8 @@ export default function SettingsView({
                   Provider &amp; model
                 </h3>
                 <p className="nex-settings-hint">
-                  Choose which provider and model new requests use. The backend honors a
-                  40-request-per-minute limit on outbound requests.
+                  Choose which provider and model new requests use. Providers must be
+                  connected with a credential before they can serve requests.
                 </p>
 
                 <div className="nex-settings-field">

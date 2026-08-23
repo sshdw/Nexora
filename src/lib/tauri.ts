@@ -305,7 +305,8 @@ export interface AiResponse {
 /** Send a user message and return/ persist the AI response.
  * `attachmentIds` names the draft attachments to link to the created user
  * message; they become part of the AI request context (FR-008).
- * The backend enforces the 40-per-minute outbound rate cap. */
+ * The backend resolves the provider row and keyring credential before any
+ * outbound request is made, so missing credentials fail before sending. */
 export function sendMessage(
   conversationId: number,
   content: string,
