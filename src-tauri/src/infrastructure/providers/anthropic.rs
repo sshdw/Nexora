@@ -1,5 +1,5 @@
 //! Anthropic provider integration: a concrete [`ProviderExecutor`] (ROADMAP.md
-//! Phase 3 — AI Providers; ARCHITECTURE.md §7).
+//! Phase 3 вЂ” AI Providers; ARCHITECTURE.md В§7).
 //!
 //! Translates the provider-independent [`AiRequest`] into an Anthropic
 //! non-streaming Messages request (`messages` endpoint,
@@ -23,7 +23,7 @@
 //! - **Required `max_tokens`:** the Messages API requires `max_tokens`; a fixed
 //!   default is supplied (not a selectable model feature).
 //!
-//! # Security (ARCHITECTURE.md §9, §11, §12)
+//! # Security (ARCHITECTURE.md В§9, В§11, В§12)
 //!
 //! - The credential is supplied by the caller from the [`CredentialStore`] for
 //!   the duration of the call only; it is never persisted, logged, or returned.
@@ -50,28 +50,43 @@ use serde::{Deserialize, Serialize};
 /// Anthropic's Messages endpoint.
 const ENDPOINT: &str = "https://api.anthropic.com/v1/messages";
 
-/// Internal provider name (DATABASE.md §7.5); the keyring namespace key.
+/// Internal provider name (DATABASE.md В§7.5); the keyring namespace key.
 pub(crate) const PROVIDER_NAME: &str = "anthropic";
 
 /// User-facing provider label.
 pub(crate) const PROVIDER_DISPLAY_NAME: &str = "Anthropic";
 
-/// `anthropic-version` header value required by the Messages API.
-const ANTHROPIC_VERSION: &str = "2023-06-07";
+/// `anthropic-version` header value required by the Messages API. This is the
+/// only GA version string published by Anthropic; an unrecognized version is
+/// rejected before authentication, so every request would fail even with a
+/// valid API key.
+const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 /// Anthropic's Messages API requires `max_tokens`; a generous default is
 /// supplied so the request is always valid without inventing model-selection
 /// behavior.
 const DEFAULT_MAX_TOKENS: u32 = 1024;
 
-/// Anthropic models currently supported by the provider (DATABASE.md §7.5:
+/// Anthropic models currently supported by the provider (DATABASE.md В§7.5:
 /// model lists are hardcoded in the MVP and managed by the application layer).
 ///
 /// The selected model is passed through unchanged and is never validated
 /// against this list at runtime (never silently substituted, never rejected):
 /// this set documents the currently supported models and anchors the
 /// model-selection surface so the UI can present only supported choices.
-pub(crate) const SUPPORTED_MODELS: &[&str] = &["claude-3-5-sonnet-20240620"];
+///
+/// Ordered per Nexora-AI-Model-Catalog-August-2026.md В§10/В§11; the first entry
+/// is the provider default consumed as `models[0]` by the selection surface
+/// (`claude-3-5-sonnet-20240620`, the previous sole entry, was retired
+/// October 28, 2025).
+pub(crate) const SUPPORTED_MODELS: &[&str] = &[
+    // Default: best cost/quality balance, 1M context.
+    "claude-sonnet-5",
+    // Fast/cheap tier.
+    "claude-haiku-4-5-20251001",
+    // Best-quality flagship tier.
+    "claude-opus-4-8",
+];
 
 /// Concrete [`ProviderExecutor`] for Anthropic.
 ///
@@ -116,7 +131,7 @@ impl ProviderExecutor for AnthropicExecutor {
             Ok(response) => Ok(response),
             Err(error) => {
                 // Record only the classification category; never the credential
-                // or request payload (ARCHITECTURE.md §9, §11).
+                // or request payload (ARCHITECTURE.md В§9, В§11).
                 log::warn!("anthropic request failed: {error}");
                 Err(ExecutorError::Failure)
             }
@@ -185,7 +200,7 @@ struct AnthropicSource {
 
 /// Translate a provider-independent request into an Anthropic Messages request.
 ///
-/// The selected model is passed through unchanged — it is never silently
+/// The selected model is passed through unchanged вЂ” it is never silently
 /// substituted (FR-004). [`AiRole::System`] messages are aggregated into the
 /// top-level `system` parameter; `user` and `assistant` messages map to the
 /// corresponding Anthropic `messages.role` and remain in chronological order.
@@ -359,7 +374,7 @@ fn classify_status(status: u16) -> AnthropicError {
 ///
 /// These identify only the failure *category*; no credential, authorization
 /// header, or request payload is ever stored. The provider-independent boundary
-/// exposes only [`ExecutorError::Failure`] — this richer classification exists
+/// exposes only [`ExecutorError::Failure`] вЂ” this richer classification exists
 /// so diagnostics can distinguish failure classes in the logs.
 #[derive(Debug)]
 enum AnthropicError {
@@ -395,7 +410,7 @@ mod tests {
     fn sample_request() -> AiRequest {
         AiRequest {
             provider: PROVIDER_NAME.to_string(),
-            model: "claude-3-5-sonnet-20240620".to_string(),
+            model: "claude-sonnet-5".to_string(),
             messages: vec![
                 AiMessage {
                     role: AiRole::System,
@@ -448,7 +463,7 @@ mod tests {
     fn selected_model_is_preserved() {
         let body = anthropic_request(&sample_request());
         // The caller-supplied model is forwarded unchanged, never substituted.
-        assert_eq!(body.model, "claude-3-5-sonnet-20240620");
+        assert_eq!(body.model, "claude-sonnet-5");
         assert_eq!(body.max_tokens, DEFAULT_MAX_TOKENS);
     }
 
@@ -458,7 +473,7 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&json).expect("parse");
 
         // Model + required max_tokens present.
-        assert_eq!(value["model"], "claude-3-5-sonnet-20240620");
+        assert_eq!(value["model"], "claude-sonnet-5");
         assert_eq!(value["max_tokens"], DEFAULT_MAX_TOKENS);
 
         // System content is a top-level field, not a message.
@@ -484,7 +499,7 @@ mod tests {
     fn request_omits_system_when_absent() {
         let request = AiRequest {
             provider: PROVIDER_NAME.to_string(),
-            model: "claude-3-5-sonnet-20240620".to_string(),
+            model: "claude-sonnet-5".to_string(),
             messages: vec![AiMessage {
                 role: AiRole::User,
                 content: "Hello".to_string(),                attachments: Vec::new(),
@@ -500,7 +515,7 @@ mod tests {
     #[test]
     fn successful_response_is_normalized() {
         let response = AnthropicResponse {
-            model: "claude-3-5-sonnet-20240620".to_string(),
+            model: "claude-sonnet-5".to_string(),
             content: vec![ContentBlock {
                 kind: "text".to_string(),
                 text: Some("pong".to_string()),
@@ -508,13 +523,13 @@ mod tests {
         };
         let ai = to_ai_response(response).expect("response converts");
         assert_eq!(ai.content, "pong");
-        assert_eq!(ai.model, "claude-3-5-sonnet-20240620");
+        assert_eq!(ai.model, "claude-sonnet-5");
     }
 
     #[test]
     fn response_without_content_is_unexpected() {
         let response = AnthropicResponse {
-            model: "claude-3-5-sonnet-20240620".to_string(),
+            model: "claude-sonnet-5".to_string(),
             content: Vec::new(),
         };
         assert!(matches!(
@@ -526,7 +541,7 @@ mod tests {
     #[test]
     fn response_block_without_text_is_unexpected() {
         let response = AnthropicResponse {
-            model: "claude-3-5-sonnet-20240620".to_string(),
+            model: "claude-sonnet-5".to_string(),
             content: vec![ContentBlock {
                 kind: "text".to_string(),
                 text: None,
@@ -644,7 +659,7 @@ mod tests {
         let json = serde_json::to_string(&anthropic_request(&request)).expect("serialize");
 
         // Text block first, then a base64 image block and a base64 PDF
-        // document block — per the Messages API content-block contract.
+        // document block вЂ” per the Messages API content-block contract.
         assert!(json.contains("\"type\":\"text\""));
         assert!(json.contains("\"type\":\"image\""));
         assert!(json.contains("\"type\":\"document\""));
@@ -685,7 +700,7 @@ mod tests {
     #[test]
     fn executor_round_trips_through_local_server() {
         let body =
-            r#"{"model":"claude-3-5-sonnet-20240620","content":[{"type":"text","text":"pong"}]}"#;
+            r#"{"model":"claude-sonnet-5","content":[{"type":"text","text":"pong"}]}"#;
         let (endpoint, _captured, server) = spawn_server(200, body);
         let executor = AnthropicExecutor::with_endpoint(endpoint);
         let ai = executor
@@ -694,13 +709,13 @@ mod tests {
         server.join().expect("server thread joins");
 
         assert_eq!(ai.content, "pong");
-        assert_eq!(ai.model, "claude-3-5-sonnet-20240620");
+        assert_eq!(ai.model, "claude-sonnet-5");
     }
 
     #[test]
     fn request_authenticates_with_x_api_key_header() {
         let body =
-            r#"{"model":"claude-3-5-sonnet-20240620","content":[{"type":"text","text":"pong"}]}"#;
+            r#"{"model":"claude-sonnet-5","content":[{"type":"text","text":"pong"}]}"#;
         let (endpoint, captured, server) = spawn_server(200, body);
         let executor = AnthropicExecutor::with_endpoint(endpoint);
         let credential = "sk-secret-example";
@@ -723,7 +738,7 @@ mod tests {
             "x-api-key header must carry the credential: {request_text}"
         );
         assert!(
-            request_text.contains("anthropic-version: 2023-06-07"),
+            request_text.contains("anthropic-version: 2023-06-01"),
             "anthropic-version header must be set: {request_text}"
         );
         assert!(

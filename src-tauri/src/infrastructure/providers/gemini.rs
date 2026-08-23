@@ -1,5 +1,5 @@
 //! Google Gemini provider integration: a concrete [`ProviderExecutor`]
-//! (ROADMAP.md Phase 3 — AI Providers; ARCHITECTURE.md §7).
+//! (ROADMAP.md Phase 3 вЂ” AI Providers; ARCHITECTURE.md В§7).
 //!
 //! Translates the provider-independent [`AiRequest`] into a non-streaming
 //! Google AI Studio `generateContent` request (`models.generateContent`,
@@ -18,7 +18,7 @@
 //!   header via `reqwest`, never in the body or URL.
 //! - **Endpoint shape:** `generateContent` embeds the model in the path
 //!   (`{base}/models/{model}:generateContent`), so the caller-supplied model
-//!   (FR-004 model selection) is never a body field — it selects both the
+//!   (FR-004 model selection) is never a body field вЂ” it selects both the
 //!   endpoint and the model used for the request.
 //! - **Roles:** Gemini contents use the roles `user` and `model` (not
 //!   `assistant`). Instructions are routed through the top-level
@@ -27,7 +27,7 @@
 //!   `user`/`model` message. The response model is reported from the
 //!   `modelVersion` field when present, falling back to the requested model.
 //!
-//! # Security (ARCHITECTURE.md §9, §11, §12)
+//! # Security (ARCHITECTURE.md В§9, В§11, В§12)
 //!
 //! - The credential is supplied by the caller from the [`CredentialStore`] for
 //!   the duration of the call only; it is never persisted, logged, or returned.
@@ -56,25 +56,31 @@ use serde::{Deserialize, Serialize};
 /// `generateContent` path (the model is appended per request).
 const ENDPOINT: &str = "https://generativelanguage.googleapis.com/v1beta";
 
-/// Internal provider name (DATABASE.md §7.5); the keyring namespace key.
+/// Internal provider name (DATABASE.md В§7.5); the keyring namespace key.
 pub(crate) const PROVIDER_NAME: &str = "gemini";
 
 /// User-facing provider label.
 pub(crate) const PROVIDER_DISPLAY_NAME: &str = "Gemini";
 
-/// Gemini models currently supported by the provider (DATABASE.md §7.5:
+/// Gemini models currently supported by the provider (DATABASE.md В§7.5:
 /// model lists are hardcoded in the MVP and managed by the application layer).
 ///
 /// The selected model is passed through unchanged and is never validated
 /// against this list at runtime (never silently substituted, never rejected):
 /// this set documents the currently supported models and anchors the
 /// model-selection tests.
+///
+/// Ordered per Nexora-AI-Model-Catalog-August-2026.md В§10/В§11; the first entry
+/// is the provider default consumed as `models[0]` by the selection surface.
+/// The retired IDs this list replaces: `gemini-1.5-pro`, `gemini-1.5-flash`
+/// (shut down), and `gemini-2.0-flash` (retired June 1, 2026).
 pub(crate) const SUPPORTED_MODELS: &[&str] = &[
-    "gemini-1.5-pro",
-    "gemini-1.5-flash",
-    "gemini-2.0-flash",
-    "gemini-2.5-pro",
-    "gemini-2.5-flash",
+    // Default: GA, current-generation, balanced cost/quality.
+    "gemini-3.6-flash",
+    // Fast/cheap tier.
+    "gemini-3.1-flash-lite",
+    // Best-quality reasoning tier (still Preview status upstream).
+    "gemini-3.1-pro-preview",
 ];
 
 /// Concrete [`ProviderExecutor`] for Google Gemini.
@@ -126,7 +132,7 @@ impl ProviderExecutor for GeminiExecutor {
             Ok(response) => Ok(response),
             Err(error) => {
                 // Record only the classification category; never the credential
-                // or request payload (ARCHITECTURE.md §9, §11).
+                // or request payload (ARCHITECTURE.md В§9, В§11).
                 log::warn!("gemini request failed: {error}");
                 Err(ExecutorError::Failure)
             }
@@ -185,8 +191,8 @@ struct SystemInstruction {
 /// Translate a provider-independent request into a Gemini `generateContent`
 /// request.
 ///
-/// The selected model is passed through unchanged — it is never silently
-/// substituted (FR-004) — and is embedded in the endpoint path by `send`.
+/// The selected model is passed through unchanged вЂ” it is never silently
+/// substituted (FR-004) вЂ” and is embedded in the endpoint path by `send`.
 /// [`AiRole::System`] messages are aggregated into the top-level
 /// `systemInstruction` parameter; `user` and `assistant` messages map to the
 /// corresponding Gemini `contents.role` (`user`/`model`) and remain in
@@ -378,10 +384,21 @@ fn send(
 }
 
 /// Classify a non-success HTTP status into a secret-free failure category.
+///
+/// Google reports credential problems as **401 UNAUTHENTICATED** (missing or
+/// malformed key) and **403 PERMISSION_DENIED** (the key lacks access: wrong
+/// key, restricted/unrestricted-key policy rejection, or the API is disabled
+/// for its project), so both map to [`GeminiError::Authentication`]. Note that
+/// Google also returns **400 INVALID_ARGUMENT for an invalid API key**
+/// (`reason: "API_KEY_INVALID"`); a 400 therefore cannot be distinguished from
+/// a genuinely malformed request without reading the error body, which this
+/// integration deliberately avoids (secret hygiene), so it stays classified as
+/// [`GeminiError::InvalidRequest`] with a message that names both likely causes.
 fn classify_status(status: u16) -> GeminiError {
     match status {
         400 => GeminiError::InvalidRequest,
-        401 => GeminiError::Authentication,
+        // Credential/access problems (see above): actionable for the user.
+        401 | 403 => GeminiError::Authentication,
         _ => GeminiError::Provider,
     }
 }
@@ -390,7 +407,7 @@ fn classify_status(status: u16) -> GeminiError {
 ///
 /// These identify only the failure *category*; no credential, authorization
 /// header, or request payload is ever stored. The provider-independent boundary
-/// exposes only [`ExecutorError::Failure`] — this richer classification exists
+/// exposes only [`ExecutorError::Failure`] вЂ” this richer classification exists
 /// so diagnostics can distinguish failure classes in the logs.
 #[derive(Debug)]
 enum GeminiError {
@@ -410,8 +427,16 @@ enum GeminiError {
 impl std::fmt::Display for GeminiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::InvalidRequest => write!(f, "the Gemini request was invalid (400)"),
-            Self::Authentication => write!(f, "Gemini rejected the credential (401)"),
+            Self::InvalidRequest => write!(
+                f,
+                "the Gemini request was rejected as invalid (400); check the selected \
+                 model and that the stored Gemini API key is valid and not restricted \
+                 (Google reports invalid keys as 400)"
+            ),
+            Self::Authentication => write!(
+                f,
+                "Gemini rejected the stored credential or its access (401/403)"
+            ),
             Self::Network => write!(f, "Gemini network or transport failure"),
             Self::Provider => write!(f, "Gemini provider failure"),
             Self::UnexpectedResponse => write!(f, "Gemini returned an unexpected response"),
@@ -426,7 +451,7 @@ mod tests {
     fn sample_request() -> AiRequest {
         AiRequest {
             provider: PROVIDER_NAME.to_string(),
-            model: "gemini-2.0-flash".to_string(),
+            model: "gemini-3.6-flash".to_string(),
             messages: vec![
                 AiMessage {
                     role: AiRole::System,
@@ -448,7 +473,7 @@ mod tests {
     fn supported_models_include_sample_model() {
         let request = sample_request();
         // The model selected in tests is one of the currently supported
-        // Gemini models (DATABASE.md §7.5: hardcoded model lists).
+        // Gemini models (DATABASE.md В§7.5: hardcoded model lists).
         assert!(SUPPORTED_MODELS.contains(&request.model.as_str()));
     }
 
@@ -472,7 +497,7 @@ mod tests {
     fn multiple_system_messages_are_joined() {
         let request = AiRequest {
             provider: PROVIDER_NAME.to_string(),
-            model: "gemini-2.0-flash".to_string(),
+            model: "gemini-3.6-flash".to_string(),
             messages: vec![
                 AiMessage {
                     role: AiRole::System,
@@ -509,7 +534,7 @@ mod tests {
     fn system_instruction_is_omitted_when_absent() {
         let request = AiRequest {
             provider: PROVIDER_NAME.to_string(),
-            model: "gemini-2.0-flash".to_string(),
+            model: "gemini-3.6-flash".to_string(),
             messages: vec![AiMessage {
                 role: AiRole::User,
                 content: "Hello".to_string(),                attachments: Vec::new(),
@@ -553,15 +578,15 @@ mod tests {
     fn endpoint_embeds_the_selected_model() {
         // The model selection (FR-004) drives the generateContent path.
         assert_eq!(
-            generate_content_url("http://127.0.0.1:1", "gemini-2.0-flash"),
-            "http://127.0.0.1:1/models/gemini-2.0-flash:generateContent"
+            generate_content_url("http://127.0.0.1:1", "gemini-3.6-flash"),
+            "http://127.0.0.1:1/models/gemini-3.6-flash:generateContent"
         );
     }
 
     #[test]
     fn successful_response_is_normalized() {
         let response = GenerateContentResponse {
-            model_version: Some("gemini-2.0-flash".to_string()),
+            model_version: Some("gemini-3.6-flash".to_string()),
             candidates: vec![Candidate {
                 content: CandidateContent {
                     parts: vec![ResponsePart {
@@ -570,9 +595,9 @@ mod tests {
                 },
             }],
         };
-        let ai = to_ai_response(response, "gemini-2.0-flash").expect("valid response maps");
+        let ai = to_ai_response(response, "gemini-3.6-flash").expect("valid response maps");
         assert_eq!(ai.content, "pong");
-        assert_eq!(ai.model, "gemini-2.0-flash");
+        assert_eq!(ai.model, "gemini-3.6-flash");
     }
 
     #[test]
@@ -587,19 +612,19 @@ mod tests {
                 },
             }],
         };
-        let ai = to_ai_response(response, "gemini-2.0-flash").expect("valid response maps");
+        let ai = to_ai_response(response, "gemini-3.6-flash").expect("valid response maps");
         assert_eq!(ai.content, "pong");
-        assert_eq!(ai.model, "gemini-2.0-flash");
+        assert_eq!(ai.model, "gemini-3.6-flash");
     }
 
     #[test]
     fn response_without_candidates_is_unexpected() {
         let response = GenerateContentResponse {
-            model_version: Some("gemini-2.0-flash".to_string()),
+            model_version: Some("gemini-3.6-flash".to_string()),
             candidates: Vec::new(),
         };
         assert!(matches!(
-            to_ai_response(response, "gemini-2.0-flash"),
+            to_ai_response(response, "gemini-3.6-flash"),
             Err(GeminiError::UnexpectedResponse)
         ));
     }
@@ -607,7 +632,7 @@ mod tests {
     #[test]
     fn candidate_without_text_part_is_unexpected() {
         let response = GenerateContentResponse {
-            model_version: Some("gemini-2.0-flash".to_string()),
+            model_version: Some("gemini-3.6-flash".to_string()),
             candidates: vec![Candidate {
                 content: CandidateContent {
                     parts: vec![ResponsePart { text: None }],
@@ -615,7 +640,7 @@ mod tests {
             }],
         };
         assert!(matches!(
-            to_ai_response(response, "gemini-2.0-flash"),
+            to_ai_response(response, "gemini-3.6-flash"),
             Err(GeminiError::UnexpectedResponse)
         ));
     }
@@ -623,13 +648,27 @@ mod tests {
     #[test]
     fn statuses_classify_without_secrets() {
         assert!(matches!(classify_status(400), GeminiError::InvalidRequest));
+        // Credential problems: 401 UNAUTHENTICATED and 403 PERMISSION_DENIED.
         assert!(matches!(classify_status(401), GeminiError::Authentication));
-        for status in [403, 404, 429, 500, 502, 503, 504] {
+        assert!(matches!(classify_status(403), GeminiError::Authentication));
+        for status in [404, 429, 500, 502, 503, 504] {
             assert!(
                 matches!(classify_status(status), GeminiError::Provider),
                 "status {status} should classify as provider failure"
             );
         }
+    }
+
+    #[test]
+    fn run_classifies_permission_denied_failure() {
+        // Google answers a key without access (wrong key, restricted-key policy,
+        // disabled API) with 403 PERMISSION_DENIED; it must surface as an
+        // authentication problem, not a generic provider failure.
+        let (endpoint, _captured, server) = spawn_server(403, "");
+        let executor = GeminiExecutor::with_endpoint(endpoint);
+        let result = executor.run(&sample_request(), "sk-secret-example");
+        assert!(matches!(result, Err(GeminiError::Authentication)));
+        server.join().expect("server thread joins");
     }
 
     #[test]
@@ -689,7 +728,7 @@ mod tests {
 
     #[test]
     fn credential_is_sent_in_header_not_body_or_url_and_model_is_selected() {
-        let success_body = r#"{"modelVersion":"gemini-2.0-flash","candidates":[{"content":{"parts":[{"text":"pong"}]}}]}"#;
+        let success_body = r#"{"modelVersion":"gemini-3.6-flash","candidates":[{"content":{"parts":[{"text":"pong"}]}}]}"#;
         let (endpoint, captured, server) = spawn_server(200, success_body);
         let executor = GeminiExecutor::with_endpoint(endpoint);
         executor
@@ -723,7 +762,7 @@ mod tests {
         // The selected model is embedded in the generateContent endpoint path
         // (FR-004 model selection passes through unchanged).
         assert!(
-            request_line.contains("POST /models/gemini-2.0-flash:generateContent"),
+            request_line.contains("POST /models/gemini-3.6-flash:generateContent"),
             "request line must embed the selected model: {request_line}"
         );
 
@@ -738,7 +777,7 @@ mod tests {
 
     #[test]
     fn executor_round_trips_through_local_server() {
-        let success_body = r#"{"modelVersion":"gemini-2.0-flash","candidates":[{"content":{"parts":[{"text":"pong"}]}}]}"#;
+        let success_body = r#"{"modelVersion":"gemini-3.6-flash","candidates":[{"content":{"parts":[{"text":"pong"}]}}]}"#;
         let (endpoint, _captured, server) = spawn_server(200, success_body);
         let executor = GeminiExecutor::with_endpoint(endpoint);
         let ai = executor
@@ -747,7 +786,7 @@ mod tests {
         server.join().expect("server thread joins");
 
         assert_eq!(ai.content, "pong");
-        assert_eq!(ai.model, "gemini-2.0-flash");
+        assert_eq!(ai.model, "gemini-3.6-flash");
     }
 
     #[test]
