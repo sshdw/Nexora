@@ -5,6 +5,7 @@ import NexoraMark from "./NexoraMark";
 import PromptLibraryEntry from "./PromptLibraryEntry";
 import SearchBox from "./SearchBox";
 import SettingsEntry from "./SettingsEntry";
+import { ImportIcon } from "./icons";
 
 export interface SidebarProps {
   conversations: Conversation[];
@@ -14,6 +15,7 @@ export interface SidebarProps {
   busy: boolean;
   selectedId: number | null;
   onSelect: (id: number) => void;
+  onExport: (id: number) => void;
   onNewConversation: () => void;
   onRetry: () => void;
   onOpenSettings: () => void;
@@ -22,6 +24,8 @@ export interface SidebarProps {
   onOpenPromptLibrary: () => void;
   /** Open a prompt found by search in the Prompt Library editor. */
   onSelectPrompt: (promptId: number) => void;
+  /** Open the import-conversation flow (FR-011). */
+  onImport: () => void;
   onRename: (id: number, title: string) => Promise<void>;
   onArchive: (id: number) => void;
   onRestore: (id: number) => void;
@@ -36,12 +40,14 @@ export default function Sidebar({
   busy,
   selectedId,
   onSelect,
+  onExport,
   onNewConversation,
   onRetry,
   onOpenSettings,
   libraryActive,
   onOpenPromptLibrary,
   onSelectPrompt,
+  onImport,
   onRename,
   onArchive,
   onRestore,
@@ -68,6 +74,7 @@ export default function Sidebar({
         selectedId={selectedId}
         busy={busy}
         onSelect={onSelect}
+        onExport={onExport}
         onRetry={onRetry}
         onRename={onRename}
         onArchive={onArchive}
@@ -77,6 +84,16 @@ export default function Sidebar({
 
       <SettingsEntry onClick={onOpenSettings} />
       <PromptLibraryEntry active={libraryActive} onClick={onOpenPromptLibrary} />
+      <button
+        type="button"
+        className="nex-settings-entry"
+        aria-label="Import conversation"
+        title="Import conversation"
+        onClick={onImport}
+      >
+        <ImportIcon className="nex-settings-icon" />
+        <span>Import conversation</span>
+      </button>
     </aside>
   );
 }

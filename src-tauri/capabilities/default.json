@@ -7,6 +7,7 @@
     "core:default",
     "opener:default",
     "dialog:default",
-    "fs:allow-stat"
+    "fs:allow-stat",
+    "fs:allow-read-text-file"
   ]
 }

@@ -219,6 +219,25 @@ export function deletePrompt(id: number): Promise<void> {
   });
 }
 
+// ---- Import / Export (FR-010, FR-011) ---------------------------------
+// Thin wrappers over the existing Phase 8 application-layer services,
+// already exposed as Tauri commands (commands/import_export.rs).
+
+/** Export one conversation to the JSON document at `path` via
+ * `export_conversation_to_file`. Read-only against the database; the
+ * document preserves persisted message order (FR-010). */
+export function exportConversationToFile(id: number, path: string): Promise<void> {
+  return invoke<void>("export_conversation_to_file", { id, path });
+}
+
+/** Import one conversation from an exported JSON document string via
+ * `import_conversation`; returns the schema-assigned id of the newly created
+ * conversation (FR-011). The backend inserts atomically — validation failure
+ * leaves no partial rows behind. */
+export function importConversation(json: string): Promise<number> {
+  return invoke<number>("import_conversation", { json });
+}
+
 // ---- AI execution ----------------------------------------------------
 
 /** One persisted `attachments` row (DATABASE.md §7.4). A draft attachment has

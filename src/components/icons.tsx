@@ -128,6 +128,37 @@ export function SettingsIcon(props: ComponentPropsWithoutRef<"svg">) {
   );
 }
 
+/** Icon for the sidebar "Import conversation" entry (FR-011): an arrow
+ * arriving into a tray, matching the 18px stroke style of the other icons. */
+export function ImportIcon(props: ComponentPropsWithoutRef<"svg">) {
+  return (
+    <svg
+      aria-hidden="true"
+      focusable="false"
+      width="18"
+      height="18"
+      viewBox="0 0 18 18"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      {...props}
+    >
+      <path
+        d="M9 2.5v7.5m0 0l3-3m-3 3l-3-3"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M2.5 11.5v2a1.5 1.5 0 001.5 1.5h10a1.5 1.5 0 001.5-1.5v-2"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
 export function PaperclipIcon(props: ComponentPropsWithoutRef<"svg">) {
   return (
     <svg

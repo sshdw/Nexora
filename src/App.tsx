@@ -2,12 +2,14 @@ import { useState } from "react";
 
 import ConversationView from "./components/ConversationView";
 import EmptyState from "./components/EmptyState";
+import { ExportModal, ImportModal } from "./components/ImportExportModals";
 import NexoraMark from "./components/NexoraMark";
 import PromptLibraryView from "./components/PromptLibraryView";
 import SettingsView from "./components/SettingsView";
 import Sidebar from "./components/Sidebar";
 import type { Conversation } from "./lib/tauri";
 import { useConversations } from "./lib/useConversations";
+import { useImportExport } from "./lib/useImportExport";
 import { useProviders } from "./lib/useProviders";
 
 interface MainContentProps {
@@ -101,6 +103,21 @@ function App() {
   // Prompt Library navigation state. When set from a search result (FR-009), the
   // Prompt Library screen opens with that prompt's existing Edit modal.
   const [promptToEditId, setPromptToEditId] = useState<number | null>(null);
+  // Import/Export (FR-010, FR-011): the conversation being exported (opens the
+  // export modal when set) and whether the import modal is shown.
+  const io = useImportExport();
+  const [exportTargetId, setExportTargetId] = useState<number | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
+
+  // After a successful import the conversation list is reloaded from the
+  // backend (single source of truth) and the new conversation is opened.
+  const handleImported = async (newId: number) => {
+    await reload();
+    setSelectedId(newId);
+    setDraft("");
+    setLibraryOpen(false);
+    setSettingsOpen(false);
+  };
 
   const handleNewConversation = async () => {
     const id = await create();
@@ -163,12 +180,14 @@ function App() {
         busy={working}
         selectedId={selectedId}
         onSelect={handleSelect}
+        onExport={setExportTargetId}
         onNewConversation={handleNewConversation}
         onRetry={reload}
         onOpenSettings={openSettings}
         libraryActive={libraryOpen}
         onOpenPromptLibrary={openLibrary}
         onSelectPrompt={handleSelectPrompt}
+        onImport={() => setImportOpen(true)}
         onRename={rename}
         onArchive={(id) => void archive(id)}
         onRestore={(id) => void restore(id)}
@@ -200,6 +219,32 @@ function App() {
           />
         )}
       </div>
+      {exportTargetId !== null &&
+        (() => {
+          const target = conversations.find((c) => c.id === exportTargetId);
+          if (!target) return null;
+          return (
+            <ExportModal
+              conversationId={target.id}
+              conversationTitle={target.title}
+              store={io}
+              onClose={() => {
+                setExportTargetId(null);
+                io.clearStatus();
+              }}
+            />
+          );
+        })()}
+      {importOpen && (
+        <ImportModal
+          store={io}
+          onImported={(newId) => void handleImported(newId)}
+          onClose={() => {
+            setImportOpen(false);
+            io.clearStatus();
+          }}
+        />
+      )}
     </div>
   );
 }

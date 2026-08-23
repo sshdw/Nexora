@@ -8,6 +8,7 @@ export interface ConversationListProps {
   selectedId: number | null;
   busy?: boolean;
   onSelect: (id: number) => void;
+  onExport: (id: number) => void;
   onRetry: () => void;
   onRename: (id: number, title: string) => Promise<void>;
   onArchive: (id: number) => void;
@@ -22,6 +23,7 @@ export default function ConversationList({
   selectedId,
   busy = false,
   onSelect,
+  onExport,
   onRetry,
   onRename,
   onArchive,
@@ -82,6 +84,7 @@ export default function ConversationList({
             conversation={conversation}
             selected={conversation.id === selectedId}
             onSelect={onSelect}
+            onExport={onExport}
             archived={false}
             busy={busy}
             onRename={onRename}
@@ -100,6 +103,7 @@ export default function ConversationList({
                 conversation={conversation}
                 selected={conversation.id === selectedId}
                 onSelect={onSelect}
+                onExport={onExport}
                 archived
                 busy={busy}
                 onRename={onRename}

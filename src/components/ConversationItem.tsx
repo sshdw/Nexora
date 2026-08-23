@@ -9,6 +9,7 @@ export interface ConversationItemProps {
   archived: boolean;
   busy?: boolean;
   onSelect: (id: number) => void;
+  onExport: (id: number) => void;
   onRename: (id: number, title: string) => Promise<void>;
   onArchive: (id: number) => void;
   onRestore: (id: number) => void;
@@ -21,6 +22,7 @@ export default function ConversationItem({
   archived,
   busy = false,
   onSelect,
+  onExport,
   onRename,
   onArchive,
   onRestore,
@@ -110,6 +112,15 @@ export default function ConversationItem({
           </time>
         </button>
         <div className="nex-conversation-actions">
+          <button
+            type="button"
+            className="nex-btn nex-btn-ghost nex-btn-sm"
+            onClick={() => onExport(conversation.id)}
+            disabled={busy}
+            aria-label="Export conversation"
+          >
+            Export
+          </button>
           <button
             type="button"
             className="nex-btn nex-btn-ghost nex-btn-sm"
