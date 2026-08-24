@@ -33,9 +33,9 @@ export default function ConversationList({
   if (loading) {
     return (
       <nav className="nex-conversation-nav" aria-label="Conversations">
-        <ul className="nex-conversation-list" role="status" aria-label="Loading">
+        <ul className="nex-skeleton-list" role="status" aria-label="Loading">
           {Array.from({ length: 5 }).map((_, index) => (
-            <li key={index} className="nex-conversation-skeleton-row" />
+            <li key={index} className="nex-skeleton-row" />
           ))}
         </ul>
       </nav>

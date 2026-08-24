@@ -1,7 +1,8 @@
 /* ============================================================
    Import / Export (FR-010, FR-011) — Phase 10.7
-   Reuses the modal system (prompt modal classes); only the
-   status/hint rows below are new, built on 0.2.1 tokens.
+   The dialogs render through the shared .nex-dialog* system
+   (components.css, 0.2.2); only the status/hint rows below are
+   specific to this flow, built on 0.2.1 tokens.
    ============================================================ */
 
 /* Success / info status row shown inside an import/export modal. Uses the

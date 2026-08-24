@@ -1,46 +1,14 @@
 //! Import / Export modals (FR-010, FR-011).
 //!
-//! Presentation only: the dialogs reuse the existing Kimi modal visual system
-//! (the same backdrop/card/action classes the Prompt Library editor uses) and
-//! delegate all behavior to the `useImportExport` hook, which in turn calls
-//! the existing backend commands. Export is read-only against stored data;
-//! import is atomic in the backend, so a failed import leaves no partial rows.
+//! Presentation only: the dialogs render through the shared ModalShell
+//! primitive (0.2.2 component layer — .nex-dialog* token system plus
+//! Esc/trap/initial-focus/restore semantics) and delegate all behavior to
+//! the `useImportExport` hook, which in turn calls the existing backend
+//! commands. Export is read-only against stored data; import is atomic in
+//! the backend, so a failed import leaves no partial rows.
 
-import type { ReactNode } from "react";
-
+import ModalShell from "./Modal";
 import type { ImportExportStore } from "../lib/useImportExport";
-
-/** Shared modal chrome matching the Prompt Library editor (Kimi baseline). */
-function ModalShell({
-  title,
-  busy,
-  onClose,
-  children,
-}: {
-  title: string;
-  busy: boolean;
-  onClose: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <div
-      className="nex-prompt-modal-backdrop"
-      role="presentation"
-      onClick={busy ? undefined : onClose}
-    >
-      <div
-        className="nex-prompt-modal-card"
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        onClick={(event) => event.stopPropagation()}
-      >
-        <h3 className="nex-prompt-modal-title">{title}</h3>
-        {children}
-      </div>
-    </div>
-  );
-}
 
 export interface ExportModalProps {
   conversationId: number;
@@ -64,7 +32,7 @@ export function ExportModal({
   return (
     <ModalShell title="Export conversation" busy={busy} onClose={onClose}>
       {error && (
-        <p className="nex-prompt-modal-error" role="alert">
+        <p className="nex-dialog-error" role="alert">
           {error.message}
         </p>
       )}
@@ -78,7 +46,7 @@ export function ExportModal({
         Saves “{conversationTitle}” as a local Nexora conversation JSON file.
         Messages are exported in their stored order.
       </p>
-      <div className="nex-prompt-modal-actions">
+      <div className="nex-dialog-actions">
         <button
           type="button"
           className="nex-btn nex-btn-ghost"
@@ -120,7 +88,7 @@ export function ImportModal({ store, onImported, onClose }: ImportModalProps) {
   return (
     <ModalShell title="Import conversation" busy={busy} onClose={onClose}>
       {error && (
-        <p className="nex-prompt-modal-error" role="alert">
+        <p className="nex-dialog-error" role="alert">
           {error.message}
         </p>
       )}
@@ -134,7 +102,7 @@ export function ImportModal({ store, onImported, onClose }: ImportModalProps) {
         before anything is written; an unsupported file is rejected without
         leaving partial data behind.
       </p>
-      <div className="nex-prompt-modal-actions">
+      <div className="nex-dialog-actions">
         <button
           type="button"
           className="nex-btn nex-btn-ghost"

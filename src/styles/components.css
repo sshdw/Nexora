@@ -1,0 +1,712 @@
+/* ============================================================
+   Nexora Reusable Component Layer — 0.2.2
+   Shared primitives consumed by every screen: buttons, fields,
+   selects, segmented control, navigation entries, chips, the
+   dialog system, popover enter-motion, tooltips, snackbars and
+   loading states.
+
+   Every visual value comes from tokens.css / motion.css — no raw
+   hex values, durations, radii or shadows live here. Screen
+   stylesheets (conversation/settings/prompts/importExport) may
+   position these primitives but never restyle their anatomy.
+
+   Labeling discipline (material-3-expressive skill):
+   OFFICIAL          = value traceable to Google Material docs/source
+   RECOMMENDATION    = chosen because Material does not prescribe it
+   NEXORA ADAPTATION = intentional Nexora-specific decision
+   ============================================================ */
+
+/* ============================================================
+   BUTTONS
+   State model per skill components.md §1: default / hover /
+   pressed / focused / disabled (+ loading via label swap).
+   Pressed uses the OFFICIAL 12% state layer as an overlay so the
+   resting fill stays intact (filled primaries included).
+   Target sizes: md >= 40px, sm >= 32px visual height inside 44px
+   rows — desktop-density RECOMMENDATION under the OFFICIAL
+   48dp effective-target baseline.
+   ============================================================ */
+
+.nex-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--nex-sys-space-xs);
+  min-height: 40px;
+  border-radius: var(--nex-sys-shape-medium);
+  padding: 7px var(--nex-sys-space-sm);
+  font-size: var(--nex-sys-type-size-body-small);
+  font-weight: var(--nex-sys-type-weight-medium);
+  border: 1px solid transparent;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  transition: background-color var(--motion-duration-fast) var(--motion-easing-standard),
+    border-color var(--motion-duration-fast) var(--motion-easing-standard),
+    color var(--motion-duration-fast) var(--motion-easing-standard),
+    opacity var(--motion-duration-fast) var(--motion-easing-standard);
+}
+
+/* Pressed layer (OFFICIAL 0.12 overlay, components.md §1). Painted
+   over the resting/hover background; excluded while disabled.
+   Reduced motion: opacity transition collapses instantly. */
+.nex-btn::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--nex-sys-state-pressed);
+  opacity: 0;
+  pointer-events: none;
+}
+.nex-btn:active:not(:disabled)::after {
+  opacity: 1;
+}
+
+.nex-btn:disabled {
+  opacity: var(--nex-sys-state-disabled-opacity);
+  cursor: default;
+}
+
+/* Primary action: solid accent fill, dark warm text on it.
+   Accent is punctuation reserved for the primary action of each
+   surface (NEXORA ADAPTATION). Hover keeps the tuned lighter fill;
+   pressed restores the resting fill under the shared 12% layer. */
+.nex-btn-primary {
+  background: var(--nex-sys-color-primary);
+  color: var(--nex-sys-color-on-primary);
+  border-color: transparent;
+}
+.nex-btn-primary:hover:not(:disabled) {
+  background: var(--nex-sys-color-primary-hover);
+  color: var(--nex-sys-color-on-primary);
+}
+.nex-btn-primary:active:not(:disabled) {
+  background: var(--nex-sys-color-primary);
+}
+
+/* Quiet secondary actions that still carry the accent
+   (e.g. the composer's "Open Settings" link-button). */
+.nex-btn-accent {
+  color: var(--nex-sys-color-primary);
+}
+.nex-btn-accent:hover:not(:disabled) {
+  background: var(--nex-sys-state-hover);
+  color: var(--nex-sys-color-primary-hover);
+}
+
+/* Outline action: hairline border, no fill. */
+.nex-btn-outline {
+  color: var(--nex-sys-color-on-surface);
+  border-color: var(--nex-sys-color-outline);
+}
+.nex-btn-outline:hover:not(:disabled) {
+  background: var(--nex-sys-state-hover);
+  border-color: var(--nex-sys-color-outline);
+}
+
+.nex-btn-ghost {
+  color: var(--nex-sys-color-on-surface-variant);
+}
+.nex-btn-ghost:hover:not(:disabled) {
+  background: var(--nex-sys-state-hover);
+  color: var(--nex-sys-color-on-surface);
+}
+
+/* Destructive: error-toned label; tinted container on hover,
+   neutral pressed layer from the shared overlay. */
+.nex-btn-danger {
+  color: var(--nex-sys-color-error);
+}
+.nex-btn-danger:hover:not(:disabled) {
+  background: var(--nex-sys-color-error-container);
+}
+
+.nex-btn-sm {
+  min-height: 32px;
+  padding: 4px 10px;
+  font-size: var(--nex-sys-type-size-label-small);
+  border-radius: var(--nex-sys-shape-small);
+}
+
+/* Micro-morph press feedback — reserved for the whitelisted
+   expressive moments only (send / item creation — NEXORA
+   ADAPTATION rationing of the OFFICIAL spring scheme guidance).
+   Press eases down on the standard curve; release settles back
+   with a single soft overshoot (OFFICIAL expressive-fast-spatial
+   conversion pair). Reduced motion collapses both to instant. */
+.nex-btn-expressive {
+  transition: background-color var(--motion-duration-fast) var(--motion-easing-standard),
+    border-color var(--motion-duration-fast) var(--motion-easing-standard),
+    color var(--motion-duration-fast) var(--motion-easing-standard),
+    opacity var(--motion-duration-fast) var(--motion-easing-standard),
+    transform var(--motion-spring-expressive-fast-spatial-duration)
+      var(--motion-spring-expressive-fast-spatial-curve);
+}
+.nex-btn-expressive:active:not(:disabled) {
+  transform: scale(0.98);
+  transition: background-color var(--motion-duration-fast) var(--motion-easing-standard),
+    transform var(--motion-duration-short2) var(--motion-easing-standard);
+}
+
+/* ---- New Conversation: the sidebar's primary creation action
+   (full-width solid accent button). Item creation is a whitelisted
+   expressive moment, hence the micro-morph class. ---- */
+.nex-new-conversation {
+  width: 100%;
+  justify-content: center;
+  gap: var(--nex-sys-space-sm);
+  padding: 8px var(--nex-sys-space-sm);
+  border-radius: var(--nex-sys-shape-medium);
+  background: var(--nex-sys-color-primary);
+  border: none;
+  color: var(--nex-sys-color-on-primary);
+  font-size: var(--nex-sys-type-size-body-small);
+  font-weight: var(--nex-sys-type-weight-medium);
+}
+.nex-new-conversation-icon {
+  color: inherit;
+  flex-shrink: 0;
+}
+.nex-new-conversation:hover:not(:disabled) {
+  background: var(--nex-sys-color-primary-hover);
+}
+.nex-new-conversation:active:not(:disabled) {
+  background: var(--nex-sys-color-primary);
+}
+.nex-new-conversation:disabled {
+  color: var(--nex-sys-color-on-primary);
+  opacity: var(--nex-sys-state-disabled-opacity);
+  cursor: default;
+}
+.nex-new-conversation:disabled .nex-new-conversation-icon {
+  color: inherit;
+}
+
+/* ============================================================
+   TEXT FIELDS (input / textarea / select / search)
+   Flat at rest; thin accent border-moment on focus is the
+   sanctioned field focus pattern (NEXORA ADAPTATION equivalent
+   of the OFFICIAL outlined field); state-layer hover; unified
+   disabled convention. All controls share the 40px control band.
+   ============================================================ */
+
+.nex-input,
+.nex-select,
+.nex-textarea {
+  width: 100%;
+  max-width: 560px;
+  min-height: 40px;
+  padding: 8px 10px;
+  border-radius: var(--nex-sys-shape-small);
+  border: 1px solid var(--nex-sys-color-outline);
+  background: transparent;
+  color: var(--nex-sys-color-on-surface);
+  font-size: var(--nex-sys-type-size-body-small);
+  font-family: inherit;
+  outline: none;
+  transition: border-color var(--motion-duration-fast) var(--motion-easing-standard),
+    background-color var(--motion-duration-fast) var(--motion-easing-standard);
+}
+
+.nex-textarea {
+  min-height: 140px;
+  resize: vertical;
+}
+
+.nex-input:hover,
+.nex-select:hover,
+.nex-textarea:hover {
+  background: var(--nex-sys-state-hover);
+}
+
+.nex-input:focus,
+.nex-select:focus,
+.nex-textarea:focus {
+  border-color: var(--nex-sys-focus-field-color);
+  background: transparent;
+}
+
+.nex-input::placeholder,
+.nex-textarea::placeholder {
+  color: var(--nex-sys-color-on-surface-tertiary);
+}
+
+.nex-input:disabled,
+.nex-select:disabled,
+.nex-textarea:disabled {
+  opacity: var(--nex-sys-state-disabled-opacity);
+  cursor: default;
+}
+
+/* ---- Search field: quiet full-width control; hairline border at
+   rest, accent hairline while focused. Shared by the sidebar and
+   the Prompt Library toolbar (radius drift consolidated onto the
+   control-band small step — audit §B.14). ---- */
+.nex-search {
+  position: relative;
+}
+.nex-search-icon {
+  position: absolute;
+  left: var(--nex-sys-space-sm);
+  top: 50%;
+  transform: translateY(-50%);
+  width: 16px;
+  height: 16px;
+  color: var(--nex-sys-color-on-surface-faint);
+  pointer-events: none;
+}
+.nex-search-input {
+  width: 100%;
+  min-height: 40px;
+  padding: 7px 10px 7px 32px;
+  border-radius: var(--nex-sys-shape-small);
+  background: transparent;
+  border: 1px solid var(--nex-sys-color-outline);
+  color: var(--nex-sys-color-on-surface);
+  font-size: var(--nex-sys-type-size-body-small);
+  outline: none;
+  transition: border-color var(--motion-duration-fast) var(--motion-easing-standard),
+    background-color var(--motion-duration-fast) var(--motion-easing-standard);
+}
+.nex-search-input::placeholder {
+  color: var(--nex-sys-color-on-surface-faint);
+}
+.nex-search-input:hover {
+  background: var(--nex-sys-state-hover);
+}
+.nex-search-input:focus {
+  background: transparent;
+  border-color: var(--nex-sys-focus-field-color);
+  outline: none;
+}
+
+/* ============================================================
+   SEGMENTED CONTROL (persistent 2–5 choice selection)
+   Selected segment carries the container tone + emphasized label
+   (OFFICIAL selection grammar). Inner radius follows the optical
+   formula: outer small (6) − padding (2) = extra-small (4).
+   ============================================================ */
+
+.nex-seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--nex-sys-shape-small);
+  border: 1px solid var(--nex-sys-color-outline);
+}
+
+.nex-seg button {
+  min-height: 32px;
+  padding: 5px 14px;
+  border: none;
+  border-radius: var(--nex-sys-shape-extra-small);
+  background: transparent;
+  color: var(--nex-sys-color-on-surface-variant);
+  font-size: var(--nex-sys-type-size-body-small);
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color var(--motion-duration-fast) var(--motion-easing-standard),
+    color var(--motion-duration-fast) var(--motion-easing-standard);
+}
+
+.nex-seg button:hover {
+  color: var(--nex-sys-color-on-surface);
+}
+
+.nex-seg button:active {
+  background: var(--nex-sys-state-pressed);
+}
+
+.nex-seg button.is-active {
+  background: var(--nex-sys-color-primary-container);
+  color: var(--nex-sys-color-primary);
+  font-weight: var(--nex-sys-type-weight-medium);
+}
+
+/* ============================================================
+   NAVIGATION ENTRY ROWS (sidebar footer utilities)
+   One shared quiet list-row language for Settings / Prompt
+   Library / Import entries: secondary at rest, promoted on hover,
+   tone-step selection with emphasized label when active.
+   ============================================================ */
+
+.nex-nav-entry {
+  display: flex;
+  align-items: center;
+  gap: var(--nex-sys-space-sm);
+  width: 100%;
+  min-height: 40px;
+  padding: 8px var(--nex-sys-space-md);
+  color: var(--nex-sys-color-on-surface-variant);
+  font-size: var(--nex-sys-type-size-body-small);
+  font-weight: var(--nex-sys-type-weight-regular);
+  border: none;
+  background: transparent;
+  text-align: left;
+  transition: background-color var(--motion-duration-fast) var(--motion-easing-standard),
+    color var(--motion-duration-fast) var(--motion-easing-standard);
+}
+.nex-nav-entry:hover {
+  background: var(--nex-sys-state-hover);
+  color: var(--nex-sys-color-on-surface);
+}
+.nex-nav-entry:active {
+  background: var(--nex-sys-state-pressed);
+}
+.nex-nav-entry:focus-visible {
+  outline-offset: var(--nex-sys-focus-ring-offset-inset);
+}
+.nex-nav-entry.is-active {
+  color: var(--nex-sys-color-on-surface);
+  font-weight: var(--nex-sys-type-weight-medium);
+}
+.nex-nav-entry-icon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  color: var(--nex-sys-color-on-surface-variant);
+}
+.nex-nav-entry:hover .nex-nav-entry-icon,
+.nex-nav-entry.is-active .nex-nav-entry-icon {
+  color: var(--nex-sys-color-on-surface);
+}
+
+/* ============================================================
+   CHIPS (input chips — draft attachments, FR-008)
+   Shell: elevated-container tone, hairline outline, medium
+   corners. States: hover tone-step, pressed layer, disabled
+   convention; the remove affordance carries its own accessible
+   name and an enlarged 36×36 target (desktop-density
+   RECOMMENDATION under the OFFICIAL 48dp baseline; previously
+   22×22 — audit §B.9). Inner radius = outer (10) − padding (6)
+   = extra-small (OFFICIAL optical formula).
+   ============================================================ */
+
+.nex-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--nex-sys-space-sm);
+  max-width: 320px;
+  padding: 6px var(--nex-sys-space-sm);
+  background: var(--nex-sys-color-surface-container-high);
+  border: 1px solid var(--nex-sys-color-outline);
+  border-radius: var(--nex-sys-shape-medium);
+  transition: background-color var(--motion-duration-fast) var(--motion-easing-standard),
+    border-color var(--motion-duration-fast) var(--motion-easing-standard);
+}
+.nex-chip:hover {
+  background: var(--nex-sys-state-hover);
+}
+.nex-chip:disabled {
+  opacity: var(--nex-sys-state-disabled-opacity);
+}
+
+.nex-chip-icon {
+  color: var(--nex-sys-color-on-surface-variant);
+  flex-shrink: 0;
+}
+
+.nex-chip-name {
+  font-size: var(--nex-sys-type-size-body-small);
+  font-weight: var(--nex-sys-type-weight-medium);
+  color: var(--nex-sys-color-on-surface);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nex-chip-size {
+  font-size: var(--nex-sys-type-size-label-small);
+  color: var(--nex-sys-color-on-surface-faint);
+}
+
+.nex-chip-remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  margin-block: -4px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: var(--nex-sys-shape-extra-small);
+  background: transparent;
+  color: var(--nex-sys-color-on-surface-variant);
+  cursor: pointer;
+  transition: background-color var(--motion-duration-fast) var(--motion-easing-standard),
+    color var(--motion-duration-fast) var(--motion-easing-standard);
+}
+.nex-chip-remove:hover:not(:disabled),
+.nex-chip-remove:active:not(:disabled) {
+  background: var(--nex-sys-color-error-container);
+  color: var(--nex-sys-color-error);
+}
+.nex-chip-remove:disabled {
+  opacity: var(--nex-sys-state-disabled-opacity);
+  cursor: default;
+}
+
+/* ============================================================
+   DIALOG SYSTEM (modal decisions)
+   Scrim + elevated card on surface-container-high with the
+   level-2 elevation. Corner step: applied-tier extra-large
+   (16px) per audit §12.2 RECOMMENDATION — NOT the OFFICIAL 28px
+   dialog step (NEXORA ADAPTATION moderate-radius remap).
+   Enter: scrim fade + card scale 0.92→1 on the OFFICIAL
+   medium4 · emphasized-decelerate pairing (audit §8.3). Exit is
+   instant — calm-close RECOMMENDATION; nothing essential is
+   communicated by the removed motion. Reduced motion collapses
+   the enter animation to its final frame.
+   Focus/Esc/trap semantics live in src/components/Modal.tsx.
+   ============================================================ */
+
+.nex-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--nex-sys-color-scrim);
+  padding: var(--nex-sys-space-md);
+  animation: nex-scrim-enter var(--motion-duration-medium4)
+    var(--motion-easing-emphasized-decelerate);
+}
+
+.nex-dialog-card {
+  width: 100%;
+  max-width: 560px;
+  max-height: 80vh;
+  background: var(--nex-sys-color-surface-container-high);
+  border: 1px solid var(--nex-sys-color-outline);
+  border-radius: var(--nex-sys-shape-extra-large);
+  box-shadow: var(--nex-sys-elevation-level2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--nex-sys-space-sm);
+  overflow-y: auto;
+  padding: var(--nex-sys-space-md);
+  animation: nex-dialog-enter var(--motion-duration-medium4)
+    var(--motion-easing-emphasized-decelerate);
+}
+
+@keyframes nex-scrim-enter {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes nex-dialog-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+}
+
+.nex-dialog-title {
+  font-size: var(--nex-sys-type-size-title-medium);
+  font-weight: var(--nex-sys-type-weight-semibold);
+  line-height: var(--nex-sys-type-line-height-tight);
+  color: var(--nex-sys-color-on-surface);
+}
+
+.nex-dialog-error {
+  margin: 0;
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-error);
+}
+
+.nex-dialog-actions {
+  display: inline-flex;
+  justify-content: flex-end;
+  gap: var(--nex-sys-space-xs);
+}
+
+/* ============================================================
+   POPOVER ENTER MOTION (anchored transient surfaces)
+   Scale 0.96→1 + fade from the top anchor origin — the menu/
+   popover pattern (skill motion.md §7) on the OFFICIAL medium2 ·
+   emphasized-decelerate anchor. Apply .nex-pop-enter to the
+   floating panel element. Reduced motion: final frame only.
+   ============================================================ */
+
+.nex-pop-enter {
+  transform-origin: top center;
+  animation: nex-pop-enter var(--motion-duration-medium2)
+    var(--motion-easing-emphasized-decelerate);
+}
+
+@keyframes nex-pop-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
+/* ============================================================
+   TOOLTIP (short clarification, ≤1 line)
+   Inverse-surface container (OFFICIAL role pair added in
+   tokens.css). Fades/rises in after a hover delay AND shows on
+   keyboard focus (:focus-within parity). aria-hidden because the
+   trigger's aria-label always carries the information — the
+   tooltip is never its sole carrier.
+   ============================================================ */
+
+.nex-tooltip {
+  position: relative;
+  display: inline-flex;
+}
+
+.nex-tooltip-bubble {
+  position: absolute;
+  bottom: calc(100% + var(--nex-sys-space-xs));
+  left: 50%;
+  z-index: 60;
+  transform: translateX(-50%) translateY(2px);
+  padding: var(--nex-sys-space-xxs) var(--nex-sys-space-xs);
+  border-radius: var(--nex-sys-shape-small);
+  background: var(--nex-sys-color-inverse-surface);
+  color: var(--nex-sys-color-inverse-on-surface);
+  font-size: var(--nex-sys-type-size-body-small);
+  white-space: nowrap;
+  box-shadow: var(--nex-sys-elevation-level1);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity var(--motion-duration-short3) var(--motion-easing-standard),
+    transform var(--motion-duration-short3) var(--motion-easing-standard),
+    visibility 0s linear var(--motion-duration-short3);
+}
+
+.nex-tooltip:hover .nex-tooltip-bubble,
+.nex-tooltip:focus-within .nex-tooltip-bubble {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0);
+  /* Delay only the reveal; hiding stays immediate. */
+  transition-delay: 400ms, 400ms, 400ms;
+}
+
+/* ============================================================
+   SNACKBAR (transient post-action feedback, ≤1 action)
+   Inverse-surface roles; extra-small corners (OFFICIAL shape
+   mapping). Bottom-right placement is a desktop RECOMMENDATION —
+   "Material does not prescribe a universal value for this."
+   Enter: slide-up + fade on the short4 anchor (skill motion.md
+   §7); dismissal is instant (parent unmounts the region).
+   Polite live-region semantics live in src/components/Snackbar.tsx.
+   Shipped as an unconsumed primitive in 0.2.2 — wiring it into a
+   flow would change product behavior reserved for later stages.
+   ============================================================ */
+
+.nex-snackbar {
+  position: fixed;
+  right: var(--nex-sys-space-lg);
+  bottom: var(--nex-sys-space-lg);
+  z-index: 120;
+  display: flex;
+  align-items: center;
+  gap: var(--nex-sys-space-sm);
+  max-width: min(420px, calc(100vw - var(--nex-sys-space-xl) * 2));
+  padding: var(--nex-sys-space-sm) var(--nex-sys-space-md);
+  border-radius: var(--nex-sys-shape-extra-small);
+  background: var(--nex-sys-color-inverse-surface);
+  color: var(--nex-sys-color-inverse-on-surface);
+  box-shadow: var(--nex-sys-elevation-level1);
+  font-size: var(--nex-sys-type-size-body-medium);
+  animation: nex-snackbar-enter var(--motion-duration-short4)
+    var(--motion-easing-standard-decelerate);
+}
+
+@keyframes nex-snackbar-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+.nex-snackbar-action {
+  flex-shrink: 0;
+  padding: var(--nex-sys-space-xxs) var(--nex-sys-space-xs);
+  border: none;
+  border-radius: var(--nex-sys-shape-small);
+  background: transparent;
+  color: var(--nex-sys-color-inverse-on-surface);
+  font-size: var(--nex-sys-type-size-body-small);
+  font-weight: var(--nex-sys-type-weight-medium);
+  cursor: pointer;
+  transition: background-color var(--motion-duration-fast) var(--motion-easing-standard);
+}
+.nex-snackbar-action:hover {
+  background: var(--nex-sys-state-inverse-hover);
+}
+.nex-snackbar-action:active {
+  background: var(--nex-sys-state-inverse-pressed);
+}
+
+/* ============================================================
+   LOADING STATES
+   Skeleton shimmer and assistant-typing dots — gentle loops
+   preserved from 0.1.0. Reduced motion: the global gate freezes
+   each loop on a single static frame; the information ("content
+   is loading" / "assistant is responding") survives as visible
+   static elements.
+   ============================================================ */
+
+.nex-skeleton-list {
+  width: 100%;
+}
+.nex-skeleton-row {
+  height: 44px;
+  margin-bottom: 4px;
+  background: var(--nex-sys-state-hover);
+  animation: nex-pulse var(--motion-loop-skeleton) ease-in-out infinite;
+}
+
+@keyframes nex-pulse {
+  0% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.42;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+.nex-typing {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: var(--nex-sys-layout-measure-max);
+  margin-inline: auto;
+  padding: var(--nex-sys-space-xs) 0;
+}
+.nex-typing-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--nex-sys-shape-full);
+  background: var(--nex-sys-color-primary);
+  opacity: 0.4;
+  animation: nex-typing var(--motion-duration-normal) var(--motion-easing-standard) infinite;
+}
+.nex-typing-dot:nth-child(2) {
+  animation-delay: var(--motion-loop-typing-dot-delay);
+}
+.nex-typing-dot:nth-child(3) {
+  animation-delay: calc(var(--motion-loop-typing-dot-delay) * 2);
+}
+@keyframes nex-typing {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+  50% {
+    opacity: 0.9;
+    transform: translateY(-2px);
+  }
+}

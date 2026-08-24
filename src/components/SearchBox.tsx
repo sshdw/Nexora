@@ -93,7 +93,14 @@ export default function SearchBox({
         spellCheck={false}
       />
       {showResults && (
-        <div className="nex-search-results" role="listbox" aria-label="Search results">
+        // Plain labelled group of actionable buttons. The previous
+        // role="listbox" was an ARIA misuse: its children are buttons,
+        // not options (keyboard users reach them via normal Tab order).
+        <div
+          className="nex-search-results nex-pop-enter"
+          role="group"
+          aria-label="Search results"
+        >
           {loading && <p className="nex-search-status">Searching…</p>}
           {error && (
             <p className="nex-search-status" role="alert">

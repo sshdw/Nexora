@@ -16,6 +16,7 @@ import { useEffect, useRef } from "react";
 import { formatBytes, formatRelativeTime } from "../lib/format";
 import { useAttachments } from "../lib/useAttachments";
 import { useConversation } from "../lib/useConversation";
+import Tooltip from "./Tooltip";
 import { CloseIcon, PaperclipIcon } from "./icons";
 
 export interface ConversationViewProps {
@@ -138,10 +139,10 @@ export default function ConversationView({
           ))
         )}
         {sending && (
-          <div className="nex-sending" aria-label="Assistant is responding">
-            <span className="nex-sending-dot" />
-            <span className="nex-sending-dot" />
-            <span className="nex-sending-dot" />
+          <div className="nex-typing" aria-label="Assistant is responding">
+            <span className="nex-typing-dot" />
+            <span className="nex-typing-dot" />
+            <span className="nex-typing-dot" />
           </div>
         )}
       </div>
@@ -163,21 +164,21 @@ export default function ConversationView({
           {attachments.length > 0 && (
             <ul className="nex-composer-attachments" aria-label="Attached files">
               {attachments.map((attachment) => (
-                <li key={attachment.id} className="nex-attachment-chip">
-                  <PaperclipIcon className="nex-attachment-icon" />
+                <li key={attachment.id} className="nex-chip">
+                  <PaperclipIcon className="nex-chip-icon" />
                   <span className="nex-attachment-text">
-                    <span className="nex-attachment-name" title={attachment.file_name}>
+                    <span className="nex-chip-name" title={attachment.file_name}>
                       {attachment.file_name}
                     </span>
                     {formatBytes(attachment.file_size_bytes) !== null && (
-                      <span className="nex-attachment-size">
+                      <span className="nex-chip-size">
                         {formatBytes(attachment.file_size_bytes)}
                       </span>
                     )}
                   </span>
                   <button
                     type="button"
-                    className="nex-attachment-remove"
+                    className="nex-chip-remove"
                     aria-label={`Remove ${attachment.file_name}`}
                     disabled={attachmentsBusy || sending}
                     onClick={() => void remove(attachment.id)}
@@ -189,16 +190,17 @@ export default function ConversationView({
             </ul>
           )}
           <div className="nex-composer-row">
-            <button
-              type="button"
-              className="nex-composer-attach"
-              aria-label="Add file"
-              title="Add file"
-              disabled={sending || attachmentsBusy}
-              onClick={() => void pickAndAttach()}
-            >
-              <PaperclipIcon />
-            </button>
+            <Tooltip label="Add file">
+              <button
+                type="button"
+                className="nex-composer-attach"
+                aria-label="Add file"
+                disabled={sending || attachmentsBusy}
+                onClick={() => void pickAndAttach()}
+              >
+                <PaperclipIcon />
+              </button>
+            </Tooltip>
             <div className="nex-composer-input-wrap">
               <textarea
                 className="nex-composer-input"

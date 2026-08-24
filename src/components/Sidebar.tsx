@@ -86,12 +86,12 @@ export default function Sidebar({
       <PromptLibraryEntry active={libraryActive} onClick={onOpenPromptLibrary} />
       <button
         type="button"
-        className="nex-settings-entry"
+        className="nex-nav-entry"
         aria-label="Import conversation"
         title="Import conversation"
         onClick={onImport}
       >
-        <ImportIcon className="nex-settings-icon" />
+        <ImportIcon className="nex-nav-entry-icon" />
         <span>Import conversation</span>
       </button>
     </aside>

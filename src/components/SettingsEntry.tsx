@@ -5,17 +5,18 @@ export interface SettingsEntryProps {
 }
 
 // Navigation entry point for the Settings view (Phase 10.3.2: functional
-// provider / model / credential management in the panel it opens).
+// provider / model / credential management in the panel it opens). Uses the
+// shared .nex-nav-entry row primitive (0.2.2 component layer).
 export default function SettingsEntry({ onClick }: SettingsEntryProps) {
   return (
     <button
       type="button"
-      className="nex-settings-entry"
+      className="nex-nav-entry"
       aria-label="Settings"
       title="Settings"
       onClick={onClick}
     >
-      <SettingsIcon className="nex-settings-icon" />
+      <SettingsIcon className="nex-nav-entry-icon" />
       <span>Settings</span>
     </button>
   );

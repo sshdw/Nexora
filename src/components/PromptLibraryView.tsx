@@ -10,6 +10,7 @@
 
 import { useEffect, useState } from "react";
 
+import ModalShell from "./Modal";
 import { SearchIcon } from "./icons";
 import type { Prompt } from "../lib/tauri";
 import { formatRelativeTime } from "../lib/format";
@@ -109,15 +110,15 @@ export default function PromptLibraryView({
       </header>
 
       <div className="nex-prompt-toolbar">
-        <div className="nex-prompt-search">
+        <div className="nex-search nex-prompt-search">
           <label htmlFor="nex-prompt-search-input" className="nex-sr-only">
             Search prompts
           </label>
-          <SearchIcon className="nex-prompt-search-icon" />
+          <SearchIcon className="nex-search-icon" />
           <input
             id="nex-prompt-search-input"
             type="search"
-            className="nex-prompt-search-input"
+            className="nex-search-input"
             placeholder="Search prompts"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
@@ -243,101 +244,82 @@ function PromptEditor({
   onCancel,
 }: PromptEditorProps) {
   return (
-    <div
-      className="nex-prompt-modal-backdrop"
-      role="presentation"
-      onClick={onCancel}
+    <ModalShell
+      title={editor.editing ? "Edit prompt" : "New prompt"}
+      onClose={onCancel}
     >
-      <div
-        className="nex-prompt-modal-card"
-        role="dialog"
-        aria-modal="true"
-        aria-label={editor.editing ? "Edit prompt" : "New prompt"}
-        onClick={(event) => event.stopPropagation()}
-      >
-        <h3 className="nex-prompt-modal-title">
-          {editor.editing ? "Edit prompt" : "New prompt"}
-        </h3>
+      {error && (
+        <p className="nex-dialog-error" role="alert">
+          {error.message}
+        </p>
+      )}
 
-        {error && (
-          <p className="nex-prompt-modal-error" role="alert">
-            {error.message}
-          </p>
-        )}
-
-        <div className="nex-prompt-field">
-          <label
-            className="nex-prompt-label"
-            htmlFor="nex-prompt-title-input"
-          >
-            Title
-          </label>
-          <input
-            id="nex-prompt-title-input"
-            className="nex-input"
-            value={editor.title}
-            maxLength={TITLE_MAX}
-            placeholder="Prompt name"
-            autoFocus
-            disabled={saving}
-            onChange={(event) => onTitleChange(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault();
-                onSave();
-              }
-            }}
-          />
-          <p className="nex-prompt-count">
-            {editor.title.length}/{TITLE_MAX}
-          </p>
-        </div>
-
-        <div className="nex-prompt-field">
-          <label
-            className="nex-prompt-label"
-            htmlFor="nex-prompt-content-input"
-          >
-            Content
-          </label>
-          <textarea
-            id="nex-prompt-content-input"
-            className="nex-textarea"
-            rows={6}
-            value={editor.content}
-            maxLength={CONTENT_MAX}
-            disabled={saving}
-            onChange={(event) => onContentChange(event.target.value)}
-          />
-          <p className="nex-prompt-count">
-            {editor.content.length}/{CONTENT_MAX}
-          </p>
-        </div>
-
-        <div className="nex-prompt-modal-actions">
-          <button
-            type="button"
-            className="nex-btn nex-btn-ghost"
-            onClick={onCancel}
-            disabled={saving}
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="nex-btn nex-btn-accent"
-            onClick={onSave}
-            disabled={
-              editor.title.trim() === "" ||
-              editor.content.trim() === "" ||
-              saving
+      <div className="nex-prompt-field">
+        <label className="nex-prompt-label" htmlFor="nex-prompt-title-input">
+          Title
+        </label>
+        <input
+          id="nex-prompt-title-input"
+          className="nex-input"
+          value={editor.title}
+          maxLength={TITLE_MAX}
+          placeholder="Prompt name"
+          autoFocus
+          disabled={saving}
+          onChange={(event) => onTitleChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              onSave();
             }
-          >
-            {editor.editing ? "Save changes" : "Create prompt"}
-          </button>
-        </div>
+          }}
+        />
+        <p className="nex-prompt-count">
+          {editor.title.length}/{TITLE_MAX}
+        </p>
       </div>
-    </div>
+
+      <div className="nex-prompt-field">
+        <label className="nex-prompt-label" htmlFor="nex-prompt-content-input">
+          Content
+        </label>
+        <textarea
+          id="nex-prompt-content-input"
+          className="nex-textarea"
+          rows={6}
+          value={editor.content}
+          maxLength={CONTENT_MAX}
+          disabled={saving}
+          onChange={(event) => onContentChange(event.target.value)}
+        />
+        <p className="nex-prompt-count">
+          {editor.content.length}/{CONTENT_MAX}
+        </p>
+      </div>
+
+      <div className="nex-dialog-actions">
+        <button
+          type="button"
+          className="nex-btn nex-btn-ghost"
+          onClick={onCancel}
+          disabled={saving}
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          className="nex-btn nex-btn-accent"
+          onClick={onSave}
+          disabled={
+            editor.title.trim() === "" ||
+            editor.content.trim() === "" ||
+            saving
+          }
+        >
+          {editor.editing ? "Save changes" : "Create prompt"}
+        </button>
+      </div>
+    </ModalShell>
   );
 }
 

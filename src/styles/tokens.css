@@ -93,6 +93,12 @@
   --nex-sys-color-outline: rgba(255, 255, 255, 0.10);
   --nex-sys-color-outline-variant: rgba(255, 255, 255, 0.06);
 
+  /* Inverse pair (OFFICIAL role names) for tooltips and snackbars.
+     Values are the existing palette inverted (NEXORA ADAPTATION):
+     a light reading tone carrying dark text in the dark theme. */
+  --nex-sys-color-inverse-surface: #ece9e6;
+  --nex-sys-color-inverse-on-surface: #232226;
+
   /* Scrim behind modals (OFFICIAL role; value RECOMMENDATION —
      "Material does not prescribe a universal value for this."). */
   --nex-sys-color-scrim: rgba(0, 0, 0, 0.35);
@@ -116,6 +122,13 @@
   --nex-sys-state-selected: rgba(255, 255, 255, var(--nex-sys-state-selected-opacity));
   --nex-sys-state-pressed: rgba(255, 255, 255, var(--nex-sys-state-pressed-opacity));
   --nex-sys-state-dragged: rgba(255, 255, 255, var(--nex-sys-state-dragged-opacity));
+
+  /* State layers over the inverse pair (tooltip/snackbar bubbles):
+     the content color there is inverse-on-surface, so its layer is
+     dark-alpha in the dark theme and flips in the light theme.
+     Opacities are the OFFICIAL hover/pressed values. */
+  --nex-sys-state-inverse-hover: rgba(35, 34, 38, 0.08);
+  --nex-sys-state-inverse-pressed: rgba(35, 34, 38, 0.12);
 
   /* Disabled convention (components.md §1: "still identifiable; not
      just color"). Unified to one app-wide value — previously three
@@ -199,6 +212,7 @@
      Zero-radius sharp corners banned (shape.md §5).
      ========================================================== */
   --nex-sys-shape-none: var(--nex-ref-shape-none);
+  --nex-sys-shape-extra-small: var(--nex-ref-shape-extra-small); /* nested inner corners (optical formula) */
   --nex-sys-shape-small: 6px;         /* controls: inputs, chips, rows (official step: 8) */
   --nex-sys-shape-medium: 10px;       /* buttons, cards, popovers (official step: 12) */
   --nex-sys-shape-large: 12px;        /* panels (official step: 16) */
@@ -271,11 +285,18 @@
   --nex-sys-color-outline: rgba(0, 0, 0, 0.14);
   --nex-sys-color-outline-variant: rgba(0, 0, 0, 0.08);
 
+  /* Inverse pair (dark tones carrying light text on paper surfaces). */
+  --nex-sys-color-inverse-surface: #262420;
+  --nex-sys-color-inverse-on-surface: #f4f2ef;
+
   /* Light overlays flip to black-based state layers; hover/selected
      keep the current tuned values (see dark-theme note above). */
   --nex-sys-state-hover: rgba(0, 0, 0, 0.045);
   --nex-sys-state-selected: rgba(0, 0, 0, 0.075);
   --nex-sys-state-pressed: rgba(0, 0, 0, 0.12);
+
+  --nex-sys-state-inverse-hover: rgba(244, 242, 239, 0.08);
+  --nex-sys-state-inverse-pressed: rgba(244, 242, 239, 0.12);
 
   --nex-sys-scrollbar-thumb: rgba(0, 0, 0, 0.2);
   --nex-sys-scrollbar-thumb-hover: rgba(0, 0, 0, 0.3);

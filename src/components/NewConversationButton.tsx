@@ -16,7 +16,7 @@ export default function NewConversationButton({
   return (
     <button
       type="button"
-      className="nex-btn nex-new-conversation"
+      className="nex-btn nex-btn-expressive nex-new-conversation"
       onClick={onClick}
       disabled={disabled}
       aria-label="New conversation"
