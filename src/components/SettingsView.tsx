@@ -152,7 +152,7 @@ export default function SettingsView({
         <div className="nex-settings-body">
           <div className="nex-settings-inner">
             {store.error && (
-              <p className="nex-settings-error" role="alert">
+              <p id="nex-settings-store-error" className="nex-settings-error" role="alert">
                 {store.error.message}
               </p>
             )}
@@ -289,13 +289,19 @@ export default function SettingsView({
                         value={clearPhrase}
                         autoFocus
                         disabled={clearing}
+                        aria-invalid={clearError ? true : undefined}
+                        aria-describedby={clearError ? "clear-confirm-error" : undefined}
                         onChange={(event) => setClearPhrase(event.target.value)}
                         onKeyDown={(event) => {
                           if (event.key === "Enter") void handleClearData();
                         }}
                       />
                       {clearError && (
-                        <p className="nex-settings-error" role="alert">
+                        <p
+                          id="clear-confirm-error"
+                          className="nex-settings-error"
+                          role="alert"
+                        >
                           {clearError}
                         </p>
                       )}
@@ -312,6 +318,7 @@ export default function SettingsView({
                           type="button"
                           className="nex-btn nex-btn-ghost nex-danger-button"
                           disabled={clearing || clearPhrase !== CLEAR_CONFIRMATION_PHRASE}
+                          aria-busy={clearing}
                           onClick={() => void handleClearData()}
                         >
                           {clearing ? "Clearing…" : "Clear all data"}
@@ -350,6 +357,9 @@ export default function SettingsView({
                     autoComplete="new-password"
                     placeholder={credentialed ? "Update API key" : "API key"}
                     aria-label={`${supported.display_name} API key`}
+                    aria-describedby={
+                      store.error ? "nex-settings-store-error" : undefined
+                    }
                     value={draftKeys[supported.name] ?? ""}
                     disabled={store.working}
                     onChange={(event) =>

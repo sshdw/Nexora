@@ -60,6 +60,7 @@ export function ExportModal({
           className="nex-btn nex-btn-primary"
           onClick={runExport}
           disabled={busy}
+          aria-busy={busy}
         >
           {busy ? "Exporting…" : exportSucceeded ? "Export again" : "Choose location"}
         </button>
@@ -116,6 +117,7 @@ export function ImportModal({ store, onImported, onClose }: ImportModalProps) {
           className="nex-btn nex-btn-primary"
           onClick={runImport}
           disabled={busy}
+          aria-busy={busy}
         >
           {busy ? "Importing…" : "Choose file"}
         </button>

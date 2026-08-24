@@ -606,8 +606,10 @@
   opacity: 1;
   visibility: visible;
   transform: translateX(-50%) translateY(0);
-  /* Delay only the reveal; hiding stays immediate. */
-  transition-delay: 400ms, 400ms, 400ms;
+  /* Delay only the reveal; hiding stays immediate. Official medium4
+     anchor (400ms) — tokenized in the 0.2.5 QA pass, value unchanged. */
+  transition-delay: var(--motion-duration-medium4), var(--motion-duration-medium4),
+    var(--motion-duration-medium4);
 }
 
 /* ============================================================

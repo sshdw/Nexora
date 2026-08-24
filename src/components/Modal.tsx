@@ -9,6 +9,12 @@
 //!
 //! While `busy`, Esc and backdrop clicks are ignored so an in-flight
 //! operation cannot be dismissed mid-write (existing behavior preserved).
+//!
+//! Background inertness (0.2.5 QA pass): while the dialog is open every
+//! element outside it is marked `inert`, so screen-reader virtual cursor
+//! navigation cannot reach content behind the modal. The walk is idempotent
+//! per instance (only elements this instance flipped are restored), so
+//! StrictMode double-mounting and stacked dialogs behave correctly.
 
 import { useEffect, useRef, type KeyboardEvent, type ReactNode } from "react";
 
@@ -36,10 +42,32 @@ export default function ModalShell({
   children,
 }: ModalShellProps) {
   const cardRef = useRef<HTMLDivElement>(null);
+  const backdropRef = useRef<HTMLDivElement>(null);
   const restoreRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
+    // Capture the restore target before inerting: if focus currently sits in
+    // the background, the inert walk below will move it to <body>.
     restoreRef.current = document.activeElement as HTMLElement | null;
+
+    // Background inertness: keep only the ancestor path to the dialog live
+    // and mark every off-path sibling at each level `inert` (pointer events
+    // and AT virtual cursor both excluded). The walk stops below
+    // <html> so <head> is never touched.
+    const inerted: HTMLElement[] = [];
+    let node: HTMLElement | null = backdropRef.current;
+    while (node) {
+      const parent = node.parentElement;
+      if (!parent || parent === document.documentElement) break;
+      for (const child of Array.from(parent.children)) {
+        if (child !== node && child instanceof HTMLElement && !child.inert) {
+          child.inert = true;
+          inerted.push(child);
+        }
+      }
+      node = parent;
+    }
+
     const card = cardRef.current;
     // Initial focus: keep it if the browser already placed it (an
     // autoFocus child); otherwise the first focusable control, falling
@@ -49,6 +77,7 @@ export default function ModalShell({
       (first ?? card).focus();
     }
     return () => {
+      for (const element of inerted) element.inert = false;
       const previous = restoreRef.current;
       if (previous && previous.isConnected) previous.focus();
     };
@@ -89,6 +118,7 @@ export default function ModalShell({
 
   return (
     <div
+      ref={backdropRef}
       className="nex-dialog-backdrop"
       role="presentation"
       onClick={busy ? undefined : onClose}

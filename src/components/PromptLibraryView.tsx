@@ -249,7 +249,7 @@ function PromptEditor({
       onClose={onCancel}
     >
       {error && (
-        <p className="nex-dialog-error" role="alert">
+        <p id="nex-prompt-editor-error" className="nex-dialog-error" role="alert">
           {error.message}
         </p>
       )}
@@ -266,6 +266,7 @@ function PromptEditor({
           placeholder="Prompt name"
           autoFocus
           disabled={saving}
+          aria-describedby={error ? "nex-prompt-editor-error" : undefined}
           onChange={(event) => onTitleChange(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter") {
@@ -290,6 +291,7 @@ function PromptEditor({
           value={editor.content}
           maxLength={CONTENT_MAX}
           disabled={saving}
+          aria-describedby={error ? "nex-prompt-editor-error" : undefined}
           onChange={(event) => onContentChange(event.target.value)}
         />
         <p className="nex-prompt-count">

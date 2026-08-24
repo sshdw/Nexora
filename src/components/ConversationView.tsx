@@ -257,6 +257,7 @@ export default function ConversationView({
               className="nex-composer-send"
               onClick={handleSubmit}
               disabled={!canSend}
+              aria-busy={sending}
             >
               {sending ? "Sending…" : "Send"}
             </button>
