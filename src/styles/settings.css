@@ -2,7 +2,7 @@
    Settings / provider / model / credential view — Warm Minimal
    Flat, single-surface layout in the Phase 10.3.1 visual language.
    Selection and status are carried by quiet text and subtle surface
-   shifts, never colour washes or boxes.
+   shifts, never colour washes or boxes. Consumes 0.2.1 tokens.
    ============================================================ */
 
 .nex-settings {
@@ -16,16 +16,16 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-sm);
-  padding: 12px var(--space-md);
-  background: var(--color-bg-main);
-  border-bottom: 1px solid var(--color-border);
+  gap: var(--nex-sys-space-sm);
+  padding: var(--nex-sys-space-sm) var(--nex-sys-space-md);
+  background: var(--nex-sys-color-surface-container);
+  border-bottom: 1px solid var(--nex-sys-color-outline-variant);
 }
 
 .nex-settings-title {
-  font-size: var(--font-size-title);
-  font-weight: var(--font-weight-semibold);
-  color: var(--color-text-primary);
+  font-size: var(--nex-sys-type-size-title-large);
+  font-weight: var(--nex-sys-type-weight-semibold);
+  color: var(--nex-sys-color-on-surface);
 }
 
 .nex-settings-body {
@@ -33,7 +33,7 @@
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: var(--space-lg) var(--space-md);
+  padding: var(--nex-sys-space-xl) var(--nex-sys-space-md);
 }
 
 .nex-settings-inner {
@@ -41,38 +41,38 @@
   margin: 0 auto;
   display: flex;
   flex-direction: column;
-  gap: var(--space-xl);
+  gap: var(--nex-sys-space-2xl);
 }
 
 .nex-settings-section {
   display: flex;
   flex-direction: column;
-  gap: var(--space-sm);
+  gap: var(--nex-sys-space-sm);
 }
 
 .nex-settings-heading {
-  font-size: var(--font-size-md);
-  font-weight: var(--font-weight-semibold);
-  color: var(--color-text-primary);
+  font-size: var(--nex-sys-type-size-body-large);
+  font-weight: var(--nex-sys-type-weight-semibold);
+  color: var(--nex-sys-color-on-surface);
 }
 
 .nex-settings-hint {
   max-width: 480px;
-  font-size: var(--font-size-sm);
-  color: var(--color-text-secondary);
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-on-surface-variant);
 }
 
 .nex-settings-field {
   display: flex;
   flex-direction: column;
-  gap: var(--space-xs);
-  margin-top: var(--space-sm);
+  gap: var(--nex-sys-space-xs);
+  margin-top: var(--nex-sys-space-sm);
 }
 
 .nex-settings-label {
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-medium);
-  color: var(--color-text-secondary);
+  font-size: var(--nex-sys-type-size-body-small);
+  font-weight: var(--nex-sys-type-weight-medium);
+  color: var(--nex-sys-color-on-surface-variant);
 }
 
 /* ---- Flat native controls (hairline borders, no fill at rest) ---- */
@@ -81,34 +81,35 @@
   width: 100%;
   max-width: 560px;
   padding: 8px 10px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--color-border-strong);
+  border-radius: var(--nex-sys-shape-small);
+  border: 1px solid var(--nex-sys-color-outline);
   background: transparent;
-  color: var(--color-text-primary);
-  font-size: var(--font-size-sm);
+  color: var(--nex-sys-color-on-surface);
+  font-size: var(--nex-sys-type-size-body-small);
   font-family: inherit;
   outline: none;
-  transition: border-color 0.12s ease, background-color 0.12s ease;
+  transition: border-color var(--motion-duration-fast) var(--motion-easing-standard),
+    background-color var(--motion-duration-fast) var(--motion-easing-standard);
 }
 
 .nex-select:hover,
 .nex-input:hover {
-  background: var(--color-bg-hover);
+  background: var(--nex-sys-state-hover);
 }
 
 .nex-select:focus,
 .nex-input:focus {
-  border-color: var(--color-focus-soft);
+  border-color: var(--nex-sys-focus-field-color);
   background: transparent;
 }
 
 .nex-input::placeholder {
-  color: var(--color-text-tertiary);
+  color: var(--nex-sys-color-on-surface-tertiary);
 }
 
 .nex-select:disabled,
 .nex-input:disabled {
-  opacity: 0.55;
+  opacity: var(--nex-sys-state-disabled-opacity);
   cursor: default;
 }
 
@@ -122,49 +123,54 @@
 .nex-settings-nav {
   width: 180px;
   flex-shrink: 0;
-  padding: var(--space-lg) var(--space-sm);
-  border-right: 1px solid var(--color-border);
-  background: var(--color-bg-sidebar);
+  padding: var(--nex-sys-space-xl) var(--nex-sys-space-sm);
+  border-right: 1px solid var(--nex-sys-color-outline-variant);
+  background: var(--nex-sys-color-surface-container-low);
   overflow-y: auto;
 }
 
 .nex-settings-nav-group {
-  margin-bottom: var(--space-md);
+  margin-bottom: var(--nex-sys-space-md);
 }
 
 .nex-settings-nav-label {
-  margin: 0 0 var(--space-xs);
-  padding-left: var(--space-sm);
-  font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-medium);
+  margin: 0 0 var(--nex-sys-space-xs);
+  padding-left: var(--nex-sys-space-sm);
+  font-size: var(--nex-sys-type-size-label-small);
+  font-weight: var(--nex-sys-type-weight-medium);
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--color-text-tertiary);
+  color: var(--nex-sys-color-on-surface-tertiary);
 }
 
 .nex-settings-nav-item {
   display: block;
   width: 100%;
-  padding: 6px var(--space-sm);
+  padding: 6px var(--nex-sys-space-sm);
   border: none;
-  border-radius: var(--radius-sm);
+  border-radius: var(--nex-sys-shape-small);
   background: transparent;
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-sm);
+  color: var(--nex-sys-color-on-surface-variant);
+  font-size: var(--nex-sys-type-size-body-small);
   font-family: inherit;
   text-align: left;
   cursor: pointer;
-  transition: background-color 0.12s ease, color 0.12s ease;
+  transition: background-color var(--motion-duration-fast) var(--motion-easing-standard),
+    color var(--motion-duration-fast) var(--motion-easing-standard);
 }
 
 .nex-settings-nav-item:hover {
-  background: var(--color-bg-hover);
-  color: var(--color-text-primary);
+  background: var(--nex-sys-state-hover);
+  color: var(--nex-sys-color-on-surface);
+}
+
+.nex-settings-nav-item:active {
+  background: var(--nex-sys-state-pressed);
 }
 
 .nex-settings-nav-item.is-active {
-  background: var(--color-bg-selected);
-  color: var(--color-text-primary);
+  background: var(--nex-sys-state-selected);
+  color: var(--nex-sys-color-on-surface);
 }
 
 /* The scrolling content pane sits right of the nav. */
@@ -183,69 +189,74 @@
   display: inline-flex;
   gap: 2px;
   padding: 2px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--color-border-strong);
+  border-radius: var(--nex-sys-shape-small);
+  border: 1px solid var(--nex-sys-color-outline);
 }
 
 .nex-seg button {
   padding: 5px 14px;
   border: none;
-  border-radius: calc(var(--radius-sm) - 1px);
+  border-radius: calc(var(--nex-sys-shape-small) - 1px);
   background: transparent;
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-sm);
+  color: var(--nex-sys-color-on-surface-variant);
+  font-size: var(--nex-sys-type-size-body-small);
   font-family: inherit;
   cursor: pointer;
-  transition: background-color 0.12s ease, color 0.12s ease;
+  transition: background-color var(--motion-duration-fast) var(--motion-easing-standard),
+    color var(--motion-duration-fast) var(--motion-easing-standard);
 }
 
 .nex-seg button:hover {
-  color: var(--color-text-primary);
+  color: var(--nex-sys-color-on-surface);
+}
+
+.nex-seg button:active {
+  background: var(--nex-sys-state-pressed);
 }
 
 .nex-seg button.is-active {
-  background: var(--color-accent-bg);
-  color: var(--color-accent);
-  font-weight: var(--font-weight-medium);
+  background: var(--nex-sys-color-primary-container);
+  color: var(--nex-sys-color-primary);
+  font-weight: var(--nex-sys-type-weight-medium);
 }
 
 /* ---- Danger zone (Data management — FR-013 explicit confirmation) ---- */
 .nex-danger-zone {
-  margin-top: var(--space-md);
-  padding: var(--space-md);
-  border: 1px solid var(--color-border-strong);
-  border-radius: var(--radius-md);
+  margin-top: var(--nex-sys-space-md);
+  padding: var(--nex-sys-space-md);
+  border: 1px solid var(--nex-sys-color-outline);
+  border-radius: var(--nex-sys-shape-medium);
 }
 
 .nex-danger-title {
-  margin: 0 0 var(--space-xs);
-  font-size: var(--font-size-base);
-  font-weight: var(--font-weight-semibold);
-  color: var(--color-error);
+  margin: 0 0 var(--nex-sys-space-xs);
+  font-size: var(--nex-sys-type-size-body-medium);
+  font-weight: var(--nex-sys-type-weight-semibold);
+  color: var(--nex-sys-color-error);
 }
 
 .nex-danger-text {
-  margin: 0 0 var(--space-sm);
+  margin: 0 0 var(--nex-sys-space-sm);
   max-width: 480px;
-  font-size: var(--font-size-sm);
-  line-height: var(--line-height-normal);
-  color: var(--color-text-secondary);
+  font-size: var(--nex-sys-type-size-body-small);
+  line-height: var(--nex-sys-type-line-height-normal);
+  color: var(--nex-sys-color-on-surface-variant);
 }
 
 .nex-danger-button {
-  color: var(--color-error);
+  color: var(--nex-sys-color-error);
 }
 
 .nex-danger-button:hover:not(:disabled),
-.nex-danger-button:focus-visible:not(:disabled) {
-  color: var(--color-error);
-  background: var(--color-error-bg);
+.nex-danger-button:active:not(:disabled) {
+  color: var(--nex-sys-color-error);
+  background: var(--nex-sys-color-error-container);
 }
 
 .nex-danger-confirm {
   display: flex;
   flex-direction: column;
-  gap: var(--space-xs);
+  gap: var(--nex-sys-space-xs);
   align-items: flex-start;
 }
 
@@ -255,24 +266,24 @@
 
 /* ---- Inline validation / command errors (FR-012 invalid values rejected) ---- */
 .nex-settings-error {
-  margin: var(--space-xs) 0 0;
-  font-size: var(--font-size-sm);
-  color: var(--color-error);
+  margin: var(--nex-sys-space-xs) 0 0;
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-error);
 }
 
 /* ---- Provider credential list ---- */
 .nex-provider-list {
   display: flex;
   flex-direction: column;
-  margin-top: var(--space-xs);
+  margin-top: var(--nex-sys-space-xs);
 }
 
 .nex-provider-row {
   display: flex;
   flex-direction: column;
-  gap: var(--space-sm);
-  padding: var(--space-sm) 0;
-  border-bottom: 1px solid var(--color-border);
+  gap: var(--nex-sys-space-sm);
+  padding: var(--nex-sys-space-sm) 0;
+  border-bottom: 1px solid var(--nex-sys-color-outline-variant);
 }
 
 .nex-provider-row:last-child {
@@ -283,24 +294,24 @@
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: var(--space-sm);
+  gap: var(--nex-sys-space-sm);
 }
 
 .nex-provider-name {
-  font-size: var(--font-size-base);
-  font-weight: var(--font-weight-medium);
-  color: var(--color-text-primary);
+  font-size: var(--nex-sys-type-size-body-medium);
+  font-weight: var(--nex-sys-type-weight-medium);
+  color: var(--nex-sys-color-on-surface);
 }
 
 .nex-provider-status {
-  font-size: var(--font-size-sm);
-  color: var(--color-text-secondary);
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-on-surface-variant);
 }
 
 .nex-provider-actions {
   display: flex;
   align-items: center;
-  gap: var(--space-xs);
+  gap: var(--nex-sys-space-xs);
 }
 
 .nex-provider-actions .nex-input {
@@ -308,10 +319,10 @@
 }
 
 .nex-provider-remove {
-  color: var(--color-error);
+  color: var(--nex-sys-color-error);
 }
 
 .nex-provider-remove:hover:not(:disabled) {
-  color: var(--color-error);
-  background: var(--color-error-bg);
+  color: var(--nex-sys-color-error);
+  background: var(--nex-sys-color-error-container);
 }

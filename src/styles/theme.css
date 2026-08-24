@@ -1,167 +1,8 @@
 /* ============================================================
-   Nexora Design Tokens — Warm Minimal
-   Warm-neutral surfaces, warm off-white text, muted amber accent.
-   Tokens are centralized here so the palette can be revised
-   without touching components.
+   Nexora Global Baselines — 0.2.1
+   Element resets and app-wide baselines only. All design tokens
+   live in tokens.css; motion tokens in motion.css.
    ============================================================ */
-
-:root {
-  /* ---- Surfaces (warm-neutral charcoal, subtly stepped for hierarchy) ----
-     Order from deepest (window) to lightest (elevated surfaces). The main
-     content surface sits one step above the sidebar so the workspace reads
-     as the calm, focused canvas. Warm neutrals — not blue-black. */
-  --color-bg-app:       #16151a;   /* window backdrop (deepest) */
-  --color-bg-sidebar:   #1b1a1f;   /* sidebar surface */
-  --color-bg-main:      #1d1c21;   /* main content canvas */
-  --color-bg-content:   #232226;   /* elevated surfaces: menus, modals */
-
-  /* ---- Interaction overlays (neutral lightness shifts only) ----
-     Skill §2/§11: hover +4–6%, selected +8–10%. Clearly perceptible but
-     restrained; selection belongs to the list surface, never color. */
-  --color-bg-hover:     rgba(255, 255, 255, 0.05);
-  --color-bg-selected:  rgba(255, 255, 255, 0.09);
-
-  /* ---- Borders (hairline zone separators only) ---- */
-  --color-border:        rgba(255, 255, 255, 0.06);
-  --color-border-strong: rgba(255, 255, 255, 0.10);
-
-  /* ---- Focus (thin accent ring, no glow) ---- */
-  --color-focus: rgba(201, 166, 107, 0.75);
-  --color-focus-soft: rgba(201, 166, 107, 0.55);   /* search input: subtle hairline, no ring */
-
-  /* ---- Text (warm off-white hierarchy) ---- */
-  --color-text-primary:   #ece9e6;   /* warm off-white — never pure white */
-  --color-text-secondary: #8b8983;   /* warm mid-gray: metadata, labels */
-  --color-text-tertiary:  #79766f;   /* quieter step, used sparingly */
-  --color-text-faint:     #5c5954;   /* faintest step: placeholders, timestamps */
-
-  /* ---- Accent (muted warm amber/ochre — punctuation, not vocabulary) ---- */
-  --color-accent:       #c9a66b;
-  --color-accent-hover: #d6b57e;
-  --color-accent-bg:    rgba(201, 166, 107, 0.12);
-  --color-on-accent:    #211c14;   /* text on solid accent fill (Design System §5) */
-
-  /* ---- Status (muted, calm next to the accent) ---- */
-  --color-error:         #b5675a;
-  --color-error-bg:      rgba(181, 103, 90, 0.12);
-  --color-error-border:  rgba(181, 103, 90, 0.32);
-  --color-success:       #8fa887;
-  --color-success-bg:    rgba(143, 168, 135, 0.12);
-
-  /* ---- Spacing (4px base, 8px rhythm) ---- */
-  --space-xxs: 4px;
-  --space-xs:  8px;
-  --space-sm:  12px;
-  --space-md:  16px;
-  --space-5:   20px;
-  --space-lg:  24px;
-  --space-xl:  32px;
-
-  /* ---- Layout ---- */
-  --sidebar-width: 280px;
-  --content-max-width: 780px;   /* centered reading column (thread & composer) */
-
-  /* ---- Radius (moderate; elevated panels top out the range) ---- */
-  --radius-sm:     6px;
-  --radius-md:     10px;
-  --radius-lg:     12px;
-  --radius-xl:     16px;
-  --radius-full:   999px;
-
-  /* ---- Typography ----
-     One UI sans-serif family throughout (skill §4). Concrete faces first so
-     rendering is deterministic; the generic `sans-serif` fallback guarantees
-     no serif/slab/display face can ever be selected. */
-  --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, sans-serif;
-  --font-size-xs:        11px;
-  --font-size-sm:        13px;
-  --font-size-base:      14px;
-  --font-size-md:        15px;
-  --font-size-lg:        17px;
-  --font-size-title:     18px;   /* conversation header */
-  --font-size-xl:        20px;   /* empty-state heading */
-  --font-size-timestamp: 12px;   /* conversation list timestamps */
-  --font-weight-regular:  400;
-  --font-weight-medium:   500;
-  --font-weight-semibold: 600;
-  --line-height-tight:    1.25;
-  --line-height-normal:   1.5;
-  --line-height-relaxed:  1.65;
-  /* Monospace stack for model names / technical metadata (Design System §4). */
-  --font-family-mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas,
-    monospace;
-
-  /* ---- Elevation (floating layers only) ---- */
-  --shadow-menu: 0 4px 16px rgba(0, 0, 0, 0.28), 0 1px 3px rgba(0, 0, 0, 0.2);
-
-  /* ---- Motion ---- */
-  --duration-fast:   120ms;
-  --duration-normal: 180ms;
-  --ease-out: cubic-bezier(0.25, 0.1, 0.25, 1);
-
-  /* Native form controls (select popups, scrollbars) follow the dark theme
-     so no white/default browser control breaks the interface. */
-  color-scheme: dark;
-}
-
-/* ---- Provisional light theme (Phase 10.8 — SRS §11 "Appearance") ----
-   Token-driven override of the same structure (kimi-design-reference/
-   Nexora Design System.md §2). Warm paper surfaces, dark warm text,
-   deepened accent. Switched via `data-theme="light"` on <html>; every
-   component references tokens only, so this block alone retints the app. */
-[data-theme="light"] {
-  --color-bg-app:       #efedea;
-  --color-bg-sidebar:   #eae8e4;
-  --color-bg-main:      #f4f2ef;
-  --color-bg-content:   #ffffff;
-
-  --color-bg-hover:     rgba(0, 0, 0, 0.045);
-  --color-bg-selected:  rgba(0, 0, 0, 0.075);
-
-  --color-border:        rgba(0, 0, 0, 0.08);
-  --color-border-strong: rgba(0, 0, 0, 0.14);
-
-  --color-focus: rgba(169, 130, 74, 0.7);
-  --color-focus-soft: rgba(169, 130, 74, 0.45);
-
-  --color-text-primary:   #262420;
-  --color-text-secondary: #5f5b54;
-  --color-text-tertiary:  #85807a;
-  --color-text-faint:     #a5a19a;
-
-  --color-accent:       #a9824a;
-  --color-accent-hover: #97743f;
-  --color-accent-bg:    rgba(169, 130, 74, 0.12);
-  --color-on-accent:    #ffffff;
-
-  --color-error:         #a8503f;
-  --color-error-bg:      rgba(168, 80, 63, 0.10);
-  --color-error-border:  rgba(168, 80, 63, 0.3);
-  --color-success:       #5d7d55;
-  --color-success-bg:    rgba(93, 125, 85, 0.12);
-
-  --shadow-menu: 0 4px 16px rgba(0, 0, 0, 0.1), 0 1px 3px rgba(0, 0, 0, 0.07);
-
-  color-scheme: light;
-}
-
-/* The brand assets are white-on-transparent; invert them for legibility on
-   paper surfaces (Design System §7). */
-[data-theme="light"] .nex-logo,
-[data-theme="light"] .nex-empty-mark,
-[data-theme="light"] .nex-placeholder-mark {
-  filter: invert(1);
-}
-
-/* ---- Motion respect ---- */
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-  }
-}
 
 /* ---- Box model ---- */
 *, *::before, *::after { box-sizing: border-box; }
@@ -172,12 +13,12 @@ html, body { margin: 0; padding: 0; height: 100%; }
 
 body {
   margin: 0;
-  background: var(--color-bg-app);
-  color: var(--color-text-primary);
-  font-family: var(--font-family);
-  font-size: var(--font-size-base);
-  font-weight: var(--font-weight-regular);
-  line-height: var(--line-height-normal);
+  background: var(--nex-sys-color-surface);
+  color: var(--nex-sys-color-on-surface);
+  font-family: var(--nex-sys-type-family);
+  font-size: var(--nex-sys-type-size-body-medium);
+  font-weight: var(--nex-sys-type-weight-regular);
+  line-height: var(--nex-sys-type-line-height-normal);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-size-adjust: 100%;
@@ -187,10 +28,10 @@ body {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
-  background: var(--color-bg-app);
+  background: var(--nex-sys-color-surface);
 }
 
-a { color: var(--color-accent); }
+a { color: var(--nex-sys-color-primary); }
 a:hover { text-decoration: underline; }
 
 /* Buttons reset to a predictable baseline; themed via .nex-btn* classes. */
@@ -208,7 +49,7 @@ button {
 button:disabled,
 button[disabled] {
   cursor: default;
-  opacity: 0.5;
+  opacity: var(--nex-sys-state-disabled-opacity);
 }
 
 ul, ol { margin: 0; padding: 0; list-style: none; }
@@ -224,8 +65,19 @@ input, textarea, select {
   font-family: inherit;
 }
 
-/* ---- Focus ring (keyboard accessibility) ---- */
+/* The brand assets are white-on-transparent; invert them for legibility on
+   paper surfaces (Design System §7). */
+[data-theme="light"] .nex-logo,
+[data-theme="light"] .nex-empty-mark,
+[data-theme="light"] .nex-placeholder-mark {
+  filter: invert(1);
+}
+
+/* ---- Focus ring (keyboard accessibility) ----
+   Single app-wide treatment: thin accent ring via tokens. Component
+   rules must not redefine ring width/color — dense rows use the
+   inset offset variant instead. */
 :focus-visible {
-  outline: 1px solid var(--color-focus);
-  outline-offset: 2px;
+  outline: var(--nex-sys-focus-ring-width) solid var(--nex-sys-focus-ring-color);
+  outline-offset: var(--nex-sys-focus-ring-offset);
 }

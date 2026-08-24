@@ -1,39 +1,40 @@
 /* ============================================================
    Nexora Application Shell & Global Layout — Phase 10.3.1 (visual refinement)
+   Consumes 0.2.1 expressive tokens (tokens.css) exclusively.
    ============================================================ */
 
 /* ---- App shell: fixed sidebar + main content ---- */
 .nex-app {
   display: grid;
-  grid-template-columns: var(--sidebar-width) 1fr;
+  grid-template-columns: var(--nex-sys-layout-sidebar-width) 1fr;
   width: 100vw;
   height: 100vh;
-  background: var(--color-bg-app);
-  color: var(--color-text-primary);
-  font-family: var(--font-family);
-  font-size: var(--font-size-base);
-  font-weight: var(--font-weight-regular);
-  line-height: var(--line-height-normal);
+  background: var(--nex-sys-color-surface);
+  color: var(--nex-sys-color-on-surface);
+  font-family: var(--nex-sys-type-family);
+  font-size: var(--nex-sys-type-size-body-medium);
+  font-weight: var(--nex-sys-type-weight-regular);
+  line-height: var(--nex-sys-type-line-height-normal);
   overflow: hidden;
 }
 
 /* ---- Sidebar: one coherent navigation surface ---- */
 .nex-sidebar {
-  width: var(--sidebar-width);
-  min-width: var(--sidebar-width);
-  max-width: var(--sidebar-width);
-  background: var(--color-bg-sidebar);
-  border-right: 1px solid var(--color-border-strong);
+  width: var(--nex-sys-layout-sidebar-width);
+  min-width: var(--nex-sys-layout-sidebar-width);
+  max-width: var(--nex-sys-layout-sidebar-width);
+  background: var(--nex-sys-color-surface-container-low);
+  border-right: 1px solid var(--nex-sys-color-outline);
   display: flex;
   flex-direction: column;
-  padding: var(--space-sm) 0;
+  padding: var(--nex-sys-space-sm) 0;
 }
 
 .nex-sidebar-head {
   display: flex;
   flex-direction: column;
-  gap: var(--space-sm);
-  padding: 0 var(--space-md);
+  gap: var(--nex-sys-space-sm);
+  padding: 0 var(--nex-sys-space-md);
 }
 
 .nex-logo {
@@ -44,7 +45,7 @@
 /* ---- Main content area ---- */
 .nex-main {
   flex: 1 1 auto;
-  background: var(--color-bg-main);
+  background: var(--nex-sys-color-surface-container);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -54,23 +55,23 @@
 .nex-main-header {
   display: flex;
   align-items: baseline;
-  gap: var(--space-sm);
-  padding: 12px var(--space-md);
-  background: var(--color-bg-main);
-  border-bottom: 1px solid var(--color-border);
+  gap: var(--nex-sys-space-sm);
+  padding: var(--nex-sys-space-sm) var(--nex-sys-space-md);
+  background: var(--nex-sys-color-surface-container);
+  border-bottom: 1px solid var(--nex-sys-color-outline-variant);
 }
 
 .nex-main-title {
-  font-size: var(--font-size-title);
-  font-weight: var(--font-weight-semibold);
-  color: var(--color-text-primary);
+  font-size: var(--nex-sys-type-size-title-large);
+  font-weight: var(--nex-sys-type-weight-semibold);
+  color: var(--nex-sys-color-on-surface);
 }
 
 .nex-main-title-badge {
-  margin-left: var(--space-xs);
-  font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-regular);
-  color: var(--color-text-tertiary);
+  margin-left: var(--nex-sys-space-xs);
+  font-size: var(--nex-sys-type-size-label-small);
+  font-weight: var(--nex-sys-type-weight-regular);
+  color: var(--nex-sys-color-on-surface-tertiary);
 }
 
 .nex-main-body {
@@ -81,20 +82,21 @@
   flex-direction: column;
 }
 
-/* ---- Typography utilities ---- */
-.nex-text-xs { font-size: var(--font-size-xs); }
-.nex-text-sm { font-size: var(--font-size-sm); }
-.nex-text-base { font-size: var(--font-size-base); }
-.nex-text-md { font-size: var(--font-size-md); }
-.nex-text-lg { font-size: var(--font-size-lg); }
+/* ---- Typography utilities ----
+   Size stops map to M3 style roles per the matrix in tokens.css
+   (label-small … headline-small). */
+.nex-text-xs { font-size: var(--nex-sys-type-size-label-small); }
+.nex-text-sm { font-size: var(--nex-sys-type-size-body-small); }
+.nex-text-base { font-size: var(--nex-sys-type-size-body-medium); }
+.nex-text-md { font-size: var(--nex-sys-type-size-body-large); }
+.nex-text-lg { font-size: var(--nex-sys-type-size-title-medium); }
 
-.nex-font-regular { font-weight: var(--font-weight-regular); }
-.nex-font-medium { font-weight: var(--font-weight-medium); }
-.nex-font-semibold { font-weight: var(--font-weight-semibold); }
+.nex-font-regular { font-weight: var(--nex-sys-type-weight-regular); }
+.nex-font-medium { font-weight: var(--nex-sys-type-weight-medium); }
+.nex-font-semibold { font-weight: var(--nex-sys-type-weight-semibold); }
 
-.nex-text-primary { color: var(--color-text-primary); }
-.nex-text-secondary { color: var(--color-text-secondary); }
-.nex-text-tertiary { color: var(--color-text-tertiary); }
+.nex-text-primary { color: var(--nex-sys-color-on-surface); }
+.nex-text-secondary { color: var(--nex-sys-color-on-surface-variant); }
+.nex-text-tertiary { color: var(--nex-sys-color-on-surface-tertiary); }
 
 .nex-flex-center { display: flex; align-items: center; justify-content: center; }
-

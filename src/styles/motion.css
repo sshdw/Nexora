@@ -1,0 +1,106 @@
+/* ============================================================
+   Nexora Motion Tokens — 0.2.1 Expressive Foundation
+   All values below are OFFICIAL Material tokens, exported from
+   the skill's references/motion.md §4–§5 (verified 2026-08-24
+   against m3.material.io and AndroidX source). Never invent
+   durations, curves, or spring parameters.
+
+   Components consume --motion-* variables only.
+   Reduced-motion handling lives at the bottom of this file.
+   ============================================================ */
+
+:root {
+  /* ---- Easing tokens (OFFICIAL; published CSS verbatim) ----
+     Note: full "emphasized" easing is N/A in CSS per the official
+     table — expressive begin+end falls back to standard. */
+  --motion-easing-standard: cubic-bezier(0.2, 0, 0, 1);
+  --motion-easing-standard-decelerate: cubic-bezier(0, 0, 0, 1);   /* entering */
+  --motion-easing-standard-accelerate: cubic-bezier(0.3, 0, 1, 1); /* exiting */
+  --motion-easing-emphasized-decelerate: cubic-bezier(0.05, 0.7, 0.1, 1); /* expressive entering */
+  --motion-easing-emphasized-accelerate: cubic-bezier(0.3, 0, 0.8, 0.15); /* expressive exiting */
+
+  /* ---- Duration tokens (OFFICIAL sets) ----
+     short1-4: 50/100/150/200 · medium1-4: 250/300/350/400 ·
+     long1-4: 450/500/550/600 · extra-long1-4: 700/800/900/1000 */
+  --motion-duration-short1: 50ms;
+  --motion-duration-short2: 100ms;
+  --motion-duration-short3: 150ms;
+  --motion-duration-short4: 200ms;
+  --motion-duration-medium1: 250ms;
+  --motion-duration-medium2: 300ms;
+  --motion-duration-medium3: 350ms;
+  --motion-duration-medium4: 400ms;
+  --motion-duration-long1: 450ms;
+  --motion-duration-long2: 500ms;
+  --motion-duration-long3: 550ms;
+  --motion-duration-long4: 600ms;
+  --motion-duration-extra-long1: 700ms;
+  --motion-duration-extra-long2: 800ms;
+  --motion-duration-extra-long3: 900ms;
+  --motion-duration-extra-long4: 1000ms;
+
+  /* Legacy app durations carried forward (NEXORA ADAPTATION —
+     pre-existing tuned values preserved for zero visual drift).
+     -fast sits between official short2/short3; snapping to the
+     official sets is a candidate cleanup after audit §12 review. */
+  --motion-duration-fast: 120ms;
+  --motion-duration-normal: 180ms;
+
+  /* ---- Spring→CSS conversion pairs (OFFICIAL table, motion.md §4)
+     For non-interruptible one-shot animations; y-values > 1 encode
+     overshoot. True interruptible springs need a JS integrator and
+     are deferred (audit §12.3 — OPEN DECISION). Naming:
+     scheme-speed-kind. Effects springs never overshoot (ζ=1). */
+  /* Expressive spatial (whitelisted moments only: send/create/
+     confirm-destructive — NEXORA ADAPTATION rationing). */
+  --motion-spring-expressive-fast-spatial-curve: cubic-bezier(0.42, 1.67, 0.21, 0.9);
+  --motion-spring-expressive-fast-spatial-duration: 350ms;
+  --motion-spring-expressive-default-spatial-curve: cubic-bezier(0.38, 1.21, 0.22, 1);
+  --motion-spring-expressive-default-spatial-duration: 500ms;
+  --motion-spring-expressive-slow-spatial-curve: cubic-bezier(0.39, 1.29, 0.35, 0.98);
+  --motion-spring-expressive-slow-spatial-duration: 650ms;
+  /* Expressive effects. */
+  --motion-spring-expressive-fast-effects-curve: cubic-bezier(0.31, 0.94, 0.34, 1);
+  --motion-spring-expressive-fast-effects-duration: 150ms;
+  --motion-spring-expressive-default-effects-curve: cubic-bezier(0.34, 0.8, 0.34, 1);
+  --motion-spring-expressive-default-effects-duration: 200ms;
+  --motion-spring-expressive-slow-effects-curve: cubic-bezier(0.34, 0.88, 0.34, 1);
+  --motion-spring-expressive-slow-effects-duration: 300ms;
+  /* Standard spatial. */
+  --motion-spring-standard-fast-spatial-curve: cubic-bezier(0.27, 1.06, 0.18, 1);
+  --motion-spring-standard-fast-spatial-duration: 350ms;
+  --motion-spring-standard-default-spatial-curve: cubic-bezier(0.27, 1.06, 0.18, 1);
+  --motion-spring-standard-default-spatial-duration: 500ms;
+  --motion-spring-standard-slow-spatial-curve: cubic-bezier(0.27, 1.06, 0.18, 1);
+  --motion-spring-standard-slow-spatial-duration: 750ms;
+  /* Standard effects. */
+  --motion-spring-standard-fast-effects-curve: cubic-bezier(0.31, 0.94, 0.34, 1);
+  --motion-spring-standard-fast-effects-duration: 150ms;
+  --motion-spring-standard-default-effects-curve: cubic-bezier(0.34, 0.8, 0.34, 1);
+  --motion-spring-standard-default-effects-duration: 200ms;
+  --motion-spring-standard-slow-effects-curve: cubic-bezier(0.34, 0.88, 0.34, 1);
+  --motion-spring-standard-slow-effects-duration: 300ms;
+
+  /* ---- Loop timings (NEXORA ADAPTATION — gentle loops preserved
+     from 0.1.0; static fallbacks under reduced motion below) ---- */
+  --motion-loop-skeleton: 1.6s;
+  --motion-loop-typing-dot-delay: 120ms;
+}
+
+/* ---- Reduced motion (OFFICIAL requirement, accessibility.md §5)
+   One global gate: every duration collapses to effectively zero and
+   loops resolve to a single static frame. Information must survive
+   animation removal — state is always legible from the final frame.
+   Per-animation degraded forms are declared beside each animation. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+    scroll-behavior: auto !important;
+  }
+}

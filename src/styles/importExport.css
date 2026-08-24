@@ -1,24 +1,24 @@
 /* ============================================================
    Import / Export (FR-010, FR-011) — Phase 10.7
-   Reuses the Kimi modal system (prompt modal classes); only the
-   status/hint rows below are new, built on existing tokens.
+   Reuses the modal system (prompt modal classes); only the
+   status/hint rows below are new, built on 0.2.1 tokens.
    ============================================================ */
 
 /* Success / info status row shown inside an import/export modal. Uses the
    success token when present, falling back to secondary text so the modal
    stays correct without the pending theme-token changes. */
 .nex-io-status.is-ok {
-  color: var(--color-success, var(--color-text-secondary));
+  color: var(--nex-sys-color-success, var(--nex-sys-color-on-surface-variant));
 }
 
 .nex-io-status {
   margin: 0;
-  font-size: var(--font-size-sm);
+  font-size: var(--nex-sys-type-size-body-small);
 }
 
 /* Neutral explanatory hint under a modal title. */
 .nex-io-hint {
   margin: 0;
-  font-size: var(--font-size-sm);
-  color: var(--color-text-tertiary);
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-on-surface-tertiary);
 }

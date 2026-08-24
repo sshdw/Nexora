@@ -1,4 +1,9 @@
-/* ============================================================\n   Prompt Library — Warm Minimal (Phase 10.4, FR-007, FR-009)\n   Flat list + modal editor. Reuses the global button primitives\n   and warm-minimal surface stack; only Prompt Library-specific\n   layout and text treatment lives here.\n   ============================================================ */
+/* ============================================================
+   Prompt Library — Warm Minimal (Phase 10.4, FR-007, FR-009;
+   0.2.1 token migration). Flat list + modal editor. Reuses the
+   global button primitives and warm-minimal surface stack; only
+   Prompt Library-specific layout and text treatment lives here.
+   ============================================================ */
 
 /* ---- Full surface ---- */
 .nex-prompt-library {
@@ -14,25 +19,25 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-sm);
-  padding: 12px var(--space-md);
-  background: var(--color-bg-main);
-  border-bottom: 1px solid var(--color-border);
+  gap: var(--nex-sys-space-sm);
+  padding: var(--nex-sys-space-sm) var(--nex-sys-space-md);
+  background: var(--nex-sys-color-surface-container);
+  border-bottom: 1px solid var(--nex-sys-color-outline-variant);
 }
 .nex-prompt-library-title {
-  font-size: var(--font-size-title);
-  font-weight: var(--font-weight-semibold);
-  color: var(--color-text-primary);
+  font-size: var(--nex-sys-type-size-title-large);
+  font-weight: var(--nex-sys-type-weight-semibold);
+  color: var(--nex-sys-color-on-surface);
 }
 
 /* ---- Toolbar: search + new prompt ---- */
 .nex-prompt-toolbar {
   display: flex;
   align-items: center;
-  gap: var(--space-sm);
-  padding: var(--space-sm) var(--space-md);
-  background: var(--color-bg-main);
-  border-bottom: 1px solid var(--color-border);
+  gap: var(--nex-sys-space-sm);
+  padding: var(--nex-sys-space-sm) var(--nex-sys-space-md);
+  background: var(--nex-sys-color-surface-container);
+  border-bottom: 1px solid var(--nex-sys-color-outline-variant);
 }
 
 /* ---- Prompt-local search (flat, mirror of the sidebar search) ---- */
@@ -43,33 +48,34 @@
 }
 .nex-prompt-search-icon {
   position: absolute;
-  left: var(--space-sm);
+  left: var(--nex-sys-space-sm);
   top: 50%;
   transform: translateY(-50%);
   width: 16px;
   height: 16px;
-  color: var(--color-text-secondary);
+  color: var(--nex-sys-color-on-surface-variant);
   pointer-events: none;
 }
 .nex-prompt-search-input {
   width: 100%;
   padding: 7px 10px 7px 30px;
-  border-radius: var(--radius-sm);
+  border-radius: var(--nex-sys-shape-small);
   background: transparent;
-  border: 1px solid var(--color-border-strong);
-  color: var(--color-text-primary);
-  font-size: var(--font-size-sm);
+  border: 1px solid var(--nex-sys-color-outline);
+  color: var(--nex-sys-color-on-surface);
+  font-size: var(--nex-sys-type-size-body-small);
   outline: none;
-  transition: border-color 0.12s ease, background-color 0.12s ease;
+  transition: border-color var(--motion-duration-fast) var(--motion-easing-standard),
+    background-color var(--motion-duration-fast) var(--motion-easing-standard);
 }
 .nex-prompt-search-input::placeholder {
-  color: var(--color-text-tertiary);
+  color: var(--nex-sys-color-on-surface-tertiary);
 }
 .nex-prompt-search-input:hover {
-  background: var(--color-bg-hover);
+  background: var(--nex-sys-state-hover);
 }
 .nex-prompt-search-input:focus {
-  border-color: var(--color-focus-soft);
+  border-color: var(--nex-sys-focus-field-color);
   background: transparent;
 }
 
@@ -86,10 +92,10 @@
 .nex-prompt-item {
   display: flex;
   flex-direction: column;
-  gap: var(--space-xs);
+  gap: var(--nex-sys-space-xs);
   width: 100%;
-  padding: var(--space-sm) var(--space-md);
-  border-bottom: 1px solid var(--color-border);
+  padding: var(--nex-sys-space-sm) var(--nex-sys-space-md);
+  border-bottom: 1px solid var(--nex-sys-color-outline-variant);
 }
 .nex-prompt-item-main {
   display: flex;
@@ -98,17 +104,17 @@
   min-width: 0;
 }
 .nex-prompt-title {
-  font-size: var(--font-size-base);
-  font-weight: var(--font-weight-medium);
-  color: var(--color-text-primary);
+  font-size: var(--nex-sys-type-size-body-medium);
+  font-weight: var(--nex-sys-type-weight-medium);
+  color: var(--nex-sys-color-on-surface);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .nex-prompt-preview {
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-regular);
-  color: var(--color-text-tertiary);
+  font-size: var(--nex-sys-type-size-body-small);
+  font-weight: var(--nex-sys-type-weight-regular);
+  color: var(--nex-sys-color-on-surface-tertiary);
   overflow: hidden;
   text-overflow: ellipsis;
   display: -webkit-box;
@@ -121,22 +127,22 @@
   justify-content: space-between;
 }
 .nex-prompt-label-muted {
-  font-size: var(--font-size-timestamp);
-  color: var(--color-text-tertiary);
+  font-size: var(--nex-sys-type-size-label-medium);
+  color: var(--nex-sys-color-on-surface-tertiary);
 }
 .nex-prompt-actions {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-xs);
+  gap: var(--nex-sys-space-xs);
   flex-shrink: 0;
   justify-content: flex-end;
 }
 
 /* ---- Status / empty ---- */
 .nex-prompt-status {
-  padding: var(--space-md);
-  font-size: var(--font-size-sm);
-  color: var(--color-text-secondary);
+  padding: var(--nex-sys-space-md);
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-on-surface-variant);
 }
 .nex-prompt-empty {
   flex: 1 1 auto;
@@ -144,18 +150,18 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: var(--space-sm);
-  padding: var(--space-xl) var(--space-md);
+  gap: var(--nex-sys-space-sm);
+  padding: var(--nex-sys-space-2xl) var(--nex-sys-space-md);
 }
 .nex-prompt-empty-title {
-  font-size: var(--font-size-lg);
-  font-weight: var(--font-weight-semibold);
-  color: var(--color-text-primary);
+  font-size: var(--nex-sys-type-size-title-medium);
+  font-weight: var(--nex-sys-type-weight-semibold);
+  color: var(--nex-sys-color-on-surface);
 }
 .nex-prompt-empty-text {
   max-width: 420px;
-  font-size: var(--font-size-sm);
-  color: var(--color-text-secondary);
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-on-surface-variant);
   text-align: center;
 }
 
@@ -167,82 +173,83 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.35);
-  padding: var(--space-md);
+  background: var(--nex-sys-color-scrim);
+  padding: var(--nex-sys-space-md);
 }
 .nex-prompt-modal-card {
   width: 100%;
   max-width: 560px;
   max-height: 80vh;
-  background: var(--color-bg-content);
-  border: 1px solid var(--color-border-strong);
-  border-radius: var(--radius-md);
-  box-shadow: 0 16px 32px rgba(0, 0, 0, 0.35);
+  background: var(--nex-sys-color-surface-container-high);
+  border: 1px solid var(--nex-sys-color-outline);
+  border-radius: var(--nex-sys-shape-medium);
+  box-shadow: var(--nex-sys-elevation-level2);
   display: flex;
   flex-direction: column;
-  gap: var(--space-sm);
+  gap: var(--nex-sys-space-sm);
   overflow-y: auto;
-  padding: var(--space-md);
+  padding: var(--nex-sys-space-md);
 }
 .nex-prompt-modal-title {
-  font-size: var(--font-size-md);
-  font-weight: var(--font-weight-semibold);
-  color: var(--color-text-primary);
+  font-size: var(--nex-sys-type-size-body-large);
+  font-weight: var(--nex-sys-type-weight-semibold);
+  color: var(--nex-sys-color-on-surface);
 }
 .nex-prompt-modal-error {
   margin: 0;
-  font-size: var(--font-size-sm);
-  color: var(--color-error);
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-error);
 }
 .nex-prompt-modal-actions {
   display: inline-flex;
   justify-content: flex-end;
-  gap: var(--space-xs);
+  gap: var(--nex-sys-space-xs);
 }
 
 /* ---- Fields reused from Settings ---- */
 .nex-prompt-field {
   display: flex;
   flex-direction: column;
-  gap: var(--space-xs);
+  gap: var(--nex-sys-space-xs);
 }
 .nex-prompt-label {
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-medium);
-  color: var(--color-text-secondary);
+  font-size: var(--nex-sys-type-size-body-small);
+  font-weight: var(--nex-sys-type-weight-medium);
+  color: var(--nex-sys-color-on-surface-variant);
 }
 .nex-textarea {
   width: 100%;
   max-width: 560px;
   min-height: 140px;
   padding: 8px 10px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--color-border-strong);
+  border-radius: var(--nex-sys-shape-small);
+  border: 1px solid var(--nex-sys-color-outline);
   background: transparent;
-  color: var(--color-text-primary);
-  font-size: var(--font-size-sm);
+  color: var(--nex-sys-color-on-surface);
+  font-size: var(--nex-sys-type-size-body-small);
   font-family: inherit;
   outline: none;
   resize: vertical;
-  transition: border-color 0.12s ease, background-color 0.12s ease;
+  transition: border-color var(--motion-duration-fast) var(--motion-easing-standard),
+    background-color var(--motion-duration-fast) var(--motion-easing-standard);
 }
 .nex-textarea::placeholder {
-  color: var(--color-text-tertiary);
+  color: var(--nex-sys-color-on-surface-tertiary);
 }
 .nex-textarea:hover {
-  background: var(--color-bg-hover);
+  background: var(--nex-sys-state-hover);
 }
 .nex-textarea:focus {
-  border-color: var(--color-focus-soft);
+  border-color: var(--nex-sys-focus-field-color);
   background: transparent;
 }
 .nex-textarea:disabled {
-  opacity: 0.55;
+  opacity: var(--nex-sys-state-disabled-opacity);
   cursor: default;
 }
 .nex-prompt-count {
-  font-size: var(--font-size-xs);
-  color: var(--color-text-tertiary);
+  font-size: var(--nex-sys-type-size-label-small);
+  color: var(--nex-sys-color-on-surface-tertiary);
   text-align: right;
 }
 
@@ -250,38 +257,39 @@
 .nex-prompt-library-entry {
   display: flex;
   align-items: center;
-  gap: var(--space-sm);
+  gap: var(--nex-sys-space-sm);
   width: 100%;
   min-height: 40px;
-  padding: 8px var(--space-md);
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-regular);
+  padding: 8px var(--nex-sys-space-md);
+  color: var(--nex-sys-color-on-surface-variant);
+  font-size: var(--nex-sys-type-size-body-small);
+  font-weight: var(--nex-sys-type-weight-regular);
   border: none;
   background: transparent;
-  transition: background-color 0.12s ease, color 0.12s ease;
+  transition: background-color var(--motion-duration-fast) var(--motion-easing-standard),
+    color var(--motion-duration-fast) var(--motion-easing-standard);
 }
 .nex-prompt-library-entry:hover {
-  background: var(--color-bg-hover);
-  color: var(--color-text-primary);
+  background: var(--nex-sys-state-hover);
+  color: var(--nex-sys-color-on-surface);
+}
+.nex-prompt-library-entry:active {
+  background: var(--nex-sys-state-pressed);
 }
 .nex-prompt-library-entry:focus-visible {
-  outline: 1px solid var(--color-focus);
-  outline-offset: -1px;
+  outline-offset: var(--nex-sys-focus-ring-offset-inset);
 }
 .nex-prompt-library-entry.is-active {
-  color: var(--color-text-primary);
-  font-weight: var(--font-weight-medium);
+  color: var(--nex-sys-color-on-surface);
+  font-weight: var(--nex-sys-type-weight-medium);
 }
 .nex-prompt-library-entry.is-active .nex-prompt-library-icon,
 .nex-prompt-library-entry:hover .nex-prompt-library-icon {
-  color: var(--color-text-primary);
+  color: var(--nex-sys-color-on-surface);
 }
 .nex-prompt-library-icon {
   width: 18px;
   height: 18px;
-  color: var(--color-text-secondary);
+  color: var(--nex-sys-color-on-surface-variant);
   flex-shrink: 0;
 }
-
-

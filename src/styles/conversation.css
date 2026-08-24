@@ -1,89 +1,98 @@
 /* ============================================================
    Nexora sidebar primitives, buttons & conversation list — Warm Minimal
-   (Phase 10.4.1 Kimi integration). Flat, single-surface navigation.
-   Selection is carried by a subtle surface-lightness shift — no accent
-   bar, no colour wash. Primary actions use the solid accent fill.
+   (Phase 10.4.1 Kimi integration; 0.2.1 token migration).
+   Flat, single-surface navigation. Selection is carried by a subtle
+   surface-lightness shift — no accent bar, no colour wash. Primary
+   actions use the solid accent fill. Consumes tokens.css/motion.css
+   exclusively.
    ============================================================ */
 
 /* ---- Shared button primitives ---- */
 .nex-btn {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-xs);
-  border-radius: var(--radius-md);
-  padding: 7px var(--space-sm);
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-medium);
+  gap: var(--nex-sys-space-xs);
+  border-radius: var(--nex-sys-shape-medium);
+  padding: 7px var(--nex-sys-space-sm);
+  font-size: var(--nex-sys-type-size-body-small);
+  font-weight: var(--nex-sys-type-weight-medium);
   border: 1px solid transparent;
   background: transparent;
   color: inherit;
   cursor: pointer;
-  transition: background-color var(--duration-fast) var(--ease-out),
-    border-color var(--duration-fast) var(--ease-out),
-    color var(--duration-fast) var(--ease-out), opacity var(--duration-fast) var(--ease-out);
+  transition: background-color var(--motion-duration-fast) var(--motion-easing-standard),
+    border-color var(--motion-duration-fast) var(--motion-easing-standard),
+    color var(--motion-duration-fast) var(--motion-easing-standard), opacity var(--motion-duration-fast) var(--motion-easing-standard);
 }
 .nex-btn:disabled {
-  opacity: 0.5;
+  opacity: var(--nex-sys-state-disabled-opacity);
   cursor: default;
 }
 .nex-btn:disabled:hover {
   background: inherit;
 }
+/* Pressed state layer — OFFICIAL 0.12 overlay (components.md §1).
+   Variant rules below may override with their own pressed treatment. */
+.nex-btn:active:not(:disabled) {
+  background-color: var(--nex-sys-state-pressed);
+}
 
 /* Primary action: solid accent fill, dark warm text on it (Kimi button rule).
    Accent is punctuation reserved for the primary action of each surface. */
 .nex-btn-primary {
-  background: var(--color-accent);
-  color: var(--color-on-accent);
+  background: var(--nex-sys-color-primary);
+  color: var(--nex-sys-color-on-primary);
   border-color: transparent;
 }
 .nex-btn-primary:hover:not(:disabled) {
-  background: var(--color-accent-hover);
-  color: var(--color-on-accent);
+  background: var(--nex-sys-color-primary-hover);
+  color: var(--nex-sys-color-on-primary);
 }
 .nex-btn-primary:active:not(:disabled) {
-  background: var(--color-accent);
-}
-.nex-btn-primary:focus-visible {
-  outline: 1.5px solid var(--color-focus);
-  outline-offset: 1px;
+  background: var(--nex-sys-color-primary);
 }
 
 /* Tonal accent action: accent text on the bare surface — used for quiet
    secondary actions that still carry the accent (e.g. Open Settings link). */
 .nex-btn-accent {
-  color: var(--color-accent);
+  color: var(--nex-sys-color-primary);
 }
 .nex-btn-accent:hover:not(:disabled) {
-  background: var(--color-bg-hover);
-  color: var(--color-accent-hover);
-}
-.nex-btn-accent:active:not(:disabled) {
-  background: var(--color-bg-selected);
+  background: var(--nex-sys-state-hover);
+  color: var(--nex-sys-color-primary-hover);
 }
 
 /* Outline action: hairline border, no fill (Kimi secondary). */
 .nex-btn-outline {
-  color: var(--color-text-primary);
-  border-color: var(--color-border-strong);
+  color: var(--nex-sys-color-on-surface);
+  border-color: var(--nex-sys-color-outline);
 }
 .nex-btn-outline:hover:not(:disabled) {
-  background: var(--color-bg-hover);
-  border-color: var(--color-border-strong);
+  background: var(--nex-sys-state-hover);
+  border-color: var(--nex-sys-color-outline);
 }
 
 .nex-btn-ghost {
-  color: var(--color-text-secondary);
+  color: var(--nex-sys-color-on-surface-variant);
 }
 .nex-btn-ghost:hover:not(:disabled) {
-  background: var(--color-bg-hover);
-  color: var(--color-text-primary);
+  background: var(--nex-sys-state-hover);
+  color: var(--nex-sys-color-on-surface);
+}
+
+.nex-btn-danger {
+  color: var(--nex-sys-color-error);
+}
+
+.nex-btn-danger:hover:not(:disabled),
+.nex-btn-danger:active:not(:disabled) {
+  background: var(--nex-sys-color-error-container);
 }
 
 .nex-btn-sm {
   padding: 4px 10px;
-  font-size: var(--font-size-xs);
-  border-radius: var(--radius-sm);
+  font-size: var(--nex-sys-type-size-label-small);
+  border-radius: var(--nex-sys-shape-small);
 }
 
 /* ---- New Conversation: the sidebar's primary action.
@@ -91,32 +100,28 @@
 .nex-new-conversation {
   width: 100%;
   justify-content: center;
-  gap: var(--space-sm);
-  padding: 8px var(--space-sm);
-  border-radius: var(--radius-md);
-  background: var(--color-accent);
+  gap: var(--nex-sys-space-sm);
+  padding: 8px var(--nex-sys-space-sm);
+  border-radius: var(--nex-sys-shape-medium);
+  background: var(--nex-sys-color-primary);
   border: none;
-  color: var(--color-on-accent);
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-medium);
+  color: var(--nex-sys-color-on-primary);
+  font-size: var(--nex-sys-type-size-body-small);
+  font-weight: var(--nex-sys-type-weight-medium);
 }
 .nex-new-conversation-icon {
   color: inherit;
   flex-shrink: 0;
 }
 .nex-new-conversation:hover:not(:disabled) {
-  background: var(--color-accent-hover);
+  background: var(--nex-sys-color-primary-hover);
 }
 .nex-new-conversation:active:not(:disabled) {
-  background: var(--color-accent);
-}
-.nex-new-conversation:focus-visible {
-  outline: 1.5px solid var(--color-focus);
-  outline-offset: 1px;
+  background: var(--nex-sys-color-primary);
 }
 .nex-new-conversation:disabled {
-  color: var(--color-on-accent);
-  opacity: 0.5;
+  color: var(--nex-sys-color-on-primary);
+  opacity: var(--nex-sys-state-disabled-opacity);
   cursor: default;
 }
 .nex-new-conversation:disabled .nex-new-conversation-icon {
@@ -130,35 +135,35 @@
 }
 .nex-search-icon {
   position: absolute;
-  left: var(--space-sm);
+  left: var(--nex-sys-space-sm);
   top: 50%;
   transform: translateY(-50%);
   width: 16px;
   height: 16px;
-  color: var(--color-text-faint);
+  color: var(--nex-sys-color-on-surface-faint);
   pointer-events: none;
 }
 .nex-search-input {
   width: 100%;
   padding: 7px 10px 7px 32px;
-  border-radius: var(--radius-md);
+  border-radius: var(--nex-sys-shape-medium);
   background: transparent;
-  border: 1px solid var(--color-border-strong);
-  color: var(--color-text-primary);
-  font-size: var(--font-size-sm);
+  border: 1px solid var(--nex-sys-color-outline);
+  color: var(--nex-sys-color-on-surface);
+  font-size: var(--nex-sys-type-size-body-small);
   outline: none;
-  transition: border-color var(--duration-fast) var(--ease-out),
-    background-color var(--duration-fast) var(--ease-out);
+  transition: border-color var(--motion-duration-fast) var(--motion-easing-standard),
+    background-color var(--motion-duration-fast) var(--motion-easing-standard);
 }
 .nex-search-input::placeholder {
-  color: var(--color-text-faint);
+  color: var(--nex-sys-color-on-surface-faint);
 }
 .nex-search-input:hover {
-  background: var(--color-bg-hover);
+  background: var(--nex-sys-state-hover);
 }
 .nex-search-input:focus {
   background: transparent;
-  border-color: var(--color-focus-soft);
+  border-color: var(--nex-sys-focus-field-color);
   outline: none;
 }
 
@@ -176,11 +181,11 @@
   background: transparent;
 }
 .nex-conversation-nav::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.12);
-  border-radius: var(--radius-full);
+  background: var(--nex-sys-scrollbar-thumb);
+  border-radius: var(--nex-sys-shape-full);
 }
 .nex-conversation-nav::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.18);
+  background: var(--nex-sys-scrollbar-thumb-hover);
 }
 
 .nex-conversation-list {
@@ -191,78 +196,82 @@
 .nex-conversation-item {
   display: flex;
   align-items: center;
-  gap: var(--space-sm);
+  gap: var(--nex-sys-space-sm);
   width: 100%;
   min-height: 44px;
-  padding: 6px var(--space-md);
-  border-radius: var(--radius-sm);
+  padding: 6px var(--nex-sys-space-md);
+  border-radius: var(--nex-sys-shape-small);
   text-align: left;
   background: transparent;
-  transition: background-color 0.12s ease;
+  transition: background-color var(--motion-duration-fast) var(--motion-easing-standard);
 }
 .nex-conversation-item:hover {
-  background: var(--color-bg-hover);
+  background: var(--nex-sys-state-hover);
+}
+.nex-conversation-item:active {
+  background: var(--nex-sys-state-pressed);
 }
 .nex-conversation-item:focus-visible {
-  outline: 1px solid var(--color-focus);
-  outline-offset: -1px;
+  outline-offset: var(--nex-sys-focus-ring-offset-inset);
 }
 .nex-conversation-item.is-selected {
-  background: var(--color-bg-selected);
+  background: var(--nex-sys-state-selected);
 }
 .nex-conversation-item.is-selected .nex-conversation-title {
-  color: var(--color-text-primary);
-  font-weight: var(--font-weight-medium);
+  color: var(--nex-sys-color-on-surface);
+  font-weight: var(--nex-sys-type-weight-medium);
 }
 /* Archived rows stay visibly quiet — their title never previews selection. */
 .nex-conversation-item.is-archived .nex-conversation-title {
-  color: var(--color-text-secondary);
+  color: var(--nex-sys-color-on-surface-variant);
 }
 .nex-conversation-item.is-archived .nex-conversation-time {
-  color: var(--color-text-tertiary);
+  color: var(--nex-sys-color-on-surface-tertiary);
 }
 
 .nex-conversation-title {
   flex: 1 1 auto;
   min-width: 0;
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-regular);
-  color: var(--color-text-primary);
+  font-size: var(--nex-sys-type-size-body-small);
+  font-weight: var(--nex-sys-type-weight-regular);
+  color: var(--nex-sys-color-on-surface);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .nex-conversation-time {
   flex-shrink: 0;
-  font-size: var(--font-size-timestamp);
-  color: var(--color-text-faint);
+  font-size: var(--nex-sys-type-size-label-medium);
+  color: var(--nex-sys-color-on-surface-faint);
   white-space: nowrap;
 }
 
 /* Quiet, sentence-case section labels act as the group dividers. */
 .nex-conversation-group-label {
-  margin-top: var(--space-sm);
-  padding: var(--space-xs) var(--space-md);
-  font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-medium);
+  margin-top: var(--nex-sys-space-sm);
+  padding: var(--nex-sys-space-xs) var(--nex-sys-space-md);
+  font-size: var(--nex-sys-type-size-label-small);
+  font-weight: var(--nex-sys-type-weight-medium);
   letter-spacing: 0.01em;
-  color: var(--color-text-secondary);
+  color: var(--nex-sys-color-on-surface-variant);
 }
 .nex-conversation-empty-hint {
-  padding: var(--space-md);
-  font-size: var(--font-size-sm);
-  color: var(--color-text-secondary);
+  padding: var(--nex-sys-space-md);
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-on-surface-variant);
 }
 
-/* ---- Loading skeleton (flat shimmer) ---- */
+/* ---- Loading skeleton (flat shimmer) ----
+   Reduced motion: loop resolves to a single static frame via the
+   global gate in motion.css — the row remains visible information. */
 .nex-conversation-skeleton-list {
   width: 100%;
 }
 .nex-conversation-skeleton-row {
   height: 44px;
   margin-bottom: 4px;
-  background: var(--color-bg-hover);
-  animation: nex-pulse 1.6s ease-in-out infinite;
+  background: var(--nex-sys-state-hover);
+  animation: nex-pulse var(--motion-loop-skeleton) ease-in-out infinite;
 }
 
 @keyframes nex-pulse {
@@ -281,13 +290,13 @@
 .nex-conversation-error {
   display: flex;
   flex-direction: column;
-  gap: var(--space-sm);
+  gap: var(--nex-sys-space-sm);
   align-items: flex-start;
-  padding: var(--space-md);
+  padding: var(--nex-sys-space-md);
 }
 .nex-conversation-error-text {
-  font-size: var(--font-size-sm);
-  color: var(--color-error);
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-error);
 }
 
 /* ---- Sidebar footer (Workspace nav: group label + entries, anchored) ---- */
@@ -295,7 +304,7 @@
   margin-top: auto;
   display: flex;
   flex-direction: column;
-  padding-top: var(--space-sm);
+  padding-top: var(--nex-sys-space-sm);
 }
 .nex-sidebar-footer .nex-conversation-group-label {
   margin-top: 0;
@@ -305,33 +314,35 @@
 .nex-settings-entry {
   display: flex;
   align-items: center;
-  gap: var(--space-sm);
+  gap: var(--nex-sys-space-sm);
   width: 100%;
   min-height: 40px;
-  padding: 8px var(--space-md);
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-regular);
+  padding: 8px var(--nex-sys-space-md);
+  color: var(--nex-sys-color-on-surface-variant);
+  font-size: var(--nex-sys-type-size-body-small);
+  font-weight: var(--nex-sys-type-weight-regular);
   border: none;
   background: transparent;
-  transition: background-color var(--duration-fast) var(--ease-out),
-    color var(--duration-fast) var(--ease-out);
+  transition: background-color var(--motion-duration-fast) var(--motion-easing-standard),
+    color var(--motion-duration-fast) var(--motion-easing-standard);
 }
 .nex-settings-entry:hover {
-  background: var(--color-bg-hover);
-  color: var(--color-text-primary);
+  background: var(--nex-sys-state-hover);
+  color: var(--nex-sys-color-on-surface);
+}
+.nex-settings-entry:active {
+  background: var(--nex-sys-state-pressed);
 }
 .nex-settings-entry:focus-visible {
-  outline: 1px solid var(--color-focus);
-  outline-offset: -1px;
+  outline-offset: var(--nex-sys-focus-ring-offset-inset);
 }
 .nex-settings-icon {
   width: 18px;
   height: 18px;
-  color: var(--color-text-secondary);
+  color: var(--nex-sys-color-on-surface-variant);
 }
 .nex-settings-entry:hover .nex-settings-icon {
-  color: var(--color-text-primary);
+  color: var(--nex-sys-color-on-surface);
 }
 
 /* ---- Empty state & placeholders (quiet, intentional) ---- */
@@ -343,10 +354,10 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: var(--space-sm);
-  padding: var(--space-xl);
+  gap: var(--nex-sys-space-sm);
+  padding: var(--nex-sys-space-2xl);
   text-align: center;
-  background: var(--color-bg-main);
+  background: var(--nex-sys-color-surface-container);
 }
 .nex-empty-mark,
 .nex-placeholder-mark {
@@ -355,31 +366,31 @@
   opacity: 0.9;
 }
 .nex-empty-title {
-  margin-top: var(--space-sm);
-  font-size: var(--font-size-lg);   /* view/empty-state headings: 17–18 */
-  font-weight: var(--font-weight-medium);
-  line-height: var(--line-height-tight);
-  color: var(--color-text-primary);
+  margin-top: var(--nex-sys-space-sm);
+  font-size: var(--nex-sys-type-size-body-large);   /* view/empty-state headings */
+  font-weight: var(--nex-sys-type-weight-medium);
+  line-height: var(--nex-sys-type-line-height-tight);
+  color: var(--nex-sys-color-on-surface);
 }
 .nex-empty-text {
   max-width: 360px;
-  font-size: var(--font-size-base);
-  color: var(--color-text-secondary);
+  font-size: var(--nex-sys-type-size-body-medium);
+  color: var(--nex-sys-color-on-surface-variant);
 }
 .nex-empty-prompt {
-  margin-top: var(--space-sm);
-  font-size: var(--font-size-sm);
-  color: var(--color-text-tertiary);
+  margin-top: var(--nex-sys-space-sm);
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-on-surface-tertiary);
 }
 .nex-placeholder-title {
-  font-size: var(--font-size-md);
-  font-weight: var(--font-weight-medium);
-  color: var(--color-text-secondary);
+  font-size: var(--nex-sys-type-size-body-large);
+  font-weight: var(--nex-sys-type-weight-medium);
+  color: var(--nex-sys-color-on-surface-variant);
 }
 .nex-placeholder-text {
   max-width: 360px;
-  font-size: var(--font-size-sm);
-  color: var(--color-text-tertiary);
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-on-surface-tertiary);
 }
 
 /* Conversation view: a composed, quiet empty pane for a conversation with no
@@ -390,15 +401,15 @@
   opacity: 0.9;
 }
 .nex-conversation-empty-title {
-  margin-top: var(--space-sm);
-  font-size: var(--font-size-md);
-  font-weight: var(--font-weight-medium);
-  color: var(--color-text-primary);
+  margin-top: var(--nex-sys-space-sm);
+  font-size: var(--nex-sys-type-size-body-large);
+  font-weight: var(--nex-sys-type-weight-medium);
+  color: var(--nex-sys-color-on-surface);
 }
 .nex-conversation-empty-text {
   max-width: 360px;
-  font-size: var(--font-size-sm);
-  color: var(--color-text-secondary);
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-on-surface-variant);
 }
 
 /* ---- Visually hidden (accessibility) ---- */
@@ -426,7 +437,7 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: var(--color-bg-main);
+  background: var(--nex-sys-color-surface-container);
 }
 
 /* ---- History thread (scrollable, chronological from the backend) ----
@@ -439,13 +450,13 @@
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: var(--space-5);
-  padding: var(--space-xl) var(--space-md) var(--space-md);
+  gap: var(--nex-sys-space-lg);
+  padding: var(--nex-sys-space-2xl) var(--nex-sys-space-md) var(--nex-sys-space-md);
 }
 
 .nex-thread-status {
-  font-size: var(--font-size-sm);
-  color: var(--color-text-secondary);
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-on-surface-variant);
 }
 
 /* ---- Messages: no chat bubbles. A full-width role label with origin
@@ -453,11 +464,11 @@
 .nex-message {
   display: flex;
   flex-direction: column;
-  gap: var(--space-xxs);
+  gap: var(--nex-sys-space-xxs);
   width: 100%;
-  max-width: var(--content-max-width);
+  max-width: var(--nex-sys-layout-measure-max);
   margin-inline: auto;
-  padding: var(--space-xs) 0;
+  padding: var(--nex-sys-space-xs) 0;
 }
 
 .nex-message-user,
@@ -470,60 +481,62 @@
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: var(--space-xs);
+  gap: var(--nex-sys-space-xs);
 }
 
 .nex-message-author {
-  font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-semibold);
-  color: var(--color-text-secondary);
+  font-size: var(--nex-sys-type-size-label-small);
+  font-weight: var(--nex-sys-type-weight-semibold);
+  color: var(--nex-sys-color-on-surface-variant);
 }
 
 .nex-message-assistant .nex-message-author {
-  color: var(--color-accent);
+  color: var(--nex-sys-color-primary);
 }
 
 .nex-message-origin {
-  font-family: var(--font-family-mono);
-  font-size: var(--font-size-xs);
-  color: var(--color-text-faint);
+  font-family: var(--nex-sys-type-family-mono);
+  font-size: var(--nex-sys-type-size-label-small);
+  color: var(--nex-sys-color-on-surface-faint);
 }
 
 .nex-message-time {
-  font-size: var(--font-size-xs);
-  color: var(--color-text-faint);
+  font-size: var(--nex-sys-type-size-label-small);
+  color: var(--nex-sys-color-on-surface-faint);
 }
 
 .nex-message-body {
-  font-size: var(--font-size-base);
-  line-height: var(--line-height-relaxed);
-  color: var(--color-text-primary);
+  font-size: var(--nex-sys-type-size-body-medium);
+  line-height: var(--nex-sys-type-line-height-relaxed);
+  color: var(--nex-sys-color-on-surface);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
-/* ---- Assistant three-dot typing pulse (loading brace, not a skeleton) ---- */
+/* ---- Assistant three-dot typing pulse (loading brace, not a skeleton) ----
+   Reduced motion: global gate freezes the loop; dots remain visible
+   statically, so "assistant is responding" survives without motion. */
 .nex-sending {
   display: flex;
   align-items: center;
   gap: 6px;
-  max-width: var(--content-max-width);
+  max-width: var(--nex-sys-layout-measure-max);
   margin-inline: auto;
-  padding: var(--space-xs) 0;
+  padding: var(--nex-sys-space-xs) 0;
 }
 .nex-sending-dot {
   width: 6px;
   height: 6px;
-  border-radius: var(--radius-full);
-  background: var(--color-accent);
+  border-radius: var(--nex-sys-shape-full);
+  background: var(--nex-sys-color-primary);
   opacity: 0.4;
-  animation: nex-typing var(--duration-normal) var(--ease-out) infinite;
+  animation: nex-typing var(--motion-duration-normal) var(--motion-easing-standard) infinite;
 }
 .nex-sending-dot:nth-child(2) {
-  animation-delay: 0.12s;
+  animation-delay: var(--motion-loop-typing-dot-delay);
 }
 .nex-sending-dot:nth-child(3) {
-  animation-delay: 0.24s;
+  animation-delay: calc(var(--motion-loop-typing-dot-delay) * 2);
 }
 @keyframes nex-typing {
   0%,
@@ -542,38 +555,38 @@
 .nex-composer-error {
   flex-shrink: 0;
   width: 100%;
-  max-width: var(--content-max-width);
+  max-width: var(--nex-sys-layout-measure-max);
   margin: 0 auto;
-  padding: var(--space-sm) var(--space-md);
-  font-size: var(--font-size-sm);
-  color: var(--color-error);
-  background: var(--color-error-bg);
-  border: 1px solid var(--color-error-border);
-  border-radius: var(--radius-md);
+  padding: var(--nex-sys-space-sm) var(--nex-sys-space-md);
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-error);
+  background: var(--nex-sys-color-error-container);
+  border: 1px solid var(--nex-sys-color-error-outline);
+  border-radius: var(--nex-sys-shape-medium);
   text-align: left;
 }
 
 /* ---- Composer: shared with the reading column (780px), an elevated
-   hairline surface with a rounded 16px editor (Kimi composer). ---- */
+   hairline surface with a rounded editor (Kimi composer). ---- */
 .nex-composer {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--space-xs);
-  padding: var(--space-md) var(--space-md) var(--space-5);
-  background: var(--color-bg-main);
+  gap: var(--nex-sys-space-xs);
+  padding: var(--nex-sys-space-md) var(--nex-sys-space-md) var(--nex-sys-space-lg);
+  background: var(--nex-sys-color-surface-container);
 }
 
 .nex-composer-inner {
   width: 100%;
-  max-width: var(--content-max-width);
+  max-width: var(--nex-sys-layout-measure-max);
   margin-inline: auto;
 }
 
 .nex-composer-row {
   display: flex;
   align-items: flex-end;
-  gap: var(--space-sm);
+  gap: var(--nex-sys-space-sm);
 }
 
 .nex-composer-input-wrap {
@@ -586,74 +599,73 @@
   resize: none;
   min-height: 52px;
   max-height: 160px;
-  padding: 12px var(--space-md);
-  border-radius: var(--radius-xl);
-  background: var(--color-bg-content);
-  border: 1px solid var(--color-border-strong);
-  color: var(--color-text-primary);
-  font-size: var(--font-size-base);
-  line-height: var(--line-height-normal);
+  padding: 12px var(--nex-sys-space-md);
+  border-radius: var(--nex-sys-shape-extra-large);
+  background: var(--nex-sys-color-surface-container-high);
+  border: 1px solid var(--nex-sys-color-outline);
+  color: var(--nex-sys-color-on-surface);
+  font-size: var(--nex-sys-type-size-body-medium);
+  line-height: var(--nex-sys-type-line-height-normal);
   outline: none;
-  transition: border-color var(--duration-fast) var(--ease-out),
-    background-color var(--duration-fast) var(--ease-out);
+  transition: border-color var(--motion-duration-fast) var(--motion-easing-standard),
+    background-color var(--motion-duration-fast) var(--motion-easing-standard);
 }
 
 .nex-composer-input::placeholder {
-  color: var(--color-text-faint);
+  color: var(--nex-sys-color-on-surface-faint);
 }
 
 .nex-composer-input:hover {
-  border-color: var(--color-border-strong);
+  border-color: var(--nex-sys-color-outline);
 }
 
 .nex-composer-input:focus-visible {
-  border-color: var(--color-focus);
+  border-color: var(--nex-sys-focus-ring-color);
   outline: none;
 }
 
 .nex-composer-input:disabled {
-  opacity: 0.6;
+  opacity: var(--nex-sys-state-disabled-opacity);
 }
 
 .nex-composer-send {
   align-self: stretch;
   min-height: 52px;
-  padding: 0 var(--space-lg);
-  border-radius: var(--radius-md);
-  background: var(--color-accent);
-  color: var(--color-on-accent);
+  padding: 0 var(--nex-sys-space-xl);
+  border-radius: var(--nex-sys-shape-medium);
+  background: var(--nex-sys-color-primary);
+  color: var(--nex-sys-color-on-primary);
   outline: none;
 }
 
 .nex-composer-send:hover:not(:disabled) {
-  background: var(--color-accent-hover);
+  background: var(--nex-sys-color-primary-hover);
 }
 
-.nex-composer-send:focus-visible {
-  outline: 1.5px solid var(--color-focus);
-  outline-offset: 1px;
+.nex-composer-send:active:not(:disabled) {
+  background: var(--nex-sys-color-primary);
 }
 
 .nex-composer-hint {
   display: flex;
   align-items: center;
-  gap: var(--space-xs);
-  font-size: var(--font-size-xs);
-  color: var(--color-text-faint);
+  gap: var(--nex-sys-space-xs);
+  font-size: var(--nex-sys-type-size-label-small);
+  color: var(--nex-sys-color-on-surface-faint);
 }
 
 .nex-composer-hint .nex-composer-model {
-  font-family: var(--font-family-mono);
-  font-size: var(--font-size-xs);
-  color: var(--color-text-secondary);
+  font-family: var(--nex-sys-type-family-mono);
+  font-size: var(--nex-sys-type-size-label-small);
+  color: var(--nex-sys-color-on-surface-variant);
 }
 
 .nex-composer-hint .nex-composer-shortcut {
-  color: var(--color-text-faint);
+  color: var(--nex-sys-color-on-surface-faint);
 }
 
 /* ---- Attachments (FR-008): draft file chips above the input row and the
-    quiet paperclip action. Reuses the existing hairline/radius/typography
+    quiet paperclip action. Reuses the shared hairline/radius/typography
     tokens; no new visual language. ---- */
 .nex-composer-attach {
   display: flex;
@@ -664,48 +676,47 @@
   min-height: 52px;
   flex-shrink: 0;
   border: none;
-  border-radius: var(--radius-md);
+  border-radius: var(--nex-sys-shape-medium);
   background: transparent;
-  color: var(--color-text-secondary);
+  color: var(--nex-sys-color-on-surface-variant);
   cursor: pointer;
-  transition: background-color var(--duration-fast) var(--ease-out),
-    color var(--duration-fast) var(--ease-out);
+  transition: background-color var(--motion-duration-fast) var(--motion-easing-standard),
+    color var(--motion-duration-fast) var(--motion-easing-standard);
 }
 .nex-composer-attach:hover:not(:disabled) {
-  background: var(--color-bg-hover);
-  color: var(--color-text-primary);
+  background: var(--nex-sys-state-hover);
+  color: var(--nex-sys-color-on-surface);
 }
-.nex-composer-attach:focus-visible {
-  outline: 1.5px solid var(--color-focus);
-  outline-offset: 1px;
+.nex-composer-attach:active:not(:disabled) {
+  background: var(--nex-sys-state-pressed);
 }
 .nex-composer-attach:disabled {
-  opacity: 0.5;
+  opacity: var(--nex-sys-state-disabled-opacity);
   cursor: default;
 }
 
 .nex-composer-attachments {
   list-style: none;
-  margin: 0 0 var(--space-xs);
+  margin: 0 0 var(--nex-sys-space-xs);
   padding: 0;
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-xs);
+  gap: var(--nex-sys-space-xs);
 }
 
 .nex-attachment-chip {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-sm);
+  gap: var(--nex-sys-space-sm);
   max-width: 320px;
-  padding: 6px var(--space-sm);
-  background: var(--color-bg-content);
-  border: 1px solid var(--color-border-strong);
-  border-radius: var(--radius-md);
+  padding: 6px var(--nex-sys-space-sm);
+  background: var(--nex-sys-color-surface-container-high);
+  border: 1px solid var(--nex-sys-color-outline);
+  border-radius: var(--nex-sys-shape-medium);
 }
 
 .nex-attachment-icon {
-  color: var(--color-text-secondary);
+  color: var(--nex-sys-color-on-surface-variant);
   flex-shrink: 0;
 }
 
@@ -716,17 +727,17 @@
 }
 
 .nex-attachment-name {
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-medium);
-  color: var(--color-text-primary);
+  font-size: var(--nex-sys-type-size-body-small);
+  font-weight: var(--nex-sys-type-weight-medium);
+  color: var(--nex-sys-color-on-surface);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .nex-attachment-size {
-  font-size: var(--font-size-xs);
-  color: var(--color-text-faint);
+  font-size: var(--nex-sys-type-size-label-small);
+  color: var(--nex-sys-color-on-surface-faint);
 }
 
 .nex-attachment-remove {
@@ -737,30 +748,28 @@
   height: 22px;
   flex-shrink: 0;
   border: none;
-  border-radius: var(--radius-sm);
+  border-radius: var(--nex-sys-shape-small);
   background: transparent;
-  color: var(--color-text-secondary);
+  color: var(--nex-sys-color-on-surface-variant);
   cursor: pointer;
-  transition: background-color var(--duration-fast) var(--ease-out),
-    color var(--duration-fast) var(--ease-out);
+  transition: background-color var(--motion-duration-fast) var(--motion-easing-standard),
+    color var(--motion-duration-fast) var(--motion-easing-standard);
 }
-.nex-attachment-remove:hover:not(:disabled) {
-  background: var(--color-error-bg);
-  color: var(--color-error);
-}
-.nex-attachment-remove:focus-visible {
-  outline: 1px solid var(--color-focus);
-  outline-offset: -1px;
+.nex-attachment-remove:hover:not(:disabled),
+.nex-attachment-remove:active:not(:disabled) {
+  background: var(--nex-sys-color-error-container);
+  color: var(--nex-sys-color-error);
 }
 .nex-attachment-remove:disabled {
-  opacity: 0.5;
+  opacity: var(--nex-sys-state-disabled-opacity);
   cursor: default;
 }
 
 /* ============================================================
    Conversation item management actions & inline rename
    Actions stay hidden until the row is hovered, focused, or selected —
-   a quiet interaction layer on the flat list.
+   a quiet interaction layer on the flat list (keyboard parity via
+   :focus-within).
    ============================================================ */
 
 .nex-conversation-item-wrap {
@@ -783,9 +792,9 @@
   align-items: center;
   gap: 2px;
   flex-shrink: 0;
-  padding-right: var(--space-sm);
+  padding-right: var(--nex-sys-space-sm);
   opacity: 0;
-  transition: opacity 0.12s ease;
+  transition: opacity var(--motion-duration-fast) var(--motion-easing-standard);
 }
 
 .nex-conversation-row:hover .nex-conversation-actions,
@@ -794,23 +803,15 @@
   opacity: 1;
 }
 
-.nex-btn-danger {
-  color: var(--color-error);
-}
-
-.nex-btn-danger:hover:not(:disabled) {
-  background: var(--color-error-bg);
-}
-
 .nex-conversation-rename-input {
   width: 100%;
   min-height: 44px;
-  padding: 6px var(--space-md);
-  border-radius: var(--radius-sm);
-  background: var(--color-bg-content);
-  border: 1px solid var(--color-focus-soft);
-  color: var(--color-text-primary);
-  font-size: var(--font-size-base);
+  padding: 6px var(--nex-sys-space-md);
+  border-radius: var(--nex-sys-shape-small);
+  background: var(--nex-sys-color-surface-container-high);
+  border: 1px solid var(--nex-sys-focus-field-color);
+  color: var(--nex-sys-color-on-surface);
+  font-size: var(--nex-sys-type-size-body-medium);
   outline: none;
 }
 
@@ -828,29 +829,29 @@
   z-index: 50;
   max-height: min(60vh, 320px);
   overflow-y: auto;
-  background: var(--color-bg-content);
-  border: 1px solid var(--color-border-strong);
-  border-radius: var(--radius-md);
-  padding: var(--space-xs);
+  background: var(--nex-sys-color-surface-container-high);
+  border: 1px solid var(--nex-sys-color-outline);
+  border-radius: var(--nex-sys-shape-medium);
+  padding: var(--nex-sys-space-xs);
   display: flex;
   flex-direction: column;
-  gap: var(--space-xxs);
-  box-shadow: var(--shadow-menu);
+  gap: var(--nex-sys-space-xxs);
+  box-shadow: var(--nex-sys-elevation-level1);
 }
 
 .nex-search-status {
-  padding: var(--space-xs) var(--space-sm);
-  font-size: var(--font-size-sm);
-  color: var(--color-text-secondary);
+  padding: var(--nex-sys-space-xs) var(--nex-sys-space-sm);
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-on-surface-variant);
 }
 
 .nex-search-group {
-  padding: var(--space-xs) var(--space-sm) var(--space-xxs);
-  font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-medium);
+  padding: var(--nex-sys-space-xs) var(--nex-sys-space-sm) var(--nex-sys-space-xxs);
+  font-size: var(--nex-sys-type-size-label-small);
+  font-weight: var(--nex-sys-type-weight-medium);
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--color-text-tertiary);
+  color: var(--nex-sys-color-on-surface-tertiary);
 }
 
 .nex-search-result {
@@ -858,39 +859,22 @@
   flex-direction: column;
   gap: 2px;
   width: 100%;
-  padding: var(--space-xs) var(--space-sm);
-  border-radius: var(--radius-sm);
+  padding: var(--nex-sys-space-xs) var(--nex-sys-space-sm);
+  border-radius: var(--nex-sys-shape-small);
   text-align: left;
-  color: var(--color-text-primary);
-  font-size: var(--font-size-sm);
+  color: var(--nex-sys-color-on-surface);
+  font-size: var(--nex-sys-type-size-body-small);
+  transition: background-color var(--motion-duration-fast) var(--motion-easing-standard);
 }
 
 .nex-search-result:hover {
-  background: var(--color-bg-selected);
+  background: var(--nex-sys-state-hover);
+}
+
+.nex-search-result:active {
+  background: var(--nex-sys-state-pressed);
 }
 
 .nex-search-result:focus-visible {
-  outline: 1px solid var(--color-focus);
-  outline-offset: -1px;
+  outline-offset: var(--nex-sys-focus-ring-offset-inset);
 }
-
-.nex-search-result-title {
-  font-weight: var(--font-weight-medium);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.nex-search-result-meta {
-  font-size: var(--font-size-xs);
-  color: var(--color-text-tertiary);
-}
-
-.nex-search-result-snippet {
-  font-size: var(--font-size-xs);
-  color: var(--color-text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
