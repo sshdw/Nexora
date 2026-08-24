@@ -11,7 +11,7 @@
 //! the sent text into the composer so it can be resent without retyping —
 //! frontend draft state only; persisted history is never modified.
 
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 
 import { formatBytes, formatRelativeTime } from "../lib/format";
 import { useAttachments } from "../lib/useAttachments";
@@ -56,6 +56,33 @@ export default function ConversationView({
   } = useAttachments(conversationId);
   const threadRef = useRef<HTMLDivElement>(null);
 
+  // Insertion-motion bookkeeping (presentation only): the message ids shown
+  // in the previous committed render, so genuinely inserted messages can be
+  // distinguished from the initial history fill — only true insertions get
+  // the entrance animation; unchanged content never animates in. Reset
+  // wholesale when the selected conversation changes.
+  const prevMessagesRef = useRef<{ conversationId: number; ids: Set<number> }>({
+    conversationId,
+    ids: new Set(),
+  });
+  const prevMessages = prevMessagesRef.current;
+  const freshMessageIds =
+    prevMessages.conversationId === conversationId &&
+    prevMessages.ids.size > 0 &&
+    messages.length > 0
+      ? new Set(
+          messages
+            .filter((message) => !prevMessages.ids.has(message.id))
+            .map((message) => message.id),
+        )
+      : null;
+  useLayoutEffect(() => {
+    prevMessagesRef.current = {
+      conversationId,
+      ids: new Set(messages.map((message) => message.id)),
+    };
+  }, [conversationId, messages]);
+
   const ready = selectedProvider !== null && selectedModel !== null;
   const canSend =
     ready && draft.trim() !== "" && !sending && !attachmentsBusy;
@@ -94,7 +121,9 @@ export default function ConversationView({
     <div className="nex-main-conversation">
       <div className="nex-thread" ref={threadRef} aria-label="Messages">
         {loading ? (
-          <p className="nex-thread-status">Loading messages…</p>
+          <p className="nex-thread-status nex-fade-in" role="status">
+            Loading messages…
+          </p>
         ) : messages.length === 0 ? (
           <div className="nex-conversation-placeholder">
             <h2 className="nex-conversation-empty-title">No messages yet</h2>
@@ -110,7 +139,8 @@ export default function ConversationView({
                 "nex-message " +
                 (message.role === "user"
                   ? "nex-message-user"
-                  : "nex-message-assistant")
+                  : "nex-message-assistant") +
+                (freshMessageIds?.has(message.id) ? " nex-message-enter" : "")
               }
             >
               <div className="nex-message-meta">
@@ -139,7 +169,11 @@ export default function ConversationView({
           ))
         )}
         {sending && (
-          <div className="nex-typing" aria-label="Assistant is responding">
+          <div
+            className="nex-typing"
+            role="status"
+            aria-label="Assistant is responding"
+          >
             <span className="nex-typing-dot" />
             <span className="nex-typing-dot" />
             <span className="nex-typing-dot" />
@@ -148,13 +182,13 @@ export default function ConversationView({
       </div>
 
       {attachmentError && (
-        <div className="nex-composer-error" role="alert">
+        <div className="nex-composer-error nex-fade-in" role="alert">
           {attachmentError.message}
         </div>
       )}
 
       {error && (
-        <div className="nex-composer-error" role="alert">
+        <div className="nex-composer-error nex-fade-in" role="alert">
           {error.message}
         </div>
       )}

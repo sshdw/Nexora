@@ -546,6 +546,27 @@
 }
 
 /* ============================================================
+   QUICK FADE ENTER (state-appearance feedback)
+   Opacity-only entrance for loading indicators and inline errors
+   that appear in place (skill motion.md §7 "Loading start/stop"
+   and "Success/error appearance" rows): the OFFICIAL fast-effects
+   conversion pair. Effects never overshoot and never move
+   (OFFICIAL rule). Reduced motion: resolves to the final frame
+   instantly via the global gate in motion.css.
+   ============================================================ */
+
+.nex-fade-in {
+  animation: nex-fade-enter var(--motion-spring-expressive-fast-effects-duration)
+    var(--motion-spring-expressive-fast-effects-curve);
+}
+
+@keyframes nex-fade-enter {
+  from {
+    opacity: 0;
+  }
+}
+
+/* ============================================================
    TOOLTIP (short clarification, ≤1 line)
    Inverse-surface container (OFFICIAL role pair added in
    tokens.css). Fades/rises in after a hover delay AND shows on

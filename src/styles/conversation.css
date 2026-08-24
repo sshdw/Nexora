@@ -1,9 +1,10 @@
 /* ============================================================
    Nexora conversation workspace & sidebar — Warm Minimal
-   (0.2.2): layout, the flat conversation list, the thread and the
+   (0.2.3): layout, the flat conversation list, the thread and the
    composer. Reusable primitives (buttons, fields, chips, nav
-   entries, loading states) live in components.css and are only
-   positioned here. Consumes tokens.css/motion.css exclusively.
+   entries, loading states, motion utilities) live in
+   components.css and are only positioned here. Consumes
+   tokens.css/motion.css exclusively.
    Flat, single-surface navigation. Selection is carried by a
    subtle surface-lightness shift — no accent bar, no colour wash.
    ============================================================ */
@@ -295,6 +296,28 @@
   overflow-wrap: anywhere;
 }
 
+/* New-message insertion (skill motion.md §7 "New item insertion";
+   audit §8.3): fade + small translate-in on the OFFICIAL
+   expressive-default spatial conversion pair — a single soft
+   overshoot, whitelisted for insertion moments only (NEXORA
+   ADAPTATION rationing). The 6px travel distance is a
+   RECOMMENDATION — "Material does not prescribe a universal value
+   for this." The class is applied by ConversationView only to
+   genuinely inserted messages, never to the initial history fill;
+   reduced motion resolves instantly via the global gate. */
+.nex-message-enter {
+  animation: nex-message-insert
+    var(--motion-spring-expressive-default-spatial-duration)
+    var(--motion-spring-expressive-default-spatial-curve);
+}
+
+@keyframes nex-message-insert {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
 /* Assistant typing dots: the loading primitive lives in components.css
    (.nex-typing / .nex-typing-dot); nothing screen-specific is added. */
 
@@ -347,7 +370,7 @@
   resize: none;
   min-height: 52px;
   max-height: 160px;
-  padding: 12px var(--nex-sys-space-md);
+  padding: var(--nex-sys-space-sm) var(--nex-sys-space-md);
   border-radius: var(--nex-sys-shape-extra-large);
   background: var(--nex-sys-color-surface-container-high);
   border: 1px solid var(--nex-sys-color-outline);
@@ -553,7 +576,7 @@
 
 .nex-search-results {
   position: absolute;
-  top: calc(100% + 4px);
+  top: calc(100% + var(--nex-sys-space-xxs));
   left: 0;
   right: 0;
   z-index: 50;

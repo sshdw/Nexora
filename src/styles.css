@@ -1,6 +1,7 @@
 /* ============================================================
-   Nexora Application Shell & Global Layout — Phase 10.3.1 (visual refinement)
-   Consumes 0.2.1 expressive tokens (tokens.css) exclusively.
+   Nexora Application Shell & Global Layout — 0.2.3 Main Workspace
+   migration. Consumes 0.2.1 expressive tokens (tokens.css)
+   exclusively; reusable primitives live in components.css.
    ============================================================ */
 
 /* ---- App shell: fixed sidebar + main content ---- */
@@ -61,14 +62,29 @@
   border-bottom: 1px solid var(--nex-sys-color-outline-variant);
 }
 
+/* Slim persistent desktop header (skill nexora-adaptation.md §2,
+   RECOMMENDATION): the title stays on one line and truncates with
+   an ellipsis instead of wrapping the header taller; the archived
+   badge is pinned beside it. */
 .nex-main-title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--nex-sys-space-xs);
+  min-width: 0;
   font-size: var(--nex-sys-type-size-title-large);
   font-weight: var(--nex-sys-type-weight-semibold);
   color: var(--nex-sys-color-on-surface);
 }
 
+.nex-main-title-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .nex-main-title-badge {
-  margin-left: var(--nex-sys-space-xs);
+  flex-shrink: 0;
   font-size: var(--nex-sys-type-size-label-small);
   font-weight: var(--nex-sys-type-weight-regular);
   color: var(--nex-sys-color-on-surface-tertiary);

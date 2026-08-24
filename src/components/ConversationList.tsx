@@ -45,7 +45,7 @@ export default function ConversationList({
   if (error) {
     return (
       <nav className="nex-conversation-nav" aria-label="Conversations">
-        <div className="nex-conversation-error" role="alert">
+        <div className="nex-conversation-error nex-fade-in" role="alert">
           <span className="nex-conversation-error-text">{error.message}</span>
           <button
             type="button"

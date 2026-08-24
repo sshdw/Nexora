@@ -55,12 +55,12 @@ function MainContent({
     <>
       <header className="nex-main-header">
         <h2 className="nex-main-title">
-          {selected.title}
+          <span className="nex-main-title-text">{selected.title}</span>
           {isArchived && (
             <span className="nex-main-title-badge" aria-label="Archived">
               Archived
             </span>
-                    )}
+          )}
         </h2>
       </header>
       <ConversationView
