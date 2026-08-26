@@ -47,18 +47,14 @@ pub(crate) fn supported_providers() -> Vec<SupportedProvider> {
         .map(|(name, display_name, models)| SupportedProvider {
             name: name.to_string(),
             display_name: display_name.to_string(),
-            models: models.iter().map(|model| model.to_string()).collect(),
+            models: models.iter().copied().map(ToString::to_string).collect(),
         })
         .collect()
 }
 
 /// Collect `(name, display_name, supported_models)` for each registered
 /// provider. Kept as a small tuple helper so the list stays a single table.
-fn provider_schemas() -> Vec<(
-    &'static str,
-    &'static str,
-    &'static [&'static str],
-)> {
+fn provider_schemas() -> Vec<(&'static str, &'static str, &'static [&'static str])> {
     vec![
         (
             openai::PROVIDER_NAME,

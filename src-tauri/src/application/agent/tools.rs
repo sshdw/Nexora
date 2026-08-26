@@ -3,11 +3,16 @@
 //! Provides the four native agent tools behind a central [`ToolRegistry`].
 //! All filesystem access is confined to `workspace_root` via path
 //! canonicalization / lexical normalisation. Shell execution is bounded by a
-//! hard timeout and output truncation to protect the LLM context.
+//! hard timeout, bounded output capture, a bounded reader-drain grace, and
+//! final output truncation to protect the LLM context; no code path can block
+//! indefinitely (a detached grandchild holding a pipe cannot stall the tool).
 
+use std::fmt::Write as _;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::mpsc::Receiver;
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -19,6 +24,16 @@ use crate::application::execution::{ToolCall, ToolDefinition};
 // ---------------------------------------------------------------------------
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+/// Hard cap accumulated per output stream before chunks are discarded;
+/// prevents unbounded memory growth from runaway child output.
+const MAX_CAPTURE_BYTES: usize = 1024 * 1024; // 1 MiB per stream
+/// How long the completed process's pipe readers may still take to reach EOF
+/// (e.g. because an orphaned grandchild inherited the pipe) before they are
+/// deliberately leaked and the captured output is used as-is.
+const DRAIN_GRACE: Duration = Duration::from_secs(2);
+/// Marker appended when a stream did not close within [`DRAIN_GRACE`].
+pub(crate) const STREAM_STILL_OPEN_MARKER: &str =
+    "[warning: output stream still open after grace period; capture may be partial]";
 const MAX_OUTPUT_BYTES: usize = 20 * 1024; // 20 KB
 const TRUNCATE_HEAD: usize = 10 * 1024;
 const TRUNCATE_TAIL: usize = 10 * 1024;
@@ -43,11 +58,13 @@ impl std::fmt::Display for ToolError {
         match self {
             Self::UnknownTool(name) => write!(f, "Error: unknown tool '{name}'"),
             Self::InvalidArguments(msg) => write!(f, "Error: invalid arguments: {msg}"),
-            Self::Io(msg) => write!(f, "Error: {msg}"),
             Self::PathTraversal(p) => {
-                write!(f, "Error: path traversal not allowed: '{p}' is outside workspace")
+                write!(
+                    f,
+                    "Error: path traversal not allowed: '{p}' is outside workspace"
+                )
             }
-            Self::Timeout(msg) => write!(f, "Error: {msg}"),
+            Self::Io(msg) | Self::Timeout(msg) => write!(f, "Error: {msg}"),
         }
     }
 }
@@ -155,10 +172,7 @@ impl ToolRegistry {
     /// `workspace_root` is the absolute path that bounds all filesystem
     /// access. Tool failures are returned as `Err(ToolError)` with an
     /// `Error:` prefix; they never panic.
-    pub(crate) fn execute(
-        call: &ToolCall,
-        workspace_root: &Path,
-    ) -> Result<String, ToolError> {
+    pub(crate) fn execute(call: &ToolCall, workspace_root: &Path) -> Result<String, ToolError> {
         let args: Value = serde_json::from_str(&call.arguments).map_err(|e| {
             ToolError::InvalidArguments(format!("arguments are not valid JSON: {e}"))
         })?;
@@ -176,42 +190,23 @@ impl ToolRegistry {
     // -----------------------------------------------------------------------
 
     fn execute_command(args: &Value, workspace_root: &Path) -> Result<String, ToolError> {
-        let command = args
-            .get("command")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                ToolError::InvalidArguments("missing required field 'command'".to_string())
-            })?;
-        if command.trim().is_empty() {
-            return Err(ToolError::InvalidArguments(
-                "field 'command' must not be empty".to_string(),
-            ));
-        }
-        let cwd_opt = args.get("cwd").and_then(Value::as_str);
+        let limits = CommandLimits::default();
+        Self::execute_command_with_limits(args, workspace_root, &limits)
+    }
 
-        // Resolve cwd inside workspace
-        let resolved_cwd = if let Some(cwd) = cwd_opt {
-            if cwd.trim().is_empty() {
-                workspace_root.to_path_buf()
-            } else {
-                let p = resolve_path(workspace_root, cwd)?;
-                if p.is_file() {
-                    return Err(ToolError::InvalidArguments(format!(
-                        "cwd '{cwd}' is a file, not a directory"
-                    )));
-                }
-                // If the directory does not exist, treat as error
-                if !p.exists() {
-                    return Err(ToolError::Io(format!("cwd does not exist: '{cwd}'")));
-                }
-                if !p.is_dir() {
-                    return Err(ToolError::Io(format!("cwd is not a directory: '{cwd}'")));
-                }
-                p
-            }
-        } else {
-            workspace_root.to_path_buf()
-        };
+    /// [`execute_command`](Self::execute_command) with injectable execution
+    /// limits.
+    ///
+    /// The default constructor applies the production constants; unit tests
+    /// inject shorter timeout / drain-grace values so they exercise the *real*
+    /// bounded-timeout and bounded-drain paths quickly instead of simulating
+    /// them. Behavior is identical in both cases.
+    fn execute_command_with_limits(
+        args: &Value,
+        workspace_root: &Path,
+        limits: &CommandLimits,
+    ) -> Result<String, ToolError> {
+        let (command, resolved_cwd) = validated_command_args(args, workspace_root)?;
 
         // Build platform-appropriate shell invocation
         let mut cmd = if cfg!(windows) {
@@ -224,61 +219,61 @@ impl ToolRegistry {
             c
         };
         cmd.current_dir(&resolved_cwd)
+            .stdin(Stdio::null()) // a command must never read host stdin
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        let mut child = cmd.spawn().map_err(|e| ToolError::Io(format!("failed to spawn command: {e}")))?;
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| ToolError::Io(format!("failed to spawn command: {e}")))?;
 
-        // Take pipes for concurrent reading
+        // Take pipes and move each into a reader thread that accumulates at
+        // most `capture_cap` bytes (discarding anything beyond) and hands its
+        // buffer to a channel when EOF is reached. Threads that never reach
+        // EOF (a grandchild still holding the pipe open) simply never send;
+        // they are reaped below through the bounded drain, never through an
+        // unbounded join.
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
 
-        let stdout_handle = stdout.map(|mut out| {
-            std::thread::spawn(move || {
-                let mut buf = Vec::new();
-                let _ = out.read_to_end(&mut buf);
-                buf
-            })
-        });
-        let stderr_handle = stderr.map(|mut err| {
-            std::thread::spawn(move || {
-                let mut buf = Vec::new();
-                let _ = err.read_to_end(&mut buf);
-                buf
-            })
-        });
+        let mut stdout_handle = stdout.map(|out| spawn_stream_reader(out, limits.capture_cap));
+        let mut stderr_handle = stderr.map(|err| spawn_stream_reader(err, limits.capture_cap));
 
         // Poll with timeout
         let start = Instant::now();
         let status = loop {
-            match child.try_wait().map_err(|e| ToolError::Io(format!("wait failed: {e}")))? {
-                Some(s) => break s,
-                None => {
-                    if start.elapsed() > COMMAND_TIMEOUT {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        // Drain reader threads
-                        if let Some(h) = stdout_handle {
-                            let _ = h.join();
-                        }
-                        if let Some(h) = stderr_handle {
-                            let _ = h.join();
-                        }
-                        return Err(ToolError::Timeout(
-                            "command timed out after 30 seconds".to_string(),
-                        ));
-                    }
-                    std::thread::sleep(Duration::from_millis(50));
-                }
+            if let Some(s) = child
+                .try_wait()
+                .map_err(|e| ToolError::Io(format!("wait failed: {e}")))?
+            {
+                break s;
             }
+            if start.elapsed() > limits.timeout {
+                let _ = child.kill();
+                let _ = child.wait();
+                // Bounded drain on the kill path too: a grandchild still
+                // holding a pipe must not block this error.
+                let mut scratch = Vec::new();
+                drain_reader(&mut stdout_handle, limits.drain_grace, &mut scratch);
+                drain_reader(&mut stderr_handle, limits.drain_grace, &mut scratch);
+                return Err(ToolError::Timeout(format!(
+                    "command timed out after {} seconds",
+                    limits.timeout.as_secs()
+                )));
+            }
+            std::thread::sleep(Duration::from_millis(50));
         };
 
-        let stdout_bytes = stdout_handle
-            .map(|h| h.join().unwrap_or_default())
-            .unwrap_or_default();
-        let stderr_bytes = stderr_handle
-            .map(|h| h.join().unwrap_or_default())
-            .unwrap_or_default();
+        // Bounded drain of both streams: wait up to the grace period for each
+        // reader to reach EOF. A stream whose pipe stays open past the grace
+        // (orphaned grandchild) has its thread deliberately leaked so the tool
+        // call can complete; the captured bytes so far are used as-is.
+        let mut stdout_bytes = Vec::new();
+        let mut stderr_bytes = Vec::new();
+        let stdout_open = drain_reader(&mut stdout_handle, limits.drain_grace, &mut stdout_bytes);
+        // Wait for stdout EOF first; if it timed out there is little reason to
+        // keep waiting for stderr, but the grace bounds the total anyway.
+        let stderr_open = drain_reader(&mut stderr_handle, limits.drain_grace, &mut stderr_bytes);
 
         let stdout_str = String::from_utf8_lossy(&stdout_bytes).to_string();
         let stderr_str = String::from_utf8_lossy(&stderr_bytes).to_string();
@@ -301,13 +296,23 @@ impl ToolRegistry {
         }
         if combined.is_empty() {
             // Still report exit status for empty output
-            if !status.success() {
-                combined = format!("command exited with status {}\n", status);
-            } else {
+            if status.success() {
                 combined = "(no output)\n".to_string();
+            } else {
+                combined = format!("command exited with status {status}\n");
             }
         } else if !status.success() {
-            combined.push_str(&format!("\n[command exited with status {}]\n", status));
+            let _ = writeln!(combined, "\n[command exited with status {status}]");
+        }
+
+        // A stream that never closed within the grace period is reported so
+        // the model knows the captured output may be incomplete.
+        if stdout_open || stderr_open {
+            if !combined.ends_with('\n') {
+                combined.push('\n');
+            }
+            combined.push_str(STREAM_STILL_OPEN_MARKER);
+            combined.push('\n');
         }
 
         let truncated = truncate_output(combined);
@@ -315,21 +320,22 @@ impl ToolRegistry {
     }
 
     fn read_file(args: &Value, workspace_root: &Path) -> Result<String, ToolError> {
-        let path = args
-            .get("path")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ToolError::InvalidArguments("missing required field 'path'".to_string()))?;
+        let path = args.get("path").and_then(Value::as_str).ok_or_else(|| {
+            ToolError::InvalidArguments("missing required field 'path'".to_string())
+        })?;
         if path.trim().is_empty() {
-            return Err(ToolError::InvalidArguments("field 'path' must not be empty".to_string()));
+            return Err(ToolError::InvalidArguments(
+                "field 'path' must not be empty".to_string(),
+            ));
         }
         let offset = args
             .get("offset_lines")
             .and_then(Value::as_u64)
-            .map(|v| v as usize);
+            .map(|v| usize::try_from(v).unwrap_or(usize::MAX));
         let limit = args
             .get("limit_lines")
             .and_then(Value::as_u64)
-            .map(|v| v as usize);
+            .map(|v| usize::try_from(v).unwrap_or(usize::MAX));
         if let Some(l) = limit {
             if l == 0 {
                 return Err(ToolError::InvalidArguments(
@@ -343,7 +349,9 @@ impl ToolRegistry {
             return Err(ToolError::Io(format!("file not found: '{path}'")));
         }
         if resolved.is_dir() {
-            return Err(ToolError::Io(format!("path is a directory, not a file: '{path}'")));
+            return Err(ToolError::Io(format!(
+                "path is a directory, not a file: '{path}'"
+            )));
         }
 
         let content = std::fs::read_to_string(&resolved)
@@ -363,21 +371,21 @@ impl ToolRegistry {
             None => total,
         };
         let slice = &lines[start..end];
-        Ok(slice.join("\n"))
+        Ok(truncate_output(slice.join("\n")))
     }
 
     fn write_file(args: &Value, workspace_root: &Path) -> Result<String, ToolError> {
-        let path = args
-            .get("path")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ToolError::InvalidArguments("missing required field 'path'".to_string()))?;
+        let path = args.get("path").and_then(Value::as_str).ok_or_else(|| {
+            ToolError::InvalidArguments("missing required field 'path'".to_string())
+        })?;
         if path.trim().is_empty() {
-            return Err(ToolError::InvalidArguments("field 'path' must not be empty".to_string()));
+            return Err(ToolError::InvalidArguments(
+                "field 'path' must not be empty".to_string(),
+            ));
         }
-        let content = args
-            .get("content")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ToolError::InvalidArguments("missing required field 'content'".to_string()))?;
+        let content = args.get("content").and_then(Value::as_str).ok_or_else(|| {
+            ToolError::InvalidArguments("missing required field 'content'".to_string())
+        })?;
 
         let resolved = resolve_path(workspace_root, path)?;
 
@@ -388,8 +396,9 @@ impl ToolRegistry {
                 if !parent_within {
                     return Err(ToolError::PathTraversal(path.to_string()));
                 }
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| ToolError::Io(format!("failed to create parent directories: {e}")))?;
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    ToolError::Io(format!("failed to create parent directories: {e}"))
+                })?;
             }
         }
 
@@ -434,9 +443,7 @@ impl ToolRegistry {
         }
         // Ensure target is within workspace
         if !is_within_workspace(workspace_root, &target) {
-            return Err(ToolError::PathTraversal(
-                path_opt.unwrap_or("").to_string(),
-            ));
+            return Err(ToolError::PathTraversal(path_opt.unwrap_or("").to_string()));
         }
 
         let mut entries = Vec::new();
@@ -446,8 +453,11 @@ impl ToolRegistry {
             let read = std::fs::read_dir(&target)
                 .map_err(|e| ToolError::Io(format!("failed to read directory: {e}")))?;
             for entry in read {
-                let entry = entry.map_err(|e| ToolError::Io(format!("failed to read entry: {e}")))?;
-                let ft = entry.file_type().map_err(|e| ToolError::Io(format!("failed to get file type: {e}")))?;
+                let entry =
+                    entry.map_err(|e| ToolError::Io(format!("failed to read entry: {e}")))?;
+                let ft = entry
+                    .file_type()
+                    .map_err(|e| ToolError::Io(format!("failed to get file type: {e}")))?;
                 let name = entry.file_name().to_string_lossy().to_string();
                 let kind = if ft.is_dir() { "dir" } else { "file" };
                 // Show relative to workspace for LLM clarity
@@ -464,8 +474,142 @@ impl ToolRegistry {
         if entries.is_empty() {
             Ok("(empty directory)".to_string())
         } else {
-            Ok(entries.join("\n"))
+            Ok(truncate_output(entries.join("\n")))
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Command execution plumbing: injectable limits, bounded capture, bounded drain
+// ---------------------------------------------------------------------------
+
+/// Validate `execute_command` arguments and resolve the working directory.
+///
+/// Returns the command string and its workspace-confined absolute directory.
+fn validated_command_args(
+    args: &Value,
+    workspace_root: &Path,
+) -> Result<(String, PathBuf), ToolError> {
+    let command = args.get("command").and_then(Value::as_str).ok_or_else(|| {
+        ToolError::InvalidArguments("missing required field 'command'".to_string())
+    })?;
+    if command.trim().is_empty() {
+        return Err(ToolError::InvalidArguments(
+            "field 'command' must not be empty".to_string(),
+        ));
+    }
+    let cwd_opt = args.get("cwd").and_then(Value::as_str);
+
+    // Resolve cwd inside workspace
+    let resolved_cwd = if let Some(cwd) = cwd_opt {
+        if cwd.trim().is_empty() {
+            workspace_root.to_path_buf()
+        } else {
+            let p = resolve_path(workspace_root, cwd)?;
+            if p.is_file() {
+                return Err(ToolError::InvalidArguments(format!(
+                    "cwd '{cwd}' is a file, not a directory"
+                )));
+            }
+            // If the directory does not exist, treat as error
+            if !p.exists() {
+                return Err(ToolError::Io(format!("cwd does not exist: '{cwd}'")));
+            }
+            if !p.is_dir() {
+                return Err(ToolError::Io(format!("cwd is not a directory: '{cwd}'")));
+            }
+            p
+        }
+    } else {
+        workspace_root.to_path_buf()
+    };
+    Ok((command.to_string(), resolved_cwd))
+}
+
+/// Execution limits injected into
+/// [`ToolRegistry::execute_command_with_limits`].
+///
+/// Unit tests construct this directly to exercise the real bounded-timeout /
+/// bounded-drain / bounded-capture code paths quickly; production always uses
+/// [`Default`].
+#[derive(Debug, Clone, Copy)]
+struct CommandLimits {
+    /// Hard timeout for the child process.
+    timeout: Duration,
+    /// Grace granted to pipe readers to reach EOF once the process has exited.
+    drain_grace: Duration,
+    /// Maximum bytes accumulated per output stream before further chunks are
+    /// discarded.
+    capture_cap: usize,
+}
+
+impl Default for CommandLimits {
+    fn default() -> Self {
+        Self {
+            timeout: COMMAND_TIMEOUT,
+            drain_grace: DRAIN_GRACE,
+            capture_cap: MAX_CAPTURE_BYTES,
+        }
+    }
+}
+
+/// Terminal of one output-stream reader thread: the channel delivering the
+/// captured buffer at EOF plus the thread handle (kept only so it can be
+/// deliberately leaked when the drain grace expires).
+type StreamReader = Option<(Receiver<Vec<u8>>, JoinHandle<()>)>;
+
+/// Move `stream` into a reader thread that accumulates at most `capture_cap`
+/// bytes and hands them over through a channel at EOF.
+///
+/// Once the cap is reached the thread keeps draining the pipe but discards
+/// everything beyond it: memory stays bounded while the child is never blocked
+/// by a full pipe.
+#[allow(clippy::needless_pass_by_value)] // spawned closure must own the stream
+fn spawn_stream_reader(
+    mut stream: impl Read + Send + 'static,
+    capture_cap: usize,
+) -> (Receiver<Vec<u8>>, JoinHandle<()>) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let mut chunk = [0_u8; 8192];
+        loop {
+            match stream.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let room = capture_cap.saturating_sub(buf.len());
+                    if room > 0 {
+                        buf.extend_from_slice(&chunk[..std::cmp::min(n, room)]);
+                    }
+                }
+            }
+        }
+        let _ = tx.send(buf); // the receiving side may already be gone; harmless
+    });
+    (rx, handle)
+}
+
+/// Boundedly wait for one reader thread to reach EOF into `out`.
+///
+/// Returns `true` when the stream did **not** close within `grace` (e.g. an
+/// orphaned grandchild holding the pipe): the reader thread is then
+/// *deliberately leaked* (`mem::forget`) so the tool call can complete and no
+/// code path can block indefinitely. Any captured bytes are moved into `out`.
+fn drain_reader(stream: &mut StreamReader, grace: Duration, out: &mut Vec<u8>) -> bool {
+    match stream.take() {
+        Some((rx, handle)) => {
+            let closed = rx.recv_timeout(grace);
+            if let Ok(buf) = closed {
+                *out = buf;
+                false
+            } else {
+                // Grace expired (or the sender vanished unread): leak the
+                // thread on purpose rather than blocking or aborting.
+                std::mem::forget(handle);
+                true
+            }
+        }
+        None => false,
     }
 }
 
@@ -513,7 +657,9 @@ fn find_char_boundary(s: &str, mut index: usize) -> usize {
 fn resolve_path(workspace_root: &Path, requested: &str) -> Result<PathBuf, ToolError> {
     // Reject null bytes etc.
     if requested.contains('\0') {
-        return Err(ToolError::InvalidArguments("path contains null byte".to_string()));
+        return Err(ToolError::InvalidArguments(
+            "path contains null byte".to_string(),
+        ));
     }
     let requested_path = Path::new(requested);
     let joined = if requested_path.is_absolute() {
@@ -575,7 +721,8 @@ fn is_within_workspace(workspace_root: &Path, target: &Path) -> bool {
     if cfg!(windows) {
         // Also check forward slash variant
         if tgt_str.starts_with(&format!("{ws_trimmed}/"))
-            || tgt_str.starts_with(&format!("{ws_trimmed}\\")) {
+            || tgt_str.starts_with(&format!("{ws_trimmed}\\"))
+        {
             return true;
         }
     }
@@ -637,11 +784,8 @@ fn normalize_lexically(path: &Path) -> PathBuf {
                         Component::Normal(_) => {
                             components.pop();
                         }
-                        Component::RootDir => {
-                            // stay at root
-                        }
-                        Component::Prefix(_) => {
-                            // cannot go above prefix
+                        Component::RootDir | Component::Prefix(_) => {
+                            // stay at root / cannot go above prefix
                         }
                         Component::ParentDir => components.push(Component::ParentDir),
                         Component::CurDir => {
@@ -728,6 +872,7 @@ mod tests {
         dir
     }
 
+    #[allow(clippy::needless_pass_by_value)] // JSON literals read best at call sites
     fn call(name: &str, args: serde_json::Value) -> ToolCall {
         ToolCall {
             id: format!("call_{name}"),
@@ -781,7 +926,10 @@ mod tests {
     #[test]
     fn execute_command_echo_captures_stdout() {
         let ws = temp_workspace();
-        let c = call("execute_command", serde_json::json!({"command": "echo hello"}));
+        let c = call(
+            "execute_command",
+            serde_json::json!({"command": "echo hello"}),
+        );
         let out = ToolRegistry::execute(&c, &ws).expect("execute_command succeeds");
         assert!(out.contains("hello"), "output was: {out}");
         let _ = fs::remove_dir_all(&ws);
@@ -854,7 +1002,10 @@ mod tests {
                 err.starts_with("Error:"),
                 "error should be prefixed with Error: got {err}"
             );
-            assert!(err.to_lowercase().contains("outside") || err.to_lowercase().contains("traversal"), "err: {err}");
+            assert!(
+                err.to_lowercase().contains("outside") || err.to_lowercase().contains("traversal"),
+                "err: {err}"
+            );
         }
 
         let write = call(
@@ -889,13 +1040,16 @@ mod tests {
         };
         let res = ToolRegistry::execute(&fail, &ws);
         // Should be Ok (process ran) with exit status reported, not Err/panic
-        assert!(res.is_ok(), "non-zero exit should not be Err, got {:?}", res);
+        assert!(res.is_ok(), "non-zero exit should not be Err, got {res:?}");
         let out = res.unwrap();
         // Should contain exit status or be non-empty
         assert!(!out.is_empty());
 
         // Invalid command should be captured as Ok with stderr or Err but not panic
-        let invalid = call("execute_command", serde_json::json!({"command": "nonexistent_command_xyz_12345"}));
+        let invalid = call(
+            "execute_command",
+            serde_json::json!({"command": "nonexistent_command_xyz_12345"}),
+        );
         let res2 = ToolRegistry::execute(&invalid, &ws);
         // Must not panic; may be Ok with error output or Err
         assert!(res2.is_ok() || res2.is_err());
@@ -916,7 +1070,10 @@ mod tests {
         // the 30s constant is present.
         assert_eq!(COMMAND_TIMEOUT, Duration::from_secs(30));
         let ws = temp_workspace();
-        let c = call("execute_command", serde_json::json!({"command": "echo quick"}));
+        let c = call(
+            "execute_command",
+            serde_json::json!({"command": "echo quick"}),
+        );
         let out = ToolRegistry::execute(&c, &ws).expect("quick command should not timeout");
         assert!(out.contains("quick"));
         let _ = fs::remove_dir_all(&ws);
@@ -940,8 +1097,14 @@ mod tests {
         };
         let c = call("execute_command", serde_json::json!({"command": cmd_str}));
         let out = ToolRegistry::execute(&c, &ws).expect("cat big");
-        assert!(out.len() <= MAX_OUTPUT_BYTES + 500, "output should be truncated near 20KB");
-        assert!(out.contains("output truncated"), "should contain truncation marker");
+        assert!(
+            out.len() <= MAX_OUTPUT_BYTES + 500,
+            "output should be truncated near 20KB"
+        );
+        assert!(
+            out.contains("output truncated"),
+            "should contain truncation marker"
+        );
         assert!(out.contains("bytes total"));
         let _ = fs::remove_dir_all(&ws);
     }
@@ -957,7 +1120,7 @@ mod tests {
 
         let list = call("list_directory", serde_json::json!({}));
         let out = ToolRegistry::execute(&list, &ws).expect("list root");
-        assert!(out.contains("root.txt") || out.contains("a"));
+        assert!(out.contains("root.txt") || out.contains('a'));
 
         let list_a = call("list_directory", serde_json::json!({"path": "a"}));
         let out_a = ToolRegistry::execute(&list_a, &ws).expect("list a");
@@ -1002,5 +1165,148 @@ mod tests {
             let back: ToolDefinition = serde_json::from_str(&json).unwrap();
             assert_eq!(def, back);
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Sandbox hardening (Task 2.1.1): bounded timeout / capture / drain
+    // -----------------------------------------------------------------------
+
+    /// Injected limits for the real execution path with short waits.
+    fn hardening_limits(timeout_secs: u64, drain_grace_ms: u64) -> CommandLimits {
+        CommandLimits {
+            timeout: Duration::from_secs(timeout_secs),
+            drain_grace: Duration::from_millis(drain_grace_ms),
+            capture_cap: MAX_CAPTURE_BYTES,
+        }
+    }
+
+    fn run_cmd(command: &str, ws: &std::path::Path) -> Result<String, ToolError> {
+        let args = serde_json::json!({ "command": command });
+        ToolRegistry::execute_command_with_limits(&args, ws, &hardening_limits(5, 500))
+    }
+
+    #[test]
+    fn command_exceeding_injected_timeout_is_killed_within_bound() {
+        let ws = temp_workspace();
+        // ~10 s of sleep; the injected 1 s timeout must kill it and return.
+        let sleep_cmd = if cfg!(windows) {
+            "ping -n 11 127.0.0.1 >nul"
+        } else {
+            "sleep 10"
+        };
+        let args = serde_json::json!({ "command": sleep_cmd });
+        let start = Instant::now();
+        let res = ToolRegistry::execute_command_with_limits(&args, &ws, &hardening_limits(1, 500));
+        assert!(
+            matches!(res, Err(ToolError::Timeout(_))),
+            "expected Timeout, got {res:?}"
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(3),
+            "timeout path blocked too long: {:?}",
+            start.elapsed()
+        );
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn grandchild_holding_pipe_does_not_hang_and_reports_partial_capture() {
+        let ws = temp_workspace();
+        // The backgrounded `sleep` inherits stdout and keeps the pipe open
+        // long after the shell exits; only the bounded drain makes this
+        // return. Exercises the REAL grace-expiry leak path.
+        let start = Instant::now();
+        let out = run_cmd("echo begin; sleep 5 &", &ws).expect("must complete despite open pipe");
+        assert!(
+            start.elapsed() < Duration::from_secs(4),
+            "drain grace not honored"
+        );
+        assert!(out.contains("begin"), "early stdout must be captured");
+        assert!(
+            out.contains("output stream still open after grace period"),
+            "partial-capture warning marker missing"
+        );
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn stdin_reading_command_returns_promptly_because_stdin_is_null() {
+        let ws = temp_workspace();
+        // A bare `cat` blocks forever on stdin; with Stdio::null() it sees EOF
+        // immediately and exits.
+        let start = Instant::now();
+        let out = run_cmd("cat", &ws).expect("cat must return via null stdin");
+        assert!(
+            start.elapsed() < Duration::from_secs(3),
+            "stdin was not detached"
+        );
+        assert_eq!(out.trim(), "(no output)");
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn runaway_output_is_memory_bounded_by_capture_cap() {
+        let ws = temp_workspace();
+        // Produce ~2 MB of output through a file; capture must stay far below
+        // the produced volume while still truncating to the context budget.
+        let content = "y".repeat(2 * 1024 * 1024);
+        let write = call(
+            "write_file",
+            serde_json::json!({ "path": "big.bin", "content": content }),
+        );
+        ToolRegistry::execute(&write, &ws).expect("seed big file");
+
+        let read_cmd = if cfg!(windows) {
+            "type big.bin"
+        } else {
+            "cat big.bin"
+        };
+        let out = run_cmd(read_cmd, &ws).expect("read big file back");
+        assert!(
+            out.len() < 100 * 1024,
+            "capture leaked past bounds: {} bytes",
+            out.len()
+        );
+        assert!(out.contains("output truncated"));
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn read_file_result_is_truncated_at_context_budget() {
+        let ws = temp_workspace();
+        let content = "z".repeat(40 * 1024);
+        let write = call(
+            "write_file",
+            serde_json::json!({ "path": "wide.txt", "content": content }),
+        );
+        ToolRegistry::execute(&write, &ws).expect("seed file");
+
+        let read = call("read_file", serde_json::json!({ "path": "wide.txt" }));
+        let out = ToolRegistry::execute(&read, &ws).expect("read");
+        assert!(
+            out.contains("output truncated"),
+            "read_file must truncate to 20KB"
+        );
+        assert!(out.len() <= MAX_OUTPUT_BYTES + 500);
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn list_directory_result_is_truncated_at_context_budget() {
+        let ws = temp_workspace();
+        // ~1200 root entries at roughly 40 bytes each exceed the 20KB budget.
+        for i in 0..1200_u32 {
+            fs::write(ws.join(format!("f{i:04}.txt")), "x").expect("create entry");
+        }
+        let list = call("list_directory", serde_json::json!({}));
+        let out = ToolRegistry::execute(&list, &ws).expect("list");
+        assert!(
+            out.contains("output truncated"),
+            "listing must truncate to 20KB"
+        );
+        assert!(out.len() <= MAX_OUTPUT_BYTES + 500);
+        let _ = fs::remove_dir_all(&ws);
     }
 }

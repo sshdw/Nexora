@@ -1,10 +1,15 @@
 //! Tauri commands over the existing [`ConversationService`]
-//! (Phase 10.2 — Tauri Command Layer).
+//! (Phase 10.2 вЂ” Tauri Command Layer).
 //!
 //! Each command is a thin translation of Tauri inputs/outputs: it delegates to
 //! the existing application-layer conversation service and converts its
 //! classified errors into safe [`CommandError`] values. No new business logic
 //! or repository access lives here.
+
+// Tauri command handlers must take ownership of their deserialized
+// arguments: serde cannot borrow into the wire payload, so passing by
+// value here is a framework requirement, not a review defect.
+#![allow(clippy::needless_pass_by_value)]
 
 use tauri::{AppHandle, Manager, State};
 
@@ -32,7 +37,9 @@ pub(crate) fn create_conversation(
 pub(crate) fn list_conversations(
     db: State<'_, Database>,
 ) -> Result<Vec<Conversation>, CommandError> {
-    ConversationService::new(db.inner()).list().map_err(Into::into)
+    ConversationService::new(db.inner())
+        .list()
+        .map_err(Into::into)
 }
 
 /// Read the message history for one conversation.
@@ -60,10 +67,7 @@ pub(crate) fn rename_conversation(
 
 /// Archive a conversation.
 #[tauri::command]
-pub(crate) fn archive_conversation(
-    id: i64,
-    db: State<'_, Database>,
-) -> Result<(), CommandError> {
+pub(crate) fn archive_conversation(id: i64, db: State<'_, Database>) -> Result<(), CommandError> {
     ConversationService::new(db.inner())
         .archive(id)
         .map_err(Into::into)
@@ -71,10 +75,7 @@ pub(crate) fn archive_conversation(
 
 /// Restore an archived conversation to the active state.
 #[tauri::command]
-pub(crate) fn restore_conversation(
-    id: i64,
-    db: State<'_, Database>,
-) -> Result<(), CommandError> {
+pub(crate) fn restore_conversation(id: i64, db: State<'_, Database>) -> Result<(), CommandError> {
     ConversationService::new(db.inner())
         .restore(id)
         .map_err(Into::into)
@@ -82,10 +83,7 @@ pub(crate) fn restore_conversation(
 
 /// Delete a conversation and the messages/attachments that cascade from it.
 #[tauri::command]
-pub(crate) fn delete_conversation(
-    id: i64,
-    db: State<'_, Database>,
-) -> Result<(), CommandError> {
+pub(crate) fn delete_conversation(id: i64, db: State<'_, Database>) -> Result<(), CommandError> {
     ConversationService::new(db.inner())
         .delete(id)
         .map_err(Into::into)
@@ -98,7 +96,7 @@ pub(crate) fn delete_conversation(
 ///
 /// # Threading (BUG-005 and its regression)
 ///
-/// The send pipeline is deliberately synchronous end to end (SQLite through
+/// The send pipeline is deliberately synchronous end to end (`SQLite` through
 /// `Mutex<Connection>`, `fs::read` + base64 attachment encoding, and the
 /// provider HTTP round trip performed with `reqwest::blocking`). It must run
 /// on a **plain thread**:
@@ -108,7 +106,7 @@ pub(crate) fn delete_conversation(
 /// - An `async` Tauri command runs on an async-runtime **worker**, which is
 ///   equally wrong: in debug builds `reqwest::blocking` builds and drops a
 ///   throwaway tokio shell runtime on the calling thread (`wait.rs::enter`),
-///   which panics inside an active runtime — killing the command task and
+///   which panics inside an active runtime вЂ” killing the command task and
 ///   leaving the frontend invoke promise unresolved forever (the reported
 ///   "sends hang indefinitely" regression).
 ///
@@ -116,7 +114,7 @@ pub(crate) fn delete_conversation(
 /// **blocking pool** via [`tauri::async_runtime::spawn_blocking`]: plain OS
 /// threads with no ambient async context, where the blocking stack behaves
 /// exactly as on any other thread. The UI stays responsive, no async worker
-/// is occupied, and the frontend contract is unchanged — `invoke` still
+/// is occupied, and the frontend contract is unchanged вЂ” `invoke` still
 /// resolves with the response or rejects with a classified error.
 #[tauri::command]
 pub(crate) async fn send_message(
@@ -133,7 +131,13 @@ pub(crate) async fn send_message(
     let outcome = tauri::async_runtime::spawn_blocking(move || {
         let db = handle.state::<Database>();
         ConversationService::new(db.inner())
-            .send_message(conversation_id, &content, &provider, &model, &attachment_ids)
+            .send_message(
+                conversation_id,
+                &content,
+                &provider,
+                &model,
+                &attachment_ids,
+            )
             .map_err(Into::into)
     })
     .await;
@@ -153,23 +157,20 @@ pub(crate) async fn send_message(
 
 #[cfg(test)]
 mod tests {
-    #[allow(unused_imports)]
-    use super::*;
-
     use crate::application::execution::{AiMessage, AiRequest, AiRole, ProviderExecutor};
     use crate::infrastructure::providers::openai::{OpenAiExecutor, PROVIDER_NAME};
 
     /// Regression for the BUG-005 follow-up ("all sends hang indefinitely"):
-    /// the send pipeline is synchronous end to end (SQLite, attachment file
+    /// the send pipeline is synchronous end to end (`SQLite`, attachment file
     /// reads + base64, and a `reqwest::blocking` HTTP round trip) and must
-    /// run on the async runtime's dedicated blocking pool — never on the
+    /// run on the async runtime's dedicated blocking pool вЂ” never on the
     /// main thread (UI freeze) and never directly inside an async worker
     /// (debug-build `reqwest::blocking` panics there while building its
     /// shell runtime, leaving the frontend invoke promise unresolved).
     ///
     /// This drives the exact production scheduling shape of the
-    /// `send_message` command — `spawn_blocking` awaited from the async
-    /// runtime — through a real `reqwest::blocking` round trip against a
+    /// `send_message` command вЂ” `spawn_blocking` awaited from the async
+    /// runtime вЂ” through a real `reqwest::blocking` round trip against a
     /// local server, proving the blocking stack completes when entered this
     /// way and returns its response to the awaiting command.
     #[test]
@@ -196,14 +197,15 @@ mod tests {
                 }
             }
             // A minimal valid OpenAI-style success body.
-            let body =
-                r#"{"model":"gpt-5.6-terra","choices":[{"message":{"content":"pong"}}]}"#;
+            let body = r#"{"model":"gpt-5.6-terra","choices":[{"message":{"content":"pong"}}]}"#;
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                 body.len(),
                 body
             );
-            stream.write_all(response.as_bytes()).expect("write response");
+            stream
+                .write_all(response.as_bytes())
+                .expect("write response");
             stream.flush().expect("flush response");
         });
 
@@ -238,7 +240,7 @@ mod tests {
     /// Negative control documenting WHY the pipeline must go through
     /// `spawn_blocking`: driven directly inside an async-runtime worker (the
     /// regression's broken scheduling), the debug-build `reqwest::blocking`
-    /// stack aborts the task instead of completing it — which is precisely
+    /// stack aborts the task instead of completing it вЂ” which is precisely
     /// what left the frontend invoke promise unresolved forever. Debug-only
     /// because reqwest's shell-runtime check is `cfg(debug_assertions)`.
     /// If this ever stops failing after a dependency upgrade, re-read the

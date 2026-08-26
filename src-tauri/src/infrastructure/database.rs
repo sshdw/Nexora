@@ -1,6 +1,6 @@
-//! SQLite foundation: connection bootstrap and forward-only migration runner.
+//! `SQLite` foundation: connection bootstrap and forward-only migration runner.
 //!
-//! Implements the Phase 0 database responsibilities of ROADMAP.md (SQLite
+//! Implements the Phase 0 database responsibilities of ROADMAP.md (`SQLite`
 //! initialization and the migration runner) against the rules in DATABASE.md:
 //!
 //! - WAL journal mode and foreign-key enforcement are enabled on every
@@ -25,7 +25,7 @@ use rusqlite::{params, Connection};
 /// Errors raised while opening or migrating the database.
 #[derive(Debug)]
 pub(crate) enum DatabaseError {
-    /// A SQLite operation failed.
+    /// A `SQLite` operation failed.
     Sqlite(rusqlite::Error),
     /// The on-disk schema version is newer than the application's migrations.
     SchemaTooNew {
@@ -59,8 +59,7 @@ impl std::error::Error for DatabaseError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Sqlite(err) => Some(err),
-            Self::SchemaTooNew { .. } => None,
-            Self::Lock(_) => None,
+            Self::SchemaTooNew { .. } | Self::Lock(_) => None,
         }
     }
 }
@@ -249,7 +248,7 @@ END;
     ),
 ];
 
-/// Open the SQLite database at `path`, apply connection pragmas, and run any
+/// Open the `SQLite` database at `path`, apply connection pragmas, and run any
 /// pending migrations.
 ///
 /// WAL mode, foreign-key enforcement, and a busy timeout are configured on the
@@ -337,11 +336,10 @@ fn target_version() -> i64 {
 fn now_millis() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| i64::try_from(d.as_millis()).unwrap_or(0))
-        .unwrap_or(0)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(0))
 }
 
-/// Shared application-wide SQLite connection.
+/// Shared application-wide `SQLite` connection.
 ///
 /// Opened exactly once during startup via [`open`] and registered as Tauri
 /// managed state, so the single connection outlives `setup` and remains

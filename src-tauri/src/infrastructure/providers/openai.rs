@@ -32,10 +32,12 @@
 // `doc_markdown` pedantic lint flags as needing backticks. Allow it locally.
 #![allow(clippy::doc_markdown)]
 
-#[allow(unused_imports)]
 use crate::application::execution::{
-    AiAttachment, AiAttachmentPayload, AiMessage, AiRequest, AiResponse, AiRole, ExecutorError, ProviderExecutor,
+    AiAttachmentPayload, AiMessage, AiRequest, AiResponse, AiRole, ExecutorError, ProviderExecutor,
 };
+// `AiAttachment` is referenced only by this module's unit tests.
+#[cfg(test)]
+use crate::application::execution::AiAttachment;
 
 use serde::{Deserialize, Serialize};
 
@@ -315,14 +317,12 @@ fn to_ai_response(response: ChatCompletionResponse) -> Result<AiResponse, OpenAi
             arguments: call.function.arguments,
         })
         .collect();
-    let content = match choice.message.content {
-        Some(text) => text,
-        None => {
-            if tool_calls.is_empty() {
-                return Err(OpenAiError::UnexpectedResponse);
-            }
-            String::new()
-        }
+    let content = if let Some(text) = choice.message.content {
+        text
+    } else if tool_calls.is_empty() {
+        return Err(OpenAiError::UnexpectedResponse);
+    } else {
+        String::new()
     };
     Ok(AiResponse {
         content,
@@ -409,7 +409,10 @@ mod tests {
             body.messages[0].content,
             OpenAiContent::Text("You are a helpful assistant.".to_string())
         );
-        assert_eq!(body.messages[1].content, OpenAiContent::Text("Hello".to_string()));
+        assert_eq!(
+            body.messages[1].content,
+            OpenAiContent::Text("Hello".to_string())
+        );
         assert_eq!(
             body.messages[2].content,
             OpenAiContent::Text("Hi there".to_string())
@@ -432,7 +435,10 @@ mod tests {
         };
         let body = chat_completion_request(&request);
         assert_eq!(body.messages[0].role, "user");
-        assert_eq!(body.messages[0].content, OpenAiContent::Text("ping".to_string()));
+        assert_eq!(
+            body.messages[0].content,
+            OpenAiContent::Text("ping".to_string())
+        );
     }
 
     #[test]
@@ -621,11 +627,18 @@ mod tests {
         let json = serde_json::to_string(&chat_completion_request(&request)).expect("serialize");
         let value: serde_json::Value = serde_json::from_str(&json).expect("parse");
         // Tools key must be present with correct wire shape.
-        let tools = value.get("tools").expect("tools present").as_array().expect("tools array");
+        let tools = value
+            .get("tools")
+            .expect("tools present")
+            .as_array()
+            .expect("tools array");
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0]["type"], "function");
         assert_eq!(tools[0]["function"]["name"], "get_weather");
-        assert_eq!(tools[0]["function"]["description"], "Get the weather for a location");
+        assert_eq!(
+            tools[0]["function"]["description"],
+            "Get the weather for a location"
+        );
         assert!(tools[0]["function"]["parameters"]["properties"]["location"].is_object());
     }
 
@@ -643,7 +656,10 @@ mod tests {
         };
         let json = serde_json::to_string(&chat_completion_request(&request)).expect("serialize");
         let value: serde_json::Value = serde_json::from_str(&json).expect("parse");
-        assert!(value.get("tools").is_none(), "tools key must be absent when empty");
+        assert!(
+            value.get("tools").is_none(),
+            "tools key must be absent when empty"
+        );
         // Byte-for-byte backward compatible: no tools key at all.
         assert!(!json.contains("\"tools\""));
     }
@@ -714,7 +730,10 @@ mod tests {
         let ai = to_ai_response(response).expect("plain text response maps");
         assert_eq!(ai.content, "Hello to you too.");
         assert_eq!(ai.model, "gpt-5.6-terra");
-        assert!(ai.tool_calls.is_empty(), "plain text must have empty tool_calls");
+        assert!(
+            ai.tool_calls.is_empty(),
+            "plain text must have empty tool_calls"
+        );
     }
 
     #[test]

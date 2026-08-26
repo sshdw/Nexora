@@ -30,7 +30,7 @@ pub(crate) enum ErrorKind {
     NotFound,
     /// A caller-supplied value was rejected (length, empty, ...).
     InvalidInput,
-    /// A persistence / SQLite operation failed.
+    /// A persistence / `SQLite` operation failed.
     Database,
     /// The OS secure keyring could not satisfy a credential operation.
     Credential,
@@ -83,7 +83,7 @@ impl std::fmt::Display for CommandError {
 
 impl std::error::Error for CommandError {}
 
-/// Curated, secret-free message for an unclassified SQLite failure. The raw
+/// Curated, secret-free message for an unclassified `SQLite` failure. The raw
 /// rusqlite detail is deliberately not surfaced to avoid leaking SQL or a
 /// stored value; the underlying failure is logged instead.
 impl From<DatabaseError> for CommandError {
@@ -202,9 +202,10 @@ impl From<PromptLibraryError> for CommandError {
             PromptLibraryError::PromptNotFound { id } => {
                 Self::new(ErrorKind::NotFound, format!("prompt {id} does not exist"))
             }
-            PromptLibraryError::ConversationNotFound { id } => {
-                Self::new(ErrorKind::NotFound, format!("conversation {id} does not exist"))
-            }
+            PromptLibraryError::ConversationNotFound { id } => Self::new(
+                ErrorKind::NotFound,
+                format!("conversation {id} does not exist"),
+            ),
             PromptLibraryError::Database(inner) => Self::from(inner),
         }
     }
@@ -217,9 +218,10 @@ impl From<AttachmentError> for CommandError {
                 ErrorKind::NotFound,
                 format!("conversation {id} does not exist"),
             ),
-            AttachmentError::AttachmentNotFound { id } => {
-                Self::new(ErrorKind::NotFound, format!("attachment {id} does not exist"))
-            }
+            AttachmentError::AttachmentNotFound { id } => Self::new(
+                ErrorKind::NotFound,
+                format!("attachment {id} does not exist"),
+            ),
             AttachmentError::InvalidInput { field, reason } => Self::new(
                 ErrorKind::InvalidInput,
                 format!("invalid {field}: {reason}"),
@@ -263,9 +265,10 @@ impl From<ExportError> for CommandError {
 impl From<ImportError> for CommandError {
     fn from(err: ImportError) -> Self {
         match err {
-            ImportError::InvalidJson(_) => {
-                Self::new(ErrorKind::InvalidJson, "the import document is not valid JSON")
-            }
+            ImportError::InvalidJson(_) => Self::new(
+                ErrorKind::InvalidJson,
+                "the import document is not valid JSON",
+            ),
             ImportError::UnsupportedFormat { .. } => Self::new(
                 ErrorKind::UnsupportedFormat,
                 "the import document uses an unsupported format",

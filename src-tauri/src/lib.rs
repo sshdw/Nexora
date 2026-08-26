@@ -1,5 +1,3 @@
-#![allow(clippy::pedantic)]
-#![allow(clippy::doc_markdown)]
 mod application;
 mod commands;
 mod domain;
@@ -8,6 +6,16 @@ mod infrastructure;
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// Run the Tauri desktop application.
+///
+/// Initializes logging, opens (and migrates) the shared `SQLite` database into
+/// managed state, and registers every command handler before entering the
+/// Tauri event loop.
+///
+/// # Panics
+///
+/// Panics when the Tauri runtime fails to start (e.g. the bundled assets or
+/// window context cannot be built); startup failure is unrecoverable.
 pub fn run() {
     // Initialize logging first so database and migration events are captured
     // (ARCHITECTURE.md §11).

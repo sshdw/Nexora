@@ -1,19 +1,24 @@
 //! Tauri commands over the existing [`SettingsService`]
-//! (Phase 10.2 — Tauri Command Layer).
+//! (Phase 10.2 вЂ” Tauri Command Layer).
 //!
 //! Each command is a thin translation of Tauri inputs/outputs: it delegates to
 //! the existing application-layer settings service (FR-012) and converts its
 //! classified errors into safe [`CommandError`] values. Settings are key/value
-//! pairs; provider credentials are never stored here (ARCHITECTURE.md §12).
+//! pairs; provider credentials are never stored here (ARCHITECTURE.md В§12).
 //!
 //! FR-012 requires that invalid values are rejected. The generic key/value
 //! store therefore validates at this command boundary before any persistence
 //! happens: only the explicitly supported setting keys may be written, and
 //! their values must belong to the domains defined by the existing
 //! implementation (themes; the build's supported providers/models). Clearing
-//! a value (`None`) is always allowed — it restores the documented default
+//! a value (`None`) is always allowed вЂ” it restores the documented default
 //! state and never persists an invalid value. This validation does not affect
 //! `clear_application_data`, which clears through the repositories directly.
+
+// Tauri command handlers must take ownership of their deserialized
+// arguments: serde cannot borrow into the wire payload, so passing by
+// value here is a framework requirement, not a review defect.
+#![allow(clippy::needless_pass_by_value)]
 
 use tauri::State;
 
@@ -101,7 +106,9 @@ pub(crate) fn get_setting(
     key: String,
     db: State<'_, Database>,
 ) -> Result<Option<String>, CommandError> {
-    SettingsService::new(db.inner()).read(&key).map_err(Into::into)
+    SettingsService::new(db.inner())
+        .read(&key)
+        .map_err(Into::into)
 }
 
 /// Write one setting by `key` (`value` may be `None` to store a `NULL`).
@@ -123,11 +130,10 @@ pub(crate) fn set_setting(
 
 /// Delete one setting by `key` (a no-op when it does not exist).
 #[tauri::command]
-pub(crate) fn delete_setting(
-    key: String,
-    db: State<'_, Database>,
-) -> Result<(), CommandError> {
-    SettingsService::new(db.inner()).delete(&key).map_err(Into::into)
+pub(crate) fn delete_setting(key: String, db: State<'_, Database>) -> Result<(), CommandError> {
+    SettingsService::new(db.inner())
+        .delete(&key)
+        .map_err(Into::into)
 }
 
 /// List every setting as `(key, value)` pairs, ordered by `key`.
@@ -161,7 +167,7 @@ mod tests {
     }
 
     /// Clearing (`None`) restores a documented default state and is always
-    /// valid for every key — including keys that are otherwise unsupported.
+    /// valid for every key вЂ” including keys that are otherwise unsupported.
     #[test]
     fn clearing_is_always_allowed() {
         for key in [THEME_KEY, SELECTED_PROVIDER_KEY, SELECTED_MODEL_KEY] {

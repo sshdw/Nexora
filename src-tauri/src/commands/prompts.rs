@@ -1,9 +1,14 @@
 //! Tauri commands over the existing [`PromptLibraryService`]
-//! (Phase 10.2 — Tauri Command Layer).
+//! (Phase 10.2 вЂ” Tauri Command Layer).
 //!
 //! Each command is a thin translation of Tauri inputs/outputs: it delegates to
 //! the existing application-layer prompt-library service and converts its
 //! classified errors into safe [`CommandError`] values.
+
+// Tauri command handlers must take ownership of their deserialized
+// arguments: serde cannot borrow into the wire payload, so passing by
+// value here is a framework requirement, not a review defect.
+#![allow(clippy::needless_pass_by_value)]
 
 use tauri::State;
 
@@ -29,7 +34,9 @@ pub(crate) fn create_prompt(
 /// List every prompt in the library.
 #[tauri::command]
 pub(crate) fn list_prompts(db: State<'_, Database>) -> Result<Vec<Prompt>, CommandError> {
-    PromptLibraryService::new(db.inner()).list().map_err(Into::into)
+    PromptLibraryService::new(db.inner())
+        .list()
+        .map_err(Into::into)
 }
 
 /// Update an existing prompt's `title` / `content`.

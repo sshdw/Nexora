@@ -1,8 +1,8 @@
 //! Tauri commands over the existing [`CredentialStore`]
-//! (Phase 10.2 — Tauri Command Layer).
+//! (Phase 10.2 вЂ” Tauri Command Layer).
 //!
 //! Provider credentials live exclusively in the OS secure keyring
-//! (ARCHITECTURE.md §12; DATABASE.md §14) and are never written to SQLite.
+//! (ARCHITECTURE.md В§12; DATABASE.md В§14) and are never written to `SQLite`.
 //! These commands delegate to the existing store and expose only safe
 //! operations:
 //!
@@ -13,6 +13,11 @@
 //! There is deliberately **no** command that returns a credential value: the
 //! secret is unnecessary for the UI and must not be returned unnecessarily
 //! (FR-014; acceptance criterion #6).
+
+// Tauri command handlers must take ownership of their deserialized
+// arguments: serde cannot borrow into the wire payload, so passing by
+// value here is a framework requirement, not a review defect.
+#![allow(clippy::needless_pass_by_value)]
 
 use crate::infrastructure::providers::credentials::CredentialStore;
 
@@ -43,7 +48,7 @@ pub(crate) fn remove_provider_credential(provider: String) -> Result<(), Command
     CredentialStore::remove(&provider).map_err(Into::into)
 }
 
-/// Report whether `provider` has a stored credential — presence only, never
+/// Report whether `provider` has a stored credential вЂ” presence only, never
 /// the secret value.
 #[tauri::command]
 pub(crate) fn has_provider_credential(provider: String) -> Result<bool, CommandError> {

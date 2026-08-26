@@ -55,8 +55,8 @@ use base64::Engine as _;
 use std::fs;
 
 use super::execution::{
-    self, AiAttachment, AiAttachmentPayload, AiMessage, AiRequest, AiResponse, AiRole, RequestError,
-    RequestExecutionService,
+    self, AiAttachment, AiAttachmentPayload, AiMessage, AiRequest, AiResponse, AiRole,
+    RequestError, RequestExecutionService,
 };
 
 /// Application-layer result shared by conversation operations, unifying
@@ -220,9 +220,10 @@ impl<'a> ConversationService<'a> {
         // persisted (FR-008 error handling).
         let mut prepared: Vec<(i64, AiAttachment)> = Vec::with_capacity(attachment_ids.len());
         for &attachment_id in attachment_ids {
-            let attachment = self.attachments.read(attachment_id)?.ok_or(
-                ConversationError::UnknownAttachment { id: attachment_id },
-            )?;
+            let attachment = self
+                .attachments
+                .read(attachment_id)?
+                .ok_or(ConversationError::UnknownAttachment { id: attachment_id })?;
             if attachment.conversation_id != conversation_id || attachment.message_id.is_some() {
                 return Err(ConversationError::ForeignAttachment { id: attachment_id });
             }
@@ -242,7 +243,8 @@ impl<'a> ConversationService<'a> {
                 .update_message_id(attachment_id, Some(user_message_id))?;
         }
 
-        let current_attachments = prepared.into_iter().map(|(_, payload)| payload).collect();
+        let current_attachments: Vec<AiAttachment> =
+            prepared.into_iter().map(|(_, payload)| payload).collect();
         let request = AiRequest {
             provider: provider.to_string(),
             model: model.to_string(),
@@ -250,7 +252,7 @@ impl<'a> ConversationService<'a> {
                 conversation_id,
                 provider,
                 user_message_id,
-                current_attachments,
+                &current_attachments,
             )?,
             tools: Vec::new(),
         };
@@ -297,7 +299,7 @@ impl<'a> ConversationService<'a> {
         conversation_id: i64,
         provider: &str,
         current_message_id: i64,
-        current_attachments: Vec<AiAttachment>,
+        current_attachments: &[AiAttachment],
     ) -> Result<Vec<AiMessage>> {
         let history = self.messages.list_by_conversation(conversation_id)?;
         let mut messages = Vec::with_capacity(history.len());
@@ -305,7 +307,7 @@ impl<'a> ConversationService<'a> {
             let mut ai_message = ai_message_from(message)?;
             if ai_message.role == AiRole::User {
                 if message.id == current_message_id {
-                    ai_message.attachments = current_attachments.clone();
+                    ai_message.attachments = current_attachments.to_vec();
                 } else {
                     for attachment in self.attachments.list_by_message(message.id)? {
                         ai_message
@@ -503,7 +505,7 @@ enum AttachmentFamily {
     /// base64 image parts by all three providers.
     Image,
     /// `application/pdf` — supported as document/inline parts by Anthropic and
-    /// Gemini; OpenAI Chat Completions has no inline PDF input.
+    /// Gemini; `OpenAI Chat Completions` has no inline PDF input.
     Pdf,
 }
 
@@ -517,9 +519,7 @@ fn attachment_family(mime: Option<&str>) -> Option<AttachmentFamily> {
         return Some(AttachmentFamily::Text);
     }
     match lowered.as_str() {
-        "image/png" | "image/jpeg" | "image/webp" | "image/gif" => {
-            Some(AttachmentFamily::Image)
-        }
+        "image/png" | "image/jpeg" | "image/webp" | "image/gif" => Some(AttachmentFamily::Image),
         "application/pdf" => Some(AttachmentFamily::Pdf),
         // Common textual application types are decoded and inlined as text.
         "application/json"
@@ -539,9 +539,8 @@ fn provider_supports(provider: &str, family: AttachmentFamily) -> bool {
         // URIs; it defines no inline PDF/document input.
         "openai" => !matches!(family, AttachmentFamily::Pdf),
         // Messages API carries base64 `image` and PDF `document` blocks.
-        "anthropic" => true,
         // generateContent carries `inlineData` images and PDFs.
-        "gemini" => true,
+        "anthropic" | "gemini" => true,
         // Unknown registered provider: conservative, text-only fallback.
         _ => matches!(family, AttachmentFamily::Text),
     }
@@ -571,9 +570,12 @@ fn build_ai_attachment(attachment: &Attachment, provider: &str) -> Result<AiAtta
         }
     }
 
-    let actual_size = fs::metadata(&attachment.file_path)
-        .map_err(|_| ConversationError::AttachmentUnreadable { name: name.clone() })?
-        .len() as i64;
+    let actual_size = i64::try_from(
+        fs::metadata(&attachment.file_path)
+            .map_err(|_| ConversationError::AttachmentUnreadable { name: name.clone() })?
+            .len(),
+    )
+    .unwrap_or(i64::MAX);
     if actual_size > MAX_ATTACHMENT_BYTES {
         return Err(ConversationError::AttachmentTooLarge {
             name,
@@ -588,7 +590,7 @@ fn build_ai_attachment(attachment: &Attachment, provider: &str) -> Result<AiAtta
     let declared = attachment_family(attachment.mime_type.as_deref());
     let is_inline = matches!(
         declared,
-        Some(AttachmentFamily::Image) | Some(AttachmentFamily::Pdf)
+        Some(AttachmentFamily::Image | AttachmentFamily::Pdf)
     );
 
     if let Some(family) = declared {
@@ -976,7 +978,13 @@ mod tests {
             .expect("prior assistant message persisted");
 
         service
-            .send_message(conversation_id, "question two", "openai", "gpt-4o-mini", &[])
+            .send_message(
+                conversation_id,
+                "question two",
+                "openai",
+                "gpt-4o-mini",
+                &[],
+            )
             .expect("send succeeds");
 
         let request = captured
@@ -1072,7 +1080,10 @@ mod tests {
         );
         let conversation_id = service.create("Chat").expect("conversation created");
         let repo = ConversationRepository::new(&db);
-        let before = repo.read(conversation_id).expect("read conversation").expect("exists");
+        let before = repo
+            .read(conversation_id)
+            .expect("read conversation")
+            .expect("exists");
 
         service
             .send_message(conversation_id, "hello", "openai", "gpt-4o-mini", &[])
@@ -1080,7 +1091,10 @@ mod tests {
 
         // Sending a message must advance the conversation's recency (DATABASE.md
         // §12) so the sidebar can order it as recently active.
-        let after = repo.read(conversation_id).expect("read conversation").expect("exists");
+        let after = repo
+            .read(conversation_id)
+            .expect("read conversation")
+            .expect("exists");
         assert!(after.updated_at > before.updated_at);
         // The message and the recency touch landed together: no extra message row.
         let history = service.history(conversation_id).expect("history loads");
@@ -1093,7 +1107,10 @@ mod tests {
         let (service, _captured) = failing_service(&db, "openai");
         let conversation_id = service.create("Chat").expect("conversation created");
         let repo = ConversationRepository::new(&db);
-        let before = repo.read(conversation_id).expect("read exists").expect("insert");
+        let before = repo
+            .read(conversation_id)
+            .expect("read exists")
+            .expect("insert");
 
         service
             .send_message(conversation_id, "hello", "openai", "gpt-4o-mini", &[])
@@ -1102,7 +1119,10 @@ mod tests {
         // The user message is persisted, so the conversation is modified even on
         // a failed execution; the recency touch reflects that and the failed
         // request leaves no assistant message (DATABASE.md §7.2).
-        let after = repo.read(conversation_id).expect("read conversation").expect("exists");
+        let after = repo
+            .read(conversation_id)
+            .expect("read conversation")
+            .expect("exists");
         assert!(after.updated_at > before.updated_at);
         let history = service.history(conversation_id).expect("history loads");
         assert_eq!(history.len(), 1);
@@ -1224,7 +1244,13 @@ mod tests {
         // An arbitrary provider/model flows through the request unchanged; the
         // conversation layer never branches on a specific provider.
         service
-            .send_message(conversation_id, "hi", "custom-provider", "custom-model", &[])
+            .send_message(
+                conversation_id,
+                "hi",
+                "custom-provider",
+                "custom-model",
+                &[],
+            )
             .expect("send succeeds");
 
         let request = captured
@@ -1338,7 +1364,7 @@ mod tests {
                 conversation_id,
                 name,
                 &path.to_string_lossy(),
-                size_override.or(Some(contents.len() as i64)),
+                size_override.or(Some(i64::try_from(contents.len()).unwrap_or(i64::MAX))),
                 mime,
             )
             .expect("draft attachment created")
@@ -1425,10 +1451,7 @@ mod tests {
             turn.attachments[0].payload,
             AiAttachmentPayload::Text("quarterly revenue rose 12 percent".to_string())
         );
-        assert_eq!(
-            turn.attachments[0].mime_type.as_deref(),
-            Some("text/plain")
-        );
+        assert_eq!(turn.attachments[0].mime_type.as_deref(), Some("text/plain"));
         // The boundary carries the decoded payload; fencing into turn text
         // happens at wire time in the executors, and no filesystem path is
         // ever present.
@@ -1481,12 +1504,15 @@ mod tests {
 
         // An attachment belonging to another conversation is rejected.
         let err = service
-            .send_message(conversation_id, "hello", "openai", "gpt-4o-mini", &[foreign])
+            .send_message(
+                conversation_id,
+                "hello",
+                "openai",
+                "gpt-4o-mini",
+                &[foreign],
+            )
             .expect_err("foreign attachment");
-        assert!(matches!(
-            err,
-            ConversationError::ForeignAttachment { .. }
-        ));
+        assert!(matches!(err, ConversationError::ForeignAttachment { .. }));
 
         // A draft already linked to a sent message can never be re-linked.
         let own = draft_text_attachment(&db, conversation_id, "own.txt", "own content");

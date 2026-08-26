@@ -41,10 +41,12 @@
 // `doc_markdown` pedantic lint flags as needing backticks. Allow it locally.
 #![allow(clippy::doc_markdown)]
 
-#[allow(unused_imports)]
 use crate::application::execution::{
-    AiAttachment, AiAttachmentPayload, AiMessage, AiRequest, AiResponse, AiRole, ExecutorError, ProviderExecutor,
+    AiAttachmentPayload, AiMessage, AiRequest, AiResponse, AiRole, ExecutorError, ProviderExecutor,
 };
+// `AiAttachment` is referenced only by this module's unit tests.
+#[cfg(test)]
+use crate::application::execution::AiAttachment;
 
 use serde::{Deserialize, Serialize};
 
@@ -416,15 +418,18 @@ mod tests {
             messages: vec![
                 AiMessage {
                     role: AiRole::System,
-                    content: "You are a helpful assistant.".to_string(),                    attachments: Vec::new(),
+                    content: "You are a helpful assistant.".to_string(),
+                    attachments: Vec::new(),
                 },
                 AiMessage {
                     role: AiRole::User,
-                    content: "Hello".to_string(),                    attachments: Vec::new(),
+                    content: "Hello".to_string(),
+                    attachments: Vec::new(),
                 },
                 AiMessage {
                     role: AiRole::Assistant,
-                    content: "Hi there".to_string(),                    attachments: Vec::new(),
+                    content: "Hi there".to_string(),
+                    attachments: Vec::new(),
                 },
             ],
             tools: Vec::new(),
@@ -459,7 +464,10 @@ mod tests {
             .iter()
             .find(|m| m.role == "assistant")
             .expect("an assistant message is present");
-        assert_eq!(assistant.content, AnthropicContent::Text("Hi there".to_string()));
+        assert_eq!(
+            assistant.content,
+            AnthropicContent::Text("Hi there".to_string())
+        );
     }
 
     #[test]
@@ -505,7 +513,8 @@ mod tests {
             model: "claude-sonnet-5".to_string(),
             messages: vec![AiMessage {
                 role: AiRole::User,
-                content: "Hello".to_string(),                attachments: Vec::new(),
+                content: "Hello".to_string(),
+                attachments: Vec::new(),
             }],
             tools: Vec::new(),
         };
@@ -703,8 +712,7 @@ mod tests {
 
     #[test]
     fn executor_round_trips_through_local_server() {
-        let body =
-            r#"{"model":"claude-sonnet-5","content":[{"type":"text","text":"pong"}]}"#;
+        let body = r#"{"model":"claude-sonnet-5","content":[{"type":"text","text":"pong"}]}"#;
         let (endpoint, _captured, server) = spawn_server(200, body);
         let executor = AnthropicExecutor::with_endpoint(endpoint);
         let ai = executor
@@ -718,8 +726,7 @@ mod tests {
 
     #[test]
     fn request_authenticates_with_x_api_key_header() {
-        let body =
-            r#"{"model":"claude-sonnet-5","content":[{"type":"text","text":"pong"}]}"#;
+        let body = r#"{"model":"claude-sonnet-5","content":[{"type":"text","text":"pong"}]}"#;
         let (endpoint, captured, server) = spawn_server(200, body);
         let executor = AnthropicExecutor::with_endpoint(endpoint);
         let credential = "sk-secret-example";

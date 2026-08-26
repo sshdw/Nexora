@@ -46,10 +46,12 @@
 // backticks. Allow it locally.
 #![allow(clippy::doc_markdown)]
 
-#[allow(unused_imports)]
 use crate::application::execution::{
-    AiAttachment, AiAttachmentPayload, AiMessage, AiRequest, AiResponse, AiRole, ExecutorError, ProviderExecutor,
+    AiAttachmentPayload, AiMessage, AiRequest, AiResponse, AiRole, ExecutorError, ProviderExecutor,
 };
+// `AiAttachment` is referenced only by this module's unit tests.
+#[cfg(test)]
+use crate::application::execution::AiAttachment;
 
 use serde::{Deserialize, Serialize};
 
@@ -457,15 +459,18 @@ mod tests {
             messages: vec![
                 AiMessage {
                     role: AiRole::System,
-                    content: "You are a helpful assistant.".to_string(),                    attachments: Vec::new(),
+                    content: "You are a helpful assistant.".to_string(),
+                    attachments: Vec::new(),
                 },
                 AiMessage {
                     role: AiRole::User,
-                    content: "Hello".to_string(),                    attachments: Vec::new(),
+                    content: "Hello".to_string(),
+                    attachments: Vec::new(),
                 },
                 AiMessage {
                     role: AiRole::Assistant,
-                    content: "Hi there".to_string(),                    attachments: Vec::new(),
+                    content: "Hi there".to_string(),
+                    attachments: Vec::new(),
                 },
             ],
             tools: Vec::new(),
@@ -504,20 +509,20 @@ mod tests {
             messages: vec![
                 AiMessage {
                     role: AiRole::System,
-                    content: "First rule.".to_string(),                    attachments: Vec::new(),
+                    content: "First rule.".to_string(),
+                    attachments: Vec::new(),
                 },
                 AiMessage {
                     role: AiRole::System,
-                    content: "Second rule.".to_string(),                    attachments: Vec::new(),
+                    content: "Second rule.".to_string(),
+                    attachments: Vec::new(),
                 },
             ],
             tools: Vec::new(),
         };
         let body = generate_content_request(&request);
         assert_eq!(
-            body.system_instruction
-                .expect("system present")
-                .parts[0]
+            body.system_instruction.expect("system present").parts[0]
                 .text
                 .as_deref(),
             Some("First rule.\n\nSecond rule.")
@@ -541,7 +546,8 @@ mod tests {
             model: "gemini-3.6-flash".to_string(),
             messages: vec![AiMessage {
                 role: AiRole::User,
-                content: "Hello".to_string(),                attachments: Vec::new(),
+                content: "Hello".to_string(),
+                attachments: Vec::new(),
             }],
             tools: Vec::new(),
         };
@@ -847,7 +853,7 @@ mod tests {
             .rev()
             .find(|c| c.role == "user")
             .expect("user contents");
-        assert!(user.parts.len() == 1);
+        assert_eq!(user.parts.len(), 1);
         assert_eq!(
             user.parts[0].text.as_deref(),
             Some("Summarize\n\n[Attached file: notes.txt]\n--- begin attached file contents ---\nrevenue rose 12 percent\n--- end attached file contents ---")

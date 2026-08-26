@@ -1,10 +1,15 @@
 //! Tauri command over the existing [`LocalSearchService`]
-//! (Phase 10.2 — Tauri Command Layer).
+//! (Phase 10.2 вЂ” Tauri Command Layer).
 //!
 //! The command is a thin translation of Tauri inputs/outputs: it delegates to
 //! the existing application-layer local-search service (FR-009, FTS5-backed,
 //! offline) and converts its classified errors into safe [`CommandError`]
 //! values.
+
+// Tauri command handlers must take ownership of their deserialized
+// arguments: serde cannot borrow into the wire payload, so passing by
+// value here is a framework requirement, not a review defect.
+#![allow(clippy::needless_pass_by_value)]
 
 use tauri::State;
 

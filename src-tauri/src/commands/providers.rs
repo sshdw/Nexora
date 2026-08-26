@@ -1,11 +1,16 @@
 //! Tauri commands over the existing [`ProviderService`]
-//! (Phase 10.2 — Tauri Command Layer).
+//! (Phase 10.2 вЂ” Tauri Command Layer).
 //!
 //! Each command is a thin translation of Tauri inputs/outputs: it delegates to
 //! the existing application-layer provider-metadata service and converts its
 //! classified errors into safe [`CommandError`] values. Provider credentials
-//! are never returned here — only metadata and credential *presence*
-//! (FR-014), never the secret value (ARCHITECTURE.md §12; DATABASE.md §14).
+//! are never returned here вЂ” only metadata and credential *presence*
+//! (FR-014), never the secret value (ARCHITECTURE.md В§12; DATABASE.md В§14).
+
+// Tauri command handlers must take ownership of their deserialized
+// arguments: serde cannot borrow into the wire payload, so passing by
+// value here is a framework requirement, not a review defect.
+#![allow(clippy::needless_pass_by_value)]
 
 use tauri::State;
 
@@ -17,9 +22,9 @@ use crate::infrastructure::repository::providers::Provider;
 use super::error::CommandError;
 
 /// Return every provider supported by this build, with its supported models
-/// (DATABASE.md §7.5: model lists are hardcoded in the MVP). This is the
+/// (DATABASE.md В§7.5: model lists are hardcoded in the MVP). This is the
 /// read-only source of truth for provider/model selection; the UI never invents
-/// providers or models. Carries metadata only — never a credential.
+/// providers or models. Carries metadata only вЂ” never a credential.
 #[tauri::command]
 pub(crate) fn supported_providers() -> Vec<SupportedProvider> {
     crate::infrastructure::providers::supported_providers()
@@ -36,7 +41,9 @@ pub(crate) fn list_providers(db: State<'_, Database>) -> Result<Vec<Provider>, C
 pub(crate) fn list_available_providers(
     db: State<'_, Database>,
 ) -> Result<Vec<Provider>, CommandError> {
-    ProviderService::new(db.inner()).available().map_err(Into::into)
+    ProviderService::new(db.inner())
+        .available()
+        .map_err(Into::into)
 }
 
 /// Report whether a provider is configured and has stored credentials.
@@ -65,5 +72,7 @@ pub(crate) fn create_provider(
 /// Remove a provider definition.
 #[tauri::command]
 pub(crate) fn remove_provider(id: i64, db: State<'_, Database>) -> Result<(), CommandError> {
-    ProviderService::new(db.inner()).remove(id).map_err(Into::into)
+    ProviderService::new(db.inner())
+        .remove(id)
+        .map_err(Into::into)
 }

@@ -1,9 +1,14 @@
 //! Tauri commands over the existing [`ExportService`] / [`ImportService`]
-//! (Phase 10.2 — Tauri Command Layer).
+//! (Phase 10.2 вЂ” Tauri Command Layer).
 //!
 //! Each command is a thin translation of Tauri inputs/outputs: it delegates to
 //! the existing application-layer export / import services (FR-010, FR-011)
 //! and converts their classified errors into safe [`CommandError`] values.
+
+// Tauri command handlers must take ownership of their deserialized
+// arguments: serde cannot borrow into the wire payload, so passing by
+// value here is a framework requirement, not a review defect.
+#![allow(clippy::needless_pass_by_value)]
 
 use tauri::State;
 

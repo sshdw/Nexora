@@ -1,10 +1,15 @@
 //! Tauri commands over the existing [`AttachmentService`]
-//! (Phase 10.2 — Tauri Command Layer).
+//! (Phase 10.2 вЂ” Tauri Command Layer).
 //!
 //! Each command is a thin translation of Tauri inputs/outputs: it delegates to
 //! the existing application-layer attachment service and converts its
 //! classified errors into safe [`CommandError`] values. No file content is
 //! read, copied, or uploaded here (FR-008 local-file reference semantics).
+
+// Tauri command handlers must take ownership of their deserialized
+// arguments: serde cannot borrow into the wire payload, so passing by
+// value here is a framework requirement, not a review defect.
+#![allow(clippy::needless_pass_by_value)]
 
 use tauri::State;
 
@@ -51,5 +56,7 @@ pub(crate) fn list_attachments(
 /// not-found by the service).
 #[tauri::command]
 pub(crate) fn remove_attachment(id: i64, db: State<'_, Database>) -> Result<(), CommandError> {
-    AttachmentService::new(db.inner()).remove(id).map_err(Into::into)
+    AttachmentService::new(db.inner())
+        .remove(id)
+        .map_err(Into::into)
 }
