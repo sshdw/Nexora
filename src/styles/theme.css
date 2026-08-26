@@ -69,7 +69,8 @@ input, textarea, select {
    paper surfaces (Design System §7). */
 [data-theme="light"] .nex-logo,
 [data-theme="light"] .nex-empty-mark,
-[data-theme="light"] .nex-placeholder-mark {
+[data-theme="light"] .nex-placeholder-mark,
+[data-theme="light"] .nex-prompt-empty-mark {
   filter: invert(1);
 }
 

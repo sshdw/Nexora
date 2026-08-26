@@ -1,8 +1,8 @@
 /* ============================================================
-   Import / Export (FR-010, FR-011) — Phase 10.7
+   Import / Export (FR-010, FR-011) — 0.3.0
    The dialogs render through the shared .nex-dialog* system
-   (components.css, 0.2.2); only the status/hint rows below are
-   specific to this flow, built on 0.2.1 tokens.
+   (components.css); only the status/hint rows below are specific
+   to this flow, built on the 0.3.0 tokens.
    ============================================================ */
 
 /* Success / info status row shown inside an import/export modal. Uses the
@@ -14,12 +14,21 @@
 
 .nex-io-status {
   margin: 0;
-  font-size: var(--nex-sys-type-size-body-small);
+  font-size: var(--nex-sys-type-size-body-medium);
 }
 
 /* Neutral explanatory hint under a modal title. */
 .nex-io-hint {
   margin: 0;
-  font-size: var(--nex-sys-type-size-body-small);
-  color: var(--nex-sys-color-on-surface-tertiary);
+  font-size: var(--nex-sys-type-size-body-medium);
+  color: var(--nex-sys-color-on-surface-variant);
+  line-height: var(--nex-sys-type-line-height-normal);
+}
+
+/* Dialog flow: description/status zones form one grouped body above
+   the action row. */
+.nex-io-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nex-sys-space-sm);
 }

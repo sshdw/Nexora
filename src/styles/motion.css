@@ -1,9 +1,15 @@
 /* ============================================================
-   Nexora Motion Tokens — 0.2.1 Expressive Foundation
+   Nexora Motion Tokens — 0.3.0 Expressive Visual Reset
    All values below are OFFICIAL Material tokens, exported from
    the skill's references/motion.md §4–§5 (verified 2026-08-24
    against m3.material.io and AndroidX source). Never invent
    durations, curves, or spring parameters.
+
+   0.3.0: the two legacy app durations are snapped onto the
+   OFFICIAL sets (--motion-duration-fast = short3, --motion-
+   duration-normal = short4) so every transition anchors to a
+   published value. Stagger + view-switch tokens added for the
+   reset's entrance motion.
 
    Components consume --motion-* variables only.
    Reduced-motion handling lives at the bottom of this file.
@@ -39,20 +45,18 @@
   --motion-duration-extra-long3: 900ms;
   --motion-duration-extra-long4: 1000ms;
 
-  /* Legacy app durations carried forward (NEXORA ADAPTATION —
-     pre-existing tuned values preserved for zero visual drift).
-     -fast sits between official short2/short3; snapping to the
-     official sets is a candidate cleanup after audit §12 review. */
-  --motion-duration-fast: 120ms;
-  --motion-duration-normal: 180ms;
+  /* Semantic aliases snapped to OFFICIAL stops (0.3.0 cleanup of
+     the pre-existing tuned values; NEXORA ADAPTATION naming). */
+  --motion-duration-fast: var(--motion-duration-short3);   /* 150ms state fades */
+  --motion-duration-normal: var(--motion-duration-short4); /* 200ms micro transitions */
 
   /* ---- Spring→CSS conversion pairs (OFFICIAL table, motion.md §4)
      For non-interruptible one-shot animations; y-values > 1 encode
      overshoot. True interruptible springs need a JS integrator and
-     are deferred (audit §12.3 — OPEN DECISION). Naming:
-     scheme-speed-kind. Effects springs never overshoot (ζ=1). */
+     remain deferred (OPEN DECISION). Naming: scheme-speed-kind.
+     Effects springs never overshoot (ζ=1). */
   /* Expressive spatial (whitelisted moments only: send/create/
-     confirm-destructive — NEXORA ADAPTATION rationing). */
+     insertion — NEXORA ADAPTATION rationing). */
   --motion-spring-expressive-fast-spatial-curve: cubic-bezier(0.42, 1.67, 0.21, 0.9);
   --motion-spring-expressive-fast-spatial-duration: 350ms;
   --motion-spring-expressive-default-spatial-curve: cubic-bezier(0.38, 1.21, 0.22, 1);
@@ -81,8 +85,18 @@
   --motion-spring-standard-slow-effects-curve: cubic-bezier(0.34, 0.88, 0.34, 1);
   --motion-spring-standard-slow-effects-duration: 300ms;
 
-  /* ---- Loop timings (NEXORA ADAPTATION — gentle loops preserved
-     from 0.1.0; static fallbacks under reduced motion below) ---- */
+  /* ---- Entrance rhythm (0.3.0; values NEXORA ADAPTATION —
+     "Material does not prescribe a universal value for this.") ---- */
+  /* Stagger step for list/card entrances (Banegasn-reference
+     pattern, re-anchored to OFFICIAL short1). */
+  --motion-stagger-step: 50ms;
+  /* Stagger travel distance (RECOMMENDATION). */
+  --motion-stagger-travel: 8px;
+  /* View-switch travel (skill motion.md §7: crossfade ≤8px translate). */
+  --motion-view-travel: 6px;
+
+  /* ---- Loop timings (NEXORA ADAPTATION — gentle loops; static
+     fallbacks under reduced motion below) ---- */
   --motion-loop-skeleton: 1.6s;
   --motion-loop-typing-dot-delay: 120ms;
 }

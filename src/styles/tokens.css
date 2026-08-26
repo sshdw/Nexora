@@ -1,14 +1,24 @@
 /* ============================================================
-   Nexora Design Tokens — 0.2.1 Expressive Foundation
+   Nexora Design Tokens — 0.3.0 Expressive Visual Reset
    Material 3 Expressive token architecture (three tiers:
-   ref → sys → component), per docs/Nexora-0.2.1-Material-3-
-   Expressive-Audit-and-Plan.md §5 and the material-3-expressive
-   skill (references/fundamentals.md §2).
+   ref → sys → component), per the material-3-expressive skill
+   (references/fundamentals.md §2).
 
    Labeling discipline (skill SKILL.md):
    OFFICIAL          = value traceable to Google Material docs/source
    RECOMMENDATION    = chosen because Material does not prescribe it
    NEXORA ADAPTATION = intentional Nexora-specific decision
+
+   0.3.0 reset notes (composition-level changes per the 0.3.0
+   visual-reset brief):
+   - Surface ladder gains surface-container-highest (OFFICIAL role);
+     tone steps widen so zones read without borders.
+   - State layers adopt the OFFICIAL opacities (hover .08 /
+     pressed .12 / dragged .16 — components.md §1).
+   - Applied shape steps adopt the OFFICIAL scale values (style-level
+     application per shape.md §2.3) incl. large-increased (20).
+   - Type ramp adds label-large (OFFICIAL button style) and lifts
+     headline-small to the empty-state display band.
 
    Both themes are defined once under identical names; components
    consume --nex-sys-* / --motion-* variables only — never raw
@@ -20,8 +30,7 @@
      REF TIER — raw reference values
      ========================================================== */
 
-  /* Palette (NEXORA ADAPTATION — warm-neutral dark scheme carried
-     forward unchanged from MVP 0.1.0; see audit §5.1). */
+  /* Palette (NEXORA ADAPTATION — warm-neutral scheme, skill color.md §4). */
   --nex-ref-palette-amber-60: #c9a66b;
   --nex-ref-palette-amber-70: #d6b57e;
   --nex-ref-palette-brick-60: #b5675a;
@@ -29,10 +38,7 @@
   --nex-ref-palette-sage-60: #8fa887;
   --nex-ref-palette-sage-70: #5d7d55;
 
-  /* Official corner-radius scale, verbatim from the skill's
-     shape.md §1 (OFFICIAL). Nexora's *applied* steps live in the
-     sys tier below as a sanctioned style-level redefinition
-     (shape.md §2.3); this tier preserves official traceability. */
+  /* Official corner-radius scale, verbatim from shape.md §1 (OFFICIAL). */
   --nex-ref-shape-none: 0;
   --nex-ref-shape-extra-small: 4px;
   --nex-ref-shape-small: 8px;
@@ -48,108 +54,91 @@
      values are NEXORA ADAPTATION unless labeled otherwise.
      ========================================================== */
 
-  /* Surface ladder (audit §5.1): one tone step between adjacent
-     peer zones; elevated planes sit on -high. */
-  --nex-sys-color-surface: #16151a;                 /* window backdrop */
-  --nex-sys-color-surface-container-low: #1b1a1f;   /* sidebar */
-  --nex-sys-color-surface-container: #1d1c21;       /* main canvas */
-  --nex-sys-color-surface-container-high: #232226;  /* menus, modals, chips */
+  /* Surface ladder — five OFFICIAL container roles; steps widened so
+     zones read by tone alone (skill color.md §3). */
+  --nex-sys-color-surface: #131217;                   /* window backdrop */
+  --nex-sys-color-surface-container-low: #1a191f;     /* sidebar */
+  --nex-sys-color-surface-container: #1e1d24;         /* main canvas */
+  --nex-sys-color-surface-container-high: #27262e;    /* menus, dialogs, cards, composer */
+  --nex-sys-color-surface-container-highest: #302f38; /* nested: user turns, chips-on-high */
 
-  /* On-surface content ladder (NEXORA ADAPTATION extensions of the
-     on-surface/on-surface-variant pair for two quieter steps). */
-  --nex-sys-color-on-surface: #ece9e6;
-  --nex-sys-color-on-surface-variant: #8b8983;
-  --nex-sys-color-on-surface-tertiary: #79766f;
-  --nex-sys-color-on-surface-faint: #5c5954;
+  /* On-surface content ladder (NEXORA ADAPTATION extension of the
+     OFFICIAL on-surface / on-surface-variant pair; brightened per the
+     OFFICIAL expressive "brighter text" guidance, color.md §2). */
+  --nex-sys-color-on-surface: #edeae7;
+  --nex-sys-color-on-surface-variant: #a19d96;
+  --nex-sys-color-on-surface-tertiary: #847f78;
+  --nex-sys-color-on-surface-faint: #655f58;
 
-  /* Primary accent family — punctuation only: primary button fill,
-     focus rings, small interactive icon states (NEXORA ADAPTATION).
-     The explicit -hover fill preserves the current tuned hover;
-     official schemes would use a state layer over the container. */
+  /* Primary accent — punctuation only: primary button fill, focus
+     rings, thin active indicator, small interactive icon states
+     (NEXORA ADAPTATION rationing; skill color.md §7). */
   --nex-sys-color-primary: var(--nex-ref-palette-amber-60);
   --nex-sys-color-primary-hover: var(--nex-ref-palette-amber-70);
-  --nex-sys-color-primary-container: rgba(201, 166, 107, 0.12);
+  --nex-sys-color-primary-container: rgba(201, 166, 107, 0.14);
   --nex-sys-color-on-primary: #211c14;
 
-  /* Secondary / tertiary accents. Nexora currently carries no second
-     hue; secondary resolves to surface tones (selection states) and
-     tertiary stays reserved for badge-level moments (OFFICIAL role
-     intent; NEXORA ADAPTATION mapping). Defined so 0.2.2 components
-     can consume roles, not hexes. */
+  /* Secondary resolves to surface tones (selection); tertiary stays
+     reserved for badge-level moments (OFFICIAL role intent). */
   --nex-sys-color-secondary: var(--nex-sys-color-on-surface-variant);
   --nex-sys-color-tertiary: var(--nex-ref-palette-amber-60);
 
-  /* Error / destructive — muted at rest, intensified only at
-     confirmation (NEXORA ADAPTATION). Success has no dedicated M3
-     role; kept textual/transient only (RECOMMENDATION). */
+  /* Error / destructive — muted at rest, intensified at confirmation
+     (NEXORA ADAPTATION). Success kept textual/transient (RECOMMENDATION). */
   --nex-sys-color-error: var(--nex-ref-palette-brick-60);
-  --nex-sys-color-error-container: rgba(181, 103, 90, 0.12);
-  --nex-sys-color-error-outline: rgba(181, 103, 90, 0.32);
+  --nex-sys-color-error-container: rgba(181, 103, 90, 0.14);
+  --nex-sys-color-error-outline: rgba(181, 103, 90, 0.36);
+  /* Filled destructive button (intensified confirm step only):
+     the darker brick keeps ≥4.5:1 with white in both themes. */
+  --nex-sys-color-error-filled: var(--nex-ref-palette-brick-70);
+  --nex-sys-color-on-error: #ffffff;
   --nex-sys-color-success: var(--nex-ref-palette-sage-60);
-  --nex-sys-color-success-container: rgba(143, 168, 135, 0.12);
+  --nex-sys-color-success-container: rgba(143, 168, 135, 0.14);
 
-  /* Outline roles (OFFICIAL names; NEXORA ADAPTATION hairline alphas).
+  /* Outline roles (OFFICIAL names; hairline alphas NEXORA ADAPTATION).
      Hairline-only policy: structural seams, never per-row borders. */
-  --nex-sys-color-outline: rgba(255, 255, 255, 0.10);
+  --nex-sys-color-outline: rgba(255, 255, 255, 0.1);
   --nex-sys-color-outline-variant: rgba(255, 255, 255, 0.06);
 
-  /* Inverse pair (OFFICIAL role names) for tooltips and snackbars.
-     Values are the existing palette inverted (NEXORA ADAPTATION):
-     a light reading tone carrying dark text in the dark theme. */
-  --nex-sys-color-inverse-surface: #ece9e6;
-  --nex-sys-color-inverse-on-surface: #232226;
+  /* Inverse pair (OFFICIAL role names) for tooltips and snackbars. */
+  --nex-sys-color-inverse-surface: #edeae7;
+  --nex-sys-color-inverse-on-surface: #27262e;
 
-  /* Scrim behind modals (OFFICIAL role; value RECOMMENDATION —
-     "Material does not prescribe a universal value for this."). */
-  --nex-sys-color-scrim: rgba(0, 0, 0, 0.35);
+  /* Scrim behind modals (OFFICIAL role; value RECOMMENDATION). */
+  --nex-sys-color-scrim: rgba(0, 0, 0, 0.4);
 
   /* ==========================================================
      SYS TIER — STATE LAYERS
-     Opacity contract per skill components.md §1. Hover/selected
-     keep Nexora's current tuned values pending audit OPEN DECISION
-     §12.1 (switch to OFFICIAL hover 0.08 / selected tone-step by
-     changing the two opacity tokens below — nothing else).
-     Pressed adopts the OFFICIAL 0.12 now (no prior value existed;
-     normalization was mandated by task area G). Dragged is
-     reserved (OFFICIAL 0.16; no drag feature exists yet).
+     OFFICIAL opacities (components.md §1): hover .08 · focus .12
+     (+ring) · pressed .12 · dragged .16. Selected alpha covers
+     contexts without a container role (NEXORA ADAPTATION).
      ========================================================== */
-  --nex-sys-state-hover-opacity: 0.05;    /* NEXORA ADAPTATION (OFFICIAL alt: 0.08 — audit §12.1) */
-  --nex-sys-state-selected-opacity: 0.09; /* NEXORA ADAPTATION */
-  --nex-sys-state-pressed-opacity: 0.12;  /* OFFICIAL */
-  --nex-sys-state-dragged-opacity: 0.16;  /* OFFICIAL — reserved */
+  --nex-sys-state-hover-opacity: 0.08;   /* OFFICIAL */
+  --nex-sys-state-selected-opacity: 0.1; /* NEXORA ADAPTATION */
+  --nex-sys-state-pressed-opacity: 0.12; /* OFFICIAL */
+  --nex-sys-state-dragged-opacity: 0.16; /* OFFICIAL — reserved */
 
   --nex-sys-state-hover: rgba(255, 255, 255, var(--nex-sys-state-hover-opacity));
   --nex-sys-state-selected: rgba(255, 255, 255, var(--nex-sys-state-selected-opacity));
   --nex-sys-state-pressed: rgba(255, 255, 255, var(--nex-sys-state-pressed-opacity));
   --nex-sys-state-dragged: rgba(255, 255, 255, var(--nex-sys-state-dragged-opacity));
 
-  /* State layers over the inverse pair (tooltip/snackbar bubbles):
-     the content color there is inverse-on-surface, so its layer is
-     dark-alpha in the dark theme and flips in the light theme.
-     Opacities are the OFFICIAL hover/pressed values. */
-  --nex-sys-state-inverse-hover: rgba(35, 34, 38, 0.08);
-  --nex-sys-state-inverse-pressed: rgba(35, 34, 38, 0.12);
+  /* State layers over the inverse pair (tooltip/snackbar bubbles). */
+  --nex-sys-state-inverse-hover: rgba(39, 38, 46, 0.08);
+  --nex-sys-state-inverse-pressed: rgba(39, 38, 46, 0.12);
 
-  /* Disabled convention (components.md §1: "still identifiable; not
-     just color"). Unified to one app-wide value — previously three
-     drifted values (0.5/0.55/0.6). OFFICIAL token conventions land
-     near ~38% content; Nexora keeps a calmer 50% (NEXORA ADAPTATION,
-     revisit with audit §12 if desired). */
+  /* Disabled convention — still identifiable, not just color
+     (OFFICIAL ~38% convention; Nexora keeps calmer 50%, NEXORA ADAPTATION). */
   --nex-sys-state-disabled-opacity: 0.5;
 
-  /* Scrollbar thumbs — tokenized so non-dark themes stay visible
-     (defect fix: previously hardcoded white alphas). Values
-     RECOMMENDATION. */
+  /* Scrollbar thumbs — tokenized for both themes. */
   --nex-sys-scrollbar-thumb: rgba(255, 255, 255, 0.12);
-  --nex-sys-scrollbar-thumb-hover: rgba(255, 255, 255, 0.18);
+  --nex-sys-scrollbar-thumb-hover: rgba(255, 255, 255, 0.2);
 
   /* ==========================================================
      SYS TIER — FOCUS
      One ring treatment app-wide: thin accent ring, no glow
-     (NEXORA ADAPTATION); visibility ≥3:1 requirement OFFICIAL.
-     Field-type controls use the border-moment variant instead
-     (sanctioned text-field pattern). Contrast verification of the
-     soft alpha remains an open follow-up (audit §B.11).
+     (NEXORA ADAPTATION); ≥3:1 visibility requirement OFFICIAL.
      ========================================================== */
   --nex-sys-focus-ring-color: rgba(201, 166, 107, 0.75);
   --nex-sys-focus-field-color: rgba(201, 166, 107, 0.55);
@@ -159,22 +148,11 @@
 
   /* ==========================================================
      SYS TIER — TYPOGRAPHY
-     Size ramp maps 1:1 to the sizes shipped in 0.1.0 (zero visual
-     change). Style matrix below documents each stop's M3 role so
-     0.2.2 components consume styles, not arbitrary px
-     (RECOMMENDATION mapping of the OFFICIAL scale in the skill's
-     typography.md §1):
-       label-small   = 11px  (badges, dense metadata)
-       label-medium  = 12px  (section labels, timestamps)
-       body-small    = 13px  (buttons today, hints, descriptions)
-       body-medium   = 14px  (list titles, settings rows, message body)
-       body-large    = 15px  (placeholder titles, section headings)
-       title-medium  = 15px  (settings section headings)
-       title-large   = 18px  (screen headers)
-       headline-small= 20px  (reserved display moment)
-     Audit-approved retargets (message body → 15–16 band etc.) are
-     deliberately NOT applied here — they alter visual composition
-     and belong to a later PO-approved pass.
+     Size ramp maps to M3 style roles (RECOMMENDATION mapping of the
+     OFFICIAL scale, typography.md §1; pixels NEXORA ADAPTATION):
+       label-small 11 · label-medium 12 · label-large 14 ·
+       body-small 13 · body-medium 14 · body-large 15 ·
+       title-medium 17 · title-large 18 · headline-small 22
      ========================================================== */
   --nex-sys-type-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
     "Helvetica Neue", Arial, sans-serif;
@@ -183,20 +161,18 @@
 
   --nex-sys-type-size-label-small: 11px;
   --nex-sys-type-size-label-medium: 12px;
+  --nex-sys-type-size-label-large: 14px;
   --nex-sys-type-size-body-small: 13px;
   --nex-sys-type-size-body-medium: 14px;
   --nex-sys-type-size-body-large: 15px;
   --nex-sys-type-size-title-medium: 17px;
   --nex-sys-type-size-title-large: 18px;
-  --nex-sys-type-size-headline-small: 20px;
+  --nex-sys-type-size-headline-small: 22px;
 
   --nex-sys-type-weight-regular: 400;
   --nex-sys-type-weight-medium: 500;
   --nex-sys-type-weight-semibold: 600;
-  /* Emphasized styles ≈ one weight step up on a variable-capable
-     stack (web interpretation, RECOMMENDATION per typography.md §2).
-     Currently identical to semibold; exists so emphasized consumers
-     can switch independently later. */
+  /* Emphasized ≈ one weight step up (web interpretation, typography.md §2). */
   --nex-sys-type-weight-emphasized: 600;
 
   --nex-sys-type-line-height-tight: 1.25;
@@ -205,28 +181,33 @@
 
   /* ==========================================================
      SYS TIER — SHAPE (applied)
-     Style-level redefinition of scale steps (OFFICIALY sanctioned
-     customization per shape.md §2.3): controls sit in the small
-     band, panels in medium→large, elevated containers above.
-     Ref-tier official values remain available for future snapping.
+     OFFICIAL scale steps applied per container class (shape.md §2/§4;
+     the step→component mapping is NEXORA ADAPTATION):
+       extra-small    4  nested inner corners (optical formula)
+       small          8  fields, rows, chips, search
+       medium        12  buttons, cards, menus/popovers
+       large         16  panels, user turns
+       large-increased 20  composer shell (OFFICIAL step)
+       extra-large   28  dialogs (OFFICIAL mapping)
+       full           —  pills: send, indicators, switches
      Zero-radius sharp corners banned (shape.md §5).
      ========================================================== */
   --nex-sys-shape-none: var(--nex-ref-shape-none);
-  --nex-sys-shape-extra-small: var(--nex-ref-shape-extra-small); /* nested inner corners (optical formula) */
-  --nex-sys-shape-small: 6px;         /* controls: inputs, chips, rows (official step: 8) */
-  --nex-sys-shape-medium: 10px;       /* buttons, cards, popovers (official step: 12) */
-  --nex-sys-shape-large: 12px;        /* panels (official step: 16) */
-  --nex-sys-shape-extra-large: 16px;  /* composer editor, top-level elevated (official step: 28) */
+  --nex-sys-shape-extra-small: var(--nex-ref-shape-extra-small);
+  --nex-sys-shape-small: var(--nex-ref-shape-small);
+  --nex-sys-shape-medium: var(--nex-ref-shape-medium);
+  --nex-sys-shape-large: var(--nex-ref-shape-large);
+  --nex-sys-shape-large-increased: var(--nex-ref-shape-large-increased);
+  --nex-sys-shape-extra-large: var(--nex-ref-shape-extra-large);
   --nex-sys-shape-full: var(--nex-ref-shape-full);
 
-  /* Optical roundness reminder (OFFICIAL formula): nested radii must
-     differ — inner radius = outer radius − padding. */
+  /* Optical roundness reminder (OFFICIAL formula): inner radius =
+     outer radius − padding. */
 
   /* ==========================================================
      SYS TIER — SPACING
-     4px base / 8px rhythm. "Material does not prescribe a universal
-     value for this" — grid itself is RECOMMENDATION (fundamentals.md
-     §2), values carried from 0.1.0 (NEXORA ADAPTATION).
+     4px base / 8px rhythm (RECOMMENDATION; "Material does not
+     prescribe a universal value for this.").
      ========================================================== */
   --nex-sys-space-xxs: 4px;
   --nex-sys-space-xs: 8px;
@@ -236,20 +217,26 @@
   --nex-sys-space-xl: 24px;
   --nex-sys-space-2xl: 32px;
 
-  /* Layout constants (NEXORA ADAPTATION; measure ≈ 50–75ch guidance,
+  /* Layout constants (NEXORA ADAPTATION; measure ≈ 50–75ch,
      nexora-adaptation.md §1). */
   --nex-sys-layout-sidebar-width: 280px;
-  --nex-sys-layout-measure-max: 780px;
+  --nex-sys-layout-measure-max: 760px;
+  --nex-sys-layout-header-height: 52px;
+  --nex-sys-layout-content-max: 680px;
+
+  /* Thin active indicator — sanctioned thin-marker accent use
+     (skill §16 mapping). */
+  --nex-sys-nav-indicator-width: 3px;
+  --nex-sys-nav-indicator-height: 16px;
 
   /* ==========================================================
      SYS TIER — ELEVATION
-     Minimal subset of the OFFICIAL level concept (0–5): flat at
-     rest everywhere; shadows mark true float only
-     (NEXORA ADAPTATION). Dark values preserved verbatim from 0.1.0.
+     Flat at rest everywhere; shadows mark true float only
+     (NEXORA ADAPTATION).
      ========================================================== */
   --nex-sys-elevation-level1: 0 4px 16px rgba(0, 0, 0, 0.28),
-    0 1px 3px rgba(0, 0, 0, 0.2);                    /* menus, popovers */
-  --nex-sys-elevation-level2: 0 16px 32px rgba(0, 0, 0, 0.35); /* modals */
+    0 1px 3px rgba(0, 0, 0, 0.2);                     /* menus, popovers */
+  --nex-sys-elevation-level2: 0 16px 40px rgba(0, 0, 0, 0.38); /* modals */
 
   /* Native form controls follow the theme. */
   color-scheme: dark;
@@ -257,28 +244,30 @@
 
 /* ============================================================
    LIGHT THEME — same role names, inverted tones (OFFICIAL
-   pattern). Provisional palette carried from Phase 10.8
-   (NEXORA ADAPTATION); audit §12.8 covers its shipping status.
+   pattern). Provisional palette (NEXORA ADAPTATION).
    ============================================================ */
 [data-theme="light"] {
-  --nex-sys-color-surface: #efedea;
-  --nex-sys-color-surface-container-low: #eae8e4;
-  --nex-sys-color-surface-container: #f4f2ef;
+  --nex-sys-color-surface: #f1efec;
+  --nex-sys-color-surface-container-low: #e9e7e2;
+  --nex-sys-color-surface-container: #f7f5f2;
   --nex-sys-color-surface-container-high: #ffffff;
+  --nex-sys-color-surface-container-highest: #f3f1ed;
 
   --nex-sys-color-on-surface: #262420;
   --nex-sys-color-on-surface-variant: #5f5b54;
-  --nex-sys-color-on-surface-tertiary: #85807a;
-  --nex-sys-color-on-surface-faint: #a5a19a;
+  --nex-sys-color-on-surface-tertiary: #7d7871;
+  --nex-sys-color-on-surface-faint: #a19c94;
 
   --nex-sys-color-primary: #a9824a;
   --nex-sys-color-primary-hover: #97743f;
   --nex-sys-color-primary-container: rgba(169, 130, 74, 0.12);
-  --nex-sys-color-on-primary: #ffffff;
+  /* Dark warm content on the mid-tone amber fill — ≥4.5:1 (white
+     on this fill measures ≈3.5:1 and fails AA at label sizes). */
+  --nex-sys-color-on-primary: #262420;
 
   --nex-sys-color-error: var(--nex-ref-palette-brick-70);
-  --nex-sys-color-error-container: rgba(168, 80, 63, 0.10);
-  --nex-sys-color-error-outline: rgba(168, 80, 63, 0.3);
+  --nex-sys-color-error-container: rgba(168, 80, 63, 0.1);
+  --nex-sys-color-error-outline: rgba(168, 80, 63, 0.32);
   --nex-sys-color-success: var(--nex-ref-palette-sage-70);
   --nex-sys-color-success-container: rgba(93, 125, 85, 0.12);
 
@@ -287,16 +276,15 @@
 
   /* Inverse pair (dark tones carrying light text on paper surfaces). */
   --nex-sys-color-inverse-surface: #262420;
-  --nex-sys-color-inverse-on-surface: #f4f2ef;
+  --nex-sys-color-inverse-on-surface: #f7f5f2;
 
-  /* Light overlays flip to black-based state layers; hover/selected
-     keep the current tuned values (see dark-theme note above). */
-  --nex-sys-state-hover: rgba(0, 0, 0, 0.045);
-  --nex-sys-state-selected: rgba(0, 0, 0, 0.075);
+  /* Light overlays flip to black-based state layers (OFFICIAL opacities). */
+  --nex-sys-state-hover: rgba(0, 0, 0, 0.08);
+  --nex-sys-state-selected: rgba(0, 0, 0, 0.1);
   --nex-sys-state-pressed: rgba(0, 0, 0, 0.12);
 
-  --nex-sys-state-inverse-hover: rgba(244, 242, 239, 0.08);
-  --nex-sys-state-inverse-pressed: rgba(244, 242, 239, 0.12);
+  --nex-sys-state-inverse-hover: rgba(247, 245, 242, 0.08);
+  --nex-sys-state-inverse-pressed: rgba(247, 245, 242, 0.12);
 
   --nex-sys-scrollbar-thumb: rgba(0, 0, 0, 0.2);
   --nex-sys-scrollbar-thumb-hover: rgba(0, 0, 0, 0.3);
@@ -306,7 +294,7 @@
 
   --nex-sys-elevation-level1: 0 4px 16px rgba(0, 0, 0, 0.1),
     0 1px 3px rgba(0, 0, 0, 0.07);
-  --nex-sys-elevation-level2: 0 16px 32px rgba(0, 0, 0, 0.14);
+  --nex-sys-elevation-level2: 0 16px 40px rgba(0, 0, 0, 0.16);
 
   color-scheme: light;
 }

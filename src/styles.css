@@ -1,7 +1,9 @@
 /* ============================================================
-   Nexora Application Shell & Global Layout — 0.2.3 Main Workspace
-   migration. Consumes 0.2.1 expressive tokens (tokens.css)
-   exclusively; reusable primitives live in components.css.
+   Nexora Application Shell & Global Layout — 0.3.0 Expressive
+   Visual Reset. Fixed sidebar + main content; zones separated by
+   surface-tone steps (no border between shell planes). Consumes
+   0.3.0 tokens (tokens.css) exclusively; reusable primitives live
+   in components.css.
    ============================================================ */
 
 /* ---- App shell: fixed sidebar + main content ---- */
@@ -19,28 +21,45 @@
   overflow: hidden;
 }
 
-/* ---- Sidebar: one coherent navigation surface ---- */
+/* ---- Sidebar: expanded-rail navigation surface (one tone step
+   above the app backdrop; the seam is carried by tone, the
+   hairline marks only the shell boundary) ---- */
 .nex-sidebar {
   width: var(--nex-sys-layout-sidebar-width);
   min-width: var(--nex-sys-layout-sidebar-width);
   max-width: var(--nex-sys-layout-sidebar-width);
   background: var(--nex-sys-color-surface-container-low);
-  border-right: 1px solid var(--nex-sys-color-outline);
+  border-right: 1px solid var(--nex-sys-color-outline-variant);
   display: flex;
   flex-direction: column;
-  padding: var(--nex-sys-space-sm) 0;
+  padding: var(--nex-sys-space-sm) var(--nex-sys-space-xs);
+  gap: var(--nex-sys-space-xs);
+  overflow: hidden;
 }
 
 .nex-sidebar-head {
   display: flex;
   flex-direction: column;
   gap: var(--nex-sys-space-sm);
-  padding: 0 var(--nex-sys-space-md);
+  padding: var(--nex-sys-space-xs) var(--nex-sys-space-xs) 0;
 }
 
+/* Brand row: mark + wordmark (identity anchor, top-left). */
+.nex-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--nex-sys-space-xs);
+  padding: var(--nex-sys-space-xxs) 0;
+}
 .nex-logo {
-  width: 24px;
+  width: 22px;
   height: auto;
+}
+.nex-brand-name {
+  font-size: var(--nex-sys-type-size-body-large);
+  font-weight: var(--nex-sys-type-weight-semibold);
+  letter-spacing: 0.01em;
+  color: var(--nex-sys-color-on-surface);
 }
 
 /* ---- Main content area ---- */
@@ -53,26 +72,27 @@
   min-width: 0;
 }
 
+/* Slim persistent desktop header (skill nexora-adaptation.md §2):
+   flat, no shadow; title truncates; trailing actions right. */
 .nex-main-header {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: var(--nex-sys-space-sm);
-  padding: var(--nex-sys-space-sm) var(--nex-sys-space-md);
+  min-height: var(--nex-sys-layout-header-height);
+  padding: var(--nex-sys-space-xs) var(--nex-sys-space-md);
   background: var(--nex-sys-color-surface-container);
   border-bottom: 1px solid var(--nex-sys-color-outline-variant);
 }
 
-/* Slim persistent desktop header (skill nexora-adaptation.md §2,
-   RECOMMENDATION): the title stays on one line and truncates with
-   an ellipsis instead of wrapping the header taller; the archived
-   badge is pinned beside it. */
 .nex-main-title {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: var(--nex-sys-space-xs);
   min-width: 0;
+  flex: 1 1 auto;
   font-size: var(--nex-sys-type-size-title-large);
   font-weight: var(--nex-sys-type-weight-semibold);
+  letter-spacing: -0.01em;
   color: var(--nex-sys-color-on-surface);
 }
 
@@ -85,9 +105,19 @@
 
 .nex-main-title-badge {
   flex-shrink: 0;
-  font-size: var(--nex-sys-type-size-label-small);
-  font-weight: var(--nex-sys-type-weight-regular);
-  color: var(--nex-sys-color-on-surface-tertiary);
+  font-size: var(--nex-sys-type-size-label-medium);
+  font-weight: var(--nex-sys-type-weight-medium);
+  color: var(--nex-sys-color-on-surface-variant);
+  padding: 2px 10px;
+  border: 1px solid var(--nex-sys-color-outline);
+  border-radius: var(--nex-sys-shape-full);
+}
+
+.nex-main-header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--nex-sys-space-xxs);
+  flex-shrink: 0;
 }
 
 .nex-main-body {

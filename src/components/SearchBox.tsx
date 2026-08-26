@@ -86,7 +86,7 @@ export default function SearchBox({
         id="nex-search-input"
         type="search"
         className="nex-search-input"
-        placeholder="Search conversations and prompts"
+        placeholder="Search"
         value={value}
         onChange={(event) => setValue(event.target.value)}
         autoComplete="off"
@@ -101,18 +101,23 @@ export default function SearchBox({
           role="group"
           aria-label="Search results"
         >
-          {loading && <p className="nex-search-status">Searching…</p>}
+          {loading && (
+            <p className="nex-search-status nex-fade-in" role="status">
+              Searching…
+            </p>
+          )}
           {error && (
-            <p className="nex-search-status" role="alert">
+            <p className="nex-search-status nex-fade-in" role="alert">
               {error.message}
             </p>
           )}
           {!loading && !error && results && (
             <>
               {!hasResults && (
-                <p className="nex-search-status">
-                  No results for “{value.trim()}”.
-                </p>
+                <div className="nex-search-empty nex-fade-in">
+                  <SearchIcon className="nex-search-empty-icon" />
+                  <span>No results for “{value.trim()}”.</span>
+                </div>
               )}
               {results.conversations.length > 0 && (
                 <>

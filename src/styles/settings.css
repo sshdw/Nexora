@@ -1,10 +1,11 @@
 /* ============================================================
-   Settings / provider / model / credential view — Warm Minimal
-   Flat, single-surface layout in the Phase 10.3.1 visual language.
-   Selection and status are carried by quiet text and subtle surface
-   shifts, never colour washes or boxes. Fields and the segmented
-   control come from components.css (0.2.2); this sheet keeps
-   Settings-specific layout only.
+   Settings / provider / model / credential view — 0.3.0
+   Expressive Visual Reset. Composition: a compact section nav on
+   the sidebar tone + an open content canvas. Sections are carried
+   by heading hierarchy and spacing — not by wrapping every group
+   in a card; only genuinely contained groups (danger zone,
+   credential list) get surfaces. Fields/segmented/nav primitives
+   come from components.css; this sheet keeps layout only.
    ============================================================ */
 
 .nex-settings {
@@ -14,20 +15,30 @@
   min-height: 0;
 }
 
+/* ---- Page header (title band + back affordance) ---- */
 .nex-settings-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--nex-sys-space-sm);
-  padding: var(--nex-sys-space-sm) var(--nex-sys-space-md);
+  min-height: var(--nex-sys-layout-header-height);
+  padding: var(--nex-sys-space-xs) var(--nex-sys-space-md);
   background: var(--nex-sys-color-surface-container);
   border-bottom: 1px solid var(--nex-sys-color-outline-variant);
 }
 
 .nex-settings-title {
-  font-size: var(--nex-sys-type-size-title-large);
+  font-size: var(--nex-sys-type-size-headline-small);
   font-weight: var(--nex-sys-type-weight-semibold);
+  letter-spacing: -0.01em;
+  line-height: var(--nex-sys-type-line-height-tight);
   color: var(--nex-sys-color-on-surface);
+}
+
+.nex-settings-subtitle {
+  margin-top: 2px;
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-on-surface-tertiary);
 }
 
 .nex-settings-body {
@@ -35,62 +46,23 @@
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: var(--nex-sys-space-xl) var(--nex-sys-space-md);
+  padding: var(--nex-sys-space-xl) var(--nex-sys-space-lg);
 }
 
-.nex-settings-inner {
-  max-width: 560px;
-  margin: 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: var(--nex-sys-space-2xl);
-}
-
-.nex-settings-section {
-  display: flex;
-  flex-direction: column;
-  gap: var(--nex-sys-space-sm);
-}
-
-.nex-settings-heading {
-  font-size: var(--nex-sys-type-size-body-large);
-  font-weight: var(--nex-sys-type-weight-semibold);
-  color: var(--nex-sys-color-on-surface);
-}
-
-.nex-settings-hint {
-  max-width: 480px;
-  font-size: var(--nex-sys-type-size-body-small);
-  color: var(--nex-sys-color-on-surface-variant);
-}
-
-.nex-settings-field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--nex-sys-space-xs);
-  margin-top: var(--nex-sys-space-sm);
-}
-
-.nex-settings-label {
-  font-size: var(--nex-sys-type-size-body-small);
-  font-weight: var(--nex-sys-type-weight-medium);
-  color: var(--nex-sys-color-on-surface-variant);
-}
-
-/* ---- Field primitives (.nex-input / .nex-select / .nex-textarea) live in
-   components.css since 0.2.2; only Settings-specific layout remains here. ---- */
-
+/* ---- Layout: nav pane + content pane ---- */
 .nex-settings-layout {
   display: flex;
   flex: 1 1 auto;
   min-height: 0;
 }
 
-/* ---- Compact section navigation (Phase 10: quiet list rows) ---- */
+/* Compact section navigation (quiet list rows on the sidebar
+   tone; the shared .nex-nav-entry primitive carries the active
+   pill indicator). */
 .nex-settings-nav {
-  width: 180px;
+  width: 200px;
   flex-shrink: 0;
-  padding: var(--nex-sys-space-xl) var(--nex-sys-space-sm);
+  padding: var(--nex-sys-space-lg) var(--nex-sys-space-sm);
   border-right: 1px solid var(--nex-sys-color-outline-variant);
   background: var(--nex-sys-color-surface-container-low);
   overflow-y: auto;
@@ -101,24 +73,25 @@
 }
 
 .nex-settings-nav-label {
-  margin: 0 0 var(--nex-sys-space-xs);
+  margin: 0 0 var(--nex-sys-space-xxs);
   padding-left: var(--nex-sys-space-sm);
   font-size: var(--nex-sys-type-size-label-medium);
   font-weight: var(--nex-sys-type-weight-medium);
-  /* Sentence case — uppercase tracking was a label-case violation
-     (audit §B.6); section labels match the sidebar's treatment. */
+  /* Sentence case — no uppercase tracking (skill typography.md §3). */
   color: var(--nex-sys-color-on-surface-tertiary);
 }
 
 .nex-settings-nav-item {
+  position: relative;
   display: block;
   width: 100%;
-  padding: 6px var(--nex-sys-space-sm);
+  min-height: 36px;
+  padding: 8px var(--nex-sys-space-sm);
   border: none;
   border-radius: var(--nex-sys-shape-small);
   background: transparent;
   color: var(--nex-sys-color-on-surface-variant);
-  font-size: var(--nex-sys-type-size-body-small);
+  font-size: var(--nex-sys-type-size-body-medium);
   font-family: inherit;
   text-align: left;
   cursor: pointer;
@@ -135,9 +108,23 @@
   background: var(--nex-sys-state-pressed);
 }
 
+/* Selected: tone step + emphasized label + thin accent pill
+   (shared active-indicator language with the sidebar). */
 .nex-settings-nav-item.is-active {
-  background: var(--nex-sys-state-selected);
+  background: var(--nex-sys-color-surface-container-high);
   color: var(--nex-sys-color-on-surface);
+  font-weight: var(--nex-sys-type-weight-medium);
+}
+.nex-settings-nav-item.is-active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: var(--nex-sys-nav-indicator-width);
+  height: var(--nex-sys-nav-indicator-height);
+  border-radius: var(--nex-sys-shape-full);
+  background: var(--nex-sys-color-primary);
 }
 
 /* The scrolling content pane sits right of the nav. */
@@ -146,20 +133,62 @@
   min-width: 0;
 }
 
-.nex-settings .nex-settings-inner {
-  max-width: 560px;
+.nex-settings-inner {
+  max-width: var(--nex-sys-layout-content-max);
   margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--nex-sys-space-xl);
 }
 
-/* ---- Segmented control (Appearance theme): the shared .nex-seg
-   primitive lives in components.css. ---- */
+/* ---- Section composition (0.3.0): heading + hint + controls on
+   the open canvas; no wrapper card. ---- */
+.nex-settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nex-sys-space-sm);
+}
 
-/* ---- Danger zone (Data management — FR-013 explicit confirmation) ---- */
+.nex-settings-heading {
+  font-size: var(--nex-sys-type-size-title-medium);
+  font-weight: var(--nex-sys-type-weight-semibold);
+  letter-spacing: -0.01em;
+  line-height: var(--nex-sys-type-line-height-tight);
+  color: var(--nex-sys-color-on-surface);
+}
+
+.nex-settings-hint {
+  max-width: 560px;
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-on-surface-variant);
+}
+
+.nex-settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nex-sys-space-xs);
+  margin-top: var(--nex-sys-space-xs);
+}
+
+.nex-settings-label {
+  font-size: var(--nex-sys-type-size-body-small);
+  font-weight: var(--nex-sys-type-weight-medium);
+  color: var(--nex-sys-color-on-surface-variant);
+}
+
+/* Field primitives (.nex-input / .nex-select / .nex-textarea) and
+   the segmented control live in components.css. */
+
+/* ---- Danger zone (Data management — FR-013 explicit confirmation).
+   The one contained surface of the page: a distinct error-toned
+   area — OFFICIAL error-container / error-outline roles — so
+   normal and destructive operations separate at a glance. ---- */
 .nex-danger-zone {
-  margin-top: var(--nex-sys-space-md);
-  padding: var(--nex-sys-space-md);
-  border: 1px solid var(--nex-sys-color-outline);
-  border-radius: var(--nex-sys-shape-medium);
+  margin-top: var(--nex-sys-space-xs);
+  padding: var(--nex-sys-space-lg);
+  border: 1px solid var(--nex-sys-color-error-outline);
+  background: var(--nex-sys-color-error-container);
+  border-radius: var(--nex-sys-shape-large); /* inner step of the canvas */
 }
 
 .nex-danger-title {
@@ -171,7 +200,7 @@
 
 .nex-danger-text {
   margin: 0 0 var(--nex-sys-space-sm);
-  max-width: 480px;
+  max-width: 520px;
   font-size: var(--nex-sys-type-size-body-small);
   line-height: var(--nex-sys-type-line-height-normal);
   color: var(--nex-sys-color-on-surface-variant);
@@ -181,10 +210,12 @@
   color: var(--nex-sys-color-error);
 }
 
-.nex-danger-button:hover:not(:disabled),
-.nex-danger-button:active:not(:disabled) {
+/* On the tinted zone, the shared danger hover (error-container)
+   would vanish into the surface — swap to the neutral state layer. */
+.nex-danger-zone .nex-btn-danger:hover:not(:disabled),
+.nex-danger-zone .nex-btn-danger:active:not(:disabled) {
   color: var(--nex-sys-color-error);
-  background: var(--nex-sys-color-error-container);
+  background: var(--nex-sys-state-hover);
 }
 
 .nex-danger-confirm {
@@ -195,28 +226,35 @@
 }
 
 .nex-danger-confirm .nex-input {
-  max-width: 240px;
+  max-width: 280px;
+  /* The confirm field sits on the tinted zone — keep it legible. */
+  background: var(--nex-sys-color-surface-container);
 }
 
-/* ---- Inline validation / command errors (FR-012 invalid values rejected) ---- */
+/* ---- Inline validation / command errors (FR-012) ---- */
 .nex-settings-error {
   margin: var(--nex-sys-space-xs) 0 0;
   font-size: var(--nex-sys-type-size-body-small);
   color: var(--nex-sys-color-error);
 }
 
-/* ---- Provider credential list ---- */
+/* ---- Provider credential list: quiet contained group; rows
+   separated by hairlines (structural seam), status as a tag with
+   dot + label (color never alone). ---- */
 .nex-provider-list {
   display: flex;
   flex-direction: column;
   margin-top: var(--nex-sys-space-xs);
+  border: 1px solid var(--nex-sys-color-outline-variant);
+  border-radius: var(--nex-sys-shape-large);
+  background: var(--nex-sys-color-surface-container);
 }
 
 .nex-provider-row {
   display: flex;
   flex-direction: column;
   gap: var(--nex-sys-space-sm);
-  padding: var(--nex-sys-space-sm) 0;
+  padding: var(--nex-sys-space-md) var(--nex-sys-space-lg);
   border-bottom: 1px solid var(--nex-sys-color-outline-variant);
 }
 
@@ -226,7 +264,7 @@
 
 .nex-provider-meta {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: var(--nex-sys-space-sm);
 }
@@ -238,8 +276,8 @@
 }
 
 .nex-provider-status {
-  font-size: var(--nex-sys-type-size-body-small);
-  color: var(--nex-sys-color-on-surface-variant);
+  display: inline-flex;
+  align-items: center;
 }
 
 .nex-provider-actions {
@@ -249,7 +287,7 @@
 }
 
 .nex-provider-actions .nex-input {
-  max-width: 320px;
+  max-width: 360px;
 }
 
 .nex-provider-remove {

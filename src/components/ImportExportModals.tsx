@@ -31,21 +31,23 @@ export function ExportModal({
 
   return (
     <ModalShell title="Export conversation" busy={busy} onClose={onClose}>
-      {error && (
-        <p className="nex-dialog-error" role="alert">
-          {error.message}
+      <div className="nex-io-body">
+        {error && (
+          <p className="nex-dialog-error nex-fade-in" role="alert">
+            {error.message}
+          </p>
+        )}
+        {exportSucceeded && !error && (
+          <p className="nex-io-status is-ok nex-fade-in" role="status">
+            Export complete. The conversation was written to the file you chose.
+            Stored data was not modified.
+          </p>
+        )}
+        <p className="nex-io-hint">
+          Saves “{conversationTitle}” as a local Nexora conversation JSON file.
+          Messages are exported in their stored order.
         </p>
-      )}
-      {exportSucceeded && !error && (
-        <p className="nex-io-status is-ok" role="status">
-          Export complete. The conversation was written to the file you chose.
-          Stored data was not modified.
-        </p>
-      )}
-      <p className="nex-io-hint">
-        Saves “{conversationTitle}” as a local Nexora conversation JSON file.
-        Messages are exported in their stored order.
-      </p>
+      </div>
       <div className="nex-dialog-actions">
         <button
           type="button"
@@ -88,21 +90,23 @@ export function ImportModal({ store, onImported, onClose }: ImportModalProps) {
 
   return (
     <ModalShell title="Import conversation" busy={busy} onClose={onClose}>
-      {error && (
-        <p className="nex-dialog-error" role="alert">
-          {error.message}
+      <div className="nex-io-body">
+        {error && (
+          <p className="nex-dialog-error nex-fade-in" role="alert">
+            {error.message}
+          </p>
+        )}
+        {importedId !== null && !error && (
+          <p className="nex-io-status is-ok nex-fade-in" role="status">
+            Import complete. The conversation was added to your list.
+          </p>
+        )}
+        <p className="nex-io-hint">
+          Choose a Nexora conversation export file (.json). The file is validated
+          before anything is written; an unsupported file is rejected without
+          leaving partial data behind.
         </p>
-      )}
-      {importedId !== null && !error && (
-        <p className="nex-io-status is-ok" role="status">
-          Import complete. The conversation was added to your list.
-        </p>
-      )}
-      <p className="nex-io-hint">
-        Choose a Nexora conversation export file (.json). The file is validated
-        before anything is written; an unsupported file is rejected without
-        leaving partial data behind.
-      </p>
+      </div>
       <div className="nex-dialog-actions">
         <button
           type="button"

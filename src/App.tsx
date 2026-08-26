@@ -2,11 +2,13 @@ import { useRef, useState } from "react";
 
 import ConversationView from "./components/ConversationView";
 import EmptyState from "./components/EmptyState";
+import { ExportIcon } from "./components/icons";
 import { ExportModal, ImportModal } from "./components/ImportExportModals";
 import NexoraMark from "./components/NexoraMark";
 import PromptLibraryView from "./components/PromptLibraryView";
 import SettingsView from "./components/SettingsView";
 import Sidebar from "./components/Sidebar";
+import Tooltip from "./components/Tooltip";
 import type { Conversation } from "./lib/tauri";
 import { useAppearance } from "./lib/useAppearance";
 import { useConversations } from "./lib/useConversations";
@@ -22,6 +24,8 @@ interface MainContentProps {
   setDraft: (value: string) => void;
   onOpenSettings: () => void;
   onMessageSent: () => void;
+  onNewConversation: () => void;
+  onExport: (id: number) => void;
 }
 
 function MainContent({
@@ -33,19 +37,37 @@ function MainContent({
   setDraft,
   onOpenSettings,
   onMessageSent,
+  onNewConversation,
+  onExport,
 }: MainContentProps) {
   if (!selected) {
     if (!hasConversations) {
-      return <EmptyState />;
+      return (
+        <EmptyState
+          actionLabel="New conversation"
+          onAction={onNewConversation}
+        />
+      );
     }
     // Conversations exist but none is open.
     return (
-      <div className="nex-main-placeholder">
-        <NexoraMark className="nex-placeholder-mark" width={24} height={24} />
+      <div className="nex-main-placeholder nex-empty-enter">
+        <span className="nex-placeholder-mark-wrap" aria-hidden="true">
+          <NexoraMark className="nex-placeholder-mark" width={30} height={30} />
+        </span>
         <p className="nex-placeholder-title">No conversation selected</p>
-        <p className="nex-text-tertiary nex-text-sm">
-          Choose a conversation from the sidebar to open it.
+        <p className="nex-placeholder-text">
+          Choose a conversation from the sidebar, or start a new one.
         </p>
+        <div className="nex-empty-actions">
+          <button
+            type="button"
+            className="nex-btn nex-btn-tonal"
+            onClick={onNewConversation}
+          >
+            New conversation
+          </button>
+        </div>
       </div>
     );
   }
@@ -62,6 +84,18 @@ function MainContent({
             </span>
           )}
         </h2>
+        <div className="nex-main-header-actions">
+          <Tooltip label="Export conversation">
+            <button
+              type="button"
+              className="nex-icon-btn"
+              aria-label="Export conversation"
+              onClick={() => onExport(selected.id)}
+            >
+              <ExportIcon />
+            </button>
+          </Tooltip>
+        </div>
       </header>
       <ConversationView
         conversationId={selected.id}
@@ -232,6 +266,8 @@ function App() {
             setDraft={setDraft}
             onOpenSettings={openSettings}
             onMessageSent={() => void reload()}
+            onNewConversation={() => void handleNewConversation()}
+            onExport={setExportTargetId}
           />
         )}
       </div>

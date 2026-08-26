@@ -16,7 +16,7 @@
 //! per instance (only elements this instance flipped are restored), so
 //! StrictMode double-mounting and stacked dialogs behave correctly.
 
-import { useEffect, useRef, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 
 const FOCUSABLE_SELECTOR = [
   "a[href]",
@@ -26,6 +26,13 @@ const FOCUSABLE_SELECTOR = [
   "textarea:not([disabled])",
   '[tabindex]:not([tabindex="-1"])',
 ].join(",");
+
+/** Exit-animation window. Mirrors the OFFICIAL short4 anchor used by
+ * .nex-dialog-exit; collapses to 0 when the user prefers reduced motion
+ * (the global CSS gate already renders the exit instantly). */
+const EXIT_MS = matchMedia("(prefers-reduced-motion: reduce)").matches
+  ? 0
+  : 200;
 
 export interface ModalShellProps {
   title: string;
@@ -44,6 +51,26 @@ export default function ModalShell({
   const cardRef = useRef<HTMLDivElement>(null);
   const backdropRef = useRef<HTMLDivElement>(null);
   const restoreRef = useRef<HTMLElement | null>(null);
+  // 0.3.0 exit motion: the shell stays mounted while the card/scrim play
+  // the OFFICIAL short4 exit, then the parent's onClose unmounts for real.
+  // Purely presentational — dismissal semantics (Esc/backdrop/Cancel) and
+  // focus restoration are unchanged.
+  const [closing, setClosing] = useState(false);
+  const closingRef = useRef(false);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  const requestClose = () => {
+    if (busy || closingRef.current) return;
+    closingRef.current = true;
+    setClosing(true);
+  };
+
+  useEffect(() => {
+    if (!closing) return;
+    const timer = window.setTimeout(() => onCloseRef.current(), EXIT_MS);
+    return () => window.clearTimeout(timer);
+  }, [closing]);
 
   useEffect(() => {
     // Capture the restore target before inerting: if focus currently sits in
@@ -87,7 +114,7 @@ export default function ModalShell({
     if (event.key === "Escape") {
       if (busy) return;
       event.stopPropagation();
-      onClose();
+      requestClose();
       return;
     }
     if (event.key !== "Tab") return;
@@ -119,14 +146,16 @@ export default function ModalShell({
   return (
     <div
       ref={backdropRef}
-      className="nex-dialog-backdrop"
+      className={
+        "nex-dialog-backdrop" + (closing ? " is-closing" : "")
+      }
       role="presentation"
-      onClick={busy ? undefined : onClose}
+      onClick={busy ? undefined : requestClose}
       onKeyDown={handleKeyDown}
     >
       <div
         ref={cardRef}
-        className="nex-dialog-card"
+        className={"nex-dialog-card" + (closing ? " is-closing" : "")}
         role="dialog"
         aria-modal="true"
         aria-label={title}

@@ -2,6 +2,14 @@ import { useState } from "react";
 
 import { formatRelativeTime } from "../lib/format";
 import type { Conversation } from "../lib/tauri";
+import ConfirmDialog from "./ConfirmDialog";
+import {
+  ArchiveIcon,
+  ExportIcon,
+  PencilIcon,
+  TrashIcon,
+  UnarchiveIcon,
+} from "./icons";
 
 export interface ConversationItemProps {
   conversation: Conversation;
@@ -30,6 +38,9 @@ export default function ConversationItem({
 }: ConversationItemProps) {
   const [renaming, setRenaming] = useState(false);
   const [draftTitle, setDraftTitle] = useState(conversation.title);
+  // 0.3.0: deletion confirms in the Nexora dialog system (was
+  // window.confirm) — same explicit-confirm behavior, in-app chrome.
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   const beginRename = () => {
     setDraftTitle(conversation.title);
@@ -50,13 +61,6 @@ export default function ConversationItem({
   const cancelRename = () => {
     setRenaming(false);
     setDraftTitle(conversation.title);
-  };
-
-  const handleDelete = () => {
-    const confirmed = window.confirm(
-      `Delete "${conversation.title}"? This cannot be undone.`,
-    );
-    if (confirmed) onDelete(conversation.id);
   };
 
   if (renaming) {
@@ -111,57 +115,78 @@ export default function ConversationItem({
             {formatRelativeTime(conversation.updated_at)}
           </time>
         </button>
+        {/* Compact icon actions replace the timestamp while hovered /
+            focused / selected — they no longer consume row width, so the
+            title can never collide with them (0.3.0 defect fix). */}
         <div className="nex-conversation-actions">
           <button
             type="button"
-            className="nex-btn nex-btn-ghost nex-btn-sm"
+            className="nex-icon-btn nex-icon-btn-sm"
             onClick={() => onExport(conversation.id)}
             disabled={busy}
             aria-label="Export conversation"
+            title="Export"
           >
-            Export
+            <ExportIcon />
           </button>
           <button
             type="button"
-            className="nex-btn nex-btn-ghost nex-btn-sm"
+            className="nex-icon-btn nex-icon-btn-sm"
             onClick={beginRename}
             disabled={busy}
             aria-label="Rename conversation"
+            title="Rename"
           >
-            Rename
+            <PencilIcon />
           </button>
           {archived ? (
             <button
               type="button"
-              className="nex-btn nex-btn-ghost nex-btn-sm"
+              className="nex-icon-btn nex-icon-btn-sm"
               onClick={() => onRestore(conversation.id)}
               disabled={busy}
               aria-label="Restore conversation"
+              title="Restore"
             >
-              Restore
+              <UnarchiveIcon />
             </button>
           ) : (
             <button
               type="button"
-              className="nex-btn nex-btn-ghost nex-btn-sm"
+              className="nex-icon-btn nex-icon-btn-sm"
               onClick={() => onArchive(conversation.id)}
               disabled={busy}
               aria-label="Archive conversation"
+              title="Archive"
             >
-              Archive
+              <ArchiveIcon />
             </button>
           )}
           <button
             type="button"
-            className="nex-btn nex-btn-danger nex-btn-sm"
-            onClick={handleDelete}
+            className="nex-icon-btn nex-icon-btn-sm nex-icon-btn-danger"
+            onClick={() => setConfirmingDelete(true)}
             disabled={busy}
             aria-label="Delete conversation"
+            title="Delete"
           >
-            Delete
+            <TrashIcon />
           </button>
         </div>
       </div>
+      {confirmingDelete && (
+        <ConfirmDialog
+          title="Delete conversation?"
+          body={`“${conversation.title}” and all of its messages will be permanently deleted. This cannot be undone.`}
+          confirmLabel="Delete"
+          danger
+          onConfirm={() => {
+            setConfirmingDelete(false);
+            onDelete(conversation.id);
+          }}
+          onCancel={() => setConfirmingDelete(false)}
+        />
+      )}
     </li>
   );
 }

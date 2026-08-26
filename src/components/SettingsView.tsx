@@ -121,9 +121,14 @@ export default function SettingsView({
   };
 
   return (
-    <div className="nex-settings">
+    <div className="nex-settings nex-view-enter">
       <header className="nex-settings-header">
-        <h2 className="nex-settings-title">Settings</h2>
+        <div className="nex-settings-heading-block">
+          <h2 className="nex-settings-title">Settings</h2>
+          <p className="nex-settings-subtitle">
+            Preferences for this device. Everything stays local.
+          </p>
+        </div>
         <button type="button" className="nex-btn nex-btn-ghost" onClick={onClose}>
           Back to conversations
         </button>
@@ -152,7 +157,7 @@ export default function SettingsView({
         <div className="nex-settings-body">
           <div className="nex-settings-inner">
             {store.error && (
-              <p id="nex-settings-store-error" className="nex-settings-error" role="alert">
+              <p id="nex-settings-store-error" className="nex-settings-error nex-fade-in" role="alert">
                 {store.error.message}
               </p>
             )}
@@ -299,7 +304,7 @@ export default function SettingsView({
                       {clearError && (
                         <p
                           id="clear-confirm-error"
-                          className="nex-settings-error"
+                          className="nex-settings-error nex-fade-in"
                           role="alert"
                         >
                           {clearError}
@@ -346,7 +351,25 @@ export default function SettingsView({
                 <div className="nex-provider-meta">
                   <span className="nex-provider-name">{supported.display_name}</span>
                   <span className="nex-provider-status">
-                    {available ? "Connected" : credentialed ? "Credential saved" : "Not connected"}
+                    <span
+                      className={
+                        "nex-tag" +
+                        (available ? " is-connected" : "")
+                      }
+                    >
+                      <span
+                        className={
+                          "nex-tag-dot" +
+                          (available ? " is-ok" : credentialed ? "" : "")
+                        }
+                        aria-hidden="true"
+                      />
+                      {available
+                        ? "Connected"
+                        : credentialed
+                          ? "Credential saved"
+                          : "Not connected"}
+                    </span>
                   </span>
                 </div>
 
@@ -368,7 +391,7 @@ export default function SettingsView({
                   />
                   <button
                     type="button"
-                    className="nex-btn nex-btn-ghost"
+                    className="nex-btn nex-btn-primary nex-btn-sm"
                     disabled={store.working || !(draftKeys[supported.name]?.trim())}
                     onClick={() => handleConnect(supported)}
                   >

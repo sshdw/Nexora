@@ -1,10 +1,9 @@
 /* ============================================================
-   Prompt Library — Warm Minimal (Phase 10.4, FR-007, FR-009;
-   0.2.2). Flat list + modal editor. Search fields, textareas,
-   nav entries and the modal system are shared primitives from
-   components.css (.nex-search*, .nex-textarea, .nex-nav-entry,
-   .nex-dialog*); only Prompt Library-specific layout and text
-   treatment lives here.
+   Prompt Library — 0.3.0 Expressive Visual Reset (FR-007, FR-009).
+   Header + toolbar + a responsive card grid (replaces the
+   CRUD-table row list). Search fields, textareas, nav entries and
+   the dialog system are shared primitives from components.css;
+   only Prompt Library layout and card treatment live here.
    ============================================================ */
 
 /* ---- Full surface ---- */
@@ -16,20 +15,31 @@
   overflow: hidden;
 }
 
-/* ---- Header: title + back affordance ---- */
+/* ---- Header: title band + back affordance ---- */
 .nex-prompt-library-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--nex-sys-space-sm);
-  padding: var(--nex-sys-space-sm) var(--nex-sys-space-md);
+  min-height: var(--nex-sys-layout-header-height);
+  padding: var(--nex-sys-space-xs) var(--nex-sys-space-md);
   background: var(--nex-sys-color-surface-container);
   border-bottom: 1px solid var(--nex-sys-color-outline-variant);
 }
+.nex-prompt-library-heading {
+  min-width: 0;
+}
 .nex-prompt-library-title {
-  font-size: var(--nex-sys-type-size-title-large);
+  font-size: var(--nex-sys-type-size-headline-small);
   font-weight: var(--nex-sys-type-weight-semibold);
+  letter-spacing: -0.01em;
+  line-height: var(--nex-sys-type-line-height-tight);
   color: var(--nex-sys-color-on-surface);
+}
+.nex-prompt-library-subtitle {
+  margin-top: 2px;
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-on-surface-tertiary);
 }
 
 /* ---- Toolbar: search + new prompt ---- */
@@ -42,39 +52,60 @@
   border-bottom: 1px solid var(--nex-sys-color-outline-variant);
 }
 
-/* ---- Prompt-local search: shared .nex-search field primitives
-   (components.css); only the toolbar placement lives here. The
-   wrapper grows to fill the toolbar row. ---- */
+/* Prompt-local search: shared .nex-search field primitives
+   (components.css); the wrapper grows to fill the toolbar row. */
 .nex-prompt-search {
   flex: 1 1 auto;
   min-width: 0;
 }
 
-/* ---- List surface ---- */
+/* ---- Card grid (0.3.0): prompts as contained cards on a padded
+   gutter. Cards are the OFFICIAL sanctioned place for shape
+   expression; hover = tone step + level-1 lift (Banegasn-reference
+   mechanic on OFFICIAL tokens). ---- */
 .nex-prompt-library-body {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
+  padding: var(--nex-sys-space-md);
 }
-.nex-prompt-list {
+.nex-prompt-grid {
   width: 100%;
+  max-width: 1240px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: var(--nex-sys-space-sm);
+  align-content: start;
 }
-.nex-prompt-item {
+
+.nex-prompt-card {
   display: flex;
   flex-direction: column;
   gap: var(--nex-sys-space-xs);
-  width: 100%;
-  padding: var(--nex-sys-space-sm) var(--nex-sys-space-md);
-  border-bottom: 1px solid var(--nex-sys-color-outline-variant);
+  min-height: 132px;
+  padding: var(--nex-sys-space-md);
+  border-radius: var(--nex-sys-shape-medium);
+  background: var(--nex-sys-color-surface-container-high);
+  border: 1px solid var(--nex-sys-color-outline-variant);
+  transition: background-color var(--motion-duration-fast) var(--motion-easing-standard),
+    box-shadow var(--motion-duration-medium2) var(--motion-easing-standard),
+    transform var(--motion-duration-medium2) var(--motion-easing-standard);
 }
-.nex-prompt-item-main {
+.nex-prompt-card:hover {
+  background: var(--nex-sys-state-hover);
+  box-shadow: var(--nex-sys-elevation-level1);
+  transform: translateY(-1px);
+}
+
+.nex-prompt-card-head {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--nex-sys-space-sm);
 }
 .nex-prompt-title {
+  min-width: 0;
   font-size: var(--nex-sys-type-size-body-medium);
   font-weight: var(--nex-sys-type-weight-medium);
   color: var(--nex-sys-color-on-surface);
@@ -82,39 +113,76 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.nex-prompt-time {
+  flex-shrink: 0;
+  font-size: var(--nex-sys-type-size-label-small);
+  color: var(--nex-sys-color-on-surface-faint);
+  white-space: nowrap;
+}
 .nex-prompt-preview {
+  flex: 1 1 auto;
   font-size: var(--nex-sys-type-size-body-small);
   font-weight: var(--nex-sys-type-weight-regular);
+  line-height: var(--nex-sys-type-line-height-normal);
   color: var(--nex-sys-color-on-surface-tertiary);
   overflow: hidden;
-  text-overflow: ellipsis;
   display: -webkit-box;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
 }
-.nex-prompt-meta {
+.nex-prompt-card-foot {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: var(--nex-sys-space-xs);
+  min-height: 32px;
 }
-.nex-prompt-label-muted {
-  font-size: var(--nex-sys-type-size-label-medium);
-  color: var(--nex-sys-color-on-surface-tertiary);
+.nex-prompt-card-foot-spacer {
+  flex: 1 1 auto;
 }
-.nex-prompt-actions {
+/* Edit/Delete reveal on hover/focus like every other row surface. */
+.nex-prompt-card-tools {
   display: inline-flex;
   align-items: center;
-  gap: var(--nex-sys-space-xs);
-  flex-shrink: 0;
-  justify-content: flex-end;
+  gap: 0;
+  opacity: 0;
+  transition: opacity var(--motion-duration-fast) var(--motion-easing-standard);
+}
+.nex-prompt-card:hover .nex-prompt-card-tools,
+.nex-prompt-card:focus-within .nex-prompt-card-tools {
+  opacity: 1;
 }
 
-/* ---- Status / empty ---- */
+/* ---- Skeleton rows reuse the shared primitive. ---- */
+.nex-prompt-list {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--nex-sys-space-xxs);
+}
+.nex-prompt-list .nex-skeleton-row {
+  margin-bottom: 0;
+  border-radius: var(--nex-sys-shape-small);
+}
+
+/* ---- Status / error / empty ---- */
 .nex-prompt-status {
   padding: var(--nex-sys-space-md);
   font-size: var(--nex-sys-type-size-body-small);
   color: var(--nex-sys-color-on-surface-variant);
 }
+.nex-prompt-error {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nex-sys-space-sm);
+  align-items: flex-start;
+  padding: var(--nex-sys-space-md);
+}
+.nex-prompt-error-text {
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-error);
+}
+/* Empty state: the shared composed-hero language (mark container +
+   headline band + primary action). */
 .nex-prompt-empty {
   flex: 1 1 auto;
   display: flex;
@@ -123,28 +191,34 @@
   justify-content: center;
   gap: var(--nex-sys-space-sm);
   padding: var(--nex-sys-space-2xl) var(--nex-sys-space-md);
+  text-align: center;
+}
+.nex-prompt-empty .nex-empty-mark-wrap {
+  width: 56px;
+  height: 56px;
+  border-radius: var(--nex-sys-shape-large);
+}
+.nex-prompt-empty .nex-empty-mark {
+  width: 26px;
 }
 .nex-prompt-empty-title {
-  font-size: var(--nex-sys-type-size-title-medium);
+  font-size: var(--nex-sys-type-size-title-large);
   font-weight: var(--nex-sys-type-weight-semibold);
+  letter-spacing: -0.01em;
+  line-height: var(--nex-sys-type-line-height-tight);
   color: var(--nex-sys-color-on-surface);
 }
 .nex-prompt-empty-text {
   max-width: 420px;
-  font-size: var(--nex-sys-type-size-body-small);
+  font-size: var(--nex-sys-type-size-body-medium);
   color: var(--nex-sys-color-on-surface-variant);
-  text-align: center;
 }
 
-/* ---- Modal editor: the shared .nex-dialog* system (components.css)
-   renders the scrim, elevated card, title and actions. ---- */
-
-/* ---- Fields reused from Settings (shared .nex-input/.nex-textarea
-   primitives in components.css) ---- */
+/* ---- Editor dialog fields (shared .nex-input/.nex-textarea) ---- */
 .nex-prompt-field {
   display: flex;
   flex-direction: column;
-  gap: var(--nex-sys-space-xs);
+  gap: var(--nex-sys-space-xxs);
 }
 .nex-prompt-label {
   font-size: var(--nex-sys-type-size-body-small);
@@ -152,10 +226,8 @@
   color: var(--nex-sys-color-on-surface-variant);
 }
 .nex-prompt-count {
+  margin: 0;
   font-size: var(--nex-sys-type-size-label-small);
   color: var(--nex-sys-color-on-surface-tertiary);
   text-align: right;
 }
-
-/* ---- Sidebar nav entry: shared .nex-nav-entry primitive
-   (components.css); the active state arrives via .is-active. ---- */

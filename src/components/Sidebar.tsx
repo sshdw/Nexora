@@ -56,7 +56,12 @@ export default function Sidebar({
   return (
     <aside className="nex-sidebar" aria-label="Nexora">
       <div className="nex-sidebar-head">
-        <NexoraMark className="nex-logo" />
+        <div className="nex-brand">
+          <NexoraMark className="nex-logo" width={22} height={22} />
+          <span className="nex-brand-name" aria-hidden="true">
+            Nexora
+          </span>
+        </div>
         <NewConversationButton onClick={onNewConversation} disabled={creating}>
           New Conversation
         </NewConversationButton>

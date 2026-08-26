@@ -17,7 +17,12 @@ import { formatBytes, formatRelativeTime } from "../lib/format";
 import { useAttachments } from "../lib/useAttachments";
 import { useConversation } from "../lib/useConversation";
 import Tooltip from "./Tooltip";
-import { CloseIcon, PaperclipIcon } from "./icons";
+import {
+  ArrowUpIcon,
+  CloseIcon,
+  PaperclipIcon,
+} from "./icons";
+import NexoraMark from "./NexoraMark";
 
 export interface ConversationViewProps {
   conversationId: number;
@@ -125,10 +130,13 @@ export default function ConversationView({
             Loading messages…
           </p>
         ) : messages.length === 0 ? (
-          <div className="nex-conversation-placeholder">
+          <div className="nex-conversation-placeholder nex-empty-enter">
+            <span className="nex-conversation-empty-mark-wrap" aria-hidden="true">
+              <NexoraMark className="nex-conversation-empty-mark" width={26} height={26} />
+            </span>
             <h2 className="nex-conversation-empty-title">No messages yet</h2>
             <p className="nex-conversation-empty-text">
-              Send a message to start the conversation.
+              Write your first message below to start the conversation.
             </p>
           </div>
         ) : (
@@ -195,83 +203,103 @@ export default function ConversationView({
 
       <div className="nex-composer">
         <div className="nex-composer-inner">
-          {attachments.length > 0 && (
-            <ul className="nex-composer-attachments" aria-label="Attached files">
-              {attachments.map((attachment) => (
-                <li key={attachment.id} className="nex-chip">
-                  <PaperclipIcon className="nex-chip-icon" />
-                  <span className="nex-attachment-text">
-                    <span className="nex-chip-name" title={attachment.file_name}>
-                      {attachment.file_name}
-                    </span>
-                    {formatBytes(attachment.file_size_bytes) !== null && (
-                      <span className="nex-chip-size">
-                        {formatBytes(attachment.file_size_bytes)}
+          <div className="nex-composer-shell">
+            {attachments.length > 0 && (
+              <ul className="nex-composer-attachments" aria-label="Attached files">
+                {attachments.map((attachment) => (
+                  <li key={attachment.id} className="nex-chip">
+                    <PaperclipIcon className="nex-chip-icon" />
+                    <span className="nex-attachment-text">
+                      <span className="nex-chip-name" title={attachment.file_name}>
+                        {attachment.file_name}
                       </span>
-                    )}
-                  </span>
-                  <button
-                    type="button"
-                    className="nex-chip-remove"
-                    aria-label={`Remove ${attachment.file_name}`}
-                    disabled={attachmentsBusy || sending}
-                    onClick={() => void remove(attachment.id)}
-                  >
-                    <CloseIcon />
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-          <div className="nex-composer-row">
-            <Tooltip label="Add file">
+                      {formatBytes(attachment.file_size_bytes) !== null && (
+                        <span className="nex-chip-size">
+                          {formatBytes(attachment.file_size_bytes)}
+                        </span>
+                      )}
+                    </span>
+                    <button
+                      type="button"
+                      className="nex-chip-remove"
+                      aria-label={`Remove ${attachment.file_name}`}
+                      disabled={attachmentsBusy || sending}
+                      onClick={() => void remove(attachment.id)}
+                    >
+                      <CloseIcon />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <textarea
+              className="nex-composer-input"
+              rows={1}
+              placeholder="Message"
+              aria-label="Message"
+              value={draft}
+              disabled={sending}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  handleSubmit();
+                }
+              }}
+            />
+            <div className="nex-composer-bar">
+              <Tooltip label="Add file">
+                <button
+                  type="button"
+                  className="nex-composer-attach"
+                  aria-label="Add file"
+                  disabled={sending || attachmentsBusy}
+                  onClick={() => void pickAndAttach()}
+                >
+                  <PaperclipIcon />
+                </button>
+              </Tooltip>
+              <span className="nex-composer-bar-spacer" />
+              {selectedModel && (
+                <span
+                  className="nex-tag nex-tag-mono nex-composer-model-tag"
+                  title="Model used for new messages"
+                >
+                  {selectedModel}
+                </span>
+              )}
               <button
                 type="button"
-                className="nex-composer-attach"
-                aria-label="Add file"
-                disabled={sending || attachmentsBusy}
-                onClick={() => void pickAndAttach()}
+                className="nex-composer-send nex-morph-pill"
+                onClick={handleSubmit}
+                disabled={!canSend}
+                aria-busy={sending}
               >
-                <PaperclipIcon />
+                {sending ? (
+                  <>
+                    <span className="nex-spinner" aria-hidden="true" />
+                    Sending…
+                  </>
+                ) : (
+                  <>
+                    Send
+                    <ArrowUpIcon aria-hidden="true" />
+                  </>
+                )}
               </button>
-            </Tooltip>
-            <div className="nex-composer-input-wrap">
-              <textarea
-                className="nex-composer-input"
-                rows={1}
-                placeholder="Message"
-                aria-label="Message"
-                value={draft}
-                disabled={sending}
-                onChange={(event) => setDraft(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey) {
-                    event.preventDefault();
-                    handleSubmit();
-                  }
-                }}
-              />
             </div>
-            <button
-              type="button"
-              className="nex-composer-send"
-              onClick={handleSubmit}
-              disabled={!canSend}
-              aria-busy={sending}
-            >
-              {sending ? "Sending…" : "Send"}
-            </button>
           </div>
           {ready ? (
             <p className="nex-composer-hint">
-              <span className="nex-composer-model">{selectedModel}</span>
               <span className="nex-composer-shortcut">
                 Enter to send · Shift+Enter for a new line
               </span>
             </p>
           ) : (
             <p className="nex-composer-hint">
-              Choose a provider and model in Settings to send messages.{" "}
+              <span className="nex-composer-shortcut">
+                Choose a provider and model in Settings to send messages.{" "}
+              </span>
               <button
                 type="button"
                 className="nex-btn nex-btn-accent nex-btn-sm"
