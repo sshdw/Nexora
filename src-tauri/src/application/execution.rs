@@ -33,7 +33,7 @@
 //! [`ExecutorError`] deliberately carry no secret payload (ARCHITECTURE.md §10:
 //! classified errors).
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use crate::infrastructure::database::{Database, DatabaseError};
 use crate::infrastructure::providers::anthropic::{
     AnthropicExecutor, PROVIDER_NAME as ANTHROPIC_PROVIDER_NAME,
@@ -50,6 +50,28 @@ use super::providers::{ProviderError, ProviderService};
 /// orchestration, persistence, and credential failures.
 pub(crate) type Result<T> = std::result::Result<T, RequestError>;
 
+/// A tool definition available to the model for one request (function calling).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ToolDefinition {
+    /// Function name as exposed to the model.
+    pub name: String,
+    /// Human-readable description of what the tool does.
+    pub description: String,
+    /// JSON Schema object describing the tool's parameters.
+    pub parameters: serde_json::Value,
+}
+
+/// A structured tool call returned by the assistant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ToolCall {
+    /// Provider-assigned identifier for this call.
+    pub id: String,
+    /// Name of the tool invoked.
+    pub name: String,
+    /// Raw JSON string of arguments for the call.
+    pub arguments: String,
+}
+
 /// A provider-independent AI request (ARCHITECTURE.md §7).
 ///
 /// The boundary deliberately carries no provider-specific structure: it
@@ -64,6 +86,8 @@ pub(crate) struct AiRequest {
     pub model: String,
     /// Conversation content to send, in chronological order.
     pub messages: Vec<AiMessage>,
+    /// Tools available to the model for this request. Empty means text-only.
+    pub tools: Vec<ToolDefinition>,
 }
 
 /// A single turn of conversation content carried by an [`AiRequest`].
@@ -174,6 +198,8 @@ pub(crate) struct AiResponse {
     pub content: String,
     /// Model that produced the response.
     pub model: String,
+    /// Structured tool calls returned by the assistant, if any.
+    pub tool_calls: Vec<ToolCall>,
 }
 
 /// Error raised by a [`ProviderExecutor`] while executing a request.

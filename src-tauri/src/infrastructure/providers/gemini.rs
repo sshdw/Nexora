@@ -46,6 +46,7 @@
 // backticks. Allow it locally.
 #![allow(clippy::doc_markdown)]
 
+#[allow(unused_imports)]
 use crate::application::execution::{
     AiAttachment, AiAttachmentPayload, AiMessage, AiRequest, AiResponse, AiRole, ExecutorError, ProviderExecutor,
 };
@@ -342,6 +343,7 @@ fn to_ai_response(
         model: response
             .model_version
             .unwrap_or_else(|| requested_model.to_string()),
+        tool_calls: Vec::new(),
     })
 }
 
@@ -466,6 +468,7 @@ mod tests {
                     content: "Hi there".to_string(),                    attachments: Vec::new(),
                 },
             ],
+            tools: Vec::new(),
         }
     }
 
@@ -508,6 +511,7 @@ mod tests {
                     content: "Second rule.".to_string(),                    attachments: Vec::new(),
                 },
             ],
+            tools: Vec::new(),
         };
         let body = generate_content_request(&request);
         assert_eq!(
@@ -539,6 +543,7 @@ mod tests {
                 role: AiRole::User,
                 content: "Hello".to_string(),                attachments: Vec::new(),
             }],
+            tools: Vec::new(),
         };
         let body = generate_content_request(&request);
         let value: serde_json::Value =

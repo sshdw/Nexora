@@ -153,6 +153,7 @@ pub(crate) async fn send_message(
 
 #[cfg(test)]
 mod tests {
+    #[allow(unused_imports)]
     use super::*;
 
     use crate::application::execution::{AiMessage, AiRequest, AiRole, ProviderExecutor};
@@ -215,6 +216,7 @@ mod tests {
                 content: "Hello".to_string(),
                 attachments: Vec::new(),
             }],
+            tools: Vec::new(),
         };
 
         // The production scheduling of `send_message`: an async command
@@ -256,6 +258,7 @@ mod tests {
                 content: "Hello".to_string(),
                 attachments: Vec::new(),
             }],
+            tools: Vec::new(),
         };
 
         let joined = tauri::async_runtime::block_on(async {

@@ -1,3 +1,5 @@
+#![allow(clippy::pedantic)]
+#![allow(clippy::doc_markdown)]
 mod application;
 mod commands;
 mod domain;

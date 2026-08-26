@@ -41,6 +41,7 @@
 // `doc_markdown` pedantic lint flags as needing backticks. Allow it locally.
 #![allow(clippy::doc_markdown)]
 
+#[allow(unused_imports)]
 use crate::application::execution::{
     AiAttachment, AiAttachmentPayload, AiMessage, AiRequest, AiResponse, AiRole, ExecutorError, ProviderExecutor,
 };
@@ -328,6 +329,7 @@ fn to_ai_response(response: AnthropicResponse) -> Result<AiResponse, AnthropicEr
     Ok(AiResponse {
         content,
         model: response.model,
+        tool_calls: Vec::new(),
     })
 }
 
@@ -425,6 +427,7 @@ mod tests {
                     content: "Hi there".to_string(),                    attachments: Vec::new(),
                 },
             ],
+            tools: Vec::new(),
         }
     }
 
@@ -504,6 +507,7 @@ mod tests {
                 role: AiRole::User,
                 content: "Hello".to_string(),                attachments: Vec::new(),
             }],
+            tools: Vec::new(),
         };
         let body = anthropic_request(&request);
         let value: serde_json::Value =

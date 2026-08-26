@@ -32,6 +32,7 @@
 // `doc_markdown` pedantic lint flags as needing backticks. Allow it locally.
 #![allow(clippy::doc_markdown)]
 
+#[allow(unused_imports)]
 use crate::application::execution::{
     AiAttachment, AiAttachmentPayload, AiMessage, AiRequest, AiResponse, AiRole, ExecutorError, ProviderExecutor,
 };
@@ -118,6 +119,21 @@ impl ProviderExecutor for OpenAiExecutor {
 struct ChatCompletionRequest {
     model: String,
     messages: Vec<OpenAiMessage>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    tools: Vec<OpenAiWireTool>,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAiWireTool {
+    r#type: &'static str,
+    function: OpenAiWireFunction,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAiWireFunction {
+    name: String,
+    description: String,
+    parameters: serde_json::Value,
 }
 
 /// One OpenAI chat message.
@@ -165,6 +181,18 @@ fn chat_completion_request(request: &AiRequest) -> ChatCompletionRequest {
     ChatCompletionRequest {
         model: request.model.clone(),
         messages: request.messages.iter().map(openai_message).collect(),
+        tools: request
+            .tools
+            .iter()
+            .map(|tool| OpenAiWireTool {
+                r#type: "function",
+                function: OpenAiWireFunction {
+                    name: tool.name.clone(),
+                    description: tool.description.clone(),
+                    parameters: tool.parameters.clone(),
+                },
+            })
+            .collect(),
     }
 }
 
@@ -227,6 +255,21 @@ struct Choice {
 #[derive(Debug, Deserialize)]
 struct ResponseMessage {
     content: Option<String>,
+    #[serde(default)]
+    tool_calls: Option<Vec<OpenAiWireToolCall>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiWireToolCall {
+    id: String,
+    r#type: String,
+    function: OpenAiWireFunctionCall,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiWireFunctionCall {
+    name: String,
+    arguments: String,
 }
 /// Perform the non-streaming HTTPS request.
 ///
@@ -258,15 +301,33 @@ fn send(
 /// Normalize a successful OpenAI response into the provider-independent
 /// [`AiResponse`], preserving the model that actually responded.
 fn to_ai_response(response: ChatCompletionResponse) -> Result<AiResponse, OpenAiError> {
-    let content = response
+    let choice = response
         .choices
         .into_iter()
         .next()
-        .and_then(|choice| choice.message.content)
         .ok_or(OpenAiError::UnexpectedResponse)?;
+    let wire_tool_calls = choice.message.tool_calls.unwrap_or_default();
+    let tool_calls: Vec<crate::application::execution::ToolCall> = wire_tool_calls
+        .into_iter()
+        .map(|call| crate::application::execution::ToolCall {
+            id: call.id,
+            name: call.function.name,
+            arguments: call.function.arguments,
+        })
+        .collect();
+    let content = match choice.message.content {
+        Some(text) => text,
+        None => {
+            if tool_calls.is_empty() {
+                return Err(OpenAiError::UnexpectedResponse);
+            }
+            String::new()
+        }
+    };
     Ok(AiResponse {
         content,
         model: response.model,
+        tool_calls,
     })
 }
 
@@ -333,6 +394,7 @@ mod tests {
                     attachments: Vec::new(),
                 },
             ],
+            tools: Vec::new(),
         }
     }
 
@@ -366,6 +428,7 @@ mod tests {
                 content: "ping".to_string(),
                 attachments: Vec::new(),
             }],
+            tools: Vec::new(),
         };
         let body = chat_completion_request(&request);
         assert_eq!(body.messages[0].role, "user");
@@ -379,6 +442,7 @@ mod tests {
             choices: vec![Choice {
                 message: ResponseMessage {
                     content: Some("Hello to you too.".to_string()),
+                    tool_calls: None,
                 },
             }],
         };
@@ -392,7 +456,10 @@ mod tests {
         let response = ChatCompletionResponse {
             model: "gpt-5.6-terra".to_string(),
             choices: vec![Choice {
-                message: ResponseMessage { content: None },
+                message: ResponseMessage {
+                    content: None,
+                    tool_calls: None,
+                },
             }],
         };
         assert!(matches!(
@@ -527,5 +594,142 @@ mod tests {
 
         assert_eq!(ai.content, "pong");
         assert_eq!(ai.model, "gpt-5.6-terra");
+    }
+
+    #[test]
+    fn request_with_tools_serializes_with_function_type() {
+        let request = AiRequest {
+            provider: PROVIDER_NAME.to_string(),
+            model: "gpt-5.6-terra".to_string(),
+            messages: vec![AiMessage {
+                role: AiRole::User,
+                content: "Use the tool".to_string(),
+                attachments: Vec::new(),
+            }],
+            tools: vec![crate::application::execution::ToolDefinition {
+                name: "get_weather".to_string(),
+                description: "Get the weather for a location".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "location": {"type": "string"}
+                    },
+                    "required": ["location"]
+                }),
+            }],
+        };
+        let json = serde_json::to_string(&chat_completion_request(&request)).expect("serialize");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        // Tools key must be present with correct wire shape.
+        let tools = value.get("tools").expect("tools present").as_array().expect("tools array");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["type"], "function");
+        assert_eq!(tools[0]["function"]["name"], "get_weather");
+        assert_eq!(tools[0]["function"]["description"], "Get the weather for a location");
+        assert!(tools[0]["function"]["parameters"]["properties"]["location"].is_object());
+    }
+
+    #[test]
+    fn request_without_tools_omits_tools_key() {
+        let request = AiRequest {
+            provider: PROVIDER_NAME.to_string(),
+            model: "gpt-5.6-terra".to_string(),
+            messages: vec![AiMessage {
+                role: AiRole::User,
+                content: "Hello".to_string(),
+                attachments: Vec::new(),
+            }],
+            tools: Vec::new(),
+        };
+        let json = serde_json::to_string(&chat_completion_request(&request)).expect("serialize");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        assert!(value.get("tools").is_none(), "tools key must be absent when empty");
+        // Byte-for-byte backward compatible: no tools key at all.
+        assert!(!json.contains("\"tools\""));
+    }
+
+    #[test]
+    fn response_with_tool_calls_maps_to_ai_response() {
+        let response = ChatCompletionResponse {
+            model: "gpt-5.6-terra".to_string(),
+            choices: vec![Choice {
+                message: ResponseMessage {
+                    content: None,
+                    tool_calls: Some(vec![OpenAiWireToolCall {
+                        id: "call_123".to_string(),
+                        r#type: "function".to_string(),
+                        function: OpenAiWireFunctionCall {
+                            name: "get_weather".to_string(),
+                            arguments: "{\"location\":\"Paris\"}".to_string(),
+                        },
+                    }]),
+                },
+            }],
+        };
+        let ai = to_ai_response(response).expect("valid tool call response maps");
+        // Content defaults to empty string when only tool calls are present.
+        assert_eq!(ai.content, "");
+        assert_eq!(ai.model, "gpt-5.6-terra");
+        assert_eq!(ai.tool_calls.len(), 1);
+        assert_eq!(ai.tool_calls[0].id, "call_123");
+        assert_eq!(ai.tool_calls[0].name, "get_weather");
+        assert_eq!(ai.tool_calls[0].arguments, "{\"location\":\"Paris\"}");
+    }
+
+    #[test]
+    fn response_with_content_and_tool_calls_maps_both() {
+        let response = ChatCompletionResponse {
+            model: "gpt-5.6-terra".to_string(),
+            choices: vec![Choice {
+                message: ResponseMessage {
+                    content: Some("I will call the tool".to_string()),
+                    tool_calls: Some(vec![OpenAiWireToolCall {
+                        id: "call_456".to_string(),
+                        r#type: "function".to_string(),
+                        function: OpenAiWireFunctionCall {
+                            name: "search".to_string(),
+                            arguments: "{\"query\":\"test\"}".to_string(),
+                        },
+                    }]),
+                },
+            }],
+        };
+        let ai = to_ai_response(response).expect("response with content and tool calls maps");
+        assert_eq!(ai.content, "I will call the tool");
+        assert_eq!(ai.tool_calls.len(), 1);
+        assert_eq!(ai.tool_calls[0].name, "search");
+    }
+
+    #[test]
+    fn plain_text_response_without_tools_still_maps_correctly() {
+        let response = ChatCompletionResponse {
+            model: "gpt-5.6-terra".to_string(),
+            choices: vec![Choice {
+                message: ResponseMessage {
+                    content: Some("Hello to you too.".to_string()),
+                    tool_calls: None,
+                },
+            }],
+        };
+        let ai = to_ai_response(response).expect("plain text response maps");
+        assert_eq!(ai.content, "Hello to you too.");
+        assert_eq!(ai.model, "gpt-5.6-terra");
+        assert!(ai.tool_calls.is_empty(), "plain text must have empty tool_calls");
+    }
+
+    #[test]
+    fn response_with_empty_tool_calls_and_content_maps_as_text() {
+        let response = ChatCompletionResponse {
+            model: "gpt-5.6-terra".to_string(),
+            choices: vec![Choice {
+                message: ResponseMessage {
+                    content: Some("Just text".to_string()),
+                    tool_calls: Some(vec![]),
+                },
+            }],
+        };
+        let ai = to_ai_response(response).expect("empty tool_calls with content maps");
+        assert_eq!(ai.content, "Just text");
+        assert!(ai.tool_calls.is_empty());
     }
 }
