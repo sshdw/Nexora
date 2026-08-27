@@ -8,6 +8,11 @@
 //!   (`runner::AgentRunner`) that drives a provider executor together with the
 //!   [`ToolRegistry`] until the model produces final text or the iteration
 //!   budget is exhausted.
+//! - Task 3.2 — Step Governor & Cancellation ([`control`]): adaptive step
+//!   budgets, user pause/resume, instant cancellation
+//!   (`control::RunControl`), and the governance event channel
+//!   (`control::AgentRunEvent`) wrapped around the runner loop.
 
+pub mod control;
 pub mod runner;
 pub mod tools;

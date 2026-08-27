@@ -219,6 +219,7 @@ mod tests {
                 attachments: Vec::new(),
             }],
             tools: Vec::new(),
+            request_timeout: None,
         };
 
         // The production scheduling of `send_message`: an async command
@@ -261,6 +262,7 @@ mod tests {
                 attachments: Vec::new(),
             }],
             tools: Vec::new(),
+            request_timeout: None,
         };
 
         let joined = tauri::async_runtime::block_on(async {

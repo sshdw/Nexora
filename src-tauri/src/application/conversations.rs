@@ -255,6 +255,7 @@ impl<'a> ConversationService<'a> {
                 &current_attachments,
             )?,
             tools: Vec::new(),
+            request_timeout: None,
         };
 
         let response = self.execution.execute(&request)?;
