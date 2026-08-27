@@ -49,9 +49,7 @@ use std::path::Path;
 use serde::Serialize;
 
 use crate::infrastructure::database::{Database, DatabaseError};
-use crate::infrastructure::repository::conversations::{
-    Conversation, ConversationRepository,
-};
+use crate::infrastructure::repository::conversations::{Conversation, ConversationRepository};
 use crate::infrastructure::repository::messages::{Message, MessageRepository};
 
 /// Application-layer result shared by export operations, unifying
@@ -215,10 +213,12 @@ impl<'a> ExportService<'a> {
     /// Read `conversation_id` and assemble its export record in persisted
     /// message order, without touching the filesystem.
     fn build(&self, conversation_id: i64) -> Result<ConversationExport> {
-        let conversation = self
-            .conversations
-            .read(conversation_id)?
-            .ok_or_else(|| ExportError::NotFound { id: conversation_id })?;
+        let conversation =
+            self.conversations
+                .read(conversation_id)?
+                .ok_or_else(|| ExportError::NotFound {
+                    id: conversation_id,
+                })?;
         let messages = self.messages.list_by_conversation(conversation_id)?;
         Ok(ConversationExport::from_records(&conversation, &messages))
     }
@@ -333,7 +333,14 @@ mod tests {
             "INSERT INTO messages
                  (conversation_id, role, content, provider_id, model_name, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            rusqlite::params![conversation_id, role, content, provider_id, model_name, created_at],
+            rusqlite::params![
+                conversation_id,
+                role,
+                content,
+                provider_id,
+                model_name,
+                created_at
+            ],
         )
         .expect("insert message");
         conn.last_insert_rowid()
@@ -371,7 +378,7 @@ mod tests {
             assistant_message_id,
         )
     }
-#[test]
+    #[test]
     fn export_preserves_conversation_and_messages_with_metadata() {
         let db = test_db();
         let (conversation_id, provider_id, user_message_id, assistant_message_id) =
@@ -450,7 +457,10 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
 
         assert_eq!(value["conversation"]["title"], "Empty");
-        assert_eq!(value["messages"].as_array().expect("messages array").len(), 0);
+        assert_eq!(
+            value["messages"].as_array().expect("messages array").len(),
+            0
+        );
     }
 
     #[test]
@@ -468,17 +478,18 @@ mod tests {
             .list_by_conversation(conversation_id)
             .expect("list messages");
 
-        let path = std::env::temp_dir().join(format!(
-            "nexora_export_test_{}.json",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("nexora_export_test_{}.json", std::process::id()));
         service
             .export_to_file(conversation_id, &path)
             .expect("export to file succeeds");
 
         // The written file matches the serialized document exactly.
         let written = std::fs::read_to_string(&path).expect("read exported file");
-        assert_eq!(written, service.serialize(conversation_id).expect("serialize"));
+        assert_eq!(
+            written,
+            service.serialize(conversation_id).expect("serialize")
+        );
 
         // Export performed read-only access: the stored records are unchanged.
         let after_conversation = ConversationRepository::new(&db)
