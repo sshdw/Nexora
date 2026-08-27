@@ -40,6 +40,7 @@ use crate::application::execution::{
 use crate::application::execution::AiAttachment;
 
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 /// OpenAI's Chat Completions endpoint.
 const ENDPOINT: &str = "https://api.openai.com/v1/chat/completions";
@@ -98,7 +99,13 @@ impl OpenAiExecutor {
     /// classified [`OpenAiError`] describing the failure category.
     fn run(&self, request: &AiRequest, credential: &str) -> Result<AiResponse, OpenAiError> {
         let body = chat_completion_request(request);
-        let response = send(&self.client, &self.endpoint, credential, &body)?;
+        let response = send(
+            &self.client,
+            &self.endpoint,
+            credential,
+            &body,
+            request.request_timeout,
+        )?;
         to_ai_response(response)
     }
 }
@@ -277,18 +284,23 @@ struct OpenAiWireFunctionCall {
 ///
 /// The credential is placed only in the `Authorization` header. A non-success
 /// response is classified by status without reading its body.
+///
+/// `request_timeout` bounds the single blocking round trip (Task 3.2): the
+/// blocking client cannot be interrupted mid-flight, so the honest bound is a
+/// wall-clock timeout applied via `RequestBuilder::timeout`. `None` preserves
+/// the historical unbounded behavior byte-for-byte.
 fn send(
     client: &reqwest::blocking::Client,
     endpoint: &str,
     credential: &str,
     body: &ChatCompletionRequest,
+    request_timeout: Option<Duration>,
 ) -> Result<ChatCompletionResponse, OpenAiError> {
-    let response = client
-        .post(endpoint)
-        .bearer_auth(credential)
-        .json(body)
-        .send()
-        .map_err(|_| OpenAiError::Provider)?;
+    let mut builder = client.post(endpoint).bearer_auth(credential).json(body);
+    if let Some(timeout) = request_timeout {
+        builder = builder.timeout(timeout);
+    }
+    let response = builder.send().map_err(|_| OpenAiError::Provider)?;
 
     let status = response.status();
     if status.is_success() {
@@ -395,6 +407,7 @@ mod tests {
                 },
             ],
             tools: Vec::new(),
+            request_timeout: None,
         }
     }
 
@@ -432,6 +445,7 @@ mod tests {
                 attachments: Vec::new(),
             }],
             tools: Vec::new(),
+            request_timeout: None,
         };
         let body = chat_completion_request(&request);
         assert_eq!(body.messages[0].role, "user");
@@ -623,6 +637,7 @@ mod tests {
                     "required": ["location"]
                 }),
             }],
+            request_timeout: None,
         };
         let json = serde_json::to_string(&chat_completion_request(&request)).expect("serialize");
         let value: serde_json::Value = serde_json::from_str(&json).expect("parse");
@@ -653,6 +668,7 @@ mod tests {
                 attachments: Vec::new(),
             }],
             tools: Vec::new(),
+            request_timeout: None,
         };
         let json = serde_json::to_string(&chat_completion_request(&request)).expect("serialize");
         let value: serde_json::Value = serde_json::from_str(&json).expect("parse");

@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
+use crate::application::agent::control::CancellationToken;
 use crate::application::execution::{ToolCall, ToolDefinition};
 
 // ---------------------------------------------------------------------------
@@ -31,6 +32,11 @@ const MAX_CAPTURE_BYTES: usize = 1024 * 1024; // 1 MiB per stream
 /// (e.g. because an orphaned grandchild inherited the pipe) before they are
 /// deliberately leaked and the captured output is used as-is.
 const DRAIN_GRACE: Duration = Duration::from_secs(2);
+/// Much shorter drain bound used specifically on the cancellation path
+/// (Task 3.2): the child has been killed and the run must return promptly
+/// (acceptance "within ~1s"). Streams that stay open past this are leaked via
+/// the same bounded `drain_reader` mechanism rather than blocking the cancel.
+const CANCEL_DRAIN_GRACE: Duration = Duration::from_millis(250);
 /// Marker appended when a stream did not close within [`DRAIN_GRACE`].
 pub(crate) const STREAM_STILL_OPEN_MARKER: &str =
     "[warning: output stream still open after grace period; capture may be partial]";
@@ -51,6 +57,7 @@ pub(crate) enum ToolError {
     Io(String),
     PathTraversal(String),
     Timeout(String),
+    Cancelled,
 }
 
 impl std::fmt::Display for ToolError {
@@ -65,6 +72,7 @@ impl std::fmt::Display for ToolError {
                 )
             }
             Self::Io(msg) | Self::Timeout(msg) => write!(f, "Error: {msg}"),
+            Self::Cancelled => write!(f, "Error: tool execution was cancelled"),
         }
     }
 }
@@ -173,11 +181,33 @@ impl ToolRegistry {
     /// access. Tool failures are returned as `Err(ToolError)` with an
     /// `Error:` prefix; they never panic.
     pub(crate) fn execute(call: &ToolCall, workspace_root: &Path) -> Result<String, ToolError> {
+        // No control attached: never cancelled (Task 3.1 semantics exactly).
+        let token = CancellationToken::new();
+        Self::execute_with_cancellation(call, workspace_root, &token)
+    }
+
+    /// [`execute`](Self::execute) that honours cooperative cancellation
+    /// (Task 3.2): returns `Err(ToolError::Cancelled)` immediately when the
+    /// token has fired, and polls `token` inside long-running command
+    /// execution so the child process is killed promptly.
+    pub(crate) fn execute_with_cancellation(
+        call: &ToolCall,
+        workspace_root: &Path,
+        token: &CancellationToken,
+    ) -> Result<String, ToolError> {
+        if token.is_cancelled() {
+            return Err(ToolError::Cancelled);
+        }
         let args: Value = serde_json::from_str(&call.arguments).map_err(|e| {
             ToolError::InvalidArguments(format!("arguments are not valid JSON: {e}"))
         })?;
         match call.name.as_str() {
-            "execute_command" => Self::execute_command(&args, workspace_root),
+            "execute_command" => Self::execute_command_with_limits(
+                &args,
+                workspace_root,
+                &CommandLimits::default(),
+                token,
+            ),
             "read_file" => Self::read_file(&args, workspace_root),
             "write_file" => Self::write_file(&args, workspace_root),
             "list_directory" => Self::list_directory(&args, workspace_root),
@@ -189,13 +219,8 @@ impl ToolRegistry {
     // Tool implementations
     // -----------------------------------------------------------------------
 
-    fn execute_command(args: &Value, workspace_root: &Path) -> Result<String, ToolError> {
-        let limits = CommandLimits::default();
-        Self::execute_command_with_limits(args, workspace_root, &limits)
-    }
-
-    /// [`execute_command`](Self::execute_command) with injectable execution
-    /// limits.
+    /// [`execute_command`](Self::execute) with injectable execution limits
+    /// and cooperative cancellation.
     ///
     /// The default constructor applies the production constants; unit tests
     /// inject shorter timeout / drain-grace values so they exercise the *real*
@@ -205,6 +230,7 @@ impl ToolRegistry {
         args: &Value,
         workspace_root: &Path,
         limits: &CommandLimits,
+        token: &CancellationToken,
     ) -> Result<String, ToolError> {
         let (command, resolved_cwd) = validated_command_args(args, workspace_root)?;
 
@@ -239,7 +265,10 @@ impl ToolRegistry {
         let mut stdout_handle = stdout.map(|out| spawn_stream_reader(out, limits.capture_cap));
         let mut stderr_handle = stderr.map(|err| spawn_stream_reader(err, limits.capture_cap));
 
-        // Poll with timeout
+        // Poll with timeout, honouring cooperative cancellation: a fired
+        // token kills the child promptly (within one poll interval) and
+        // aborts with `ToolError::Cancelled` — this is the "instant cancel"
+        // path that reaches running tool processes (Task 3.2).
         let start = Instant::now();
         let status = loop {
             if let Some(s) = child
@@ -247,6 +276,18 @@ impl ToolRegistry {
                 .map_err(|e| ToolError::Io(format!("wait failed: {e}")))?
             {
                 break s;
+            }
+            if token.is_cancelled() {
+                let _ = child.kill();
+                let _ = child.wait();
+                // Cancellation must return promptly (acceptance: "within ~1s"):
+                // drain the just-killed child's pipes only briefly — a
+                // grandchild still holding them is leaked via the bounded
+                // `drain_reader` grace mechanism, never block the cancel.
+                let mut scratch = Vec::new();
+                drain_reader(&mut stdout_handle, CANCEL_DRAIN_GRACE, &mut scratch);
+                drain_reader(&mut stderr_handle, CANCEL_DRAIN_GRACE, &mut scratch);
+                return Err(ToolError::Cancelled);
             }
             if start.elapsed() > limits.timeout {
                 let _ = child.kill();
@@ -1182,7 +1223,8 @@ mod tests {
 
     fn run_cmd(command: &str, ws: &std::path::Path) -> Result<String, ToolError> {
         let args = serde_json::json!({ "command": command });
-        ToolRegistry::execute_command_with_limits(&args, ws, &hardening_limits(5, 500))
+        let token = CancellationToken::new();
+        ToolRegistry::execute_command_with_limits(&args, ws, &hardening_limits(5, 500), &token)
     }
 
     #[test]
@@ -1195,8 +1237,14 @@ mod tests {
             "sleep 10"
         };
         let args = serde_json::json!({ "command": sleep_cmd });
+        let token = CancellationToken::new();
         let start = Instant::now();
-        let res = ToolRegistry::execute_command_with_limits(&args, &ws, &hardening_limits(1, 500));
+        let res = ToolRegistry::execute_command_with_limits(
+            &args,
+            &ws,
+            &hardening_limits(1, 500),
+            &token,
+        );
         assert!(
             matches!(res, Err(ToolError::Timeout(_))),
             "expected Timeout, got {res:?}"
@@ -1206,6 +1254,73 @@ mod tests {
             "timeout path blocked too long: {:?}",
             start.elapsed()
         );
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    // -----------------------------------------------------------------------
+    // Cooperative cancellation (Task 3.2)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn pre_cancelled_token_rejects_execution_without_running_anything() {
+        let ws = temp_workspace();
+        let token = CancellationToken::new();
+        token.cancel();
+        let call = call(
+            "execute_command",
+            serde_json::json!({ "command": "echo should-not-run" }),
+        );
+        let res = ToolRegistry::execute_with_cancellation(&call, &ws, &token);
+        assert_eq!(res.unwrap_err(), ToolError::Cancelled);
+        assert_eq!(
+            res_err_string(&call, &ws, &token),
+            "Error: tool execution was cancelled"
+        );
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    /// Render the Display of an already-cancelled execution for the assertion
+    /// above without a second execution path divergence.
+    fn res_err_string(call: &ToolCall, ws: &std::path::Path, token: &CancellationToken) -> String {
+        match ToolRegistry::execute_with_cancellation(call, ws, token) {
+            Err(err) => err.to_string(),
+            Ok(_) => panic!("must stay cancelled"),
+        }
+    }
+
+    #[test]
+    fn cancel_during_long_running_command_kills_child_within_about_a_second() {
+        let ws = temp_workspace();
+        // ~15 s of work; cancellation must kill it well inside a second of
+        // being requested (plus one poll interval), building directly on the
+        // hardened Task 2.1.1 bounded wait loop.
+        let long_cmd = if cfg!(windows) {
+            "ping -n 16 127.0.0.1 >nul"
+        } else {
+            "sleep 15"
+        };
+        let call = call(
+            "execute_command",
+            serde_json::json!({ "command": long_cmd }),
+        );
+        let token = CancellationToken::new();
+
+        std::thread::scope(|scope| {
+            let worker =
+                scope.spawn(|| ToolRegistry::execute_with_cancellation(&call, &ws, &token));
+            // Let the child reach its steady state before cancelling.
+            std::thread::sleep(Duration::from_millis(300));
+            let start = Instant::now();
+            token.cancel();
+            let res = worker.join().expect("worker must not panic");
+            assert_eq!(res.unwrap_err(), ToolError::Cancelled);
+            assert!(
+                start.elapsed() <= Duration::from_secs(1),
+                "cancellation took too long: {:?}",
+                start.elapsed()
+            );
+        });
+
         let _ = fs::remove_dir_all(&ws);
     }
 

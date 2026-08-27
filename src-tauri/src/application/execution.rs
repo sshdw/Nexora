@@ -33,7 +33,6 @@
 //! [`ExecutorError`] deliberately carry no secret payload (ARCHITECTURE.md §10:
 //! classified errors).
 
-use serde::{Deserialize, Serialize};
 use crate::infrastructure::database::{Database, DatabaseError};
 use crate::infrastructure::providers::anthropic::{
     AnthropicExecutor, PROVIDER_NAME as ANTHROPIC_PROVIDER_NAME,
@@ -43,6 +42,7 @@ use crate::infrastructure::providers::gemini::{
     GeminiExecutor, PROVIDER_NAME as GEMINI_PROVIDER_NAME,
 };
 use crate::infrastructure::providers::openai::{OpenAiExecutor, PROVIDER_NAME};
+use serde::{Deserialize, Serialize};
 
 use super::providers::{ProviderError, ProviderService};
 
@@ -88,6 +88,11 @@ pub(crate) struct AiRequest {
     pub messages: Vec<AiMessage>,
     /// Tools available to the model for this request. Empty means text-only.
     pub tools: Vec<ToolDefinition>,
+    /// Optional wall-clock bound on the single blocking HTTP round trip
+    /// (Task 3.2). `None` keeps the historical unbounded behavior; the
+    /// blocking client cannot be interrupted mid-flight, so executors honour
+    /// this via their HTTP client's per-request timeout when set.
+    pub request_timeout: Option<std::time::Duration>,
 }
 
 /// A single turn of conversation content carried by an [`AiRequest`].

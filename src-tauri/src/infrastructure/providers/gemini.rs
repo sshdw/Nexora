@@ -474,6 +474,7 @@ mod tests {
                 },
             ],
             tools: Vec::new(),
+            request_timeout: None,
         }
     }
 
@@ -519,6 +520,7 @@ mod tests {
                 },
             ],
             tools: Vec::new(),
+            request_timeout: None,
         };
         let body = generate_content_request(&request);
         assert_eq!(
@@ -550,6 +552,7 @@ mod tests {
                 attachments: Vec::new(),
             }],
             tools: Vec::new(),
+            request_timeout: None,
         };
         let body = generate_content_request(&request);
         let value: serde_json::Value =

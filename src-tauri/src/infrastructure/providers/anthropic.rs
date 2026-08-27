@@ -433,6 +433,7 @@ mod tests {
                 },
             ],
             tools: Vec::new(),
+            request_timeout: None,
         }
     }
 
@@ -517,6 +518,7 @@ mod tests {
                 attachments: Vec::new(),
             }],
             tools: Vec::new(),
+            request_timeout: None,
         };
         let body = anthropic_request(&request);
         let value: serde_json::Value =
