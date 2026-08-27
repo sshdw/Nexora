@@ -34,6 +34,14 @@
 //! that reaches running tool processes. When no control is attached the loop
 //! keeps the exact deterministic Task 3.1 behaviour.
 //!
+//! Task 4.1 layers the HD-3 autonomy ladder on top of that: an attached
+//! [`ApprovalGate`] decides per tool risk class and [`AutonomyMode`] whether
+//! a call executes automatically or parks until the user approves or denies
+//! it. Approved calls dispatch exactly as before; denied calls become a
+//! controlled observation (`Error: tool execution was denied by the user`)
+//! and the loop continues. When no gate is attached the loop keeps the exact
+//! pre-4.1 behaviour.
+//!
 //! # Observation representation
 //!
 //! The provider-independent boundary (`AiRequest` / `AiMessage`) deliberately
@@ -47,6 +55,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
+use crate::application::agent::approval::{ApprovalDecision, ApprovalGate};
 use crate::application::agent::control::{AgentRunEvent, CancellationToken, RunControl};
 use crate::application::agent::tools::ToolRegistry;
 use crate::application::execution::{
@@ -138,7 +147,10 @@ impl From<ExecutorError> for AgentError {
 /// Wraps one [`ProviderExecutor`] reference and the workspace root that bounds
 /// [`ToolRegistry`] filesystem access. The runner is reusable across runs; it
 /// owns no conversation state between [`Self::run`] calls and performs no
-/// persistence, approval gating, or cancellation (later tasks).
+/// persistence. Governance (pause/resume, budgets, cancellation) and approval
+/// gating are applied only when a [`RunControl`] or [`ApprovalGate`] is
+/// attached; otherwise the loop keeps the exact deterministic pre-3.2/4.1
+/// behaviour.
 pub(crate) struct AgentRunner<'a> {
     executor: &'a dyn ProviderExecutor,
     workspace_root: PathBuf,
@@ -147,6 +159,9 @@ pub(crate) struct AgentRunner<'a> {
     /// exact deterministic Task 3.1 semantics; `pause`/`resume`/`extend_steps`
     /// are no-ops and cancellation never fires.
     control: Option<RunControl>,
+    /// Optional three-tier approval gate (Task 4.1). When `None` the loop keeps
+    /// the exact deterministic pre-4.1 behaviour; no approval is ever required.
+    approval_gate: Option<ApprovalGate>,
     /// Optional governance-event channel (Task 3.2); Milestone 5 bridges it to
     /// Tauri events. Delivery is best-effort.
     event_sender: Option<Sender<AgentRunEvent>>,
@@ -163,6 +178,7 @@ impl<'a> AgentRunner<'a> {
             workspace_root: workspace_root.to_path_buf(),
             max_iterations: DEFAULT_MAX_ITERATIONS,
             control: None,
+            approval_gate: None,
             event_sender: None,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
         }
@@ -181,7 +197,25 @@ impl<'a> AgentRunner<'a> {
     /// governs this runner.
     #[must_use]
     pub(crate) fn with_control(mut self, control: RunControl) -> Self {
+        if let Some(gate) = &self.approval_gate {
+            gate.set_token(control.token().clone());
+        }
         self.control = Some(control);
+        self
+    }
+
+    /// Attach an [`ApprovalGate`] so the run enforces the HD-3 autonomy
+    /// ladder (Task 4.1). When no gate is attached the loop keeps the exact
+    /// pre-4.1 deterministic behaviour. Cloned cheaply; every clone governs
+    /// this runner. If a `RunControl` is already attached, the gate is wired
+    /// to share its cancellation token so `cancel()` while parked on an
+    /// approval aborts with `AgentError::Cancelled` without deadlock.
+    #[must_use]
+    pub(crate) fn with_approval_gate(mut self, gate: ApprovalGate) -> Self {
+        if let Some(control) = &self.control {
+            gate.set_token(control.token().clone());
+        }
+        self.approval_gate = Some(gate);
         self
     }
 
@@ -295,6 +329,35 @@ impl<'a> AgentRunner<'a> {
             let token: &CancellationToken = control.map_or(&idle_token, RunControl::token);
             for call in &response.tool_calls {
                 self.check_cancellation(control)?;
+                // Task 4.1: approval gate evaluated at the per-tool-call
+                // boundary, before dispatch. Auto paths execute exactly as
+                // before; denied calls become a controlled observation and the
+                // loop continues; cancellation while parked aborts.
+                if let Some(gate) = &self.approval_gate {
+                    if gate.needs_approval(call) {
+                        self.emit(AgentRunEvent::ApprovalRequested {
+                            call_id: call.id.clone(),
+                            name: call.name.clone(),
+                            arguments: call.arguments.clone(),
+                        });
+                        let Ok(decision) = gate.request_approval(call) else {
+                            self.emit(AgentRunEvent::Cancelled);
+                            return Err(AgentError::Cancelled);
+                        };
+                        let approved = matches!(decision, ApprovalDecision::Approved);
+                        self.emit(AgentRunEvent::ApprovalResolved {
+                            call_id: call.id.clone(),
+                            approved,
+                        });
+                        if !approved {
+                            messages.push(observation_message(
+                                call,
+                                "Error: tool execution was denied by the user",
+                            ));
+                            continue;
+                        }
+                    }
+                }
                 let observation = match ToolRegistry::execute_with_cancellation(
                     call,
                     &self.workspace_root,
@@ -1177,6 +1240,479 @@ mod tests {
             custom_fake.requests.borrow()[0].request_timeout,
             Some(custom)
         );
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    // -----------------------------------------------------------------------
+    // Three-tier approval gate (Task 4.1)
+    // -----------------------------------------------------------------------
+
+    use crate::application::agent::approval::{ApprovalDecision, ApprovalGate, AutonomyMode};
+
+    #[allow(clippy::needless_pass_by_value)]
+    fn approval_call(id: &str, name: &str, arguments: serde_json::Value) -> ToolCall {
+        ToolCall {
+            id: id.to_string(),
+            name: name.to_string(),
+            arguments: arguments.to_string(),
+        }
+    }
+
+    #[allow(dead_code)]
+    fn run_with_gate(
+        ws: &std::path::Path,
+        gate: ApprovalGate,
+        steps: Vec<Result<AiResponse, ExecutorError>>,
+        control: Option<RunControl>,
+    ) -> (Result<String, AgentError>, Vec<AgentRunEvent>) {
+        let (tx, rx) = channel();
+        let fake = FakeExecutor::new(steps);
+        let mut runner = AgentRunner::new(&fake, ws)
+            .with_approval_gate(gate)
+            .with_event_sender(tx);
+        if let Some(c) = control {
+            runner = runner.with_control(c);
+        }
+        let res = runner.run("openai", "m", "cred", "q");
+        let mut events = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            events.push(ev);
+        }
+        (res, events)
+    }
+
+    #[test]
+    fn approval_matrix_supervised_read_requires_approval() {
+        let ws = temp_workspace();
+        let gate = ApprovalGate::new(AutonomyMode::Supervised);
+        let gate_clone = gate.clone();
+        let (tx, rx) = channel();
+        let fake = FakeExecutor::new(vec![
+            Ok(AiResponse {
+                content: String::new(),
+                model: "m".to_string(),
+                tool_calls: vec![approval_call(
+                    "r1",
+                    "read_file",
+                    serde_json::json!({"path": "exists.txt"}),
+                )],
+            }),
+            Ok(text_response("done")),
+        ]);
+        // Create a file to read.
+        fs::write(ws.join("exists.txt"), "hello").expect("write");
+        let runner = AgentRunner::new(&fake, &ws)
+            .with_approval_gate(gate_clone)
+            .with_event_sender(tx);
+        let gate_for_driver = gate.clone();
+        let driver = thread::spawn(move || {
+            let ev = rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("ApprovalRequested");
+            assert!(
+                matches!(ev, AgentRunEvent::ApprovalRequested { call_id, name, .. } if call_id=="r1" && name=="read_file")
+            );
+            assert!(gate_for_driver.respond("r1", ApprovalDecision::Approved));
+            let ev2 = rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("ApprovalResolved");
+            assert!(
+                matches!(ev2, AgentRunEvent::ApprovalResolved { call_id, approved } if call_id=="r1" && approved)
+            );
+            rx.recv_timeout(Duration::from_secs(5)).expect("Completed")
+        });
+        let answer = runner.run("openai", "m", "cred", "q").expect("completes");
+        assert_eq!(answer, "done");
+        let completed = driver.join().expect("driver");
+        assert_eq!(completed, AgentRunEvent::Completed { steps: 2 });
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn approval_matrix_supervised_mutating_requires_approval() {
+        let ws = temp_workspace();
+        let gate = ApprovalGate::new(AutonomyMode::Supervised);
+        let gate_clone = gate.clone();
+        let (tx, rx) = channel();
+        let fake = FakeExecutor::new(vec![
+            Ok(AiResponse {
+                content: String::new(),
+                model: "m".to_string(),
+                tool_calls: vec![approval_call(
+                    "w1",
+                    "write_file",
+                    serde_json::json!({"path": "out.txt", "content": "hi"}),
+                )],
+            }),
+            Ok(text_response("done")),
+        ]);
+        let runner = AgentRunner::new(&fake, &ws)
+            .with_approval_gate(gate_clone)
+            .with_event_sender(tx);
+        let gate_for_driver = gate.clone();
+        let driver = thread::spawn(move || {
+            let ev = rx.recv_timeout(Duration::from_secs(5)).expect("requested");
+            assert!(
+                matches!(ev, AgentRunEvent::ApprovalRequested { call_id, .. } if call_id=="w1")
+            );
+            gate_for_driver.respond("w1", ApprovalDecision::Approved);
+            let ev2 = rx.recv_timeout(Duration::from_secs(5)).expect("resolved");
+            assert!(matches!(
+                ev2,
+                AgentRunEvent::ApprovalResolved { approved: true, .. }
+            ));
+            rx.recv_timeout(Duration::from_secs(5)).expect("completed")
+        });
+        runner.run("openai", "m", "cred", "q").expect("completes");
+        assert_eq!(fs::read_to_string(ws.join("out.txt")).expect("file"), "hi");
+        let completed = driver.join().expect("driver");
+        assert_eq!(completed, AgentRunEvent::Completed { steps: 2 });
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn approval_matrix_semi_read_auto_approved_no_events() {
+        let ws = temp_workspace();
+        let gate = ApprovalGate::new(AutonomyMode::SemiAutonomous);
+        let (tx, rx) = channel();
+        fs::write(ws.join("a.txt"), "content").expect("write");
+        let fake = FakeExecutor::new(vec![
+            Ok(AiResponse {
+                content: String::new(),
+                model: "m".to_string(),
+                tool_calls: vec![approval_call(
+                    "r1",
+                    "read_file",
+                    serde_json::json!({"path": "a.txt"}),
+                )],
+            }),
+            Ok(text_response("ok")),
+        ]);
+        let runner = AgentRunner::new(&fake, &ws)
+            .with_approval_gate(gate)
+            .with_event_sender(tx);
+        let answer = runner.run("openai", "m", "cred", "q").expect("auto");
+        assert_eq!(answer, "ok");
+        // No approval events for auto path; only Completed may be present.
+        let mut saw_approval = false;
+        while let Ok(ev) = rx.try_recv() {
+            if matches!(
+                ev,
+                AgentRunEvent::ApprovalRequested { .. } | AgentRunEvent::ApprovalResolved { .. }
+            ) {
+                saw_approval = true;
+            }
+        }
+        assert!(!saw_approval, "auto path must not emit approval events");
+        // File still there, tool executed.
+        assert_eq!(fs::read_to_string(ws.join("a.txt")).unwrap(), "content");
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn approval_matrix_semi_mutating_requires_approval() {
+        let ws = temp_workspace();
+        let gate = ApprovalGate::new(AutonomyMode::SemiAutonomous);
+        let gate_clone = gate.clone();
+        let (tx, rx) = channel();
+        let fake = FakeExecutor::new(vec![
+            Ok(AiResponse {
+                content: String::new(),
+                model: "m".to_string(),
+                tool_calls: vec![approval_call(
+                    "w1",
+                    "execute_command",
+                    serde_json::json!({"command": "echo hi"}),
+                )],
+            }),
+            Ok(text_response("done")),
+        ]);
+        let runner = AgentRunner::new(&fake, &ws)
+            .with_approval_gate(gate_clone)
+            .with_event_sender(tx);
+        let gate_for_driver = gate.clone();
+        let driver = thread::spawn(move || {
+            let ev = rx.recv_timeout(Duration::from_secs(5)).expect("requested");
+            assert!(
+                matches!(ev, AgentRunEvent::ApprovalRequested { name, .. } if name=="execute_command")
+            );
+            gate_for_driver.respond("w1", ApprovalDecision::Approved);
+            rx.recv_timeout(Duration::from_secs(5)).expect("resolved");
+            rx.recv_timeout(Duration::from_secs(5)).expect("completed")
+        });
+        runner.run("openai", "m", "cred", "q").expect("completes");
+        driver.join().expect("driver");
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn approval_matrix_full_read_auto() {
+        let ws = temp_workspace();
+        let gate = ApprovalGate::new(AutonomyMode::FullAutonomous);
+        let fake = FakeExecutor::new(vec![
+            Ok(AiResponse {
+                content: String::new(),
+                model: "m".to_string(),
+                tool_calls: vec![approval_call("r1", "list_directory", serde_json::json!({}))],
+            }),
+            Ok(text_response("listed")),
+        ]);
+        let runner = AgentRunner::new(&fake, &ws).with_approval_gate(gate);
+        let answer = runner.run("openai", "m", "cred", "q").expect("auto");
+        assert_eq!(answer, "listed");
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn approval_matrix_full_mutating_auto() {
+        let ws = temp_workspace();
+        let gate = ApprovalGate::new(AutonomyMode::FullAutonomous);
+        let fake = FakeExecutor::new(vec![
+            Ok(AiResponse {
+                content: String::new(),
+                model: "m".to_string(),
+                tool_calls: vec![approval_call(
+                    "w1",
+                    "write_file",
+                    serde_json::json!({"path": "auto.txt", "content": "x"}),
+                )],
+            }),
+            Ok(text_response("ok")),
+        ]);
+        let runner = AgentRunner::new(&fake, &ws).with_approval_gate(gate);
+        runner.run("openai", "m", "cred", "q").expect("auto");
+        assert_eq!(fs::read_to_string(ws.join("auto.txt")).unwrap(), "x");
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn denied_call_becomes_observation_and_loop_continues() {
+        let ws = temp_workspace();
+        let gate = ApprovalGate::new(AutonomyMode::SemiAutonomous);
+        let gate_clone = gate.clone();
+        let (tx, rx) = channel();
+        let fake = FakeExecutor::new(vec![
+            Ok(AiResponse {
+                content: String::new(),
+                model: "m".to_string(),
+                tool_calls: vec![approval_call(
+                    "w1",
+                    "write_file",
+                    serde_json::json!({"path": "should_not_exist.txt", "content": "bad"}),
+                )],
+            }),
+            Ok(text_response("recovered")),
+        ]);
+        let runner = AgentRunner::new(&fake, &ws)
+            .with_approval_gate(gate_clone)
+            .with_event_sender(tx);
+        let gate_for_driver = gate.clone();
+        let driver = thread::spawn(move || {
+            let ev = rx.recv_timeout(Duration::from_secs(5)).expect("requested");
+            assert!(matches!(ev, AgentRunEvent::ApprovalRequested { .. }));
+            gate_for_driver.respond("w1", ApprovalDecision::Denied);
+            let ev2 = rx.recv_timeout(Duration::from_secs(5)).expect("resolved");
+            assert!(matches!(
+                ev2,
+                AgentRunEvent::ApprovalResolved {
+                    approved: false,
+                    ..
+                }
+            ));
+            rx.recv_timeout(Duration::from_secs(5)).expect("completed")
+        });
+        let answer = runner.run("openai", "m", "cred", "q").expect("completes");
+        assert_eq!(answer, "recovered");
+        driver.join().expect("driver");
+        // Denied tool must not have executed.
+        assert!(fs::read_to_string(ws.join("should_not_exist.txt")).is_err());
+        // The denied observation was fed to the next LLM turn.
+        let requests = fake.requests.borrow();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[1].messages[1]
+            .content
+            .contains("denied by the user"));
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn cancel_while_awaiting_approval_aborts_with_cancelled_no_deadlock() {
+        let ws = temp_workspace();
+        let control = RunControl::new();
+        let gate = ApprovalGate::with_token(AutonomyMode::Supervised, control.token().clone());
+        let (tx, rx) = channel();
+        let fake = FakeExecutor::new(vec![Ok(AiResponse {
+            content: String::new(),
+            model: "m".to_string(),
+            tool_calls: vec![approval_call(
+                "c1",
+                "write_file",
+                serde_json::json!({"path": "x.txt", "content": "y"}),
+            )],
+        })]);
+        let runner = AgentRunner::new(&fake, &ws)
+            .with_control(control.clone())
+            .with_approval_gate(gate)
+            .with_event_sender(tx);
+        let driver = thread::spawn(move || {
+            let ev = rx.recv_timeout(Duration::from_secs(5)).expect("requested");
+            assert!(matches!(ev, AgentRunEvent::ApprovalRequested { .. }));
+            control.cancel();
+            rx.recv_timeout(Duration::from_secs(5)).expect("cancelled")
+        });
+        let err = runner
+            .run("openai", "m", "cred", "q")
+            .expect_err("cancelled");
+        assert!(matches!(err, AgentError::Cancelled));
+        let cancelled = driver.join().expect("driver");
+        assert_eq!(cancelled, AgentRunEvent::Cancelled);
+        // No file should have been written; no further LLM work.
+        assert!(fs::read_to_string(ws.join("x.txt")).is_err());
+        assert_eq!(fake.requests.borrow().len(), 1);
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn cancel_via_gate_while_parked_also_aborts() {
+        let ws = temp_workspace();
+        let gate = ApprovalGate::new(AutonomyMode::Supervised);
+        let gate_clone = gate.clone();
+        let (tx, rx) = channel();
+        let fake = FakeExecutor::new(vec![Ok(AiResponse {
+            content: String::new(),
+            model: "m".to_string(),
+            tool_calls: vec![approval_call(
+                "c1",
+                "read_file",
+                serde_json::json!({"path": "a.txt"}),
+            )],
+        })]);
+        let runner = AgentRunner::new(&fake, &ws)
+            .with_approval_gate(gate_clone)
+            .with_event_sender(tx);
+        let gate_for_driver = gate.clone();
+        let driver = thread::spawn(move || {
+            let _ = rx.recv_timeout(Duration::from_secs(5)).expect("requested");
+            gate_for_driver.cancel();
+            rx.recv_timeout(Duration::from_secs(5)).expect("cancelled")
+        });
+        let err = runner
+            .run("openai", "m", "cred", "q")
+            .expect_err("cancelled");
+        assert!(matches!(err, AgentError::Cancelled));
+        driver.join().expect("driver");
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn runtime_mode_switch_mid_run_changes_next_decision() {
+        let ws = temp_workspace();
+        let gate = ApprovalGate::new(AutonomyMode::Supervised);
+        let gate_clone = gate.clone();
+        let (tx, rx) = channel();
+        let fake = FakeExecutor::new(vec![
+            Ok(AiResponse {
+                content: String::new(),
+                model: "m".to_string(),
+                tool_calls: vec![approval_call(
+                    "w1",
+                    "write_file",
+                    serde_json::json!({"path": "first.txt", "content": "1"}),
+                )],
+            }),
+            Ok(AiResponse {
+                content: String::new(),
+                model: "m".to_string(),
+                tool_calls: vec![approval_call(
+                    "w2",
+                    "write_file",
+                    serde_json::json!({"path": "second.txt", "content": "2"}),
+                )],
+            }),
+            Ok(text_response("done")),
+        ]);
+        let runner = AgentRunner::new(&fake, &ws)
+            .with_approval_gate(gate_clone)
+            .with_event_sender(tx);
+        let gate_for_driver = gate.clone();
+        let driver = thread::spawn(move || {
+            // First tool requires approval in Supervised.
+            let ev1 = rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("first requested");
+            assert!(
+                matches!(ev1, AgentRunEvent::ApprovalRequested { call_id, .. } if call_id=="w1")
+            );
+            gate_for_driver.respond("w1", ApprovalDecision::Approved);
+            let ev1_res = rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("first resolved");
+            assert!(matches!(
+                ev1_res,
+                AgentRunEvent::ApprovalResolved { approved: true, .. }
+            ));
+            // Switch to FullAutonomous before the next tool call is evaluated.
+            gate_for_driver.set_mode(AutonomyMode::FullAutonomous);
+            // Second tool should auto-execute: no second ApprovalRequested.
+            let ev2 = rx.recv_timeout(Duration::from_secs(5)).expect("completed");
+            assert_eq!(ev2, AgentRunEvent::Completed { steps: 3 });
+        });
+        let answer = runner.run("openai", "m", "cred", "q").expect("completes");
+        assert_eq!(answer, "done");
+        driver.join().expect("driver");
+        assert_eq!(fs::read_to_string(ws.join("first.txt")).unwrap(), "1");
+        assert_eq!(fs::read_to_string(ws.join("second.txt")).unwrap(), "2");
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn no_gate_default_path_unchanged() {
+        let ws = temp_workspace();
+        let fake = FakeExecutor::new(vec![
+            Ok(AiResponse {
+                content: String::new(),
+                model: "m".to_string(),
+                tool_calls: vec![approval_call(
+                    "w1",
+                    "write_file",
+                    serde_json::json!({"path": "no_gate.txt", "content": "ok"}),
+                )],
+            }),
+            Ok(text_response("done")),
+        ]);
+        let runner = AgentRunner::new(&fake, &ws);
+        let answer = runner.run("openai", "m", "cred", "q").expect("completes");
+        assert_eq!(answer, "done");
+        assert_eq!(fs::read_to_string(ws.join("no_gate.txt")).unwrap(), "ok");
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn approval_gate_builder_is_additive_and_cloneable() {
+        let ws = temp_workspace();
+        let gate = ApprovalGate::new(AutonomyMode::Supervised);
+        let control = RunControl::new();
+        let fake = FakeExecutor::new(vec![Ok(text_response("hi"))]);
+        // Order: control then gate.
+        let runner1 = AgentRunner::new(&fake, &ws)
+            .with_control(control.clone())
+            .with_approval_gate(gate.clone());
+        let fake2 = FakeExecutor::new(vec![Ok(text_response("hi"))]);
+        // Order: gate then control.
+        let runner2 = AgentRunner::new(&fake2, &ws)
+            .with_approval_gate(gate.clone())
+            .with_control(control.clone());
+        // Both should be constructible and behave identically for auto path.
+        // FullAutonomous gate with no approval needed should complete regardless of order.
+        let full_gate = ApprovalGate::new(AutonomyMode::FullAutonomous);
+        let fake3 = FakeExecutor::new(vec![Ok(text_response("ok"))]);
+        let r = AgentRunner::new(&fake3, &ws)
+            .with_control(control)
+            .with_approval_gate(full_gate);
+        let ans = r.run("openai", "m", "cred", "q").expect("ok");
+        assert_eq!(ans, "ok");
+        drop(runner1);
+        drop(runner2);
         let _ = fs::remove_dir_all(&ws);
     }
 }
