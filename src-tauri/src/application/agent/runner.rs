@@ -20,21 +20,6 @@
 //! [`ToolRegistry`] and converted into a textual observation message that is
 //! appended to the conversation history for the next model turn.
 //!
-//! # Termination
-//!
-//! The loop finishes successfully when a provider response carries no tool
-//! calls and usable final assistant content (AC-2). It terminates
-//! deterministically once `max_iterations` model turns are exhausted, and it
-//! propagates provider failures as classified [`AgentError`] values without
-//! panicking (AC-9, AC-10). No adaptive budgeting lives here (Task 3.2).
-//!
-//! # Observation representation
-//!
-//! The provider-independent boundary (`AiRequest` / `AiMessage`) deliberately
-//! has no tool-role message today, so observations are recorded in the
-//! chronological history as [`AiRole::User`] messages carrying an explicit
-//! `[tool '<name>' result]` fence plus the call identifier. This invents no
-//! new wire format: every observation crosses the exact existing
 //! # Termination & Governance
 //!
 //! The loop finishes successfully when a provider response carries no tool
@@ -108,7 +93,7 @@ pub(crate) enum AgentError {
     BudgetExhausted(usize),
     /// The provider returned neither tool calls nor usable final content.
     EmptyResponse,
-    /// A user presented the run via [`RunControl::cancel`] (or cancellation
+    /// A user cancelled the run via [`RunControl::cancel`] (or cancellation
     /// was observed during a tool execution).
     Cancelled,
 }
