@@ -14,10 +14,10 @@
 //! any filesystem operations, and all business rules intentionally live in
 //! higher application layers and are not enforced here.
 
-use serde::Serialize;
 use crate::infrastructure::database::{Database, DatabaseError};
 use crate::infrastructure::repository::{Repository, Result};
 use rusqlite::{params, Error as SqliteError};
+use serde::Serialize;
 
 /// A single `attachments` row as persisted, mirroring the columns defined by
 /// DATABASE.md §7.4. It is a plain persistence record carrying the raw stored

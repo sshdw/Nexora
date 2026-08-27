@@ -13,10 +13,10 @@
 //! In particular, it never touches credentials: API keys, secrets, and tokens
 //! belong exclusively to the OS keyring and are never stored in `SQLite`.
 
-use serde::Serialize;
 use crate::infrastructure::database::{Database, DatabaseError};
 use crate::infrastructure::repository::{Repository, Result};
 use rusqlite::{params, Error as SqliteError, Transaction};
+use serde::Serialize;
 
 /// A single `providers` row as persisted, mirroring the columns defined by
 /// DATABASE.md §7.5. It is a plain persistence record carrying the raw stored

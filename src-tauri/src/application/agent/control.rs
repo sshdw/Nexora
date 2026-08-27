@@ -87,6 +87,22 @@ pub(crate) enum AgentRunEvent {
         /// Effective step allowance at the moment of exhaustion.
         max_steps: usize,
     },
+    /// A tool call is awaiting user approval (Task 4.1).
+    ApprovalRequested {
+        /// Provider-assigned identifier for the pending tool call.
+        call_id: String,
+        /// Tool name.
+        name: String,
+        /// Raw JSON arguments for the call.
+        arguments: String,
+    },
+    /// A parked approval was resolved (Task 4.1).
+    ApprovalResolved {
+        /// Provider-assigned identifier for the resolved call.
+        call_id: String,
+        /// Whether the user approved the call.
+        approved: bool,
+    },
     /// A user cancellation was observed; the run aborted with
     /// `AgentError::Cancelled`.
     Cancelled,
