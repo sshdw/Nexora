@@ -12,6 +12,7 @@ use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::Receiver;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -595,12 +596,12 @@ impl Default for CommandLimits {
 }
 
 /// Terminal of one output-stream reader thread: the channel delivering the
-/// captured buffer at EOF plus the thread handle (kept only so it can be
-/// deliberately leaked when the drain grace expires).
-type StreamReader = Option<(Receiver<Vec<u8>>, JoinHandle<()>)>;
+/// EOF signal, the shared live capture buffer, plus the thread handle (kept
+/// only so it can be deliberately leaked when the drain grace expires).
+type StreamReader = Option<(Receiver<()>, Arc<Mutex<Vec<u8>>>, JoinHandle<()>)>;
 
 /// Move `stream` into a reader thread that accumulates at most `capture_cap`
-/// bytes and hands them over through a channel at EOF.
+/// bytes into a shared live buffer and signals EOF through a channel.
 ///
 /// Once the cap is reached the thread keeps draining the pipe but discards
 /// everything beyond it: memory stays bounded while the child is never blocked
@@ -609,15 +610,19 @@ type StreamReader = Option<(Receiver<Vec<u8>>, JoinHandle<()>)>;
 fn spawn_stream_reader(
     mut stream: impl Read + Send + 'static,
     capture_cap: usize,
-) -> (Receiver<Vec<u8>>, JoinHandle<()>) {
+) -> (Receiver<()>, Arc<Mutex<Vec<u8>>>, JoinHandle<()>) {
     let (tx, rx) = std::sync::mpsc::channel();
+    let shared = Arc::new(Mutex::new(Vec::new()));
+    let shared_cloned = Arc::clone(&shared);
     let handle = std::thread::spawn(move || {
-        let mut buf = Vec::new();
         let mut chunk = [0_u8; 8192];
         loop {
             match stream.read(&mut chunk) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
+                    let mut buf = shared_cloned
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     let room = capture_cap.saturating_sub(buf.len());
                     if room > 0 {
                         buf.extend_from_slice(&chunk[..std::cmp::min(n, room)]);
@@ -625,9 +630,9 @@ fn spawn_stream_reader(
                 }
             }
         }
-        let _ = tx.send(buf); // the receiving side may already be gone; harmless
+        let _ = tx.send(()); // the receiving side may already be gone; harmless
     });
-    (rx, handle)
+    (rx, shared, handle)
 }
 
 /// Boundedly wait for one reader thread to reach EOF into `out`.
@@ -638,14 +643,22 @@ fn spawn_stream_reader(
 /// code path can block indefinitely. Any captured bytes are moved into `out`.
 fn drain_reader(stream: &mut StreamReader, grace: Duration, out: &mut Vec<u8>) -> bool {
     match stream.take() {
-        Some((rx, handle)) => {
+        Some((rx, shared, handle)) => {
             let closed = rx.recv_timeout(grace);
-            if let Ok(buf) = closed {
-                *out = buf;
+            if closed.is_ok() {
+                let mut buf = shared
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                *out = std::mem::take(&mut *buf);
                 false
             } else {
                 // Grace expired (or the sender vanished unread): leak the
-                // thread on purpose rather than blocking or aborting.
+                // thread on purpose rather than blocking or aborting, but
+                // preserve the partial capture accumulated so far.
+                let mut buf = shared
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                *out = std::mem::take(&mut *buf);
                 std::mem::forget(handle);
                 true
             }
