@@ -147,7 +147,10 @@ impl From<ExecutorError> for AgentError {
 /// Wraps one [`ProviderExecutor`] reference and the workspace root that bounds
 /// [`ToolRegistry`] filesystem access. The runner is reusable across runs; it
 /// owns no conversation state between [`Self::run`] calls and performs no
-/// persistence, approval gating, or cancellation (later tasks).
+/// persistence. Governance (pause/resume, budgets, cancellation) and approval
+/// gating are applied only when a [`RunControl`] or [`ApprovalGate`] is
+/// attached; otherwise the loop keeps the exact deterministic pre-3.2/4.1
+/// behaviour.
 pub(crate) struct AgentRunner<'a> {
     executor: &'a dyn ProviderExecutor,
     workspace_root: PathBuf,

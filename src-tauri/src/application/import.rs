@@ -215,10 +215,7 @@ fn validate_message(message: &ImportMessage, index: usize, conversation_id: i64)
     }
     ensure_valid(
         message.created_at > 0,
-        format!(
-            "{} created_at must be a positive integer",
-            field("created_at")
-        ),
+        format!("{} created_at must be a positive integer", field("created_at")),
     )
 }
 
@@ -300,9 +297,7 @@ impl<'a> ImportService<'a> {
                 // Keep the reference only when it resolves to a local provider;
                 // otherwise store NULL so the FK check is satisfied and the
                 // "valid or NULL" invariant (DATABASE.md §13) holds.
-                let provider_id = message
-                    .provider_id
-                    .filter(|id| valid_providers.contains(id));
+                let provider_id = message.provider_id.filter(|id| valid_providers.contains(id));
                 MessageRepository::create_with_timestamps(
                     tx,
                     conversation_id,
@@ -398,6 +393,7 @@ impl From<DatabaseError> for ImportError {
         Self::Database(err)
     }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -508,6 +504,7 @@ mod tests {
             .expect("conversation exists")
     }
 
+
     #[test]
     fn import_creates_new_conversation_and_messages_with_new_ids() {
         let db = test_db();
@@ -595,7 +592,7 @@ mod tests {
         assert_eq!(contents, vec!["first", "second", "third"]);
     }
 
-    #[test]
+#[test]
     fn import_nulls_provider_reference_without_a_local_provider() {
         let db = test_db();
         // Referenced provider does not exist locally.
@@ -673,7 +670,7 @@ mod tests {
         assert_eq!(before_conversation, after_conversation);
         assert_eq!(before_messages, after_messages);
     }
-    /// Count rows in `conversations`, used to assert an import wrote nothing.
+/// Count rows in `conversations`, used to assert an import wrote nothing.
     fn conversation_count(db: &Database) -> i64 {
         let conn = db.lock().expect("lock connection");
         conn.query_row("SELECT COUNT(*) FROM conversations", [], |row| row.get(0))
@@ -720,10 +717,7 @@ mod tests {
         })
         .to_string();
         let err = service.import(&json).expect_err("unsupported version");
-        assert!(matches!(
-            err,
-            ImportError::UnsupportedVersion { version: 2 }
-        ));
+        assert!(matches!(err, ImportError::UnsupportedVersion { version: 2 }));
         assert_eq!(conversation_count(&db), 0);
     }
 
@@ -792,15 +786,7 @@ mod tests {
             conversation(id),
             vec![
                 message(id, 1, "user", "ok", None, None, 1),
-                message(
-                    id,
-                    2,
-                    "assistant",
-                    "this content is far too long to fit",
-                    None,
-                    None,
-                    2,
-                ),
+                message(id, 2, "assistant", "this content is far too long to fit", None, None, 2),
             ],
         );
 

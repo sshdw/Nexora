@@ -33,12 +33,12 @@
 //! unchanged to the FTS index; a malformed FTS expression surfaces as a
 //! classified [`SearchError::Database`], never a panic.
 
+use serde::Serialize;
 use crate::infrastructure::database::{Database, DatabaseError};
 use crate::infrastructure::repository::conversations::Conversation;
 use crate::infrastructure::repository::messages::Message;
 use crate::infrastructure::repository::prompts::Prompt;
 use crate::infrastructure::repository::search::SearchRepository;
-use serde::Serialize;
 
 /// Application-layer result shared by local-search operations, unifying
 /// persistence and query failures.
@@ -399,7 +399,10 @@ mod tests {
         // A trailing wildcard stays outside the quotes (prefix search).
         assert_eq!(sanitize_fts_query("run*"), "\"run\"*");
         // Embedded quotes are doubled; bare wildcard-only tokens are dropped.
-        assert_eq!(sanitize_fts_query("say \"hi\" *"), "\"say\" \"\"\"hi\"\"\"");
+        assert_eq!(
+            sanitize_fts_query("say \"hi\" *"),
+            "\"say\" \"\"\"hi\"\"\""
+        );
         assert_eq!(sanitize_fts_query("* ** *"), "");
     }
 
@@ -448,7 +451,9 @@ mod tests {
         // Implicit AND across tokens, as before sanitization existed.
         let results = service.search("launch strategy").expect("search succeeds");
         assert_eq!(results.message_matches.len(), 1);
-        let results = service.search("launch unrelated").expect("search succeeds");
+        let results = service
+            .search("launch unrelated")
+            .expect("search succeeds");
         assert!(results.message_matches.is_empty());
 
         // A query containing a double quote is still a valid expression.
@@ -562,9 +567,7 @@ mod tests {
         let service = LocalSearchService::new(&db);
         create_conversation(&db, "Roadmap");
 
-        let results = service
-            .search("\"unterminated")
-            .expect("sanitized query ok");
+        let results = service.search("\"unterminated").expect("sanitized query ok");
         assert!(results.conversations.is_empty());
         assert!(results.message_matches.is_empty());
         assert!(results.prompts.is_empty());

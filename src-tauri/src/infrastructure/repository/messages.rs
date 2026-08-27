@@ -15,10 +15,10 @@
 //! None"). The table has no mutable fields and no `update_at` column, so this
 //! repository exposes no update method.
 
+use serde::Serialize;
 use crate::infrastructure::database::{Database, DatabaseError};
 use crate::infrastructure::repository::{Repository, Result};
 use rusqlite::{params, Error as SqliteError, Transaction};
-use serde::Serialize;
 
 /// A single `messages` row as persisted, mirroring the columns defined by
 /// DATABASE.md §7.2. It is a plain persistence record and carries no
@@ -158,14 +158,7 @@ impl MessageRepository<'_> {
             "INSERT INTO messages
                  (conversation_id, role, content, provider_id, model_name, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                conversation_id,
-                role,
-                content,
-                provider_id,
-                model_name,
-                created_at
-            ],
+            params![conversation_id, role, content, provider_id, model_name, created_at],
         )?;
         Ok(tx.last_insert_rowid())
     }

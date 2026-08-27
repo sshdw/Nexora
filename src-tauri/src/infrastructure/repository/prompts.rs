@@ -11,10 +11,10 @@
 //! higher application layers, and business rules belong to higher layers; none
 //! of that is enforced here.
 
+use serde::Serialize;
 use crate::infrastructure::database::{Database, DatabaseError};
 use crate::infrastructure::repository::{Repository, Result};
 use rusqlite::{params, Error as SqliteError, Transaction};
-use serde::Serialize;
 
 /// A single `prompts` row as persisted, mirroring the columns defined by
 /// DATABASE.md §7.3. It is a plain persistence record carrying the raw stored

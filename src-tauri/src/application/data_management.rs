@@ -357,10 +357,8 @@ mod tests {
 
     fn count(db: &Database, table: &str) -> i64 {
         let conn = db.lock().expect("lock connection");
-        conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
-            row.get(0)
-        })
-        .expect("count rows")
+        conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
+            .expect("count rows")
     }
 
     #[test]
@@ -415,11 +413,7 @@ mod tests {
         // Search still sees the data.
         let search = LocalSearchService::new(&db);
         assert_eq!(
-            search
-                .search("content")
-                .expect("search")
-                .message_matches
-                .len(),
+            search.search("content").expect("search").message_matches.len(),
             1
         );
     }
@@ -447,16 +441,8 @@ mod tests {
         assert!(conversation.is_none());
         // AC-7: the deleted conversation no longer appears in local search.
         let search = LocalSearchService::new(&db);
-        assert!(search
-            .search("strategy")
-            .expect("search")
-            .conversations
-            .is_empty());
-        assert!(search
-            .search("strategy")
-            .expect("search")
-            .message_matches
-            .is_empty());
+        assert!(search.search("strategy").expect("search").conversations.is_empty());
+        assert!(search.search("strategy").expect("search").message_matches.is_empty());
     }
 
     #[test]

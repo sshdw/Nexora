@@ -254,6 +254,20 @@ impl ApprovalGate {
         }
         false
     }
+
+    #[cfg(test)]
+    pub(crate) fn has_pending_for(&self, id: &str) -> bool {
+        let state = self.lock_state();
+        match state.pending.as_ref() {
+            Some(pending) => pending.id == id && pending.decision.is_none(),
+            None => false,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_any_pending(&self) -> bool {
+        self.lock_state().pending.is_some()
+    }
 }
 
 #[cfg(test)]
@@ -267,6 +281,17 @@ mod tests {
             id: id.to_string(),
             name: name.to_string(),
             arguments: "{}".to_string(),
+        }
+    }
+
+    fn wait_until_parked(gate: &ApprovalGate, id: &str) {
+        let start = Instant::now();
+        while !gate.has_pending_for(id) {
+            assert!(
+                start.elapsed() <= Duration::from_secs(2),
+                "timed out waiting for gate to park id={id}"
+            );
+            thread::yield_now();
         }
     }
 
@@ -321,10 +346,9 @@ mod tests {
     fn auto_approved_calls_return_immediately_without_parking() {
         let gate = ApprovalGate::new(AutonomyMode::FullAutonomous);
         let call = tool_call("auto", "read_file");
-        let start = Instant::now();
         let decision = gate.request_approval(&call).expect("auto approved");
         assert_eq!(decision, ApprovalDecision::Approved);
-        assert!(start.elapsed() < Duration::from_millis(100));
+        assert!(!gate.has_any_pending());
         // Semi read also auto.
         let semi = ApprovalGate::new(AutonomyMode::SemiAutonomous);
         let read = tool_call("r", "list_directory");
@@ -332,6 +356,7 @@ mod tests {
             semi.request_approval(&read).expect("auto"),
             ApprovalDecision::Approved
         );
+        assert!(!semi.has_any_pending());
     }
 
     #[test]
@@ -340,11 +365,11 @@ mod tests {
         let call = tool_call("c1", "read_file");
         let gate2 = gate.clone();
         let handle = thread::spawn(move || gate2.request_approval(&call).expect("approved"));
-        // Give the thread time to park.
-        thread::sleep(Duration::from_millis(50));
+        wait_until_parked(&gate, "c1");
         assert!(gate.respond("c1", ApprovalDecision::Approved));
         let decision = handle.join().expect("thread joins");
         assert_eq!(decision, ApprovalDecision::Approved);
+        assert!(!gate.has_any_pending());
     }
 
     #[test]
@@ -353,7 +378,7 @@ mod tests {
         let call = tool_call("c2", "write_file");
         let gate2 = gate.clone();
         let handle = thread::spawn(move || gate2.request_approval(&call).expect("denied"));
-        thread::sleep(Duration::from_millis(50));
+        wait_until_parked(&gate, "c2");
         assert!(gate.respond("c2", ApprovalDecision::Denied));
         let decision = handle.join().expect("join");
         assert_eq!(decision, ApprovalDecision::Denied);
@@ -365,8 +390,9 @@ mod tests {
         let call = tool_call("real", "write_file");
         let gate2 = gate.clone();
         let handle = thread::spawn(move || gate2.request_approval(&call).expect("approved"));
-        thread::sleep(Duration::from_millis(30));
+        wait_until_parked(&gate, "real");
         assert!(!gate.respond("wrong_id", ApprovalDecision::Approved));
+        assert!(gate.has_pending_for("real"));
         // Still parked, now respond correctly.
         assert!(gate.respond("real", ApprovalDecision::Approved));
         let decision = handle.join().expect("join");
@@ -379,7 +405,7 @@ mod tests {
         let call = tool_call("wait", "execute_command");
         let gate2 = gate.clone();
         let handle = thread::spawn(move || gate2.request_approval(&call));
-        thread::sleep(Duration::from_millis(50));
+        wait_until_parked(&gate, "wait");
         gate.cancel();
         let res = handle.join().expect("join");
         assert!(res.is_err(), "cancellation must abort with Err");
@@ -401,7 +427,7 @@ mod tests {
         let call = tool_call("shared", "read_file");
         let gate2 = gate.clone();
         let handle = thread::spawn(move || gate2.request_approval(&call));
-        thread::sleep(Duration::from_millis(50));
+        wait_until_parked(&gate, "shared");
         // Cancelling via the shared token (as RunControl::cancel does) must wake.
         token.cancel();
         let res = handle.join().expect("join");
@@ -418,7 +444,7 @@ mod tests {
         let call = tool_call("x", "write_file");
         let gate2 = gate_clone.clone();
         let handle = thread::spawn(move || gate2.request_approval(&call));
-        thread::sleep(Duration::from_millis(30));
+        wait_until_parked(&gate, "x");
         token.cancel();
         let res = handle.join().expect("join");
         assert!(res.is_err());
@@ -441,14 +467,11 @@ mod tests {
         gate.set_mode(AutonomyMode::Supervised);
         let call = tool_call("park", "write_file");
         let handle = thread::spawn(move || gate2.request_approval(&call).expect("approved"));
-        thread::sleep(Duration::from_millis(30));
+        wait_until_parked(&gate, "park");
         // Switch mode while parked: should not resolve pending.
         gate.set_mode(AutonomyMode::FullAutonomous);
-        thread::sleep(Duration::from_millis(30));
-        assert!(
-            !handle.is_finished(),
-            "mode switch must not auto-resolve"
-        );
+        assert!(!handle.is_finished(), "mode switch must not auto-resolve");
+        assert!(gate.has_pending_for("park"));
         assert!(gate.respond("park", ApprovalDecision::Approved));
         let decision = handle.join().expect("join");
         assert_eq!(decision, ApprovalDecision::Approved);
@@ -465,7 +488,7 @@ mod tests {
         gate.set_mode(AutonomyMode::Supervised);
         let g2 = gate.clone();
         let h = thread::spawn(move || g2.request_approval(&call).expect("ok"));
-        thread::sleep(Duration::from_millis(30));
+        wait_until_parked(&gate, "c");
         assert!(other.respond("c", ApprovalDecision::Denied));
         assert_eq!(h.join().unwrap(), ApprovalDecision::Denied);
     }
