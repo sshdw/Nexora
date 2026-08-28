@@ -14,8 +14,9 @@
 //!
 //! Business-table migrations materialize the DATABASE.md schema (§7–§11) via
 //! [`MIGRATIONS`]: the base tables and their functional indexes (v1), the FTS5
-//! search indexes and their synchronization triggers (v2), and the
-//! `updated_at` maintenance triggers (v3).
+//! search indexes and their synchronization triggers (v2), the
+//! `updated_at` maintenance triggers (v3), and the agent run persistence
+//! tables `agent_runs` / `agent_steps` (v4, Task 4.2).
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -89,6 +90,10 @@ impl From<rusqlite::Error> for DatabaseError {
 ///   command is unsupported for these regular content-storing tables.
 /// - v3: the `updated_at` maintenance triggers (§11) for `conversations`
 ///   (title/status) and `prompts` (title/content).
+/// - v4: the agent run persistence tables `agent_runs` (§7.8) and
+///   `agent_steps` (§7.9) with their columns, defaults, CHECK constraints,
+///   foreign keys (§9), `UNIQUE(run_id, seq)`, and functional indexes (§8) —
+///   agent roadmap, Task 4.2.
 pub(crate) const MIGRATIONS: &[(i64, &str)] = &[
     // v1 — base tables and functional indexes (DATABASE.md §7, §8).
     (
@@ -246,6 +251,59 @@ BEGIN
 END;
 ",
     ),
+    // v4 — agent run persistence tables (DATABASE.md §7.8, §7.9; agent
+    // roadmap, Task 4.2). One `agent_runs` row per opt-in-persisted agent
+    // run; append-only `agent_steps` rows for each model turn, tool call,
+    // and parked approval decision. `conversation_id` is NULL until the
+    // Task 5.1 IPC layer wires runs to conversations; the column and its
+    // CASCADE exist from this migration so the privacy doctrine holds from
+    // day one (D50). Model names are never credentials (DATABASE.md §14).
+    (
+        4,
+        r"CREATE TABLE agent_runs (
+    id INTEGER PRIMARY KEY CHECK (id > 0),
+    conversation_id INTEGER
+        CHECK (conversation_id IS NULL OR conversation_id > 0)
+        REFERENCES conversations (id) ON DELETE CASCADE,
+    model TEXT NOT NULL CHECK (length(model) > 0),
+    mode TEXT NOT NULL
+        CHECK (mode IN ('supervised', 'semi_autonomous', 'full_autonomous')),
+    status TEXT NOT NULL DEFAULT 'running'
+        CHECK (status IN ('running', 'completed', 'cancelled', 'budget_exhausted', 'error')),
+    started_at INTEGER NOT NULL DEFAULT (unixepoch()) CHECK (started_at > 0),
+    finished_at INTEGER CHECK (finished_at IS NULL OR finished_at > 0),
+    total_steps INTEGER NOT NULL DEFAULT 0 CHECK (total_steps >= 0),
+    final_content TEXT,
+    error TEXT
+);
+
+CREATE TABLE agent_steps (
+    id INTEGER PRIMARY KEY CHECK (id > 0),
+    run_id INTEGER NOT NULL
+        CHECK (run_id > 0)
+        REFERENCES agent_runs (id) ON DELETE CASCADE,
+    seq INTEGER NOT NULL CHECK (seq >= 1),
+    kind TEXT NOT NULL CHECK (kind IN ('model_turn', 'tool_call', 'approval')),
+    tool_name TEXT CHECK (tool_name IS NULL OR length(tool_name) > 0),
+    arguments TEXT,
+    observation TEXT,
+    status TEXT
+        CHECK (status IS NULL OR status IN ('succeeded', 'failed', 'denied', 'cancelled')),
+    started_at INTEGER NOT NULL DEFAULT (unixepoch()) CHECK (started_at > 0),
+    duration_ms INTEGER CHECK (duration_ms IS NULL OR duration_ms >= 0),
+    UNIQUE (run_id, seq)
+);
+
+CREATE INDEX idx_agent_steps_run_seq
+    ON agent_steps (run_id, seq);
+
+CREATE INDEX idx_agent_runs_conversation
+    ON agent_runs (conversation_id);
+
+CREATE INDEX idx_agent_runs_started
+    ON agent_runs (started_at);
+",
+    ),
 ];
 
 /// Open the `SQLite` database at `path`, apply connection pragmas, and run any
@@ -372,6 +430,17 @@ impl Database {
     }
 }
 
+/// Open an in-memory database with production pragmas and the full migration
+/// set applied. Test-only convenience for modules that exercise persistence
+/// against the documented schema without the Tauri runtime.
+#[cfg(test)]
+pub(crate) fn in_memory_database() -> Database {
+    let mut conn = Connection::open_in_memory().expect("open in-memory database");
+    configure(&conn).expect("configure in-memory connection");
+    migrate(&mut conn).expect("apply migrations");
+    Database::new(conn)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,6 +487,8 @@ mod tests {
         let conn = in_memory_migrated();
 
         for table in [
+            "agent_runs",
+            "agent_steps",
             "app_settings",
             "attachments",
             "conversations",
@@ -437,6 +508,9 @@ mod tests {
             );
         }
         for index in [
+            "idx_agent_runs_conversation",
+            "idx_agent_runs_started",
+            "idx_agent_steps_run_seq",
             "idx_attachments_conversation",
             "idx_attachments_message",
             "idx_conversations_status_updated",
@@ -467,14 +541,14 @@ mod tests {
             );
         }
 
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3]);
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4]);
     }
 
     #[test]
     fn migration_state_is_recorded_correctly() {
         let conn = in_memory_migrated();
 
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3]);
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4]);
 
         let applied_at: i64 = conn
             .query_row(
@@ -488,17 +562,17 @@ mod tests {
         let version_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .expect("count schema_version rows");
-        assert_eq!(version_count, 3, "one row per applied migration");
+        assert_eq!(version_count, 4, "one row per applied migration");
     }
 
     #[test]
     fn re_running_migrations_is_a_no_op() {
         let mut conn = in_memory_migrated();
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3]);
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4]);
 
         migrate(&mut conn).expect("a second migration run must succeed");
 
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3]);
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4]);
         // The no-op run created or dropped nothing.
         assert!(schema_object_exists(&conn, "conversations", "table"));
         assert!(schema_object_exists(&conn, "conversations_fts", "table"));
@@ -527,7 +601,7 @@ mod tests {
             !schema_object_exists(&conn, "partial_table", "table"),
             "the valid part of the failed migration must roll back"
         );
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3]);
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4]);
     }
 
     #[test]
@@ -909,6 +983,204 @@ mod tests {
         assert!(
             updated_at > created_at,
             "rename must refresh updated_at through the trigger"
+        );
+    }
+    // -----------------------------------------------------------------------
+    // Agent run persistence (DATABASE.md §7.8, §7.9; Task 4.2)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn agent_run_tables_enforce_foreign_keys_and_cascades() {
+        let db = in_memory_database();
+        let conn = db.lock().expect("lock connection");
+
+        // A step must belong to an existing run.
+        let orphan_step = conn.execute(
+            "INSERT INTO agent_steps (run_id, seq, kind) VALUES (999, 1, 'model_turn')",
+            [],
+        );
+        assert!(orphan_step.is_err(), "orphan agent_steps must be rejected");
+
+        // A run must belong to an existing conversation when linked.
+        let orphan_run = conn.execute(
+            "INSERT INTO agent_runs (conversation_id, model, mode) \
+             VALUES (999, 'm', 'supervised')",
+            [],
+        );
+        assert!(orphan_run.is_err(), "orphan agent_runs must be rejected");
+
+        // conversation_id = NULL is allowed until the Task 5.1 IPC layer
+        // wires runs to conversations (DATABASE.md §7.8).
+        conn.execute(
+            "INSERT INTO agent_runs (model, mode) VALUES ('m', 'supervised')",
+            [],
+        )
+        .expect("NULL conversation_id run accepted");
+        let run_id = conn.last_insert_rowid();
+
+        for seq in 1..=2 {
+            conn.execute(
+                "INSERT INTO agent_steps (run_id, seq, kind, tool_name) \
+                 VALUES (?1, ?2, 'tool_call', 'write_file')",
+                params![run_id, seq],
+            )
+            .expect("append step");
+        }
+
+        // Deleting a run cascades to its steps (DATABASE.md §7.8, §9).
+        conn.execute("DELETE FROM agent_runs WHERE id = ?1", [run_id])
+            .expect("delete run");
+        let steps_left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM agent_steps", [], |row| row.get(0))
+            .expect("count steps after run cascade");
+        assert_eq!(steps_left, 0, "run delete cascades steps");
+    }
+
+    #[test]
+    fn deleting_a_conversation_cascades_agent_runs_and_steps() {
+        let db = in_memory_database();
+        let conn = db.lock().expect("lock connection");
+
+        conn.execute("INSERT INTO conversations (title) VALUES ('c')", [])
+            .expect("insert conversation");
+        let conv_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO agent_runs (conversation_id, model, mode) \
+             VALUES (?1, 'm', 'supervised')",
+            [conv_id],
+        )
+        .expect("linked run accepted");
+        let run_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO agent_steps (run_id, seq, kind) VALUES (?1, 1, 'model_turn')",
+            [run_id],
+        )
+        .expect("append step");
+
+        // D50 privacy doctrine: removing a conversation atomically removes
+        // its agent runs and, through them, their steps (DATABASE.md §9).
+        conn.execute("DELETE FROM conversations WHERE id = ?1", [conv_id])
+            .expect("delete conversation");
+        let runs_left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row.get(0))
+            .expect("count runs after conversation cascade");
+        let steps_left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM agent_steps", [], |row| row.get(0))
+            .expect("count steps after conversation cascade");
+        assert_eq!(runs_left, 0, "conversation delete cascades agent runs");
+        assert_eq!(steps_left, 0, "conversation delete cascades agent steps");
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn agent_tables_enforce_documented_check_constraints() {
+        let db = in_memory_database();
+        let conn = db.lock().expect("lock connection");
+
+        conn.execute(
+            "INSERT INTO agent_runs (model, mode) VALUES ('m', 'supervised')",
+            [],
+        )
+        .expect("baseline run accepted");
+        let run_id = conn.last_insert_rowid();
+
+        // agent_runs: non-empty model, mode enumeration, run status
+        // enumeration, positive timestamps, non-negative totals.
+        assert!(
+            conn.execute(
+                "INSERT INTO agent_runs (model, mode) VALUES ('', 'supervised')",
+                [],
+            )
+            .is_err(),
+            "empty model must be rejected"
+        );
+        assert!(
+            conn.execute(
+                "INSERT INTO agent_runs (model, mode) VALUES ('m', 'chaos')",
+                [],
+            )
+            .is_err(),
+            "unknown mode must be rejected"
+        );
+        assert!(
+            conn.execute(
+                "UPDATE agent_runs SET status = 'warp' WHERE id = ?1",
+                [run_id],
+            )
+            .is_err(),
+            "unknown run status must be rejected"
+        );
+        assert!(
+            conn.execute(
+                "UPDATE agent_runs SET total_steps = -1 WHERE id = ?1",
+                [run_id],
+            )
+            .is_err(),
+            "negative total_steps must be rejected"
+        );
+        assert!(
+            conn.execute(
+                "UPDATE agent_runs SET finished_at = 0 WHERE id = ?1",
+                [run_id],
+            )
+            .is_err(),
+            "non-positive finished_at must be rejected"
+        );
+        assert!(
+            conn.execute(
+                "UPDATE agent_runs SET started_at = 0 WHERE id = ?1",
+                [run_id],
+            )
+            .is_err(),
+            "non-positive started_at must be rejected"
+        );
+
+        // agent_steps: kind enumeration, seq >= 1, step status enumeration,
+        // non-empty tool_name, non-negative duration_ms.
+        let step_base = "INSERT INTO agent_steps (run_id, seq, kind) VALUES (?1, ?2, ?3)";
+        conn.execute(step_base, params![run_id, 1, "model_turn"])
+            .expect("valid step accepted");
+        assert!(
+            conn.execute(step_base, params![run_id, 2, "divination"])
+                .is_err(),
+            "unknown step kind must be rejected"
+        );
+        assert!(
+            conn.execute(step_base, params![run_id, 0, "model_turn"])
+                .is_err(),
+            "seq < 1 must be rejected"
+        );
+        let duplicate = conn.execute(step_base, params![run_id, 1, "tool_call"]);
+        assert!(
+            duplicate.is_err(),
+            "UNIQUE(run_id, seq) must reject a duplicate seq"
+        );
+        assert!(
+            conn.execute(
+                "INSERT INTO agent_steps (run_id, seq, kind, status) \
+                 VALUES (?1, 2, 'tool_call', 'transcended')",
+                [run_id],
+            )
+            .is_err(),
+            "unknown step status must be rejected"
+        );
+        assert!(
+            conn.execute(
+                "INSERT INTO agent_steps (run_id, seq, kind, tool_name) \
+                 VALUES (?1, 3, 'tool_call', '')",
+                [run_id],
+            )
+            .is_err(),
+            "empty tool_name must be rejected"
+        );
+        assert!(
+            conn.execute(
+                "INSERT INTO agent_steps (run_id, seq, kind, duration_ms) \
+                 VALUES (?1, 4, 'tool_call', -5)",
+                [run_id],
+            )
+            .is_err(),
+            "negative duration_ms must be rejected"
         );
     }
 }

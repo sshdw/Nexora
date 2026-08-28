@@ -27,6 +27,7 @@ use rusqlite::{Connection, Transaction};
 
 use super::database::{Database, DatabaseError};
 
+pub mod agent_runs;
 pub mod attachments;
 pub mod conversations;
 pub mod messages;

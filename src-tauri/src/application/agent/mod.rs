@@ -16,8 +16,14 @@
 //!   (`approval::ApprovalGate`) that decides per tool risk class and
 //!   [`approval::AutonomyMode`] whether a call executes automatically or
 //!   parks until the user approves or denies it.
+//! - Task 4.2 — Agent Run Persistence ([`persistence`]): the opt-in run
+//!   recorder (`persistence::RunRecorder`) that persists one `agent_runs`
+//!   row and append-only `agent_steps` rows (DATABASE.md §7.8, §7.9) when —
+//!   and only when — it is attached to the runner; without a recorder the
+//!   loop keeps the exact pre-4.2 behaviour.
 
 pub mod approval;
 pub mod control;
+pub mod persistence;
 pub mod runner;
 pub mod tools;

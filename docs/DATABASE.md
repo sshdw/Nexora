@@ -78,6 +78,8 @@ Migrations follow a forward-only, incremental philosophy. Each migration is atom
 | **Provider** | User | Added, removed | Referenced by Message |
 | **AppSetting** | Application | Updated throughout use | Standalone |
 | **SchemaVersion** | Application | Inserted during migrations | Standalone |
+| **AgentRun** | Application | Created at agent run start, finalized at run termination | 1:N AgentStep; N:1 Conversation (optional) |
+| **AgentStep** | AgentRun | Appended during the run, immutable after insertion | N:1 AgentRun |
 
 ---
 
@@ -253,6 +255,64 @@ Migrations follow a forward-only, incremental philosophy. Each migration is atom
 | version | Migration number | INTEGER | NO | None | `version > 0` | None | PK | Implementation Decision. |
 | applied_at | Application timestamp | INTEGER | NO | Current Unix timestamp | `applied_at > 0` | None | No | Implementation Decision. |
 
+### 7.8 agent_runs
+
+**Purpose:** Persists an agent run (the multi-step ReAct loop with governance) when opt-in persistence is attached to the runner. One row per run.  
+**Related FR:** None (agent roadmap, Task 4.2; D12)
+
+**CRUD:**
+- **Create:** `INSERT` at run start with `status = 'running'` (only when a run recorder is attached).
+- **Read:** `SELECT` by `id`; `SELECT` ordered by `started_at` for run history; `SELECT` by `conversation_id` for the runs of one conversation.
+- **Update:** Terminal fields only — `status`, `finished_at`, `total_steps`, `final_content`, `error` — at run termination.
+- **Delete:** `DELETE` by `id`. Cascades to agent_steps.
+
+**Deletion Behavior:** Hard delete. Application-managed (no user UI in Task 4.2). `ON DELETE CASCADE` to agent_steps; also cascade-deleted when its conversation is removed (optional link, D50 privacy doctrine).  
+**Rationale:** A run and its step records form a single unit of deletion (D12); a conversation and its agent history form a single unit of privacy (Nexora privacy doctrine, D50).
+
+| Field | Purpose | Type | Nullable | Default | CHECK | FK | UNIQUE | Traceability |
+|-------|---------|------|----------|---------|-------|-----|--------|--------------|
+| id | Surrogate primary key | INTEGER | NO | SQLite INTEGER PRIMARY KEY | `id > 0` | None | PK | Implementation Decision. |
+| conversation_id | Owning conversation (NULL until the M5 IPC layer wires runs to conversations) | INTEGER | YES | NULL | None | conversations.id | No | Agent roadmap (Task 4.2). `ON DELETE CASCADE`. |
+| model | Provider model name for the run | TEXT | NO | None | `length(model) > 0` | None | No | Agent roadmap (Task 4.2). Never a credential. |
+| mode | Autonomy mode at run start | TEXT | NO | None | `mode IN ('supervised', 'semi_autonomous', 'full_autonomous')` | None | No | Agent roadmap (Task 4.2). |
+| status | Run state | TEXT | NO | `'running'` | `status IN ('running', 'completed', 'cancelled', 'budget_exhausted', 'error')` | None | No | Agent roadmap (Task 4.2). |
+| started_at | Start timestamp | INTEGER | NO | Current Unix timestamp | `started_at > 0` | None | No | Implementation Decision. |
+| finished_at | Termination timestamp | INTEGER | YES | NULL | `finished_at > 0` | None | No | Agent roadmap (Task 4.2). |
+| total_steps | Number of recorded steps | INTEGER | NO | 0 | `total_steps >= 0` | None | No | D12. |
+| final_content | Final assistant text (terminal `completed` only) | TEXT | YES | NULL | None | None | No | Agent roadmap (Task 4.2). |
+| error | Classified error text (terminal `error` only) | TEXT | YES | NULL | None | None | No | Agent roadmap (Task 4.2). |
+
+**Implementation Note:** `conversation_id` is stored as NULL until the Task 5.1 IPC layer begins passing the owning conversation to the runner (D50). The column and its CASCADE exist from this migration so the privacy doctrine holds from day one.
+
+---
+
+### 7.9 agent_steps
+
+**Purpose:** Structured step records of an agent run (D12): one row per model turn marker, per tool call, and per parked approval decision.  
+**Related FR:** None (agent roadmap, Task 4.2; D12)
+
+**CRUD:**
+- **Create:** `INSERT` (append) during the run, in step order, only when a run recorder is attached.
+- **Read:** `SELECT` by `run_id` ordered by `seq`.
+- **Update:** None. Immutable after insertion.
+- **Delete:** Only via `ON DELETE CASCADE` from agent_runs.
+
+**Deletion Behavior:** Never deleted directly. `ON DELETE CASCADE` from agent_runs.  
+**Rationale:** Step records exist only while their run exists (D12).
+
+| Field | Purpose | Type | Nullable | Default | CHECK | FK | UNIQUE | Traceability |
+|-------|---------|------|----------|---------|-------|-----|--------|--------------|
+| id | Surrogate primary key | INTEGER | NO | SQLite INTEGER PRIMARY KEY | `id > 0` | None | PK | Implementation Decision. |
+| run_id | Owning run | INTEGER | NO | None | None | agent_runs.id | No | D12. `ON DELETE CASCADE`. |
+| seq | 1-based step sequence within the run | INTEGER | NO | None | `seq >= 1` | None | No (with run_id) | D12. `UNIQUE(run_id, seq)`. |
+| kind | Step kind | TEXT | NO | None | `kind IN ('model_turn', 'tool_call', 'approval')` | None | No | D12. |
+| tool_name | Tool name (tool_call / approval) | TEXT | YES | NULL | `length(tool_name) > 0` | None | No | Agent roadmap (Task 4.2). |
+| arguments | Raw JSON arguments exactly as provider-supplied | TEXT | YES | NULL | None | None | No | Agent roadmap (Task 4.2). |
+| observation | Tool output / denial text / approval decision | TEXT | YES | NULL | None | None | No | Agent roadmap (Task 4.2). |
+| status | Tool call outcome | TEXT | YES | NULL | `status IN ('succeeded', 'failed', 'denied', 'cancelled')` | None | No | Agent roadmap (Task 4.2). |
+| started_at | Step start timestamp | INTEGER | NO | Current Unix timestamp | `started_at > 0` | None | No | Implementation Decision. |
+| duration_ms | Step duration in milliseconds | INTEGER | YES | NULL | `duration_ms >= 0` | None | No | D12. |
+
 ---
 
 ## 8. INDEXES
@@ -264,6 +324,9 @@ Migrations follow a forward-only, incremental philosophy. Each migration is atom
 | `message_id` | attachments | `SELECT * FROM attachments WHERE message_id = ?` | Load historical attachments for a message. | FR-008 |
 | `status`, `updated_at` | conversations | `SELECT * FROM conversations WHERE status = 'active' ORDER BY updated_at DESC` | List active conversations by recency. | FR-006 |
 | `name` | providers | `SELECT * FROM providers WHERE name = ?` | Resolve provider by internal name for keyring lookup. | FR-004, FR-014 |
+| `run_id`, `seq` | agent_steps | `SELECT * FROM agent_steps WHERE run_id = ? ORDER BY seq` | Ordered step retrieval for a run. | Agent roadmap (Task 4.2). |
+| `conversation_id` | agent_runs | `SELECT * FROM agent_runs WHERE conversation_id = ? ORDER BY started_at DESC` | List the agent runs of one conversation (M5). | Agent roadmap (Task 4.2). |
+| `started_at` | agent_runs | `SELECT * FROM agent_runs ORDER BY started_at DESC` | Run history listing by recency. | Agent roadmap (Task 4.2). |
 
 ---
 
@@ -275,6 +338,8 @@ Migrations follow a forward-only, incremental philosophy. Each migration is atom
 | messages | provider_id | providers | id | SET NULL | Provider removal (FR-014) must not destroy message history (FR-005). The provider reference is cleared. |
 | attachments | conversation_id | conversations | id | CASCADE | Attachments belong to the conversation context. Removed with the conversation per FR-013. |
 | attachments | message_id | messages | id | CASCADE | When a message is deleted, its linked attachments are removed. Draft attachments (`message_id IS NULL`) are unaffected by message deletion, but are removed via `conversation_id` CASCADE when the conversation is deleted. |
+| agent_runs | conversation_id | conversations | id | CASCADE | Optional link: a run may not yet be tied to a conversation (NULL until Task 5.1). Removing a conversation atomically removes its agent runs (Nexora privacy doctrine, D50). |
+| agent_steps | run_id | agent_runs | id | CASCADE | Step records are part of the run (D12). Removing a run atomically removes its steps. |
 
 ---
 
