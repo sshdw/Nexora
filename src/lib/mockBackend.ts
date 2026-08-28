@@ -67,17 +67,17 @@ const supported = [
   {
     name: "openai",
     display_name: "OpenAI",
-    models: ["gpt-5.2", "gpt-5.2-mini", "o5-pro"],
+    models: ["gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-sol"],
   },
   {
     name: "anthropic",
     display_name: "Anthropic",
-    models: ["claude-opus-4.6", "claude-sonnet-4.5", "claude-haiku-4.5"],
+    models: ["claude-sonnet-5", "claude-haiku-4-5-20251001", "claude-opus-4-8"],
   },
   {
     name: "gemini",
     display_name: "Gemini",
-    models: ["gemini-3.6-flash", "gemini-3.6-pro", "gemini-3.1-ultra"],
+    models: ["gemini-3.6-flash", "gemini-3.1-flash-lite", "gemini-3.1-pro-preview"],
   },
 ];
 
