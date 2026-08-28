@@ -49,6 +49,7 @@ use crate::application::execution::{
 use crate::application::execution::AiAttachment;
 
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 /// Anthropic's Messages endpoint.
 const ENDPOINT: &str = "https://api.anthropic.com/v1/messages";
@@ -123,7 +124,13 @@ impl AnthropicExecutor {
     /// classified [`AnthropicError`] describing the failure category.
     fn run(&self, request: &AiRequest, credential: &str) -> Result<AiResponse, AnthropicError> {
         let body = anthropic_request(request);
-        let response = send(&self.client, &self.endpoint, credential, &body)?;
+        let response = send(
+            &self.client,
+            &self.endpoint,
+            credential,
+            &body,
+            request.request_timeout,
+        )?;
         to_ai_response(response)
     }
 }
@@ -148,6 +155,10 @@ impl ProviderExecutor for AnthropicExecutor {
 /// `system` is a top-level Anthropic-specific parameter and is omitted (via
 /// `skip_serializing_if`) when no system message is present, so the wire shape
 /// matches Anthropic's contract in both cases.
+///
+/// `tools` carries Anthropic-native tool definitions (`name`/`description`/
+/// `input_schema`) only when `AiRequest.tools` is non-empty; an empty list is
+/// omitted entirely to keep the wire payload byte-compatible with plain chat.
 #[derive(Debug, Serialize)]
 struct AnthropicRequest {
     model: String,
@@ -155,6 +166,19 @@ struct AnthropicRequest {
     messages: Vec<AnthropicMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     system: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    tools: Vec<AnthropicWireTool>,
+}
+
+/// Anthropic-native tool definition (Messages `tools` array).
+///
+/// Mirrors the Anthropic wire contract:
+/// `{ "name", "description", "input_schema": <JSON Schema> }`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct AnthropicWireTool {
+    name: String,
+    description: String,
+    input_schema: serde_json::Value,
 }
 
 /// One Anthropic chat message. Only `user` and `assistant` roles are valid
@@ -229,11 +253,21 @@ fn anthropic_request(request: &AiRequest) -> AnthropicRequest {
             content: anthropic_content(message),
         })
         .collect();
+    let tools: Vec<AnthropicWireTool> = request
+        .tools
+        .iter()
+        .map(|tool| AnthropicWireTool {
+            name: tool.name.clone(),
+            description: tool.description.clone(),
+            input_schema: tool.parameters.clone(),
+        })
+        .collect();
     AnthropicRequest {
         model: request.model.clone(),
         max_tokens: DEFAULT_MAX_TOKENS,
         messages,
         system,
+        tools,
     }
 }
 
@@ -304,34 +338,72 @@ struct AnthropicResponse {
     content: Vec<ContentBlock>,
 }
 
-/// One content block from an Anthropic response. Non-streaming text
-/// completions produce `text` blocks; the `type` discriminator is preserved so
-/// only `text` blocks are extracted.
+/// One content block from an Anthropic response.
+///
+/// Non-streaming completions produce `text` blocks (`{type:"text", text:"..."}`)
+/// and tool invocations produce `tool_use` blocks
+/// (`{type:"tool_use", id, name, input}`); unknown block types are ignored.
+/// The `type` discriminator is preserved so extraction can dispatch by kind.
 #[derive(Debug, Deserialize)]
 struct ContentBlock {
     #[serde(rename = "type")]
     kind: String,
     text: Option<String>,
+    id: Option<String>,
+    name: Option<String>,
+    input: Option<serde_json::Value>,
 }
 
 /// Normalize a successful Anthropic response into the provider-independent
 /// [`AiResponse`].
 ///
-/// The assistant's text is taken from the first `text` content block. If the
-/// response contains no extractable text (empty `content`, no `text` block, or
-/// a block missing `text`), this returns [`AnthropicError::UnexpectedResponse`]
+/// Text blocks are concatenated in wire order to produce `AiResponse.content`;
+/// `tool_use` blocks map in order to `AiResponse.tool_calls` with
+/// `arguments` as a JSON string of the `input` object. A tool-only response
+/// yields `content == ""`; a text-only response yields an empty `tool_calls`
+/// vector. If the response contains neither extractable text nor a `tool_use`
+/// block (empty `content`, no `text`/`tool_use` block, or blocks missing
+/// required fields), this returns [`AnthropicError::UnexpectedResponse`]
 /// rather than inventing a partial response shape.
 fn to_ai_response(response: AnthropicResponse) -> Result<AiResponse, AnthropicError> {
-    let content = response
-        .content
-        .into_iter()
-        .find(|block| block.kind == "text")
-        .and_then(|block| block.text)
-        .ok_or(AnthropicError::UnexpectedResponse)?;
+    let mut text_parts: Vec<String> = Vec::new();
+    let mut tool_calls: Vec<crate::application::execution::ToolCall> = Vec::new();
+    for block in response.content {
+        match block.kind.as_str() {
+            "text" => {
+                if let Some(text) = block.text {
+                    text_parts.push(text);
+                }
+            }
+            "tool_use" => {
+                let id = block.id.ok_or(AnthropicError::UnexpectedResponse)?;
+                let name = block.name.ok_or(AnthropicError::UnexpectedResponse)?;
+                let input = block
+                    .input
+                    .unwrap_or(serde_json::Value::Object(serde_json::Map::default()));
+                let arguments = serde_json::to_string(&input)
+                    .map_err(|_| AnthropicError::UnexpectedResponse)?;
+                tool_calls.push(crate::application::execution::ToolCall {
+                    id,
+                    name,
+                    arguments,
+                });
+            }
+            _ => {}
+        }
+    }
+    if text_parts.is_empty() && tool_calls.is_empty() {
+        return Err(AnthropicError::UnexpectedResponse);
+    }
+    let content = if text_parts.is_empty() {
+        String::new()
+    } else {
+        text_parts.join("")
+    };
     Ok(AiResponse {
         content,
         model: response.model,
-        tool_calls: Vec::new(),
+        tool_calls,
     })
 }
 
@@ -341,19 +413,27 @@ fn to_ai_response(response: AnthropicResponse) -> Result<AiResponse, AnthropicEr
 /// `anthropic-version` header). A non-success response is classified by status
 /// without reading its body, so provider diagnostics can never leak the
 /// credential or request payload.
+///
+/// `request_timeout` bounds the single blocking round trip (Task 3.2): the
+/// blocking client cannot be interrupted mid-flight, so the honest bound is a
+/// wall-clock timeout applied via `RequestBuilder::timeout`. `None` preserves
+/// the historical unbounded behavior byte-for-byte.
 fn send(
     client: &reqwest::blocking::Client,
     endpoint: &str,
     credential: &str,
     body: &AnthropicRequest,
+    request_timeout: Option<Duration>,
 ) -> Result<AnthropicResponse, AnthropicError> {
-    let response = client
+    let mut builder = client
         .post(endpoint)
         .header("x-api-key", credential)
         .header("anthropic-version", ANTHROPIC_VERSION)
-        .json(body)
-        .send()
-        .map_err(|_| AnthropicError::Network)?;
+        .json(body);
+    if let Some(timeout) = request_timeout {
+        builder = builder.timeout(timeout);
+    }
+    let response = builder.send().map_err(|_| AnthropicError::Network)?;
 
     let status = response.status();
     if status.is_success() {
@@ -534,6 +614,9 @@ mod tests {
             content: vec![ContentBlock {
                 kind: "text".to_string(),
                 text: Some("pong".to_string()),
+                id: None,
+                name: None,
+                input: None,
             }],
         };
         let ai = to_ai_response(response).expect("response converts");
@@ -560,6 +643,9 @@ mod tests {
             content: vec![ContentBlock {
                 kind: "text".to_string(),
                 text: None,
+                id: None,
+                name: None,
+                input: None,
             }],
         };
         assert!(matches!(
@@ -758,6 +844,220 @@ mod tests {
             !request_text.contains("authorization: bearer"),
             "must not use bearer auth: {request_text}"
         );
+    }
+
+    #[test]
+    fn request_with_tools_serializes_with_native_shape() {
+        let request = AiRequest {
+            provider: PROVIDER_NAME.to_string(),
+            model: "claude-sonnet-5".to_string(),
+            messages: vec![AiMessage {
+                role: AiRole::User,
+                content: "Use the tool".to_string(),
+                attachments: Vec::new(),
+            }],
+            tools: vec![crate::application::execution::ToolDefinition {
+                name: "get_weather".to_string(),
+                description: "Get the weather for a location".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "location": {"type": "string"}
+                    },
+                    "required": ["location"]
+                }),
+            }],
+            request_timeout: None,
+        };
+        let json = serde_json::to_string(&anthropic_request(&request)).expect("serialize");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        let tools = value
+            .get("tools")
+            .expect("tools present")
+            .as_array()
+            .expect("tools array");
+        assert_eq!(tools.len(), 1);
+        // Anthropic native wire shape: name / description / input_schema (not
+        // OpenAI's type/function nesting).
+        assert_eq!(tools[0]["name"], "get_weather");
+        assert_eq!(tools[0]["description"], "Get the weather for a location");
+        assert!(tools[0]["input_schema"]["properties"]["location"].is_object());
+        assert!(!json.contains("\"type\":\"function\""));
+    }
+
+    #[test]
+    fn request_without_tools_omits_tools_key() {
+        let request = AiRequest {
+            provider: PROVIDER_NAME.to_string(),
+            model: "claude-sonnet-5".to_string(),
+            messages: vec![AiMessage {
+                role: AiRole::User,
+                content: "Hello".to_string(),
+                attachments: Vec::new(),
+            }],
+            tools: Vec::new(),
+            request_timeout: None,
+        };
+        let json = serde_json::to_string(&anthropic_request(&request)).expect("serialize");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        assert!(
+            value.get("tools").is_none(),
+            "tools key must be absent when empty"
+        );
+        assert!(!json.contains("\"tools\""));
+    }
+
+    #[test]
+    fn response_with_tool_use_maps_to_ai_response() {
+        let response = AnthropicResponse {
+            model: "claude-sonnet-5".to_string(),
+            content: vec![ContentBlock {
+                kind: "tool_use".to_string(),
+                text: None,
+                id: Some("toolu_123".to_string()),
+                name: Some("get_weather".to_string()),
+                input: Some(serde_json::json!({"location":"Paris"})),
+            }],
+        };
+        let ai = to_ai_response(response).expect("tool_use response maps");
+        assert_eq!(ai.content, "");
+        assert_eq!(ai.model, "claude-sonnet-5");
+        assert_eq!(ai.tool_calls.len(), 1);
+        assert_eq!(ai.tool_calls[0].id, "toolu_123");
+        assert_eq!(ai.tool_calls[0].name, "get_weather");
+        assert_eq!(ai.tool_calls[0].arguments, "{\"location\":\"Paris\"}");
+    }
+
+    #[test]
+    fn response_with_content_and_tool_use_maps_both() {
+        let response = AnthropicResponse {
+            model: "claude-sonnet-5".to_string(),
+            content: vec![
+                ContentBlock {
+                    kind: "text".to_string(),
+                    text: Some("I will call the tool ".to_string()),
+                    id: None,
+                    name: None,
+                    input: None,
+                },
+                ContentBlock {
+                    kind: "tool_use".to_string(),
+                    text: None,
+                    id: Some("toolu_456".to_string()),
+                    name: Some("search".to_string()),
+                    input: Some(serde_json::json!({"query":"test"})),
+                },
+            ],
+        };
+        let ai = to_ai_response(response).expect("text + tool_use maps");
+        assert_eq!(ai.content, "I will call the tool ");
+        assert_eq!(ai.tool_calls.len(), 1);
+        assert_eq!(ai.tool_calls[0].name, "search");
+        assert_eq!(ai.tool_calls[0].arguments, "{\"query\":\"test\"}");
+    }
+
+    #[test]
+    fn plain_text_response_without_tools_still_maps_correctly() {
+        let response = AnthropicResponse {
+            model: "claude-sonnet-5".to_string(),
+            content: vec![ContentBlock {
+                kind: "text".to_string(),
+                text: Some("Hello to you too.".to_string()),
+                id: None,
+                name: None,
+                input: None,
+            }],
+        };
+        let ai = to_ai_response(response).expect("plain text maps");
+        assert_eq!(ai.content, "Hello to you too.");
+        assert_eq!(ai.model, "claude-sonnet-5");
+        assert!(ai.tool_calls.is_empty());
+    }
+
+    #[test]
+    fn tool_only_response_yields_empty_content() {
+        let response = AnthropicResponse {
+            model: "claude-sonnet-5".to_string(),
+            content: vec![
+                ContentBlock {
+                    kind: "tool_use".to_string(),
+                    text: None,
+                    id: Some("toolu_1".to_string()),
+                    name: Some("get_weather".to_string()),
+                    input: Some(serde_json::json!({"location":"Paris"})),
+                },
+                ContentBlock {
+                    kind: "tool_use".to_string(),
+                    text: None,
+                    id: Some("toolu_2".to_string()),
+                    name: Some("get_time".to_string()),
+                    input: Some(serde_json::json!({})),
+                },
+            ],
+        };
+        let ai = to_ai_response(response).expect("tool-only maps");
+        assert_eq!(ai.content, "");
+        assert_eq!(ai.tool_calls.len(), 2);
+        assert_eq!(ai.tool_calls[0].id, "toolu_1");
+        assert_eq!(ai.tool_calls[1].id, "toolu_2");
+    }
+
+    #[test]
+    fn multiple_text_blocks_are_concatenated() {
+        let response = AnthropicResponse {
+            model: "claude-sonnet-5".to_string(),
+            content: vec![
+                ContentBlock {
+                    kind: "text".to_string(),
+                    text: Some("Hello ".to_string()),
+                    id: None,
+                    name: None,
+                    input: None,
+                },
+                ContentBlock {
+                    kind: "text".to_string(),
+                    text: Some("world".to_string()),
+                    id: None,
+                    name: None,
+                    input: None,
+                },
+            ],
+        };
+        let ai = to_ai_response(response).expect("concatenated text maps");
+        assert_eq!(ai.content, "Hello world");
+        assert!(ai.tool_calls.is_empty());
+    }
+
+    #[test]
+    fn response_without_text_and_without_tool_use_is_unexpected() {
+        let response = AnthropicResponse {
+            model: "claude-sonnet-5".to_string(),
+            content: vec![ContentBlock {
+                kind: "text".to_string(),
+                text: None,
+                id: None,
+                name: None,
+                input: None,
+            }],
+        };
+        assert!(matches!(
+            to_ai_response(response),
+            Err(AnthropicError::UnexpectedResponse)
+        ));
+    }
+
+    #[test]
+    fn request_timeout_is_threaded_through_send() {
+        let body = r#"{"model":"claude-sonnet-5","content":[{"type":"text","text":"pong"}]}"#;
+        let (endpoint, _captured, server) = spawn_server(200, body);
+        let executor = AnthropicExecutor::with_endpoint(endpoint);
+        let mut request = sample_request();
+        request.request_timeout = Some(Duration::from_secs(5));
+        let ai = executor
+            .execute(&request, "sk-secret-example")
+            .expect("round trip with timeout succeeds");
+        server.join().expect("server thread joins");
+        assert_eq!(ai.content, "pong");
     }
 
     /// Spawn a local HTTP server that reads the request headers, returns a

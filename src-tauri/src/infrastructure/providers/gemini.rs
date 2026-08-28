@@ -54,6 +54,7 @@ use crate::application::execution::{
 use crate::application::execution::AiAttachment;
 
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 /// Google AI Studio (Gemini API) base URL root, without the per-model
 /// `generateContent` path (the model is appended per request).
@@ -124,6 +125,7 @@ impl GeminiExecutor {
             &request.model,
             credential,
             &body,
+            request.request_timeout,
         )?;
         to_ai_response(response, &request.model)
     }
@@ -149,11 +151,40 @@ impl ProviderExecutor for GeminiExecutor {
 /// `systemInstruction` is a top-level Gemini-specific parameter and is omitted
 /// (via `skip_serializing_if`) when no system message is present, so the wire
 /// shape matches Gemini's contract in both cases.
+///
+/// `tools` carries Gemini-native function declarations only when
+/// `AiRequest.tools` is non-empty; an empty list is omitted entirely to keep
+/// the wire payload byte-compatible with plain chat.
 #[derive(Debug, Serialize)]
 struct GenerateContentRequest {
     contents: Vec<GeminiContent>,
     #[serde(rename = "systemInstruction", skip_serializing_if = "Option::is_none")]
     system_instruction: Option<SystemInstruction>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    tools: Vec<GeminiTool>,
+}
+
+/// Gemini-native tool container (`tools` array element).
+///
+/// The `generateContent` REST contract nests function declarations under
+/// `tools[].functionDeclarations[]`; this struct models that single-element
+/// container. All `AiRequest.tools` are emitted as one `functionDeclarations`
+/// array to preserve declaration order without inventing multiple tool entries.
+#[derive(Debug, Serialize)]
+struct GeminiTool {
+    #[serde(rename = "functionDeclarations")]
+    function_declarations: Vec<GeminiFunctionDeclaration>,
+}
+
+/// Gemini-native function declaration.
+///
+/// Mirrors the `generateContent` declaration contract:
+/// `{ "name", "description", "parameters": <JSON Schema> }`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct GeminiFunctionDeclaration {
+    name: String,
+    description: String,
+    parameters: serde_json::Value,
 }
 
 /// One Gemini `contents` entry. Only `user` and `model` roles are valid inside
@@ -222,6 +253,21 @@ fn generate_content_request(request: &AiRequest) -> GenerateContentRequest {
             parts: gemini_parts(message),
         })
         .collect();
+    let tools = if request.tools.is_empty() {
+        Vec::new()
+    } else {
+        vec![GeminiTool {
+            function_declarations: request
+                .tools
+                .iter()
+                .map(|tool| GeminiFunctionDeclaration {
+                    name: tool.name.clone(),
+                    description: tool.description.clone(),
+                    parameters: tool.parameters.clone(),
+                })
+                .collect(),
+        }]
+    };
     GenerateContentRequest {
         contents,
         system_instruction: system.map(|text| SystemInstruction {
@@ -230,6 +276,7 @@ fn generate_content_request(request: &AiRequest) -> GenerateContentRequest {
                 inline_data: None,
             }],
         }),
+        tools,
     }
 }
 
@@ -306,18 +353,34 @@ struct CandidateContent {
 }
 
 /// One response part. Text completions produce `text` parts; non-text parts
-/// (for example `inlineData`) carry no text and are skipped.
+/// (for example `inlineData`) carry no text and are skipped. Tool invocations
+/// produce `functionCall` parts (`{functionCall:{name, args}}`).
 #[derive(Debug, Deserialize)]
 struct ResponsePart {
     text: Option<String>,
+    #[serde(rename = "functionCall")]
+    function_call: Option<GeminiFunctionCall>,
+}
+
+/// Gemini-native function call inside a response part.
+#[derive(Debug, Deserialize)]
+struct GeminiFunctionCall {
+    name: String,
+    #[serde(default)]
+    args: Option<serde_json::Value>,
 }
 
 /// Normalize a successful Gemini response into the provider-independent
 /// [`AiResponse`].
 ///
-/// The assistant's text is taken from the `text` part of the first candidate's
-/// content. If the response contains no extractable text (no candidates, no
-/// `parts`, no `text` part, or a missing `text` value), this returns
+/// Text parts are concatenated in wire order to produce `AiResponse.content`;
+/// `functionCall` parts map in order to `AiResponse.tool_calls` with
+/// `arguments` as a JSON string of `args`. Gemini does not assign a per-call
+/// id, so this uses a deterministic index-based id `call_{n}` (`n` = zero-based
+/// position among function calls in the response). A tool-only response yields
+/// `content == ""`; a text-only response yields an empty `tool_calls` vector.
+/// If the response contains neither extractable text nor a `functionCall`
+/// (no candidates, no `parts`, no `text`/`functionCall`), this returns
 /// [`GeminiError::UnexpectedResponse`] rather than inventing a partial response
 /// shape.
 ///
@@ -327,25 +390,52 @@ struct ResponsePart {
 ///
 /// # Errors
 ///
-/// Returns [`GeminiError::UnexpectedResponse`] when no assistant text can be
-/// extracted from the response.
+/// Returns [`GeminiError::UnexpectedResponse`] when no assistant text nor
+/// tool call can be extracted from the response.
 fn to_ai_response(
     response: GenerateContentResponse,
     requested_model: &str,
 ) -> Result<AiResponse, GeminiError> {
-    let content = response
+    let candidate = response
         .candidates
         .into_iter()
         .next()
-        .and_then(|candidate| candidate.content.parts.into_iter().next())
-        .and_then(|part| part.text)
         .ok_or(GeminiError::UnexpectedResponse)?;
+    let mut text_parts: Vec<String> = Vec::new();
+    let mut tool_calls: Vec<crate::application::execution::ToolCall> = Vec::new();
+    for part in candidate.content.parts {
+        if let Some(text) = part.text {
+            text_parts.push(text);
+        }
+        if let Some(call) = part.function_call {
+            let index = tool_calls.len();
+            let id = format!("call_{index}");
+            let args_value = call
+                .args
+                .unwrap_or(serde_json::Value::Object(serde_json::Map::default()));
+            let arguments =
+                serde_json::to_string(&args_value).map_err(|_| GeminiError::UnexpectedResponse)?;
+            tool_calls.push(crate::application::execution::ToolCall {
+                id,
+                name: call.name,
+                arguments,
+            });
+        }
+    }
+    if text_parts.is_empty() && tool_calls.is_empty() {
+        return Err(GeminiError::UnexpectedResponse);
+    }
+    let content = if text_parts.is_empty() {
+        String::new()
+    } else {
+        text_parts.join("")
+    };
     Ok(AiResponse {
         content,
         model: response
             .model_version
             .unwrap_or_else(|| requested_model.to_string()),
-        tool_calls: Vec::new(),
+        tool_calls,
     })
 }
 
@@ -363,19 +453,27 @@ fn generate_content_url(endpoint: &str, model: &str) -> String {
 /// Studio API key authentication), never in the body or URL. A non-success
 /// response is classified by status without reading its body, so provider
 /// diagnostics can never leak the credential or request payload.
+///
+/// `request_timeout` bounds the single blocking round trip (Task 3.2): the
+/// blocking client cannot be interrupted mid-flight, so the honest bound is a
+/// wall-clock timeout applied via `RequestBuilder::timeout`. `None` preserves
+/// the historical unbounded behavior byte-for-byte.
 fn send(
     client: &reqwest::blocking::Client,
     endpoint: &str,
     model: &str,
     credential: &str,
     body: &GenerateContentRequest,
+    request_timeout: Option<Duration>,
 ) -> Result<GenerateContentResponse, GeminiError> {
-    let response = client
+    let mut builder = client
         .post(generate_content_url(endpoint, model))
         .header("x-goog-api-key", credential)
-        .json(body)
-        .send()
-        .map_err(|_| GeminiError::Network)?;
+        .json(body);
+    if let Some(timeout) = request_timeout {
+        builder = builder.timeout(timeout);
+    }
+    let response = builder.send().map_err(|_| GeminiError::Network)?;
 
     let status = response.status();
     if status.is_success() {
@@ -605,6 +703,7 @@ mod tests {
                 content: CandidateContent {
                     parts: vec![ResponsePart {
                         text: Some("pong".to_string()),
+                        function_call: None,
                     }],
                 },
             }],
@@ -622,6 +721,7 @@ mod tests {
                 content: CandidateContent {
                     parts: vec![ResponsePart {
                         text: Some("pong".to_string()),
+                        function_call: None,
                     }],
                 },
             }],
@@ -649,7 +749,10 @@ mod tests {
             model_version: Some("gemini-3.6-flash".to_string()),
             candidates: vec![Candidate {
                 content: CandidateContent {
-                    parts: vec![ResponsePart { text: None }],
+                    parts: vec![ResponsePart {
+                        text: None,
+                        function_call: None,
+                    }],
                 },
             }],
         };
@@ -861,6 +964,238 @@ mod tests {
             user.parts[0].text.as_deref(),
             Some("Summarize\n\n[Attached file: notes.txt]\n--- begin attached file contents ---\nrevenue rose 12 percent\n--- end attached file contents ---")
         );
+    }
+
+    #[test]
+    fn request_with_tools_serializes_with_native_shape() {
+        let request = AiRequest {
+            provider: PROVIDER_NAME.to_string(),
+            model: "gemini-3.6-flash".to_string(),
+            messages: vec![AiMessage {
+                role: AiRole::User,
+                content: "Use the tool".to_string(),
+                attachments: Vec::new(),
+            }],
+            tools: vec![crate::application::execution::ToolDefinition {
+                name: "get_weather".to_string(),
+                description: "Get the weather for a location".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "location": {"type": "string"}
+                    },
+                    "required": ["location"]
+                }),
+            }],
+            request_timeout: None,
+        };
+        let json = serde_json::to_string(&generate_content_request(&request)).expect("serialize");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        let tools = value
+            .get("tools")
+            .expect("tools present")
+            .as_array()
+            .expect("tools array");
+        assert_eq!(tools.len(), 1);
+        let decls = tools[0]
+            .get("functionDeclarations")
+            .expect("functionDeclarations present")
+            .as_array()
+            .expect("functionDeclarations array");
+        assert_eq!(decls.len(), 1);
+        assert_eq!(decls[0]["name"], "get_weather");
+        assert_eq!(decls[0]["description"], "Get the weather for a location");
+        assert!(decls[0]["parameters"]["properties"]["location"].is_object());
+    }
+
+    #[test]
+    fn request_without_tools_omits_tools_key() {
+        let request = AiRequest {
+            provider: PROVIDER_NAME.to_string(),
+            model: "gemini-3.6-flash".to_string(),
+            messages: vec![AiMessage {
+                role: AiRole::User,
+                content: "Hello".to_string(),
+                attachments: Vec::new(),
+            }],
+            tools: Vec::new(),
+            request_timeout: None,
+        };
+        let json = serde_json::to_string(&generate_content_request(&request)).expect("serialize");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        assert!(
+            value.get("tools").is_none(),
+            "tools key must be absent when empty"
+        );
+        assert!(!json.contains("\"tools\""));
+    }
+
+    #[test]
+    fn response_with_function_call_maps_to_ai_response() {
+        let response = GenerateContentResponse {
+            model_version: Some("gemini-3.6-flash".to_string()),
+            candidates: vec![Candidate {
+                content: CandidateContent {
+                    parts: vec![ResponsePart {
+                        text: None,
+                        function_call: Some(GeminiFunctionCall {
+                            name: "get_weather".to_string(),
+                            args: Some(serde_json::json!({"location":"Paris"})),
+                        }),
+                    }],
+                },
+            }],
+        };
+        let ai = to_ai_response(response, "gemini-3.6-flash").expect("functionCall maps");
+        assert_eq!(ai.content, "");
+        assert_eq!(ai.model, "gemini-3.6-flash");
+        assert_eq!(ai.tool_calls.len(), 1);
+        // Deterministic index-based id (no random UUIDs).
+        assert_eq!(ai.tool_calls[0].id, "call_0");
+        assert_eq!(ai.tool_calls[0].name, "get_weather");
+        assert_eq!(ai.tool_calls[0].arguments, "{\"location\":\"Paris\"}");
+    }
+
+    #[test]
+    fn response_with_content_and_function_call_maps_both() {
+        let response = GenerateContentResponse {
+            model_version: Some("gemini-3.6-flash".to_string()),
+            candidates: vec![Candidate {
+                content: CandidateContent {
+                    parts: vec![
+                        ResponsePart {
+                            text: Some("I will call the tool ".to_string()),
+                            function_call: None,
+                        },
+                        ResponsePart {
+                            text: None,
+                            function_call: Some(GeminiFunctionCall {
+                                name: "search".to_string(),
+                                args: Some(serde_json::json!({"query":"test"})),
+                            }),
+                        },
+                    ],
+                },
+            }],
+        };
+        let ai = to_ai_response(response, "gemini-3.6-flash").expect("text + functionCall maps");
+        assert_eq!(ai.content, "I will call the tool ");
+        assert_eq!(ai.tool_calls.len(), 1);
+        assert_eq!(ai.tool_calls[0].name, "search");
+        assert_eq!(ai.tool_calls[0].arguments, "{\"query\":\"test\"}");
+    }
+
+    #[test]
+    fn plain_text_response_without_tools_still_maps_correctly() {
+        let response = GenerateContentResponse {
+            model_version: Some("gemini-3.6-flash".to_string()),
+            candidates: vec![Candidate {
+                content: CandidateContent {
+                    parts: vec![ResponsePart {
+                        text: Some("Hello to you too.".to_string()),
+                        function_call: None,
+                    }],
+                },
+            }],
+        };
+        let ai = to_ai_response(response, "gemini-3.6-flash").expect("plain text maps");
+        assert_eq!(ai.content, "Hello to you too.");
+        assert_eq!(ai.model, "gemini-3.6-flash");
+        assert!(ai.tool_calls.is_empty());
+    }
+
+    #[test]
+    fn tool_only_response_yields_empty_content() {
+        let response = GenerateContentResponse {
+            model_version: Some("gemini-3.6-flash".to_string()),
+            candidates: vec![Candidate {
+                content: CandidateContent {
+                    parts: vec![
+                        ResponsePart {
+                            text: None,
+                            function_call: Some(GeminiFunctionCall {
+                                name: "get_weather".to_string(),
+                                args: Some(serde_json::json!({"location":"Paris"})),
+                            }),
+                        },
+                        ResponsePart {
+                            text: None,
+                            function_call: Some(GeminiFunctionCall {
+                                name: "get_time".to_string(),
+                                args: Some(serde_json::json!({})),
+                            }),
+                        },
+                    ],
+                },
+            }],
+        };
+        let ai = to_ai_response(response, "gemini-3.6-flash").expect("tool-only maps");
+        assert_eq!(ai.content, "");
+        assert_eq!(ai.tool_calls.len(), 2);
+        // Deterministic ids in wire order.
+        assert_eq!(ai.tool_calls[0].id, "call_0");
+        assert_eq!(ai.tool_calls[1].id, "call_1");
+        assert_eq!(ai.tool_calls[0].name, "get_weather");
+        assert_eq!(ai.tool_calls[1].name, "get_time");
+    }
+
+    #[test]
+    fn multiple_text_parts_are_concatenated() {
+        let response = GenerateContentResponse {
+            model_version: Some("gemini-3.6-flash".to_string()),
+            candidates: vec![Candidate {
+                content: CandidateContent {
+                    parts: vec![
+                        ResponsePart {
+                            text: Some("Hello ".to_string()),
+                            function_call: None,
+                        },
+                        ResponsePart {
+                            text: Some("world".to_string()),
+                            function_call: None,
+                        },
+                    ],
+                },
+            }],
+        };
+        let ai = to_ai_response(response, "gemini-3.6-flash").expect("concatenated text maps");
+        assert_eq!(ai.content, "Hello world");
+        assert!(ai.tool_calls.is_empty());
+    }
+
+    #[test]
+    fn request_timeout_is_threaded_through_send() {
+        let body = r#"{"modelVersion":"gemini-3.6-flash","candidates":[{"content":{"parts":[{"text":"pong"}]}}]}"#;
+        let (endpoint, _captured, server) = spawn_server(200, body);
+        let executor = GeminiExecutor::with_endpoint(endpoint);
+        let mut request = sample_request();
+        request.request_timeout = Some(Duration::from_secs(5));
+        let ai = executor
+            .execute(&request, "sk-secret-example")
+            .expect("round trip with timeout succeeds");
+        server.join().expect("server thread joins");
+        assert_eq!(ai.content, "pong");
+    }
+
+    #[test]
+    fn function_call_without_args_maps_to_empty_object_string() {
+        let response = GenerateContentResponse {
+            model_version: Some("gemini-3.6-flash".to_string()),
+            candidates: vec![Candidate {
+                content: CandidateContent {
+                    parts: vec![ResponsePart {
+                        text: None,
+                        function_call: Some(GeminiFunctionCall {
+                            name: "no_args_tool".to_string(),
+                            args: None,
+                        }),
+                    }],
+                },
+            }],
+        };
+        let ai = to_ai_response(response, "gemini-3.6-flash").expect("no-args maps");
+        assert_eq!(ai.content, "");
+        assert_eq!(ai.tool_calls[0].arguments, "{}");
     }
 
     /// Spawn a local HTTP server that reads the request headers, returns a
