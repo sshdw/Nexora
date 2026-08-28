@@ -1,5 +1,5 @@
 //! Agent execution service: the multi-step agent `ReAct` loop (ROADMAP.md
-//! Phase 3 — Task 3.1).
+//! Phase 3 вЂ” Task 3.1).
 //!
 //! [`AgentRunner`] orchestrates the existing provider-independent execution
 //! layer ([`ProviderExecutor`]) and the existing native workspace tools
@@ -15,8 +15,8 @@
 //!
 //! The runner owns only orchestration: it never executes shell commands,
 //! touches the filesystem outside the configured workspace root, or formats
-//! provider payloads. Every returned tool call — including unknown tools,
-//! malformed arguments, and failing invocations — is dispatched through
+//! provider payloads. Every returned tool call вЂ” including unknown tools,
+//! malformed arguments, and failing invocations вЂ” is dispatched through
 //! [`ToolRegistry`] and converted into a textual observation message that is
 //! appended to the conversation history for the next model turn.
 //!
@@ -42,6 +42,15 @@
 //! and the loop continues. When no gate is attached the loop keeps the exact
 //! pre-4.1 behaviour.
 //!
+//! Task 4.2 layers opt-in persistence on top of that: with an attached
+//! [`RunRecorder`] ([`AgentRunner::with_run_recorder`]) the run is persisted
+//! to `agent_runs` (DATABASE.md В§7.8) from start to termination on every exit
+//! path, and each model turn, dispatched tool call, and parked approval
+//! decision is appended to `agent_steps` (В§7.9, D12) вЂ” all best-effort, so
+//! persistence failures never panic the loop and never change the run's
+//! semantics. When no recorder is attached the loop keeps the exact pre-4.2
+//! behaviour and writes nothing.
+//!
 //! # Observation representation
 //!
 //! The provider-independent boundary (`AiRequest` / `AiMessage`) deliberately
@@ -53,10 +62,13 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::application::agent::approval::{ApprovalDecision, ApprovalGate};
 use crate::application::agent::control::{AgentRunEvent, CancellationToken, RunControl};
+use crate::application::agent::persistence::{
+    mode_to_column, ActiveRunRecord, RunRecorder, DEFAULT_RECORDED_MODE,
+};
 use crate::application::agent::tools::ToolRegistry;
 use crate::application::execution::{
     AiMessage, AiRequest, AiRole, ExecutorError, ProviderExecutor, ToolCall,
@@ -89,7 +101,7 @@ pub(crate) const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::new(120, 0);
 // ---------------------------------------------------------------------------
 
 /// Classified agent-loop failure. Carries no secret payload and never embeds
-/// credential material (ARCHITECTURE.md §9, §11): the provider variant wraps
+/// credential material (ARCHITECTURE.md В§9, В§11): the provider variant wraps
 /// the already-classified [`ExecutorError`].
 #[derive(Debug)]
 pub(crate) enum AgentError {
@@ -146,11 +158,11 @@ impl From<ExecutorError> for AgentError {
 ///
 /// Wraps one [`ProviderExecutor`] reference and the workspace root that bounds
 /// [`ToolRegistry`] filesystem access. The runner is reusable across runs; it
-/// owns no conversation state between [`Self::run`] calls and performs no
-/// persistence. Governance (pause/resume, budgets, cancellation) and approval
-/// gating are applied only when a [`RunControl`] or [`ApprovalGate`] is
-/// attached; otherwise the loop keeps the exact deterministic pre-3.2/4.1
-/// behaviour.
+/// owns no conversation state between [`Self::run`] calls. Governance
+/// (pause/resume, budgets, cancellation), approval gating, and run
+/// persistence are applied only when a [`RunControl`], [`ApprovalGate`], or
+/// [`RunRecorder`] is attached; otherwise the loop keeps the exact
+/// deterministic pre-3.2/4.1/4.2 behaviour.
 pub(crate) struct AgentRunner<'a> {
     executor: &'a dyn ProviderExecutor,
     workspace_root: PathBuf,
@@ -167,6 +179,11 @@ pub(crate) struct AgentRunner<'a> {
     event_sender: Option<Sender<AgentRunEvent>>,
     /// Per-request timeout applied to every provider round trip (Task 3.2).
     request_timeout: Duration,
+    /// Opt-in run recorder (Task 4.2). When `None` nothing is persisted and
+    /// the loop keeps the exact pre-4.2 behaviour; when attached, the run and
+    /// its structured steps are persisted to `agent_runs` / `agent_steps`
+    /// (DATABASE.md В§7.8, В§7.9) best-effort.
+    recorder: Option<RunRecorder<'a>>,
 }
 
 impl<'a> AgentRunner<'a> {
@@ -181,6 +198,7 @@ impl<'a> AgentRunner<'a> {
             approval_gate: None,
             event_sender: None,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            recorder: None,
         }
     }
 
@@ -227,6 +245,19 @@ impl<'a> AgentRunner<'a> {
         self
     }
 
+    /// Attach the opt-in run recorder (Task 4.2): the run and its structured
+    /// steps are persisted to `agent_runs` / `agent_steps` (DATABASE.md
+    /// В§7.8, В§7.9) best-effort. When no recorder is attached the loop keeps
+    /// the exact pre-4.2 behaviour and writes nothing. The recorded mode is
+    /// the attached [`ApprovalGate`]'s current [`AutonomyMode`], or
+    /// [`DEFAULT_RECORDED_MODE`] without a gate; `conversation_id` stays
+    /// `NULL` until the Task 5.1 IPC layer wires runs to conversations.
+    #[must_use]
+    pub(crate) fn with_run_recorder(mut self, recorder: RunRecorder<'a>) -> Self {
+        self.recorder = Some(recorder);
+        self
+    }
+
     /// Override the default per-request HTTP timeout (Task 3.2).
     #[must_use]
     pub(crate) fn with_request_timeout(mut self, timeout: Duration) -> Self {
@@ -259,12 +290,48 @@ impl<'a> AgentRunner<'a> {
     /// when no [`RunControl`] is attached); [`AgentError::Cancelled`] when a
     /// user cancels; [`AgentError::Provider`] when any underlying request
     /// fails.
+    ///
+    /// Task 4.2: when a [`RunRecorder`] is attached, the run is persisted to
+    /// `agent_runs` from start to termination on every exit path, and each
+    /// model turn, dispatched tool call, and parked approval decision is
+    /// appended to `agent_steps` (DATABASE.md В§7.8, В§7.9) вЂ” all best-effort,
+    /// so persistence failures never change the run's semantics.
     pub(crate) fn run(
         &self,
         provider: &str,
         model: &str,
         credential: &str,
         user_request: &str,
+    ) -> Result<String, AgentError> {
+        // Task 4.2: opt-in run persistence. When a recorder is attached the
+        // run row is inserted before the first model turn; the recorded mode
+        // is the gate's current mode, or DEFAULT_RECORDED_MODE without a
+        // gate (documented in `persistence`).
+        let mut record = self.recorder.as_ref().map(|recorder| {
+            let mode = self
+                .approval_gate
+                .as_ref()
+                .map_or(DEFAULT_RECORDED_MODE, |gate| mode_to_column(gate.mode()));
+            ActiveRunRecord::start(*recorder, model, mode)
+        });
+        let result = self.react_loop(provider, model, credential, user_request, record.as_mut());
+        if let Some(rec) = record.as_ref() {
+            rec.finalize(&result);
+        }
+        result
+    }
+
+    /// The deterministic `ReAct` loop proper (Task 3.1 semantics with the
+    /// Task 3.2 governance and Task 4.1 approval layers), optionally
+    /// recording each model turn, dispatched tool call, and parked approval
+    /// decision into `record` (Task 4.2).
+    fn react_loop(
+        &self,
+        provider: &str,
+        model: &str,
+        credential: &str,
+        user_request: &str,
+        mut record: Option<&mut ActiveRunRecord<'_>>,
     ) -> Result<String, AgentError> {
         let tools = ToolRegistry::definitions();
         // A control never cancelled the plan: when the runner has no attached
@@ -297,8 +364,17 @@ impl<'a> AgentRunner<'a> {
                 tools: tools.clone(),
                 request_timeout: Some(self.request_timeout),
             };
+            let turn_started = Instant::now();
             let response = self.executor.execute(&request, credential)?;
             steps_taken += 1;
+
+            // Task 4.2: record the completed model turn (D12) with its
+            // provider round-trip duration.
+            if let Some(rec) = record.as_mut() {
+                let duration_ms =
+                    i64::try_from(turn_started.elapsed().as_millis()).unwrap_or(i64::MAX);
+                rec.model_turn(&response.content, Some(duration_ms));
+            }
 
             self.check_cancellation(control)?;
 
@@ -323,7 +399,7 @@ impl<'a> AgentRunner<'a> {
                 });
             }
 
-            // AC-6: never drop a call — every returned call is dispatched and
+            // AC-6: never drop a call вЂ” every returned call is dispatched and
             // observed. Failures are rendered through `ToolError`'s Display
             // (`Error: ...`) so the model can recover on the next turn.
             let token: &CancellationToken = control.map_or(&idle_token, RunControl::token);
@@ -341,10 +417,19 @@ impl<'a> AgentRunner<'a> {
                             arguments: call.arguments.clone(),
                         });
                         let Ok(decision) = gate.request_approval(call) else {
+                            // Task 4.2: cancellation ended the parked wait вЂ”
+                            // record the `cancelled` approval step (D12).
+                            if let Some(rec) = record.as_mut() {
+                                rec.approval_cancelled(call);
+                            }
                             self.emit(AgentRunEvent::Cancelled);
                             return Err(AgentError::Cancelled);
                         };
                         let approved = matches!(decision, ApprovalDecision::Approved);
+                        // Task 4.2: record the parked approval decision (D12).
+                        if let Some(rec) = record.as_mut() {
+                            rec.approval(call, approved);
+                        }
                         self.emit(AgentRunEvent::ApprovalResolved {
                             call_id: call.id.clone(),
                             approved,
@@ -358,15 +443,27 @@ impl<'a> AgentRunner<'a> {
                         }
                     }
                 }
-                let observation = match ToolRegistry::execute_with_cancellation(
-                    call,
-                    &self.workspace_root,
-                    token,
-                ) {
-                    Ok(output) => output,
-                    Err(tool_error) => tool_error.to_string(),
+                // Task 4.2: the dispatched call (approved or ungated) is
+                // recorded with its raw arguments, observation, and outcome
+                // (D12). A cancellation observed by the tool records as
+                // `cancelled`; everything else is `succeeded` or `failed`.
+                let dispatch_started = Instant::now();
+                let outcome =
+                    ToolRegistry::execute_with_cancellation(call, &self.workspace_root, token);
+                let dispatch_ms =
+                    i64::try_from(dispatch_started.elapsed().as_millis()).unwrap_or(i64::MAX);
+                let (observation, tool_status) = match outcome {
+                    Ok(output) if token.is_cancelled() => (output, "cancelled"),
+                    Ok(output) => (output, "succeeded"),
+                    Err(tool_error) if token.is_cancelled() => {
+                        (tool_error.to_string(), "cancelled")
+                    }
+                    Err(tool_error) => (tool_error.to_string(), "failed"),
                 };
                 messages.push(observation_message(call, &observation));
+                if let Some(rec) = record.as_mut() {
+                    rec.tool_call(call, &observation, tool_status, Some(dispatch_ms));
+                }
             }
         }
     }
@@ -1713,6 +1810,263 @@ mod tests {
         assert_eq!(ans, "ok");
         drop(runner1);
         drop(runner2);
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    // -----------------------------------------------------------------------
+    // Opt-in run persistence (Task 4.2)
+    // -----------------------------------------------------------------------
+
+    use crate::application::agent::persistence::RunRecorder;
+    use crate::infrastructure::database::in_memory_database;
+    use crate::infrastructure::repository::agent_runs::AgentRunRepository;
+
+    #[test]
+    fn no_recorder_persists_nothing() {
+        let db = in_memory_database();
+        let ws = temp_workspace();
+        let fake = FakeExecutor::new(vec![Ok(tool_step("a")), Ok(text_response("done"))]);
+        let runner = AgentRunner::new(&fake, &ws);
+
+        let answer = runner.run("openai", "m", "cred", "q").expect("finish");
+        assert_eq!(answer, "done");
+
+        // The database is available but no recorder was attached, so the
+        // pre-4.2 behaviour persists nothing (the unrecorded path stays
+        // byte-for-byte unchanged).
+        let runs = AgentRunRepository::new(&db);
+        assert!(
+            runs.list_runs_by_started_at_desc()
+                .expect("list runs")
+                .is_empty(),
+            "no agent_runs rows without an attached recorder"
+        );
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn recorder_persists_completed_run_with_gap_free_steps() {
+        let db = in_memory_database();
+        let ws = temp_workspace();
+        let fake = FakeExecutor::new(vec![Ok(text_response("final answer"))]);
+        let runner = AgentRunner::new(&fake, &ws).with_run_recorder(RunRecorder::new(&db));
+
+        let answer = runner.run("openai", "m", "cred", "q").expect("finish");
+        assert_eq!(answer, "final answer");
+
+        let runs = AgentRunRepository::new(&db);
+        let all = runs.list_runs_by_started_at_desc().expect("list runs");
+        assert_eq!(all.len(), 1, "one run row per run");
+        let run = &all[0];
+        assert_eq!(run.status, "completed");
+        assert_eq!(run.final_content.as_deref(), Some("final answer"));
+        assert_eq!(run.model, "m");
+        assert_eq!(run.conversation_id, None, "NULL until Task 5.1 (D50)");
+        assert_eq!(run.mode, "supervised", "documented default without a gate");
+        assert!(run.finished_at.is_some(), "finalize stamps the time");
+        assert_eq!(run.error, None);
+
+        let steps = runs.list_steps(run.id).expect("list steps");
+        assert!(
+            steps.iter().any(|s| s.kind == "model_turn"),
+            "the model turn is recorded (D12)"
+        );
+        let step_count = i64::try_from(steps.len()).expect("step count fits");
+        let seqs: Vec<i64> = steps.iter().map(|s| s.seq).collect();
+        assert_eq!(
+            seqs,
+            (1..=step_count).collect::<Vec<_>>(),
+            "seq strictly increasing without gaps on the happy path"
+        );
+        assert_eq!(
+            run.total_steps, step_count,
+            "total_steps counts the recorded steps (D12)"
+        );
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn recorder_persists_dispatched_tool_call_with_succeeded_status() {
+        let db = in_memory_database();
+        let ws = temp_workspace();
+        fs::write(ws.join("exists.txt"), "hello").expect("write fixture");
+        let fake = FakeExecutor::new(vec![
+            Ok(AiResponse {
+                content: String::new(),
+                model: "m".to_string(),
+                tool_calls: vec![call_tool(
+                    "r1",
+                    "read_file",
+                    serde_json::json!({"path": "exists.txt"}),
+                )],
+            }),
+            Ok(text_response("done")),
+        ]);
+        let runner = AgentRunner::new(&fake, &ws).with_run_recorder(RunRecorder::new(&db));
+
+        runner.run("openai", "m", "cred", "q").expect("finish");
+
+        let runs = AgentRunRepository::new(&db);
+        let run = &runs.list_runs_by_started_at_desc().expect("list runs")[0];
+        let steps = runs.list_steps(run.id).expect("list steps");
+        let kinds: Vec<&str> = steps.iter().map(|s| s.kind.as_str()).collect();
+        assert_eq!(kinds, vec!["model_turn", "tool_call", "model_turn"]);
+        let call_step = &steps[1];
+        assert_eq!(call_step.tool_name.as_deref(), Some("read_file"));
+        assert_eq!(call_step.status.as_deref(), Some("succeeded"));
+        assert_eq!(
+            call_step.arguments.as_deref(),
+            Some("{\"path\":\"exists.txt\"}"),
+            "raw JSON arguments exactly as provider-supplied"
+        );
+        assert_eq!(call_step.observation.as_deref(), Some("hello"));
+        assert!(call_step.duration_ms.is_some());
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn recorder_persists_denied_approval_and_run_still_completes() {
+        let db = in_memory_database();
+        let ws = temp_workspace();
+        let gate = ApprovalGate::new(AutonomyMode::Supervised);
+        let gate_for_driver = gate.clone();
+        let (tx, rx) = channel();
+        let fake = FakeExecutor::new(vec![
+            Ok(AiResponse {
+                content: String::new(),
+                model: "m".to_string(),
+                tool_calls: vec![approval_call(
+                    "w1",
+                    "write_file",
+                    serde_json::json!({"path": "x.txt", "content": "1"}),
+                )],
+            }),
+            Ok(text_response("ok")),
+        ]);
+        let runner = AgentRunner::new(&fake, &ws)
+            .with_approval_gate(gate)
+            .with_run_recorder(RunRecorder::new(&db))
+            .with_event_sender(tx);
+
+        let driver = thread::spawn(move || {
+            rx.recv_timeout(Duration::from_secs(5))
+                .expect("ApprovalRequested");
+            assert!(gate_for_driver.respond("w1", ApprovalDecision::Denied));
+            rx.recv_timeout(Duration::from_secs(5))
+                .expect("ApprovalResolved");
+            rx.recv_timeout(Duration::from_secs(5)).expect("Completed")
+        });
+        let answer = runner.run("openai", "m", "cred", "q").expect("completes");
+        assert_eq!(answer, "ok");
+        driver.join().expect("driver joins");
+
+        let runs = AgentRunRepository::new(&db);
+        let run = &runs.list_runs_by_started_at_desc().expect("list runs")[0];
+        assert_eq!(run.status, "completed");
+        let steps = runs.list_steps(run.id).expect("list steps");
+        let approval_steps: Vec<_> = steps.iter().filter(|s| s.kind == "approval").collect();
+        assert_eq!(approval_steps.len(), 1, "the parked decision is recorded");
+        assert_eq!(approval_steps[0].status.as_deref(), Some("denied"));
+        assert_eq!(approval_steps[0].tool_name.as_deref(), Some("write_file"));
+        assert!(
+            !steps.iter().any(|s| s.kind == "tool_call"),
+            "a denied call is never dispatched, so no tool_call step exists"
+        );
+        assert!(
+            fs::read_to_string(ws.join("x.txt")).is_err(),
+            "denied tool must not have executed"
+        );
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn recorder_persists_cancelled_run() {
+        let db = in_memory_database();
+        let ws = temp_workspace();
+        let fake = FakeExecutor::new(vec![Ok(text_response("never"))]);
+        let control = RunControl::new();
+        control.cancel();
+        let runner = AgentRunner::new(&fake, &ws)
+            .with_control(control)
+            .with_run_recorder(RunRecorder::new(&db));
+
+        let err = runner
+            .run("openai", "m", "cred", "q")
+            .expect_err("cancelled");
+        assert!(matches!(err, AgentError::Cancelled));
+
+        let runs = AgentRunRepository::new(&db);
+        let run = &runs.list_runs_by_started_at_desc().expect("list runs")[0];
+        assert_eq!(run.status, "cancelled");
+        assert_eq!(run.final_content, None);
+        assert_eq!(run.error, None, "cancellation is not a classified error");
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn recorder_persists_budget_exhausted_run() {
+        let db = in_memory_database();
+        let ws = temp_workspace();
+        let fake = FakeExecutor::new(vec![
+            Ok(tool_step("a")),
+            Ok(tool_step("b")),
+            Ok(text_response("later")),
+        ]);
+        let runner = AgentRunner::new(&fake, &ws)
+            .with_max_iterations(2)
+            .with_run_recorder(RunRecorder::new(&db));
+
+        let err = runner
+            .run("openai", "m", "cred", "q")
+            .expect_err("exhausted");
+        assert!(matches!(err, AgentError::BudgetExhausted(2)));
+
+        let runs = AgentRunRepository::new(&db);
+        let run = &runs.list_runs_by_started_at_desc().expect("list runs")[0];
+        assert_eq!(run.status, "budget_exhausted");
+        assert_eq!(
+            run.total_steps, 4,
+            "two model turns and two dispatched tool calls"
+        );
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn recorder_persists_error_run_for_provider_failure_without_panic() {
+        let db = in_memory_database();
+        let ws = temp_workspace();
+        let fake = FakeExecutor::new(vec![Err(ExecutorError::Failure)]);
+        let runner = AgentRunner::new(&fake, &ws).with_run_recorder(RunRecorder::new(&db));
+
+        let err = runner.run("openai", "m", "cred", "q").expect_err("fails");
+        assert!(matches!(err, AgentError::Provider(_)));
+
+        let runs = AgentRunRepository::new(&db);
+        let run = &runs.list_runs_by_started_at_desc().expect("list runs")[0];
+        assert_eq!(run.status, "error");
+        assert_eq!(
+            run.error.as_deref(),
+            Some("the AI provider failed to fulfil the request"),
+            "classified error text, no secrets"
+        );
+        assert_eq!(run.final_content, None);
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn recorder_records_the_gate_mode_when_attached() {
+        let db = in_memory_database();
+        let ws = temp_workspace();
+        let fake = FakeExecutor::new(vec![Ok(text_response("done"))]);
+        let runner = AgentRunner::new(&fake, &ws)
+            .with_approval_gate(ApprovalGate::new(AutonomyMode::SemiAutonomous))
+            .with_run_recorder(RunRecorder::new(&db));
+
+        runner.run("openai", "m", "cred", "q").expect("finish");
+
+        let runs = AgentRunRepository::new(&db);
+        let run = &runs.list_runs_by_started_at_desc().expect("list runs")[0];
+        assert_eq!(run.mode, "semi_autonomous", "the gate's mode is recorded");
         let _ = fs::remove_dir_all(&ws);
     }
 }
