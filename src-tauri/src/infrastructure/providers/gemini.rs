@@ -1165,16 +1165,52 @@ mod tests {
 
     #[test]
     fn request_timeout_is_threaded_through_send() {
-        let body = r#"{"modelVersion":"gemini-3.6-flash","candidates":[{"content":{"parts":[{"text":"pong"}]}}]}"#;
-        let (endpoint, _captured, server) = spawn_server(200, body);
-        let executor = GeminiExecutor::with_endpoint(endpoint);
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::time::Duration;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test server");
+        let addr = listener.local_addr().expect("local address");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept connection");
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 1024];
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        raw.extend_from_slice(&buf[..n]);
+                        if raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_secs(2));
+            let body = r#"{"modelVersion":"gemini-3.6-flash","candidates":[{"content":{"parts":[{"text":"pong"}]}}]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+        });
+        let executor = GeminiExecutor::with_endpoint(format!("http://{addr}"));
         let mut request = sample_request();
-        request.request_timeout = Some(Duration::from_secs(5));
-        let ai = executor
-            .execute(&request, "sk-secret-example")
-            .expect("round trip with timeout succeeds");
-        server.join().expect("server thread joins");
-        assert_eq!(ai.content, "pong");
+        request.request_timeout = Some(Duration::from_millis(200));
+        let start = std::time::Instant::now();
+        let result = executor.execute(&request, "sk-secret-example");
+        let elapsed = start.elapsed();
+        assert!(
+            matches!(result, Err(ExecutorError::Failure)),
+            "expected timeout to surface as ExecutorError::Failure, got {result:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "timeout should fire quickly, elapsed={elapsed:?}"
+        );
+        let _ = server.join();
     }
 
     #[test]

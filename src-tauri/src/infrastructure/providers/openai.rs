@@ -271,6 +271,8 @@ struct ResponseMessage {
 #[derive(Debug, Deserialize)]
 struct OpenAiWireToolCall {
     id: String,
+    // Wire field consumed by serde, retained for OpenAI `type:"function"` compatibility.
+    #[allow(dead_code)]
     r#type: String,
     function: OpenAiWireFunctionCall,
 }
@@ -766,5 +768,56 @@ mod tests {
         let ai = to_ai_response(response).expect("empty tool_calls with content maps");
         assert_eq!(ai.content, "Just text");
         assert!(ai.tool_calls.is_empty());
+    }
+
+    #[test]
+    fn request_timeout_is_threaded_through_send() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::time::Duration;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test server");
+        let addr = listener.local_addr().expect("local address");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept connection");
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 1024];
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        raw.extend_from_slice(&buf[..n]);
+                        if raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_secs(2));
+            let body = r#"{"model":"gpt-5.6-terra","choices":[{"message":{"content":"pong"}}]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+        });
+        let executor = OpenAiExecutor::with_endpoint(format!("http://{addr}"));
+        let mut request = sample_request();
+        request.request_timeout = Some(Duration::from_millis(200));
+        let start = std::time::Instant::now();
+        let result = executor.execute(&request, "sk-secret-example");
+        let elapsed = start.elapsed();
+        // Must be a classified boundary failure (timeout surfaces as Provider/Network → Failure).
+        assert!(
+            matches!(result, Err(ExecutorError::Failure)),
+            "expected timeout to surface as ExecutorError::Failure, got {result:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "timeout should fire quickly, elapsed={elapsed:?}"
+        );
+        let _ = server.join();
     }
 }

@@ -608,6 +608,52 @@ mod tests {
     }
 
     #[test]
+    fn multiple_system_messages_are_joined() {
+        let request = AiRequest {
+            provider: PROVIDER_NAME.to_string(),
+            model: "claude-sonnet-5".to_string(),
+            messages: vec![
+                AiMessage {
+                    role: AiRole::System,
+                    content: "First rule.".to_string(),
+                    attachments: Vec::new(),
+                },
+                AiMessage {
+                    role: AiRole::System,
+                    content: "Second rule.".to_string(),
+                    attachments: Vec::new(),
+                },
+            ],
+            tools: Vec::new(),
+            request_timeout: None,
+        };
+        let body = anthropic_request(&request);
+        assert_eq!(body.system.as_deref(), Some("First rule.\n\nSecond rule."));
+        let value: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&body).expect("serialize")).expect("parse");
+        assert_eq!(value["system"], "First rule.\n\nSecond rule.");
+    }
+
+    #[test]
+    fn tool_use_without_input_maps_to_empty_object_string() {
+        let response = AnthropicResponse {
+            model: "claude-sonnet-5".to_string(),
+            content: vec![ContentBlock {
+                kind: "tool_use".to_string(),
+                text: None,
+                id: Some("toolu_no_args".to_string()),
+                name: Some("no_args_tool".to_string()),
+                input: None,
+            }],
+        };
+        let ai = to_ai_response(response).expect("no-args maps");
+        assert_eq!(ai.content, "");
+        assert_eq!(ai.tool_calls.len(), 1);
+        assert_eq!(ai.tool_calls[0].id, "toolu_no_args");
+        assert_eq!(ai.tool_calls[0].arguments, "{}");
+    }
+
+    #[test]
     fn successful_response_is_normalized() {
         let response = AnthropicResponse {
             model: "claude-sonnet-5".to_string(),
@@ -1048,16 +1094,52 @@ mod tests {
 
     #[test]
     fn request_timeout_is_threaded_through_send() {
-        let body = r#"{"model":"claude-sonnet-5","content":[{"type":"text","text":"pong"}]}"#;
-        let (endpoint, _captured, server) = spawn_server(200, body);
-        let executor = AnthropicExecutor::with_endpoint(endpoint);
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::time::Duration;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test server");
+        let addr = listener.local_addr().expect("local address");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept connection");
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 1024];
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        raw.extend_from_slice(&buf[..n]);
+                        if raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_secs(2));
+            let body = r#"{"model":"claude-sonnet-5","content":[{"type":"text","text":"pong"}]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+        });
+        let executor = AnthropicExecutor::with_endpoint(format!("http://{addr}"));
         let mut request = sample_request();
-        request.request_timeout = Some(Duration::from_secs(5));
-        let ai = executor
-            .execute(&request, "sk-secret-example")
-            .expect("round trip with timeout succeeds");
-        server.join().expect("server thread joins");
-        assert_eq!(ai.content, "pong");
+        request.request_timeout = Some(Duration::from_millis(200));
+        let start = std::time::Instant::now();
+        let result = executor.execute(&request, "sk-secret-example");
+        let elapsed = start.elapsed();
+        assert!(
+            matches!(result, Err(ExecutorError::Failure)),
+            "expected timeout to surface as ExecutorError::Failure, got {result:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "timeout should fire quickly, elapsed={elapsed:?}"
+        );
+        let _ = server.join();
     }
 
     /// Spawn a local HTTP server that reads the request headers, returns a

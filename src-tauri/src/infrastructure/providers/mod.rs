@@ -1,17 +1,13 @@
-//! AI provider integration: credential storage (ROADMAP.md Phase 3 — AI
-//! Providers; ARCHITECTURE.md §5, §7).
+//! AI provider integration: credential storage and provider executors
+//! (ROADMAP.md Phase 3 — AI Providers; ARCHITECTURE.md §5, §7).
 //!
 //! The infrastructure layer is responsible for AI providers and operating
-//! system integration. This module currently contains only the provider
-//! credential store over the OS secure keyring ([`credentials`], FR-014).
-//! Request execution, response normalization, and retry handling are distinct
-//! Phase 3 tasks and intentionally live elsewhere.
-
-// This crate has no credential-store consumer yet (the application layer's
-// provider credential service and Tauri commands arrive in later Phase 3
-// tasks), so store items not yet referenced are intentionally unused. Remove
-// this attribute once a consumer references them.
-#![allow(dead_code)]
+//! system integration. It exposes the OS secure keyring credential store
+//! ([`credentials`], FR-014) and the concrete provider executors
+//! ([`openai`], [`anthropic`], [`gemini`]) behind the provider-independent
+//! [`ProviderExecutor`] boundary (ARCHITECTURE.md §7). The supported provider
+//! definitions and hardcoded model lists are aggregated here for the UI via
+//! [`supported_providers`] (DATABASE.md §7.5).
 
 pub mod anthropic;
 pub mod credentials;
