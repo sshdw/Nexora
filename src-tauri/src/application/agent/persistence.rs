@@ -41,7 +41,7 @@
 use crate::application::agent::approval::AutonomyMode;
 use crate::application::agent::runner::AgentError;
 use crate::application::execution::ToolCall;
-use crate::infrastructure::database::Database;
+use crate::infrastructure::database::{Database, DatabaseError};
 use crate::infrastructure::repository::agent_runs::AgentRunRepository;
 
 /// Autonomy mode recorded for a run when no [`ApprovalGate`] is attached
@@ -97,7 +97,12 @@ impl<'a> RunRecorder<'a> {
         }
     }
 
-    /// Append one `agent_steps` row (DATABASE.md §7.9). Best-effort.
+    /// Append one `agent_steps` row (DATABASE.md §7.9).
+    ///
+    /// Reports whether persistence succeeded (`Ok(())`) or failed
+    /// (`Err`), so the caller can keep its `seq` / step counters consistent.
+    /// Failures are logged here — best-effort: they never panic and are
+    /// never propagated into the agent run itself (CF-01).
     #[allow(clippy::too_many_arguments)]
     fn insert_step(
         self,
@@ -109,9 +114,9 @@ impl<'a> RunRecorder<'a> {
         observation: Option<&str>,
         status: Option<&str>,
         duration_ms: Option<i64>,
-    ) {
+    ) -> Result<(), DatabaseError> {
         let repo = AgentRunRepository::new(self.db);
-        if let Err(err) = repo.append_step(
+        let result = repo.append_step(
             run_id,
             seq,
             kind,
@@ -120,12 +125,14 @@ impl<'a> RunRecorder<'a> {
             observation,
             status,
             duration_ms,
-        ) {
+        );
+        if let Err(err) = &result {
             log::warn!(
                 "agent run persistence: step append failed (run {run_id}, \
-                 seq {seq}), continuing: {err}"
+                 seq {seq}), skipping step: {err}"
             );
         }
+        result.map(|_| ())
     }
 
     /// Finalize the `agent_runs` row at run termination (DATABASE.md §7.8).
@@ -240,8 +247,10 @@ impl<'a> ActiveRunRecord<'a> {
     }
 
     /// Append one step with the next `seq`. Best-effort: a failed insert is
-    /// logged and skipped without advancing the counters, so successful
-    /// inserts stay gap-free and strictly increasing (D12).
+    /// logged and skipped without advancing the counters, so the next step
+    /// reuses the same `seq`, `total_steps` counts only successfully
+    /// persisted steps, and successful inserts stay gap-free and strictly
+    /// increasing (D12; CF-01).
     fn append(
         &mut self,
         kind: &str,
@@ -255,20 +264,23 @@ impl<'a> ActiveRunRecord<'a> {
             return;
         };
         let seq = self.next_seq;
-        self.recorder.insert_step(
-            run_id,
-            seq,
-            kind,
-            tool_name,
-            arguments,
-            observation,
-            status,
-            duration_ms,
-        );
-        // Counters advance only on success; `insert_step` reports failures
-        // through `log`, so a skipped step never leaves a gap.
-        self.next_seq += 1;
-        self.recorded_steps += 1;
+        if self
+            .recorder
+            .insert_step(
+                run_id,
+                seq,
+                kind,
+                tool_name,
+                arguments,
+                observation,
+                status,
+                duration_ms,
+            )
+            .is_ok()
+        {
+            self.next_seq += 1;
+            self.recorded_steps += 1;
+        }
     }
 
     /// Finalize the run on every exit path (DATABASE.md §7.8): `completed`
@@ -294,6 +306,83 @@ impl<'a> ActiveRunRecord<'a> {
             self.recorded_steps,
             final_content,
             error.as_deref(),
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::infrastructure::database::in_memory_database;
+    use rusqlite::params;
+
+    /// CF-01: a failed step append must not advance `next_seq` /
+    /// `recorded_steps`; the next successful step reuses the same `seq`,
+    /// successfully persisted steps stay gap-free, and `total_steps` counts
+    /// only successfully persisted steps.
+    ///
+    /// The failure is simulated deterministically through the smallest
+    /// existing seam: the shared connection behind [`Database::lock`] (the
+    /// same seam the repository and schema tests use) pre-occupies seq 1 so
+    /// the recorder's first insert fails on the schema's
+    /// `UNIQUE(run_id, seq)` constraint.
+    #[test]
+    fn failed_step_append_preserves_seq_and_counts_only_persisted_steps() {
+        let db = in_memory_database();
+        let mut record = ActiveRunRecord::start(RunRecorder::new(&db), "m", "supervised");
+        let run_id = record.run_id.expect("run row persisted at start");
+
+        // Force the FIRST step append to fail.
+        {
+            let conn = db.lock().expect("lock connection");
+            conn.execute(
+                "INSERT INTO agent_steps (run_id, seq, kind) VALUES (?1, 1, 'model_turn')",
+                params![run_id],
+            )
+            .expect("occupy seq 1");
+        }
+
+        record.model_turn("turn one", None);
+
+        // The failure was swallowed (best-effort: no panic, no propagation
+        // into the run), but neither counter advanced.
+        assert_eq!(record.next_seq, 1, "seq does not advance on failure");
+        assert_eq!(
+            record.recorded_steps, 0,
+            "recorded_steps does not advance on failure"
+        );
+
+        // Clear the obstacle so the next append can succeed; it must reuse
+        // the same sequence number 1.
+        {
+            let conn = db.lock().expect("lock connection");
+            conn.execute(
+                "DELETE FROM agent_steps WHERE run_id = ?1 AND seq = 1",
+                params![run_id],
+            )
+            .expect("clear seq 1");
+        }
+
+        record.model_turn("turn one (persisted)", None);
+        record.model_turn("turn two", None);
+
+        assert_eq!(record.next_seq, 3, "successful steps advance the seq");
+        assert_eq!(record.recorded_steps, 2);
+
+        let runs = AgentRunRepository::new(&db);
+        let steps = runs.list_steps(run_id).expect("list steps");
+        let seqs: Vec<i64> = steps.iter().map(|s| s.seq).collect();
+        assert_eq!(
+            seqs,
+            vec![1, 2],
+            "successfully persisted steps stay gap-free"
+        );
+
+        record.finalize(&Ok("done".to_string()));
+        let run = runs.read_run(run_id).expect("read run").expect("exists");
+        assert_eq!(
+            run.total_steps, 2,
+            "total_steps counts only successfully persisted steps"
         );
     }
 }
