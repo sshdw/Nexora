@@ -65,6 +65,8 @@ Schema changes are tracked in the `schema_version` table. Each migration inserts
 
 Migrations follow a forward-only, incremental philosophy. Each migration is atomic and versioned. The application refuses to start if the database file's schema version is newer than the application's known migration set, preventing backward incompatibility. Migrations are executed within a transaction; if any step fails, the entire migration rolls back, preserving database integrity. No destructive data changes occur without explicit validation.
 
+v5 introduces a validated rebuild pattern for `agent_runs`: when a `CHECK` widening cannot be expressed with `ALTER TABLE ADD COLUMN`, the migration rebuilds the table (`CREATE TABLE agent_runs_new` -> copy -> `DROP TABLE agent_runs` -> `RENAME`) with `PRAGMA foreign_keys=OFF` applied before the transaction and restored to `ON` after (SQLite cannot toggle `foreign_keys` inside a transaction). This pattern is limited to v5; all other migrations remain byte-identical plain transactions.
+
 ---
 
 ## 6. Entity Relationship Overview
@@ -275,12 +277,14 @@ Migrations follow a forward-only, incremental philosophy. Each migration is atom
 | conversation_id | Owning conversation (NULL until the M5 IPC layer wires runs to conversations) | INTEGER | YES | NULL | None | conversations.id | No | Agent roadmap (Task 4.2). `ON DELETE CASCADE`. |
 | model | Provider model name for the run | TEXT | NO | None | `length(model) > 0` | None | No | Agent roadmap (Task 4.2). Never a credential. |
 | mode | Autonomy mode at run start | TEXT | NO | None | `mode IN ('supervised', 'semi_autonomous', 'full_autonomous')` | None | No | Agent roadmap (Task 4.2). |
-| status | Run state | TEXT | NO | `'running'` | `status IN ('running', 'completed', 'cancelled', 'budget_exhausted', 'error')` | None | No | Agent roadmap (Task 4.2). |
+| status | Run state | TEXT | NO | `'running'` | `status IN ('running', 'completed', 'cancelled', 'budget_exhausted', 'spend_limit_exceeded', 'error')` | None | No | Agent roadmap (Task 4.2/4.3). |
 | started_at | Start timestamp | INTEGER | NO | Current Unix timestamp | `started_at > 0` | None | No | Implementation Decision. |
 | finished_at | Termination timestamp | INTEGER | YES | NULL | `finished_at > 0` | None | No | Agent roadmap (Task 4.2). |
 | total_steps | Number of recorded steps | INTEGER | NO | 0 | `total_steps >= 0` | None | No | D12. |
 | final_content | Final assistant text (terminal `completed` only) | TEXT | YES | NULL | None | None | No | Agent roadmap (Task 4.2). |
 | error | Classified error text (terminal `error` only) | TEXT | YES | NULL | None | None | No | Agent roadmap (Task 4.2). |
+| spent_micro_usd | Total spend at finalize in micro-USD | INTEGER | YES | NULL | `spent_micro_usd IS NULL OR spent_micro_usd >= 0` | None | No | Task 4.3. Policy default pricing; stored only when persisted. |
+| limit_micro_usd | Per-run spend limit in micro-USD | INTEGER | YES | NULL | `limit_micro_usd IS NULL OR limit_micro_usd >= 0` | None | No | Task 4.3. NULL = no limit (opt-in). |
 
 **Implementation Note:** `conversation_id` is stored as NULL until the Task 5.1 IPC layer begins passing the owning conversation to the runner (D50). The column and its CASCADE exist from this migration so the privacy doctrine holds from day one.
 

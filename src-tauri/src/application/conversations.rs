@@ -942,6 +942,7 @@ mod tests {
                 content: "response text".to_string(),
                 model: "gpt-4o-mini".to_string(),
                 tool_calls: Vec::new(),
+                usage: None,
             },
         );
         let conversation_id = service.create("Chat").expect("conversation created");
@@ -963,6 +964,7 @@ mod tests {
                 content: "answer two".to_string(),
                 model: "gpt-4o-mini".to_string(),
                 tool_calls: Vec::new(),
+                usage: None,
             },
         );
         let conversation_id = service.create("Chat").expect("conversation created");
@@ -1019,6 +1021,7 @@ mod tests {
                 content: "persisted answer".to_string(),
                 model: "gpt-4o-mini".to_string(),
                 tool_calls: Vec::new(),
+                usage: None,
             },
         );
         let conversation_id = service.create("Chat").expect("conversation created");
@@ -1077,6 +1080,7 @@ mod tests {
                 content: "answer".to_string(),
                 model: "gpt-4o-mini".to_string(),
                 tool_calls: Vec::new(),
+                usage: None,
             },
         );
         let conversation_id = service.create("Chat").expect("conversation created");
@@ -1147,6 +1151,7 @@ mod tests {
                 content: "final answer".to_string(),
                 model: "gpt-4o-mini".to_string(),
                 tool_calls: Vec::new(),
+                usage: None,
             },
         );
 
@@ -1238,6 +1243,7 @@ mod tests {
                 content: "ok".to_string(),
                 model: "model-v2".to_string(),
                 tool_calls: Vec::new(),
+                usage: None,
             },
         );
         let conversation_id = service.create("Chat").expect("conversation created");
@@ -1272,6 +1278,7 @@ mod tests {
                 content: "unused".to_string(),
                 model: "unused".to_string(),
                 tool_calls: Vec::new(),
+                usage: None,
             },
         );
 
@@ -1314,6 +1321,7 @@ mod tests {
                 content: "unused".to_string(),
                 model: "unused".to_string(),
                 tool_calls: Vec::new(),
+                usage: None,
             },
         );
         let conversation_id = service.create("Chat").expect("conversation created");
@@ -1397,6 +1405,7 @@ mod tests {
                 content: "ok".to_string(),
                 model: "m".to_string(),
                 tool_calls: Vec::new(),
+                usage: None,
             },
         );
         let conversation_id = service.create("Chat").expect("conversation created");
@@ -1468,6 +1477,7 @@ mod tests {
                 content: "unused".to_string(),
                 model: "unused".to_string(),
                 tool_calls: Vec::new(),
+                usage: None,
             },
         );
         let conversation_id = service.create("Chat").expect("conversation created");
@@ -1497,6 +1507,7 @@ mod tests {
                 content: "ok".to_string(),
                 model: "m".to_string(),
                 tool_calls: Vec::new(),
+                usage: None,
             },
         );
         let conversation_id = service.create("Chat").expect("conversation created");
@@ -1538,6 +1549,7 @@ mod tests {
                 content: "ok".to_string(),
                 model: "m".to_string(),
                 tool_calls: Vec::new(),
+                usage: None,
             },
         );
         let conversation_id = service.create("Chat").expect("conversation created");
@@ -1590,6 +1602,7 @@ mod tests {
                 content: "ok".to_string(),
                 model: "m".to_string(),
                 tool_calls: Vec::new(),
+                usage: None,
             },
         );
         let conversation_id = service.create("Chat").expect("conversation created");
@@ -1621,6 +1634,7 @@ mod tests {
                 content: "unused".to_string(),
                 model: "unused".to_string(),
                 tool_calls: Vec::new(),
+                usage: None,
             },
         );
         let conversation_id = service.create("Chat").expect("conversation created");
@@ -1660,6 +1674,7 @@ mod tests {
                 content: "ok".to_string(),
                 model: "m".to_string(),
                 tool_calls: Vec::new(),
+                usage: None,
             },
         );
         let conversation_id = service.create("Chat").expect("conversation created");
@@ -1698,6 +1713,7 @@ mod tests {
                 content: "unused".to_string(),
                 model: "unused".to_string(),
                 tool_calls: Vec::new(),
+                usage: None,
             },
         );
         let conversation_id = service.create("Chat").expect("conversation created");
@@ -1739,6 +1755,7 @@ mod tests {
                 content: "unused".to_string(),
                 model: "unused".to_string(),
                 tool_calls: Vec::new(),
+                usage: None,
             },
         );
         let conversation_id = service.create("Chat").expect("conversation created");

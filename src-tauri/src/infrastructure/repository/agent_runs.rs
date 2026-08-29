@@ -35,7 +35,7 @@ use serde::Serialize;
 /// interpretation or business meaning; `mode` and `status` hold the column
 /// values (`'supervised'` / `'semi_autonomous'` / `'full_autonomous'` and
 /// `'running'` / `'completed'` / `'cancelled'` / `'budget_exhausted'` /
-/// `'error'`).
+/// `'spend_limit_exceeded'` / `'error'`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct AgentRun {
     /// Surrogate primary key (`id`).
@@ -60,6 +60,11 @@ pub(crate) struct AgentRun {
     /// Classified error text (`error`), terminal `error` only. Never a
     /// secret (DATABASE.md §14).
     pub error: Option<String>,
+    /// Total billed spend at finalize, micro-USD (Task 4.3). `None` for
+    /// pre-v5 rows or when not persisted.
+    pub spent_micro_usd: Option<u64>,
+    /// Per-run spend limit, micro-USD (Task 4.3). `None` when no limit.
+    pub limit_micro_usd: Option<u64>,
 }
 
 /// A single `agent_steps` row as persisted, mirroring the columns defined by
@@ -158,6 +163,7 @@ impl AgentRunRepository<'_> {
     ///
     /// Returns a [`DatabaseError`] if the update fails, for example a
     /// `status` value rejected by the table CHECK constraint.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn finalize_run(
         &self,
         id: i64,
@@ -165,12 +171,26 @@ impl AgentRunRepository<'_> {
         total_steps: i64,
         final_content: Option<&str>,
         error: Option<&str>,
+        spent_micro_usd: Option<u64>,
+        limit_micro_usd: Option<u64>,
     ) -> Result<()> {
         let conn = self.conn()?;
+        // spent/limit are stored as INTEGER (micro-USD); use i64 for SQLite
+        // compatibility while the domain uses u64.
+        let spent_i64 = spent_micro_usd.map(|v| i64::try_from(v).unwrap_or(i64::MAX));
+        let limit_i64 = limit_micro_usd.map(|v| i64::try_from(v).unwrap_or(i64::MAX));
         conn.execute(
             "UPDATE agent_runs SET status = ?2, finished_at = (unixepoch()), \
-             total_steps = ?3, final_content = ?4, error = ?5 WHERE id = ?1",
-            params![id, status, total_steps, final_content, error],
+             total_steps = ?3, final_content = ?4, error = ?5, spent_micro_usd = ?6, limit_micro_usd = ?7 WHERE id = ?1",
+            params![
+                id,
+                status,
+                total_steps,
+                final_content,
+                error,
+                spent_i64,
+                limit_i64
+            ],
         )?;
         Ok(())
     }
@@ -186,7 +206,7 @@ impl AgentRunRepository<'_> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, conversation_id, model, mode, status, started_at, finished_at, \
-             total_steps, final_content, error FROM agent_runs WHERE id = ?1",
+             total_steps, final_content, error, spent_micro_usd, limit_micro_usd FROM agent_runs WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map([id], row_to_agent_run)?;
         rows.next().transpose().map_err(DatabaseError::Sqlite)
@@ -202,7 +222,7 @@ impl AgentRunRepository<'_> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, conversation_id, model, mode, status, started_at, finished_at, \
-             total_steps, final_content, error FROM agent_runs ORDER BY started_at DESC",
+             total_steps, final_content, error, spent_micro_usd, limit_micro_usd FROM agent_runs ORDER BY started_at DESC",
         )?;
         let rows = stmt.query_map([], row_to_agent_run)?;
         let mut runs = Vec::new();
@@ -222,7 +242,7 @@ impl AgentRunRepository<'_> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, conversation_id, model, mode, status, started_at, finished_at, \
-             total_steps, final_content, error FROM agent_runs \
+             total_steps, final_content, error, spent_micro_usd, limit_micro_usd FROM agent_runs \
              WHERE conversation_id = ?1 ORDER BY started_at DESC",
         )?;
         let rows = stmt.query_map([conversation_id], row_to_agent_run)?;
@@ -337,6 +357,8 @@ impl AgentRunRepository<'_> {
 
 /// Map one `agent_runs` row onto an [`AgentRun`] record.
 fn row_to_agent_run(row: &rusqlite::Row<'_>) -> std::result::Result<AgentRun, SqliteError> {
+    let spent_i64: Option<i64> = row.get(10)?;
+    let limit_i64: Option<i64> = row.get(11)?;
     Ok(AgentRun {
         id: row.get(0)?,
         conversation_id: row.get(1)?,
@@ -348,6 +370,8 @@ fn row_to_agent_run(row: &rusqlite::Row<'_>) -> std::result::Result<AgentRun, Sq
         total_steps: row.get(7)?,
         final_content: row.get(8)?,
         error: row.get(9)?,
+        spent_micro_usd: spent_i64.map(|v| u64::try_from(v).unwrap_or(0)),
+        limit_micro_usd: limit_i64.map(|v| u64::try_from(v).unwrap_or(0)),
     })
 }
 #[cfg(test)]
@@ -380,7 +404,7 @@ mod tests {
         assert_eq!(created.total_steps, 0);
         assert_eq!(created.finished_at, None);
 
-        runs.finalize_run(run_id, "completed", 3, Some("all done"), None)
+        runs.finalize_run(run_id, "completed", 3, Some("all done"), None, None, None)
             .expect("finalize run");
 
         let finalized = runs
@@ -533,7 +557,7 @@ mod tests {
 
         let run_id = runs.create_run(None, "m", "supervised").expect("run");
         assert!(
-            runs.finalize_run(run_id, "transcended", 1, None, None)
+            runs.finalize_run(run_id, "transcended", 1, None, None, None, None)
                 .is_err(),
             "unknown run status must be rejected"
         );

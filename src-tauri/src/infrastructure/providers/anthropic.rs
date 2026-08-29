@@ -79,7 +79,8 @@ const DEFAULT_MAX_TOKENS: u32 = 1024;
 /// this set documents the currently supported models and anchors the
 /// model-selection surface so the UI can present only supported choices.
 ///
-/// Ordered per Nexora-AI-Model-Catalog-August-2026.md В§10/В§11; the first entry
+/// Pricing is governed by the policy table in
+/// `crate::application::agent::pricing` (DATABASE.md В§7.8); the first entry
 /// is the provider default consumed as `models[0]` by the selection surface
 /// (`claude-3-5-sonnet-20240620`, the previous sole entry, was retired
 /// October 28, 2025).
@@ -336,6 +337,16 @@ fn collect_system(messages: &[AiMessage]) -> Option<String> {
 struct AnthropicResponse {
     model: String,
     content: Vec<ContentBlock>,
+    #[serde(default)]
+    usage: Option<AnthropicUsage>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AnthropicUsage {
+    #[serde(default)]
+    input_tokens: u64,
+    #[serde(default)]
+    output_tokens: u64,
 }
 
 /// One content block from an Anthropic response.
@@ -400,10 +411,21 @@ fn to_ai_response(response: AnthropicResponse) -> Result<AiResponse, AnthropicEr
     } else {
         text_parts.join("")
     };
+    let usage = response.usage.and_then(|u| {
+        if u.input_tokens == 0 && u.output_tokens == 0 {
+            None
+        } else {
+            Some(crate::application::execution::TokenUsage {
+                input_tokens: u.input_tokens,
+                output_tokens: u.output_tokens,
+            })
+        }
+    });
     Ok(AiResponse {
         content,
         model: response.model,
         tool_calls,
+        usage,
     })
 }
 
@@ -645,6 +667,7 @@ mod tests {
                 name: Some("no_args_tool".to_string()),
                 input: None,
             }],
+            usage: None,
         };
         let ai = to_ai_response(response).expect("no-args maps");
         assert_eq!(ai.content, "");
@@ -664,6 +687,7 @@ mod tests {
                 name: None,
                 input: None,
             }],
+            usage: None,
         };
         let ai = to_ai_response(response).expect("response converts");
         assert_eq!(ai.content, "pong");
@@ -675,6 +699,7 @@ mod tests {
         let response = AnthropicResponse {
             model: "claude-sonnet-5".to_string(),
             content: Vec::new(),
+            usage: None,
         };
         assert!(matches!(
             to_ai_response(response),
@@ -693,6 +718,7 @@ mod tests {
                 name: None,
                 input: None,
             }],
+            usage: None,
         };
         assert!(matches!(
             to_ai_response(response),
@@ -964,6 +990,7 @@ mod tests {
                 name: Some("get_weather".to_string()),
                 input: Some(serde_json::json!({"location":"Paris"})),
             }],
+            usage: None,
         };
         let ai = to_ai_response(response).expect("tool_use response maps");
         assert_eq!(ai.content, "");
@@ -994,6 +1021,7 @@ mod tests {
                     input: Some(serde_json::json!({"query":"test"})),
                 },
             ],
+            usage: None,
         };
         let ai = to_ai_response(response).expect("text + tool_use maps");
         assert_eq!(ai.content, "I will call the tool ");
@@ -1013,6 +1041,7 @@ mod tests {
                 name: None,
                 input: None,
             }],
+            usage: None,
         };
         let ai = to_ai_response(response).expect("plain text maps");
         assert_eq!(ai.content, "Hello to you too.");
@@ -1040,6 +1069,7 @@ mod tests {
                     input: Some(serde_json::json!({})),
                 },
             ],
+            usage: None,
         };
         let ai = to_ai_response(response).expect("tool-only maps");
         assert_eq!(ai.content, "");
@@ -1068,6 +1098,7 @@ mod tests {
                     input: None,
                 },
             ],
+            usage: None,
         };
         let ai = to_ai_response(response).expect("concatenated text maps");
         assert_eq!(ai.content, "Hello world");
@@ -1085,6 +1116,7 @@ mod tests {
                 name: None,
                 input: None,
             }],
+            usage: None,
         };
         assert!(matches!(
             to_ai_response(response),
@@ -1203,5 +1235,44 @@ mod tests {
             504 => "Gateway Timeout",
             _ => "OK",
         }
+    }
+    #[test]
+    fn usage_present_maps_to_token_usage() {
+        let json = r#"{"model":"claude-sonnet-5","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":12,"output_tokens":34}}"#;
+        let parsed: AnthropicResponse = serde_json::from_str(json).expect("parse");
+        let usage = parsed.usage.clone().expect("usage present");
+        assert_eq!(usage.input_tokens, 12);
+        assert_eq!(usage.output_tokens, 34);
+        let ai = to_ai_response(parsed).expect("to_ai");
+        let u = ai.usage.expect("ai usage");
+        assert_eq!(u.input_tokens, 12);
+        assert_eq!(u.output_tokens, 34);
+    }
+
+    #[test]
+    fn usage_absent_maps_to_none() {
+        let json = r#"{"model":"claude-sonnet-5","content":[{"type":"text","text":"hi"}]}"#;
+        let parsed: AnthropicResponse = serde_json::from_str(json).expect("parse");
+        assert!(parsed.usage.is_none());
+        let ai = to_ai_response(parsed).expect("to_ai");
+        assert!(ai.usage.is_none());
+    }
+
+    #[test]
+    fn usage_zero_zero_maps_to_none() {
+        let json = r#"{"model":"claude-sonnet-5","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":0,"output_tokens":0}}"#;
+        let parsed: AnthropicResponse = serde_json::from_str(json).expect("parse");
+        let ai = to_ai_response(parsed).expect("to_ai");
+        assert!(ai.usage.is_none());
+    }
+
+    #[test]
+    fn usage_partial_zero_maps_to_some() {
+        let json = r#"{"model":"claude-sonnet-5","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":0,"output_tokens":5}}"#;
+        let parsed: AnthropicResponse = serde_json::from_str(json).expect("parse");
+        let ai = to_ai_response(parsed).expect("to_ai");
+        let u = ai.usage.expect("some");
+        assert_eq!(u.input_tokens, 0);
+        assert_eq!(u.output_tokens, 5);
     }
 }

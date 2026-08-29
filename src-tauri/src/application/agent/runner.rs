@@ -69,6 +69,7 @@ use crate::application::agent::control::{AgentRunEvent, CancellationToken, RunCo
 use crate::application::agent::persistence::{
     mode_to_column, ActiveRunRecord, RunRecorder, DEFAULT_RECORDED_MODE,
 };
+use crate::application::agent::pricing;
 use crate::application::agent::tools::ToolRegistry;
 use crate::application::execution::{
     AiMessage, AiRequest, AiRole, ExecutorError, ProviderExecutor, ToolCall,
@@ -112,6 +113,9 @@ pub(crate) enum AgentError {
     /// attached the run first parked at the boundary awaiting `extend_steps`
     /// and only aborts if it was instead cancelled.
     BudgetExhausted(usize),
+    /// The spend guard tripped: billed spend exceeded the configured per-run
+    /// limit (Task 4.3). `spent_micro` includes the tripping turn's cost.
+    SpendLimitExceeded { spent_micro: u64, limit_micro: u64 },
     /// The provider returned neither tool calls nor usable final content.
     EmptyResponse,
     /// A user cancelled the run via [`RunControl::cancel`] (or cancellation
@@ -127,6 +131,13 @@ impl std::fmt::Display for AgentError {
                 f,
                 "agent stopped: reached the {max}-step limit without a final answer"
             ),
+            Self::SpendLimitExceeded {
+                spent_micro,
+                limit_micro,
+            } => write!(
+                f,
+                "agent stopped: spend limit exceeded (spent {spent_micro} micro-USD of {limit_micro} micro-USD)"
+            ),
             Self::EmptyResponse => {
                 write!(f, "agent stopped: the model returned an empty response")
             }
@@ -139,7 +150,10 @@ impl std::error::Error for AgentError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Provider(err) => Some(err),
-            Self::BudgetExhausted(_) | Self::EmptyResponse | Self::Cancelled => None,
+            Self::BudgetExhausted(_)
+            | Self::SpendLimitExceeded { .. }
+            | Self::EmptyResponse
+            | Self::Cancelled => None,
         }
     }
 }
@@ -184,6 +198,9 @@ pub(crate) struct AgentRunner<'a> {
     /// its structured steps are persisted to `agent_runs` / `agent_steps`
     /// (DATABASE.md В§7.8, В§7.9) best-effort.
     recorder: Option<RunRecorder<'a>>,
+    /// Opt-in spend limit in micro-USD (Task 4.3). `None` means no financial
+    /// guard; the loop keeps the exact pre-4.3 behaviour.
+    spend_limit_micro_usd: Option<u64>,
 }
 
 impl<'a> AgentRunner<'a> {
@@ -199,6 +216,7 @@ impl<'a> AgentRunner<'a> {
             event_sender: None,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             recorder: None,
+            spend_limit_micro_usd: None,
         }
     }
 
@@ -265,6 +283,15 @@ impl<'a> AgentRunner<'a> {
         self
     }
 
+    /// Attach an opt-in spend limit in micro-USD (Task 4.3). `None` (the
+    /// default) means no financial guard; the loop keeps the exact pre-4.3
+    /// behaviour and `tool_calls` byte-for-byte tests stay green.
+    #[must_use]
+    pub(crate) fn with_spend_limit(mut self, micro_usd: u64) -> Self {
+        self.spend_limit_micro_usd = Some(micro_usd);
+        self
+    }
+
     /// Execute the `ReAct` loop for one user request.
     ///
     /// Sends the initial request augmented with the [`ToolRegistry`]
@@ -314,9 +341,17 @@ impl<'a> AgentRunner<'a> {
                 .map_or(DEFAULT_RECORDED_MODE, |gate| mode_to_column(gate.mode()));
             ActiveRunRecord::start(*recorder, model, mode)
         });
-        let result = self.react_loop(provider, model, credential, user_request, record.as_mut());
+        let mut spent_micro_usd: u64 = 0;
+        let result = self.react_loop(
+            provider,
+            model,
+            credential,
+            user_request,
+            record.as_mut(),
+            &mut spent_micro_usd,
+        );
         if let Some(rec) = record.as_ref() {
-            rec.finalize(&result);
+            rec.finalize(&result, spent_micro_usd, self.spend_limit_micro_usd);
         }
         result
     }
@@ -325,6 +360,7 @@ impl<'a> AgentRunner<'a> {
     /// Task 3.2 governance and Task 4.1 approval layers), optionally
     /// recording each model turn, dispatched tool call, and parked approval
     /// decision into `record` (Task 4.2).
+    #[allow(clippy::too_many_lines)]
     fn react_loop(
         &self,
         provider: &str,
@@ -332,6 +368,7 @@ impl<'a> AgentRunner<'a> {
         credential: &str,
         user_request: &str,
         mut record: Option<&mut ActiveRunRecord<'_>>,
+        spent_micro_usd: &mut u64,
     ) -> Result<String, AgentError> {
         let tools = ToolRegistry::definitions();
         // A control never cancelled the plan: when the runner has no attached
@@ -377,6 +414,28 @@ impl<'a> AgentRunner<'a> {
             }
 
             self.check_cancellation(control)?;
+
+            // Task 4.3: spend guard — accumulate billed cost for this turn
+            // (only when a consumer exists) and trip if the limit is exceeded.
+            // Usage absent is counted as $0 (count-as-known).
+            if let Some(usage) = response.usage {
+                if self.spend_limit_micro_usd.is_some() || record.is_some() {
+                    let cost = pricing::cost_for_usage(usage);
+                    *spent_micro_usd = spent_micro_usd.saturating_add(cost);
+                    if let Some(limit) = self.spend_limit_micro_usd {
+                        if *spent_micro_usd > limit {
+                            self.emit(AgentRunEvent::SpendLimitExceeded {
+                                spent_micro: *spent_micro_usd,
+                                limit_micro: limit,
+                            });
+                            return Err(AgentError::SpendLimitExceeded {
+                                spent_micro: *spent_micro_usd,
+                                limit_micro: limit,
+                            });
+                        }
+                    }
+                }
+            }
 
             if response.tool_calls.is_empty() {
                 // AC-2: no tool calls means the model is done. Usable final
@@ -595,6 +654,7 @@ mod tests {
             content: content.to_string(),
             model: "test-model".to_string(),
             tool_calls: Vec::new(),
+            usage: None,
         }
     }
 
@@ -694,6 +754,7 @@ mod tests {
                         "content": "react-loop"
                     }),
                 )],
+                usage: None,
             }),
             Ok(text_response("wrote notes.txt")),
         ]);
@@ -747,6 +808,7 @@ mod tests {
                     ),
                     call_tool("c", "read_file", serde_json::json!({"path": "one.txt"})),
                 ],
+                usage: None,
             }),
             Ok(text_response("did everything")),
         ]);
@@ -784,6 +846,7 @@ mod tests {
                 content: String::new(),
                 model: "test-model".to_string(),
                 tool_calls: vec![raw_call("u1", "does_not_exist", "{}")],
+                usage: None,
             }),
             Ok(text_response("recovered")),
         ]);
@@ -810,6 +873,7 @@ mod tests {
                 content: String::new(),
                 model: "test-model".to_string(),
                 tool_calls: vec![raw_call("bad", "write_file", "not json at all")],
+                usage: None,
             }),
             Ok(text_response("handled")),
         ]);
@@ -837,6 +901,7 @@ mod tests {
                         "path": "../../outside.txt"
                     }),
                 )],
+                usage: None,
             }),
             Ok(text_response("kept going")),
         ]);
@@ -859,6 +924,7 @@ mod tests {
                 content: String::new(),
                 model: "test-model".to_string(),
                 tool_calls: vec![call_tool("loop", "list_directory", serde_json::json!({}))],
+                usage: None,
             })
         };
         let fake = FakeExecutor::new(vec![step(), step(), step()]);
@@ -914,6 +980,7 @@ mod tests {
                 content: String::new(),
                 model: "test-model".to_string(),
                 tool_calls: vec![call_tool("t", "list_directory", serde_json::json!({}))],
+                usage: None,
             }),
             Err(ExecutorError::Failure),
         ]);
@@ -1039,6 +1106,7 @@ mod tests {
             content: String::new(),
             model: "m".to_string(),
             tool_calls: vec![call_tool(id, "list_directory", serde_json::json!({}))],
+            usage: None,
         }
     }
 
@@ -1259,6 +1327,7 @@ mod tests {
                         "write_file",
                         serde_json::json!({ "path": "a.txt", "content": "1" }),
                     )],
+                    usage: None,
                 }),
                 // Turn 2 (block_at = 1): parks until the test cancels, then
                 // yields a fresh tool call that must never run.
@@ -1270,6 +1339,7 @@ mod tests {
                         "write_file",
                         serde_json::json!({ "path": "b.txt", "content": "2" }),
                     )],
+                    usage: None,
                 }),
                 Ok(text_response("never")),
             ],
@@ -1393,6 +1463,7 @@ mod tests {
                     "read_file",
                     serde_json::json!({"path": "exists.txt"}),
                 )],
+                usage: None,
             }),
             Ok(text_response("done")),
         ]);
@@ -1440,6 +1511,7 @@ mod tests {
                     "write_file",
                     serde_json::json!({"path": "out.txt", "content": "hi"}),
                 )],
+                usage: None,
             }),
             Ok(text_response("done")),
         ]);
@@ -1482,6 +1554,7 @@ mod tests {
                     "read_file",
                     serde_json::json!({"path": "a.txt"}),
                 )],
+                usage: None,
             }),
             Ok(text_response("ok")),
         ]);
@@ -1521,6 +1594,7 @@ mod tests {
                     "execute_command",
                     serde_json::json!({"command": "echo hi"}),
                 )],
+                usage: None,
             }),
             Ok(text_response("done")),
         ]);
@@ -1551,6 +1625,7 @@ mod tests {
                 content: String::new(),
                 model: "m".to_string(),
                 tool_calls: vec![approval_call("r1", "list_directory", serde_json::json!({}))],
+                usage: None,
             }),
             Ok(text_response("listed")),
         ]);
@@ -1573,6 +1648,7 @@ mod tests {
                     "write_file",
                     serde_json::json!({"path": "auto.txt", "content": "x"}),
                 )],
+                usage: None,
             }),
             Ok(text_response("ok")),
         ]);
@@ -1597,6 +1673,7 @@ mod tests {
                     "write_file",
                     serde_json::json!({"path": "should_not_exist.txt", "content": "bad"}),
                 )],
+                usage: None,
             }),
             Ok(text_response("recovered")),
         ]);
@@ -1646,6 +1723,7 @@ mod tests {
                 "write_file",
                 serde_json::json!({"path": "x.txt", "content": "y"}),
             )],
+            usage: None,
         })]);
         let runner = AgentRunner::new(&fake, &ws)
             .with_control(control.clone())
@@ -1683,6 +1761,7 @@ mod tests {
                 "read_file",
                 serde_json::json!({"path": "a.txt"}),
             )],
+            usage: None,
         })]);
         let runner = AgentRunner::new(&fake, &ws)
             .with_approval_gate(gate_clone)
@@ -1716,6 +1795,7 @@ mod tests {
                     "write_file",
                     serde_json::json!({"path": "first.txt", "content": "1"}),
                 )],
+                usage: None,
             }),
             Ok(AiResponse {
                 content: String::new(),
@@ -1725,6 +1805,7 @@ mod tests {
                     "write_file",
                     serde_json::json!({"path": "second.txt", "content": "2"}),
                 )],
+                usage: None,
             }),
             Ok(text_response("done")),
         ]);
@@ -1774,6 +1855,7 @@ mod tests {
                     "write_file",
                     serde_json::json!({"path": "no_gate.txt", "content": "ok"}),
                 )],
+                usage: None,
             }),
             Ok(text_response("done")),
         ]);
@@ -1899,6 +1981,7 @@ mod tests {
                     "read_file",
                     serde_json::json!({"path": "exists.txt"}),
                 )],
+                usage: None,
             }),
             Ok(text_response("done")),
         ]);
@@ -1940,6 +2023,7 @@ mod tests {
                     "write_file",
                     serde_json::json!({"path": "x.txt", "content": "1"}),
                 )],
+                usage: None,
             }),
             Ok(text_response("ok")),
         ]);
@@ -2067,6 +2151,232 @@ mod tests {
         let runs = AgentRunRepository::new(&db);
         let run = &runs.list_runs_by_started_at_desc().expect("list runs")[0];
         assert_eq!(run.mode, "semi_autonomous", "the gate's mode is recorded");
+        let _ = fs::remove_dir_all(&ws);
+    }
+    // -----------------------------------------------------------------------
+    // Spend guard (Task 4.3)
+    // -----------------------------------------------------------------------
+
+    use crate::application::execution::TokenUsage;
+
+    fn usage_response(content: &str, input: u64, output: u64) -> AiResponse {
+        AiResponse {
+            content: content.to_string(),
+            model: "test-model".to_string(),
+            tool_calls: Vec::new(),
+            usage: Some(TokenUsage {
+                input_tokens: input,
+                output_tokens: output,
+            }),
+        }
+    }
+
+    fn usage_tool_response(id: &str, input: u64, output: u64) -> AiResponse {
+        AiResponse {
+            content: String::new(),
+            model: "test-model".to_string(),
+            tool_calls: vec![call_tool(id, "list_directory", serde_json::json!({}))],
+            usage: Some(TokenUsage {
+                input_tokens: input,
+                output_tokens: output,
+            }),
+        }
+    }
+
+    #[test]
+    fn spend_guard_trips_exactly_on_exceed() {
+        let ws = temp_workspace();
+        // Each turn costs 1_000_000 micro (200_000 input tokens * 5_000_000 / 1M)
+        let cheap = |id| usage_tool_response(id, 200_000, 0);
+        let fake = FakeExecutor::new(vec![
+            Ok(cheap("a")),
+            Ok(cheap("b")),
+            Ok(usage_response("final", 200_000, 0)),
+        ]);
+        let limit = 2_500_000u64; // 2.5M, so 2*1M=2M under, 3*1M=3M over
+        let (tx, rx) = channel();
+        let runner = AgentRunner::new(&fake, &ws)
+            .with_spend_limit(limit)
+            .with_event_sender(tx);
+        let err = runner
+            .run("openai", "m", "cred", "q")
+            .expect_err("must trip");
+        match err {
+            AgentError::SpendLimitExceeded {
+                spent_micro,
+                limit_micro,
+            } => {
+                assert_eq!(spent_micro, 3_000_000);
+                assert_eq!(limit_micro, limit);
+            }
+            other => panic!("expected SpendLimitExceeded, got {other:?}"),
+        }
+        // Event payload correct
+        let ev = rx.recv_timeout(Duration::from_secs(2)).expect("event");
+        assert_eq!(
+            ev,
+            AgentRunEvent::SpendLimitExceeded {
+                spent_micro: 3_000_000,
+                limit_micro: limit
+            }
+        );
+        // Two tool calls ran (first two turns), third was final but tripped before return
+        assert_eq!(fake.requests.borrow().len(), 3);
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn spend_guard_no_limit_behaves_identical() {
+        let ws = temp_workspace();
+        // Same script as above, but no limit — must complete normally
+        let fake = FakeExecutor::new(vec![
+            Ok(AiResponse {
+                content: String::new(),
+                model: "m".to_string(),
+                tool_calls: vec![call_tool("a", "list_directory", serde_json::json!({}))],
+                usage: Some(TokenUsage {
+                    input_tokens: 200_000,
+                    output_tokens: 0,
+                }),
+            }),
+            Ok(text_response("done")),
+        ]);
+        let runner = AgentRunner::new(&fake, &ws);
+        let ans = runner.run("openai", "m", "cred", "q").expect("completes");
+        assert_eq!(ans, "done");
+        assert_eq!(fake.requests.borrow().len(), 2);
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn spend_guard_usage_none_adds_zero() {
+        let ws = temp_workspace();
+        // First turn: usage None (cost 0), second: cheap 1M, limit 500k -> second trips
+        // Actually first None adds 0, spent 0, second 1M >500k trips
+        let fake = FakeExecutor::new(vec![
+            Ok(AiResponse {
+                content: String::new(),
+                model: "m".to_string(),
+                tool_calls: vec![call_tool("a", "list_directory", serde_json::json!({}))],
+                usage: None,
+            }),
+            Ok(usage_tool_response("b", 200_000, 0)),
+            Ok(text_response("never")),
+        ]);
+        let runner = AgentRunner::new(&fake, &ws).with_spend_limit(500_000);
+        let err = runner
+            .run("openai", "m", "cred", "q")
+            .expect_err("trips on second");
+        assert!(matches!(err, AgentError::SpendLimitExceeded { .. }));
+        // Only 2 turns ran (first None + second that tripped)
+        assert_eq!(fake.requests.borrow().len(), 2);
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn spend_guard_event_and_error_payload_correct() {
+        let ws = temp_workspace();
+        let fake = FakeExecutor::new(vec![Ok(usage_response("hi", 400_000, 0))]);
+        // 400k *5M/1M =2_000_000
+        let limit = 1_000_000u64;
+        let (tx, rx) = channel();
+        let runner = AgentRunner::new(&fake, &ws)
+            .with_spend_limit(limit)
+            .with_event_sender(tx);
+        let err = runner.run("openai", "m", "cred", "q").expect_err("trips");
+        match &err {
+            AgentError::SpendLimitExceeded {
+                spent_micro,
+                limit_micro,
+            } => {
+                assert_eq!(*spent_micro, 2_000_000);
+                assert_eq!(*limit_micro, limit);
+                // Display contains integers, no secrets
+                let s = format!("{err}");
+                assert!(s.contains("2000000"));
+                assert!(s.contains("1000000"));
+            }
+            _ => panic!("wrong error"),
+        }
+        let ev = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        match ev {
+            AgentRunEvent::SpendLimitExceeded {
+                spent_micro,
+                limit_micro,
+            } => {
+                assert_eq!(spent_micro, 2_000_000);
+                assert_eq!(limit_micro, limit);
+            }
+            _ => panic!("wrong event"),
+        }
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn spend_guard_recorder_persists_status_and_spend() {
+        let db = in_memory_database();
+        let ws = temp_workspace();
+        let fake = FakeExecutor::new(vec![Ok(usage_response("hi", 400_000, 0))]);
+        let runner = AgentRunner::new(&fake, &ws)
+            .with_spend_limit(1_000_000)
+            .with_run_recorder(RunRecorder::new(&db));
+        let err = runner.run("openai", "m", "cred", "q").expect_err("trips");
+        assert!(matches!(err, AgentError::SpendLimitExceeded { .. }));
+        let runs = AgentRunRepository::new(&db);
+        let run = runs.list_runs_by_started_at_desc().expect("list")[0].clone();
+        assert_eq!(run.status, "spend_limit_exceeded");
+        assert_eq!(run.spent_micro_usd, Some(2_000_000));
+        assert_eq!(run.limit_micro_usd, Some(1_000_000));
+        assert_eq!(run.error, None);
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn spend_guard_non_recorded_still_emits_event() {
+        let ws = temp_workspace();
+        let fake = FakeExecutor::new(vec![Ok(usage_response("hi", 400_000, 0))]);
+        let (tx, rx) = channel();
+        let runner = AgentRunner::new(&fake, &ws)
+            .with_spend_limit(1_000_000)
+            .with_event_sender(tx);
+        let err = runner.run("openai", "m", "cred", "q").expect_err("trips");
+        assert!(matches!(err, AgentError::SpendLimitExceeded { .. }));
+        let ev = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(matches!(ev, AgentRunEvent::SpendLimitExceeded { .. }));
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn spend_guard_step_governor_untouched() {
+        let ws = temp_workspace();
+        // BudgetExhausted should still happen when max_iterations hit, even with a spend limit that is not tripped
+        let fake = FakeExecutor::new(vec![
+            Ok(usage_tool_response("a", 10, 0)), // cost tiny 50 micro
+            Ok(usage_tool_response("b", 10, 0)),
+            Ok(text_response("later")),
+        ]);
+        let runner = AgentRunner::new(&fake, &ws)
+            .with_max_iterations(2)
+            .with_spend_limit(10_000_000); // high, not tripped
+        let err = runner.run("openai", "m", "cred", "q").expect_err("budget");
+        assert!(matches!(err, AgentError::BudgetExhausted(2)));
+        assert_eq!(fake.requests.borrow().len(), 2);
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn spend_guard_exactly_at_limit_does_not_trip() {
+        let ws = temp_workspace();
+        // Cost 1M per turn, limit 2M, two turns exactly at limit -> should complete
+        let fake = FakeExecutor::new(vec![
+            Ok(usage_tool_response("a", 200_000, 0)),
+            Ok(usage_response("done", 200_000, 0)),
+        ]);
+        let runner = AgentRunner::new(&fake, &ws).with_spend_limit(2_000_000);
+        let ans = runner
+            .run("openai", "m", "cred", "q")
+            .expect("at limit completes");
+        assert_eq!(ans, "done");
         let _ = fs::remove_dir_all(&ws);
     }
 }

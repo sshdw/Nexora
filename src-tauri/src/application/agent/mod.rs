@@ -25,5 +25,6 @@
 pub mod approval;
 pub mod control;
 pub mod persistence;
+pub mod pricing;
 pub mod runner;
 pub mod tools;

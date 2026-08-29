@@ -74,7 +74,8 @@ pub(crate) const PROVIDER_DISPLAY_NAME: &str = "Gemini";
 /// this set documents the currently supported models and anchors the
 /// model-selection tests.
 ///
-/// Ordered per Nexora-AI-Model-Catalog-August-2026.md В§10/В§11; the first entry
+/// Pricing is governed by the policy table in
+/// `crate::application::agent::pricing` (DATABASE.md В§7.8); the first entry
 /// is the provider default consumed as `models[0]` by the selection surface.
 /// The retired IDs this list replaces: `gemini-1.5-pro`, `gemini-1.5-flash`
 /// (shut down), and `gemini-2.0-flash` (retired June 1, 2026).
@@ -338,6 +339,16 @@ struct GenerateContentResponse {
     #[serde(rename = "modelVersion")]
     model_version: Option<String>,
     candidates: Vec<Candidate>,
+    #[serde(rename = "usageMetadata", default)]
+    usage_metadata: Option<GeminiUsage>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GeminiUsage {
+    #[serde(rename = "promptTokenCount", default)]
+    prompt_token_count: u64,
+    #[serde(rename = "candidatesTokenCount", default)]
+    candidates_token_count: u64,
 }
 
 /// One generation candidate from a Gemini response.
@@ -430,12 +441,23 @@ fn to_ai_response(
     } else {
         text_parts.join("")
     };
+    let usage = response.usage_metadata.and_then(|u| {
+        if u.prompt_token_count == 0 && u.candidates_token_count == 0 {
+            None
+        } else {
+            Some(crate::application::execution::TokenUsage {
+                input_tokens: u.prompt_token_count,
+                output_tokens: u.candidates_token_count,
+            })
+        }
+    });
     Ok(AiResponse {
         content,
         model: response
             .model_version
             .unwrap_or_else(|| requested_model.to_string()),
         tool_calls,
+        usage,
     })
 }
 
@@ -707,6 +729,7 @@ mod tests {
                     }],
                 },
             }],
+            usage_metadata: None,
         };
         let ai = to_ai_response(response, "gemini-3.6-flash").expect("valid response maps");
         assert_eq!(ai.content, "pong");
@@ -725,6 +748,7 @@ mod tests {
                     }],
                 },
             }],
+            usage_metadata: None,
         };
         let ai = to_ai_response(response, "gemini-3.6-flash").expect("valid response maps");
         assert_eq!(ai.content, "pong");
@@ -736,6 +760,7 @@ mod tests {
         let response = GenerateContentResponse {
             model_version: Some("gemini-3.6-flash".to_string()),
             candidates: Vec::new(),
+            usage_metadata: None,
         };
         assert!(matches!(
             to_ai_response(response, "gemini-3.6-flash"),
@@ -755,6 +780,7 @@ mod tests {
                     }],
                 },
             }],
+            usage_metadata: None,
         };
         assert!(matches!(
             to_ai_response(response, "gemini-3.6-flash"),
@@ -1045,6 +1071,7 @@ mod tests {
                     }],
                 },
             }],
+            usage_metadata: None,
         };
         let ai = to_ai_response(response, "gemini-3.6-flash").expect("functionCall maps");
         assert_eq!(ai.content, "");
@@ -1077,6 +1104,7 @@ mod tests {
                     ],
                 },
             }],
+            usage_metadata: None,
         };
         let ai = to_ai_response(response, "gemini-3.6-flash").expect("text + functionCall maps");
         assert_eq!(ai.content, "I will call the tool ");
@@ -1097,6 +1125,7 @@ mod tests {
                     }],
                 },
             }],
+            usage_metadata: None,
         };
         let ai = to_ai_response(response, "gemini-3.6-flash").expect("plain text maps");
         assert_eq!(ai.content, "Hello to you too.");
@@ -1128,6 +1157,7 @@ mod tests {
                     ],
                 },
             }],
+            usage_metadata: None,
         };
         let ai = to_ai_response(response, "gemini-3.6-flash").expect("tool-only maps");
         assert_eq!(ai.content, "");
@@ -1157,6 +1187,7 @@ mod tests {
                     ],
                 },
             }],
+            usage_metadata: None,
         };
         let ai = to_ai_response(response, "gemini-3.6-flash").expect("concatenated text maps");
         assert_eq!(ai.content, "Hello world");
@@ -1228,6 +1259,7 @@ mod tests {
                     }],
                 },
             }],
+            usage_metadata: None,
         };
         let ai = to_ai_response(response, "gemini-3.6-flash").expect("no-args maps");
         assert_eq!(ai.content, "");
@@ -1295,5 +1327,44 @@ mod tests {
             504 => "Gateway Timeout",
             _ => "OK",
         }
+    }
+    #[test]
+    fn usage_present_maps_to_token_usage() {
+        let json = r#"{"modelVersion":"gemini-3.6-flash","candidates":[{"content":{"parts":[{"text":"hi"}]}}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":20}}"#;
+        let parsed: GenerateContentResponse = serde_json::from_str(json).expect("parse");
+        let usage = parsed.usage_metadata.clone().expect("usage present");
+        assert_eq!(usage.prompt_token_count, 10);
+        assert_eq!(usage.candidates_token_count, 20);
+        let ai = to_ai_response(parsed, "gemini-3.6-flash").expect("to_ai");
+        let u = ai.usage.expect("ai usage");
+        assert_eq!(u.input_tokens, 10);
+        assert_eq!(u.output_tokens, 20);
+    }
+
+    #[test]
+    fn usage_absent_maps_to_none() {
+        let json = r#"{"modelVersion":"gemini-3.6-flash","candidates":[{"content":{"parts":[{"text":"hi"}]}}]}"#;
+        let parsed: GenerateContentResponse = serde_json::from_str(json).expect("parse");
+        assert!(parsed.usage_metadata.is_none());
+        let ai = to_ai_response(parsed, "gemini-3.6-flash").expect("to_ai");
+        assert!(ai.usage.is_none());
+    }
+
+    #[test]
+    fn usage_zero_zero_maps_to_none() {
+        let json = r#"{"modelVersion":"gemini-3.6-flash","candidates":[{"content":{"parts":[{"text":"hi"}]}}],"usageMetadata":{"promptTokenCount":0,"candidatesTokenCount":0}}"#;
+        let parsed: GenerateContentResponse = serde_json::from_str(json).expect("parse");
+        let ai = to_ai_response(parsed, "gemini-3.6-flash").expect("to_ai");
+        assert!(ai.usage.is_none());
+    }
+
+    #[test]
+    fn usage_partial_zero_maps_to_some() {
+        let json = r#"{"modelVersion":"gemini-3.6-flash","candidates":[{"content":{"parts":[{"text":"hi"}]}}],"usageMetadata":{"promptTokenCount":0,"candidatesTokenCount":5}}"#;
+        let parsed: GenerateContentResponse = serde_json::from_str(json).expect("parse");
+        let ai = to_ai_response(parsed, "gemini-3.6-flash").expect("to_ai");
+        let u = ai.usage.expect("some");
+        assert_eq!(u.input_tokens, 0);
+        assert_eq!(u.output_tokens, 5);
     }
 }

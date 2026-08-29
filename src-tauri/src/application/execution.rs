@@ -192,12 +192,25 @@ pub(crate) enum AiRole {
     Assistant,
 }
 
+/// Token usage for one provider response (Task 4.3).
+///
+/// `None` on [`AiResponse::usage`] means the provider response carried no
+/// usage block (streaming or usage-less response) — this is not an error and
+/// is counted as $0 by the spend guard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct TokenUsage {
+    /// Input (prompt) tokens billed for this turn.
+    pub input_tokens: u64,
+    /// Output (completion) tokens billed for this turn.
+    pub output_tokens: u64,
+}
+
 /// A provider-independent AI response (ARCHITECTURE.md §7).
 ///
 /// Carries the assistant's text plus the model that produced it so the caller
 /// can record which model actually responded. No secret or provider-specific
 /// detail is included.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct AiResponse {
     /// Assistant response text.
     pub content: String,
@@ -205,6 +218,8 @@ pub(crate) struct AiResponse {
     pub model: String,
     /// Structured tool calls returned by the assistant, if any.
     pub tool_calls: Vec<ToolCall>,
+    /// Token usage for this turn, if the provider reported it.
+    pub usage: Option<TokenUsage>,
 }
 
 /// Error raised by a [`ProviderExecutor`] while executing a request.
