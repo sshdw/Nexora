@@ -10,8 +10,9 @@
 //! # Recording semantics (D12)
 //!
 //! - **Start:** one `agent_runs` row is inserted at the beginning of `run()`
-//!   with `status = 'running'` and `conversation_id = NULL` (the Task 5.1
-//!   IPC layer will begin wiring runs to conversations; D50).
+//!   with `status = 'running'` and the recorder's `conversation_id` (linked
+//!   runs, D50; Task 5.1 — the IPC layer pre-creates the row with the
+//!   conversation and the spawned run adopts it).
 //! - **Mode:** the mode recorded for the run is the attached
 //!   [`ApprovalGate`]'s current [`AutonomyMode`]. Without a gate the run is
 //!   recorded as `supervised` ([`DEFAULT_RECORDED_MODE`]) — the most
@@ -38,7 +39,10 @@
 //! counter does not advance, keeping successful inserts gap-free), and a
 //! failed finalize is logged. Every failure is reported through `log`.
 
+use std::sync::mpsc::Sender;
+
 use crate::application::agent::approval::AutonomyMode;
+use crate::application::agent::control::AgentRunEvent;
 use crate::application::agent::runner::AgentError;
 use crate::application::execution::ToolCall;
 use crate::infrastructure::database::{Database, DatabaseError};
@@ -61,22 +65,103 @@ pub(crate) fn mode_to_column(mode: AutonomyMode) -> &'static str {
     }
 }
 
+/// Map a run outcome onto the terminal `agent_runs` columns
+/// `(status, final_content, error)` (DATABASE.md §7.8). Shared by
+/// [`ActiveRunRecord::finalize`] and the Task 5.1 bridge's `RunFinished`
+/// frame, so the UI, the live stream, and the persisted row cannot disagree.
+#[must_use]
+pub(crate) fn terminal_outcome(
+    result: &Result<String, AgentError>,
+) -> (&'static str, Option<String>, Option<String>) {
+    match result {
+        Ok(content) => ("completed", Some(content.clone()), None),
+        // Cancellation, budget and spend exhaustion are terminal states of
+        // the governance ladder, not classified errors; `error` stays NULL
+        // per DATABASE.md §7.8 (terminal `error` only).
+        Err(AgentError::Cancelled) => ("cancelled", None, None),
+        Err(AgentError::BudgetExhausted(_)) => ("budget_exhausted", None, None),
+        Err(AgentError::SpendLimitExceeded { .. }) => ("spend_limit_exceeded", None, None),
+        Err(err) => ("error", None, Some(err.to_string())),
+    }
+}
+
 /// Opt-in run recorder: the attachment point between the runner loop and the
 /// agent persistence tables (Task 4.2).
 ///
 /// A cheap copyable handle over the shared application [`Database`], mirroring
 /// the runner's other optional attachments (`RunControl`, `ApprovalGate`).
 /// All recording is best-effort; see the module docs for the failure policy.
+///
+/// Task 5.1 extends the recorder with two opt-in additions:
+///
+/// - `conversation_id`: carried into `create_run` so runs are linked to
+///   their conversations (D50; the column existed nullable until now).
+/// - `events`: an optional [`Sender<AgentRunEvent>`] borrowed from the run
+///   bridge; after each *successful* `append_step` the recorder emits one
+///   `AgentRunEvent::StepRecorded` with the persisted `run_id`/`seq`, so the
+///   live stream and the persisted rows are produced by the same code path
+///   (CF-01-safe: a failed insert emits nothing and its `seq` is reused).
+/// - `run_id`: a pre-assigned run id adopted instead of inserting a new row
+///   (the Task 5.1 IPC layer creates the row synchronously before spawning
+///   the run thread so it can register the run and return the id).
+///
+/// The runner itself is untouched by all three: it keeps calling
+/// `ActiveRunRecord::start(*recorder, ..)` exactly as in 4.2.
 #[derive(Clone, Copy)]
 pub(crate) struct RunRecorder<'a> {
     db: &'a Database,
+    conversation_id: Option<i64>,
+    adopted_run_id: Option<i64>,
+    events: Option<&'a Sender<AgentRunEvent>>,
 }
 
 impl<'a> RunRecorder<'a> {
     /// Create a recorder over the shared application [`Database`].
     #[must_use]
     pub(crate) const fn new(db: &'a Database) -> Self {
-        Self { db }
+        Self {
+            db,
+            conversation_id: None,
+            adopted_run_id: None,
+            events: None,
+        }
+    }
+
+    /// Link recorded runs to `conversation_id` (Task 5.1, D50): the value is
+    /// passed straight into `create_run`.
+    #[must_use]
+    pub(crate) const fn with_conversation(mut self, conversation_id: i64) -> Self {
+        self.conversation_id = Some(conversation_id);
+        self
+    }
+
+    /// Adopt a pre-created `agent_runs` row (Task 5.1): `start` records
+    /// against this id instead of inserting a new row.
+    #[must_use]
+    pub(crate) const fn with_run_id(mut self, run_id: i64) -> Self {
+        self.adopted_run_id = Some(run_id);
+        self
+    }
+
+    /// Stream one `StepRecorded` event per successfully persisted step to
+    /// `events` (Task 5.1). Best-effort: a disconnected receiver never blocks
+    /// or fails the run.
+    #[must_use]
+    pub(crate) const fn with_events(mut self, events: &'a Sender<AgentRunEvent>) -> Self {
+        self.events = Some(events);
+        self
+    }
+
+    /// Create the `agent_runs` row for a run about to start (Task 5.1).
+    ///
+    /// The IPC layer calls this synchronously *before* spawning the run
+    /// thread, so it can register the run and return its id immediately; the
+    /// spawned thread's recorder then adopts the row via
+    /// [`Self::with_run_id`]. Best-effort: returns `None` when the insert
+    /// fails.
+    #[must_use]
+    pub(crate) fn create_run_row(&self, model: &str, mode: &str) -> Option<i64> {
+        self.insert_run(model, mode)
     }
 
     /// Insert the `agent_runs` row for one run (DATABASE.md §7.8).
@@ -85,7 +170,7 @@ impl<'a> RunRecorder<'a> {
     /// when the insert fails, so the run continues without persistence.
     fn insert_run(self, model: &str, mode: &str) -> Option<i64> {
         let repo = AgentRunRepository::new(self.db);
-        match repo.create_run(None, model, mode) {
+        match repo.create_run(self.conversation_id, model, mode) {
             Ok(id) => Some(id),
             Err(err) => {
                 log::warn!(
@@ -126,11 +211,31 @@ impl<'a> RunRecorder<'a> {
             status,
             duration_ms,
         );
-        if let Err(err) = &result {
-            log::warn!(
+        match &result {
+            Err(err) => log::warn!(
                 "agent run persistence: step append failed (run {run_id}, \
                  seq {seq}), skipping step: {err}"
-            );
+            ),
+            // Task 5.1: emit one step event per successfully persisted step,
+            // with exactly the persisted `run_id`/`seq` (CF-01-aligned). The
+            // emission happens on the run thread (recorder methods are called
+            // by the runner), so governance and step events on the same
+            // channel stay totally ordered by emission. Best-effort: a
+            // disconnected receiver never blocks or fails the run.
+            Ok(_) => {
+                if let Some(events) = self.events {
+                    let _ = events.send(AgentRunEvent::StepRecorded {
+                        run_id,
+                        seq,
+                        kind: kind.to_string(),
+                        tool_name: tool_name.map(str::to_string),
+                        arguments: arguments.map(str::to_string),
+                        observation: observation.map(str::to_string),
+                        status: status.map(str::to_string),
+                        duration_ms,
+                    });
+                }
+            }
         }
         result.map(|_| ())
     }
@@ -177,12 +282,16 @@ pub(crate) struct ActiveRunRecord<'a> {
 }
 
 impl<'a> ActiveRunRecord<'a> {
-    /// Start recording one run: insert the `agent_runs` row (DATABASE.md
-    /// §7.8). Best-effort — a failed start leaves the record without a run
-    /// id and every later step append becomes a no-op.
+    /// Start recording one run: record against the adopted run id when the
+    /// recorder carries one (Task 5.1 IPC path — the row was created before
+    /// the run thread spawned), otherwise insert the `agent_runs` row
+    /// (DATABASE.md §7.8). Best-effort — a failed start leaves the record
+    /// without a run id and every later step append becomes a no-op.
     #[must_use]
     pub(crate) fn start(recorder: RunRecorder<'a>, model: &str, mode: &str) -> Self {
-        let run_id = recorder.insert_run(model, mode);
+        let run_id = recorder
+            .adopted_run_id
+            .or_else(|| recorder.insert_run(model, mode));
         Self {
             recorder,
             run_id,
@@ -307,16 +416,7 @@ impl<'a> ActiveRunRecord<'a> {
         let Some(run_id) = self.run_id else {
             return;
         };
-        let (status, final_content, error) = match result {
-            Ok(content) => ("completed", Some(content.as_str()), None),
-            // Cancellation, budget and spend exhaustion are terminal states of
-            // the governance ladder, not classified errors; `error` stays NULL
-            // per DATABASE.md §7.8 (terminal `error` only).
-            Err(AgentError::Cancelled) => ("cancelled", None, None),
-            Err(AgentError::BudgetExhausted(_)) => ("budget_exhausted", None, None),
-            Err(AgentError::SpendLimitExceeded { .. }) => ("spend_limit_exceeded", None, None),
-            Err(err) => ("error", None, Some(err.to_string())),
-        };
+        let (status, final_content, error) = terminal_outcome(result);
         // Task 4.3: spent/limit are persisted when a recorder is attached,
         // even for non-spend runs (spent may be 0). Pre-v5 rows have NULL.
         let spent_opt = Some(spent_micro_usd);
@@ -324,7 +424,7 @@ impl<'a> ActiveRunRecord<'a> {
             run_id,
             status,
             self.recorded_steps,
-            final_content,
+            final_content.as_deref(),
             error.as_deref(),
             spent_opt,
             limit_micro_usd,
@@ -406,5 +506,199 @@ mod tests {
             run.total_steps, 2,
             "total_steps counts only successfully persisted steps"
         );
+    }
+
+    /// Task 5.1: the recorder emits one `StepRecorded` per successfully
+    /// persisted step, with `seq` exactly matching the persisted rows and
+    /// payloads identical to the stored columns.
+    #[test]
+    fn step_events_align_with_persisted_seq_and_payloads() {
+        let db = in_memory_database();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut record =
+            ActiveRunRecord::start(RunRecorder::new(&db).with_events(&tx), "m", "supervised");
+        let run_id = record.run_id.expect("run row persisted at start");
+
+        record.model_turn("thinking", Some(120));
+        let call = ToolCall {
+            id: "c1".to_string(),
+            name: "read_file".to_string(),
+            arguments: "{}".to_string(),
+        };
+        record.tool_call(&call, "file body", "succeeded", Some(5));
+        record.approval(&call, true);
+
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+        assert_eq!(events.len(), 3, "one event per persisted step");
+        for (index, event) in events.iter().enumerate() {
+            let AgentRunEvent::StepRecorded {
+                run_id: event_run_id,
+                seq,
+                ..
+            } = event
+            else {
+                panic!("expected StepRecorded, got: {event:?}");
+            };
+            assert_eq!(*event_run_id, run_id);
+            assert_eq!(
+                *seq,
+                i64::try_from(index + 1).expect("index fits in i64"),
+                "seq aligns with the row"
+            );
+        }
+        let AgentRunEvent::StepRecorded {
+            kind,
+            tool_name,
+            observation,
+            status,
+            duration_ms,
+            ..
+        } = &events[2]
+        else {
+            unreachable!("checked above");
+        };
+        assert_eq!(kind, "approval");
+        assert_eq!(tool_name.as_deref(), Some("read_file"));
+        assert_eq!(observation.as_deref(), Some("approved"));
+        assert_eq!(status.as_deref(), Some("succeeded"));
+        assert_eq!(*duration_ms, None);
+
+        // The live seqs are exactly the persisted seqs.
+        let runs = AgentRunRepository::new(&db);
+        let persisted: Vec<i64> = runs
+            .list_steps(run_id)
+            .expect("list steps")
+            .iter()
+            .map(|step| step.seq)
+            .collect();
+        let streamed: Vec<i64> = events
+            .iter()
+            .map(|event| match event {
+                AgentRunEvent::StepRecorded { seq, .. } => *seq,
+                other => panic!("unexpected event: {other:?}"),
+            })
+            .collect();
+        assert_eq!(streamed, persisted, "live stream matches persisted rows");
+    }
+
+    /// Task 5.1 + CF-01: a failed step insert emits NO event; the retry that
+    /// succeeds reuses the same `seq` and emits it once.
+    #[test]
+    fn failed_step_insert_emits_no_event_and_retry_uses_same_seq() {
+        let db = in_memory_database();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut record =
+            ActiveRunRecord::start(RunRecorder::new(&db).with_events(&tx), "m", "supervised");
+        let run_id = record.run_id.expect("run row persisted at start");
+
+        // Force the FIRST step append to fail (same seam as the CF-01 test).
+        {
+            let conn = db.lock().expect("lock connection");
+            conn.execute(
+                "INSERT INTO agent_steps (run_id, seq, kind) VALUES (?1, 1, 'model_turn')",
+                params![run_id],
+            )
+            .expect("occupy seq 1");
+        }
+        record.model_turn("dropped", None);
+        assert!(rx.try_recv().is_err(), "a failed insert must emit no event");
+
+        // Clear the obstacle; the retry reuses seq 1 and emits it once.
+        {
+            let conn = db.lock().expect("lock connection");
+            conn.execute(
+                "DELETE FROM agent_steps WHERE run_id = ?1 AND seq = 1",
+                params![run_id],
+            )
+            .expect("clear seq 1");
+        }
+        record.model_turn("persisted", None);
+        match rx.try_recv().expect("retry emits") {
+            AgentRunEvent::StepRecorded { seq, .. } => assert_eq!(seq, 1),
+            other => panic!("expected StepRecorded, got: {other:?}"),
+        }
+        assert!(rx.try_recv().is_err(), "no duplicate event");
+    }
+
+    /// Task 5.1 (D50): the recorder passes its conversation id into
+    /// `create_run`; a recorder without one keeps the historical NULL.
+    #[test]
+    fn conversation_id_is_passed_to_create_run() {
+        let db = in_memory_database();
+        let conversations =
+            crate::infrastructure::repository::conversations::ConversationRepository::new(&db);
+        let conversation_id = conversations
+            .create("conv", "active")
+            .expect("conversation");
+
+        let linked = ActiveRunRecord::start(
+            RunRecorder::new(&db).with_conversation(conversation_id),
+            "m",
+            "supervised",
+        );
+        let linked_id = linked.run_id.expect("linked run persisted");
+        let runs = AgentRunRepository::new(&db);
+        assert_eq!(
+            runs.read_run(linked_id)
+                .expect("read")
+                .expect("exists")
+                .conversation_id,
+            Some(conversation_id),
+            "create_run receives the recorder's conversation id"
+        );
+
+        let unlinked = ActiveRunRecord::start(RunRecorder::new(&db), "m", "supervised");
+        let unlinked_id = unlinked.run_id.expect("run persisted");
+        assert_eq!(
+            runs.read_run(unlinked_id)
+                .expect("read")
+                .expect("exists")
+                .conversation_id,
+            None,
+            "no conversation id recorded without with_conversation"
+        );
+    }
+
+    /// Task 5.1: an adopted run id records against the pre-created row —
+    /// no second `agent_runs` row is inserted and steps land under the
+    /// adopted id.
+    #[test]
+    fn adopted_run_id_records_against_the_pre_created_row() {
+        let db = in_memory_database();
+        let runs = AgentRunRepository::new(&db);
+        let conversations =
+            crate::infrastructure::repository::conversations::ConversationRepository::new(&db);
+        let conversation_id = conversations
+            .create("conv", "active")
+            .expect("conversation");
+        let pre_created = runs
+            .create_run(Some(conversation_id), "m", "semi_autonomous")
+            .expect("pre-created row");
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut record = ActiveRunRecord::start(
+            RunRecorder::new(&db)
+                .with_run_id(pre_created)
+                .with_conversation(conversation_id)
+                .with_events(&tx),
+            "m",
+            "semi_autonomous",
+        );
+        record.model_turn("turn", None);
+
+        assert_eq!(record.run_id, Some(pre_created), "adopted id is kept");
+        assert_eq!(
+            runs.list_runs_by_conversation(conversation_id)
+                .expect("list")
+                .len(),
+            1,
+            "no duplicate run row is inserted"
+        );
+        let steps = runs.list_steps(pre_created).expect("steps");
+        assert_eq!(steps.len(), 1, "steps land under the adopted run id");
+        assert_eq!(steps[0].seq, 1);
     }
 }

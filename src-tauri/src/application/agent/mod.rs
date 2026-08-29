@@ -21,10 +21,15 @@
 //!   row and append-only `agent_steps` rows (DATABASE.md §7.8, §7.9) when —
 //!   and only when — it is attached to the runner; without a recorder the
 //!   loop keeps the exact pre-4.2 behaviour.
+//! - Task 5.1 — Run Bridge ([`service`]): spawns runs on dedicated threads,
+//!   streams every governance/step event to the frontend as `agent-run-event`
+//!   frames, tracks active runs (`service::AgentRunRegistry`), and links runs
+//!   to conversations (D50).
 
 pub mod approval;
 pub mod control;
 pub mod persistence;
 pub mod pricing;
 pub mod runner;
+pub mod service;
 pub mod tools;
