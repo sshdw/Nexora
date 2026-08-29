@@ -335,3 +335,125 @@ export function sendMessage(
     attachmentIds,
   });
 }
+
+// ---- Agent runs (Task 5.1) ------------------------------------------
+
+/** One `agent_runs` row as persisted by the backend (DATABASE.md §7.8). */
+export interface AgentRun {
+  id: number;
+  conversation_id: number | null;
+  model: string;
+  mode: string;
+  status: string;
+  started_at: number;
+  finished_at: number | null;
+  total_steps: number;
+  final_content: string | null;
+  error: string | null;
+  spent_micro_usd: number | null;
+  limit_micro_usd: number | null;
+}
+
+/** One `agent_steps` row as persisted (DATABASE.md §7.9). */
+export interface AgentStep {
+  id: number;
+  run_id: number;
+  seq: number;
+  kind: string;
+  tool_name: string | null;
+  arguments: string | null;
+  observation: string | null;
+  status: string | null;
+  started_at: number;
+  duration_ms: number | null;
+}
+
+/** Step payload of a `RunFrame::Step` frame (Task 5.1). */
+export interface StepEventFrame {
+  seq: number;
+  kind: string;
+  tool_name: string | null;
+  arguments: string | null;
+  observation: string | null;
+  status: string | null;
+  duration_ms: number | null;
+}
+
+/** Terminal payload of a `RunFrame::Finished` frame (Task 5.1). */
+export interface RunFinishedPayload {
+  conversation_id: number;
+  status: string;
+  final_content: string | null;
+  error: string | null;
+}
+
+/** Governance event payload streamed inside a `RunFrame::Governance`. */
+export type GovernanceEventPayload =
+  | { type: "paused" }
+  | { type: "resumed" }
+  | { type: "budget_exhausted"; max_steps: number }
+  | { type: "spend_limit_exceeded"; spent_micro: number; limit_micro: number }
+  | { type: "approval_requested"; call_id: string; name: string; arguments: string }
+  | { type: "approval_resolved"; call_id: string; approved: boolean }
+  | { type: "cancelled" }
+  | { type: "completed"; steps: number };
+
+/** One `agent-run-event` frame (Task 5.1 design §2.4). */
+export type AgentRunEventPayload =
+  | { type: "step"; run_id: number; event: StepEventFrame }
+  | { type: "governance"; run_id: number; event: GovernanceEventPayload }
+  | { type: "finished"; run_id: number; event: RunFinishedPayload };
+
+/** Start one opt-in agent run for `conversationId` (Task 5.1).
+ * Returns `{ run_id }` immediately; the run streams via `agent-run-event`. */
+export function startAgentRun(
+  conversationId: number,
+  content: string,
+  provider: string,
+  model: string,
+): Promise<{ run_id: number }> {
+  return invoke<{ run_id: number }>("start_agent_run", {
+    conversation_id: conversationId,
+    content,
+    provider,
+    model,
+  } as unknown as Record<string, unknown>);
+}
+
+/** Cancel an active run (Task 5.1). */
+export function cancelAgentRun(runId: number): Promise<void> {
+  return invoke<void>("cancel_agent_run", { run_id: runId } as unknown as Record<string, unknown>);
+}
+
+/** Resolve a parked approval (Task 5.1). */
+export function resolveAgentApproval(
+  runId: number,
+  callId: string,
+  approved: boolean,
+): Promise<void> {
+  return invoke<void>("resolve_agent_approval", {
+    run_id: runId,
+    call_id: callId,
+    approved,
+  } as unknown as Record<string, unknown>);
+}
+
+/** Grant additional iterations to a budget-parked run (Task 5.1). */
+export function extendAgentRun(runId: number, extraSteps: number): Promise<void> {
+  return invoke<void>("extend_agent_run", {
+    run_id: runId,
+    extra_steps: extraSteps,
+  } as unknown as Record<string, unknown>);
+}
+
+/** List the runs of one conversation (rehydration, Task 5.1). */
+export function listAgentRuns(conversationId: number): Promise<AgentRun[]> {
+  return invoke<AgentRun[]>("list_agent_runs", {
+    conversation_id: conversationId,
+  } as unknown as Record<string, unknown>);
+}
+
+/** List the steps of one run (rehydration, Task 5.1). */
+export function listAgentSteps(runId: number): Promise<AgentStep[]> {
+  return invoke<AgentStep[]>("list_agent_steps", { run_id: runId } as unknown as Record<string, unknown>);
+}

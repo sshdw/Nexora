@@ -778,3 +778,232 @@
   font-size: var(--nex-sys-type-size-label-small);
   color: var(--nex-sys-color-on-surface-faint);
 }
+
+/* ============================================================
+   Agent run accordion (Task 5.1)
+   Placed chronologically inside the thread; shows live steps,
+   status pill, approval, and budget affordances.
+   ============================================================ */
+
+.nex-composer-agent-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: var(--nex-sys-shape-full);
+  background: var(--nex-sys-color-surface-container-high);
+  border: 1px solid var(--nex-sys-color-outline-variant);
+  font-size: var(--nex-sys-type-size-label-medium);
+  color: var(--nex-sys-color-on-surface-variant);
+  cursor: pointer;
+  user-select: none;
+}
+.nex-composer-agent-toggle input {
+  accent-color: var(--nex-sys-color-primary);
+}
+.nex-composer-agent-toggle:has(input:checked) {
+  background: var(--nex-sys-color-primary-container);
+  color: var(--nex-sys-color-primary);
+  border-color: var(--nex-sys-color-primary);
+}
+
+.nex-agent-run {
+  width: 100%;
+  max-width: var(--nex-sys-layout-measure-max);
+  margin-inline: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--nex-sys-space-xs);
+  padding: var(--nex-sys-space-sm) var(--nex-sys-space-md);
+  border-radius: var(--nex-sys-shape-medium);
+  background: var(--nex-sys-color-surface-container-high);
+  border: 1px solid var(--nex-sys-color-outline-variant);
+}
+
+.nex-agent-run-header {
+  display: flex;
+  align-items: center;
+  gap: var(--nex-sys-space-xs);
+  flex-wrap: wrap;
+}
+
+.nex-agent-status-running {
+  background: var(--nex-sys-color-primary-container);
+  color: var(--nex-sys-color-primary);
+}
+.nex-agent-status-completed {
+  background: var(--nex-sys-color-success-container);
+  color: var(--nex-sys-color-success);
+}
+.nex-agent-status-cancelled {
+  background: var(--nex-sys-color-surface-container-highest);
+  color: var(--nex-sys-color-on-surface-variant);
+}
+.nex-agent-status-budget {
+  background: var(--nex-sys-color-error-container);
+  color: var(--nex-sys-color-error);
+}
+.nex-agent-status-spend {
+  background: var(--nex-sys-color-error-container);
+  color: var(--nex-sys-color-error);
+}
+.nex-agent-status-error {
+  background: var(--nex-sys-color-error-container);
+  color: var(--nex-sys-color-error);
+}
+
+.nex-agent-spinner {
+  width: 12px;
+  height: 12px;
+  border-width: 2px;
+}
+
+.nex-agent-run-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--nex-sys-space-xs);
+}
+
+.nex-agent-run-id {
+  font-size: var(--nex-sys-type-size-label-small);
+  color: var(--nex-sys-color-on-surface-faint);
+  font-family: var(--nex-sys-type-family-mono);
+}
+
+.nex-agent-run-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--nex-sys-space-xs);
+  margin-left: auto;
+}
+
+.nex-agent-run-error {
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-error);
+  white-space: nowrap;
+}
+
+.nex-agent-approval {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--nex-sys-space-sm);
+  padding: var(--nex-sys-space-sm);
+  border-radius: var(--nex-sys-shape-small);
+  background: var(--nex-sys-color-surface-container-highest);
+  border: 1px solid var(--nex-sys-color-outline-variant);
+}
+
+.nex-agent-approval-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-on-surface-variant);
+}
+
+.nex-agent-approval-actions {
+  display: inline-flex;
+  gap: var(--nex-sys-space-xs);
+  flex-shrink: 0;
+}
+
+.nex-agent-empty {
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-on-surface-tertiary);
+}
+
+.nex-agent-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nex-sys-space-xs);
+}
+
+.nex-agent-step {
+  border-radius: var(--nex-sys-shape-small);
+  background: var(--nex-sys-color-surface-container-highest);
+  border: 1px solid var(--nex-sys-color-outline-variant);
+  overflow: hidden;
+}
+
+.nex-agent-step-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--nex-sys-space-xs);
+  padding: var(--nex-sys-space-xs) var(--nex-sys-space-sm);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  color: var(--nex-sys-color-on-surface);
+  font-size: var(--nex-sys-type-size-body-small);
+}
+.nex-agent-step-header:hover {
+  background: var(--nex-sys-state-hover);
+}
+
+.nex-agent-step-seq {
+  font-family: var(--nex-sys-type-family-mono);
+  font-size: var(--nex-sys-type-size-label-small);
+  color: var(--nex-sys-color-on-surface-faint);
+}
+
+.nex-agent-step-kind {
+  font-weight: var(--nex-sys-type-weight-medium);
+}
+
+.nex-agent-step-tool {
+  font-family: var(--nex-sys-type-family-mono);
+  font-size: var(--nex-sys-type-size-label-small);
+  color: var(--nex-sys-color-on-surface-variant);
+}
+
+.nex-agent-step-status {
+  margin-left: auto;
+  font-size: var(--nex-sys-type-size-label-small);
+}
+
+.nex-agent-step-duration {
+  font-size: var(--nex-sys-type-size-label-small);
+  color: var(--nex-sys-color-on-surface-faint);
+}
+
+.nex-agent-step-chevron {
+  margin-left: var(--nex-sys-space-xs);
+  color: var(--nex-sys-color-on-surface-faint);
+}
+
+.nex-agent-step-body {
+  padding: var(--nex-sys-space-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--nex-sys-space-xs);
+  border-top: 1px solid var(--nex-sys-color-outline-variant);
+}
+
+.nex-agent-step-args {
+  margin: 0;
+  padding: var(--nex-sys-space-xs) var(--nex-sys-space-sm);
+  border-radius: var(--nex-sys-shape-extra-small);
+  background: var(--nex-sys-color-surface-container);
+  border: 1px solid var(--nex-sys-color-outline-variant);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.nex-agent-step-observation {
+  margin: 0;
+  padding: var(--nex-sys-space-xs) 0;
+  font-size: var(--nex-sys-type-size-body-small);
+  line-height: var(--nex-sys-type-line-height-normal);
+  color: var(--nex-sys-color-on-surface);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: inherit;
+}
+
+.nex-agent-step-empty {
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-on-surface-faint);
+}
