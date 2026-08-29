@@ -58,7 +58,8 @@ pub(crate) const PROVIDER_DISPLAY_NAME: &str = "OpenAI";
 /// this set documents the currently supported models and anchors the
 /// model-selection surface so the UI can present only supported choices.
 ///
-/// Ordered per Nexora-AI-Model-Catalog-August-2026.md В§10/В§11; the first entry
+/// Pricing is governed by the policy table in
+/// `crate::application::agent::pricing` (DATABASE.md В§7.8); the first entry
 /// is the provider default consumed as `models[0]` by the selection surface.
 pub(crate) const SUPPORTED_MODELS: &[&str] = &[
     // Default: best balance of cost and capability.

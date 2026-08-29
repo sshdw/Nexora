@@ -74,7 +74,8 @@ pub(crate) const PROVIDER_DISPLAY_NAME: &str = "Gemini";
 /// this set documents the currently supported models and anchors the
 /// model-selection tests.
 ///
-/// Ordered per Nexora-AI-Model-Catalog-August-2026.md В§10/В§11; the first entry
+/// Pricing is governed by the policy table in
+/// `crate::application::agent::pricing` (DATABASE.md В§7.8); the first entry
 /// is the provider default consumed as `models[0]` by the selection surface.
 /// The retired IDs this list replaces: `gemini-1.5-pro`, `gemini-1.5-flash`
 /// (shut down), and `gemini-2.0-flash` (retired June 1, 2026).
