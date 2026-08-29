@@ -63,6 +63,12 @@ pub fn run() {
             commands::data_management::delete_conversation_permanently,
             commands::data_management::delete_prompt_permanently,
             commands::data_management::clear_application_data,
+            commands::agent::start_agent_run,
+            commands::agent::cancel_agent_run,
+            commands::agent::resolve_agent_approval,
+            commands::agent::extend_agent_run,
+            commands::agent::list_agent_runs,
+            commands::agent::list_agent_steps,
         ])
         .setup(|app| {
             // Locate the per-user application data directory and ensure it
@@ -81,6 +87,12 @@ pub fn run() {
             // outlives setup() and remains available for the application's
             // lifetime (ROADMAP.md Phase 0; Tauri managed state).
             app.manage(infrastructure::database::Database::new(opened));
+            // Hold the active-run registry as managed state (Task 5.1): an
+            // `Arc` so the agent IPC commands can clone an owned handle into
+            // `spawn_blocking` and the spawned run threads.
+            app.manage(std::sync::Arc::new(
+                application::agent::service::AgentRunRegistry::default(),
+            ));
             // Confirm the shared connection is reachable through managed state
             // and record the applied schema version; startup fails loudly if it
             // is not (DATABASE.md §4–§5).

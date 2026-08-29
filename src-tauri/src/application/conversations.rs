@@ -260,6 +260,52 @@ impl<'a> ConversationService<'a> {
 
         let response = self.execution.execute(&request)?;
 
+        // Shared assistant-turn persistence (Task 5.1, DP-7): records the
+        // provider row id and the responding model exactly as before.
+        self.persist_assistant_message(
+            conversation_id,
+            &response.content,
+            provider,
+            &response.model,
+        )?;
+
+        Ok(response)
+    }
+
+    /// Persist `content` as the user message of `conversation_id` (Task 5.1,
+    /// DP-7): the shared user-turn persistence used by the agent-run bridge
+    /// before it spawns a run, backed by the same
+    /// [`Self::persist_message_and_touch`] transaction as plain chat.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConversationError::NotFound`] when the conversation does not
+    /// exist or [`ConversationError::Database`] when the insert fails.
+    pub(crate) fn persist_user_message(&self, conversation_id: i64, content: &str) -> Result<i64> {
+        if !self.conversations.exists(conversation_id)? {
+            return Err(ConversationError::NotFound {
+                id: conversation_id,
+            });
+        }
+        self.persist_message_and_touch(conversation_id, ROLE_USER, content, None, None)
+    }
+
+    /// Persist the final assistant message of a completed turn (Task 5.1,
+    /// DP-7): the shared assistant-turn persistence used by both plain chat
+    /// ([`Self::send_message`]) and the agent-run bridge, recording the
+    /// provider row id and the responding model exactly as plain chat does.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConversationError::Database`] when the provider lookup or
+    /// the insert fails.
+    pub(crate) fn persist_assistant_message(
+        &self,
+        conversation_id: i64,
+        content: &str,
+        provider: &str,
+        model: &str,
+    ) -> Result<()> {
         // Execution succeeded, so the provider metadata row is resolvable
         // (RequestExecutionService rejects an unknown provider before any
         // request is sent). The provider's id is recorded on the assistant
@@ -268,12 +314,11 @@ impl<'a> ConversationService<'a> {
         self.persist_message_and_touch(
             conversation_id,
             ROLE_ASSISTANT,
-            &response.content,
+            content,
             provider_id,
-            Some(&response.model),
+            Some(model),
         )?;
-
-        Ok(response)
+        Ok(())
     }
 
     /// Build the provider-independent history for `conversation_id`, mapping
