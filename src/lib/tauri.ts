@@ -296,10 +296,23 @@ export function removeAttachment(id: number): Promise<void> {
   return invoke<void>("remove_attachment", { id });
 }
 
+export interface ToolCall {
+  id: string;
+  name: string;
+  arguments: string;
+}
+
+export interface TokenUsage {
+  input_tokens: number;
+  output_tokens: number;
+}
+
 /** Normalized AI response returned by `send_message`. */
 export interface AiResponse {
   content: string;
   model: string;
+  tool_calls: ToolCall[];
+  usage?: TokenUsage | null;
 }
 
 /** Send a user message and return/ persist the AI response.

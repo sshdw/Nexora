@@ -87,6 +87,14 @@ pub(crate) enum AgentRunEvent {
         /// Effective step allowance at the moment of exhaustion.
         max_steps: usize,
     },
+    /// The spend guard tripped: billed spend exceeded the configured limit
+    /// (Task 4.3). `spent_micro` includes the tripping turn's cost.
+    SpendLimitExceeded {
+        /// Billed spend at the moment of the trip, micro-USD.
+        spent_micro: u64,
+        /// Configured per-run limit, micro-USD.
+        limit_micro: u64,
+    },
     /// A tool call is awaiting user approval (Task 4.1).
     ApprovalRequested {
         /// Provider-assigned identifier for the pending tool call.

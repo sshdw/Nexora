@@ -137,6 +137,7 @@ impl<'a> RunRecorder<'a> {
 
     /// Finalize the `agent_runs` row at run termination (DATABASE.md §7.8).
     /// Best-effort.
+    #[allow(clippy::too_many_arguments)]
     fn finalize_run(
         self,
         run_id: i64,
@@ -144,9 +145,19 @@ impl<'a> RunRecorder<'a> {
         total_steps: i64,
         final_content: Option<&str>,
         error: Option<&str>,
+        spent_micro_usd: Option<u64>,
+        limit_micro_usd: Option<u64>,
     ) {
         let repo = AgentRunRepository::new(self.db);
-        if let Err(err) = repo.finalize_run(run_id, status, total_steps, final_content, error) {
+        if let Err(err) = repo.finalize_run(
+            run_id,
+            status,
+            total_steps,
+            final_content,
+            error,
+            spent_micro_usd,
+            limit_micro_usd,
+        ) {
             log::warn!(
                 "agent run persistence: finalize failed (run {run_id}), \
                  continuing: {err}"
@@ -284,28 +295,39 @@ impl<'a> ActiveRunRecord<'a> {
     }
 
     /// Finalize the run on every exit path (DATABASE.md §7.8): `completed`
-    /// with final content, `cancelled`, `budget_exhausted`, or `error` with
-    /// the classified error text. `total_steps` is the number of recorded
-    /// steps (D12). Best-effort.
-    pub(crate) fn finalize(&self, result: &Result<String, AgentError>) {
+    /// with final content, `cancelled`, `budget_exhausted`,
+    /// `spend_limit_exceeded`, or `error` with the classified error text.
+    /// `total_steps` is the number of recorded steps (D12). Best-effort.
+    pub(crate) fn finalize(
+        &self,
+        result: &Result<String, AgentError>,
+        spent_micro_usd: u64,
+        limit_micro_usd: Option<u64>,
+    ) {
         let Some(run_id) = self.run_id else {
             return;
         };
         let (status, final_content, error) = match result {
             Ok(content) => ("completed", Some(content.as_str()), None),
-            // Cancellation and budget exhaustion are terminal states of the
-            // governance ladder, not classified errors; `error` stays NULL
+            // Cancellation, budget and spend exhaustion are terminal states of
+            // the governance ladder, not classified errors; `error` stays NULL
             // per DATABASE.md §7.8 (terminal `error` only).
             Err(AgentError::Cancelled) => ("cancelled", None, None),
             Err(AgentError::BudgetExhausted(_)) => ("budget_exhausted", None, None),
+            Err(AgentError::SpendLimitExceeded { .. }) => ("spend_limit_exceeded", None, None),
             Err(err) => ("error", None, Some(err.to_string())),
         };
+        // Task 4.3: spent/limit are persisted when a recorder is attached,
+        // even for non-spend runs (spent may be 0). Pre-v5 rows have NULL.
+        let spent_opt = Some(spent_micro_usd);
         self.recorder.finalize_run(
             run_id,
             status,
             self.recorded_steps,
             final_content,
             error.as_deref(),
+            spent_opt,
+            limit_micro_usd,
         );
     }
 }
@@ -378,7 +400,7 @@ mod tests {
             "successfully persisted steps stay gap-free"
         );
 
-        record.finalize(&Ok("done".to_string()));
+        record.finalize(&Ok("done".to_string()), 0, None);
         let run = runs.read_run(run_id).expect("read run").expect("exists");
         assert_eq!(
             run.total_steps, 2,

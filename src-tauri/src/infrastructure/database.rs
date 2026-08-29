@@ -94,6 +94,9 @@ impl From<rusqlite::Error> for DatabaseError {
 ///   `agent_steps` (§7.9) with their columns, defaults, CHECK constraints,
 ///   foreign keys (§9), `UNIQUE(run_id, seq)`, and functional indexes (§8) —
 ///   agent roadmap, Task 4.2.
+/// - v5: the spend-guard columns `spent_micro_usd` / `limit_micro_usd` and the
+///   widened `status` CHECK (`spend_limit_exceeded`, Task 4.3) via a validated
+///   rebuild of `agent_runs` (DATABASE.md §5).
 pub(crate) const MIGRATIONS: &[(i64, &str)] = &[
     // v1 — base tables and functional indexes (DATABASE.md §7, §8).
     (
@@ -304,6 +307,44 @@ CREATE INDEX idx_agent_runs_started
     ON agent_runs (started_at);
 ",
     ),
+    // v5 — spend-guard columns and widened status CHECK (DATABASE.md §7.8,
+    // §5; Task 4.3). SQLite cannot ALTER a CHECK, so the table is rebuilt
+    // (create new → copy → drop → rename) with foreign_keys OFF pre-tx.
+    (
+        5,
+        r"CREATE TABLE agent_runs_new (
+    id INTEGER PRIMARY KEY CHECK (id > 0),
+    conversation_id INTEGER
+        CHECK (conversation_id IS NULL OR conversation_id > 0)
+        REFERENCES conversations (id) ON DELETE CASCADE,
+    model TEXT NOT NULL CHECK (length(model) > 0),
+    mode TEXT NOT NULL
+        CHECK (mode IN ('supervised', 'semi_autonomous', 'full_autonomous')),
+    status TEXT NOT NULL DEFAULT 'running'
+        CHECK (status IN ('running', 'completed', 'cancelled', 'budget_exhausted', 'spend_limit_exceeded', 'error')),
+    started_at INTEGER NOT NULL DEFAULT (unixepoch()) CHECK (started_at > 0),
+    finished_at INTEGER CHECK (finished_at IS NULL OR finished_at > 0),
+    total_steps INTEGER NOT NULL DEFAULT 0 CHECK (total_steps >= 0),
+    final_content TEXT,
+    error TEXT,
+    spent_micro_usd INTEGER CHECK (spent_micro_usd IS NULL OR spent_micro_usd >= 0),
+    limit_micro_usd INTEGER CHECK (limit_micro_usd IS NULL OR limit_micro_usd >= 0)
+);
+
+INSERT INTO agent_runs_new
+    (id, conversation_id, model, mode, status, started_at, finished_at,
+     total_steps, final_content, error)
+    SELECT id, conversation_id, model, mode, status, started_at, finished_at,
+           total_steps, final_content, error
+    FROM agent_runs;
+
+DROP TABLE agent_runs;
+ALTER TABLE agent_runs_new RENAME TO agent_runs;
+
+CREATE INDEX idx_agent_runs_conversation ON agent_runs (conversation_id);
+CREATE INDEX idx_agent_runs_started ON agent_runs (started_at);
+",
+    ),
 ];
 
 /// Open the `SQLite` database at `path`, apply connection pragmas, and run any
@@ -356,7 +397,26 @@ fn migrate(conn: &mut Connection) -> Result<(), DatabaseError> {
         if version <= current {
             continue;
         }
-        apply_migration(conn, version, sql)?;
+        if version == 5 {
+            // v5 rebuilds agent_runs, a parent of agent_steps; SQLite cannot
+            // hold the FK while dropping the parent, and PRAGMA foreign_keys
+            // cannot be toggled inside the transaction that apply_migration
+            // opens. The toggle is therefore applied here, outside the tx.
+            conn.execute_batch("PRAGMA foreign_keys=OFF;")?;
+            let result = apply_migration(conn, version, sql);
+            // Restore enforcement for all subsequent work.
+            match conn.execute_batch("PRAGMA foreign_keys=ON;") {
+                Ok(()) => {}
+                Err(restore_err) => {
+                    if result.is_ok() {
+                        return Err(restore_err.into());
+                    }
+                }
+            }
+            result?;
+        } else {
+            apply_migration(conn, version, sql)?;
+        }
     }
 
     Ok(())
@@ -541,14 +601,14 @@ mod tests {
             );
         }
 
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4]);
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5]);
     }
 
     #[test]
     fn migration_state_is_recorded_correctly() {
         let conn = in_memory_migrated();
 
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4]);
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5]);
 
         let applied_at: i64 = conn
             .query_row(
@@ -562,17 +622,17 @@ mod tests {
         let version_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .expect("count schema_version rows");
-        assert_eq!(version_count, 4, "one row per applied migration");
+        assert_eq!(version_count, 5, "one row per applied migration");
     }
 
     #[test]
     fn re_running_migrations_is_a_no_op() {
         let mut conn = in_memory_migrated();
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4]);
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5]);
 
         migrate(&mut conn).expect("a second migration run must succeed");
 
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4]);
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5]);
         // The no-op run created or dropped nothing.
         assert!(schema_object_exists(&conn, "conversations", "table"));
         assert!(schema_object_exists(&conn, "conversations_fts", "table"));
@@ -601,7 +661,7 @@ mod tests {
             !schema_object_exists(&conn, "partial_table", "table"),
             "the valid part of the failed migration must roll back"
         );
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4]);
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5]);
     }
 
     #[test]
@@ -1182,5 +1242,89 @@ mod tests {
             .is_err(),
             "negative duration_ms must be rejected"
         );
+    }
+    #[test]
+    fn v5_preserves_v4_rows_and_enables_spend_limit_exceeded() {
+        // Build a v4-only DB: apply migrations 1..=4 manually, insert rows, then migrate to v5.
+        let mut conn = Connection::open_in_memory().expect("open in-memory");
+        configure(&conn).expect("configure");
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY CHECK (version > 0), applied_at INTEGER NOT NULL CHECK (applied_at > 0));",
+        )
+        .expect("create schema_version");
+        // Apply only v1..v4
+        for &(version, sql) in MIGRATIONS.iter().filter(|(v, _)| *v <= 4) {
+            apply_migration(&mut conn, version, sql).expect("apply v1..v4");
+        }
+        // Seed a v4-shaped run and step
+        conn.execute(
+            "INSERT INTO agent_runs (model, mode, status) VALUES ('m', 'supervised', 'completed')",
+            [],
+        )
+        .expect("seed run");
+        let run_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO agent_steps (run_id, seq, kind) VALUES (?1, 1, 'model_turn')",
+            [run_id],
+        )
+        .expect("seed step");
+        // Migrate to v5 (and any later)
+        migrate(&mut conn).expect("migrate to v5");
+        // Schema version is 5
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5]);
+        // Row preserved, new columns NULL for pre-v5 rows
+        let (status, spent, limit): (String, Option<i64>, Option<i64>) = conn
+            .query_row(
+                "SELECT status, spent_micro_usd, limit_micro_usd FROM agent_runs WHERE id = ?1",
+                [run_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read preserved run");
+        assert_eq!(status, "completed");
+        assert_eq!(spent, None, "pre-v5 spent is NULL");
+        assert_eq!(limit, None, "pre-v5 limit is NULL");
+        // Step preserved
+        let steps: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_steps WHERE run_id = ?1",
+                [run_id],
+                |row| row.get(0),
+            )
+            .expect("count steps");
+        assert_eq!(steps, 1);
+        // FK still ON after rebuild
+        let fk_on: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .expect("fk pragma");
+        assert_eq!(fk_on, 1, "FK must be ON after v5");
+        // New status is now accepted
+        conn.execute(
+            "INSERT INTO agent_runs (model, mode, status) VALUES ('m', 'supervised', 'spend_limit_exceeded')",
+            [],
+        )
+        .expect("new status accepted");
+        // New columns accept values and reject negatives
+        let new_id = conn.last_insert_rowid();
+        conn.execute(
+            "UPDATE agent_runs SET spent_micro_usd = 123, limit_micro_usd = 456 WHERE id = ?1",
+            [new_id],
+        )
+        .expect("spend columns accept non-negative");
+        let bad = conn.execute(
+            "UPDATE agent_runs SET spent_micro_usd = -1 WHERE id = ?1",
+            [new_id],
+        );
+        assert!(bad.is_err(), "negative spent must be rejected");
+        let bad2 = conn.execute(
+            "UPDATE agent_runs SET limit_micro_usd = -1 WHERE id = ?1",
+            [new_id],
+        );
+        assert!(bad2.is_err(), "negative limit must be rejected");
+        // Unknown status still rejected
+        let bad_status = conn.execute(
+            "INSERT INTO agent_runs (model, mode, status) VALUES ('m', 'supervised', 'warp')",
+            [],
+        );
+        assert!(bad_status.is_err(), "unknown status still rejected");
     }
 }

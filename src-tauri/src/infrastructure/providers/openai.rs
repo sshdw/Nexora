@@ -255,6 +255,16 @@ fn openai_message(message: &AiMessage) -> OpenAiMessage {
 struct ChatCompletionResponse {
     model: String,
     choices: Vec<Choice>,
+    #[serde(default)]
+    usage: Option<OpenAiUsage>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct OpenAiUsage {
+    #[serde(default)]
+    prompt_tokens: u64,
+    #[serde(default)]
+    completion_tokens: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -339,10 +349,21 @@ fn to_ai_response(response: ChatCompletionResponse) -> Result<AiResponse, OpenAi
     } else {
         String::new()
     };
+    let usage = response.usage.and_then(|u| {
+        if u.prompt_tokens == 0 && u.completion_tokens == 0 {
+            None
+        } else {
+            Some(crate::application::execution::TokenUsage {
+                input_tokens: u.prompt_tokens,
+                output_tokens: u.completion_tokens,
+            })
+        }
+    });
     Ok(AiResponse {
         content,
         model: response.model,
         tool_calls,
+        usage,
     })
 }
 
@@ -468,6 +489,7 @@ mod tests {
                     tool_calls: None,
                 },
             }],
+            usage: None,
         };
         let ai = to_ai_response(response).expect("valid response maps");
         assert_eq!(ai.content, "Hello to you too.");
@@ -484,6 +506,7 @@ mod tests {
                     tool_calls: None,
                 },
             }],
+            usage: None,
         };
         assert!(matches!(
             to_ai_response(response),
@@ -496,6 +519,7 @@ mod tests {
         let response = ChatCompletionResponse {
             model: "gpt-5.6-terra".to_string(),
             choices: vec![],
+            usage: None,
         };
         assert!(matches!(
             to_ai_response(response),
@@ -700,6 +724,7 @@ mod tests {
                     }]),
                 },
             }],
+            usage: None,
         };
         let ai = to_ai_response(response).expect("valid tool call response maps");
         // Content defaults to empty string when only tool calls are present.
@@ -728,6 +753,7 @@ mod tests {
                     }]),
                 },
             }],
+            usage: None,
         };
         let ai = to_ai_response(response).expect("response with content and tool calls maps");
         assert_eq!(ai.content, "I will call the tool");
@@ -745,6 +771,7 @@ mod tests {
                     tool_calls: None,
                 },
             }],
+            usage: None,
         };
         let ai = to_ai_response(response).expect("plain text response maps");
         assert_eq!(ai.content, "Hello to you too.");
@@ -765,6 +792,7 @@ mod tests {
                     tool_calls: Some(vec![]),
                 },
             }],
+            usage: None,
         };
         let ai = to_ai_response(response).expect("empty tool_calls with content maps");
         assert_eq!(ai.content, "Just text");
@@ -820,5 +848,44 @@ mod tests {
             "timeout should fire quickly, elapsed={elapsed:?}"
         );
         let _ = server.join();
+    }
+    #[test]
+    fn usage_present_maps_to_token_usage() {
+        let json = r#"{"model":"gpt-5.6-terra","choices":[{"message":{"content":"hi"}}],"usage":{"prompt_tokens":10,"completion_tokens":20}}"#;
+        let parsed: ChatCompletionResponse = serde_json::from_str(json).expect("parse");
+        let usage = parsed.usage.clone().expect("usage present");
+        assert_eq!(usage.prompt_tokens, 10);
+        assert_eq!(usage.completion_tokens, 20);
+        let ai = to_ai_response(parsed).expect("to_ai");
+        let u = ai.usage.expect("ai usage");
+        assert_eq!(u.input_tokens, 10);
+        assert_eq!(u.output_tokens, 20);
+    }
+
+    #[test]
+    fn usage_absent_maps_to_none() {
+        let json = r#"{"model":"gpt-5.6-terra","choices":[{"message":{"content":"hi"}}]}"#;
+        let parsed: ChatCompletionResponse = serde_json::from_str(json).expect("parse");
+        assert!(parsed.usage.is_none());
+        let ai = to_ai_response(parsed).expect("to_ai");
+        assert!(ai.usage.is_none());
+    }
+
+    #[test]
+    fn usage_zero_zero_maps_to_none() {
+        let json = r#"{"model":"gpt-5.6-terra","choices":[{"message":{"content":"hi"}}],"usage":{"prompt_tokens":0,"completion_tokens":0}}"#;
+        let parsed: ChatCompletionResponse = serde_json::from_str(json).expect("parse");
+        let ai = to_ai_response(parsed).expect("to_ai");
+        assert!(ai.usage.is_none(), "0,0 should map to None per spec");
+    }
+
+    #[test]
+    fn usage_partial_zero_maps_to_some() {
+        let json = r#"{"model":"gpt-5.6-terra","choices":[{"message":{"content":"hi"}}],"usage":{"prompt_tokens":0,"completion_tokens":5}}"#;
+        let parsed: ChatCompletionResponse = serde_json::from_str(json).expect("parse");
+        let ai = to_ai_response(parsed).expect("to_ai");
+        let u = ai.usage.expect("some");
+        assert_eq!(u.input_tokens, 0);
+        assert_eq!(u.output_tokens, 5);
     }
 }
