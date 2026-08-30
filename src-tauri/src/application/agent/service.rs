@@ -45,6 +45,7 @@ use super::persistence::{mode_to_column, terminal_outcome, RunRecorder};
 use super::runner::AgentRunner;
 use crate::application::conversations::ConversationService;
 use crate::application::execution::{ExecutorRegistry, ProviderExecutor, RequestError};
+use crate::application::settings::SettingsService;
 use crate::infrastructure::database::Database;
 use crate::infrastructure::repository::agent_runs::{AgentRun, AgentRunRepository, AgentStep};
 
@@ -321,6 +322,61 @@ impl AgentRunRegistry {
         }
     }
 
+    /// Change the autonomy mode of an active run (Task 5.2, DP-AUTONOMY).
+    /// A parked approval is never auto-resolved by a mode switch.
+    /// Returns `false` when the run is not active.
+    #[must_use]
+    pub(crate) fn set_mode(&self, run_id: i64, mode: AutonomyMode) -> bool {
+        match self
+            .runs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&run_id)
+        {
+            Some(entry) => {
+                entry.gate.set_mode(mode);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Pause an active run (Task 5.2, DP-PAUSE). Takes effect at the next
+    /// step boundary. Returns `false` when the run is not active.
+    #[must_use]
+    pub(crate) fn pause(&self, run_id: i64) -> bool {
+        match self
+            .runs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&run_id)
+        {
+            Some(entry) => {
+                entry.control.pause();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Resume a paused run (Task 5.2, DP-PAUSE). Returns `false` when the run
+    /// is not active.
+    #[must_use]
+    pub(crate) fn resume(&self, run_id: i64) -> bool {
+        match self
+            .runs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&run_id)
+        {
+            Some(entry) => {
+                entry.control.resume();
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Whether a run is currently registered (test seam).
     #[cfg(test)]
     fn is_active(&self, run_id: i64) -> bool {
@@ -397,6 +453,31 @@ pub(crate) enum AgentRunError {
 /// `registry` and `request` are taken by value deliberately: the bridge owns
 /// the start request, and the registry handle is a cheap `Arc` that is
 /// shared into the spawned threads.
+/// Parse a persisted autonomy string into [`AutonomyMode`], defaulting to
+/// `SemiAutonomous` for missing, empty, or legacy-invalid values (Task 5.2,
+/// DP-AUTONOMY — matches current hardcoded behavior).
+#[must_use]
+#[allow(clippy::match_same_arms)]
+pub(crate) fn parse_autonomy_mode(value: Option<&str>) -> AutonomyMode {
+    match value {
+        Some("supervised") => AutonomyMode::Supervised,
+        Some("full_autonomous") => AutonomyMode::FullAutonomous,
+        Some("semi_autonomous") => AutonomyMode::SemiAutonomous,
+        _ => AutonomyMode::SemiAutonomous,
+    }
+}
+
+/// Resolve the persisted autonomy mode from `app_settings` (`agent.autonomy`),
+/// defaulting to `SemiAutonomous` when unset or invalid.
+#[must_use]
+pub(crate) fn resolve_autonomy_mode(db: &Database) -> AutonomyMode {
+    let svc = SettingsService::new(db);
+    match svc.read("agent.autonomy") {
+        Ok(Some(value)) => parse_autonomy_mode(Some(value.as_str())),
+        _ => AutonomyMode::SemiAutonomous,
+    }
+}
+
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn start_run(
     db: &Database,
@@ -405,6 +486,7 @@ pub(crate) fn start_run(
     executor: Arc<dyn ProviderExecutor + Send + Sync>,
     workspace_root: PathBuf,
     request: AgentRunRequest,
+    mode: AutonomyMode,
 ) -> Result<i64, AgentRunError> {
     ExecutorRegistry::new()
         .resolve_owned(&request.provider)
@@ -422,7 +504,15 @@ pub(crate) fn start_run(
         });
     }
 
-    let started = start_run_claimed(db, &registry, host, executor, workspace_root, &request);
+    let started = start_run_claimed(
+        db,
+        &registry,
+        host,
+        executor,
+        workspace_root,
+        &request,
+        mode,
+    );
     if started.is_err() {
         registry.unclaim_conversation(request.conversation_id);
     }
@@ -437,6 +527,7 @@ fn start_run_claimed(
     executor: Arc<dyn ProviderExecutor + Send + Sync>,
     workspace_root: PathBuf,
     request: &AgentRunRequest,
+    mode: AutonomyMode,
 ) -> Result<i64, AgentRunError> {
     // Persist the user message BEFORE spawning (design §3.2): a crash can
     // never lose it, and it appears in the thread immediately. No assistant
@@ -463,12 +554,12 @@ fn start_run_claimed(
 
     // Create the linked run row (D50) through the recorder so the run id is
     // known synchronously; the spawned run adopts it (no second insert).
-    let gate = ApprovalGate::new(AutonomyMode::SemiAutonomous);
+    let gate = ApprovalGate::new(mode);
     let control = RunControl::new();
-    let mode = mode_to_column(AutonomyMode::SemiAutonomous);
+    let mode_column = mode_to_column(mode);
     let Some(run_id) = RunRecorder::new(db)
         .with_conversation(request.conversation_id)
-        .create_run_row(&request.model, mode)
+        .create_run_row(&request.model, mode_column)
     else {
         return Err(AgentRunError::RunNotPersisted);
     };
@@ -793,6 +884,7 @@ mod tests {
             ])),
             workspace,
             request(conversation_id, "do things"),
+            crate::application::agent::approval::AutonomyMode::SemiAutonomous,
         )
         .expect("start");
 
@@ -889,6 +981,7 @@ mod tests {
             ])),
             workspace,
             request(conversation_id, "mutate something"),
+            crate::application::agent::approval::AutonomyMode::SemiAutonomous,
         )
         .expect("start");
 
@@ -915,6 +1008,7 @@ mod tests {
             Arc::new(ScriptedExecutor::new(vec![Ok(text_response("no"))])),
             temp_workspace("approval-second"),
             request(conversation_id, "second"),
+            crate::application::agent::approval::AutonomyMode::SemiAutonomous,
         );
         assert!(
             matches!(second, Err(AgentRunError::RunAlreadyActive { .. })),
@@ -958,6 +1052,7 @@ mod tests {
             ])),
             workspace,
             request(conversation_id, "cancel me"),
+            crate::application::agent::approval::AutonomyMode::SemiAutonomous,
         )
         .expect("start");
 
@@ -1014,6 +1109,7 @@ mod tests {
             ])),
             workspace,
             req,
+            crate::application::agent::approval::AutonomyMode::SemiAutonomous,
         )
         .expect("start");
 
@@ -1060,6 +1156,7 @@ mod tests {
             Arc::new(ScriptedExecutor::new(vec![Err(ExecutorError::Failure)])),
             workspace,
             request(conversation_id, "explode"),
+            crate::application::agent::approval::AutonomyMode::SemiAutonomous,
         )
         .expect("start");
 
@@ -1075,5 +1172,282 @@ mod tests {
         assert!(!registry.is_active(run_id));
         assert!(host.persisted.lock().expect("lock").is_empty());
         let _ = std::fs::remove_dir_all(temp_workspace("error"));
+    }
+
+    #[test]
+    fn parse_autonomy_mode_defaults_to_semi() {
+        use crate::application::agent::approval::AutonomyMode;
+        assert_eq!(
+            parse_autonomy_mode(Some("supervised")),
+            AutonomyMode::Supervised
+        );
+        assert_eq!(
+            parse_autonomy_mode(Some("semi_autonomous")),
+            AutonomyMode::SemiAutonomous
+        );
+        assert_eq!(
+            parse_autonomy_mode(Some("full_autonomous")),
+            AutonomyMode::FullAutonomous
+        );
+        // Invalid, None, empty all default to semi
+        assert_eq!(parse_autonomy_mode(None), AutonomyMode::SemiAutonomous);
+        assert_eq!(parse_autonomy_mode(Some("")), AutonomyMode::SemiAutonomous);
+        assert_eq!(
+            parse_autonomy_mode(Some("garbage")),
+            AutonomyMode::SemiAutonomous
+        );
+        assert_eq!(
+            parse_autonomy_mode(Some("SemiAutonomous")),
+            AutonomyMode::SemiAutonomous
+        );
+    }
+
+    #[test]
+    fn resolve_autonomy_mode_reads_setting_and_defaults() {
+        let db = crate::infrastructure::database::in_memory_database();
+        // Default when unset
+        assert_eq!(
+            resolve_autonomy_mode(&db),
+            crate::application::agent::approval::AutonomyMode::SemiAutonomous
+        );
+        // Supervised
+        crate::application::settings::SettingsService::new(&db)
+            .write("agent.autonomy", Some("supervised"))
+            .expect("write");
+        assert_eq!(
+            resolve_autonomy_mode(&db),
+            crate::application::agent::approval::AutonomyMode::Supervised
+        );
+        // Full
+        crate::application::settings::SettingsService::new(&db)
+            .write("agent.autonomy", Some("full_autonomous"))
+            .expect("write");
+        assert_eq!(
+            resolve_autonomy_mode(&db),
+            crate::application::agent::approval::AutonomyMode::FullAutonomous
+        );
+        // Invalid legacy defaults to semi
+        crate::application::settings::SettingsService::new(&db)
+            .write("agent.autonomy", Some("legacy"))
+            .expect("write");
+        assert_eq!(
+            resolve_autonomy_mode(&db),
+            crate::application::agent::approval::AutonomyMode::SemiAutonomous
+        );
+        // Clearing restores default
+        crate::application::settings::SettingsService::new(&db)
+            .delete("agent.autonomy")
+            .expect("delete");
+        assert_eq!(
+            resolve_autonomy_mode(&db),
+            crate::application::agent::approval::AutonomyMode::SemiAutonomous
+        );
+    }
+
+    #[test]
+    fn start_run_persists_resolved_mode() {
+        let (db, workspace, _rx, host) = setup("mode-persist");
+        let registry = Arc::new(AgentRunRegistry::default());
+        let conversation_id = ConversationService::new(&db).create("conv").expect("conv");
+        // Write setting to supervised
+        crate::application::settings::SettingsService::new(&db)
+            .write("agent.autonomy", Some("supervised"))
+            .expect("write");
+        let mode = resolve_autonomy_mode(&db);
+        assert_eq!(
+            mode,
+            crate::application::agent::approval::AutonomyMode::Supervised
+        );
+        let run_id = start_run(
+            &db,
+            Arc::clone(&registry),
+            Arc::clone(&host) as Arc<dyn AgentRunHost>,
+            Arc::new(ScriptedExecutor::new(vec![Ok(text_response("done"))])),
+            workspace.clone(),
+            request(conversation_id, "hello"),
+            mode,
+        )
+        .expect("start");
+        // Verify persisted row has mode column = supervised
+        let runs = list_runs_for_conversation(&db, conversation_id).expect("list");
+        let run = runs.iter().find(|r| r.id == run_id).expect("run");
+        assert_eq!(run.mode, "supervised");
+        let _ = std::fs::remove_dir_all(temp_workspace("mode-persist"));
+    }
+
+    #[test]
+    fn registry_set_mode_pause_resume_happy_and_unknown() {
+        let registry = AgentRunRegistry::default();
+        // Unknown runs -> false / NotActive
+        assert!(!registry.set_mode(
+            9999,
+            crate::application::agent::approval::AutonomyMode::FullAutonomous
+        ));
+        assert!(!registry.pause(9999));
+        assert!(!registry.resume(9999));
+        assert_eq!(
+            registry.resolve(9999, "any", true),
+            ResolveOutcome::RunNotActive
+        );
+        assert!(!registry.extend(9999, 1));
+        // Manual registration for happy path (parallel-safe, no threads)
+        let reg = AgentRunRegistry::default();
+        let gate = crate::application::agent::approval::ApprovalGate::new(
+            crate::application::agent::approval::AutonomyMode::Supervised,
+        );
+        let control = crate::application::agent::control::RunControl::new();
+        reg.register(
+            42,
+            ActiveAgentRun {
+                conversation_id: 1,
+                control: control.clone(),
+                gate: gate.clone(),
+            },
+        );
+        assert!(reg.is_active(42));
+        // set_mode
+        assert!(reg.set_mode(
+            42,
+            crate::application::agent::approval::AutonomyMode::FullAutonomous
+        ));
+        assert_eq!(
+            gate.mode(),
+            crate::application::agent::approval::AutonomyMode::FullAutonomous
+        );
+        // pause/resume
+        assert!(reg.pause(42));
+        assert!(control.pause_pending());
+        assert!(reg.resume(42));
+        assert!(!control.pause_pending());
+    }
+
+    #[test]
+    fn registry_set_mode_does_not_resolve_parked_approval() {
+        let gate = crate::application::agent::approval::ApprovalGate::new(
+            crate::application::agent::approval::AutonomyMode::Supervised,
+        );
+        let control = crate::application::agent::control::RunControl::new();
+        let reg = AgentRunRegistry::default();
+        reg.register(
+            101,
+            ActiveAgentRun {
+                conversation_id: 1,
+                control: control.clone(),
+                gate: gate.clone(),
+            },
+        );
+        // Park an approval in a thread
+        let call = crate::application::execution::ToolCall {
+            id: "parked-1".to_string(),
+            name: "write_file".to_string(),
+            arguments: "{}".to_string(),
+        };
+        let gate2 = gate.clone();
+        let handle = std::thread::spawn(move || gate2.request_approval(&call));
+        // Wait until parked
+        let start = std::time::Instant::now();
+        while !gate.has_pending_for("parked-1") {
+            assert!(start.elapsed() < Duration::from_secs(2), "not parked");
+            std::thread::yield_now();
+        }
+        // Switch mode while parked: must not auto-resolve
+        assert!(reg.set_mode(
+            101,
+            crate::application::agent::approval::AutonomyMode::FullAutonomous
+        ));
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(!handle.is_finished(), "mode switch must not auto-resolve");
+        assert!(gate.has_pending_for("parked-1"));
+        // Now resolve normally
+        assert_eq!(reg.resolve(101, "parked-1", true), ResolveOutcome::Resolved);
+        let decision = handle.join().expect("join").expect("approved");
+        assert_eq!(
+            decision,
+            crate::application::agent::approval::ApprovalDecision::Approved
+        );
+        // Resolve again should be NoPendingApproval
+        assert_eq!(
+            reg.resolve(101, "parked-1", true),
+            ResolveOutcome::NoPendingApproval
+        );
+    }
+
+    #[test]
+    fn pause_resume_round_trip_allows_run_to_continue_to_completion() {
+        let (db, workspace, rx, host) = setup("pause-resume");
+        let registry = Arc::new(AgentRunRegistry::default());
+        let conversation_id = ConversationService::new(&db).create("conv").expect("conv");
+        // Create a run that will be paused at first step boundary: pre-pause the control via registry after start but before next turn.
+        // Simpler: start, then immediately pause via registry, then resume after Paused event.
+        let mut req = request(conversation_id, "pause me");
+        req.max_iterations = Some(10);
+        let run_id = start_run(
+            &db,
+            Arc::clone(&registry),
+            Arc::clone(&host) as Arc<dyn AgentRunHost>,
+            Arc::new(ScriptedExecutor::new(vec![
+                Ok(tool_response("a", "list_directory")),
+                Ok(tool_response("b", "list_directory")),
+                Ok(text_response("done after pause")),
+            ])),
+            workspace,
+            req,
+            crate::application::agent::approval::AutonomyMode::SemiAutonomous,
+        )
+        .expect("start");
+        // Wait for first governance event? Instead we exercise pause/resume via registry directly:
+        // The runner will check pause at next step boundary; we pause now.
+        assert!(registry.pause(run_id));
+        // Give runner a moment to hit pause (it checks at step boundary before next LLM turn)
+        std::thread::sleep(Duration::from_millis(100));
+        // Now resume: run should continue
+        assert!(registry.resume(run_id));
+        let frames = collect_frames(&rx);
+        let RunFrame::Finished { event, .. } = frames.last().expect("frames") else {
+            panic!("last must be finished");
+        };
+        assert_eq!(event.status, "completed");
+        assert_eq!(event.final_content.as_deref(), Some("done after pause"));
+        // After completion, pause/resume on inactive should be false
+        assert!(!registry.pause(run_id));
+        assert!(!registry.resume(run_id));
+        assert!(!registry.set_mode(
+            run_id,
+            crate::application::agent::approval::AutonomyMode::Supervised
+        ));
+        let _ = std::fs::remove_dir_all(temp_workspace("pause-resume"));
+    }
+
+    #[test]
+    fn inactive_run_after_completion_returns_not_found_for_all_controls() {
+        let (db, workspace, rx, host) = setup("inactive-controls");
+        let registry = Arc::new(AgentRunRegistry::default());
+        let conversation_id = ConversationService::new(&db).create("conv").expect("conv");
+        let run_id = start_run(
+            &db,
+            Arc::clone(&registry),
+            Arc::clone(&host) as Arc<dyn AgentRunHost>,
+            Arc::new(ScriptedExecutor::new(vec![Ok(text_response("quick"))])),
+            workspace,
+            request(conversation_id, "hi"),
+            crate::application::agent::approval::AutonomyMode::SemiAutonomous,
+        )
+        .expect("start");
+        let frames = collect_frames(&rx);
+        assert!(matches!(frames.last().unwrap(), RunFrame::Finished { .. }));
+        // Now all controls should report inactive
+        assert!(!registry.cancel(run_id));
+        assert!(!registry.pause(run_id));
+        assert!(!registry.resume(run_id));
+        assert!(!registry.extend(run_id, 1));
+        assert_eq!(
+            registry.resolve(run_id, "any", true),
+            ResolveOutcome::RunNotActive
+        );
+        assert!(!registry.set_mode(
+            run_id,
+            crate::application::agent::approval::AutonomyMode::FullAutonomous
+        ));
+        let _ = std::fs::remove_dir_all(temp_workspace("inactive-controls"));
     }
 }

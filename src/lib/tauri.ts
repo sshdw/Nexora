@@ -457,3 +457,26 @@ export function listAgentRuns(conversationId: number): Promise<AgentRun[]> {
 export function listAgentSteps(runId: number): Promise<AgentStep[]> {
   return invoke<AgentStep[]>("list_agent_steps", { run_id: runId } as unknown as Record<string, unknown>);
 }
+
+// ---- Agent mode & pause (Task 5.2) ------------------------------------
+
+/** Autonomy modes for the agent (Task 5.2). */
+export type AutonomyMode = "supervised" | "semi_autonomous" | "full_autonomous";
+
+/** Live-switch the autonomy mode of an active run (Task 5.2). */
+export function agentSetMode(runId: number, mode: AutonomyMode): Promise<void> {
+  return invoke<void>("agent_set_mode", {
+    run_id: runId,
+    mode,
+  } as unknown as Record<string, unknown>);
+}
+
+/** Pause an active run at the next step boundary (Task 5.2). */
+export function pauseAgentRun(runId: number): Promise<void> {
+  return invoke<void>("pause_agent_run", { run_id: runId } as unknown as Record<string, unknown>);
+}
+
+/** Resume a paused run (Task 5.2). */
+export function resumeAgentRun(runId: number): Promise<void> {
+  return invoke<void>("resume_agent_run", { run_id: runId } as unknown as Record<string, unknown>);
+}

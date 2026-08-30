@@ -15,21 +15,23 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 
 import { formatBytes, formatRelativeTime } from "../lib/format";
 import {
+  agentSetMode,
   cancelAgentRun,
   extendAgentRun,
+  getSetting,
+  pauseAgentRun,
   resolveAgentApproval,
+  resumeAgentRun,
+  setSetting,
   startAgentRun,
+  type AutonomyMode,
 } from "../lib/tauri";
 import { useAgentRun } from "../lib/useAgentRun";
 import { useAttachments } from "../lib/useAttachments";
 import { useConversation } from "../lib/useConversation";
 import Tooltip from "./Tooltip";
 import AgentRunSteps from "./AgentRunSteps";
-import {
-  ArrowUpIcon,
-  CloseIcon,
-  PaperclipIcon,
-} from "./icons";
+import { ArrowUpIcon, CloseIcon, PaperclipIcon } from "./icons";
 import NexoraMark from "./NexoraMark";
 
 export interface ConversationViewProps {
@@ -69,9 +71,30 @@ export default function ConversationView({
   } = useAttachments(conversationId);
   const { runs, reload: reloadAgent } = useAgentRun(conversationId);
   const [agentMode, setAgentMode] = useState<boolean>(false);
+  const [autonomyMode, setAutonomyMode] = useState<AutonomyMode>("semi_autonomous");
   const [agentBusy, setAgentBusy] = useState<boolean>(false);
   const [agentError, setAgentError] = useState<string | null>(null);
   const threadRef = useRef<HTMLDivElement>(null);
+
+  // Load persisted autonomy default on mount and when conversation changes (global setting).
+  useEffect(() => {
+    let cancelled = false;
+    void getSetting("agent.autonomy")
+      .then((v) => {
+        if (cancelled) return;
+        if (v === "supervised" || v === "semi_autonomous" || v === "full_autonomous") {
+          setAutonomyMode(v);
+        } else {
+          setAutonomyMode("semi_autonomous");
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setAutonomyMode("semi_autonomous");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Insertion-motion bookkeeping (presentation only): the message ids shown
   // in the previous committed render, so genuinely inserted messages can be
@@ -101,7 +124,7 @@ export default function ConversationView({
   }, [conversationId, messages]);
 
   const ready = selectedProvider !== null && selectedModel !== null;
-  const hasActiveRun = runs.some((r) => r.status === "running" || r.status === "budget_exhausted");
+  const hasActiveRun = runs.some((r) => r.status === "running" || r.status === "paused" || r.status === "budget_exhausted");
   const canSend =
     ready && draft.trim() !== "" && !sending && !attachmentsBusy && !agentBusy && !hasActiveRun;
 
@@ -115,6 +138,24 @@ export default function ConversationView({
     setAgentError(null);
     try {
       await cancelAgentRun(runId);
+    } catch (e) {
+      setAgentError(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
+  const handleAgentPause = useCallback(async (runId: number) => {
+    setAgentError(null);
+    try {
+      await pauseAgentRun(runId);
+    } catch (e) {
+      setAgentError(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
+  const handleAgentResume = useCallback(async (runId: number) => {
+    setAgentError(null);
+    try {
+      await resumeAgentRun(runId);
     } catch (e) {
       setAgentError(e instanceof Error ? e.message : String(e));
     }
@@ -137,6 +178,29 @@ export default function ConversationView({
       setAgentError(e instanceof Error ? e.message : String(e));
     }
   }, []);
+
+  const handleAutonomyChange = useCallback(
+    async (mode: AutonomyMode) => {
+      setAutonomyMode(mode);
+      try {
+        await setSetting("agent.autonomy", mode);
+      } catch (e) {
+        setAgentError(e instanceof Error ? e.message : String(e));
+        return;
+      }
+      // Live-switch any active run's gate (DP-AUTONOMY): parked approval stays.
+      for (const run of runs) {
+        if (run.status === "running" || run.status === "paused") {
+          try {
+            await agentSetMode(run.run_id, mode);
+          } catch {
+            // Best-effort: a run that just finished will miss, ignore.
+          }
+        }
+      }
+    },
+    [runs],
+  );
 
   const handleSubmit = async () => {
     const content = draft.trim();
@@ -250,6 +314,8 @@ export default function ConversationView({
                 onResolveApproval={(callId, approved) => void handleAgentApprove(item.run.run_id, callId, approved)}
                 onCancel={() => void handleAgentCancel(item.run.run_id)}
                 onContinue={() => void handleAgentContinue(item.run.run_id)}
+                onPause={() => void handleAgentPause(item.run.run_id)}
+                onResume={() => void handleAgentResume(item.run.run_id)}
               />
             ),
           )
@@ -294,6 +360,25 @@ export default function ConversationView({
 
       <div className="nex-composer">
         <div className="nex-composer-inner">
+          {agentMode && (
+            <div className="nex-agent-autonomy" role="group" aria-label="Autonomy mode">
+              <span className="nex-agent-autonomy-label">Autonomy</span>
+              <div className="nex-seg" role="tablist" aria-label="Autonomy mode">
+                {(["supervised", "semi_autonomous", "full_autonomous"] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    role="tab"
+                    aria-selected={autonomyMode === mode}
+                    className={autonomyMode === mode ? "is-active" : undefined}
+                    onClick={() => void handleAutonomyChange(mode)}
+                  >
+                    {mode === "supervised" ? "Supervised" : mode === "semi_autonomous" ? "Semi-auto" : "Full-auto"}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="nex-composer-shell">
             {attachments.length > 0 && (
               <ul className="nex-composer-attachments" aria-label="Attached files">

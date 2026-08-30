@@ -37,14 +37,20 @@ pub(crate) const SELECTED_PROVIDER_KEY: &str = "provider.selected";
 /// The selected-model key persisted by the provider/model hook (FR-004).
 pub(crate) const SELECTED_MODEL_KEY: &str = "provider.model";
 
+/// Autonomy mode persisted for agent runs (Task 5.2, DP-AUTONOMY).
+pub(crate) const AUTONOMY_KEY: &str = "agent.autonomy";
+
 /// Theme values defined by the current implementation (no others exist).
 const VALID_THEMES: &[&str] = &["dark", "light"];
+
+/// Valid autonomy modes for [`AUTONOMY_KEY`] (Task 5.2).
+const VALID_AUTONOMY: &[&str] = &["supervised", "semi_autonomous", "full_autonomous"];
 
 /// Validate one setting write against the domains defined by the existing
 /// implementation (FR-012: invalid values are rejected before persistence).
 ///
 /// Rules:
-/// - Only the three explicitly supported keys may be written.
+/// - Only the four explicitly supported keys may be written.
 /// - A `None` value (clearing back to the default state) is always valid.
 /// - [`THEME_KEY`] accepts only the implemented themes (`dark`, `light`).
 /// - [`SELECTED_PROVIDER_KEY`] accepts only names returned by the build's
@@ -52,8 +58,10 @@ const VALID_THEMES: &[&str] = &["dark", "light"];
 /// - [`SELECTED_MODEL_KEY`] accepts only model identifiers listed for a
 ///   supported provider (union across providers; the writer orders model
 ///   before provider when switching, so per-provider coupling is not assumed).
+/// - [`AUTONOMY_KEY`] accepts only the three autonomy modes
+///   (`supervised`, `semi_autonomous`, `full_autonomous`).
 ///
-/// No credential, payload, or path value can appear here: only the three
+/// No credential, payload, or path value can appear here: only the four
 /// keys above reach persistence, and none of them ever carries a secret.
 fn validate_setting(key: &str, value: Option<&str>) -> Result<(), CommandError> {
     // Clearing a setting restores its default state; never an invalid value.
@@ -80,6 +88,13 @@ fn validate_setting(key: &str, value: Option<&str>) -> Result<(), CommandError> 
                 .iter()
                 .any(|p| p.models.iter().any(|m| m == value))
             {
+                Ok(())
+            } else {
+                Err(rejected(key, value))
+            }
+        }
+        AUTONOMY_KEY => {
+            if VALID_AUTONOMY.contains(&value) {
                 Ok(())
             } else {
                 Err(rejected(key, value))
@@ -170,7 +185,12 @@ mod tests {
     /// valid for every key вЂ” including keys that are otherwise unsupported.
     #[test]
     fn clearing_is_always_allowed() {
-        for key in [THEME_KEY, SELECTED_PROVIDER_KEY, SELECTED_MODEL_KEY] {
+        for key in [
+            THEME_KEY,
+            SELECTED_PROVIDER_KEY,
+            SELECTED_MODEL_KEY,
+            AUTONOMY_KEY,
+        ] {
             assert!(validate_setting(key, None).is_ok());
         }
         assert!(validate_setting("anything.else", None).is_ok());
@@ -226,9 +246,23 @@ mod tests {
     #[test]
     fn unknown_keys_are_rejected() {
         // A provider name is not a valid value under an arbitrary key: only
-        // the three explicitly supported setting keys are writable.
+        // the four explicitly supported setting keys are writable.
         assert_rejected("appearance.mode", "dark");
         assert_rejected("export.format", "markdown");
         assert_rejected("", "dark");
+    }
+
+    #[test]
+    fn valid_autonomy_values_are_accepted() {
+        for mode in VALID_AUTONOMY {
+            assert_accepted(AUTONOMY_KEY, mode);
+        }
+    }
+
+    #[test]
+    fn invalid_autonomy_values_are_rejected() {
+        for mode in ["", "SemiAutonomous", "semi", "auto", "supervised "] {
+            assert_rejected(AUTONOMY_KEY, mode);
+        }
     }
 }

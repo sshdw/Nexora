@@ -43,6 +43,7 @@ const settings = new Map<string, string>([
   ["provider.selected", "gemini"],
   ["provider.model", "gemini-3.6-flash"],
   ["appearance.theme", "dark"],
+  ["agent.autonomy", "semi_autonomous"],
 ]);
 
 const attachments: Array<{
@@ -110,6 +111,7 @@ type ActiveMockRun = {
   timers: number[];
   pendingApproval: { call_id: string; name: string; arguments: string } | null;
   budgetExhausted: boolean;
+  paused: boolean;
 };
 const activeRuns = new Map<number, ActiveMockRun>();
 
@@ -231,10 +233,22 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
       return null;
     case "get_setting":
       return settings.get(String(args.key)) ?? null;
-    case "set_setting":
-      if (args.value === null || args.value === undefined) settings.delete(String(args.key));
-      else settings.set(String(args.key), String(args.value));
+    case "set_setting": {
+      const key = String(args.key);
+      const val = args.value as string | null | undefined;
+      if (val === null || val === undefined) {
+        settings.delete(key);
+      } else {
+        const strVal = String(val);
+        if (key === "agent.autonomy") {
+          if (!["supervised", "semi_autonomous", "full_autonomous"].includes(strVal)) {
+            throw { kind: "invalidInput", message: `value '${strVal}' is not a valid 'agent.autonomy' setting` };
+          }
+        }
+        settings.set(key, strVal);
+      }
       return null;
+    }
     case "delete_setting":
       settings.delete(String(args.key));
       return null;
@@ -361,7 +375,7 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
       }
       return { content: "ok", model: String(args.model) };
     }
-    // ---- Agent runs (Task 5.1) ----
+    // ---- Agent runs (Task 5.1/5.2) ----
     case "start_agent_run": {
       const conversationId = argNumber(args, "conversation_id", "conversationId");
       const content = argString(args, "content") ?? "";
@@ -392,11 +406,16 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
       if (conv) conv.updated_at = now();
 
       const runId = nextAgentRunId++;
+      const resolvedMode = (() => {
+        const stored = settings.get("agent.autonomy");
+        if (stored === "supervised" || stored === "semi_autonomous" || stored === "full_autonomous") return stored;
+        return "semi_autonomous";
+      })();
       const run: MockAgentRun = {
         id: runId,
         conversation_id: convId,
         model,
-        mode: "semi_autonomous",
+        mode: resolvedMode,
         status: "running",
         started_at: now(),
         finished_at: null,
@@ -408,7 +427,7 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
       };
       agentRuns.push(run);
       agentSteps.set(runId, []);
-      const active: ActiveMockRun = { status: "running", timers: [], pendingApproval: null, budgetExhausted: false };
+      const active: ActiveMockRun = { status: "running", timers: [], pendingApproval: null, budgetExhausted: false, paused: false };
       activeRuns.set(runId, active);
 
       // Helper to append persisted step and emit live frame
@@ -458,37 +477,41 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
         emitAgentEvent({ type: "finished", run_id: runId, event: { conversation_id: convId, status, final_content: finalContent, error } });
       };
 
-      // Synthetic stream: 5 steps over ~4s with an approval park ~2s auto-resolved
-      // Step 1: model_turn thinking (500ms)
+      // Synthetic stream: terminal (execute_command) + diff (write_file) + approval park
+      // Step 1: model_turn thinking (400ms)
       active.timers.push(window.setTimeout(() => {
         if (!activeRuns.has(runId)) return;
         appendStep("model_turn", null, null, "Thinking about your request…", null, 120);
         emitAgentEvent({ type: "governance", run_id: runId, event: { type: "completed", steps: 1 } });
       }, 400) as unknown as number);
 
-      // Step 2: tool_call read_file succeeded (900ms)
+      // Step 2: execute_command terminal (900ms) — demonstrates terminal view
       active.timers.push(window.setTimeout(() => {
         if (!activeRuns.has(runId)) return;
-        appendStep("tool_call", "read_file", JSON.stringify({ path: "notes.txt" }), "file body preview…", "succeeded", 35);
+        const cmd = "cargo test";
+        const observation = "running 3 tests\ntest ok\n--- stderr ---\nwarning: unused variable";
+        appendStep("tool_call", "execute_command", JSON.stringify({ command: cmd }), observation, "succeeded", 210);
       }, 900) as unknown as number);
 
       // Step 3: approval park for write_file (1400ms) -> emit ApprovalRequested, park until resolved
       active.timers.push(window.setTimeout(() => {
         if (!activeRuns.has(runId)) return;
         const callId = `call-${runId}-approval`;
-        active.pendingApproval = { call_id: callId, name: "write_file", arguments: JSON.stringify({ path: "output.txt", content: "hello" }) };
-        emitAgentEvent({ type: "governance", run_id: runId, event: { type: "approval_requested", call_id: callId, name: "write_file", arguments: JSON.stringify({ path: "output.txt", content: "hello" }) } });
+        const writeArgs = JSON.stringify({ path: "output.txt", content: "hello world\nsecond line" });
+        active.pendingApproval = { call_id: callId, name: "write_file", arguments: writeArgs };
+        emitAgentEvent({ type: "governance", run_id: runId, event: { type: "approval_requested", call_id: callId, name: "write_file", arguments: writeArgs } });
         // Auto-resolve after ~2s if not manually resolved
         const auto = window.setTimeout(() => {
           if (!activeRuns.has(runId) || !active.pendingApproval) return;
           const approved = true;
           emitAgentEvent({ type: "governance", run_id: runId, event: { type: "approval_resolved", call_id: callId, approved } });
-          appendStep("approval", "write_file", JSON.stringify({ path: "output.txt", content: "hello" }), approved ? "approved" : "denied", approved ? "succeeded" : "denied", null);
+          appendStep("approval", "write_file", writeArgs, approved ? "approved" : "denied", approved ? "succeeded" : "denied", null);
           active.pendingApproval = null;
-          // After approval, continue with tool_call and final model_turn
+          // After approval, continue with write_file diff and final model_turn
           window.setTimeout(() => {
             if (!activeRuns.has(runId)) return;
-            appendStep("tool_call", "write_file", JSON.stringify({ path: "output.txt", content: "hello" }), "Successfully wrote 5 bytes to 'output.txt'", "succeeded", 12);
+            const diff = "--- a/output.txt\n+++ b/output.txt\n@@ -0,0 +1,2 @@\n+hello world\n+second line\n";
+            appendStep("tool_call", "write_file", writeArgs, diff, "succeeded", 12);
           }, 400);
           window.setTimeout(() => {
             if (!activeRuns.has(runId)) return;
@@ -562,8 +585,9 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
         active.timers.push(window.setTimeout(() => {
           if (!activeRuns.has(runId)) return;
           const seq2 = (agentSteps.get(runId)!.length) + 1;
-          agentSteps.get(runId)!.push({ id: mockNextStepId++, run_id: runId, seq: seq2, kind: "tool_call", tool_name: "write_file", arguments: pending.arguments, observation: "Successfully wrote 5 bytes to 'output.txt'", status: "succeeded", started_at: now(), duration_ms: 12 });
-          emitAgentEvent({ type: "step", run_id: runId, event: { seq: seq2, kind: "tool_call", tool_name: "write_file", arguments: pending.arguments, observation: "Successfully wrote 5 bytes to 'output.txt'", status: "succeeded", duration_ms: 12 } });
+          const diff = "--- a/output.txt\n+++ b/output.txt\n@@ -0,0 +1,2 @@\n+hello world\n+second line\n";
+          agentSteps.get(runId)!.push({ id: mockNextStepId++, run_id: runId, seq: seq2, kind: "tool_call", tool_name: "write_file", arguments: pending.arguments, observation: diff, status: "succeeded", started_at: now(), duration_ms: 12 });
+          emitAgentEvent({ type: "step", run_id: runId, event: { seq: seq2, kind: "tool_call", tool_name: "write_file", arguments: pending.arguments, observation: diff, status: "succeeded", duration_ms: 12 } });
         }, 400) as unknown as number);
         active.timers.push(window.setTimeout(() => {
           if (!activeRuns.has(runId)) return;
@@ -614,6 +638,47 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
         }, 600) as unknown as number);
       } else {
         // Extend budget while running: just log, no immediate effect
+      }
+      return null;
+    }
+    case "agent_set_mode": {
+      const runId = argNumber(args, "run_id", "runId");
+      const mode = argString(args, "mode") ?? "";
+      if (runId === undefined) fail("run_id required");
+      if (!["supervised", "semi_autonomous", "full_autonomous"].includes(mode)) {
+        throw { kind: "invalidInput", message: `value '${mode}' is not a valid 'agent.autonomy' setting` };
+      }
+      const active = activeRuns.get(runId);
+      if (!active) throw { kind: "notFound", message: `no active agent run with id ${runId}` };
+      const run = agentRuns.find((r) => r.id === runId);
+      if (run) run.mode = mode;
+      // Mode switch never auto-resolves a parked approval (DP-AUTONOMY): do nothing to pendingApproval
+      return null;
+    }
+    case "pause_agent_run": {
+      const runId = argNumber(args, "run_id", "runId");
+      if (runId === undefined) fail("run_id required");
+      const active = activeRuns.get(runId);
+      if (!active) throw { kind: "notFound", message: `no active agent run with id ${runId}` };
+      if (!active.paused) {
+        active.paused = true;
+        emitAgentEvent({ type: "governance", run_id: runId, event: { type: "paused" } });
+      }
+      return null;
+    }
+    case "resume_agent_run": {
+      const runId = argNumber(args, "run_id", "runId");
+      if (runId === undefined) fail("run_id required");
+      const active = activeRuns.get(runId);
+      if (!active) throw { kind: "notFound", message: `no active agent run with id ${runId}` };
+      if (active.paused) {
+        active.paused = false;
+        emitAgentEvent({ type: "governance", run_id: runId, event: { type: "resumed" } });
+        // If we paused during a pending approval auto-resolve, the timers are still pending; resuming will let them fire
+        // For budget-pending, simulate continuation if needed
+        if (active.budgetExhausted) {
+          // let extend handle it; just keep paused state cleared
+        }
       }
       return null;
     }

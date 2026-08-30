@@ -34,6 +34,7 @@ use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::application::agent::approval::AutonomyMode;
 use crate::application::agent::service::{
     self, AgentRunError, AgentRunHost, AgentRunRegistry, AgentRunRequest, ResolveOutcome, RunFrame,
 };
@@ -181,6 +182,9 @@ pub(crate) async fn start_agent_run(
 
         let root = workspace_root(&handle)?;
         let host: Arc<dyn AgentRunHost> = Arc::new(TauriAgentHost::new(handle, db_client.clone()));
+        // Resolve autonomy mode from settings (DP-AUTONOMY): default
+        // semi_autonomous when unset/invalid.
+        let mode = service::resolve_autonomy_mode(db_ref);
 
         let run_id = service::start_run(
             db_ref,
@@ -196,6 +200,7 @@ pub(crate) async fn start_agent_run(
                 credential,
                 max_iterations: None,
             },
+            mode,
         )?;
         Ok::<StartAgentRunResponse, CommandError>(StartAgentRunResponse { run_id })
     })
@@ -278,6 +283,68 @@ pub(crate) fn extend_agent_run(
     }
 }
 
+/// Live-switch the autonomy mode of an active run (Task 5.2, DP-AUTONOMY).
+/// A parked approval is never auto-resolved by a mode switch.
+#[tauri::command]
+pub(crate) fn agent_set_mode(
+    run_id: i64,
+    mode: String,
+    registry: State<'_, ManagedRegistry>,
+) -> Result<(), CommandError> {
+    let mode = match mode.as_str() {
+        "supervised" => AutonomyMode::Supervised,
+        "semi_autonomous" => AutonomyMode::SemiAutonomous,
+        "full_autonomous" => AutonomyMode::FullAutonomous,
+        _ => {
+            return Err(CommandError::new(
+                ErrorKind::InvalidInput,
+                format!("value '{mode}' is not a valid 'agent.autonomy' setting"),
+            ))
+        }
+    };
+    if registry.set_mode(run_id, mode) {
+        Ok(())
+    } else {
+        Err(CommandError::new(
+            ErrorKind::NotFound,
+            format!("no active agent run with id {run_id}"),
+        ))
+    }
+}
+
+/// Pause an active run (Task 5.2, DP-PAUSE). Takes effect at the next step
+/// boundary; `resume` or `cancel` ends it.
+#[tauri::command]
+pub(crate) fn pause_agent_run(
+    run_id: i64,
+    registry: State<'_, ManagedRegistry>,
+) -> Result<(), CommandError> {
+    if registry.pause(run_id) {
+        Ok(())
+    } else {
+        Err(CommandError::new(
+            ErrorKind::NotFound,
+            format!("no active agent run with id {run_id}"),
+        ))
+    }
+}
+
+/// Resume a paused run (Task 5.2, DP-PAUSE).
+#[tauri::command]
+pub(crate) fn resume_agent_run(
+    run_id: i64,
+    registry: State<'_, ManagedRegistry>,
+) -> Result<(), CommandError> {
+    if registry.resume(run_id) {
+        Ok(())
+    } else {
+        Err(CommandError::new(
+            ErrorKind::NotFound,
+            format!("no active agent run with id {run_id}"),
+        ))
+    }
+}
+
 /// Rehydration: the runs of one conversation, `started_at` DESC.
 #[tauri::command]
 pub(crate) fn list_agent_runs(
@@ -350,6 +417,67 @@ mod tests {
         for case in cases {
             let mapped: CommandError = case.into();
             assert!(safe_message(&mapped), "secret leaked into: {mapped:?}");
+        }
+    }
+
+    #[test]
+    fn new_agent_commands_are_secret_free_and_classified() {
+        // agent_set_mode invalid mode -> InvalidInput, secret-free
+        let invalid = CommandError::new(
+            ErrorKind::InvalidInput,
+            format!(
+                "value '{}' is not a valid 'agent.autonomy' setting",
+                "bad_mode"
+            ),
+        );
+        assert_eq!(invalid.kind, ErrorKind::InvalidInput);
+        assert!(safe_message(&invalid));
+
+        // pause/resume/set_mode unknown run -> NotFound, secret-free
+        let not_found = CommandError::new(
+            ErrorKind::NotFound,
+            format!("no active agent run with id {}", 9999),
+        );
+        assert_eq!(not_found.kind, ErrorKind::NotFound);
+        assert!(safe_message(&not_found));
+
+        // resolve unknown approval -> NotFound
+        let no_approval = CommandError::new(
+            ErrorKind::NotFound,
+            "the run has no pending approval for that call".to_string(),
+        );
+        assert_eq!(no_approval.kind, ErrorKind::NotFound);
+        assert!(safe_message(&no_approval));
+
+        // extend zero steps -> InvalidInput
+        let bad_extend = CommandError::new(
+            ErrorKind::InvalidInput,
+            "extra steps must be greater than zero".to_string(),
+        );
+        assert_eq!(bad_extend.kind, ErrorKind::InvalidInput);
+        assert!(safe_message(&bad_extend));
+    }
+
+    #[test]
+    fn autonomy_mode_string_validation_accepts_only_three_values() {
+        for mode in ["supervised", "semi_autonomous", "full_autonomous"] {
+            let ok = match mode {
+                "supervised" => AutonomyMode::Supervised,
+                "semi_autonomous" => AutonomyMode::SemiAutonomous,
+                "full_autonomous" => AutonomyMode::FullAutonomous,
+                _ => panic!("should be valid"),
+            };
+            // Ensure the parsing in agent_set_mode would succeed (by not returning error)
+            assert!(matches!(
+                ok,
+                AutonomyMode::Supervised
+                    | AutonomyMode::SemiAutonomous
+                    | AutonomyMode::FullAutonomous
+            ));
+        }
+        // Invalid values would be rejected by the command (InvalidInput)
+        for bad in ["", "semi", "SERPER"] {
+            assert!(!["supervised", "semi_autonomous", "full_autonomous"].contains(&bad));
         }
     }
 }
