@@ -812,6 +812,9 @@ mod tests {
     use super::*;
     use rusqlite::Connection;
 
+    static ATTACHMENT_COUNTER: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+
     /// Shared cell through which a [`StubExecutor`] exposes the request it
     /// received, so tests can inspect the history passed to execution.
     type Captured = std::rc::Rc<std::cell::RefCell<Option<AiRequest>>>;
@@ -1411,7 +1414,17 @@ mod tests {
         size_override: Option<i64>,
         contents: &[u8],
     ) -> i64 {
-        let path = std::env::temp_dir().join(format!("nexora-test-{}-{name}", std::process::id()));
+        let counter = ATTACHMENT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "nexora-test-{}-{}-{}-{name}",
+            std::process::id(),
+            counter,
+            nanos
+        ));
         fs::write(&path, contents).expect("write temp attachment file");
         AttachmentRepository::new(db)
             .create(

@@ -1,20 +1,12 @@
 //! End-to-end suite for the agent stack (Task 6.1).
 //!
-//! Drives the **real** production stack — file-backed SQLite with real
+//! Drives the **real** production stack — file-backed `SQLite` with real
 //! migrations, `ConversationService`, `AgentRunHost` wiring, `ToolRegistry`
 //! with a real temporary workspace, settings, and the event stream — with a
 //! deterministic scripted [`ProviderExecutor`]. No network, no new
 //! dependencies, no widened visibility. All helpers are `#[cfg(test)]`
 //! and the whole module is gated behind `#[cfg(test)]` in `agent/mod.rs`
 //! so `cargo test e2e` selects exactly this suite.
-
-#![allow(clippy::too_many_lines)]
-#![allow(clippy::cast_possible_wrap)]
-#![allow(clippy::items_after_statements)]
-#![allow(clippy::used_underscore_binding)]
-#![allow(clippy::needless_pass_by_value)]
-#![allow(clippy::doc_markdown)]
-#![allow(clippy::similar_names)]
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -176,6 +168,7 @@ fn collect_until_finished_into(rx: &Receiver<RunFrame>, out: &mut Vec<RunFrame>)
     }
 }
 
+#[allow(clippy::used_underscore_binding)]
 fn wait_for_approval_requested(rx: &Receiver<RunFrame>) -> String {
     let mut _buf = Vec::new();
     wait_for_approval_requested_into(rx, &mut _buf)
@@ -202,6 +195,7 @@ fn wait_for_approval_requested_into(rx: &Receiver<RunFrame>, buf: &mut Vec<RunFr
     }
 }
 
+#[allow(clippy::used_underscore_binding)]
 fn wait_for_budget_exhausted(rx: &Receiver<RunFrame>) {
     let mut _buf = Vec::new();
     wait_for_budget_exhausted_into(rx, &mut _buf);
@@ -226,6 +220,7 @@ fn wait_for_budget_exhausted_into(rx: &Receiver<RunFrame>, buf: &mut Vec<RunFram
     }
 }
 
+#[allow(clippy::used_underscore_binding)]
 fn wait_for_paused(rx: &Receiver<RunFrame>) {
     let mut _buf = Vec::new();
     wait_for_paused_into(rx, &mut _buf);
@@ -297,6 +292,7 @@ fn usage_response(content: &str, input: u64, output: u64) -> AiResponse {
     }
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn tool_response(
     id: &str,
     name: &str,
@@ -315,6 +311,7 @@ fn tool_response(
     }
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn tool_usage(
     id: &str,
     name: &str,
@@ -348,6 +345,7 @@ fn create_conversation(db: &Database, title: &str) -> i64 {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[allow(clippy::items_after_statements)]
 fn e2e_plain_chat_regression() {
     let (db, db_path) = e2e_db("plain-chat");
     let ws = e2e_workspace("plain-chat-ws");
@@ -427,6 +425,7 @@ fn e2e_plain_chat_regression() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn e2e_full_agent_journey() {
     let (db, db_path) = e2e_db("full-journey");
     let ws = e2e_workspace("full-journey");
@@ -523,7 +522,8 @@ fn e2e_full_agent_journey() {
         })
         .collect();
     assert!(!streamed_seqs.is_empty(), "must have step events, got none");
-    let expected: Vec<i64> = (1..=streamed_seqs.len() as i64).collect();
+    let expected: Vec<i64> =
+        (1..=i64::try_from(streamed_seqs.len()).expect("len fits in i64")).collect();
     assert_eq!(
         streamed_seqs, expected,
         "streamed seqs must be 1..N contiguous, got {streamed_seqs:?}"
@@ -799,7 +799,7 @@ fn e2e_budget_park_extend_completes() {
         .list_steps(run_id)
         .expect("steps");
     let seqs: Vec<i64> = steps.iter().map(|s| s.seq).collect();
-    let expected: Vec<i64> = (1..=seqs.len() as i64).collect();
+    let expected: Vec<i64> = (1..=i64::try_from(seqs.len()).expect("len fits in i64")).collect();
     assert_eq!(seqs, expected, "seqs must be contiguous");
 
     drop(db);
@@ -987,6 +987,7 @@ fn e2e_pause_resume_completes() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn e2e_spend_limit_trips() {
     let (db, db_path) = e2e_db("spend");
     let ws = e2e_workspace("spend");
@@ -1098,6 +1099,8 @@ fn e2e_spend_limit_trips() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
+#[allow(clippy::similar_names)]
 fn e2e_duplicate_run_rejected_parallel_ok() {
     let (db, db_path) = e2e_db("duplicate");
     let ws = e2e_workspace("duplicate");
@@ -1294,7 +1297,7 @@ fn e2e_autonomy_setting_respected() {
     let frames = collect_until_finished(&rx);
 
     // No approval should have been requested in full_autonomous
-    let had_approval = frames.iter().any(|f| {
+    let approval_requested_in_stream = frames.iter().any(|f| {
         matches!(
             f,
             RunFrame::Governance {
@@ -1304,7 +1307,7 @@ fn e2e_autonomy_setting_respected() {
         )
     });
     assert!(
-        !had_approval,
+        !approval_requested_in_stream,
         "full_autonomous must not park on write_file, got approvals in {frames:?}"
     );
 
@@ -1336,9 +1339,9 @@ fn e2e_autonomy_setting_respected() {
     let steps = AgentRunRepository::new(&db)
         .list_steps(run_id)
         .expect("steps");
-    let has_approval = steps.iter().any(|s| s.kind == "approval");
+    let has_approval_step = steps.iter().any(|s| s.kind == "approval");
     assert!(
-        !has_approval,
+        !has_approval_step,
         "full autonomous must have no approval steps, got {steps:?}"
     );
     let has_tool = steps
@@ -1352,6 +1355,7 @@ fn e2e_autonomy_setting_respected() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn e2e_restart_sweep_and_rehydration() {
     let (db, db_path) = e2e_db("sweep");
     let ws = e2e_workspace("sweep");
@@ -1439,7 +1443,7 @@ fn e2e_restart_sweep_and_rehydration() {
     assert_eq!(steps[1].kind, "tool_call");
     // seqs strictly ordered
     let seqs: Vec<i64> = steps.iter().map(|s| s.seq).collect();
-    let expected: Vec<i64> = (1..=seqs.len() as i64).collect();
+    let expected: Vec<i64> = (1..=i64::try_from(seqs.len()).expect("len fits in i64")).collect();
     assert_eq!(seqs, expected, "steps must be ordered by seq");
 
     drop(db2);
@@ -1453,6 +1457,7 @@ fn e2e_restart_sweep_and_rehydration() {
 
 #[test]
 #[ignore = "env-gated real provider smoke; requires NEXORA_E2E_REAL_PROVIDER=1"]
+#[allow(clippy::too_many_lines)]
 fn e2e_real_provider_smoke() {
     // Only run when explicitly enabled.
     let enabled = std::env::var("NEXORA_E2E_REAL_PROVIDER").ok();
