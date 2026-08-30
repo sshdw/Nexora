@@ -182,6 +182,24 @@ impl ApprovalGate {
         }
     }
 
+    /// Pre-register a pending entry for `call` so that an `ApprovalRequested`
+    /// emission that follows can be resolved immediately without a race.
+    /// Called by the runner before emitting the event; does not notify.
+    pub(crate) fn prepare_pending(&self, call: &ToolCall) {
+        let mut state = self.lock_state();
+        match state.pending.as_ref() {
+            Some(existing) if existing.id == call.id => {
+                // Already prepared for this call — preserve any early decision.
+            }
+            _ => {
+                state.pending = Some(PendingApproval {
+                    id: call.id.clone(),
+                    decision: None,
+                });
+            }
+        }
+    }
+
     /// Decide for `call` per the autonomy ladder, or park until
     /// `respond(request_id, decision)` or cancellation. Returns
     /// `Err(())` when cancellation aborted the wait (the runner maps this to
@@ -192,15 +210,24 @@ impl ApprovalGate {
             return Ok(ApprovalDecision::Approved);
         }
 
-        // Create pending entry.
+        // Create pending entry, reusing an early-prepared one for the same
+        // call id so an early decision (respond before park) is not clobbered.
         {
             let mut state = self.lock_state();
-            // If a previous pending somehow remains (should not happen in the
-            // sequential per-tool-call runner loop), replace it conservatively.
-            state.pending = Some(PendingApproval {
-                id: call.id.clone(),
-                decision: None,
-            });
+            match state.pending.as_ref() {
+                Some(existing) if existing.id == call.id => {
+                    // Reuse the pending prepared by `prepare_pending`; keep decision if already set.
+                }
+                _ => {
+                    // If a previous pending somehow remains for a different id
+                    // (should not happen in the sequential per-tool-call runner loop),
+                    // replace it conservatively.
+                    state.pending = Some(PendingApproval {
+                        id: call.id.clone(),
+                        decision: None,
+                    });
+                }
+            }
         }
 
         // Park until a decision arrives or cancellation fires. Use a short
@@ -512,5 +539,50 @@ mod tests {
             gate.request_approval(&call).expect("recovered"),
             ApprovalDecision::Approved
         );
+    }
+
+    #[test]
+    fn prepare_pending_early_resolve_is_consumed_without_parking() {
+        // Guard: if request_approval clobbers the early decision, this test
+        // must fail (it would park forever instead of returning immediately).
+        let gate = ApprovalGate::new(AutonomyMode::Supervised);
+        let call = tool_call("early-1", "write_file");
+        gate.prepare_pending(&call);
+        assert!(gate.has_pending_for("early-1"));
+        assert!(gate.respond("early-1", ApprovalDecision::Approved));
+        // Decision is now set; has_pending_for is false but has_any_pending true (decision Some).
+        assert!(!gate.has_pending_for("early-1"));
+        assert!(gate.has_any_pending());
+        // request_approval must consume the early decision without parking.
+        // Use a channel with timeout to detect a clobber-bug that would park.
+        let gate2 = gate.clone();
+        let call2 = call.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let res = gate2.request_approval(&call2);
+            let _ = tx.send(res);
+        });
+        let res = rx.recv_timeout(Duration::from_secs(1)).expect(
+            "request_approval must return immediately — clobbered early decision would park",
+        );
+        let decision = res.expect("approved");
+        assert_eq!(decision, ApprovalDecision::Approved);
+        assert!(!gate.has_any_pending(), "pending cleared after consumption");
+    }
+
+    #[test]
+    fn prepare_pending_normal_park_and_resolve_still_works() {
+        let gate = ApprovalGate::new(AutonomyMode::Supervised);
+        let call = tool_call("normal-1", "write_file");
+        gate.prepare_pending(&call);
+        assert!(gate.has_pending_for("normal-1"));
+        let gate2 = gate.clone();
+        let handle = thread::spawn(move || gate2.request_approval(&call).expect("approved"));
+        wait_until_parked(&gate, "normal-1");
+        assert!(!handle.is_finished(), "should be parked");
+        assert!(gate.respond("normal-1", ApprovalDecision::Approved));
+        let decision = handle.join().expect("join");
+        assert_eq!(decision, ApprovalDecision::Approved);
+        assert!(!gate.has_any_pending());
     }
 }
