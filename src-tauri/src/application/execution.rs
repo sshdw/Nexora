@@ -33,6 +33,8 @@
 //! [`ExecutorError`] deliberately carry no secret payload (ARCHITECTURE.md §10:
 //! classified errors).
 
+use std::sync::Arc;
+
 use crate::infrastructure::database::{Database, DatabaseError};
 use crate::infrastructure::providers::anthropic::{
     AnthropicExecutor, PROVIDER_NAME as ANTHROPIC_PROVIDER_NAME,
@@ -280,7 +282,7 @@ pub(crate) trait ProviderExecutor {
 /// unregistered `name` resolves to [`None`] — there is deliberately no fallback
 /// to an arbitrary available provider.
 pub(crate) struct ExecutorRegistry {
-    executors: Vec<(&'static str, Box<dyn ProviderExecutor>)>,
+    executors: Vec<(&'static str, Arc<dyn ProviderExecutor + Send + Sync>)>,
 }
 
 impl ExecutorRegistry {
@@ -292,9 +294,9 @@ impl ExecutorRegistry {
     pub(crate) fn new() -> Self {
         Self {
             executors: vec![
-                (PROVIDER_NAME, Box::new(OpenAiExecutor::new())),
-                (ANTHROPIC_PROVIDER_NAME, Box::new(AnthropicExecutor::new())),
-                (GEMINI_PROVIDER_NAME, Box::new(GeminiExecutor::new())),
+                (PROVIDER_NAME, Arc::new(OpenAiExecutor::new())),
+                (ANTHROPIC_PROVIDER_NAME, Arc::new(AnthropicExecutor::new())),
+                (GEMINI_PROVIDER_NAME, Arc::new(GeminiExecutor::new())),
             ],
         }
     }
@@ -303,11 +305,27 @@ impl ExecutorRegistry {
     ///
     /// Returns [`None`] when no executor is registered for `name`; no fallback
     /// or automatic provider selection is performed.
-    pub(crate) fn resolve(&self, name: &str) -> Option<&dyn ProviderExecutor> {
+    pub(crate) fn resolve(&self, name: &str) -> Option<&(dyn ProviderExecutor + Send + Sync)> {
         self.executors
             .iter()
             .find(|(registered, _)| *registered == name)
             .map(|(_, executor)| executor.as_ref())
+    }
+
+    /// Resolve the executor registered for `name` as an owned shared handle
+    /// (Task 5.1): the agent-run bridge moves the executor into the spawned
+    /// run thread, which outlives the registry that resolved it.
+    ///
+    /// Returns [`None`] when no executor is registered for `name` — no
+    /// fallback, exactly like [`Self::resolve`].
+    pub(crate) fn resolve_owned(
+        &self,
+        name: &str,
+    ) -> Option<Arc<dyn ProviderExecutor + Send + Sync>> {
+        self.executors
+            .iter()
+            .find(|(registered, _)| *registered == name)
+            .map(|(_, executor)| Arc::clone(executor))
     }
 }
 
@@ -335,33 +353,24 @@ impl<'a> RequestExecutionService<'a> {
         }
     }
 
-    /// Execute `request`.
-    ///
-    /// Resolves the requested provider through the Provider Metadata Service,
-    /// verifies it is configured and has stored credentials, reads the
-    /// credential from the [`CredentialStore`] only for the duration of the
-    /// call, and delegates execution to the [`ProviderExecutor`].
+    /// Resolve the credential for `provider` (Task 5.1 factoring): the
+    /// provider-metadata lookup plus the FR-014 credential checks that
+    /// [`Self::execute`] performs, exposed so the agent-run bridge can
+    /// resolve the credential before spawning the run thread. The value is
+    /// never persisted, logged, or placed in any returned metadata.
     ///
     /// # Errors
     ///
-    /// Returns [`RequestError::UnknownProvider`] when no provider with the
-    /// request's `provider` name is configured; [`RequestError::MissingCredentials`]
-    /// when the provider exists but has no stored credential;
-    /// [`RequestError::ProviderUnavailable`] when the secure keyring cannot be
-    /// reached to determine or obtain the credential;
-    /// [`RequestError::ExecutorUnavailable`] when the provider is configured but
-    /// has no registered executor; [`RequestError::Execution`]
-    /// when the provider fails to fulfil the request; or
-    /// [`RequestError::Database`] when the provider lookup fails.
-    pub(crate) fn execute(&self, request: &AiRequest) -> Result<AiResponse> {
+    /// Same classification as [`Self::execute`] steps 1–3.
+    pub(crate) fn resolve_credential(&self, provider: &str) -> Result<String> {
         // 1. Resolve the requested provider through the Provider Metadata
         //    Service (ARCHITECTURE.md §7: provider selection).
         let provider = self
             .provider
-            .read_by_name(&request.provider)
+            .read_by_name(provider)
             .map_err(RequestError::from)?
             .ok_or_else(|| RequestError::UnknownProvider {
-                name: request.provider.clone(),
+                name: provider.to_string(),
             })?;
 
         // 2. The provider must be available: configured and credentialed
@@ -387,28 +396,48 @@ impl<'a> RequestExecutionService<'a> {
         // 3. Obtain the credential only now, immediately before execution, and
         //    only from the existing CredentialStore (FR-014). The value is
         //    never persisted, logged, or placed in any returned metadata.
-        let credential = match CredentialStore::read(&provider.name) {
-            Ok(Some(secret)) => secret,
-            Ok(None) => {
-                return Err(RequestError::MissingCredentials {
-                    name: provider.name,
-                })
-            }
-            Err(CredentialError::StorageUnavailable) => {
-                return Err(RequestError::ProviderUnavailable {
-                    name: provider.name,
-                });
-            }
-            Err(err) => return Err(RequestError::Credential(err)),
-        };
+        match CredentialStore::read(&provider.name) {
+            Ok(Some(secret)) => Ok(secret),
+            Ok(None) => Err(RequestError::MissingCredentials {
+                name: provider.name,
+            }),
+            Err(CredentialError::StorageUnavailable) => Err(RequestError::ProviderUnavailable {
+                name: provider.name,
+            }),
+            Err(err) => Err(RequestError::Credential(err)),
+        }
+    }
+
+    /// Execute `request`.
+    ///
+    /// Resolves the requested provider through the Provider Metadata Service,
+    /// verifies it is configured and has stored credentials, reads the
+    /// credential from the [`CredentialStore`] only for the duration of the
+    /// call, and delegates execution to the [`ProviderExecutor`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RequestError::UnknownProvider`] when no provider with the
+    /// request's `provider` name is configured; [`RequestError::MissingCredentials`]
+    /// when the provider exists but has no stored credential;
+    /// [`RequestError::ProviderUnavailable`] when the secure keyring cannot be
+    /// reached to determine or obtain the credential;
+    /// [`RequestError::ExecutorUnavailable`] when the provider is configured but
+    /// has no registered executor; [`RequestError::Execution`]
+    /// when the provider fails to fulfil the request; or
+    /// [`RequestError::Database`] when the provider lookup fails.
+    pub(crate) fn execute(&self, request: &AiRequest) -> Result<AiResponse> {
+        // 1–3. Provider row, availability, and credential (shared with the
+        //     Task 5.1 agent-run bridge through `resolve_credential`).
+        let credential = self.resolve_credential(&request.provider)?;
 
         // 4. Resolve the concrete executor for this provider through the
         //    registry. A provider whose metadata exists but has no registered
         //    executor cannot fulfil the request; it fails explicitly with a
         //    classified error rather than falling back to another provider.
-        let executor = self.executors.resolve(&provider.name).ok_or_else(|| {
+        let executor = self.executors.resolve(&request.provider).ok_or_else(|| {
             RequestError::ExecutorUnavailable {
-                name: provider.name.clone(),
+                name: request.provider.clone(),
             }
         })?;
 
@@ -417,7 +446,7 @@ impl<'a> RequestExecutionService<'a> {
         executor
             .execute(request, &credential)
             .map_err(|_| RequestError::Execution {
-                name: provider.name,
+                name: request.provider.clone(),
             })
     }
 }

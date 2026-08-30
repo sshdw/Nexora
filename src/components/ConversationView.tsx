@@ -11,12 +11,20 @@
 //! the sent text into the composer so it can be resent without retyping —
 //! frontend draft state only; persisted history is never modified.
 
-import { useEffect, useLayoutEffect, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { formatBytes, formatRelativeTime } from "../lib/format";
+import {
+  cancelAgentRun,
+  extendAgentRun,
+  resolveAgentApproval,
+  startAgentRun,
+} from "../lib/tauri";
+import { useAgentRun } from "../lib/useAgentRun";
 import { useAttachments } from "../lib/useAttachments";
 import { useConversation } from "../lib/useConversation";
 import Tooltip from "./Tooltip";
+import AgentRunSteps from "./AgentRunSteps";
 import {
   ArrowUpIcon,
   CloseIcon,
@@ -59,6 +67,10 @@ export default function ConversationView({
     remove,
     refresh: refreshAttachments,
   } = useAttachments(conversationId);
+  const { runs, reload: reloadAgent } = useAgentRun(conversationId);
+  const [agentMode, setAgentMode] = useState<boolean>(false);
+  const [agentBusy, setAgentBusy] = useState<boolean>(false);
+  const [agentError, setAgentError] = useState<string | null>(null);
   const threadRef = useRef<HTMLDivElement>(null);
 
   // Insertion-motion bookkeeping (presentation only): the message ids shown
@@ -89,19 +101,68 @@ export default function ConversationView({
   }, [conversationId, messages]);
 
   const ready = selectedProvider !== null && selectedModel !== null;
+  const hasActiveRun = runs.some((r) => r.status === "running" || r.status === "budget_exhausted");
   const canSend =
-    ready && draft.trim() !== "" && !sending && !attachmentsBusy;
+    ready && draft.trim() !== "" && !sending && !attachmentsBusy && !agentBusy && !hasActiveRun;
 
   // Keep the newest message in view as history loads and responses arrive.
   useEffect(() => {
     const el = threadRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [messages, loading, sending]);
+  }, [messages, loading, sending, runs, agentBusy]);
+
+  const handleAgentCancel = useCallback(async (runId: number) => {
+    setAgentError(null);
+    try {
+      await cancelAgentRun(runId);
+    } catch (e) {
+      setAgentError(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
+  const handleAgentApprove = useCallback(async (runId: number, callId: string, approved: boolean) => {
+    setAgentError(null);
+    try {
+      await resolveAgentApproval(runId, callId, approved);
+    } catch (e) {
+      setAgentError(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
+  const handleAgentContinue = useCallback(async (runId: number) => {
+    setAgentError(null);
+    try {
+      await extendAgentRun(runId, 10);
+    } catch (e) {
+      setAgentError(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
 
   const handleSubmit = async () => {
     const content = draft.trim();
     if (!canSend || !content || !selectedProvider || !selectedModel) return;
     const attachmentIds = attachments.map((attachment) => attachment.id);
+    // Agent path: opt-in streaming via start_agent_run (DP-3, DP-4).
+    if (agentMode) {
+      setAgentError(null);
+      setAgentBusy(true);
+      setDraft("");
+      try {
+        await startAgentRun(conversationId, content, selectedProvider, selectedModel);
+        // User message persisted before spawn; refresh both histories.
+        await Promise.all([refreshAttachments(), reloadAgent()]);
+        onMessageSent?.();
+      } catch (e) {
+        // Start failed: surface error, restore draft, and reload to show persisted state.
+        const msg = e instanceof Error ? e.message : typeof e === "object" && e !== null && "message" in e ? String((e as { message: unknown }).message) : String(e);
+        setAgentError(msg);
+        setDraft(content);
+        await Promise.all([refreshAttachments(), reloadAgent()]);
+      } finally {
+        setAgentBusy(false);
+      }
+      return;
+    }
     setDraft("");
     const failure = await send(content, selectedProvider, selectedModel, attachmentIds);
     // A failed AI request keeps the persisted user message and creates no
@@ -122,6 +183,15 @@ export default function ConversationView({
     onMessageSent?.();
   };
 
+  // Chronological thread: messages and agent runs interleaved by timestamp (Task 5.1 DP-6).
+  const threadItems: Array<
+    | { kind: "message"; ts: number; message: (typeof messages)[number] }
+    | { kind: "run"; ts: number; run: (typeof runs)[number] }
+  > = [
+    ...messages.map((m) => ({ kind: "message" as const, ts: m.created_at, message: m })),
+    ...runs.map((r) => ({ kind: "run" as const, ts: r.started_at, run: r })),
+  ].sort((a, b) => a.ts - b.ts);
+
   return (
     <div className="nex-main-conversation">
       <div className="nex-thread" ref={threadRef} aria-label="Messages">
@@ -129,7 +199,7 @@ export default function ConversationView({
           <p className="nex-thread-status nex-fade-in" role="status">
             Loading messages…
           </p>
-        ) : messages.length === 0 ? (
+        ) : threadItems.length === 0 ? (
           <div className="nex-conversation-placeholder nex-empty-enter">
             <span className="nex-conversation-empty-mark-wrap" aria-hidden="true">
               <NexoraMark className="nex-conversation-empty-mark" width={26} height={26} />
@@ -140,48 +210,63 @@ export default function ConversationView({
             </p>
           </div>
         ) : (
-          messages.map((message) => (
-            <article
-              key={message.id}
-              className={
-                "nex-message " +
-                (message.role === "user"
-                  ? "nex-message-user"
-                  : "nex-message-assistant") +
-                (freshMessageIds?.has(message.id) ? " nex-message-enter" : "")
-              }
-            >
-              <div className="nex-message-meta">
-                <span className="nex-message-author">
-                  {message.role === "user"
-                    ? "You"
-                    : "Assistant"}
-                </span>
-                {message.role === "assistant" && message.model_name && (
-                  <span
-                    className="nex-message-origin"
-                    title="Provider and model used for this message"
-                  >
-                    {message.model_name}
+          threadItems.map((item) =>
+            item.kind === "message" ? (
+              <article
+                key={`msg-${item.message.id}`}
+                className={
+                  "nex-message " +
+                  (item.message.role === "user"
+                    ? "nex-message-user"
+                    : "nex-message-assistant") +
+                  (freshMessageIds?.has(item.message.id) ? " nex-message-enter" : "")
+                }
+              >
+                <div className="nex-message-meta">
+                  <span className="nex-message-author">
+                    {item.message.role === "user" ? "You" : "Assistant"}
                   </span>
-                )}
-                <time
-                  className="nex-message-time"
-                  dateTime={new Date(message.created_at * 1000).toISOString()}
-                >
-                  {formatRelativeTime(message.created_at)}
-                </time>
-              </div>
-              <div className="nex-message-body">{message.content}</div>
-            </article>
-          ))
+                  {item.message.role === "assistant" && item.message.model_name && (
+                    <span
+                      className="nex-message-origin"
+                      title="Provider and model used for this message"
+                    >
+                      {item.message.model_name}
+                    </span>
+                  )}
+                  <time
+                    className="nex-message-time"
+                    dateTime={new Date(item.message.created_at * 1000).toISOString()}
+                  >
+                    {formatRelativeTime(item.message.created_at)}
+                  </time>
+                </div>
+                <div className="nex-message-body">{item.message.content}</div>
+              </article>
+            ) : (
+              <AgentRunSteps
+                key={`run-${item.run.run_id}`}
+                run={item.run}
+                onResolveApproval={(callId, approved) => void handleAgentApprove(item.run.run_id, callId, approved)}
+                onCancel={() => void handleAgentCancel(item.run.run_id)}
+                onContinue={() => void handleAgentContinue(item.run.run_id)}
+              />
+            ),
+          )
         )}
-        {sending && (
+        {sending && !agentMode && (
           <div
             className="nex-typing"
             role="status"
             aria-label="Assistant is responding"
           >
+            <span className="nex-typing-dot" />
+            <span className="nex-typing-dot" />
+            <span className="nex-typing-dot" />
+          </div>
+        )}
+        {agentBusy && (
+          <div className="nex-typing" role="status" aria-label="Agent is responding">
             <span className="nex-typing-dot" />
             <span className="nex-typing-dot" />
             <span className="nex-typing-dot" />
@@ -198,6 +283,12 @@ export default function ConversationView({
       {error && (
         <div className="nex-composer-error nex-fade-in" role="alert">
           {error.message}
+        </div>
+      )}
+
+      {agentError && (
+        <div className="nex-composer-error nex-fade-in" role="alert">
+          {agentError}
         </div>
       )}
 
@@ -238,12 +329,12 @@ export default function ConversationView({
               placeholder="Message"
               aria-label="Message"
               value={draft}
-              disabled={sending}
+              disabled={sending || agentBusy}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === "Enter" && !event.shiftKey) {
                   event.preventDefault();
-                  handleSubmit();
+                  void handleSubmit();
                 }
               }}
             />
@@ -253,12 +344,21 @@ export default function ConversationView({
                   type="button"
                   className="nex-composer-attach"
                   aria-label="Add file"
-                  disabled={sending || attachmentsBusy}
+                  disabled={sending || attachmentsBusy || agentBusy}
                   onClick={() => void pickAndAttach()}
                 >
                   <PaperclipIcon />
                 </button>
               </Tooltip>
+              <label className="nex-composer-agent-toggle" title="Stream steps via the agent (opt-in)">
+                <input
+                  type="checkbox"
+                  checked={agentMode}
+                  onChange={(e) => setAgentMode(e.target.checked)}
+                  aria-label="Agent mode"
+                />
+                <span>Agent</span>
+              </label>
               <span className="nex-composer-bar-spacer" />
               {selectedModel && (
                 <span
@@ -271,14 +371,14 @@ export default function ConversationView({
               <button
                 type="button"
                 className="nex-composer-send nex-morph-pill"
-                onClick={handleSubmit}
+                onClick={() => void handleSubmit()}
                 disabled={!canSend}
-                aria-busy={sending}
+                aria-busy={sending || agentBusy}
               >
-                {sending ? (
+                {sending || agentBusy ? (
                   <>
                     <span className="nex-spinner" aria-hidden="true" />
-                    Sending…
+                    {agentMode ? "Running…" : "Sending…"}
                   </>
                 ) : (
                   <>

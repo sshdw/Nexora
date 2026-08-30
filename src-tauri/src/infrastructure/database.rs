@@ -19,7 +19,7 @@
 //! tables `agent_runs` / `agent_steps` (v4, Task 4.2).
 
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use rusqlite::{params, Connection};
 
@@ -465,16 +465,21 @@ fn now_millis() -> i64 {
 /// application components obtain it through `app.state::<Database>()`.
 ///
 /// `rusqlite::Connection` is `Send` but not `Sync`; wrapping it in a `Mutex`
-/// satisfies Tauri's `Send + Sync` requirement for managed state.
+/// satisfies Tauri's `Send + Sync` requirement for managed state. The
+/// connection is additionally held behind an [`Arc`] so the handle is
+/// cheaply cloneable: the Task 5.1 agent-run bridge moves an owned clone
+/// into the spawned run thread, which records steps through the same shared
+/// connection (every access still serializes on the one `Mutex`).
+#[derive(Clone)]
 pub(crate) struct Database {
-    conn: Mutex<Connection>,
+    conn: Arc<Mutex<Connection>>,
 }
 
 impl Database {
     /// Wrap an already-opened, migrated connection in shared application state.
-    pub(crate) const fn new(conn: Connection) -> Self {
+    pub(crate) fn new(conn: Connection) -> Self {
         Self {
-            conn: Mutex::new(conn),
+            conn: Arc::new(Mutex::new(conn)),
         }
     }
 

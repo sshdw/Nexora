@@ -25,6 +25,8 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
+use serde::Serialize;
+
 // ---------------------------------------------------------------------------
 // Cancellation token
 // ---------------------------------------------------------------------------
@@ -73,9 +75,16 @@ impl CancellationToken {
 /// Milestone-governance event emitted over the optional run-event channel.
 ///
 /// Delivery is best-effort: a receiver that stopped draining the channel
-/// never blocks or aborts the run. Per-step streaming events are out of
-/// scope here (Task 5.1).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// never blocks or aborts the run. Task 5.1 extends this enum with
+/// [`AgentRunEvent::StepRecorded`], emitted by the run recorder (not the
+/// runner) after each *successfully persisted* `agent_steps` row, so live
+/// events and persisted steps share one code path and one total order.
+///
+/// Serialization is internal-tagged (`{"kind": "...", ...field values}`)
+/// with `snake_case` variant names; the Task 5.1 bridge wraps events in the
+/// `agent-run-event` Tauri frame alongside `run_id`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum AgentRunEvent {
     /// The run parked at a step boundary because the user paused it.
     Paused,
@@ -116,6 +125,31 @@ pub(crate) enum AgentRunEvent {
     Cancelled,
     /// The run produced a final answer after `steps` accounted model turns.
     Completed { steps: usize },
+    /// One successfully persisted agent step, streamed to the UI (Task 5.1).
+    /// Emitted by the recorder immediately after the `agent_steps` insert
+    /// succeeds; `seq` is exactly the persisted value (CF-01-aligned: a
+    /// failed insert emits nothing and its `seq` is reused by the retry).
+    /// Emitted on the run thread, so governance and step events on the same
+    /// channel are totally ordered by emission.
+    StepRecorded {
+        /// The run this step belongs to.
+        run_id: i64,
+        /// 1-based sequence within the run, identical to `agent_steps.seq`.
+        seq: i64,
+        /// `'model_turn' | 'tool_call' | 'approval'` (schema CHECK values).
+        kind: String,
+        /// Tool name; `None` for `model_turn`.
+        tool_name: Option<String>,
+        /// Raw JSON arguments exactly as provider-supplied.
+        arguments: Option<String>,
+        /// Model-turn content / tool output / denial or approval text.
+        observation: Option<String>,
+        /// `'succeeded' | 'failed' | 'denied' | 'cancelled'` (tool/approval
+        /// only).
+        status: Option<String>,
+        /// Step duration in milliseconds, when known.
+        duration_ms: Option<i64>,
+    },
 }
 
 // ---------------------------------------------------------------------------

@@ -12,6 +12,7 @@
 //! The commands are wired into the application through
 //! `tauri::Builder::invoke_handler` in [`crate::run`].
 
+pub mod agent;
 pub mod attachments;
 pub mod conversations;
 pub mod credentials;
