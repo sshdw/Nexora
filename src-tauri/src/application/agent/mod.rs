@@ -28,6 +28,8 @@
 
 pub mod approval;
 pub mod control;
+#[cfg(test)]
+mod e2e;
 pub mod persistence;
 pub mod pricing;
 pub mod runner;
