@@ -67,6 +67,9 @@ pub fn run() {
             commands::agent::cancel_agent_run,
             commands::agent::resolve_agent_approval,
             commands::agent::extend_agent_run,
+            commands::agent::agent_set_mode,
+            commands::agent::pause_agent_run,
+            commands::agent::resume_agent_run,
             commands::agent::list_agent_runs,
             commands::agent::list_agent_steps,
         ])
@@ -97,6 +100,22 @@ pub fn run() {
             // and record the applied schema version; startup fails loudly if it
             // is not (DATABASE.md §4–§5).
             let db = app.state::<infrastructure::database::Database>();
+            // Sweep orphaned 'running' runs from crashed sessions to 'error'
+            // at startup (Task 5.2, DP-8): only status='running' rows are
+            // touched; all other statuses and row counts untouched.
+            {
+                let swept = crate::infrastructure::repository::agent_runs::AgentRunRepository::new(
+                    db.inner(),
+                )
+                .fail_orphaned_running_runs("run interrupted by application shutdown")
+                .unwrap_or_else(|err| {
+                    log::warn!("orphaned run sweep failed: {err}");
+                    0
+                });
+                if swept > 0 {
+                    log::info!("swept {swept} orphaned agent runs to error");
+                }
+            }
             let conn = db.lock()?;
             let version: i64 = conn.query_row(
                 "SELECT COALESCE(MAX(version), 0) FROM schema_version",

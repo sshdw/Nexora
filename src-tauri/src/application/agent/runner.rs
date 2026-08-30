@@ -779,7 +779,7 @@ mod tests {
         assert_eq!(requests[1].messages.len(), 2);
         assert_eq!(
             requests[1].messages[1].content,
-            "[tool 'write_file' (id c1) result]\nSuccessfully wrote 10 bytes to 'notes.txt'"
+            "[tool 'write_file' (id c1) result]\n--- a/notes.txt\n+++ b/notes.txt\n@@ -0,0 +1,1 @@\n+react-loop\n"
         );
         let _ = fs::remove_dir_all(&ws);
     }
@@ -828,11 +828,11 @@ mod tests {
         assert_eq!(tail.len(), 3);
         assert_eq!(
             tail[0].content,
-            "[tool 'write_file' (id a) result]\nSuccessfully wrote 1 bytes to 'one.txt'"
+            "[tool 'write_file' (id a) result]\n--- a/one.txt\n+++ b/one.txt\n@@ -0,0 +1,1 @@\n+1\n"
         );
         assert_eq!(
             tail[1].content,
-            "[tool 'write_file' (id b) result]\nSuccessfully wrote 1 bytes to 'two.txt'"
+            "[tool 'write_file' (id b) result]\n--- a/two.txt\n+++ b/two.txt\n@@ -0,0 +1,1 @@\n+2\n"
         );
         assert_eq!(tail[2].content, "[tool 'read_file' (id c) result]\n1");
         let _ = fs::remove_dir_all(&ws);

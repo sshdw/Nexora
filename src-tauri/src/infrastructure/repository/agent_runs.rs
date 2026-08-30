@@ -321,6 +321,24 @@ impl AgentRunRepository<'_> {
         Ok(conn.last_insert_rowid())
     }
 
+    /// Sweep orphaned `running` runs to `error` at startup (Task 5.2, DP-8).
+    ///
+    /// `UPDATE agent_runs SET status='error', error=?1, finished_at=unixepoch()
+    /// WHERE status='running'` — only `running` rows are touched; all other
+    /// statuses and row counts are unchanged. Returns the number of rows swept.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DatabaseError`] if the update fails.
+    pub(crate) fn fail_orphaned_running_runs(&self, message: &str) -> Result<usize> {
+        let conn = self.conn()?;
+        let updated = conn.execute(
+            "UPDATE agent_runs SET status = 'error', error = ?1, finished_at = (unixepoch()) WHERE status = 'running'",
+            params![message],
+        )?;
+        Ok(updated)
+    }
+
     /// List the recorded steps of one run ordered by `seq` (DATABASE.md
     /// §7.9, §8).
     ///
@@ -617,5 +635,72 @@ mod tests {
         let ids: Vec<i64> = listed.iter().map(|r| r.id).collect();
         assert!(ids.contains(&first) && ids.contains(&second));
         assert_eq!(listed.len(), 2);
+    }
+
+    #[test]
+    fn orphaned_sweep_marks_only_running_as_error() {
+        let db = in_memory_database();
+        let runs = repo(&db);
+        // Create one row per status (six terminal + running)
+        let statuses = [
+            "running",
+            "completed",
+            "cancelled",
+            "budget_exhausted",
+            "spend_limit_exceeded",
+            "error",
+        ];
+        let mut ids = Vec::new();
+        for status in statuses {
+            let id = runs.create_run(None, "m", "supervised").expect("create");
+            // Move status to target (running stays running, others finalized)
+            if status != "running" {
+                runs.finalize_run(id, status, 0, None, None, None, None)
+                    .expect("finalize");
+            }
+            ids.push((id, status));
+        }
+        let total_before = runs.list_runs_by_started_at_desc().expect("list").len();
+        assert_eq!(total_before, 6);
+        let swept = runs
+            .fail_orphaned_running_runs("run interrupted by application shutdown")
+            .expect("sweep");
+        assert_eq!(swept, 1, "only running rows should be swept");
+        let all = runs.list_runs_by_started_at_desc().expect("list after");
+        assert_eq!(all.len(), 6, "row counts unchanged");
+        for (id, original) in ids {
+            let row = runs.read_run(id).expect("read").expect("exists");
+            if original == "running" {
+                assert_eq!(row.status, "error");
+                assert_eq!(
+                    row.error.as_deref(),
+                    Some("run interrupted by application shutdown")
+                );
+                assert!(row.finished_at.is_some(), "swept row must have finished_at");
+            } else {
+                assert_eq!(row.status, original, "non-running status must be untouched");
+            }
+        }
+    }
+
+    #[test]
+    fn orphaned_sweep_is_idempotent_and_empty_is_noop() {
+        let db = in_memory_database();
+        let runs = repo(&db);
+        let swept_empty = runs
+            .fail_orphaned_running_runs("run interrupted by application shutdown")
+            .expect("sweep empty");
+        assert_eq!(swept_empty, 0);
+        let id = runs.create_run(None, "m", "supervised").expect("create");
+        let swept_one = runs
+            .fail_orphaned_running_runs("run interrupted by application shutdown")
+            .expect("sweep one");
+        assert_eq!(swept_one, 1);
+        let swept_again = runs
+            .fail_orphaned_running_runs("run interrupted by application shutdown")
+            .expect("sweep again");
+        assert_eq!(swept_again, 0, "second sweep should touch none");
+        let row = runs.read_run(id).expect("read").expect("exists");
+        assert_eq!(row.status, "error");
     }
 }
