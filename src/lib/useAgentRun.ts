@@ -335,6 +335,22 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
                 copy[idx] = { ...copy[idx], status: "cancelled" };
                 return copy;
               });
+            } else if (gov.type === "paused") {
+              setRuns((prev) => {
+                const idx = prev.findIndex((r) => r.run_id === runId);
+                if (idx < 0) return prev;
+                const copy = [...prev];
+                copy[idx] = { ...copy[idx], status: "paused" };
+                return copy;
+              });
+            } else if (gov.type === "resumed") {
+              setRuns((prev) => {
+                const idx = prev.findIndex((r) => r.run_id === runId);
+                if (idx < 0) return prev;
+                const copy = [...prev];
+                copy[idx] = { ...copy[idx], status: "running" };
+                return copy;
+              });
             } else if (gov.type === "completed") {
               // Completed governance event is informational; final status comes from finished frame.
               // Keep as running until finished reload.
