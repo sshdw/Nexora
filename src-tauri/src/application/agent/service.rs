@@ -409,6 +409,8 @@ pub(crate) struct AgentRunRequest {
     pub credential: String,
     /// Iteration-budget override (test seam; `None` = runner default).
     pub(crate) max_iterations: Option<usize>,
+    /// Spend-limit override in micro-USD (test seam; `None` = no guard).
+    pub(crate) spend_limit_micro_usd: Option<u64>,
 }
 
 /// Classified failures of [`start_run`] (pre-spawn only: once the run thread
@@ -635,6 +637,9 @@ fn spawn_run(
                 if let Some(max_iterations) = run_request.max_iterations {
                     runner = runner.with_max_iterations(max_iterations);
                 }
+                if let Some(limit) = run_request.spend_limit_micro_usd {
+                    runner = runner.with_spend_limit(limit);
+                }
                 runner.with_run_recorder(recorder).run(
                     &run_request.provider,
                     &run_request.model,
@@ -859,6 +864,7 @@ mod tests {
             model: "test-model".to_string(),
             credential: "sk-secret-test-credential".to_string(),
             max_iterations: None,
+            spend_limit_micro_usd: None,
         }
     }
 

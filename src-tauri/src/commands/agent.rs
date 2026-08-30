@@ -199,6 +199,7 @@ pub(crate) async fn start_agent_run(
                 model,
                 credential,
                 max_iterations: None,
+                spend_limit_micro_usd: None,
             },
             mode,
         )?;
