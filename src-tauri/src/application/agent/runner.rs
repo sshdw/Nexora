@@ -470,6 +470,9 @@ impl<'a> AgentRunner<'a> {
                 // loop continues; cancellation while parked aborts.
                 if let Some(gate) = &self.approval_gate {
                     if gate.needs_approval(call) {
+                        // INVARIANT: once ApprovalRequested is emitted, a pending entry for that call_id exists,
+                        // so a concurrent resolve cannot hit NoPendingApproval — the race is closed by construction.
+                        gate.prepare_pending(call);
                         self.emit(AgentRunEvent::ApprovalRequested {
                             call_id: call.id.clone(),
                             name: call.name.clone(),
@@ -1892,6 +1895,67 @@ mod tests {
         assert_eq!(ans, "ok");
         drop(runner1);
         drop(runner2);
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn approval_immediate_resolve_after_requested_proceeds_without_race() {
+        // Deterministic regression for the emit-before-park race: upon receiving
+        // ApprovalRequested, immediately resolve via respond (no sleep) and expect
+        // the call to proceed as approved.
+        let ws = temp_workspace();
+        let gate = ApprovalGate::new(AutonomyMode::Supervised);
+        let gate_clone = gate.clone();
+        let (tx, rx) = channel();
+        let fake = FakeExecutor::new(vec![
+            Ok(AiResponse {
+                content: String::new(),
+                model: "m".to_string(),
+                tool_calls: vec![approval_call(
+                    "race-1",
+                    "write_file",
+                    serde_json::json!({"path": "immediate.txt", "content": "immediate ok"}),
+                )],
+                usage: None,
+            }),
+            Ok(text_response("done after immediate approve")),
+        ]);
+        let runner = AgentRunner::new(&fake, &ws)
+            .with_approval_gate(gate_clone)
+            .with_event_sender(tx);
+        let gate_for_driver = gate.clone();
+        let driver = thread::spawn(move || {
+            let ev = rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("ApprovalRequested");
+            assert!(
+                matches!(ev, AgentRunEvent::ApprovalRequested { call_id, .. } if call_id == "race-1")
+            );
+            // Immediate resolve — must succeed; the race is closed by construction
+            // because prepare_pending ran before the emit.
+            let resolved = gate_for_driver.respond("race-1", ApprovalDecision::Approved);
+            assert!(
+                resolved,
+                "immediate respond must succeed — race closed by construction"
+            );
+            let ev2 = rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("ApprovalResolved");
+            assert!(matches!(
+                ev2,
+                AgentRunEvent::ApprovalResolved { approved: true, .. }
+            ));
+            rx.recv_timeout(Duration::from_secs(5)).expect("Completed")
+        });
+        let answer = runner
+            .run("openai", "m", "cred", "q")
+            .expect("run completes after immediate approval");
+        assert_eq!(answer, "done after immediate approve");
+        assert_eq!(
+            fs::read_to_string(ws.join("immediate.txt")).expect("file written"),
+            "immediate ok"
+        );
+        driver.join().expect("driver");
         let _ = fs::remove_dir_all(&ws);
     }
 
