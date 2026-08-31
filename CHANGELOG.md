@@ -77,5 +77,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sandbox hardening (2026-08-24/26).
 
 > Note: tag `v0.3.0` exists remotely from the MVP era but carries no changelog entry; superseded by 1.0.0.
+
 [1.0.0]: https://github.com/sshdw/Nexora/releases/tag/v1.0.0
 [0.1.0]: https://github.com/sshdw/Nexora/releases/tag/v0.1.0
