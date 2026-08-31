@@ -40,7 +40,7 @@ Perform these with `npm run tauri dev` on a real build, covering both light and 
 
 ## Owner
 
-Task 6.1 backend E2E is verified by `cargo test` (352 tests, 0 failed). This checklist is the only deferred manual gate for 6.2; keep it short and check it before release.
+Task 6.1 backend E2E is verified by `cargo test` (363 passed / 0 failed / 1 ignored on Windows; 365 / 0 / 1 on ubuntu CI, the delta being 2 `#[cfg(unix)]` tests; the ignored test is `e2e_real_provider_smoke`). This checklist is the only deferred manual gate for 6.2; keep it short and check it before release.
 
 ## 1.0 release gate
 
