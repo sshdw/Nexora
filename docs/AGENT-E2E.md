@@ -41,3 +41,10 @@ Perform these with `npm run tauri dev` on a real build, covering both light and 
 ## Owner
 
 Task 6.1 backend E2E is verified by `cargo test` (352 tests, 0 failed). This checklist is the only deferred manual gate for 6.2; keep it short and check it before release.
+
+## 1.0 release gate
+
+This manual checklist is the **1.0.0 release gate**: the Human confirms every
+item above BEFORE the `v1.0.0` tag is created. Tagging happens at promote time
+only — never as part of an implementation task. The automated counterpart of
+the gate is the Task 6.2 stress suite (`cargo test stress_`).
