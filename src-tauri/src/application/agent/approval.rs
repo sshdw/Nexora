@@ -207,6 +207,19 @@ impl ApprovalGate {
     pub(crate) fn request_approval(&self, call: &ToolCall) -> Result<ApprovalDecision, ()> {
         // Fast-path: auto-approved without ever creating a pending entry.
         if !self.needs_approval(call) {
+            // A `prepare_pending` may have pre-registered this exact call id
+            // before the mode was switched to auto-approve. That stale entry
+            // would linger until the next different-id approval overwrote it
+            // (hotfix-review backlog, classified BENIGN). Clear it here so a
+            // late `respond` for the stale id resolves nothing (Task 6.2).
+            let mut state = self.lock_state();
+            if state
+                .pending
+                .as_ref()
+                .is_some_and(|pending| pending.id == call.id)
+            {
+                state.pending = None;
+            }
             return Ok(ApprovalDecision::Approved);
         }
 
@@ -584,5 +597,28 @@ mod tests {
         let decision = handle.join().expect("join");
         assert_eq!(decision, ApprovalDecision::Approved);
         assert!(!gate.has_any_pending());
+    }
+
+    #[test]
+    fn fast_path_clears_stale_prepared_pending() {
+        // Hotfix-review backlog cleanup (Task 6.2): prepare → switch to
+        // FullAutonomous → request_approval must auto-approve AND the stale
+        // pre-registered pending must be gone afterwards. Observable via a
+        // subsequent respond(same_id) returning false.
+        let gate = ApprovalGate::new(AutonomyMode::Supervised);
+        let call = tool_call("stale-1", "write_file");
+        gate.prepare_pending(&call);
+        assert!(gate.has_pending_for("stale-1"));
+        gate.set_mode(AutonomyMode::FullAutonomous);
+        let decision = gate.request_approval(&call).expect("auto-approved");
+        assert_eq!(decision, ApprovalDecision::Approved);
+        assert!(
+            !gate.has_any_pending(),
+            "stale prepared pending must be cleared by the fast-path"
+        );
+        assert!(
+            !gate.respond("stale-1", ApprovalDecision::Denied),
+            "a late respond for the stale id must not resolve anything"
+        );
     }
 }
