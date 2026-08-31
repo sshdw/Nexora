@@ -34,4 +34,6 @@ pub mod persistence;
 pub mod pricing;
 pub mod runner;
 pub mod service;
+#[cfg(test)]
+mod stress;
 pub mod tools;
