@@ -5,48 +5,6 @@ mod infrastructure;
 
 use tauri::Manager;
 
-/// Zero-dependency debug logger (debug builds only): prints
-/// `[{level}] {target}: {args}` to stderr so provider/agent failures are
-/// diagnosable during development. Records carry level + target module +
-/// message only — never a request body, a payload field value, or a header
-/// (ARCHITECTURE.md §12). Release builds install nothing here.
-#[cfg(debug_assertions)]
-fn init_debug_logger() {
-    /// Sink mirroring every `log` record to stderr with module targets.
-    struct DebugStderrLogger;
-
-    impl log::Log for DebugStderrLogger {
-        fn enabled(&self, metadata: &log::Metadata) -> bool {
-            log::max_level() >= metadata.level()
-        }
-
-        fn log(&self, record: &log::Record) {
-            if self.enabled(record.metadata()) {
-                // Level + target/module + message only; never a request body,
-                // a payload field value, or a header.
-                eprintln!(
-                    "[{}] {}: {}",
-                    record.level(),
-                    record.target(),
-                    record.args()
-                );
-            }
-        }
-
-        fn flush(&self) {}
-    }
-
-    static DEBUG_STDERR_LOGGER: DebugStderrLogger = DebugStderrLogger;
-
-    // `set_logger` fails only when a logger is already installed; the first
-    // installer wins and that is an acceptable no-op, so the result is
-    // ignored deliberately. (`set_boxed_logger` is unused because the crate's
-    // unified `log` feature set does not enable `std`; a static logger needs
-    // no allocation and no dependency change.)
-    let _ = log::set_logger(&DEBUG_STDERR_LOGGER);
-    log::set_max_level(log::LevelFilter::Debug);
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 /// Run the Tauri desktop application.
 ///
@@ -60,15 +18,8 @@ fn init_debug_logger() {
 /// window context cannot be built); startup failure is unrecoverable.
 pub fn run() {
     // Initialize logging first so database and migration events are captured
-    // (ARCHITECTURE.md §11). The global `log` sink is once-only: debug builds
-    // claim it with the verbose module-target logger BEFORE the minimal
-    // `infrastructure::logging` sink attempts to install, then re-apply the
-    // verbose max level (the shared `init` re-applies its own Info filter).
-    #[cfg(debug_assertions)]
-    init_debug_logger();
+    // (ARCHITECTURE.md §11).
     infrastructure::logging::init();
-    #[cfg(debug_assertions)]
-    log::set_max_level(log::LevelFilter::Debug);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
