@@ -404,6 +404,9 @@ export type AgentRunEventPayload =
   | { type: "governance"; run_id: number; event: GovernanceEventPayload }
   | { type: "finished"; run_id: number; event: RunFinishedPayload };
 
+// NOTE: command ARGS are camelCase (Tauri v2); payloads/events stay snake_case
+// (serde `rename_all = "snake_case"`) — never align one to the other.
+
 /** Start one opt-in agent run for `conversationId` (Task 5.1).
  * Returns `{ run_id }` immediately; the run streams via `agent-run-event`. */
 export function startAgentRun(
@@ -413,16 +416,16 @@ export function startAgentRun(
   model: string,
 ): Promise<{ run_id: number }> {
   return invoke<{ run_id: number }>("start_agent_run", {
-    conversation_id: conversationId,
+    conversationId,
     content,
     provider,
     model,
-  } as unknown as Record<string, unknown>);
+  });
 }
 
 /** Cancel an active run (Task 5.1). */
 export function cancelAgentRun(runId: number): Promise<void> {
-  return invoke<void>("cancel_agent_run", { run_id: runId } as unknown as Record<string, unknown>);
+  return invoke<void>("cancel_agent_run", { runId });
 }
 
 /** Resolve a parked approval (Task 5.1). */
@@ -432,30 +435,30 @@ export function resolveAgentApproval(
   approved: boolean,
 ): Promise<void> {
   return invoke<void>("resolve_agent_approval", {
-    run_id: runId,
-    call_id: callId,
+    runId,
+    callId,
     approved,
-  } as unknown as Record<string, unknown>);
+  });
 }
 
 /** Grant additional iterations to a budget-parked run (Task 5.1). */
 export function extendAgentRun(runId: number, extraSteps: number): Promise<void> {
   return invoke<void>("extend_agent_run", {
-    run_id: runId,
-    extra_steps: extraSteps,
-  } as unknown as Record<string, unknown>);
+    runId,
+    extraSteps,
+  });
 }
 
 /** List the runs of one conversation (rehydration, Task 5.1). */
 export function listAgentRuns(conversationId: number): Promise<AgentRun[]> {
   return invoke<AgentRun[]>("list_agent_runs", {
-    conversation_id: conversationId,
-  } as unknown as Record<string, unknown>);
+    conversationId,
+  });
 }
 
 /** List the steps of one run (rehydration, Task 5.1). */
 export function listAgentSteps(runId: number): Promise<AgentStep[]> {
-  return invoke<AgentStep[]>("list_agent_steps", { run_id: runId } as unknown as Record<string, unknown>);
+  return invoke<AgentStep[]>("list_agent_steps", { runId });
 }
 
 // ---- Agent mode & pause (Task 5.2) ------------------------------------
@@ -466,17 +469,17 @@ export type AutonomyMode = "supervised" | "semi_autonomous" | "full_autonomous";
 /** Live-switch the autonomy mode of an active run (Task 5.2). */
 export function agentSetMode(runId: number, mode: AutonomyMode): Promise<void> {
   return invoke<void>("agent_set_mode", {
-    run_id: runId,
+    runId,
     mode,
-  } as unknown as Record<string, unknown>);
+  });
 }
 
 /** Pause an active run at the next step boundary (Task 5.2). */
 export function pauseAgentRun(runId: number): Promise<void> {
-  return invoke<void>("pause_agent_run", { run_id: runId } as unknown as Record<string, unknown>);
+  return invoke<void>("pause_agent_run", { runId });
 }
 
 /** Resume a paused run (Task 5.2). */
 export function resumeAgentRun(runId: number): Promise<void> {
-  return invoke<void>("resume_agent_run", { run_id: runId } as unknown as Record<string, unknown>);
+  return invoke<void>("resume_agent_run", { runId });
 }

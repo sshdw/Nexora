@@ -131,17 +131,14 @@ function emitAgentEvent(frame: unknown) {
   }
 }
 
-function argNumber(args: Record<string, unknown>, ...keys: string[]): number | undefined {
-  for (const k of keys) if (k in args && args[k] !== undefined && args[k] !== null) return Number(args[k]);
-  return undefined;
-}
-function argString(args: Record<string, unknown>, ...keys: string[]): string | undefined {
-  for (const k of keys) if (k in args && args[k] !== undefined && args[k] !== null) return String(args[k]);
-  return undefined;
-}
-function argBool(args: Record<string, unknown>, ...keys: string[]): boolean | undefined {
-  for (const k of keys) if (k in args && args[k] !== undefined) return Boolean(args[k]);
-  return undefined;
+/** Strict camelCase-only argument reader for the agent commands. Mirrors the
+ * Tauri v2 IPC contract (arguments are deserialized by camelCase name) so the
+ * mock enforces the same contract instead of forgiving snake_case fallbacks. */
+function requireArg(args: Record<string, unknown>, command: string, key: string): unknown {
+  if (!(key in args) || args[key] === undefined || args[key] === null) {
+    throw { kind: "invalidInput", message: `command ${command} missing required key ${key}` };
+  }
+  return args[key];
 }
 
 function fail(message: string): never {
@@ -377,12 +374,11 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
     }
     // ---- Agent runs (Task 5.1/5.2) ----
     case "start_agent_run": {
-      const conversationId = argNumber(args, "conversation_id", "conversationId");
-      const content = argString(args, "content") ?? "";
-      const provider = argString(args, "provider") ?? "openai";
-      const model = argString(args, "model") ?? "test-model";
-      if (conversationId === undefined) fail("conversation_id required");
-      const convId = conversationId as number;
+      const conversationId = Number(requireArg(args, "start_agent_run", "conversationId"));
+      const content = String(requireArg(args, "start_agent_run", "content"));
+      const provider = String(requireArg(args, "start_agent_run", "provider"));
+      const model = String(requireArg(args, "start_agent_run", "model"));
+      const convId = conversationId;
       if (!conversations.some((c) => c.id === convId)) {
         throw { kind: "notFound", message: `conversation ${convId} does not exist` };
       }
@@ -528,8 +524,7 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
       return { run_id: runId };
     }
     case "cancel_agent_run": {
-      const runId = argNumber(args, "run_id", "runId");
-      if (runId === undefined) fail("run_id required");
+      const runId = Number(requireArg(args, "cancel_agent_run", "runId"));
       const active = activeRuns.get(runId);
       if (!active) throw { kind: "notFound", message: `no active agent run with id ${runId}` };
       for (const t of active.timers) clearTimeout(t);
@@ -558,10 +553,9 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
       return null;
     }
     case "resolve_agent_approval": {
-      const runId = argNumber(args, "run_id", "runId");
-      const callId = argString(args, "call_id", "callId") ?? "";
-      const approved = argBool(args, "approved") ?? false;
-      if (runId === undefined) fail("run_id required");
+      const runId = Number(requireArg(args, "resolve_agent_approval", "runId"));
+      const callId = String(requireArg(args, "resolve_agent_approval", "callId"));
+      const approved = Boolean(requireArg(args, "resolve_agent_approval", "approved"));
       const active = activeRuns.get(runId);
       if (!active) throw { kind: "notFound", message: `no active agent run with id ${runId}` };
       if (!active.pendingApproval || active.pendingApproval.call_id !== callId) throw { kind: "notFound", message: "the run has no pending approval for that call" };
@@ -614,9 +608,8 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
       return null;
     }
     case "extend_agent_run": {
-      const runId = argNumber(args, "run_id", "runId");
-      const extra = argNumber(args, "extra_steps", "extraSteps") ?? 1;
-      if (runId === undefined) fail("run_id required");
+      const runId = Number(requireArg(args, "extend_agent_run", "runId"));
+      const extra = Number(requireArg(args, "extend_agent_run", "extraSteps"));
       if (extra <= 0) throw { kind: "invalidInput", message: "extra steps must be greater than zero" };
       const active = activeRuns.get(runId);
       if (!active) throw { kind: "notFound", message: `no active agent run with id ${runId}` };
@@ -642,9 +635,8 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
       return null;
     }
     case "agent_set_mode": {
-      const runId = argNumber(args, "run_id", "runId");
-      const mode = argString(args, "mode") ?? "";
-      if (runId === undefined) fail("run_id required");
+      const runId = Number(requireArg(args, "agent_set_mode", "runId"));
+      const mode = String(requireArg(args, "agent_set_mode", "mode"));
       if (!["supervised", "semi_autonomous", "full_autonomous"].includes(mode)) {
         throw { kind: "invalidInput", message: `value '${mode}' is not a valid 'agent.autonomy' setting` };
       }
@@ -656,8 +648,7 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
       return null;
     }
     case "pause_agent_run": {
-      const runId = argNumber(args, "run_id", "runId");
-      if (runId === undefined) fail("run_id required");
+      const runId = Number(requireArg(args, "pause_agent_run", "runId"));
       const active = activeRuns.get(runId);
       if (!active) throw { kind: "notFound", message: `no active agent run with id ${runId}` };
       if (!active.paused) {
@@ -667,8 +658,7 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
       return null;
     }
     case "resume_agent_run": {
-      const runId = argNumber(args, "run_id", "runId");
-      if (runId === undefined) fail("run_id required");
+      const runId = Number(requireArg(args, "resume_agent_run", "runId"));
       const active = activeRuns.get(runId);
       if (!active) throw { kind: "notFound", message: `no active agent run with id ${runId}` };
       if (active.paused) {
@@ -683,13 +673,11 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
       return null;
     }
     case "list_agent_runs": {
-      const convId = argNumber(args, "conversation_id", "conversationId");
-      if (convId === undefined) return [];
+      const convId = Number(requireArg(args, "list_agent_runs", "conversationId"));
       return [...agentRuns].filter((r) => r.conversation_id === convId).sort((a, b) => b.started_at - a.started_at);
     }
     case "list_agent_steps": {
-      const runId = argNumber(args, "run_id", "runId");
-      if (runId === undefined) return [];
+      const runId = Number(requireArg(args, "list_agent_steps", "runId"));
       const steps = agentSteps.get(runId) ?? [];
       return [...steps].sort((a, b) => a.seq - b.seq);
     }
