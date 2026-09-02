@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] — 2026-09-02
+
+### Fixed
+
+- **Agent IPC argument naming (post-1.0.0 hotfix)**: all nine agent commands
+  (`start_agent_run`, `cancel_agent_run`, `resolve_agent_approval`, `extend_agent_run`,
+  `agent_set_mode`, `pause_agent_run`, `resume_agent_run`, `list_agent_runs`,
+  `list_agent_steps`) were invoked with snake_case argument keys, while Tauri v2
+  deserializes command arguments by camelCase name — so every agent call was rejected
+  at IPC validation before reaching the service. The JavaScript layer now sends
+  camelCase keys, the browser mock enforces the same contract instead of accepting both
+  spellings, and two naming-parity tests keep the frontend and the Rust signatures in sync.
+
 ## [1.0.0] — 2026-08-30
 
 ### Added
@@ -78,5 +91,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > Note: tag `v0.3.0` exists remotely from the MVP era but carries no changelog entry; superseded by 1.0.0.
 
+[1.0.1]: https://github.com/sshdw/Nexora/releases/tag/v1.0.1
 [1.0.0]: https://github.com/sshdw/Nexora/releases/tag/v1.0.0
 [0.1.0]: https://github.com/sshdw/Nexora/releases/tag/v0.1.0
