@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   at IPC validation before reaching the service. The JavaScript layer now sends
   camelCase keys, the browser mock enforces the same contract instead of accepting both
   spellings, and two naming-parity tests keep the frontend and the Rust signatures in sync.
+- **Gemini tool-schema rejection (post-1.0.0 hotfix)**: tool schemas are reduced to the
+  OpenAPI subset Gemini accepts for all four agent tools (chat and the other providers
+  unaffected), and a debug-only stderr logger is installed in debug builds so provider
+  failures are diagnosable.
 
 ## [1.0.0] — 2026-08-30
 
