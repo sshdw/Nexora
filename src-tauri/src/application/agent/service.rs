@@ -815,6 +815,7 @@ mod tests {
                 id: format!("{name}-1"),
                 name: tool.to_string(),
                 arguments: "{}".to_string(),
+                thought_signature: None,
             }],
             usage: None,
         }
@@ -1347,6 +1348,7 @@ mod tests {
             id: "parked-1".to_string(),
             name: "write_file".to_string(),
             arguments: "{}".to_string(),
+            thought_signature: None,
         };
         let gate2 = gate.clone();
         let handle = std::thread::spawn(move || gate2.request_approval(&call));

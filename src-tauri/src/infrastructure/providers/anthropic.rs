@@ -203,8 +203,8 @@ enum AnthropicContent {
     Blocks(Vec<AnthropicBlock>),
 }
 
-/// One Anthropic content block: text, a base64 image, or a base64 PDF
-/// document.
+/// One Anthropic content block: text, a base64 image, a base64 PDF
+/// document, a `tool_use` invocation, or a `tool_result`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum AnthropicBlock {
@@ -214,6 +214,17 @@ enum AnthropicBlock {
     Image { source: AnthropicSource },
     /// A PDF document supplied as inline base64 data (FR-008).
     Document { source: AnthropicSource },
+    /// A model tool invocation (assistant turn).
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    /// The result of one tool invocation (tool-result turn).
+    ToolResult {
+        tool_use_id: String,
+        content: String,
+    },
 }
 
 /// The base64 data source shared by image and document blocks.
@@ -240,7 +251,10 @@ fn anthropic_request(request: &AiRequest) -> AnthropicRequest {
         .filter(|message| message.role != AiRole::System)
         .map(|message| AnthropicMessage {
             role: match message.role {
-                AiRole::User => "user",
+                // User turns and tool results are both user-role on the wire;
+                // a tool result additionally carries a tool_result block
+                // (Anthropic contract).
+                AiRole::User | AiRole::Tool => "user",
                 // System is filtered out above and mapped to the top-level
                 // `system` field by `collect_system`; this arm is unreachable in
                 // practice but keeps the match exhaustive.
@@ -278,6 +292,35 @@ fn anthropic_request(request: &AiRequest) -> AnthropicRequest {
 /// pre-FR-008 wire shape); otherwise a text block followed by one base64
 /// `image` or `document` block per binary attachment.
 fn anthropic_content(message: &AiMessage) -> AnthropicContent {
+    // Assistant agent turn with structured tool calls: an optional text block
+    // (only when narration is non-empty) followed by one `tool_use` block per
+    // call, answering them in order.
+    if message.role == AiRole::Assistant && !message.tool_calls.is_empty() {
+        let mut blocks: Vec<AnthropicBlock> = Vec::new();
+        if !message.content.trim().is_empty() {
+            blocks.push(AnthropicBlock::Text {
+                text: message.content.clone(),
+            });
+        }
+        for call in &message.tool_calls {
+            let input = serde_json::from_str::<serde_json::Value>(&call.arguments)
+                .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::default()));
+            blocks.push(AnthropicBlock::ToolUse {
+                id: call.id.clone(),
+                name: call.name.clone(),
+                input,
+            });
+        }
+        return AnthropicContent::Blocks(blocks);
+    }
+    // Tool result turn (serialized as a user message with a tool_result block).
+    if message.role == AiRole::Tool {
+        let result = message.tool_result.as_ref().expect("tool result present");
+        return AnthropicContent::Blocks(vec![AnthropicBlock::ToolResult {
+            tool_use_id: result.call_id.clone(),
+            content: result.content.clone(),
+        }]);
+    }
     let mut blocks: Vec<AnthropicBlock> = Vec::new();
     for attachment in &message.attachments {
         let AiAttachmentPayload::Base64(data) = &attachment.payload else {
@@ -398,6 +441,8 @@ fn to_ai_response(response: AnthropicResponse) -> Result<AiResponse, AnthropicEr
                     id,
                     name,
                     arguments,
+                    // Anthropic responses carry no reasoning signature.
+                    thought_signature: None,
                 });
             }
             _ => {}
@@ -522,16 +567,22 @@ mod tests {
                     role: AiRole::System,
                     content: "You are a helpful assistant.".to_string(),
                     attachments: Vec::new(),
+                    tool_calls: Vec::new(),
+                    tool_result: None,
                 },
                 AiMessage {
                     role: AiRole::User,
                     content: "Hello".to_string(),
                     attachments: Vec::new(),
+                    tool_calls: Vec::new(),
+                    tool_result: None,
                 },
                 AiMessage {
                     role: AiRole::Assistant,
                     content: "Hi there".to_string(),
                     attachments: Vec::new(),
+                    tool_calls: Vec::new(),
+                    tool_result: None,
                 },
             ],
             tools: Vec::new(),
@@ -618,6 +669,8 @@ mod tests {
                 role: AiRole::User,
                 content: "Hello".to_string(),
                 attachments: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_result: None,
             }],
             tools: Vec::new(),
             request_timeout: None,
@@ -639,11 +692,15 @@ mod tests {
                     role: AiRole::System,
                     content: "First rule.".to_string(),
                     attachments: Vec::new(),
+                    tool_calls: Vec::new(),
+                    tool_result: None,
                 },
                 AiMessage {
                     role: AiRole::System,
                     content: "Second rule.".to_string(),
                     attachments: Vec::new(),
+                    tool_calls: Vec::new(),
+                    tool_result: None,
                 },
             ],
             tools: Vec::new(),
@@ -828,6 +885,8 @@ mod tests {
                     payload: AiAttachmentPayload::Base64("JVBERi0=".to_string()),
                 },
             ],
+            tool_calls: Vec::new(),
+            tool_result: None,
         });
         let json = serde_json::to_string(&anthropic_request(&request)).expect("serialize");
 
@@ -855,6 +914,8 @@ mod tests {
                 mime_type: Some("text/plain".to_string()),
                 payload: AiAttachmentPayload::Text("revenue rose 12 percent".to_string()),
             }],
+            tool_calls: Vec::new(),
+            tool_result: None,
         });
         let body = anthropic_request(&request);
         let user = body
@@ -927,6 +988,8 @@ mod tests {
                 role: AiRole::User,
                 content: "Use the tool".to_string(),
                 attachments: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_result: None,
             }],
             tools: vec![crate::application::execution::ToolDefinition {
                 name: "get_weather".to_string(),
@@ -966,6 +1029,8 @@ mod tests {
                 role: AiRole::User,
                 content: "Hello".to_string(),
                 attachments: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_result: None,
             }],
             tools: Vec::new(),
             request_timeout: None,
@@ -1122,6 +1187,83 @@ mod tests {
             to_ai_response(response),
             Err(AnthropicError::UnexpectedResponse)
         ));
+    }
+
+    /// The native tool round-trip serializes as Anthropic content blocks: an
+    /// assistant turn with a `tool_use` block per call (`input` as an object
+    /// parsed from the arguments string) and a tool result as a user turn
+    /// carrying a `tool_result` block.
+    #[test]
+    fn tool_round_trip_request_serializes_native_blocks() {
+        let request = AiRequest {
+            provider: PROVIDER_NAME.to_string(),
+            model: "claude-sonnet-5".to_string(),
+            messages: vec![
+                AiMessage {
+                    role: AiRole::User,
+                    content: "List files".to_string(),
+                    attachments: Vec::new(),
+                    tool_calls: Vec::new(),
+                    tool_result: None,
+                },
+                AiMessage {
+                    role: AiRole::Assistant,
+                    content: String::new(),
+                    attachments: Vec::new(),
+                    tool_calls: vec![crate::application::execution::ToolCall {
+                        id: "call_7".to_string(),
+                        name: "list_directory".to_string(),
+                        arguments: r#"{"path":"."}"#.to_string(),
+                        thought_signature: None,
+                    }],
+                    tool_result: None,
+                },
+                AiMessage {
+                    role: AiRole::Tool,
+                    content: String::new(),
+                    attachments: Vec::new(),
+                    tool_calls: Vec::new(),
+                    tool_result: Some(crate::application::execution::AiToolResult {
+                        call_id: "call_7".to_string(),
+                        name: "list_directory".to_string(),
+                        content: "a.txt".to_string(),
+                    }),
+                },
+            ],
+            tools: Vec::new(),
+            request_timeout: None,
+        };
+        let body = anthropic_request(&request);
+        let value: serde_json::Value =
+            serde_json::to_value(&body).expect("request body serializes");
+
+        assert_eq!(
+            value["messages"][1],
+            serde_json::json!({
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "call_7",
+                        "name": "list_directory",
+                        "input": { "path": "." }
+                    }
+                ]
+            })
+        );
+        assert_eq!(
+            value["messages"][2],
+            serde_json::json!({
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "call_7",
+                        "content": "a.txt"
+                    }
+                ]
+            })
+        );
     }
 
     #[test]

@@ -264,6 +264,22 @@ The application should not depend on provider-specific behavior.
 
 
 
+The provider-independent boundary (`application/execution.rs`) carries the
+message model shared by every executor: `AiMessage` (role, text content,
+attachments) plus the native tool round-trip fields — `tool_calls`
+(`Vec<ToolCall>`, non-empty only on an assistant agent turn) and `tool_result`
+(`Option<AiToolResult>`, present only on the `AiRole::Tool` variant). The
+`Tool` role exists strictly for in-flight agent requests: tool observations
+are returned to the provider in its native shape (Gemini
+`functionCall`/`functionResponse` with thought-signature round-trip, OpenAI
+`tool_calls`/`role: "tool"`, Anthropic `tool_use`/`tool_result`); it is never
+persisted (DATABASE.md §7.2 remains user/assistant/system). `ToolCall.thought_signature`
+is a provider-opaque reasoning signature (Gemini 3): pure pass-through — it is
+echoed verbatim on the next request, and never logged, never persisted, never
+parsed.
+
+
+
 8\. Database Layer
 
 

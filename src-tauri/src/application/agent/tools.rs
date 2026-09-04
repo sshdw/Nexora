@@ -1145,6 +1145,7 @@ mod tests {
             id: format!("call_{name}"),
             name: name.to_string(),
             arguments: args.to_string(),
+            thought_signature: None,
         }
     }
 

@@ -321,6 +321,7 @@ mod tests {
             id: id.to_string(),
             name: name.to_string(),
             arguments: "{}".to_string(),
+            thought_signature: None,
         }
     }
 

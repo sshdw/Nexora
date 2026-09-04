@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Gemini tool-schema rejection (post-1.0.0 hotfix)**: tool schemas are reduced to the
   OpenAPI subset Gemini accepts for all four agent tools (chat and the other providers
   unaffected).
+- Fixed: agent runs now return the model's own tool calls and each tool's result to the
+  provider in the provider-native format (Gemini functionCall/functionResponse with
+  thought-signature round-trip, OpenAI tool_calls/role "tool", Anthropic
+  tool_use/tool_result) instead of plain user text, and every run starts with a fixed
+  agent system prompt describing the OS, shell and workspace. Before this change the
+  model never saw its own tool calls, so multi-step agent tasks could not complete.
 
 ## [1.0.0] — 2026-08-30
 
