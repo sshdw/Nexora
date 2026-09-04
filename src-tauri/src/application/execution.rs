@@ -72,6 +72,22 @@ pub(crate) struct ToolCall {
     pub name: String,
     /// Raw JSON string of arguments for the call.
     pub arguments: String,
+    /// Provider-opaque reasoning signature (Gemini 3 thought signatures),
+    /// pass-through only: never logged, never persisted, never parsed.
+    #[serde(default)]
+    pub thought_signature: Option<String>,
+}
+
+/// The execution result of one dispatched tool call, carried back to the
+/// provider in the provider-native response format ([`AiRole::Tool`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AiToolResult {
+    /// The identifier of the tool call this result answers.
+    pub call_id: String,
+    /// Name of the tool that produced this result.
+    pub name: String,
+    /// Textual observation produced by the tool (success or error).
+    pub content: String,
 }
 
 /// A provider-independent AI request (ARCHITECTURE.md §7).
@@ -110,6 +126,14 @@ pub(crate) struct AiMessage {
     /// display name, size, and media type cross the provider-independent
     /// boundary.
     pub attachments: Vec<AiAttachment>,
+    /// Structured tool calls made by the assistant. Non-empty only on an
+    /// [`AiRole::Assistant`] agent turn; every call is answered by a matching
+    /// [`AiRole::Tool`] message before the next model turn.
+    pub tool_calls: Vec<ToolCall>,
+    /// Execution result of the dispatched tool call. Some only when
+    /// `role == AiRole::Tool`; the textual content of such messages is an
+    /// empty string — the observation lives in [`AiToolResult::content`].
+    pub tool_result: Option<AiToolResult>,
 }
 
 impl AiMessage {
@@ -192,6 +216,9 @@ pub(crate) enum AiRole {
     User,
     /// An assistant (AI) response.
     Assistant,
+    /// Role strictly for in-flight agent requests (tool results); never
+    /// persisted (DATABASE.md §7.2 remains user/assistant/system).
+    Tool,
 }
 
 /// Token usage for one provider response (Task 4.3).
@@ -604,6 +631,8 @@ mod tests {
             role: AiRole::User,
             content: "plain text".to_string(),
             attachments: Vec::new(),
+            tool_calls: Vec::new(),
+            tool_result: None,
         };
         assert_eq!(message.composed_content(), "plain text");
     }
@@ -619,6 +648,8 @@ mod tests {
                 mime_type: Some("text/plain".to_string()),
                 payload: AiAttachmentPayload::Text("file body line".to_string()),
             }],
+            tool_calls: Vec::new(),
+            tool_result: None,
         };
         assert_eq!(
             message.composed_content(),
@@ -640,6 +671,8 @@ mod tests {
                 mime_type: Some("application/pdf".to_string()),
                 payload: AiAttachmentPayload::Base64("Zm9vYmFy".to_string()),
             }],
+            tool_calls: Vec::new(),
+            tool_result: None,
         };
         let composed = message.composed_content();
         assert_eq!(

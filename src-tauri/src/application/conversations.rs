@@ -534,6 +534,8 @@ fn ai_message_from(message: &Message) -> Result<AiMessage> {
         // Historical attachments are joined by `ai_history`; the plain
         // per-row mapping starts from no attachment references.
         attachments: Vec::new(),
+        tool_calls: Vec::new(),
+        tool_result: None,
     })
 }
 

@@ -17,7 +17,7 @@
 //! touches the filesystem outside the configured workspace root, or formats
 //! provider payloads. Every returned tool call вЂ” including unknown tools,
 //! malformed arguments, and failing invocations вЂ” is dispatched through
-//! [`ToolRegistry`] and converted into a textual observation message that is
+//! [`ToolRegistry`] and converted into a native tool-result message that is
 //! appended to the conversation history for the next model turn.
 //!
 //! # Termination & Governance
@@ -51,14 +51,19 @@
 //! semantics. When no recorder is attached the loop keeps the exact pre-4.2
 //! behaviour and writes nothing.
 //!
-//! # Observation representation
+//! # Observation representation (native tool round-trip)
 //!
-//! The provider-independent boundary (`AiRequest` / `AiMessage`) deliberately
-//! has no tool-role message today, so observations are recorded in the
-//! chronological history as [`AiRole::User`] messages carrying an explicit
-//! `[tool '<name>' result]` fence plus the call identifier. This invents no
-//! new wire format: every observation crosses the exact existing
-//! provider-neutral text channel that executors already render.
+//! The provider-independent boundary models tool turns natively: the
+//! assistant's own tool calls are appended as an [`AiRole::Assistant`]
+//! message carrying `tool_calls` (including the provider-opaque
+//! `thought_signature` pass-through), and every observation is appended as
+//! an [`AiRole::Tool`] message carrying the `call_id`, `name`, and text of
+//! the result. Each executor translates these into its provider-native
+//! format (Gemini `functionCall`/`functionResponse`, `OpenAI`
+//! `tool_calls`/role `tool`, Anthropic `tool_use`/`tool_result`), so the
+//! model always sees its own calls and the results they produced. Unlike the
+//! historical plain-user-text fence, these roles are in-flight only: they
+//! are never persisted (DATABASE.md §7.2 stays user/assistant/system).
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
@@ -72,7 +77,7 @@ use crate::application::agent::persistence::{
 use crate::application::agent::pricing;
 use crate::application::agent::tools::ToolRegistry;
 use crate::application::execution::{
-    AiMessage, AiRequest, AiRole, ExecutorError, ProviderExecutor, ToolCall,
+    AiMessage, AiRequest, AiRole, ExecutorError, ProviderExecutor,
 };
 
 // ---------------------------------------------------------------------------
@@ -96,6 +101,21 @@ pub(crate) const DEFAULT_MAX_ITERATIONS: usize = 10;
 /// `request_timeout: Option<Duration>`; the runner always sets it to this
 /// default unless overridden via [`AgentRunner::with_request_timeout`].
 pub(crate) const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::new(120, 0);
+
+/// Fixed system prompt for Windows hosts (the primary target).
+const AGENT_SYSTEM_PROMPT_WINDOWS: &str = "You are Nexora, a desktop agent working on the user's machine.\n\nEnvironment:\n- The operating system is Windows; execute_command runs each command through cmd.exe, so Unix shell utilities such as ls, cat or grep are unavailable - use their Windows equivalents (dir, type, findstr).\n- The file tools read_file, write_file and list_directory operate inside a dedicated agent workspace directory. Relative paths resolve against the workspace, paths outside it are rejected, and execute_command runs with the workspace as its current directory.\n\nWorkflow:\n- Call a tool whenever the task needs one. Every call you make comes back as a tool result that you must use to continue.\n- A turn that only calls tools is not a final answer: when the task is done, reply to the user directly, without tool calls.\n- If a tool returns an error, read it, fix the arguments or choose another approach; never repeat an identical failing call.\n- Reply in the user's language.";
+
+/// Fixed system prompt for POSIX hosts; the Environment section states the
+/// shell accordingly.
+const AGENT_SYSTEM_PROMPT_POSIX: &str = "You are Nexora, a desktop agent working on the user's machine.\n\nEnvironment:\n- execute_command runs each command through the POSIX shell (sh).\n- The file tools read_file, write_file and list_directory operate inside a dedicated agent workspace directory. Relative paths resolve against the workspace, paths outside it are rejected, and execute_command runs with the workspace as its current directory.\n\nWorkflow:\n- Call a tool whenever the task needs one. Every call you make comes back as a tool result that you must use to continue.\n- A turn that only calls tools is not a final answer: when the task is done, reply to the user directly, without tool calls.\n- If a tool returns an error, read it, fix the arguments or choose another approach; never repeat an identical failing call.\n- Reply in the user's language.";
+
+/// The fixed agent system prompt assembled for this build target.
+#[cfg(windows)]
+const AGENT_SYSTEM_PROMPT: &str = AGENT_SYSTEM_PROMPT_WINDOWS;
+
+/// The fixed agent system prompt assembled for this build target.
+#[cfg(not(windows))]
+const AGENT_SYSTEM_PROMPT: &str = AGENT_SYSTEM_PROMPT_POSIX;
 
 // ---------------------------------------------------------------------------
 // Error
@@ -378,11 +398,25 @@ impl<'a> AgentRunner<'a> {
         let control = self.control.as_ref();
         let base = self.max_iterations;
         let mut steps_taken: usize = 0;
-        let mut messages = vec![AiMessage {
-            role: AiRole::User,
-            content: user_request.to_string(),
-            attachments: Vec::new(),
-        }];
+        // History opens with the fixed agent system prompt plus the user
+        // request; after every tool turn the assistant's own calls and each
+        // tool's result are appended natively (see module docs).
+        let mut messages = vec![
+            AiMessage {
+                role: AiRole::System,
+                content: AGENT_SYSTEM_PROMPT.to_string(),
+                attachments: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_result: None,
+            },
+            AiMessage {
+                role: AiRole::User,
+                content: user_request.to_string(),
+                attachments: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_result: None,
+            },
+        ];
 
         loop {
             // ---- Step boundary: governance gates before the next LLM turn ----
@@ -448,15 +482,16 @@ impl<'a> AgentRunner<'a> {
                 return Ok(response.content);
             }
 
-            // Preserve the assistant's own narration turn (when present) in
-            // chronological order before its observations.
-            if !response.content.trim().is_empty() {
-                messages.push(AiMessage {
-                    role: AiRole::Assistant,
-                    content: response.content,
-                    attachments: Vec::new(),
-                });
-            }
+            // The model's own turn — narration plus every returned tool call —
+            // is appended unconditionally so the model always sees what it
+            // called; the individual observations follow as Tool messages.
+            messages.push(AiMessage {
+                role: AiRole::Assistant,
+                content: response.content,
+                attachments: Vec::new(),
+                tool_calls: response.tool_calls.clone(),
+                tool_result: None,
+            });
 
             // AC-6: never drop a call вЂ” every returned call is dispatched and
             // observed. Failures are rendered through `ToolError`'s Display
@@ -497,10 +532,18 @@ impl<'a> AgentRunner<'a> {
                             approved,
                         });
                         if !approved {
-                            messages.push(observation_message(
-                                call,
-                                "Error: tool execution was denied by the user",
-                            ));
+                            messages.push(AiMessage {
+                                role: AiRole::Tool,
+                                content: String::new(),
+                                attachments: Vec::new(),
+                                tool_calls: Vec::new(),
+                                tool_result: Some(crate::application::execution::AiToolResult {
+                                    call_id: call.id.clone(),
+                                    name: call.name.clone(),
+                                    content: "Error: tool execution was denied by the user"
+                                        .to_string(),
+                                }),
+                            });
                             continue;
                         }
                     }
@@ -522,7 +565,17 @@ impl<'a> AgentRunner<'a> {
                     }
                     Err(tool_error) => (tool_error.to_string(), "failed"),
                 };
-                messages.push(observation_message(call, &observation));
+                messages.push(AiMessage {
+                    role: AiRole::Tool,
+                    content: String::new(),
+                    attachments: Vec::new(),
+                    tool_calls: Vec::new(),
+                    tool_result: Some(crate::application::execution::AiToolResult {
+                        call_id: call.id.clone(),
+                        name: call.name.clone(),
+                        content: observation.clone(),
+                    }),
+                });
                 if let Some(rec) = record.as_mut() {
                     rec.tool_call(call, &observation, tool_status, Some(dispatch_ms));
                 }
@@ -601,22 +654,6 @@ impl<'a> AgentRunner<'a> {
     }
 }
 
-/// Build the observation [`AiMessage`] for one dispatched tool call.
-///
-/// Recorded as a `User` turn fenced by an explicit header so the next model
-/// invocation can reason over the output (AC-5) using only the existing
-/// provider-neutral message shape.
-fn observation_message(call: &ToolCall, observation: &str) -> AiMessage {
-    AiMessage {
-        role: AiRole::User,
-        attachments: Vec::new(),
-        content: format!(
-            "[tool '{}' (id {}) result]\n{observation}",
-            call.name, call.id
-        ),
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -624,7 +661,7 @@ fn observation_message(call: &ToolCall, observation: &str) -> AiMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::application::execution::AiResponse;
+    use crate::application::execution::{AiResponse, ToolCall};
     use std::cell::RefCell;
     use std::fs;
     use std::path::PathBuf;
@@ -667,6 +704,7 @@ mod tests {
             id: id.to_string(),
             name: name.to_string(),
             arguments: arguments.to_string(),
+            thought_signature: None,
         }
     }
 
@@ -675,6 +713,7 @@ mod tests {
             id: id.to_string(),
             name: name.to_string(),
             arguments: arguments.to_string(),
+            thought_signature: None,
         }
     }
 
@@ -742,6 +781,178 @@ mod tests {
         let _ = fs::remove_dir_all(&ws);
     }
 
+    /// Every request the runner emits opens with the fixed agent system
+    /// prompt (exact equality, including the target-specific Environment
+    /// section chosen at compile time).
+    #[test]
+    fn every_request_starts_with_the_agent_system_prompt() {
+        let ws = temp_workspace();
+        let fake = FakeExecutor::new(vec![
+            Ok(AiResponse {
+                content: String::new(),
+                model: "m".to_string(),
+                tool_calls: vec![ToolCall {
+                    id: "s1".to_string(),
+                    name: "list_directory".to_string(),
+                    arguments: "{}".to_string(),
+                    thought_signature: None,
+                }],
+                usage: None,
+            }),
+            Ok(text_response("done")),
+        ]);
+        let runner = AgentRunner::new(&fake, &ws);
+
+        runner.run("openai", "m", "cred", "hello").expect("finish");
+
+        let requests = fake.requests.borrow();
+        assert_eq!(requests.len(), 2);
+        for request in requests.iter() {
+            assert_eq!(request.messages[0].role, AiRole::System);
+            assert_eq!(request.messages[0].content, AGENT_SYSTEM_PROMPT);
+        }
+        // The prompt text is the compile-time target variant.
+        #[cfg(windows)]
+        assert_eq!(AGENT_SYSTEM_PROMPT, AGENT_SYSTEM_PROMPT_WINDOWS);
+        #[cfg(not(windows))]
+        assert_eq!(AGENT_SYSTEM_PROMPT, AGENT_SYSTEM_PROMPT_POSIX);
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    /// After one tool turn the second request's history is exactly
+    /// [System, User, Assistant{narration, call verbatim incl.
+    /// `thought_signature`}, `Tool{call_id, name, observation}`].
+    #[test]
+    fn second_request_history_carries_assistant_calls_and_tool_results() {
+        let ws = temp_workspace();
+        let fake = FakeExecutor::new(vec![
+            Ok(AiResponse {
+                content: "Let me check.".to_string(),
+                model: "m".to_string(),
+                tool_calls: vec![ToolCall {
+                    id: "c9".to_string(),
+                    name: "list_directory".to_string(),
+                    arguments: "{\"path\":\".\"}".to_string(),
+                    thought_signature: Some("sig-abc".to_string()),
+                }],
+                usage: None,
+            }),
+            Ok(text_response("listed")),
+        ]);
+        let runner = AgentRunner::new(&fake, &ws);
+
+        runner
+            .run("openai", "m", "cred", "list it")
+            .expect("finish");
+
+        let history = &fake.requests.borrow()[1].messages;
+        assert_eq!(history.len(), 4);
+
+        assert_eq!(
+            history[0],
+            AiMessage {
+                role: AiRole::System,
+                content: AGENT_SYSTEM_PROMPT.to_string(),
+                attachments: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_result: None,
+            }
+        );
+        assert_eq!(
+            history[1],
+            AiMessage {
+                role: AiRole::User,
+                content: "list it".to_string(),
+                attachments: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_result: None,
+            }
+        );
+        assert_eq!(
+            history[2],
+            AiMessage {
+                role: AiRole::Assistant,
+                content: "Let me check.".to_string(),
+                attachments: Vec::new(),
+                tool_calls: vec![ToolCall {
+                    id: "c9".to_string(),
+                    name: "list_directory".to_string(),
+                    arguments: "{\"path\":\".\"}".to_string(),
+                    thought_signature: Some("sig-abc".to_string()),
+                }],
+                tool_result: None,
+            }
+        );
+        assert_eq!(history[3].role, AiRole::Tool);
+        assert_eq!(history[3].content, "");
+        let result = history[3].tool_result.as_ref().expect("result present");
+        assert_eq!(result.call_id, "c9");
+        assert_eq!(result.name, "list_directory");
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    /// Two calls in one response: the Assistant message carries both calls
+    /// and the two Tool messages follow in the same order — the wire ordering
+    /// contract (all function calls first, then all results).
+    #[test]
+    fn parallel_tool_calls_keep_call_then_result_ordering() {
+        let ws = temp_workspace();
+        let fake = FakeExecutor::new(vec![
+            Ok(AiResponse {
+                content: String::new(),
+                model: "m".to_string(),
+                tool_calls: vec![
+                    ToolCall {
+                        id: "p1".to_string(),
+                        name: "read_file".to_string(),
+                        arguments: "{\"path\":\"a.txt\"}".to_string(),
+                        thought_signature: Some("sig-first".to_string()),
+                    },
+                    ToolCall {
+                        id: "p2".to_string(),
+                        name: "read_file".to_string(),
+                        arguments: "{\"path\":\"b.txt\"}".to_string(),
+                        // Parallel calls: only the first carries a signature.
+                        thought_signature: None,
+                    },
+                ],
+                usage: None,
+            }),
+            Ok(text_response("both read")),
+        ]);
+        fs::write(ws.join("a.txt"), "alpha").expect("seed a");
+        fs::write(ws.join("b.txt"), "beta").expect("seed b");
+        let runner = AgentRunner::new(&fake, &ws);
+
+        runner
+            .run("openai", "m", "cred", "read both")
+            .expect("finish");
+
+        let history = &fake.requests.borrow()[1].messages;
+        assert_eq!(history.len(), 5);
+        // All function calls first, in order, signatures verbatim.
+        assert_eq!(history[2].role, AiRole::Assistant);
+        assert_eq!(history[2].tool_calls.len(), 2);
+        assert_eq!(history[2].tool_calls[0].id, "p1");
+        assert_eq!(
+            history[2].tool_calls[0].thought_signature.as_deref(),
+            Some("sig-first")
+        );
+        assert_eq!(history[2].tool_calls[1].id, "p2");
+        assert_eq!(history[2].tool_calls[1].thought_signature, None);
+        // Then all results, in the same call order.
+        assert_eq!(history[3].role, AiRole::Tool);
+        assert_eq!(history[3].tool_result.as_ref().expect("p1").call_id, "p1");
+        assert_eq!(
+            history[3].tool_result.as_ref().expect("p1").content,
+            "alpha"
+        );
+        assert_eq!(history[4].role, AiRole::Tool);
+        assert_eq!(history[4].tool_result.as_ref().expect("p2").call_id, "p2");
+        assert_eq!(history[4].tool_result.as_ref().expect("p2").content, "beta");
+        let _ = fs::remove_dir_all(&ws);
+    }
+
     #[test]
     fn single_tool_call_executes_and_observation_feeds_back_to_final_answer() {
         let ws = temp_workspace();
@@ -776,13 +987,29 @@ mod tests {
 
         let requests = fake.requests.borrow();
         assert_eq!(requests.len(), 2);
-        // History of the second request keeps the original user turn and adds
-        // exactly the fenced observation (AC-5).
-        assert_eq!(requests[1].messages[0].content, "create notes");
-        assert_eq!(requests[1].messages.len(), 2);
+        // History of the second request: [System, User, Assistant{calls},
+        // Tool{observation}] — the model sees its own call and the result.
+        let history = &requests[1].messages;
+        assert_eq!(history.len(), 4);
+        assert_eq!(history[0].role, AiRole::System);
+        assert_eq!(history[0].content, AGENT_SYSTEM_PROMPT);
+        assert_eq!(history[1].role, AiRole::User);
+        assert_eq!(history[1].content, "create notes");
+        assert_eq!(history[2].role, AiRole::Assistant);
+        assert_eq!(history[2].content, "");
+        assert_eq!(history[2].tool_calls.len(), 1);
+        assert_eq!(history[2].tool_calls[0].id, "c1");
+        assert_eq!(history[2].tool_calls[0].name, "write_file");
+        assert_eq!(history[3].role, AiRole::Tool);
+        let result = history[3]
+            .tool_result
+            .as_ref()
+            .expect("tool result present");
+        assert_eq!(result.call_id, "c1");
+        assert_eq!(result.name, "write_file");
         assert_eq!(
-            requests[1].messages[1].content,
-            "[tool 'write_file' (id c1) result]\n--- a/notes.txt\n+++ b/notes.txt\n@@ -0,0 +1,1 @@\n+react-loop\n"
+            result.content,
+            "--- a/notes.txt\n+++ b/notes.txt\n@@ -0,0 +1,1 @@\n+react-loop\n"
         );
         let _ = fs::remove_dir_all(&ws);
     }
@@ -826,18 +1053,30 @@ mod tests {
 
         let requests = fake.requests.borrow();
         assert_eq!(requests.len(), 2);
-        // user + assistant narration + three observations in original order.
-        let tail = &requests[1].messages[requests[1].messages.len() - 3..];
-        assert_eq!(tail.len(), 3);
+        // [System, User, Assistant{narration + 3 calls}, Tool, Tool, Tool] —
+        // results follow the calls in original order (AC-6).
+        let history = &requests[1].messages;
+        assert_eq!(history.len(), 6);
+        assert_eq!(history[0].role, AiRole::System);
+        assert_eq!(history[1].role, AiRole::User);
+        assert_eq!(history[2].role, AiRole::Assistant);
+        assert_eq!(history[2].content, "planning two writes");
+        assert_eq!(history[2].tool_calls.len(), 3);
+        let tail = &history[3..];
+        assert_eq!(tail[0].role, AiRole::Tool);
+        assert_eq!(tail[0].tool_result.as_ref().expect("a").call_id, "a");
         assert_eq!(
-            tail[0].content,
-            "[tool 'write_file' (id a) result]\n--- a/one.txt\n+++ b/one.txt\n@@ -0,0 +1,1 @@\n+1\n"
+            tail[0].tool_result.as_ref().expect("a").content,
+            "--- a/one.txt\n+++ b/one.txt\n@@ -0,0 +1,1 @@\n+1\n"
         );
+        assert_eq!(tail[1].tool_result.as_ref().expect("b").call_id, "b");
         assert_eq!(
-            tail[1].content,
-            "[tool 'write_file' (id b) result]\n--- a/two.txt\n+++ b/two.txt\n@@ -0,0 +1,1 @@\n+2\n"
+            tail[1].tool_result.as_ref().expect("b").content,
+            "--- a/two.txt\n+++ b/two.txt\n@@ -0,0 +1,1 @@\n+2\n"
         );
-        assert_eq!(tail[2].content, "[tool 'read_file' (id c) result]\n1");
+        assert_eq!(tail[2].tool_result.as_ref().expect("c").call_id, "c");
+        assert_eq!(tail[2].tool_result.as_ref().expect("c").name, "read_file");
+        assert_eq!(tail[2].tool_result.as_ref().expect("c").content, "1");
         let _ = fs::remove_dir_all(&ws);
     }
 
@@ -858,13 +1097,26 @@ mod tests {
         let answer = runner.run("openai", "m", "cred", "try").expect("finish");
         assert_eq!(answer, "recovered");
 
-        assert_eq!(fake.requests.borrow()[1].messages[0].content, "try");
-        let observation = &fake.requests.borrow()[1].messages[1].content;
+        let history = &fake.requests.borrow()[1].messages;
+        assert_eq!(history.len(), 4);
+        assert_eq!(history[0].role, AiRole::System);
+        assert_eq!(history[0].content, AGENT_SYSTEM_PROMPT);
+        assert_eq!(history[1].role, AiRole::User);
+        assert_eq!(history[1].content, "try");
+        assert_eq!(history[2].role, AiRole::Assistant);
+        assert_eq!(history[2].tool_calls[0].id, "u1");
+        assert_eq!(history[3].role, AiRole::Tool);
+        let result = history[3]
+            .tool_result
+            .as_ref()
+            .expect("tool result present");
+        assert_eq!(result.call_id, "u1");
+        assert_eq!(result.name, "does_not_exist");
         assert!(
-            observation.contains("[tool 'does_not_exist' (id u1) result]"),
-            "observation header missing: {observation}"
+            result.content.contains("unknown tool"),
+            "unknown-tool observation missing: {}",
+            result.content
         );
-        assert!(observation.contains("unknown tool"));
         let _ = fs::remove_dir_all(&ws);
     }
 
@@ -885,8 +1137,18 @@ mod tests {
         let answer = runner.run("openai", "m", "cred", "x").expect("finish");
         assert_eq!(answer, "handled");
 
-        let observation = &fake.requests.borrow()[1].messages[1].content;
-        assert!(observation.contains("invalid arguments"));
+        let history = &fake.requests.borrow()[1].messages;
+        assert_eq!(history.len(), 4);
+        assert_eq!(history[3].role, AiRole::Tool);
+        let result = history[3]
+            .tool_result
+            .as_ref()
+            .expect("tool result present");
+        assert!(
+            result.content.contains("invalid arguments"),
+            "malformed-arguments observation missing: {}",
+            result.content
+        );
         let _ = fs::remove_dir_all(&ws);
     }
 
@@ -913,8 +1175,17 @@ mod tests {
         let answer = runner.run("openai", "m", "cred", "sneak").expect("finish");
         assert_eq!(answer, "kept going");
 
-        let observation = &fake.requests.borrow()[1].messages[1].content;
-        assert!(observation.contains("outside workspace"));
+        let history = &fake.requests.borrow()[1].messages;
+        assert_eq!(history[3].role, AiRole::Tool);
+        let result = history[3]
+            .tool_result
+            .as_ref()
+            .expect("tool result present");
+        assert!(
+            result.content.contains("outside workspace"),
+            "escape observation missing: {}",
+            result.content
+        );
         let _ = fs::remove_dir_all(&ws);
     }
 
@@ -1023,6 +1294,8 @@ mod tests {
                 role: AiRole::User,
                 content: "just chat".to_string(),
                 attachments: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_result: None,
             }],
             tools: Vec::new(),
             request_timeout: None,
@@ -1425,6 +1698,7 @@ mod tests {
             id: id.to_string(),
             name: name.to_string(),
             arguments: arguments.to_string(),
+            thought_signature: None,
         }
     }
 
@@ -1703,12 +1977,20 @@ mod tests {
         driver.join().expect("driver");
         // Denied tool must not have executed.
         assert!(fs::read_to_string(ws.join("should_not_exist.txt")).is_err());
-        // The denied observation was fed to the next LLM turn.
+        // The denied observation was fed to the next LLM turn as a Tool
+        // message with the verbatim denial text.
         let requests = fake.requests.borrow();
         assert_eq!(requests.len(), 2);
-        assert!(requests[1].messages[1]
-            .content
-            .contains("denied by the user"));
+        let history = &requests[1].messages;
+        assert_eq!(history[3].role, AiRole::Tool);
+        let result = history[3]
+            .tool_result
+            .as_ref()
+            .expect("tool result present");
+        assert_eq!(
+            result.content, "Error: tool execution was denied by the user",
+            "denied observation must be verbatim"
+        );
         let _ = fs::remove_dir_all(&ws);
     }
 

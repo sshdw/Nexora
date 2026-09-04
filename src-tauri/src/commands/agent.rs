@@ -481,4 +481,241 @@ mod tests {
             assert!(!["supervised", "semi_autonomous", "full_autonomous"].contains(&bad));
         }
     }
+
+    // ---- IPC naming-parity guard (v1.0.1) -------------------------------
+    //
+    // Tauri v2 deserializes command arguments by their camelCase parameter
+    // name, while response payloads are snake_case (serde
+    // `rename_all = "snake_case"`). The 1.0.0 release shipped every agent
+    // command invoked with snake_case ARG keys and was therefore dead at IPC
+    // validation. These tests parse the argument object literals of every
+    // `invoke(...)` call in `src/lib/tauri.ts` (never interface/type
+    // declarations, which legitimately keep snake_case response fields) and
+    // pin them against the Rust signatures above.
+
+    /// Source of the frontend IPC wrapper, resolved relative to
+    /// `src-tauri/src/commands/` (3 ups = repository root).
+    const TAURI_TS: &str = include_str!("../../../src/lib/tauri.ts");
+
+    /// True when `key` looks like a `snake_case` identifier (e.g. `run_id`):
+    /// a lowercase letter, an underscore, and another lowercase letter.
+    fn is_snake_case(key: &str) -> bool {
+        let bytes = key.as_bytes();
+        bytes
+            .windows(3)
+            .any(|w| w[1] == b'_' && w[0].is_ascii_lowercase() && w[2].is_ascii_lowercase())
+    }
+
+    /// Skips a string literal starting at `open` (`"`, `'` or backtick) and
+    /// returns the index just past its closing quote.
+    fn skip_string(src: &[u8], open: usize) -> usize {
+        let quote = src[open];
+        let mut i = open + 1;
+        while i < src.len() {
+            if src[i] == b'\\' {
+                i += 2;
+                continue;
+            }
+            if src[i] == quote {
+                return i + 1;
+            }
+            i += 1;
+        }
+        src.len()
+    }
+    /// Collects every `invoke("command", { ... })` call site in `src` as
+    /// (command name, top-level object-literal keys). Calls without an
+    /// argument object yield an empty key list.
+    fn extract_invoke_arg_literals(src: &str) -> Vec<(String, Vec<String>)> {
+        let bytes = src.as_bytes();
+        let mut calls = Vec::new();
+        let mut cursor = 0usize;
+        while let Some(found) = src[cursor..].find("invoke") {
+            let at = cursor + found;
+            cursor = at + "invoke".len();
+            // Only call syntax counts: `invoke<...>(` or `invoke(` — the
+            // `import { invoke }` binding and prose are skipped here.
+            let rest = src[cursor..].trim_start();
+            if !rest.starts_with('<') && !rest.starts_with('(') {
+                continue;
+            }
+            let Some(open) = bytes[cursor..].iter().position(|&b| b == b'(') else {
+                continue;
+            };
+            let mut i = cursor + open + 1;
+            // First argument: the command-name string literal.
+            while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            if i >= bytes.len() || bytes[i] != b'"' {
+                continue;
+            }
+            let cmd_start = i + 1;
+            i = skip_string(bytes, i);
+            let command = src[cmd_start..i - 1].to_string();
+            // Second argument (optional): the argument object literal.
+            while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            let keys = if i < bytes.len() && bytes[i] == b',' {
+                i += 1;
+                while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                    i += 1;
+                }
+                if i < bytes.len() && bytes[i] == b'{' {
+                    let mut depth = 0i32;
+                    let mut in_string: Option<u8> = None;
+                    let start = i;
+                    while i < bytes.len() {
+                        let b = bytes[i];
+                        if let Some(quote) = in_string {
+                            if b == b'\\' {
+                                i += 2;
+                                continue;
+                            }
+                            if b == quote {
+                                in_string = None;
+                            }
+                        } else {
+                            match b {
+                                b'"' | b'\'' | b'`' => in_string = Some(b),
+                                b'{' => depth += 1,
+                                b'}' => {
+                                    depth -= 1;
+                                    if depth == 0 {
+                                        break;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        i += 1;
+                    }
+                    top_level_keys(&src[start + 1..i.min(bytes.len())])
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            };
+            calls.push((command, keys));
+        }
+        calls
+    }
+
+    /// Splits the inner text of an object literal into its top-level keys,
+    /// handling shorthand properties (`conversationId`) and explicit ones
+    /// (`runId: runId`).
+    fn top_level_keys(inner: &str) -> Vec<String> {
+        fn push_key(keys: &mut Vec<String>, segment: &str) {
+            let segment = segment.trim();
+            if segment.is_empty() {
+                return;
+            }
+            let key = match segment.find(':') {
+                Some(idx) => segment[..idx].trim(),
+                None => segment,
+            };
+            if !key.is_empty() {
+                keys.push(key.to_string());
+            }
+        }
+
+        let mut keys = Vec::new();
+        let mut depth = 0i32;
+        let mut in_string: Option<char> = None;
+        let mut current = String::new();
+        for ch in inner.chars() {
+            if let Some(quote) = in_string {
+                current.push(ch);
+                if ch == quote {
+                    in_string = None;
+                }
+                continue;
+            }
+            match ch {
+                '"' | '\'' | '`' => {
+                    in_string = Some(ch);
+                    current.push(ch);
+                }
+                '{' | '(' | '[' => {
+                    depth += 1;
+                    current.push(ch);
+                }
+                '}' | ')' | ']' => {
+                    depth -= 1;
+                    current.push(ch);
+                }
+                ',' if depth == 0 => {
+                    push_key(&mut keys, &current);
+                    current.clear();
+                }
+                _ => current.push(ch),
+            }
+        }
+        push_key(&mut keys, &current);
+        keys
+    }
+
+    /// Test A: no `invoke` call in `src/lib/tauri.ts` may pass a `snake_case`
+    /// argument key — command ARGS are camelCase (Tauri v2) repo-wide.
+    #[test]
+    fn ipc_args_are_camel_case() {
+        let calls = extract_invoke_arg_literals(TAURI_TS);
+        // Non-vacuous: the parser must see the 27 non-agent call sites plus
+        // the 9 agent ones (36 invoke sites carry an argument object).
+        assert!(
+            calls.len() >= 36,
+            "naming-parity parser found only {} invoke calls in src/lib/tauri.ts; \
+             it must parse every call site to be a real guard",
+            calls.len()
+        );
+        for (command, keys) in calls {
+            for key in keys {
+                assert!(
+                    !is_snake_case(&key),
+                    "invoke(\"{command}\") argument key '{key}' is snake_case; \
+                     Tauri v2 command ARGS must use camelCase keys"
+                );
+            }
+        }
+    }
+
+    /// Test B: the argument key set of each agent command in `tauri.ts` must
+    /// exactly equal the Rust parameter names in camelCase — no extra key,
+    /// no missing key.
+    #[test]
+    fn agent_command_arg_keys_match_rust_params() {
+        const AGENT_COMMANDS: [(&str, &[&str]); 9] = [
+            (
+                "start_agent_run",
+                &["conversationId", "content", "provider", "model"],
+            ),
+            ("cancel_agent_run", &["runId"]),
+            ("resolve_agent_approval", &["runId", "callId", "approved"]),
+            ("extend_agent_run", &["runId", "extraSteps"]),
+            ("list_agent_runs", &["conversationId"]),
+            ("list_agent_steps", &["runId"]),
+            ("agent_set_mode", &["runId", "mode"]),
+            ("pause_agent_run", &["runId"]),
+            ("resume_agent_run", &["runId"]),
+        ];
+        let calls = extract_invoke_arg_literals(TAURI_TS);
+        for (command, want) in AGENT_COMMANDS {
+            let got = &calls
+                .iter()
+                .find(|(name, _)| name == command)
+                .unwrap_or_else(|| panic!("invoke(\"{command}\") not found in src/lib/tauri.ts"))
+                .1;
+            let mut got_sorted: Vec<&str> = got.iter().map(String::as_str).collect();
+            got_sorted.sort_unstable();
+            let mut want_sorted: Vec<&str> = want.to_vec();
+            want_sorted.sort_unstable();
+            assert_eq!(
+                got_sorted, want_sorted,
+                "invoke(\"{command}\") argument keys must exactly match the \
+                 Rust command parameters (camelCase)"
+            );
+        }
+    }
 }

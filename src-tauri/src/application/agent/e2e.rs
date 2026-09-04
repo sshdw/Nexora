@@ -306,6 +306,7 @@ fn tool_response(
             id: id.to_string(),
             name: name.to_string(),
             arguments: args.to_string(),
+            thought_signature: None,
         }],
         usage,
     }

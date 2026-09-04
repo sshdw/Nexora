@@ -524,6 +524,7 @@ mod tests {
             id: "c1".to_string(),
             name: "read_file".to_string(),
             arguments: "{}".to_string(),
+            thought_signature: None,
         };
         record.tool_call(&call, "file body", "succeeded", Some(5));
         record.approval(&call, true);

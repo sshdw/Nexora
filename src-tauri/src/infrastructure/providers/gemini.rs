@@ -197,8 +197,11 @@ struct GeminiContent {
     parts: Vec<GeminiPart>,
 }
 
-/// One Gemini content part: either a text segment or an inline base64 data
-/// part (images / PDFs, FR-008). Exactly one field is set per part.
+/// One Gemini content part: a text segment, an inline base64 data part
+/// (images / PDFs, FR-008), a `functionCall` part, or a `functionResponse`
+/// part. Chat parts set only `text`/`inline_data`; native tool round-trips
+/// set `function_call`/`thought_signature` (assistant) or `function_response`
+/// (tool result). Exactly one field is set per part.
 #[derive(Debug, Serialize)]
 struct GeminiPart {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -207,6 +210,30 @@ struct GeminiPart {
     /// generateContent REST contract.
     #[serde(rename = "inlineData", skip_serializing_if = "Option::is_none")]
     inline_data: Option<GeminiInlineData>,
+    /// A model tool invocation (`{functionCall: {name, args}}`).
+    #[serde(rename = "functionCall", skip_serializing_if = "Option::is_none")]
+    function_call: Option<GeminiRequestFunctionCall>,
+    /// Provider-opaque reasoning signature returned verbatim on the model's
+    /// first `functionCall` part of a turn (Gemini 3 thought signatures).
+    #[serde(rename = "thoughtSignature", skip_serializing_if = "Option::is_none")]
+    thought_signature: Option<String>,
+    /// The result of one tool call (`{functionResponse: {name, response}}`).
+    #[serde(rename = "functionResponse", skip_serializing_if = "Option::is_none")]
+    function_response: Option<GeminiRequestFunctionResponse>,
+}
+
+/// Gemini-native request `functionCall` part payload.
+#[derive(Debug, Serialize)]
+struct GeminiRequestFunctionCall {
+    name: String,
+    args: serde_json::Value,
+}
+
+/// Gemini-native request `functionResponse` part payload.
+#[derive(Debug, Serialize)]
+struct GeminiRequestFunctionResponse {
+    name: String,
+    response: serde_json::Value,
 }
 
 /// Inline base64 data of one Gemini part (FR-008).
@@ -240,7 +267,10 @@ fn generate_content_request(request: &AiRequest) -> GenerateContentRequest {
         .filter(|message| message.role != AiRole::System)
         .map(|message| GeminiContent {
             role: match message.role {
-                AiRole::User => "user",
+                // User turns and tool results are both user-role on the wire;
+                // a tool result additionally carries a functionResponse part
+                // (Gemini contract).
+                AiRole::User | AiRole::Tool => "user",
                 // System is filtered out above and mapped to the top-level
                 // `systemInstruction` field by `collect_system`; this arm is
                 // unreachable in practice but keeps the match exhaustive.
@@ -248,10 +278,9 @@ fn generate_content_request(request: &AiRequest) -> GenerateContentRequest {
                 AiRole::System => "system",
             }
             .to_string(),
-            // Attachment payloads are rendered per the Gemini contract: inline
-            // text file contents become a text part; base64 images and PDFs
-            // become `inlineData` parts (FR-008).
-            parts: gemini_parts(message),
+            // Chat turns render attachments per the Gemini contract; assistant
+            // tool-call turns and tool results render provider-native parts.
+            parts: request_parts(message),
         })
         .collect();
     let tools = if request.tools.is_empty() {
@@ -264,7 +293,10 @@ fn generate_content_request(request: &AiRequest) -> GenerateContentRequest {
                 .map(|tool| GeminiFunctionDeclaration {
                     name: tool.name.clone(),
                     description: tool.description.clone(),
-                    parameters: tool.parameters.clone(),
+                    // Reduce the full JSON Schema to the OpenAPI subset Gemini
+                    // accepts; the verbatim schema stays the shared source of
+                    // truth for the other providers.
+                    parameters: to_gemini_schema(&tool.parameters),
                 })
                 .collect(),
         }]
@@ -275,10 +307,147 @@ fn generate_content_request(request: &AiRequest) -> GenerateContentRequest {
             parts: vec![GeminiPart {
                 text: Some(text),
                 inline_data: None,
+                function_call: None,
+                thought_signature: None,
+                function_response: None,
             }],
         }),
         tools,
     }
+}
+
+/// Build the Gemini parts for one request message.
+///
+/// Assistant agent turns with structured tool calls produce an optional text
+/// part (only when narration is non-empty) followed by one `functionCall`
+/// part per call, each echoing its `thought_signature` verbatim; tool-result
+/// turns produce a single `functionResponse` part. All other turns fall back
+/// to [`gemini_parts`] (chat path unchanged).
+fn request_parts(message: &AiMessage) -> Vec<GeminiPart> {
+    if message.role == AiRole::Assistant && !message.tool_calls.is_empty() {
+        let mut parts = Vec::new();
+        if !message.content.trim().is_empty() {
+            parts.push(GeminiPart {
+                text: Some(message.composed_content()),
+                inline_data: None,
+                function_call: None,
+                thought_signature: None,
+                function_response: None,
+            });
+        }
+        for call in &message.tool_calls {
+            let args = serde_json::from_str::<serde_json::Value>(&call.arguments)
+                .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::default()));
+            parts.push(GeminiPart {
+                text: None,
+                inline_data: None,
+                function_call: Some(GeminiRequestFunctionCall {
+                    name: call.name.clone(),
+                    args,
+                }),
+                // Verbatim echo of the provider-opaque signature; Gemini
+                // attaches it only to the first functionCall part of parallel
+                // calls, so echoing each call's own value preserves that.
+                thought_signature: call.thought_signature.clone(),
+                function_response: None,
+            });
+        }
+        return parts;
+    }
+    if message.role == AiRole::Tool {
+        let result = message.tool_result.as_ref().expect("tool result present");
+        return vec![GeminiPart {
+            text: None,
+            inline_data: None,
+            function_call: None,
+            thought_signature: None,
+            function_response: Some(GeminiRequestFunctionResponse {
+                name: result.name.clone(),
+                // `{ "output": <observation> }` is the canonical response
+                // object for this integration.
+                response: serde_json::json!({ "output": result.content }),
+            }),
+        }];
+    }
+    gemini_parts(message)
+}
+
+/// Reduce a provider-independent JSON Schema to the subset of OpenAPI 3.0 that
+/// Gemini's `functionDeclarations[].parameters` accepts.
+/// Unknown keys are DROPPED, never renamed and never rejected: the wire type is
+/// parsed as proto3 JSON, where any unknown field name fails the whole request.
+fn to_gemini_schema(schema: &serde_json::Value) -> serde_json::Value {
+    /// Keys Gemini's function-declaration `Schema` accepts (OpenAPI 3.0
+    /// subset); everything else is dropped before it can reach the wire.
+    const ALLOWED: [&str; 11] = [
+        "type",
+        "format",
+        "description",
+        "nullable",
+        "enum",
+        "properties",
+        "items",
+        "anyOf",
+        "maxItems",
+        "required",
+        "propertyOrdering",
+    ];
+
+    // A non-object (null / array / scalar) is never a valid Schema object;
+    // an empty Schema always is.
+    let Some(object) = schema.as_object() else {
+        return serde_json::json!({});
+    };
+
+    let mut reduced = serde_json::Map::new();
+    for (key, value) in object {
+        match key.as_str() {
+            // `properties` is a map of name -> Schema; reduce every value.
+            "properties" => {
+                if let Some(properties) = value.as_object() {
+                    let mapped: serde_json::Map<String, serde_json::Value> = properties
+                        .iter()
+                        .map(|(name, property)| (name.clone(), to_gemini_schema(property)))
+                        .collect();
+                    reduced.insert("properties".to_string(), serde_json::Value::Object(mapped));
+                }
+            }
+            // `items` is a single Schema; a non-object form is dropped.
+            "items" => {
+                if value.is_object() {
+                    reduced.insert("items".to_string(), to_gemini_schema(value));
+                }
+            }
+            // `anyOf` is an array of Schemas; a non-array form is dropped.
+            "anyOf" => {
+                if let Some(alternatives) = value.as_array() {
+                    reduced.insert(
+                        "anyOf".to_string(),
+                        serde_json::Value::Array(
+                            alternatives.iter().map(to_gemini_schema).collect(),
+                        ),
+                    );
+                }
+            }
+            // `required` survives only as a non-empty array of strings.
+            "required" => {
+                if let Some(required) = value.as_array() {
+                    let all_strings = required.iter().all(serde_json::Value::is_string);
+                    if !required.is_empty() && all_strings {
+                        reduced.insert("required".to_string(), value.clone());
+                    }
+                }
+            }
+            // Plain allow-listed keys pass through verbatim.
+            key if ALLOWED.contains(&key) => {
+                reduced.insert(key.to_string(), value.clone());
+            }
+            // Unknown keys (additionalProperties, minimum, maximum, const,
+            // propertyNames, $schema, $defs, ...) are dropped silently.
+            _ => {}
+        }
+    }
+    serde_json::Value::Object(reduced)
 }
 
 /// Build the Gemini parts for one message (FR-008).
@@ -289,6 +458,9 @@ fn gemini_parts(message: &AiMessage) -> Vec<GeminiPart> {
     let mut parts = vec![GeminiPart {
         text: Some(message.composed_content()),
         inline_data: None,
+        function_call: None,
+        thought_signature: None,
+        function_response: None,
     }];
     for attachment in &message.attachments {
         let AiAttachmentPayload::Base64(data) = &attachment.payload else {
@@ -304,6 +476,9 @@ fn gemini_parts(message: &AiMessage) -> Vec<GeminiPart> {
                     .to_string(),
                 data: data.clone(),
             }),
+            function_call: None,
+            thought_signature: None,
+            function_response: None,
         });
     }
     parts
@@ -365,12 +540,15 @@ struct CandidateContent {
 
 /// One response part. Text completions produce `text` parts; non-text parts
 /// (for example `inlineData`) carry no text and are skipped. Tool invocations
-/// produce `functionCall` parts (`{functionCall:{name, args}}`).
+/// produce `functionCall` parts (`{functionCall:{name, args}}`) that may also
+/// carry a provider-opaque `thoughtSignature`.
 #[derive(Debug, Deserialize)]
 struct ResponsePart {
     text: Option<String>,
     #[serde(rename = "functionCall")]
     function_call: Option<GeminiFunctionCall>,
+    #[serde(rename = "thoughtSignature", default)]
+    thought_signature: Option<String>,
 }
 
 /// Gemini-native function call inside a response part.
@@ -430,6 +608,9 @@ fn to_ai_response(
                 id,
                 name: call.name,
                 arguments,
+                // The thought signature travels only with the part that carries
+                // the function call; pure text/thought parts never set it.
+                thought_signature: part.thought_signature,
             });
         }
     }
@@ -581,16 +762,22 @@ mod tests {
                     role: AiRole::System,
                     content: "You are a helpful assistant.".to_string(),
                     attachments: Vec::new(),
+                    tool_calls: Vec::new(),
+                    tool_result: None,
                 },
                 AiMessage {
                     role: AiRole::User,
                     content: "Hello".to_string(),
                     attachments: Vec::new(),
+                    tool_calls: Vec::new(),
+                    tool_result: None,
                 },
                 AiMessage {
                     role: AiRole::Assistant,
                     content: "Hi there".to_string(),
                     attachments: Vec::new(),
+                    tool_calls: Vec::new(),
+                    tool_result: None,
                 },
             ],
             tools: Vec::new(),
@@ -632,11 +819,15 @@ mod tests {
                     role: AiRole::System,
                     content: "First rule.".to_string(),
                     attachments: Vec::new(),
+                    tool_calls: Vec::new(),
+                    tool_result: None,
                 },
                 AiMessage {
                     role: AiRole::System,
                     content: "Second rule.".to_string(),
                     attachments: Vec::new(),
+                    tool_calls: Vec::new(),
+                    tool_result: None,
                 },
             ],
             tools: Vec::new(),
@@ -670,6 +861,8 @@ mod tests {
                 role: AiRole::User,
                 content: "Hello".to_string(),
                 attachments: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_result: None,
             }],
             tools: Vec::new(),
             request_timeout: None,
@@ -726,6 +919,7 @@ mod tests {
                     parts: vec![ResponsePart {
                         text: Some("pong".to_string()),
                         function_call: None,
+                        thought_signature: None,
                     }],
                 },
             }],
@@ -745,6 +939,7 @@ mod tests {
                     parts: vec![ResponsePart {
                         text: Some("pong".to_string()),
                         function_call: None,
+                        thought_signature: None,
                     }],
                 },
             }],
@@ -777,6 +972,7 @@ mod tests {
                     parts: vec![ResponsePart {
                         text: None,
                         function_call: None,
+                        thought_signature: None,
                     }],
                 },
             }],
@@ -952,6 +1148,8 @@ mod tests {
                     payload: AiAttachmentPayload::Base64("JVBERi0=".to_string()),
                 },
             ],
+            tool_calls: Vec::new(),
+            tool_result: None,
         });
         let json = serde_json::to_string(&generate_content_request(&request)).expect("serialize");
 
@@ -977,6 +1175,8 @@ mod tests {
                 mime_type: Some("text/plain".to_string()),
                 payload: AiAttachmentPayload::Text("revenue rose 12 percent".to_string()),
             }],
+            tool_calls: Vec::new(),
+            tool_result: None,
         });
         let body = generate_content_request(&request);
         let user = body
@@ -1001,6 +1201,8 @@ mod tests {
                 role: AiRole::User,
                 content: "Use the tool".to_string(),
                 attachments: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_result: None,
             }],
             tools: vec![crate::application::execution::ToolDefinition {
                 name: "get_weather".to_string(),
@@ -1043,6 +1245,8 @@ mod tests {
                 role: AiRole::User,
                 content: "Hello".to_string(),
                 attachments: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_result: None,
             }],
             tools: Vec::new(),
             request_timeout: None,
@@ -1068,6 +1272,7 @@ mod tests {
                             name: "get_weather".to_string(),
                             args: Some(serde_json::json!({"location":"Paris"})),
                         }),
+                        thought_signature: None,
                     }],
                 },
             }],
@@ -1093,6 +1298,7 @@ mod tests {
                         ResponsePart {
                             text: Some("I will call the tool ".to_string()),
                             function_call: None,
+                            thought_signature: None,
                         },
                         ResponsePart {
                             text: None,
@@ -1100,6 +1306,7 @@ mod tests {
                                 name: "search".to_string(),
                                 args: Some(serde_json::json!({"query":"test"})),
                             }),
+                            thought_signature: None,
                         },
                     ],
                 },
@@ -1122,6 +1329,7 @@ mod tests {
                     parts: vec![ResponsePart {
                         text: Some("Hello to you too.".to_string()),
                         function_call: None,
+                        thought_signature: None,
                     }],
                 },
             }],
@@ -1146,6 +1354,7 @@ mod tests {
                                 name: "get_weather".to_string(),
                                 args: Some(serde_json::json!({"location":"Paris"})),
                             }),
+                            thought_signature: None,
                         },
                         ResponsePart {
                             text: None,
@@ -1153,6 +1362,7 @@ mod tests {
                                 name: "get_time".to_string(),
                                 args: Some(serde_json::json!({})),
                             }),
+                            thought_signature: None,
                         },
                     ],
                 },
@@ -1179,10 +1389,12 @@ mod tests {
                         ResponsePart {
                             text: Some("Hello ".to_string()),
                             function_call: None,
+                            thought_signature: None,
                         },
                         ResponsePart {
                             text: Some("world".to_string()),
                             function_call: None,
+                            thought_signature: None,
                         },
                     ],
                 },
@@ -1256,6 +1468,7 @@ mod tests {
                             name: "no_args_tool".to_string(),
                             args: None,
                         }),
+                        thought_signature: None,
                     }],
                 },
             }],
@@ -1264,6 +1477,147 @@ mod tests {
         let ai = to_ai_response(response, "gemini-3.6-flash").expect("no-args maps");
         assert_eq!(ai.content, "");
         assert_eq!(ai.tool_calls[0].arguments, "{}");
+    }
+    /// A request carrying an assistant tool-call turn with a thought
+    /// signature on the first (parallel) call followed by a tool-result turn
+    /// serializes as native `functionCall` / `functionResponse` parts: the
+    /// signature is echoed verbatim on its own call only, the second call
+    /// carries none, and the observation rides `{functionResponse: {name,
+    /// response: {output}}}` on a user-role turn.
+    #[test]
+    fn tool_round_trip_request_serializes_native_parts() {
+        let request = AiRequest {
+            provider: PROVIDER_NAME.to_string(),
+            model: "gemini-3.6-flash".to_string(),
+            messages: vec![
+                AiMessage {
+                    role: AiRole::System,
+                    content: "You are an agent.".to_string(),
+                    attachments: Vec::new(),
+                    tool_calls: Vec::new(),
+                    tool_result: None,
+                },
+                AiMessage {
+                    role: AiRole::User,
+                    content: "List files".to_string(),
+                    attachments: Vec::new(),
+                    tool_calls: Vec::new(),
+                    tool_result: None,
+                },
+                AiMessage {
+                    role: AiRole::Assistant,
+                    content: "Listing".to_string(),
+                    attachments: Vec::new(),
+                    tool_calls: vec![
+                        crate::application::execution::ToolCall {
+                            id: "call_0".to_string(),
+                            name: "list_directory".to_string(),
+                            arguments: r#"{"path":"."}"#.to_string(),
+                            thought_signature: Some("sig-abc".to_string()),
+                        },
+                        crate::application::execution::ToolCall {
+                            id: "call_1".to_string(),
+                            name: "read_file".to_string(),
+                            arguments: r#"{"path":"a.txt"}"#.to_string(),
+                            thought_signature: None,
+                        },
+                    ],
+                    tool_result: None,
+                },
+                AiMessage {
+                    role: AiRole::Tool,
+                    content: String::new(),
+                    attachments: Vec::new(),
+                    tool_calls: Vec::new(),
+                    tool_result: Some(crate::application::execution::AiToolResult {
+                        call_id: "call_0".to_string(),
+                        name: "list_directory".to_string(),
+                        content: "a.txt\nb.txt".to_string(),
+                    }),
+                },
+            ],
+            tools: Vec::new(),
+            request_timeout: None,
+        };
+        let body = generate_content_request(&request);
+        let value: serde_json::Value =
+            serde_json::to_value(&body).expect("request body serializes");
+
+        assert_eq!(value["contents"][0]["role"], "user");
+        assert_eq!(value["contents"][0]["parts"][0]["text"], "List files");
+
+        // Assistant turn: all functionCall parts first (text part, then the
+        // two calls in order), signature verbatim on the first call only.
+        assert_eq!(
+            value["contents"][1],
+            serde_json::json!({
+                "role": "model",
+                "parts": [
+                    { "text": "Listing" },
+                    {
+                        "functionCall": { "name": "list_directory", "args": { "path": "." } },
+                        "thoughtSignature": "sig-abc"
+                    },
+                    { "functionCall": { "name": "read_file", "args": { "path": "a.txt" } } }
+                ]
+            })
+        );
+
+        // Tool result: user-role turn with a single functionResponse part and
+        // the canonical `{ "output": <observation> }` response object.
+        assert_eq!(
+            value["contents"][2],
+            serde_json::json!({
+                "role": "user",
+                "parts": [
+                    {
+                        "functionResponse": {
+                            "name": "list_directory",
+                            "response": { "output": "a.txt\nb.txt" }
+                        }
+                    }
+                ]
+            })
+        );
+    }
+
+    /// A `thoughtSignature` on a response part is transferred to the
+    /// `ToolCall` only when the part carries a `functionCall`; a signature on
+    /// a pure text part is dropped.
+    #[test]
+    fn thought_signature_is_transferred_to_tool_calls() {
+        let response = GenerateContentResponse {
+            model_version: None,
+            candidates: vec![Candidate {
+                content: CandidateContent {
+                    parts: vec![
+                        ResponsePart {
+                            text: Some("Working".to_string()),
+                            function_call: None,
+                            thought_signature: Some("sig-on-text".to_string()),
+                        },
+                        ResponsePart {
+                            text: None,
+                            function_call: Some(GeminiFunctionCall {
+                                name: "list_directory".to_string(),
+                                args: Some(serde_json::json!({ "path": "." })),
+                            }),
+                            thought_signature: Some("sig-abc".to_string()),
+                        },
+                    ],
+                },
+            }],
+            usage_metadata: None,
+        };
+        let ai = to_ai_response(response, "gemini-3.6-flash").expect("parts map");
+        assert_eq!(ai.content, "Working");
+        assert_eq!(ai.tool_calls.len(), 1);
+        assert_eq!(ai.tool_calls[0].name, "list_directory");
+        assert_eq!(
+            ai.tool_calls[0].thought_signature.as_deref(),
+            Some("sig-abc"),
+            "the signature of the functionCall part travels with the call"
+        );
     }
 
     /// Spawn a local HTTP server that reads the request headers, returns a
@@ -1366,5 +1720,193 @@ mod tests {
         let u = ai.usage.expect("some");
         assert_eq!(u.input_tokens, 0);
         assert_eq!(u.output_tokens, 5);
+    }
+
+    // ---- Gemini tool-schema reduction (v1.0.1) ---------------------------
+    //
+    // `ToolRegistry::definitions()` (src/application/agent/tools.rs:100, 119,
+    // 144, 163) emits full JSON Schema objects (`additionalProperties`,
+    // `minimum`), but Gemini parses `tools[].functionDeclarations[].parameters`
+    // as proto3 JSON and rejects any unknown field name with 400
+    // INVALID_ARGUMENT. `to_gemini_schema` is the Gemini-only wire adapter.
+
+    /// True when `key` appears anywhere inside `value` (objects or arrays).
+    fn contains_key_recursive(value: &serde_json::Value, key: &str) -> bool {
+        match value {
+            serde_json::Value::Object(map) => {
+                map.contains_key(key)
+                    || map.values().any(|inner| contains_key_recursive(inner, key))
+            }
+            serde_json::Value::Array(items) => {
+                items.iter().any(|inner| contains_key_recursive(inner, key))
+            }
+            _ => false,
+        }
+    }
+
+    /// An [`AiRequest`] carrying the four real workspace tool definitions.
+    fn tool_request(tools: Vec<crate::application::execution::ToolDefinition>) -> AiRequest {
+        AiRequest {
+            provider: PROVIDER_NAME.to_string(),
+            model: "gemini-3.6-flash".to_string(),
+            messages: vec![AiMessage {
+                role: AiRole::User,
+                content: "Run the tests".to_string(),
+                attachments: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_result: None,
+            }],
+            tools,
+            request_timeout: None,
+        }
+    }
+
+    /// Test (a): the four real tool definitions, serialized through
+    /// `generate_content_request`, contain none of the JSON-Schema keys Gemini
+    /// rejects; read_file's parameters equal the exact reduced shape; the
+    /// empty `required` of list_directory is dropped entirely.
+    #[test]
+    fn agent_tool_declarations_are_reduced_to_the_gemini_subset() {
+        let request = tool_request(crate::application::agent::tools::ToolRegistry::definitions());
+        let body = generate_content_request(&request);
+        let value: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&body).expect("serialize")).expect("parse");
+        let declarations = value["tools"][0]["functionDeclarations"]
+            .as_array()
+            .expect("four function declarations");
+        assert_eq!(declarations.len(), 4, "all four tools are declared");
+
+        for declaration in declarations {
+            let parameters = &declaration["parameters"];
+            for forbidden in [
+                "additionalProperties",
+                "minimum",
+                "maximum",
+                "const",
+                "propertyNames",
+                "$schema",
+                "$defs",
+            ] {
+                assert!(
+                    !contains_key_recursive(parameters, forbidden),
+                    "declaration '{}' leaked forbidden key '{forbidden}': {parameters}",
+                    declaration["name"]
+                );
+            }
+        }
+
+        // read_file: type / description / properties / non-empty required
+        // survive unchanged; minimum and additionalProperties are gone.
+        let read_file = &declarations[1];
+        assert_eq!(read_file["name"], "read_file");
+        let expected = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to the file relative to workspace root"
+                },
+                "offset_lines": {
+                    "type": "integer",
+                    "description": "Line offset to start reading from (0-indexed)"
+                },
+                "limit_lines": {
+                    "type": "integer",
+                    "description": "Maximum number of lines to return"
+                }
+            },
+            "required": ["path"]
+        });
+        assert_eq!(
+            read_file["parameters"], expected,
+            "read_file parameters must equal the exact reduced shape"
+        );
+
+        // list_directory: `required: []` is dropped entirely (tools.rs:175).
+        let list_directory = &declarations[3];
+        assert_eq!(list_directory["name"], "list_directory");
+        assert!(
+            list_directory["parameters"].get("required").is_none(),
+            "list_directory must not carry a 'required' key"
+        );
+
+        // Non-empty required arrays of the other tools survive verbatim.
+        assert_eq!(
+            declarations[0]["parameters"]["required"],
+            serde_json::json!(["command"]),
+            "execute_command keeps its required array"
+        );
+        assert_eq!(
+            declarations[2]["parameters"]["required"],
+            serde_json::json!(["path", "content"]),
+            "write_file keeps its required array"
+        );
+    }
+
+    /// Test (b): the reduction is a Gemini wire adapter only. The shared
+    /// `AiRequest.tools` payload — the exact value the OpenAI
+    /// (`chat_completion_request`, openai.rs:190) and Anthropic
+    /// (`anthropic_request`, anthropic.rs:235) body builders serialize
+    /// verbatim into their `tools` arrays — keeps the full JSON Schema, and
+    /// `generate_content_request` never mutates it.
+    #[test]
+    fn other_providers_keep_the_schema_verbatim() {
+        let definitions = crate::application::agent::tools::ToolRegistry::definitions();
+        let shared = definitions.clone();
+
+        // The shared source of truth still carries the keys Gemini rejects;
+        // OpenAI and Anthropic serialize exactly this value.
+        for definition in &shared {
+            assert!(
+                definition.parameters.get("additionalProperties").is_some(),
+                "shared definition '{}' lost additionalProperties",
+                definition.name
+            );
+        }
+        let read_file = &shared[1];
+        assert_eq!(read_file.name, "read_file");
+        assert!(
+            contains_key_recursive(&read_file.parameters, "minimum"),
+            "shared read_file schema lost its 'minimum' constraints"
+        );
+
+        // Driving the definitions through the Gemini body builder leaves the
+        // shared value untouched, and the reduction appears only in the
+        // Gemini wire body (a passthrough would leak the keys below).
+        let request = tool_request(definitions);
+        let body = generate_content_request(&request);
+        let value: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&body).expect("serialize")).expect("parse");
+        let declarations = value["tools"][0]["functionDeclarations"]
+            .as_array()
+            .expect("declarations");
+        for declaration in declarations {
+            assert!(
+                !contains_key_recursive(&declaration["parameters"], "additionalProperties"),
+                "gemini body for '{}' still carries additionalProperties: {}",
+                declaration["name"],
+                declaration["parameters"]
+            );
+        }
+        for definition in &shared {
+            assert!(
+                definition.parameters.get("additionalProperties").is_some(),
+                "shared definition '{}' was mutated by the gemini builder",
+                definition.name
+            );
+        }
+    }
+
+    /// Test (c): a plain chat request (empty tools) serializes without a
+    /// `tools` key at all — no empty array may reach the wire.
+    #[test]
+    fn chat_requests_still_omit_the_tools_field() {
+        let json =
+            serde_json::to_string(&generate_content_request(&sample_request())).expect("serialize");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        assert!(
+            value.get("tools").is_none(),
+            "chat body must not contain a 'tools' key: {value}"
+        );
     }
 }

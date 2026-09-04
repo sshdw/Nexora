@@ -148,13 +148,36 @@ struct OpenAiWireFunction {
 
 /// One OpenAI chat message.
 ///
-/// `content` is a plain string for the common no-attachment case (byte-for-
-/// byte identical to the pre-FR-008 wire shape) and a parts array only when
-/// the turn carries binary attachments (FR-008).
+/// `content` is serialized as `null` for assistant turns that carry only
+/// `tool_calls` (OpenAI contract); regular turns keep the plain-string or
+/// parts form of the pre-FR-008 / FR-008 shapes. Tool-result turns set
+/// `tool_call_id` and a text content.
 #[derive(Debug, Serialize)]
 struct OpenAiMessage {
     role: String,
-    content: OpenAiContent,
+    // Serialized explicitly (None renders as JSON null) so assistant
+    // tool-call turns carry `"content": null` per the OpenAI contract.
+    content: Option<OpenAiContent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<OpenAiReqWireToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<String>,
+}
+
+/// OpenAI assistant `tool_calls` entry (request direction).
+#[derive(Debug, Serialize)]
+struct OpenAiReqWireToolCall {
+    id: String,
+    r#type: &'static str,
+    function: OpenAiReqWireFunctionCall,
+}
+
+/// OpenAI assistant `function` payload: `name` plus the raw `arguments`
+/// string exactly as the model produced it.
+#[derive(Debug, Serialize)]
+struct OpenAiReqWireFunctionCall {
+    name: String,
+    arguments: String,
 }
 
 /// OpenAI Chat Completions `content` values: a plain string, or an array of
@@ -212,6 +235,39 @@ fn chat_completion_request(request: &AiRequest) -> ChatCompletionRequest {
 // contents become part of the turn text; base64 images become `image_url`
 // data-URI parts (FR-008).
 fn openai_message(message: &AiMessage) -> OpenAiMessage {
+    // Assistant agent turn with structured tool calls: content is `null` and
+    // the calls ride the `tool_calls` array with verbatim argument strings.
+    if message.role == AiRole::Assistant && !message.tool_calls.is_empty() {
+        return OpenAiMessage {
+            role: "assistant".to_string(),
+            content: None,
+            tool_calls: Some(
+                message
+                    .tool_calls
+                    .iter()
+                    .map(|call| OpenAiReqWireToolCall {
+                        id: call.id.clone(),
+                        r#type: "function",
+                        function: OpenAiReqWireFunctionCall {
+                            name: call.name.clone(),
+                            arguments: call.arguments.clone(),
+                        },
+                    })
+                    .collect(),
+            ),
+            tool_call_id: None,
+        };
+    }
+    // Tool result turn: role "tool" answering one call by id.
+    if message.role == AiRole::Tool {
+        let result = message.tool_result.as_ref().expect("tool result present");
+        return OpenAiMessage {
+            role: "tool".to_string(),
+            content: Some(OpenAiContent::Text(result.content.clone())),
+            tool_calls: None,
+            tool_call_id: Some(result.call_id.clone()),
+        };
+    }
     let mut parts: Vec<OpenAiContentPart> = Vec::new();
     for attachment in &message.attachments {
         if let AiAttachmentPayload::Base64(data) = &attachment.payload {
@@ -244,9 +300,13 @@ fn openai_message(message: &AiMessage) -> OpenAiMessage {
             AiRole::System => "system",
             AiRole::User => "user",
             AiRole::Assistant => "assistant",
+            // Handled above; unreachable here but keeps the match exhaustive.
+            AiRole::Tool => "tool",
         }
         .to_string(),
-        content,
+        content: Some(content),
+        tool_calls: None,
+        tool_call_id: None,
     }
 }
 
@@ -340,6 +400,8 @@ fn to_ai_response(response: ChatCompletionResponse) -> Result<AiResponse, OpenAi
             id: call.id,
             name: call.function.name,
             arguments: call.function.arguments,
+            // OpenAI responses carry no reasoning signature.
+            thought_signature: None,
         })
         .collect();
     let content = if let Some(text) = choice.message.content {
@@ -418,16 +480,22 @@ mod tests {
                     role: AiRole::System,
                     content: "You are a helpful assistant.".to_string(),
                     attachments: Vec::new(),
+                    tool_calls: Vec::new(),
+                    tool_result: None,
                 },
                 AiMessage {
                     role: AiRole::User,
                     content: "Hello".to_string(),
                     attachments: Vec::new(),
+                    tool_calls: Vec::new(),
+                    tool_result: None,
                 },
                 AiMessage {
                     role: AiRole::Assistant,
                     content: "Hi there".to_string(),
                     attachments: Vec::new(),
+                    tool_calls: Vec::new(),
+                    tool_result: None,
                 },
             ],
             tools: Vec::new(),
@@ -444,15 +512,17 @@ mod tests {
         assert_eq!(roles, vec!["system", "user", "assistant"]);
         assert_eq!(
             body.messages[0].content,
-            OpenAiContent::Text("You are a helpful assistant.".to_string())
+            Some(OpenAiContent::Text(
+                "You are a helpful assistant.".to_string()
+            ))
         );
         assert_eq!(
             body.messages[1].content,
-            OpenAiContent::Text("Hello".to_string())
+            Some(OpenAiContent::Text("Hello".to_string()))
         );
         assert_eq!(
             body.messages[2].content,
-            OpenAiContent::Text("Hi there".to_string())
+            Some(OpenAiContent::Text("Hi there".to_string()))
         );
         // Messages remain in chronological order.
         assert_eq!(body.messages.len(), 3);
@@ -467,6 +537,8 @@ mod tests {
                 role: AiRole::User,
                 content: "ping".to_string(),
                 attachments: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_result: None,
             }],
             tools: Vec::new(),
             request_timeout: None,
@@ -475,7 +547,7 @@ mod tests {
         assert_eq!(body.messages[0].role, "user");
         assert_eq!(
             body.messages[0].content,
-            OpenAiContent::Text("ping".to_string())
+            Some(OpenAiContent::Text("ping".to_string()))
         );
     }
 
@@ -560,6 +632,8 @@ mod tests {
                 mime_type: Some("image/png".to_string()),
                 payload: AiAttachmentPayload::Base64("cG5nIQ==".to_string()),
             }],
+            tool_calls: Vec::new(),
+            tool_result: None,
         });
         let json = serde_json::to_string(&chat_completion_request(&request)).expect("serialize");
 
@@ -583,6 +657,8 @@ mod tests {
                 mime_type: Some("text/plain".to_string()),
                 payload: AiAttachmentPayload::Text("revenue rose 12 percent".to_string()),
             }],
+            tool_calls: Vec::new(),
+            tool_result: None,
         });
         let body = chat_completion_request(&request);
         let user = body
@@ -591,7 +667,7 @@ mod tests {
             .rev()
             .find(|m| m.role == "user")
             .expect("user message");
-        let OpenAiContent::Text(text) = &user.content else {
+        let OpenAiContent::Text(text) = user.content.as_ref().expect("content present") else {
             panic!("text-only attachments keep the plain string wire shape");
         };
         assert!(text.contains("revenue rose 12 percent"));
@@ -652,6 +728,8 @@ mod tests {
                 role: AiRole::User,
                 content: "Use the tool".to_string(),
                 attachments: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_result: None,
             }],
             tools: vec![crate::application::execution::ToolDefinition {
                 name: "get_weather".to_string(),
@@ -693,6 +771,8 @@ mod tests {
                 role: AiRole::User,
                 content: "Hello".to_string(),
                 attachments: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_result: None,
             }],
             tools: Vec::new(),
             request_timeout: None,
@@ -797,6 +877,81 @@ mod tests {
         let ai = to_ai_response(response).expect("empty tool_calls with content maps");
         assert_eq!(ai.content, "Just text");
         assert!(ai.tool_calls.is_empty());
+    }
+
+    /// The native tool round-trip serializes as the OpenAI shapes: an
+    /// assistant turn with `"content": null` plus a `tool_calls` array
+    /// carrying the verbatim argument string, and a tool-result turn with
+    /// `role: "tool"`, `tool_call_id`, and the observation as text content.
+    #[test]
+    fn tool_round_trip_request_serializes_native_shapes() {
+        let request = AiRequest {
+            provider: PROVIDER_NAME.to_string(),
+            model: "gpt-5.6-terra".to_string(),
+            messages: vec![
+                AiMessage {
+                    role: AiRole::User,
+                    content: "List files".to_string(),
+                    attachments: Vec::new(),
+                    tool_calls: Vec::new(),
+                    tool_result: None,
+                },
+                AiMessage {
+                    role: AiRole::Assistant,
+                    content: String::new(),
+                    attachments: Vec::new(),
+                    tool_calls: vec![crate::application::execution::ToolCall {
+                        id: "call_7".to_string(),
+                        name: "list_directory".to_string(),
+                        arguments: r#"{"path":"."}"#.to_string(),
+                        thought_signature: None,
+                    }],
+                    tool_result: None,
+                },
+                AiMessage {
+                    role: AiRole::Tool,
+                    content: String::new(),
+                    attachments: Vec::new(),
+                    tool_calls: Vec::new(),
+                    tool_result: Some(crate::application::execution::AiToolResult {
+                        call_id: "call_7".to_string(),
+                        name: "list_directory".to_string(),
+                        content: "a.txt".to_string(),
+                    }),
+                },
+            ],
+            tools: Vec::new(),
+            request_timeout: None,
+        };
+        let body = chat_completion_request(&request);
+        let value: serde_json::Value =
+            serde_json::to_value(&body).expect("request body serializes");
+
+        assert_eq!(
+            value["messages"][1],
+            serde_json::json!({
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [
+                    {
+                        "id": "call_7",
+                        "type": "function",
+                        "function": {
+                            "name": "list_directory",
+                            "arguments": "{\"path\":\".\"}"
+                        }
+                    }
+                ]
+            })
+        );
+        assert_eq!(
+            value["messages"][2],
+            serde_json::json!({
+                "role": "tool",
+                "tool_call_id": "call_7",
+                "content": "a.txt"
+            })
+        );
     }
 
     #[test]
