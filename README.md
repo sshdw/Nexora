@@ -8,7 +8,7 @@ Nexora implements the approved MVP scope — functional requirements FR-001 thro
 
 - **AI conversations** — create unlimited conversations, exchange messages with an AI, rename, archive/restore, and permanently delete them (FR-002, FR-006).
 - **Persistent history** — complete conversation history survives restarts and remains in chronological order; failed requests show an error instead of corrupting history (FR-003, FR-005).
-- **Multiple AI providers** — connect OpenAI, Anthropic, or Google Gemini, each with a maintained list of supported models; select provider and model before sending a request (FR-004).
+- **Multiple AI providers** — connect OpenAI, Anthropic, Google Gemini, xKiro, OpenRouter, NVIDIA NIM, or OpenCode Zen (the last four as OpenAI-compatible endpoints), each with a maintained list of supported models; select provider and model before sending a request (FR-004).
 - **Prompt library** — create, edit, and delete reusable prompts and insert them into any conversation (FR-007).
 - **Document attachments** — attach local files to a request, review them before sending, and remove them beforehand (FR-008).
 - **Local search** — offline full-text search across conversation titles, message content, and prompts, powered by SQLite FTS5 (FR-009).
@@ -33,7 +33,7 @@ Nexora implements the approved MVP scope — functional requirements FR-001 thro
 | Backend | Rust |
 | Database | SQLite via `rusqlite` (bundled, with FTS5) |
 
-Supported providers — OpenAI, Anthropic, and Google Gemini — and their supported models are defined in the backend (`src-tauri/src/infrastructure/providers/`).
+Supported providers — OpenAI, Anthropic, Google Gemini, xKiro, OpenRouter, NVIDIA NIM, and OpenCode Zen (the last four as OpenAI-compatible endpoints) — and their supported models are defined in the backend (`src-tauri/src/infrastructure/providers/`).
 
 ## Architecture
 
@@ -103,7 +103,7 @@ Backend tests run against in-memory SQLite instances using the same migrations a
 
 ## Project Status
 
-**Nexora 1.0.2** — MVP + agent era shipped; see CHANGELOG.
+**Nexora 1.1.0** — MVP + agent era shipped; see CHANGELOG.
 
 Capabilities outside the approved MVP (cloud sync, user accounts, collaboration, mobile/web apps, plugins) are explicitly out of scope — see [docs/SRS.md](docs/SRS.md).
 

@@ -67,5 +67,61 @@ fn provider_schemas() -> Vec<(&'static str, &'static str, &'static [&'static str
             gemini::PROVIDER_DISPLAY_NAME,
             gemini::SUPPORTED_MODELS,
         ),
+        (
+            openai::XKIRO_NAME,
+            openai::XKIRO_DISPLAY_NAME,
+            openai::XKIRO_MODELS,
+        ),
+        (
+            openai::OPENROUTER_NAME,
+            openai::OPENROUTER_DISPLAY_NAME,
+            openai::OPENROUTER_MODELS,
+        ),
+        (
+            openai::NVIDIA_NAME,
+            openai::NVIDIA_DISPLAY_NAME,
+            openai::NVIDIA_MODELS,
+        ),
+        (
+            openai::OPENCODE_ZEN_NAME,
+            openai::OPENCODE_ZEN_DISPLAY_NAME,
+            openai::OPENCODE_ZEN_MODELS,
+        ),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn supported_providers_lists_seven() {
+        let providers = supported_providers();
+        let names: Vec<&str> = providers.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "openai",
+                "anthropic",
+                "gemini",
+                "xkiro",
+                "openrouter",
+                "nvidia",
+                "opencode_zen",
+            ]
+        );
+        for provider in &providers {
+            assert!(
+                (3..=5).contains(&provider.models.len()),
+                "provider '{}' must list 3-5 models, got {}",
+                provider.name,
+                provider.models.len()
+            );
+            assert!(
+                !provider.models[0].is_empty(),
+                "provider '{}' default model must be non-empty",
+                provider.name
+            );
+        }
+    }
 }

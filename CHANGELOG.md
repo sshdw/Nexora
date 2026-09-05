@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] — 2026-09-05
+
+### Added
+
+- OpenAI-compatible providers xKiro, OpenRouter, NVIDIA NIM, and OpenCode
+  Zen behind the single shared `OpenAiExecutor` (distinct endpoint per
+  provider, plus OpenRouter Referer/Title headers) with curated hardcoded
+  model shortlists; pricing unchanged (5M/25M micro-USD per 1M tokens).
+
 ## [1.0.2] — 2026-09-04
 
 ### Fixed
@@ -110,6 +119,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > Note: tag `v0.3.0` exists remotely from the MVP era but carries no changelog entry; superseded by 1.0.0.
 
+[1.1.0]: https://github.com/sshdw/Nexora/releases/tag/v1.1.0
 [1.0.2]: https://github.com/sshdw/Nexora/releases/tag/v1.0.2
 [1.0.1]: https://github.com/sshdw/Nexora/releases/tag/v1.0.1
 [1.0.0]: https://github.com/sshdw/Nexora/releases/tag/v1.0.0
