@@ -8,7 +8,7 @@ Nexora implements the approved MVP scope — functional requirements FR-001 thro
 
 - **AI conversations** — create unlimited conversations, exchange messages with an AI, rename, archive/restore, and permanently delete them (FR-002, FR-006).
 - **Persistent history** — complete conversation history survives restarts and remains in chronological order; failed requests show an error instead of corrupting history (FR-003, FR-005).
-- **Multiple AI providers** — connect OpenAI, Anthropic, Google Gemini, xKiro, OpenRouter, NVIDIA NIM, or OpenCode Zen (the last four as OpenAI-compatible endpoints), each with a maintained list of supported models; select provider and model before sending a request (FR-004).
+- **Multiple AI providers** — connect OpenAI, Anthropic, Google Gemini, xKiro, OpenRouter, NVIDIA NIM, or OpenCode Zen (the last four as OpenAI-compatible endpoints), each with a maintained list of supported models; select provider and model before sending a request (FR-004). Compatible providers ship curated shortlists, and Settings accepts a custom model ID beyond the shortlist.
 - **Prompt library** — create, edit, and delete reusable prompts and insert them into any conversation (FR-007).
 - **Document attachments** — attach local files to a request, review them before sending, and remove them beforehand (FR-008).
 - **Local search** — offline full-text search across conversation titles, message content, and prompts, powered by SQLite FTS5 (FR-009).

@@ -281,7 +281,7 @@ parsed. The boundary's `ExecutorError` carries classified failure categories
 rejected credential, invalid request, unexpected response) — still secret-free,
 still no response-body reads, still no retry logic.
 
-OpenAI-compatible providers (xKiro, OpenRouter, NVIDIA NIM, OpenCode Zen) reuse `OpenAiExecutor` with a distinct endpoint (plus OpenRouter Referer/Title headers); they are not separate protocol implementations.
+OpenAI-compatible providers (xKiro, OpenRouter, NVIDIA NIM, OpenCode Zen) reuse `OpenAiExecutor` with a distinct endpoint (plus OpenRouter Referer/Title headers); they are not separate protocol implementations. HTTP 404 from a compatible endpoint maps to invalid request (model/route missing) instead of the opaque catch-all failure.
 
 
 

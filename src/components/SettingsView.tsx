@@ -3,7 +3,7 @@ import { useState } from "react";
 import type { SupportedProvider } from "../lib/tauri";
 import { clearApplicationData } from "../lib/tauri";
 import type { AppearanceStore } from "../lib/useAppearance";
-import type { ProvidersStore } from "../lib/useProviders";
+import { isCustomModelId, type ProvidersStore } from "../lib/useProviders";
 
 /** Settings sections (Phase 10.8). Only approved areas with defined behavior
  * are offered: Appearance (theme), Provider & model (FR-004), Data management
@@ -58,14 +58,44 @@ export default function SettingsView({
       ? store.selectedModel
       : selectedModels[0] ?? null;
 
+  /** A persisted custom model ID (valid but outside the shortlist). */
+  const persistedCustom =
+    store.selectedModel && !selectedModels.includes(store.selectedModel)
+      ? store.selectedModel
+      : null;
+  /** Local custom draft; non-null means the Custom… option is active. */
+  const [customDraft, setCustomDraft] = useState<string | null>(null);
+  const customActive = customDraft !== null || persistedCustom !== null;
+  const customValue = customDraft ?? persistedCustom ?? "";
+
   const handleProviderChange = async (name: string) => {
+    // A custom model ID is provider-independent: keep it across the switch.
+    const keepCustom = store.selectedModel ? isCustomModelId(store.selectedModel) : false;
+    setCustomDraft(null);
     await store.selectProvider(name);
+    if (keepCustom) return;
     // Persist the default model for the newly selected provider so the
     // selection is never left without a model.
     const def = store.providers.find((p) => p.supported.name === name)?.supported;
     if (def && def.models.length > 0) {
       await store.selectModel(def.models[0]);
     }
+  };
+
+  const handleModelSelect = (value: string) => {
+    // The `__custom__` option is UI-only and is never sent to the backend.
+    if (value === "__custom__") {
+      setCustomDraft(persistedCustom ?? "");
+      return;
+    }
+    setCustomDraft(null);
+    void store.selectModel(value);
+  };
+
+  const commitCustom = () => {
+    const value = customDraft ?? persistedCustom ?? "";
+    if (!value || value === "__custom__") return;
+    void store.selectModel(value);
   };
 
   const handleConnect = async (definition: SupportedProvider) => {
@@ -238,9 +268,9 @@ export default function SettingsView({
                   <select
                     id="model-select"
                     className="nex-select"
-                    value={effectiveModel ?? ""}
+                    value={customActive ? "__custom__" : (effectiveModel ?? "")}
                     disabled={selectedModels.length === 0}
-                    onChange={(event) => store.selectModel(event.target.value)}
+                    onChange={(event) => handleModelSelect(event.target.value)}
                   >
                     {selectedModels.length === 0 && (
                       <option value="">Select a provider first</option>
@@ -250,8 +280,34 @@ export default function SettingsView({
                         {model}
                       </option>
                     ))}
+                    {selectedModels.length > 0 && (
+                      <option value="__custom__">Custom…</option>
+                    )}
                   </select>
                 </div>
+
+                {customActive && selectedModels.length > 0 && (
+                  <div className="nex-settings-field">
+                    <label className="nex-settings-label" htmlFor="model-custom">
+                      Custom model ID
+                    </label>
+                    <input
+                      id="model-custom"
+                      className="nex-input"
+                      type="text"
+                      value={customValue}
+                      placeholder="e.g. vendor/model-variant"
+                      onChange={(event) => setCustomDraft(event.target.value)}
+                      onBlur={commitCustom}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") commitCustom();
+                      }}
+                    />
+                    <p className="nex-settings-hint">
+                      Listed ID or custom: 1–200 chars of A–Z a–z 0–9 . _ / : - +.
+                    </p>
+                  </div>
+                )}
               </section>
             )}
 
