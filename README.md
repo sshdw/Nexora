@@ -103,7 +103,7 @@ Backend tests run against in-memory SQLite instances using the same migrations a
 
 ## Project Status
 
-**Nexora 1.0.2** — MVP + agent era shipped; see CHANGELOG.
+**Nexora 1.1.0** — MVP + agent era shipped; see CHANGELOG.
 
 Capabilities outside the approved MVP (cloud sync, user accounts, collaboration, mobile/web apps, plugins) are explicitly out of scope — see [docs/SRS.md](docs/SRS.md).
 
