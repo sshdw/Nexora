@@ -140,7 +140,17 @@ impl ProviderExecutor for GeminiExecutor {
                 // Record only the classification category; never the credential
                 // or request payload (ARCHITECTURE.md В§9, В§11).
                 log::warn!("gemini request failed: {error}");
-                Err(ExecutorError::Failure)
+                Err(match error {
+                    GeminiError::InvalidRequest => ExecutorError::InvalidRequest,
+                    GeminiError::Authentication => ExecutorError::Authentication,
+                    GeminiError::Network => ExecutorError::Network,
+                    GeminiError::RateLimited { retry_after_secs } => {
+                        ExecutorError::RateLimited { retry_after_secs }
+                    }
+                    GeminiError::ProviderUnavailable => ExecutorError::ProviderUnavailable,
+                    GeminiError::UnexpectedResponse => ExecutorError::UnexpectedResponse,
+                    GeminiError::Provider => ExecutorError::Failure,
+                })
             }
         }
     }
@@ -684,7 +694,12 @@ fn send(
             .json::<GenerateContentResponse>()
             .map_err(|_| GeminiError::UnexpectedResponse)
     } else {
-        Err(classify_status(status.as_u16()))
+        let retry_after_secs = response
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.trim().parse::<u64>().ok());
+        Err(classify_status(status.as_u16(), retry_after_secs))
     }
 }
 
@@ -699,11 +714,17 @@ fn send(
 /// a genuinely malformed request without reading the error body, which this
 /// integration deliberately avoids (secret hygiene), so it stays classified as
 /// [`GeminiError::InvalidRequest`] with a message that names both likely causes.
-fn classify_status(status: u16) -> GeminiError {
+///
+/// `retry_after_secs` is the provider's `Retry-After` header parsed as integer
+/// seconds (absent or HTTP-date values are `None`) and is carried only by the
+/// 429 [`GeminiError::RateLimited`] category.
+fn classify_status(status: u16, retry_after_secs: Option<u64>) -> GeminiError {
     match status {
         400 => GeminiError::InvalidRequest,
         // Credential/access problems (see above): actionable for the user.
         401 | 403 => GeminiError::Authentication,
+        429 => GeminiError::RateLimited { retry_after_secs },
+        s if s >= 500 => GeminiError::ProviderUnavailable,
         _ => GeminiError::Provider,
     }
 }
@@ -722,6 +743,11 @@ enum GeminiError {
     Authentication,
     /// A network/transport failure (connection refused, DNS, timeout, ...).
     Network,
+    /// The provider rate limited the request (HTTP 429), carrying the
+    /// provider's `Retry-After` hint when it was a valid integer.
+    RateLimited { retry_after_secs: Option<u64> },
+    /// The provider is unavailable or overloaded (HTTP 5xx).
+    ProviderUnavailable,
     /// A provider-side error (HTTP 4xx other than 400/401, 5xx, 429, ...).
     Provider,
     /// The response was not a recognizable generation (e.g. missing text
@@ -743,6 +769,8 @@ impl std::fmt::Display for GeminiError {
                 "Gemini rejected the stored credential or its access (401/403)"
             ),
             Self::Network => write!(f, "Gemini network or transport failure"),
+            Self::RateLimited { .. } => write!(f, "Gemini rate limit (429)"),
+            Self::ProviderUnavailable => write!(f, "Gemini unavailable (5xx)"),
             Self::Provider => write!(f, "Gemini provider failure"),
             Self::UnexpectedResponse => write!(f, "Gemini returned an unexpected response"),
         }
@@ -986,16 +1014,36 @@ mod tests {
 
     #[test]
     fn statuses_classify_without_secrets() {
-        assert!(matches!(classify_status(400), GeminiError::InvalidRequest));
+        assert!(matches!(
+            classify_status(400, None),
+            GeminiError::InvalidRequest
+        ));
         // Credential problems: 401 UNAUTHENTICATED and 403 PERMISSION_DENIED.
-        assert!(matches!(classify_status(401), GeminiError::Authentication));
-        assert!(matches!(classify_status(403), GeminiError::Authentication));
-        for status in [404, 429, 500, 502, 503, 504] {
-            assert!(
-                matches!(classify_status(status), GeminiError::Provider),
-                "status {status} should classify as provider failure"
-            );
-        }
+        assert!(matches!(
+            classify_status(401, None),
+            GeminiError::Authentication
+        ));
+        assert!(matches!(
+            classify_status(403, None),
+            GeminiError::Authentication
+        ));
+        // 429 carries the Retry-After hint (None when absent/not parseable).
+        assert!(matches!(
+            classify_status(429, None),
+            GeminiError::RateLimited {
+                retry_after_secs: None
+            }
+        ));
+        assert!(matches!(
+            classify_status(500, None),
+            GeminiError::ProviderUnavailable
+        ));
+        assert!(matches!(
+            classify_status(503, None),
+            GeminiError::ProviderUnavailable
+        ));
+        // Other 4xx remain the catch-all provider failure.
+        assert!(matches!(classify_status(404, None), GeminiError::Provider));
     }
 
     #[test]
@@ -1016,10 +1064,10 @@ mod tests {
             client: reqwest::blocking::Client::new(),
             endpoint: "http://127.0.0.1:1".to_string(), // unreachable -> network failure
         };
-        // The boundary must only ever surface ExecutorError::Failure, never a
+        // The boundary surfaces the classified category (here: network), never a
         // Gemini-specific or secret-bearing type.
         let result = executor.execute(&sample_request(), "sk-secret-example");
-        assert!(matches!(result, Err(ExecutorError::Failure)));
+        assert!(matches!(result, Err(ExecutorError::Network)));
     }
 
     #[test]
@@ -1032,10 +1080,10 @@ mod tests {
         let err = executor
             .execute(&sample_request(), credential)
             .expect_err("unreachable endpoint must fail");
-        // The collapsed boundary error carries a fixed, secret-free message.
+        // The classified boundary error carries a fixed, secret-free message.
         assert_eq!(
             format!("{err}"),
-            "the AI provider failed to fulfil the request"
+            "the AI provider could not be reached (network or timeout)"
         );
         assert!(!format!("{err}").contains(credential));
     }
@@ -1062,6 +1110,79 @@ mod tests {
         let executor = GeminiExecutor::with_endpoint(endpoint);
         let result = executor.run(&sample_request(), "sk-secret-example");
         assert!(matches!(result, Err(GeminiError::InvalidRequest)));
+        server.join().expect("server thread joins");
+    }
+
+    #[test]
+    fn status_429_maps_to_rate_limited_with_retry_after() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        // Case 1: 429 with a valid integer Retry-After header.
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test server");
+        let addr = listener.local_addr().expect("local address");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept connection");
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 1024];
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        raw.extend_from_slice(&buf[..n]);
+                        if raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                }
+            }
+            let response = "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nRetry-After: 30\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+        });
+        let executor = GeminiExecutor::with_endpoint(format!("http://{addr}"));
+        let result = executor.execute(&sample_request(), "sk-secret-example");
+        assert!(matches!(
+            result,
+            Err(ExecutorError::RateLimited {
+                retry_after_secs: Some(30)
+            })
+        ));
+        let _ = server.join();
+
+        // Case 2: 429 without the header -> None.
+        let (endpoint, _captured, server) = spawn_server(429, "");
+        let executor = GeminiExecutor::with_endpoint(endpoint);
+        let result = executor.execute(&sample_request(), "sk-secret-example");
+        assert!(matches!(
+            result,
+            Err(ExecutorError::RateLimited {
+                retry_after_secs: None
+            })
+        ));
+        server.join().expect("server thread joins");
+    }
+
+    #[test]
+    fn status_5xx_maps_to_provider_unavailable() {
+        for status in [500, 503] {
+            let (endpoint, _captured, server) = spawn_server(status, "");
+            let executor = GeminiExecutor::with_endpoint(endpoint);
+            let result = executor.execute(&sample_request(), "sk-secret-example");
+            assert!(
+                matches!(result, Err(ExecutorError::ProviderUnavailable)),
+                "status {status} should map to ProviderUnavailable, got {result:?}"
+            );
+            server.join().expect("server thread joins");
+        }
+    }
+
+    #[test]
+    fn other_client_errors_still_surface_as_failure() {
+        let (endpoint, _captured, server) = spawn_server(404, "");
+        let executor = GeminiExecutor::with_endpoint(endpoint);
+        let result = executor.execute(&sample_request(), "sk-secret-example");
+        assert!(matches!(result, Err(ExecutorError::Failure)));
         server.join().expect("server thread joins");
     }
 
@@ -1446,8 +1567,8 @@ mod tests {
         let result = executor.execute(&request, "sk-secret-example");
         let elapsed = start.elapsed();
         assert!(
-            matches!(result, Err(ExecutorError::Failure)),
-            "expected timeout to surface as ExecutorError::Failure, got {result:?}"
+            matches!(result, Err(ExecutorError::Network)),
+            "expected timeout to surface as ExecutorError::Network, got {result:?}"
         );
         assert!(
             elapsed < Duration::from_secs(1),

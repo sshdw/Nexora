@@ -253,19 +253,72 @@ pub(crate) struct AiResponse {
 
 /// Error raised by a [`ProviderExecutor`] while executing a request.
 ///
-/// Deliberately carries **no secret payload** and **no provider-specific
-/// detail**: it classifies only the failure category so a formatted
-/// [`ExecutorError`] can never leak a credential (ARCHITECTURE.md §9, §11).
+/// Deliberately carries **no secret payload** and **no response-body
+/// content**: it classifies only the failure *category*, so a formatted
+/// [`ExecutorError`] can never leak a credential or payload
+/// (ARCHITECTURE.md §9, §11). The boundary now carries the classified
+/// categories computed by each provider.
 #[derive(Debug)]
 pub(crate) enum ExecutorError {
-    /// The provider could not fulfil the request (network, authentication, or
-    /// provider-side failure).
+    /// The provider could not be reached (network or timeout).
+    Network,
+    /// The provider rate limited the request (HTTP 429), with the
+    /// provider's `Retry-After` value when it was a valid integer of
+    /// seconds.
+    RateLimited { retry_after_secs: Option<u64> },
+    /// The provider is unavailable or overloaded (HTTP 5xx).
+    ProviderUnavailable,
+    /// The provider rejected the stored credential (HTTP 401/403).
+    Authentication,
+    /// The provider rejected the request as invalid (HTTP 400).
+    InvalidRequest,
+    /// The provider returned an unexpected response.
+    UnexpectedResponse,
+    /// The provider could not fulfil the request (catch-all).
     Failure,
 }
 
 impl std::fmt::Display for ExecutorError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Network => {
+                write!(
+                    f,
+                    "the AI provider could not be reached (network or timeout)"
+                )
+            }
+            Self::RateLimited {
+                retry_after_secs: None,
+            } => {
+                write!(
+                    f,
+                    "the AI provider rate limit was hit (HTTP 429); wait before retrying"
+                )
+            }
+            Self::RateLimited {
+                retry_after_secs: Some(secs),
+            } => write!(
+                f,
+                "the AI provider rate limit was hit (HTTP 429); retry after {secs} seconds"
+            ),
+            Self::ProviderUnavailable => {
+                write!(f, "the AI provider is unavailable or overloaded (HTTP 5xx)")
+            }
+            Self::Authentication => {
+                write!(
+                    f,
+                    "the AI provider rejected the stored credential (HTTP 401/403)"
+                )
+            }
+            Self::InvalidRequest => {
+                write!(
+                    f,
+                    "the AI provider rejected the request as invalid (HTTP 400)"
+                )
+            }
+            Self::UnexpectedResponse => {
+                write!(f, "the AI provider returned an unexpected response")
+            }
             Self::Failure => write!(f, "the AI provider failed to fulfil the request"),
         }
     }
@@ -472,8 +525,9 @@ impl<'a> RequestExecutionService<'a> {
         //    moved only into this call and dropped when it returns.
         executor
             .execute(request, &credential)
-            .map_err(|_| RequestError::Execution {
+            .map_err(|err| RequestError::Execution {
                 name: request.provider.clone(),
+                message: err.to_string(),
             })
     }
 }
@@ -507,11 +561,13 @@ pub(crate) enum RequestError {
         /// The provider internal name.
         name: String,
     },
-    /// The provider failed to fulfil the request (network, authentication, or
-    /// provider-side failure).
+    /// The provider failed to fulfil the request; `message` carries the
+    /// classified error text (never a credential or payload).
     Execution {
         /// The provider internal name.
         name: String,
+        /// The classified provider error text.
+        message: String,
     },
     /// A credential-store failure other than an unreachable keyring.
     Credential(CredentialError),
@@ -537,8 +593,8 @@ impl std::fmt::Display for RequestError {
             Self::ExecutorUnavailable { name } => {
                 write!(f, "the AI provider '{name}' has no registered executor")
             }
-            Self::Execution { name } => {
-                write!(f, "the AI provider '{name}' failed to fulfil the request")
+            Self::Execution { name, message } => {
+                write!(f, "the AI provider '{name}' failed: {message}")
             }
             Self::Credential(err) => write!(f, "{err}"),
             Self::Database(err) => write!(f, "{err}"),
@@ -681,5 +737,56 @@ mod tests {
         );
         // The base64 data itself never enters the text channel.
         assert!(!composed.contains("Zm9vYmFy"));
+    }
+
+    #[test]
+    fn executor_error_display_texts_are_distinct() {
+        assert_eq!(
+            ExecutorError::Network.to_string(),
+            "the AI provider could not be reached (network or timeout)"
+        );
+        assert_eq!(
+            ExecutorError::RateLimited {
+                retry_after_secs: None
+            }
+            .to_string(),
+            "the AI provider rate limit was hit (HTTP 429); wait before retrying"
+        );
+        assert_eq!(
+            ExecutorError::RateLimited {
+                retry_after_secs: Some(30)
+            }
+            .to_string(),
+            "the AI provider rate limit was hit (HTTP 429); retry after 30 seconds"
+        );
+        assert_eq!(
+            ExecutorError::ProviderUnavailable.to_string(),
+            "the AI provider is unavailable or overloaded (HTTP 5xx)"
+        );
+        assert_eq!(
+            ExecutorError::Authentication.to_string(),
+            "the AI provider rejected the stored credential (HTTP 401/403)"
+        );
+        assert_eq!(
+            ExecutorError::InvalidRequest.to_string(),
+            "the AI provider rejected the request as invalid (HTTP 400)"
+        );
+        assert_eq!(
+            ExecutorError::UnexpectedResponse.to_string(),
+            "the AI provider returned an unexpected response"
+        );
+        assert_eq!(
+            ExecutorError::Failure.to_string(),
+            "the AI provider failed to fulfil the request"
+        );
+    }
+
+    #[test]
+    fn request_execution_display_includes_classified_message() {
+        let err = RequestError::Execution {
+            name: "openai".into(),
+            message: "boom".into(),
+        };
+        assert_eq!(err.to_string(), "the AI provider 'openai' failed: boom");
     }
 }

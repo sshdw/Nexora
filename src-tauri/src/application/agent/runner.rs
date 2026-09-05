@@ -126,7 +126,9 @@ const AGENT_SYSTEM_PROMPT: &str = AGENT_SYSTEM_PROMPT_POSIX;
 /// the already-classified [`ExecutorError`].
 #[derive(Debug)]
 pub(crate) enum AgentError {
-    /// The provider failed to fulfil one of the loop's requests.
+    /// The provider failed to fulfil one of the loop's requests. The
+    /// classified [`ExecutorError`] passes through verbatim to the run
+    /// error text (its Display is rendered unchanged).
     Provider(ExecutorError),
     /// The iteration budget was exhausted before the model produced a final
     /// answer. With no [`RunControl`] attached this aborts outright; with one

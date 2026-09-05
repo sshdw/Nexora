@@ -119,7 +119,17 @@ impl ProviderExecutor for OpenAiExecutor {
                 // Record only the classification category; never the credential
                 // or request payload (ARCHITECTURE.md В§9, В§11).
                 log::warn!("openai request failed: {error}");
-                Err(ExecutorError::Failure)
+                Err(match error {
+                    OpenAiError::InvalidRequest => ExecutorError::InvalidRequest,
+                    OpenAiError::Authentication => ExecutorError::Authentication,
+                    OpenAiError::Network => ExecutorError::Network,
+                    OpenAiError::RateLimited { retry_after_secs } => {
+                        ExecutorError::RateLimited { retry_after_secs }
+                    }
+                    OpenAiError::ProviderUnavailable => ExecutorError::ProviderUnavailable,
+                    OpenAiError::UnexpectedResponse => ExecutorError::UnexpectedResponse,
+                    OpenAiError::Provider => ExecutorError::Failure,
+                })
             }
         }
     }
@@ -373,7 +383,7 @@ fn send(
     if let Some(timeout) = request_timeout {
         builder = builder.timeout(timeout);
     }
-    let response = builder.send().map_err(|_| OpenAiError::Provider)?;
+    let response = builder.send().map_err(|_| OpenAiError::Network)?;
 
     let status = response.status();
     if status.is_success() {
@@ -381,7 +391,12 @@ fn send(
             .json::<ChatCompletionResponse>()
             .map_err(|_| OpenAiError::UnexpectedResponse)
     } else {
-        Err(classify_status(status.as_u16()))
+        let retry_after_secs = response
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.trim().parse::<u64>().ok());
+        Err(classify_status(status.as_u16(), retry_after_secs))
     }
 }
 
@@ -430,10 +445,16 @@ fn to_ai_response(response: ChatCompletionResponse) -> Result<AiResponse, OpenAi
 }
 
 /// Classify a non-success HTTP status into a secret-free failure category.
-fn classify_status(status: u16) -> OpenAiError {
+///
+/// `retry_after_secs` is the provider's `Retry-After` header parsed as integer
+/// seconds (absent or HTTP-date values are `None`) and is carried only by the
+/// 429 [`OpenAiError::RateLimited`] category.
+fn classify_status(status: u16, retry_after_secs: Option<u64>) -> OpenAiError {
     match status {
         400 => OpenAiError::InvalidRequest,
-        401 => OpenAiError::Authentication,
+        401 | 403 => OpenAiError::Authentication,
+        429 => OpenAiError::RateLimited { retry_after_secs },
+        s if s >= 500 => OpenAiError::ProviderUnavailable,
         _ => OpenAiError::Provider,
     }
 }
@@ -448,6 +469,13 @@ fn classify_status(status: u16) -> OpenAiError {
 enum OpenAiError {
     /// The OpenAI endpoint rejected the request as malformed (HTTP 400).
     InvalidRequest,
+    /// A network/transport failure (connection refused, DNS, timeout, ...).
+    Network,
+    /// The provider rate limited the request (HTTP 429), carrying the
+    /// provider's `Retry-After` hint when it was a valid integer.
+    RateLimited { retry_after_secs: Option<u64> },
+    /// The provider is unavailable or overloaded (HTTP 5xx).
+    ProviderUnavailable,
     /// The credential was rejected (HTTP 401).
     Authentication,
     /// A network failure or a provider-side error (HTTP 5xx, 429, ...).
@@ -461,6 +489,9 @@ impl std::fmt::Display for OpenAiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidRequest => write!(f, "the OpenAI request was invalid (400)"),
+            Self::Network => write!(f, "OpenAI network or transport failure"),
+            Self::RateLimited { .. } => write!(f, "OpenAI rate limit (429)"),
+            Self::ProviderUnavailable => write!(f, "OpenAI unavailable (5xx)"),
             Self::Authentication => write!(f, "OpenAI rejected the credential (401)"),
             Self::Provider => write!(f, "OpenAI provider or network failure"),
             Self::UnexpectedResponse => write!(f, "OpenAI returned an unexpected response"),
@@ -601,11 +632,35 @@ mod tests {
 
     #[test]
     fn statuses_classify_without_secrets() {
-        assert!(matches!(classify_status(400), OpenAiError::InvalidRequest));
-        assert!(matches!(classify_status(401), OpenAiError::Authentication));
-        for status in [403, 429, 500, 502, 503, 504] {
-            assert!(matches!(classify_status(status), OpenAiError::Provider));
-        }
+        assert!(matches!(
+            classify_status(400, None),
+            OpenAiError::InvalidRequest
+        ));
+        assert!(matches!(
+            classify_status(401, None),
+            OpenAiError::Authentication
+        ));
+        assert!(matches!(
+            classify_status(403, None),
+            OpenAiError::Authentication
+        ));
+        // 429 carries the Retry-After hint (None when absent/not parseable).
+        assert!(matches!(
+            classify_status(429, None),
+            OpenAiError::RateLimited {
+                retry_after_secs: None
+            }
+        ));
+        assert!(matches!(
+            classify_status(500, None),
+            OpenAiError::ProviderUnavailable
+        ));
+        assert!(matches!(
+            classify_status(503, None),
+            OpenAiError::ProviderUnavailable
+        ));
+        // Other 4xx remain the catch-all provider failure.
+        assert!(matches!(classify_status(404, None), OpenAiError::Provider));
     }
 
     #[test]
@@ -614,10 +669,10 @@ mod tests {
             client: reqwest::blocking::Client::new(),
             endpoint: "http://127.0.0.1:1".to_string(), // unreachable -> network failure
         };
-        // The boundary must only ever surface ExecutorError::Failure, never an
+        // The boundary surfaces the classified category (here: network), never an
         // OpenAI-specific or secret-bearing type.
         let result = executor.execute(&sample_request(), "sk-secret-example");
-        assert!(matches!(result, Err(ExecutorError::Failure)));
+        assert!(matches!(result, Err(ExecutorError::Network)));
     }
 
     #[test]
@@ -717,6 +772,147 @@ mod tests {
 
         assert_eq!(ai.content, "pong");
         assert_eq!(ai.model, "gpt-5.6-terra");
+    }
+
+    #[test]
+    fn status_429_maps_to_rate_limited_with_retry_after() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        // Case 1: 429 with a valid integer Retry-After header.
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test server");
+        let addr = listener.local_addr().expect("local address");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept connection");
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 1024];
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        raw.extend_from_slice(&buf[..n]);
+                        if raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                }
+            }
+            let response = "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nRetry-After: 30\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+        });
+        let executor = OpenAiExecutor::with_endpoint(format!("http://{addr}"));
+        let result = executor.execute(&sample_request(), "sk-secret-example");
+        assert!(matches!(
+            result,
+            Err(ExecutorError::RateLimited {
+                retry_after_secs: Some(30)
+            })
+        ));
+        let _ = server.join();
+
+        // Case 2: 429 without the header -> None.
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test server");
+        let addr = listener.local_addr().expect("local address");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept connection");
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 1024];
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        raw.extend_from_slice(&buf[..n]);
+                        if raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                }
+            }
+            let response = "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+        });
+        let executor = OpenAiExecutor::with_endpoint(format!("http://{addr}"));
+        let result = executor.execute(&sample_request(), "sk-secret-example");
+        assert!(matches!(
+            result,
+            Err(ExecutorError::RateLimited {
+                retry_after_secs: None
+            })
+        ));
+        let _ = server.join();
+    }
+
+    #[test]
+    fn status_5xx_maps_to_provider_unavailable() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        for status in [500, 503] {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test server");
+            let addr = listener.local_addr().expect("local address");
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().expect("accept connection");
+                let mut raw = Vec::new();
+                let mut buf = [0u8; 1024];
+                loop {
+                    match stream.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            raw.extend_from_slice(&buf[..n]);
+                            if raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                                break;
+                            }
+                        }
+                    }
+                }
+                let response = format!(
+                    "HTTP/1.1 {status} Server Error\r\nContent-Type: application/json\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+            });
+            let executor = OpenAiExecutor::with_endpoint(format!("http://{addr}"));
+            let result = executor.execute(&sample_request(), "sk-secret-example");
+            assert!(
+                matches!(result, Err(ExecutorError::ProviderUnavailable)),
+                "status {status} should map to ProviderUnavailable, got {result:?}"
+            );
+            let _ = server.join();
+        }
+    }
+
+    #[test]
+    fn other_client_errors_still_surface_as_failure() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test server");
+        let addr = listener.local_addr().expect("local address");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept connection");
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 1024];
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        raw.extend_from_slice(&buf[..n]);
+                        if raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                }
+            }
+            let response = "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+        });
+        let executor = OpenAiExecutor::with_endpoint(format!("http://{addr}"));
+        let result = executor.execute(&sample_request(), "sk-secret-example");
+        assert!(matches!(result, Err(ExecutorError::Failure)));
+        let _ = server.join();
     }
 
     #[test]
@@ -993,10 +1189,10 @@ mod tests {
         let start = std::time::Instant::now();
         let result = executor.execute(&request, "sk-secret-example");
         let elapsed = start.elapsed();
-        // Must be a classified boundary failure (timeout surfaces as Provider/Network → Failure).
+        // Must be a classified boundary failure (timeout surfaces as Network).
         assert!(
-            matches!(result, Err(ExecutorError::Failure)),
-            "expected timeout to surface as ExecutorError::Failure, got {result:?}"
+            matches!(result, Err(ExecutorError::Network)),
+            "expected timeout to surface as ExecutorError::Network, got {result:?}"
         );
         assert!(
             elapsed < Duration::from_secs(1),
