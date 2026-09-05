@@ -2099,30 +2099,78 @@ mod tests {
         let runner = AgentRunner::new(&fake, &ws)
             .with_approval_gate(gate_clone)
             .with_event_sender(tx);
+        // Hang fuse: `run` must stay on this thread (`AgentRunner` holds
+        // `&dyn ProviderExecutor`, which is not `Send`, so it cannot move to
+        // a spawned thread without touching production bounds), so a watchdog
+        // cancels the gate if the run has not finished within 10s. A parked
+        // run then aborts instead of hanging the suite forever. The watchdog
+        // stands down the moment the run reports back, so a passing run
+        // costs no extra seconds.
+        let fuse_fired = Arc::new(AtomicBool::new(false));
+        let (finish_tx, finish_rx) = channel();
+        let watchdog = {
+            let fuse_fired = fuse_fired.clone();
+            let gate = gate.clone();
+            thread::spawn(move || {
+                if finish_rx.recv_timeout(Duration::from_secs(10)).is_err() {
+                    fuse_fired.store(true, Ordering::SeqCst);
+                    gate.cancel();
+                }
+            })
+        };
+        // Every driver failure cancels first: otherwise a parked run would
+        // never return and the suite would hang on `run` below.
         let gate_for_driver = gate.clone();
         let driver = thread::spawn(move || {
             // First tool requires approval in Supervised.
-            let ev1 = rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("first requested");
-            assert!(
-                matches!(ev1, AgentRunEvent::ApprovalRequested { call_id, .. } if call_id=="w1")
-            );
+            let Ok(ev1) = rx.recv_timeout(Duration::from_secs(5)) else {
+                gate_for_driver.cancel();
+                panic!("first requested: timed out");
+            };
+            let w1_requested =
+                matches!(&ev1, AgentRunEvent::ApprovalRequested { call_id, .. } if call_id == "w1");
+            if !w1_requested {
+                gate_for_driver.cancel();
+                panic!("first event must request approval for w1, got {ev1:?}");
+            }
             gate_for_driver.respond("w1", ApprovalDecision::Approved);
-            let ev1_res = rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("first resolved");
-            assert!(matches!(
-                ev1_res,
-                AgentRunEvent::ApprovalResolved { approved: true, .. }
-            ));
-            // Switch to FullAutonomous before the next tool call is evaluated.
+            // Switch immediately: the earliest moment the next tool can see
+            // Full, with no `recv` in between that would let w2 park while
+            // still Supervised and strand `run` on a second approval.
             gate_for_driver.set_mode(AutonomyMode::FullAutonomous);
-            // Second tool should auto-execute: no second ApprovalRequested.
-            let ev2 = rx.recv_timeout(Duration::from_secs(5)).expect("completed");
-            assert_eq!(ev2, AgentRunEvent::Completed { steps: 3 });
+            // Do not assume the next event is Completed: drain until
+            // `Completed { steps: 3 }`, skipping ApprovalResolved / step /
+            // tool events. Cap the drain so a flood cannot loop.
+            let mut seen = 0;
+            loop {
+                if seen >= 32 {
+                    gate_for_driver.cancel();
+                    panic!("too many events without Completed");
+                }
+                match rx.recv_timeout(Duration::from_secs(5)) {
+                    Ok(AgentRunEvent::Completed { steps }) => {
+                        assert_eq!(steps, 3);
+                        break;
+                    }
+                    Ok(AgentRunEvent::Cancelled) => {
+                        gate_for_driver.cancel();
+                        panic!("unexpected terminal: Cancelled");
+                    }
+                    Ok(_) => {
+                        seen += 1;
+                    }
+                    Err(_) => {
+                        gate_for_driver.cancel();
+                        panic!("timed out waiting for Completed");
+                    }
+                }
+            }
         });
-        let answer = runner.run("openai", "m", "cred", "q").expect("completes");
+        let result = runner.run("openai", "m", "cred", "q");
+        let _ = finish_tx.send(());
+        watchdog.join().expect("watchdog joins");
+        assert!(!fuse_fired.load(Ordering::SeqCst), "run hung");
+        let answer = result.expect("completes");
         assert_eq!(answer, "done");
         driver.join().expect("driver");
         assert_eq!(fs::read_to_string(ws.join("first.txt")).unwrap(), "1");
