@@ -276,7 +276,10 @@ are returned to the provider in its native shape (Gemini
 persisted (DATABASE.md §7.2 remains user/assistant/system). `ToolCall.thought_signature`
 is a provider-opaque reasoning signature (Gemini 3): pure pass-through — it is
 echoed verbatim on the next request, and never logged, never persisted, never
-parsed.
+parsed. The boundary's `ExecutorError` carries classified failure categories
+(network, rate limit with the provider's Retry-After hint, provider unavailable,
+rejected credential, invalid request, unexpected response) — still secret-free,
+still no response-body reads, still no retry logic.
 
 
 
