@@ -138,9 +138,9 @@ impl From<RequestError> for CommandError {
                 ErrorKind::Request,
                 format!("the AI provider '{name}' has no registered executor"),
             ),
-            RequestError::Execution { name } => Self::new(
+            RequestError::Execution { name, message } => Self::new(
                 ErrorKind::Request,
-                format!("the AI provider '{name}' failed to fulfil the request"),
+                format!("the AI provider '{name}' failed: {message}"),
             ),
             RequestError::Credential(inner) => Self::from(inner),
             RequestError::Database(inner) => Self::from(inner),

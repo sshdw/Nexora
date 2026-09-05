@@ -550,6 +550,7 @@ fn start_run_claimed(
             log::error!("agent run setup: unexpected user-message error: {other}");
             return Err(AgentRunError::Request(RequestError::Execution {
                 name: request.provider.clone(),
+                message: other.to_string(),
             }));
         }
     }

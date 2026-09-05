@@ -859,6 +859,7 @@ mod tests {
                 (Some(response), _) => Ok(response.clone()),
                 (None, Some(provider)) => Err(RequestError::Execution {
                     name: provider.clone(),
+                    message: "stub execution failure".to_string(),
                 }),
                 (None, None) => panic!("stub executor has no configured outcome"),
             }
@@ -1109,7 +1110,7 @@ mod tests {
         // classified exactly as RequestExecutionService classified it.
         assert!(matches!(
             err,
-            ConversationError::Request(RequestError::Execution { name }) if name == "openai"
+            ConversationError::Request(RequestError::Execution { name, .. }) if name == "openai"
         ));
         // The request was actually handed to the execution boundary.
         assert!(captured.borrow().is_some());
