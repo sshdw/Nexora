@@ -43,7 +43,10 @@ use crate::infrastructure::providers::credentials::{CredentialError, CredentialS
 use crate::infrastructure::providers::gemini::{
     GeminiExecutor, PROVIDER_NAME as GEMINI_PROVIDER_NAME,
 };
-use crate::infrastructure::providers::openai::{OpenAiExecutor, PROVIDER_NAME};
+use crate::infrastructure::providers::openai::{
+    OpenAiExecutor, NVIDIA_ENDPOINT, NVIDIA_NAME, OPENCODE_ZEN_ENDPOINT, OPENCODE_ZEN_NAME,
+    OPENROUTER_ENDPOINT, OPENROUTER_NAME, PROVIDER_NAME, XKIRO_ENDPOINT, XKIRO_NAME,
+};
 use serde::{Deserialize, Serialize};
 
 use super::providers::{ProviderError, ProviderService};
@@ -377,6 +380,39 @@ impl ExecutorRegistry {
                 (PROVIDER_NAME, Arc::new(OpenAiExecutor::new())),
                 (ANTHROPIC_PROVIDER_NAME, Arc::new(AnthropicExecutor::new())),
                 (GEMINI_PROVIDER_NAME, Arc::new(GeminiExecutor::new())),
+                // Additional OpenAI-compatible providers share `OpenAiExecutor`.
+                (
+                    XKIRO_NAME,
+                    Arc::new(OpenAiExecutor::compatible(
+                        XKIRO_NAME,
+                        XKIRO_ENDPOINT.to_string(),
+                    )),
+                ),
+                (
+                    OPENROUTER_NAME,
+                    Arc::new(OpenAiExecutor::compatible_with_headers(
+                        OPENROUTER_NAME,
+                        OPENROUTER_ENDPOINT.to_string(),
+                        &[
+                            ("HTTP-Referer", "https://github.com/sshdw/Nexora"),
+                            ("X-Title", "Nexora"),
+                        ],
+                    )),
+                ),
+                (
+                    NVIDIA_NAME,
+                    Arc::new(OpenAiExecutor::compatible(
+                        NVIDIA_NAME,
+                        NVIDIA_ENDPOINT.to_string(),
+                    )),
+                ),
+                (
+                    OPENCODE_ZEN_NAME,
+                    Arc::new(OpenAiExecutor::compatible(
+                        OPENCODE_ZEN_NAME,
+                        OPENCODE_ZEN_ENDPOINT.to_string(),
+                    )),
+                ),
             ],
         }
     }
@@ -657,6 +693,41 @@ mod tests {
         // The Gemini executor is registered under the internal `gemini` name,
         // independently of the OpenAI and Anthropic registrations.
         assert!(registry.resolve(GEMINI_PROVIDER_NAME).is_some());
+    }
+
+    #[test]
+    fn registry_resolves_xkiro() {
+        let registry = ExecutorRegistry::new();
+        assert!(registry.resolve("xkiro").is_some());
+    }
+
+    #[test]
+    fn registry_resolves_openrouter() {
+        let registry = ExecutorRegistry::new();
+        assert!(registry.resolve("openrouter").is_some());
+    }
+
+    #[test]
+    fn registry_resolves_nvidia() {
+        let registry = ExecutorRegistry::new();
+        assert!(registry.resolve("nvidia").is_some());
+    }
+
+    #[test]
+    fn registry_resolves_opencode_zen() {
+        let registry = ExecutorRegistry::new();
+        assert!(registry.resolve("opencode_zen").is_some());
+    }
+
+    #[test]
+    fn registry_compatible_providers_do_not_shadow_openai() {
+        let registry = ExecutorRegistry::new();
+        assert!(registry.resolve("openai").is_some());
+        assert!(registry.resolve("xkiro").is_some());
+        assert!(registry.resolve("openrouter").is_some());
+        assert!(registry.resolve("nvidia").is_some());
+        assert!(registry.resolve("opencode_zen").is_some());
+        assert!(registry.resolve("not-a-provider").is_none());
     }
 
     #[test]

@@ -69,6 +69,41 @@ pub(crate) const SUPPORTED_MODELS: &[&str] = &[
     // Best-quality flagship tier.
     "gpt-5.6-sol",
 ];
+/// OpenAI-compatible provider identities sharing [`OpenAiExecutor`].
+///
+/// Curated hardcoded model shortlists (DATABASE.md §7.5); `MODELS[0]` is the
+/// provider default consumed by the selection surface. Pricing inherits the
+/// shared policy rate; wire IDs were frozen from each provider's `/models`
+/// catalog and prefer free-tier IDs where the catalog offers them.
+pub(crate) const XKIRO_NAME: &str = "xkiro";
+pub(crate) const XKIRO_DISPLAY_NAME: &str = "xKiro";
+pub(crate) const XKIRO_ENDPOINT: &str = "https://api.xkiro.com/v1/chat/completions";
+pub(crate) const XKIRO_MODELS: &[&str] = &[
+    "deepseek/deepseek-v4-flash",
+    "openai/gpt-5.3-codex-spark",
+    "qwen/qwen3.5-omni-plus:free",
+];
+pub(crate) const OPENROUTER_NAME: &str = "openrouter";
+pub(crate) const OPENROUTER_DISPLAY_NAME: &str = "OpenRouter";
+pub(crate) const OPENROUTER_ENDPOINT: &str = "https://openrouter.ai/api/v1/chat/completions";
+pub(crate) const OPENROUTER_MODELS: &[&str] = &[
+    "z-ai/glm-5.2:free",
+    "minimax/minimax-m3:free",
+    "minimax/minimax-m2.7:free",
+];
+pub(crate) const NVIDIA_NAME: &str = "nvidia";
+pub(crate) const NVIDIA_DISPLAY_NAME: &str = "NVIDIA NIM";
+pub(crate) const NVIDIA_ENDPOINT: &str = "https://integrate.api.nvidia.com/v1/chat/completions";
+pub(crate) const NVIDIA_MODELS: &[&str] = &[
+    "nvidia/llama-3.1-nemotron-70b-instruct",
+    "moonshotai/kimi-k2.6",
+    "mistralai/mistral-large",
+];
+pub(crate) const OPENCODE_ZEN_NAME: &str = "opencode_zen";
+pub(crate) const OPENCODE_ZEN_DISPLAY_NAME: &str = "OpenCode Zen";
+pub(crate) const OPENCODE_ZEN_ENDPOINT: &str = "https://opencode.ai/zen/v1/chat/completions";
+pub(crate) const OPENCODE_ZEN_MODELS: &[&str] =
+    &["deepseek-v4-flash-free", "big-pickle", "mimo-v2.5-free"];
 ///
 /// Stateless over the shared `reqwest` blocking client so it can be shared
 /// across requests; the per-request credential and request payload are passed
@@ -76,6 +111,8 @@ pub(crate) const SUPPORTED_MODELS: &[&str] = &[
 pub(crate) struct OpenAiExecutor {
     client: reqwest::blocking::Client,
     endpoint: String,
+    name: &'static str,
+    extra_headers: Vec<(&'static str, &'static str)>,
 }
 
 impl OpenAiExecutor {
@@ -88,9 +125,32 @@ impl OpenAiExecutor {
     /// including the command-layer threading regression test, to exercise
     /// the full request/response path without a live OpenAI service).
     pub(crate) fn with_endpoint(endpoint: String) -> Self {
+        Self::compatible(PROVIDER_NAME, endpoint)
+    }
+
+    /// Create an OpenAI-compatible executor with a distinct provider identity
+    /// at `endpoint` (no extra headers).
+    pub(crate) fn compatible(name: &'static str, endpoint: String) -> Self {
         Self {
             client: reqwest::blocking::Client::new(),
             endpoint,
+            name,
+            extra_headers: Vec::new(),
+        }
+    }
+
+    /// Create an OpenAI-compatible executor with static extra headers applied
+    /// after `bearer_auth` (OpenRouter Referer/Title only).
+    pub(crate) fn compatible_with_headers(
+        name: &'static str,
+        endpoint: String,
+        headers: &[(&'static str, &'static str)],
+    ) -> Self {
+        Self {
+            client: reqwest::blocking::Client::new(),
+            endpoint,
+            name,
+            extra_headers: headers.to_vec(),
         }
     }
 
@@ -106,6 +166,7 @@ impl OpenAiExecutor {
             credential,
             &body,
             request.request_timeout,
+            &self.extra_headers,
         )?;
         to_ai_response(response)
     }
@@ -118,7 +179,7 @@ impl ProviderExecutor for OpenAiExecutor {
             Err(error) => {
                 // Record only the classification category; never the credential
                 // or request payload (ARCHITECTURE.md В§9, В§11).
-                log::warn!("openai request failed: {error}");
+                log::warn!("{name} request failed: {error}", name = self.name);
                 Err(match error {
                     OpenAiError::InvalidRequest => ExecutorError::InvalidRequest,
                     OpenAiError::Authentication => ExecutorError::Authentication,
@@ -378,8 +439,13 @@ fn send(
     credential: &str,
     body: &ChatCompletionRequest,
     request_timeout: Option<Duration>,
+    extra_headers: &[(&'static str, &'static str)],
 ) -> Result<ChatCompletionResponse, OpenAiError> {
-    let mut builder = client.post(endpoint).bearer_auth(credential).json(body);
+    let mut builder = client.post(endpoint).bearer_auth(credential);
+    for (key, value) in extra_headers {
+        builder = builder.header(*key, *value);
+    }
+    builder = builder.json(body);
     if let Some(timeout) = request_timeout {
         builder = builder.timeout(timeout);
     }
@@ -668,6 +734,8 @@ mod tests {
         let executor = OpenAiExecutor {
             client: reqwest::blocking::Client::new(),
             endpoint: "http://127.0.0.1:1".to_string(), // unreachable -> network failure
+            name: PROVIDER_NAME,
+            extra_headers: Vec::new(),
         };
         // The boundary surfaces the classified category (here: network), never an
         // OpenAI-specific or secret-bearing type.
@@ -1238,5 +1306,161 @@ mod tests {
         let u = ai.usage.expect("some");
         assert_eq!(u.input_tokens, 0);
         assert_eq!(u.output_tokens, 5);
+    }
+
+    #[test]
+    fn compatible_executor_posts_to_given_endpoint() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test server");
+        let addr = listener.local_addr().expect("local address");
+
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept connection");
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 1024];
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        raw.extend_from_slice(&buf[..n]);
+                        if raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                }
+            }
+            // A minimal valid OpenAI-style success body.
+            let body = r#"{"model":"deepseek/deepseek-v4-flash","choices":[{"message":{"content":"pong"}}]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write response");
+            stream.flush().expect("flush response");
+        });
+
+        let executor = OpenAiExecutor::compatible(XKIRO_NAME, format!("http://{addr}"));
+        let ai = executor
+            .execute(&sample_request(), "sk-secret-example")
+            .expect("round trip succeeds");
+        server.join().expect("server thread joins");
+
+        assert_eq!(ai.content, "pong");
+    }
+
+    #[test]
+    fn compatible_openrouter_sends_referer_headers() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test server");
+        let addr = listener.local_addr().expect("local address");
+
+        let server = std::thread::spawn(move || -> Vec<u8> {
+            let (mut stream, _) = listener.accept().expect("accept connection");
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 1024];
+            // Read headers first, then the declared body so the credential
+            // check below inspects the actual request payload.
+            let mut header_end = None;
+            let mut content_length = 0usize;
+            while header_end.is_none() {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        raw.extend_from_slice(&buf[..n]);
+                        if let Some(pos) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+                            header_end = Some(pos + 4);
+                            let head = String::from_utf8_lossy(&raw[..pos + 4]).to_lowercase();
+                            for line in head.lines() {
+                                if let Some(value) = line.strip_prefix("content-length:") {
+                                    content_length = value.trim().parse().unwrap_or(0);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(end) = header_end {
+                while raw.len() < end + content_length {
+                    match stream.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => raw.extend_from_slice(&buf[..n]),
+                    }
+                }
+            }
+            // A minimal valid OpenAI-style success body.
+            let body =
+                r#"{"model":"z-ai/glm-5.2:free","choices":[{"message":{"content":"pong"}}]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write response");
+            stream.flush().expect("flush response");
+            raw
+        });
+
+        let executor = OpenAiExecutor::compatible_with_headers(
+            OPENROUTER_NAME,
+            format!("http://{addr}"),
+            &[
+                ("HTTP-Referer", "https://github.com/sshdw/Nexora"),
+                ("X-Title", "Nexora"),
+            ],
+        );
+        let ai = executor
+            .execute(&sample_request(), "sk-secret-example")
+            .expect("round trip succeeds");
+        let raw = server.join().expect("server thread joins");
+
+        assert_eq!(ai.content, "pong");
+        // Header field names are case-insensitive on the wire (RFC 9110 §5.1)
+        // and the HTTP stack normalizes them to lowercase; match the name
+        // case-insensitively while requiring the exact header value bytes.
+        let head_end = raw
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .unwrap_or(raw.len());
+        let head = String::from_utf8_lossy(&raw[..head_end]);
+        let has_header = |name: &str, value: &str| {
+            head.lines().any(|line| {
+                line.split_once(':')
+                    .is_some_and(|(field_name, field_value)| {
+                        field_name.eq_ignore_ascii_case(name) && field_value.trim() == value
+                    })
+            })
+        };
+        assert!(
+            has_header("HTTP-Referer", "https://github.com/sshdw/Nexora"),
+            "openrouter Referer header missing"
+        );
+        assert!(
+            has_header("X-Title", "Nexora"),
+            "openrouter Title header missing"
+        );
+        // The credential travels only in the Authorization header.
+        let has_authorization = head.lines().any(|line| {
+            line.split_once(':')
+                .is_some_and(|(n, _)| n.eq_ignore_ascii_case("Authorization"))
+        });
+        assert!(has_authorization, "Authorization header missing");
+        let body_part = raw
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .map(|pos| String::from_utf8_lossy(&raw[pos + 4..]).into_owned())
+            .unwrap_or_default();
+        assert!(
+            !body_part.contains("sk-secret-example"),
+            "request body must not include the credential"
+        );
     }
 }

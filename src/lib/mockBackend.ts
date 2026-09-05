@@ -72,6 +72,26 @@ const supported = [
     display_name: "Gemini",
     models: ["gemini-3.6-flash", "gemini-3.1-flash-lite", "gemini-3.1-pro-preview"],
   },
+  {
+    name: "xkiro",
+    display_name: "xKiro",
+    models: ["deepseek/deepseek-v4-flash", "openai/gpt-5.3-codex-spark", "qwen/qwen3.5-omni-plus:free"],
+  },
+  {
+    name: "openrouter",
+    display_name: "OpenRouter",
+    models: ["z-ai/glm-5.2:free", "minimax/minimax-m3:free", "minimax/minimax-m2.7:free"],
+  },
+  {
+    name: "nvidia",
+    display_name: "NVIDIA NIM",
+    models: ["nvidia/llama-3.1-nemotron-70b-instruct", "moonshotai/kimi-k2.6", "mistralai/mistral-large"],
+  },
+  {
+    name: "opencode_zen",
+    display_name: "OpenCode Zen",
+    models: ["deepseek-v4-flash-free", "big-pickle", "mimo-v2.5-free"],
+  },
 ];
 
 // ---- Agent run mock state (Task 5.1) ----
