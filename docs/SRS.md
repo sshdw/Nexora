@@ -6,6 +6,8 @@
 
 **Status:** Draft
 
+> Note: this document covers the **approved MVP scope FR-001–FR-015**; agent-era requirements live in the AGENT-*-DESIGN docs and CHANGELOG.
+
 ---
 
 # 1. Introduction

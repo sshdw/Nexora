@@ -1,3 +1,5 @@
+This file is a **historical record**. MVP phases 0–9 completed in 0.1.0. Agent-era phases 4.1–6.2 were planned and tracked separately (see `docs/AGENT-4.3-DESIGN.md`, `docs/AGENT-5.1-DESIGN.md`, and CHANGELOG).
+
 Purpose
 
 

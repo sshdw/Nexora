@@ -1,10 +1,10 @@
 # Nexora
 
-Nexora is a local-first AI desktop application for working with multiple AI providers while keeping all user data in a single local SQLite database. Conversations, prompts, attachments, and settings live entirely on your machine: there are no accounts and no cloud synchronization, and the network is contacted only when you send a request to an AI provider.
+Nexora is a local-first AI desktop application for working with multiple AI providers while keeping all user data in a single local SQLite database. Nexora is a desktop AI agent (one agent run per dialog) on Tauri v2. Conversations, prompts, attachments, and settings live entirely on your machine: there are no accounts and no cloud synchronization, and the network is contacted only when you send a request to an AI provider.
 
 ## Features
 
-Nexora 0.1.0 implements the full approved MVP scope — functional requirements FR-001 through FR-015 of the [SRS](docs/SRS.md):
+Nexora implements the approved MVP scope — functional requirements FR-001 through FR-015 of the [SRS](docs/SRS.md) — plus the shipped agent stack:
 
 - **AI conversations** — create unlimited conversations, exchange messages with an AI, rename, archive/restore, and permanently delete them (FR-002, FR-006).
 - **Persistent history** — complete conversation history survives restarts and remains in chronological order; failed requests show an error instead of corrupting history (FR-003, FR-005).
@@ -17,6 +17,12 @@ Nexora 0.1.0 implements the full approved MVP scope — functional requirements 
 - **Data management** — permanently remove conversations or prompts, or clear all application data behind an explicit typed confirmation (FR-013).
 - **Credential management** — add, update, and remove provider API keys; missing credentials are detected before a request is sent (FR-014).
 - **Offline access** — browsing history, searching, editing prompts, and changing settings all work without internet access; startup never requires a connection (FR-001, FR-015).
+- **Agent runs with streaming steps** — one run per dialog.
+- **Tools** — file read/write, command execution, directory listing.
+- **Autonomy modes** — `supervised` / `semi_autonomous` (default) / `full_autonomous`; approval parking (parked approvals never auto-resolved).
+- **Run controls** — pause / resume / cancel; iteration budget with extend; financial spend guard (per-run micro-USD budget).
+- **Terminal and diff viewers**.
+- **Classified provider errors (v1.0.2)** — rate limit with Retry-After hint, outage/5xx, network/timeout, rejected credential, invalid request, unexpected response — agent runs and chat alike.
 
 ## Tech Stack
 
@@ -27,7 +33,7 @@ Nexora 0.1.0 implements the full approved MVP scope — functional requirements 
 | Backend | Rust |
 | Database | SQLite via `rusqlite` (bundled, with FTS5) |
 
-Supported providers — OpenAI, Anthropic, and Google Gemini — and their supported models are defined in the backend (`src-tauri/src/infrastructure/providers/`) and kept in sync with [`docs/Nexora-AI-Model-Catalog-August-2026.md`](docs/Nexora-AI-Model-Catalog-August-2026.md).
+Supported providers — OpenAI, Anthropic, and Google Gemini — and their supported models are defined in the backend (`src-tauri/src/infrastructure/providers/`).
 
 ## Architecture
 
@@ -53,6 +59,10 @@ Infrastructure: SQLite repositories · AI provider clients · OS keyring
 - **Local-first data ownership** — every conversation, prompt, attachment record, and setting resides locally in one self-contained database file. There are no user accounts, no shared workspaces, and no background synchronization.
 - **Offline availability** — core functionality works without internet access. Data leaves the machine only when you initiate an AI request with a configured provider.
 - **Protected credentials** — API keys are stored exclusively in the operating system's secure keyring. They are never written to SQLite, log output, or source code, and errors returned to the UI carry no secret material.
+
+## Install
+
+Users download Nexora from GitHub Releases (latest): [https://github.com/sshdw/Nexora/releases/latest](https://github.com/sshdw/Nexora/releases/latest). The recommended installer is the NSIS `Nexora_*_x64-setup.exe`; the MSI `Nexora_*_x64_en-US.msi` is also published.
 
 ## Getting Started
 
@@ -93,7 +103,7 @@ Backend tests run against in-memory SQLite instances using the same migrations a
 
 ## Project Status
 
-**Nexora 0.1.0 — MVP released.** All fifteen functional requirements of the approved MVP scope are implemented.
+**Nexora 1.0.2** — MVP + agent era shipped; see CHANGELOG.
 
 Capabilities outside the approved MVP (cloud sync, user accounts, collaboration, mobile/web apps, plugins) are explicitly out of scope — see [docs/SRS.md](docs/SRS.md).
 
@@ -104,5 +114,7 @@ Approved specification documents live in [`docs/`](docs/):
 - [SRS.md](docs/SRS.md) — requirements specification (FR-001–FR-015)
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md) — technical architecture
 - [DATABASE.md](docs/DATABASE.md) — database design and migration strategy
-- [ROADMAP.md](docs/ROADMAP.md) — implementation phases
-- [AI_WORKFLOW.md](docs/AI_WORKFLOW.md) — development workflow
+- [ROADMAP.md](docs/ROADMAP.md) — implementation phases (historical MVP phases)
+- [AGENT-E2E.md](docs/AGENT-E2E.md) — manual UI checklist
+- [AGENT-4.3-DESIGN.md](docs/AGENT-4.3-DESIGN.md) and [AGENT-5.1-DESIGN.md](docs/AGENT-5.1-DESIGN.md) — historical design records
+- [CHANGELOG.md](CHANGELOG.md)
