@@ -1,6 +1,0 @@
-﻿
-   Id ProcessName
-   -- -----------
-17008 nexora     
-
-
