@@ -55,9 +55,10 @@ const VALID_AUTONOMY: &[&str] = &["supervised", "semi_autonomous", "full_autonom
 /// - [`THEME_KEY`] accepts only the implemented themes (`dark`, `light`).
 /// - [`SELECTED_PROVIDER_KEY`] accepts only names returned by the build's
 ///   `supported_providers()` registry (the single source of truth).
-/// - [`SELECTED_MODEL_KEY`] accepts only model identifiers listed for a
+/// - [`SELECTED_MODEL_KEY`] accepts model identifiers listed for a
 ///   supported provider (union across providers; the writer orders model
-///   before provider when switching, so per-provider coupling is not assumed).
+///   before provider when switching, so per-provider coupling is not assumed)
+///   or a custom model ID (1..=200 chars of `A-Za-z0-9._/:-+`, no `..`).
 /// - [`AUTONOMY_KEY`] accepts only the three autonomy modes
 ///   (`supervised`, `semi_autonomous`, `full_autonomous`).
 ///
@@ -87,6 +88,7 @@ fn validate_setting(key: &str, value: Option<&str>) -> Result<(), CommandError> 
             if supported_providers()
                 .iter()
                 .any(|p| p.models.iter().any(|m| m == value))
+                || is_valid_custom_model_id(value)
             {
                 Ok(())
             } else {
@@ -105,6 +107,32 @@ fn validate_setting(key: &str, value: Option<&str>) -> Result<(), CommandError> 
             format!("setting key '{key}' is not supported"),
         )),
     }
+}
+
+/// Custom model IDs accepted for [`SELECTED_MODEL_KEY`] alongside the listed
+/// shortlist IDs: length 1..=200 bytes, charset `A-Za-z0-9._/:-+`, no
+/// whitespace/controls, and no `..` parent-traversal segment.
+fn is_valid_custom_model_id(value: &str) -> bool {
+    if value.is_empty() || value.len() > 200 {
+        return false;
+    }
+    if value.contains("..") {
+        return false;
+    }
+    value.bytes().all(|byte| {
+        matches!(
+            byte,
+            b'A'..=b'Z'
+                | b'a'..=b'z'
+                | b'0'..=b'9'
+                | b'.'
+                | b'_'
+                | b'/'
+                | b':'
+                | b'-'
+                | b'+'
+        )
+    })
 }
 
 /// Build the uniform secret-free rejection for an out-of-domain value.
@@ -238,7 +266,37 @@ mod tests {
 
     #[test]
     fn invalid_model_values_are_rejected() {
-        for model in ["", "gpt-5", "claude-opus", "gemini-3-pro"] {
+        let overlong = "a".repeat(201);
+        for model in ["", "gpt 5", "../x", overlong.as_str()] {
+            assert_rejected(SELECTED_MODEL_KEY, model);
+        }
+    }
+
+    #[test]
+    fn custom_model_ids_are_accepted() {
+        let max_len = "a".repeat(200);
+        for model in [
+            "gpt-5",
+            "my-custom.model:v1",
+            "a",
+            "vendor/model:free",
+            max_len.as_str(),
+        ] {
+            assert_accepted(SELECTED_MODEL_KEY, model);
+        }
+    }
+
+    #[test]
+    fn custom_model_ids_reject_whitespace_and_overlong() {
+        let overlong = "a".repeat(201);
+        for model in [
+            "gpt 5",
+            " gpt-5",
+            "gpt-5 ",
+            "gpt\t5",
+            "gpt\n5",
+            overlong.as_str(),
+        ] {
             assert_rejected(SELECTED_MODEL_KEY, model);
         }
     }

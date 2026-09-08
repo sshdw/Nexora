@@ -79,17 +79,31 @@ pub(crate) const XKIRO_NAME: &str = "xkiro";
 pub(crate) const XKIRO_DISPLAY_NAME: &str = "xKiro";
 pub(crate) const XKIRO_ENDPOINT: &str = "https://api.xkiro.com/v1/chat/completions";
 pub(crate) const XKIRO_MODELS: &[&str] = &[
+    "openai/gpt-5.6-sol",
     "deepseek/deepseek-v4-flash",
     "openai/gpt-5.3-codex-spark",
     "qwen/qwen3.5-omni-plus:free",
+    "minimax/minimax-m3:free",
+    "minimax/minimax-m2.7:free",
+    "qwen/qwen3.5-plus:free",
+    "qwen/qwen3.6-plus:free",
+    "qwen/qwen3.7-plus:free",
+    "deepseek/deepseek-v4-pro",
 ];
 pub(crate) const OPENROUTER_NAME: &str = "openrouter";
 pub(crate) const OPENROUTER_DISPLAY_NAME: &str = "OpenRouter";
 pub(crate) const OPENROUTER_ENDPOINT: &str = "https://openrouter.ai/api/v1/chat/completions";
 pub(crate) const OPENROUTER_MODELS: &[&str] = &[
+    "openai/gpt-5.2",
     "z-ai/glm-5.2:free",
     "minimax/minimax-m3:free",
     "minimax/minimax-m2.7:free",
+    "inclusionai/ling-3.0-flash-fin:free",
+    "nvidia/nemotron-3.5-lightning:free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "cohere/north-mini-code:free",
+    "google/gemma-4-31b-it:free",
 ];
 pub(crate) const NVIDIA_NAME: &str = "nvidia";
 pub(crate) const NVIDIA_DISPLAY_NAME: &str = "NVIDIA NIM";
@@ -98,12 +112,29 @@ pub(crate) const NVIDIA_MODELS: &[&str] = &[
     "nvidia/llama-3.1-nemotron-70b-instruct",
     "moonshotai/kimi-k2.6",
     "mistralai/mistral-large",
+    "openai/gpt-oss-20b",
+    "meta/llama-3.2-11b-vision-instruct",
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+    "nvidia/nemotron-3-super-120b-a12b",
+    "nvidia/nemotron-3-ultra-550b-a55b",
+    "mistralai/mistral-nemotron",
+    "moonshotai/kimi-k3",
 ];
 pub(crate) const OPENCODE_ZEN_NAME: &str = "opencode_zen";
 pub(crate) const OPENCODE_ZEN_DISPLAY_NAME: &str = "OpenCode Zen";
 pub(crate) const OPENCODE_ZEN_ENDPOINT: &str = "https://opencode.ai/zen/v1/chat/completions";
-pub(crate) const OPENCODE_ZEN_MODELS: &[&str] =
-    &["deepseek-v4-flash-free", "big-pickle", "mimo-v2.5-free"];
+pub(crate) const OPENCODE_ZEN_MODELS: &[&str] = &[
+    "deepseek-v4-flash-free",
+    "big-pickle",
+    "mimo-v2.5-free",
+    "ling-3.0-flash-fin-free",
+    "nemotron-3-ultra-free",
+    "nemotron-3.5-lightning-free",
+    "deepseek-v4-flash",
+    "deepseek-v4-pro",
+    "minimax-m3",
+    "glm-5.2",
+];
 ///
 /// Stateless over the shared `reqwest` blocking client so it can be shared
 /// across requests; the per-request credential and request payload are passed
@@ -517,7 +548,7 @@ fn to_ai_response(response: ChatCompletionResponse) -> Result<AiResponse, OpenAi
 /// 429 [`OpenAiError::RateLimited`] category.
 fn classify_status(status: u16, retry_after_secs: Option<u64>) -> OpenAiError {
     match status {
-        400 => OpenAiError::InvalidRequest,
+        400 | 404 => OpenAiError::InvalidRequest,
         401 | 403 => OpenAiError::Authentication,
         429 => OpenAiError::RateLimited { retry_after_secs },
         s if s >= 500 => OpenAiError::ProviderUnavailable,
@@ -703,6 +734,10 @@ mod tests {
             OpenAiError::InvalidRequest
         ));
         assert!(matches!(
+            classify_status(404, None),
+            OpenAiError::InvalidRequest
+        ));
+        assert!(matches!(
             classify_status(401, None),
             OpenAiError::Authentication
         ));
@@ -726,7 +761,7 @@ mod tests {
             OpenAiError::ProviderUnavailable
         ));
         // Other 4xx remain the catch-all provider failure.
-        assert!(matches!(classify_status(404, None), OpenAiError::Provider));
+        assert!(matches!(classify_status(422, None), OpenAiError::Provider));
     }
 
     #[test]
@@ -952,7 +987,7 @@ mod tests {
     }
 
     #[test]
-    fn other_client_errors_still_surface_as_failure() {
+    fn status_404_maps_to_invalid_request() {
         use std::io::{Read, Write};
         use std::net::TcpListener;
 
@@ -974,6 +1009,38 @@ mod tests {
                 }
             }
             let response = "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+        });
+        let executor = OpenAiExecutor::with_endpoint(format!("http://{addr}"));
+        let result = executor.execute(&sample_request(), "sk-secret-example");
+        assert!(matches!(result, Err(ExecutorError::InvalidRequest)));
+        let _ = server.join();
+    }
+
+    #[test]
+    fn other_client_errors_still_surface_as_failure() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test server");
+        let addr = listener.local_addr().expect("local address");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept connection");
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 1024];
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        raw.extend_from_slice(&buf[..n]);
+                        if raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                }
+            }
+            let response = "HTTP/1.1 422 Unprocessable Entity\r\nContent-Type: application/json\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
             let _ = stream.write_all(response.as_bytes());
             let _ = stream.flush();
         });

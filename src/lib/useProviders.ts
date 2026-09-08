@@ -30,6 +30,14 @@ import {
 const SELECTED_PROVIDER_KEY = "provider.selected";
 const SELECTED_MODEL_KEY = "provider.model";
 
+/** Mirror of the backend custom model ID rule (commands/settings.rs):
+ * listed shortlist ID or 1..=200 chars of A-Za-z0-9._/:-+ without `..`. */
+export function isCustomModelId(value: string): boolean {
+  if (value.length === 0 || value.length > 200) return false;
+  if (value.includes("..")) return false;
+  return /^[A-Za-z0-9._/:+-]+$/.test(value);
+}
+
 /** Runtime status for one build-supported provider. */
 export interface ProviderStatus {
   /** Build-supported provider definition. */
@@ -101,13 +109,16 @@ export function useProviders(): ProvidersStore {
       // FR-012: a persisted selection only becomes active state if it still
       // belongs to the supported provider/model domains; anything else (a
       // stale or hand-edited value) falls back to the default (no selection).
+      // A valid custom model ID persists like a listed one.
       const validProvider =
         defs.some((provider) => provider.name === providerSetting) ? providerSetting : null;
-      const validModel = defs.some((provider) =>
-        modelSetting === null ? false : provider.models.includes(modelSetting),
-      )
-        ? modelSetting
-        : null;
+      const validModel =
+        modelSetting === null
+          ? null
+          : defs.some((provider) => provider.models.includes(modelSetting)) ||
+              isCustomModelId(modelSetting)
+            ? modelSetting
+            : null;
       setSelectedProvider(validProvider);
       setSelectedModel(validModel);
     } catch (e) {
@@ -126,10 +137,13 @@ export function useProviders(): ProvidersStore {
       setError(null);
       try {
         // Keep the persisted model valid: clear it when the newly selected
-        // provider does not support the previously selected model.
+        // provider does not support the previously selected model — except a
+        // valid custom model ID, which is provider-independent and kept.
         const def = supported.find((provider) => provider.name === name);
         const nextModel =
-          def && selectedModel && def.models.includes(selectedModel) ? selectedModel : null;
+          def && selectedModel && (def.models.includes(selectedModel) || isCustomModelId(selectedModel))
+            ? selectedModel
+            : null;
         if (nextModel !== selectedModel) {
           await setSetting(SELECTED_MODEL_KEY, nextModel);
           setSelectedModel(nextModel);

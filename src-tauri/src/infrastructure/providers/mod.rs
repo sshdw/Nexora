@@ -111,9 +111,22 @@ mod tests {
             ]
         );
         for provider in &providers {
-            assert!(
-                (3..=5).contains(&provider.models.len()),
-                "provider '{}' must list 3-5 models, got {}",
+            // Native providers keep their curated 3-model lists; the four
+            // OpenAI-compatible providers carry the 10-chat-ID shortlists
+            // frozen from each provider's live `/models` catalog (all four
+            // catalogs held >= 10 chat models on 2026-09-05).
+            let expected = if matches!(
+                provider.name.as_str(),
+                "xkiro" | "openrouter" | "nvidia" | "opencode_zen"
+            ) {
+                10
+            } else {
+                3
+            };
+            assert_eq!(
+                provider.models.len(),
+                expected,
+                "provider '{}' must list {expected} models, got {}",
                 provider.name,
                 provider.models.len()
             );

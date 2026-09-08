@@ -75,22 +75,66 @@ const supported = [
   {
     name: "xkiro",
     display_name: "xKiro",
-    models: ["deepseek/deepseek-v4-flash", "openai/gpt-5.3-codex-spark", "qwen/qwen3.5-omni-plus:free"],
+    models: [
+      "openai/gpt-5.6-sol",
+      "deepseek/deepseek-v4-flash",
+      "openai/gpt-5.3-codex-spark",
+      "qwen/qwen3.5-omni-plus:free",
+      "minimax/minimax-m3:free",
+      "minimax/minimax-m2.7:free",
+      "qwen/qwen3.5-plus:free",
+      "qwen/qwen3.6-plus:free",
+      "qwen/qwen3.7-plus:free",
+      "deepseek/deepseek-v4-pro",
+    ],
   },
   {
     name: "openrouter",
     display_name: "OpenRouter",
-    models: ["z-ai/glm-5.2:free", "minimax/minimax-m3:free", "minimax/minimax-m2.7:free"],
+    models: [
+      "openai/gpt-5.2",
+      "z-ai/glm-5.2:free",
+      "minimax/minimax-m3:free",
+      "minimax/minimax-m2.7:free",
+      "inclusionai/ling-3.0-flash-fin:free",
+      "nvidia/nemotron-3.5-lightning:free",
+      "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "nvidia/nemotron-3-super-120b-a12b:free",
+      "cohere/north-mini-code:free",
+      "google/gemma-4-31b-it:free",
+    ],
   },
   {
     name: "nvidia",
     display_name: "NVIDIA NIM",
-    models: ["nvidia/llama-3.1-nemotron-70b-instruct", "moonshotai/kimi-k2.6", "mistralai/mistral-large"],
+    models: [
+      "nvidia/llama-3.1-nemotron-70b-instruct",
+      "moonshotai/kimi-k2.6",
+      "mistralai/mistral-large",
+      "openai/gpt-oss-20b",
+      "meta/llama-3.2-11b-vision-instruct",
+      "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+      "nvidia/nemotron-3-super-120b-a12b",
+      "nvidia/nemotron-3-ultra-550b-a55b",
+      "mistralai/mistral-nemotron",
+      "moonshotai/kimi-k3",
+    ],
   },
   {
     name: "opencode_zen",
     display_name: "OpenCode Zen",
-    models: ["deepseek-v4-flash-free", "big-pickle", "mimo-v2.5-free"],
+    models: [
+      "deepseek-v4-flash-free",
+      "big-pickle",
+      "mimo-v2.5-free",
+      "ling-3.0-flash-fin-free",
+      "nemotron-3-ultra-free",
+      "nemotron-3.5-lightning-free",
+      "deepseek-v4-flash",
+      "deepseek-v4-pro",
+      "minimax-m3",
+      "glm-5.2",
+    ],
   },
 ];
 
@@ -260,6 +304,19 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
         if (key === "agent.autonomy") {
           if (!["supervised", "semi_autonomous", "full_autonomous"].includes(strVal)) {
             throw { kind: "invalidInput", message: `value '${strVal}' is not a valid 'agent.autonomy' setting` };
+          }
+        }
+        // Mirror the Rust custom model rule (commands/settings.rs): a listed
+        // shortlist ID or 1..=200 chars of A-Za-z0-9._/:-+ without `..`.
+        if (key === "provider.model") {
+          const listed = supported.some((p) => p.models.includes(strVal));
+          const custom =
+            strVal.length >= 1 &&
+            strVal.length <= 200 &&
+            !strVal.includes("..") &&
+            /^[A-Za-z0-9._/:+-]+$/.test(strVal);
+          if (!listed && !custom) {
+            throw { kind: "invalidInput", message: `value '${strVal}' is not a valid 'provider.model' setting` };
           }
         }
         settings.set(key, strVal);
