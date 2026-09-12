@@ -54,6 +54,7 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
 use std::fs;
 
+use super::agent::runner::DEFAULT_REQUEST_TIMEOUT;
 use super::execution::{
     self, AiAttachment, AiAttachmentPayload, AiMessage, AiRequest, AiResponse, AiRole,
     RequestError, RequestExecutionService,
@@ -255,7 +256,11 @@ impl<'a> ConversationService<'a> {
                 &current_attachments,
             )?,
             tools: Vec::new(),
-            request_timeout: None,
+            // Bound the single blocking POST so a stalled provider surfaces
+            // the existing network/timeout error instead of hanging the send.
+            // This reuses the agent runner's default (120s); the agent path
+            // itself is unchanged.
+            request_timeout: Some(DEFAULT_REQUEST_TIMEOUT),
         };
 
         let response = self.execution.execute(&request)?;
@@ -1058,6 +1063,42 @@ mod tests {
         assert_eq!(turns[0], (AiRole::User, "question one"));
         assert_eq!(turns[1], (AiRole::Assistant, "answer one"));
         assert_eq!(turns[2], (AiRole::User, "question two"));
+    }
+
+    #[test]
+    fn chat_path_carries_the_shared_request_timeout() {
+        let db = test_db();
+        let (service, captured) = succeeding_service(
+            &db,
+            AiResponse {
+                content: "answer".to_string(),
+                model: "gpt-4o-mini".to_string(),
+                tool_calls: Vec::new(),
+                usage: None,
+            },
+        );
+        let conversation_id = service.create("Chat").expect("conversation created");
+
+        service
+            .send_message(conversation_id, "hello", "openai", "gpt-4o-mini", &[])
+            .expect("send succeeds");
+
+        let request = captured
+            .borrow()
+            .as_ref()
+            .expect("an AiRequest was passed to execution")
+            .clone();
+        // A stalled POST must surface the network/timeout error instead of
+        // hanging: the chat path reuses the agent runner's 120s default.
+        assert_eq!(
+            request.request_timeout,
+            Some(DEFAULT_REQUEST_TIMEOUT),
+            "chat AiRequest must carry the shared 120s timeout"
+        );
+        assert_eq!(
+            request.request_timeout,
+            Some(std::time::Duration::from_mins(2))
+        );
     }
 
     #[test]
