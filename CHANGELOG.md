@@ -5,12 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] — 2026-09-12
+
+### Fixed
+
+- Compat shortlists re-gated by live smoke (xKiro 8, OpenRouter 8, NVIDIA
+  NIM 5, OpenCode Zen 5): an ID stays listed iff a live POST to the
+  provider's `chat/completions` endpoint returns chat 2xx for it, and is
+  agent-usable iff the tools leg returns 2xx; 429-only IDs stay listed.
+  Native OpenAI/Anthropic/Gemini lists unchanged.
+- Chat sends now carry the shared 120s request timeout, so a stalled POST
+  surfaces the existing network/timeout error instead of hanging.
+- HTTP 402 (insufficient credits/quota) on the OpenAI-compatible path now
+  surfaces its own message (top up or switch to a free-tier ID); Anthropic
+  and Gemini 404 now map to invalid request, like OpenAI.
+- Spend guard bills $0 for known-free model IDs (`:free` suffix, `-free`
+  infix); everything else keeps the 5M/25M policy rate.
+
 ## [1.2.0] — 2026-09-05
 
 ### Added
 
 - Provider wire verification: the four OpenAI-compatible shortlists now list
-  10 chat model IDs each, frozen from each provider's live `/models` catalog;
+  smoke-gated keep-lists (an ID stays listed iff a live POST to the
+  provider's `chat/completions` endpoint returns chat 2xx for it, and is
+  agent-usable iff the tools leg returns 2xx; 429-only IDs stay listed);
   Settings accepts a custom model ID outside the shortlist.
 - HTTP 404 from a compatible endpoint now maps to invalid request
   (model/route missing) instead of the opaque catch-all failure.
@@ -129,6 +148,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > Note: tag `v0.3.0` exists remotely from the MVP era but carries no changelog entry; superseded by 1.0.0.
 
+[1.2.1]: https://github.com/sshdw/Nexora/releases/tag/v1.2.1
 [1.2.0]: https://github.com/sshdw/Nexora/releases/tag/v1.2.0
 [1.1.0]: https://github.com/sshdw/Nexora/releases/tag/v1.1.0
 [1.0.2]: https://github.com/sshdw/Nexora/releases/tag/v1.0.2

@@ -40,6 +40,41 @@ pub(crate) fn cost_for_usage(usage: TokenUsage) -> u64 {
     cost_micro(usage.input_tokens, usage.output_tokens)
 }
 
+/// Whether `model` is a known-free tier ID, billed at $0.
+///
+/// Shape rules (smoke-gated shortlists, 2026-09-12):
+/// - OpenRouter/xKiro free tier: a `:free` suffix (`...:free`).
+/// - `OpenCode Zen` free tier: a `-free` infix/suffix (`...-free`), which covers
+///   the Zen free IDs (`ling-3.0-flash-fin-free`, `nemotron-3-ultra-free`,
+///   `nemotron-3.5-lightning-free`, `mimo-v2.5-free`).
+///
+/// Anything else — including paid-looking IDs and unmarked IDs such as
+/// `big-pickle` — bills at the policy rate.
+#[must_use]
+pub(crate) fn is_free_model(model: &str) -> bool {
+    model.ends_with(":free") || model.contains("-free")
+}
+
+/// Compute the billed cost for `input_tokens` / `output_tokens` for `model`,
+/// in micro-USD.
+///
+/// Known-free IDs bill $0 regardless of usage; everything else bills at the
+/// policy rate via [`cost_micro`]. Zero tokens always cost zero, and
+/// saturation semantics are preserved.
+#[must_use]
+pub(crate) fn cost_micro_for_model(model: &str, input_tokens: u64, output_tokens: u64) -> u64 {
+    if is_free_model(model) {
+        return 0;
+    }
+    cost_micro(input_tokens, output_tokens)
+}
+
+/// Convenience wrapper for [`TokenUsage`] with model-aware free-tier billing.
+#[must_use]
+pub(crate) fn cost_for_model_usage(model: &str, usage: TokenUsage) -> u64 {
+    cost_micro_for_model(model, usage.input_tokens, usage.output_tokens)
+}
+
 fn ceil_cost(tokens: u64, price_per_1m: u64) -> u64 {
     if tokens == 0 || price_per_1m == 0 {
         return 0;
@@ -124,5 +159,107 @@ mod tests {
         assert_eq!(huge, u64::MAX, "huge cost must saturate to u64::MAX");
         let also_huge = ceil_cost(u64::MAX, POLICY_DEFAULT_INPUT_MICRO_PER_1M);
         assert_eq!(also_huge, u64::MAX);
+    }
+
+    #[test]
+    fn free_tier_ids_bill_zero_at_any_usage() {
+        let usage = TokenUsage {
+            input_tokens: 2_000,
+            output_tokens: 3_000,
+        };
+        // `:free` suffix (OpenRouter / xKiro free tier).
+        for model in [
+            "qwen/qwen3.5-plus:free",
+            "minimax/minimax-m3:free",
+            "z-ai/glm-5.2:free",
+            "cohere/north-mini-code:free",
+        ] {
+            assert!(is_free_model(model), "{model} must be free-shaped");
+            assert_eq!(
+                cost_for_model_usage(model, usage),
+                0,
+                "{model} must bill $0"
+            );
+            assert_eq!(
+                cost_micro_for_model(model, 1_000_000, 1_000_000),
+                0,
+                "{model} must bill $0 at 1M/1M tokens"
+            );
+        }
+        // `-free` infix/suffix (OpenCode Zen free tier).
+        for model in [
+            "ling-3.0-flash-fin-free",
+            "nemotron-3-ultra-free",
+            "nemotron-3.5-lightning-free",
+            "mimo-v2.5-free",
+        ] {
+            assert!(is_free_model(model), "{model} must be free-shaped");
+            assert_eq!(
+                cost_for_model_usage(model, usage),
+                0,
+                "{model} must bill $0"
+            );
+        }
+    }
+
+    #[test]
+    fn paid_looking_ids_bill_the_policy_rate() {
+        let usage = TokenUsage {
+            input_tokens: 1_000_000,
+            output_tokens: 1_000_000,
+        };
+        for model in [
+            "gpt-5.6-terra",
+            "deepseek/deepseek-v4-pro",
+            "nvidia/nemotron-3-super-120b-a12b",
+            "big-pickle",
+            "test-model",
+            "",
+        ] {
+            assert!(!is_free_model(model), "{model} must not be free-shaped");
+            assert_eq!(
+                cost_for_model_usage(model, usage),
+                POLICY_DEFAULT_INPUT_MICRO_PER_1M + POLICY_DEFAULT_OUTPUT_MICRO_PER_1M,
+                "{model} must bill the policy rate"
+            );
+        }
+    }
+
+    #[test]
+    fn model_aware_billing_zero_tokens_and_saturation() {
+        let zero = TokenUsage {
+            input_tokens: 0,
+            output_tokens: 0,
+        };
+        // Zero tokens cost zero for free and paid IDs alike.
+        assert_eq!(cost_for_model_usage("qwen/qwen3.5-plus:free", zero), 0);
+        assert_eq!(cost_for_model_usage("gpt-5.6-terra", zero), 0);
+        assert_eq!(cost_micro_for_model("gpt-5.6-terra", 0, 0), 0);
+        // Saturation is preserved for paid IDs.
+        assert_eq!(
+            cost_micro_for_model("gpt-5.6-terra", u64::MAX, u64::MAX),
+            u64::MAX,
+        );
+        assert_eq!(
+            cost_for_model_usage(
+                "gpt-5.6-terra",
+                TokenUsage {
+                    input_tokens: u64::MAX,
+                    output_tokens: u64::MAX
+                }
+            ),
+            u64::MAX,
+        );
+        // ...while free IDs still bill zero even at saturating usage.
+        assert_eq!(
+            cost_for_model_usage(
+                "mimo-v2.5-free",
+                TokenUsage {
+                    input_tokens: u64::MAX,
+                    output_tokens: u64::MAX
+                }
+            ),
+            0,
+        );
     }
 }

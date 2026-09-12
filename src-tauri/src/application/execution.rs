@@ -271,6 +271,10 @@ pub(crate) enum ExecutorError {
     RateLimited { retry_after_secs: Option<u64> },
     /// The provider is unavailable or overloaded (HTTP 5xx).
     ProviderUnavailable,
+    /// The provider reported insufficient credits/quota (HTTP 402): the
+    /// credential is valid but the account cannot pay for this call
+    /// (surfaced on the OpenAI-compatible path, e.g. `OpenRouter`).
+    PaymentRequired,
     /// The provider rejected the stored credential (HTTP 401/403).
     Authentication,
     /// The provider rejected the request as invalid (HTTP 400).
@@ -306,6 +310,13 @@ impl std::fmt::Display for ExecutorError {
             ),
             Self::ProviderUnavailable => {
                 write!(f, "the AI provider is unavailable or overloaded (HTTP 5xx)")
+            }
+            Self::PaymentRequired => {
+                write!(
+                    f,
+                    "provider reported insufficient credits/quota (HTTP 402); \
+                     top up or switch to a free-tier ID"
+                )
             }
             Self::Authentication => {
                 write!(
@@ -833,6 +844,11 @@ mod tests {
         assert_eq!(
             ExecutorError::ProviderUnavailable.to_string(),
             "the AI provider is unavailable or overloaded (HTTP 5xx)"
+        );
+        assert_eq!(
+            ExecutorError::PaymentRequired.to_string(),
+            "provider reported insufficient credits/quota (HTTP 402); \
+             top up or switch to a free-tier ID"
         );
         assert_eq!(
             ExecutorError::Authentication.to_string(),

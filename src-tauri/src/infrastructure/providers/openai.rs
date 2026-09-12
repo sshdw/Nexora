@@ -73,15 +73,18 @@ pub(crate) const SUPPORTED_MODELS: &[&str] = &[
 ///
 /// Curated hardcoded model shortlists (DATABASE.md §7.5); `MODELS[0]` is the
 /// provider default consumed by the selection surface. Pricing inherits the
-/// shared policy rate; wire IDs were frozen from each provider's `/models`
-/// catalog and prefer free-tier IDs where the catalog offers them.
+/// shared policy rate.
+///
+/// Keep rule (smoke-gated, 2026-09-12): an ID stays listed iff a live POST to
+/// the provider's `chat/completions` endpoint returns chat 2xx for it; an ID
+/// is agent-usable iff the tools leg returns 2xx. IDs that return 429 on both
+/// legs stay listed (rate-limited, not dead) only when explicitly noted;
+/// anything failing the chat leg is dropped, never re-added from the catalog.
 pub(crate) const XKIRO_NAME: &str = "xkiro";
 pub(crate) const XKIRO_DISPLAY_NAME: &str = "xKiro";
 pub(crate) const XKIRO_ENDPOINT: &str = "https://api.xkiro.com/v1/chat/completions";
 pub(crate) const XKIRO_MODELS: &[&str] = &[
-    "openai/gpt-5.6-sol",
     "deepseek/deepseek-v4-flash",
-    "openai/gpt-5.3-codex-spark",
     "qwen/qwen3.5-omni-plus:free",
     "minimax/minimax-m3:free",
     "minimax/minimax-m2.7:free",
@@ -94,8 +97,6 @@ pub(crate) const OPENROUTER_NAME: &str = "openrouter";
 pub(crate) const OPENROUTER_DISPLAY_NAME: &str = "OpenRouter";
 pub(crate) const OPENROUTER_ENDPOINT: &str = "https://openrouter.ai/api/v1/chat/completions";
 pub(crate) const OPENROUTER_MODELS: &[&str] = &[
-    "openai/gpt-5.2",
-    "z-ai/glm-5.2:free",
     "minimax/minimax-m3:free",
     "minimax/minimax-m2.7:free",
     "inclusionai/ling-3.0-flash-fin:free",
@@ -103,37 +104,27 @@ pub(crate) const OPENROUTER_MODELS: &[&str] = &[
     "nvidia/nemotron-3-ultra-550b-a55b:free",
     "nvidia/nemotron-3-super-120b-a12b:free",
     "cohere/north-mini-code:free",
-    "google/gemma-4-31b-it:free",
+    "z-ai/glm-5.2:free",
 ];
 pub(crate) const NVIDIA_NAME: &str = "nvidia";
 pub(crate) const NVIDIA_DISPLAY_NAME: &str = "NVIDIA NIM";
 pub(crate) const NVIDIA_ENDPOINT: &str = "https://integrate.api.nvidia.com/v1/chat/completions";
 pub(crate) const NVIDIA_MODELS: &[&str] = &[
-    "nvidia/llama-3.1-nemotron-70b-instruct",
-    "moonshotai/kimi-k2.6",
-    "mistralai/mistral-large",
-    "openai/gpt-oss-20b",
-    "meta/llama-3.2-11b-vision-instruct",
-    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
     "nvidia/nemotron-3-super-120b-a12b",
     "nvidia/nemotron-3-ultra-550b-a55b",
-    "mistralai/mistral-nemotron",
-    "moonshotai/kimi-k3",
+    "meta/llama-3.2-11b-vision-instruct",
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+    "openai/gpt-oss-20b",
 ];
 pub(crate) const OPENCODE_ZEN_NAME: &str = "opencode_zen";
 pub(crate) const OPENCODE_ZEN_DISPLAY_NAME: &str = "OpenCode Zen";
 pub(crate) const OPENCODE_ZEN_ENDPOINT: &str = "https://opencode.ai/zen/v1/chat/completions";
 pub(crate) const OPENCODE_ZEN_MODELS: &[&str] = &[
-    "deepseek-v4-flash-free",
-    "big-pickle",
-    "mimo-v2.5-free",
     "ling-3.0-flash-fin-free",
     "nemotron-3-ultra-free",
     "nemotron-3.5-lightning-free",
-    "deepseek-v4-flash",
-    "deepseek-v4-pro",
-    "minimax-m3",
-    "glm-5.2",
+    "big-pickle",
+    "mimo-v2.5-free",
 ];
 ///
 /// Stateless over the shared `reqwest` blocking client so it can be shared
@@ -215,6 +206,7 @@ impl ProviderExecutor for OpenAiExecutor {
                     OpenAiError::InvalidRequest => ExecutorError::InvalidRequest,
                     OpenAiError::Authentication => ExecutorError::Authentication,
                     OpenAiError::Network => ExecutorError::Network,
+                    OpenAiError::PaymentRequired => ExecutorError::PaymentRequired,
                     OpenAiError::RateLimited { retry_after_secs } => {
                         ExecutorError::RateLimited { retry_after_secs }
                     }
@@ -550,6 +542,9 @@ fn classify_status(status: u16, retry_after_secs: Option<u64>) -> OpenAiError {
     match status {
         400 | 404 => OpenAiError::InvalidRequest,
         401 | 403 => OpenAiError::Authentication,
+        // 402 (OpenRouter insufficient credits/quota) is distinct from 401/403:
+        // the credential is valid but the account cannot pay for this call.
+        402 => OpenAiError::PaymentRequired,
         429 => OpenAiError::RateLimited { retry_after_secs },
         s if s >= 500 => OpenAiError::ProviderUnavailable,
         _ => OpenAiError::Provider,
@@ -568,6 +563,9 @@ enum OpenAiError {
     InvalidRequest,
     /// A network/transport failure (connection refused, DNS, timeout, ...).
     Network,
+    /// The provider reported insufficient credits/quota (HTTP 402): the
+    /// credential is valid but the account cannot pay for this call.
+    PaymentRequired,
     /// The provider rate limited the request (HTTP 429), carrying the
     /// provider's `Retry-After` hint when it was a valid integer.
     RateLimited { retry_after_secs: Option<u64> },
@@ -587,6 +585,11 @@ impl std::fmt::Display for OpenAiError {
         match self {
             Self::InvalidRequest => write!(f, "the OpenAI request was invalid (400)"),
             Self::Network => write!(f, "OpenAI network or transport failure"),
+            Self::PaymentRequired => write!(
+                f,
+                "provider reported insufficient credits/quota (HTTP 402); \
+                 top up or switch to a free-tier ID"
+            ),
             Self::RateLimited { .. } => write!(f, "OpenAI rate limit (429)"),
             Self::ProviderUnavailable => write!(f, "OpenAI unavailable (5xx)"),
             Self::Authentication => write!(f, "OpenAI rejected the credential (401)"),
@@ -744,6 +747,12 @@ mod tests {
         assert!(matches!(
             classify_status(403, None),
             OpenAiError::Authentication
+        ));
+        // 402 means the credential is valid but the account cannot pay for
+        // the call (OpenRouter insufficient credits/quota).
+        assert!(matches!(
+            classify_status(402, None),
+            OpenAiError::PaymentRequired
         ));
         // 429 carries the Retry-After hint (None when absent/not parseable).
         assert!(matches!(
@@ -1015,6 +1024,46 @@ mod tests {
         let executor = OpenAiExecutor::with_endpoint(format!("http://{addr}"));
         let result = executor.execute(&sample_request(), "sk-secret-example");
         assert!(matches!(result, Err(ExecutorError::InvalidRequest)));
+        let _ = server.join();
+    }
+
+    #[test]
+    fn status_402_maps_to_payment_required() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test server");
+        let addr = listener.local_addr().expect("local address");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept connection");
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 1024];
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        raw.extend_from_slice(&buf[..n]);
+                        if raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                }
+            }
+            let response = "HTTP/1.1 402 Payment Required\r\nContent-Type: application/json\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+        });
+        let executor = OpenAiExecutor::with_endpoint(format!("http://{addr}"));
+        let err = executor
+            .execute(&sample_request(), "sk-secret-example")
+            .expect_err("402 must fail");
+        assert!(matches!(err, ExecutorError::PaymentRequired));
+        // The boundary message names the remedy, never the body or credential.
+        assert_eq!(
+            err.to_string(),
+            "provider reported insufficient credits/quota (HTTP 402); \
+             top up or switch to a free-tier ID"
+        );
         let _ = server.join();
     }
 

@@ -453,10 +453,11 @@ impl<'a> AgentRunner<'a> {
 
             // Task 4.3: spend guard — accumulate billed cost for this turn
             // (only when a consumer exists) and trip if the limit is exceeded.
-            // Usage absent is counted as $0 (count-as-known).
+            // Usage absent is counted as $0 (count-as-known). Known-free
+            // model IDs bill $0 regardless of usage.
             if let Some(usage) = response.usage {
                 if self.spend_limit_micro_usd.is_some() || record.is_some() {
-                    let cost = pricing::cost_for_usage(usage);
+                    let cost = pricing::cost_for_model_usage(model, usage);
                     *spent_micro_usd = spent_micro_usd.saturating_add(cost);
                     if let Some(limit) = self.spend_limit_micro_usd {
                         if *spent_micro_usd > limit {
