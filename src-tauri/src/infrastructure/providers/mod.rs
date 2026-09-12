@@ -112,16 +112,14 @@ mod tests {
         );
         for provider in &providers {
             // Native providers keep their curated 3-model lists; the four
-            // OpenAI-compatible providers carry the 10-chat-ID shortlists
-            // frozen from each provider's live `/models` catalog (all four
-            // catalogs held >= 10 chat models on 2026-09-05).
-            let expected = if matches!(
-                provider.name.as_str(),
-                "xkiro" | "openrouter" | "nvidia" | "opencode_zen"
-            ) {
-                10
-            } else {
-                3
+            // OpenAI-compatible providers carry smoke-gated shortlists
+            // (xkiro 8, openrouter 8, nvidia 5, opencode_zen 5): an ID stays
+            // listed iff a live POST to the provider's `chat/completions`
+            // endpoint returns chat 2xx for it, and 429-only IDs stay listed.
+            let expected = match provider.name.as_str() {
+                "xkiro" | "openrouter" => 8,
+                "nvidia" | "opencode_zen" => 5,
+                _ => 3,
             };
             assert_eq!(
                 provider.models.len(),

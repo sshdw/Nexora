@@ -534,7 +534,9 @@ fn send(
 /// 429 [`AnthropicError::RateLimited`] category.
 fn classify_status(status: u16, retry_after_secs: Option<u64>) -> AnthropicError {
     match status {
-        400 => AnthropicError::InvalidRequest,
+        // 404 (unknown model/route) is a malformed request like 400, matching
+        // the OpenAI-compatible path.
+        400 | 404 => AnthropicError::InvalidRequest,
         401 | 403 => AnthropicError::Authentication,
         429 => AnthropicError::RateLimited { retry_after_secs },
         s if s >= 500 => AnthropicError::ProviderUnavailable,
@@ -550,7 +552,8 @@ fn classify_status(status: u16, retry_after_secs: Option<u64>) -> AnthropicError
 /// so diagnostics can distinguish failure classes in the logs.
 #[derive(Debug)]
 enum AnthropicError {
-    /// The Anthropic endpoint rejected the request as malformed (HTTP 400).
+    /// The Anthropic endpoint rejected the request as malformed (HTTP 400) or
+    /// addressed an unknown model/route (HTTP 404).
     InvalidRequest,
     /// The credential was rejected (HTTP 401).
     Authentication,
@@ -817,6 +820,11 @@ mod tests {
             classify_status(400, None),
             AnthropicError::InvalidRequest
         ));
+        // 404 (unknown model/route) is invalid like 400, matching OpenAI.
+        assert!(matches!(
+            classify_status(404, None),
+            AnthropicError::InvalidRequest
+        ));
         assert!(matches!(
             classify_status(401, None),
             AnthropicError::Authentication
@@ -842,7 +850,7 @@ mod tests {
         ));
         // Other 4xx remain the catch-all provider failure.
         assert!(matches!(
-            classify_status(404, None),
+            classify_status(422, None),
             AnthropicError::Provider
         ));
     }
@@ -904,10 +912,21 @@ mod tests {
 
     #[test]
     fn run_classifies_provider_failure() {
-        let (endpoint, _captured, server) = spawn_server(404, "");
+        let (endpoint, _captured, server) = spawn_server(422, "");
         let executor = AnthropicExecutor::with_endpoint(endpoint);
         let result = executor.run(&sample_request(), "sk-secret-example");
         assert!(matches!(result, Err(AnthropicError::Provider)));
+        server.join().expect("server thread joins");
+    }
+
+    #[test]
+    fn run_classifies_unknown_model_failure_as_invalid_request() {
+        // 404 (unknown model/route) surfaces as invalid request, matching the
+        // OpenAI-compatible path.
+        let (endpoint, _captured, server) = spawn_server(404, "");
+        let executor = AnthropicExecutor::with_endpoint(endpoint);
+        let result = executor.run(&sample_request(), "sk-secret-example");
+        assert!(matches!(result, Err(AnthropicError::InvalidRequest)));
         server.join().expect("server thread joins");
     }
 
@@ -1428,10 +1447,21 @@ mod tests {
 
     #[test]
     fn other_client_errors_still_surface_as_failure() {
-        let (endpoint, _captured, server) = spawn_server(404, "");
+        let (endpoint, _captured, server) = spawn_server(422, "");
         let executor = AnthropicExecutor::with_endpoint(endpoint);
         let result = executor.execute(&sample_request(), "sk-secret-example");
         assert!(matches!(result, Err(ExecutorError::Failure)));
+        server.join().expect("server thread joins");
+    }
+
+    #[test]
+    fn status_404_maps_to_invalid_request() {
+        // Unknown model/route surfaces as invalid request, matching the
+        // OpenAI-compatible path.
+        let (endpoint, _captured, server) = spawn_server(404, "");
+        let executor = AnthropicExecutor::with_endpoint(endpoint);
+        let result = executor.execute(&sample_request(), "sk-secret-example");
+        assert!(matches!(result, Err(ExecutorError::InvalidRequest)));
         server.join().expect("server thread joins");
     }
 
