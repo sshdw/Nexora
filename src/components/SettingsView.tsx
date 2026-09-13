@@ -304,7 +304,9 @@ export default function SettingsView({
                       }}
                     />
                     <p className="nex-settings-hint">
-                      Listed ID or custom: 1–200 chars of A–Z a–z 0–9 . _ / : - +.
+                      Listed ID or custom: 1–200 chars of A–Z a–z 0–9 . _ / : - +. Use
+                      the exact model ID from your provider&apos;s model list or
+                      dashboard.
                     </p>
                   </div>
                 )}
