@@ -238,6 +238,10 @@ export default function SettingsView({
                   Choose which provider and model new requests use. Providers must be
                   connected with a credential before they can serve requests.
                 </p>
+                <p className="nex-settings-hint">
+                  Model options come from the backend&apos;s supported list; the static
+                  August 2026 catalog doc may be stale.
+                </p>
 
                 <div className="nex-settings-field">
                   <label className="nex-settings-label" htmlFor="provider-select">

@@ -20,42 +20,10 @@ let nextPromptId = 3;
 let nextProviderId = 2;
 let nextAttachmentId = 1;
 
-const conversations = [
-  { id: 1, title: "Designing the composer", status: "active", created_at: hoursAgo(30), updated_at: hoursAgo(1) },
-  { id: 2, title: "Rust migration notes", status: "active", created_at: hoursAgo(50), updated_at: hoursAgo(5) },
-  { id: 3, title: "Old research thread", status: "archived", created_at: hoursAgo(200), updated_at: hoursAgo(96) },
-];
-
-const messages: MockMessage[] = [
-  { id: 1, conversation_id: 1, role: "user", content: "Hello", provider_id: null, model_name: null, created_at: hoursAgo(1) },
-  { id: 2, conversation_id: 1, role: "assistant", content: "Hello! How can I help you today?", provider_id: 1, model_name: "gemini-3.6-flash", created_at: hoursAgo(1) + 20 },
-  { id: 3, conversation_id: 1, role: "user", content: "Summarize the Material 3 Expressive motion system in two sentences.", provider_id: null, model_name: null, created_at: hoursAgo(1) + 60 },
-];
-
-const prompts = [
-  { id: 1, title: "Weekly review", content: "Summarize this week's progress, list blockers, and propose the top three priorities for next week.", created_at: hoursAgo(20), updated_at: hoursAgo(2) },
-  { id: 2, title: "Code review checklist", content: "Review the attached diff for correctness, edge cases, naming, and test coverage. Flag anything that changes public behavior.", created_at: hoursAgo(40), updated_at: hoursAgo(10) },
-];
-
-const providers = [{ id: 1, name: "gemini", display_name: "Gemini" }];
-const credentialed = new Set<string>(["gemini"]);
-const settings = new Map<string, string>([
-  ["provider.selected", "gemini"],
-  ["provider.model", "gemini-3.6-flash"],
-  ["appearance.theme", "dark"],
-  ["agent.autonomy", "semi_autonomous"],
-]);
-
-const attachments: Array<{
-  id: number;
-  conversation_id: number;
-  message_id: number | null;
-  file_name: string;
-  file_path: string;
-  file_size_bytes: number | null;
-  mime_type: string | null;
-}> = [];
-
+// Single source for the mock catalog (DEV-ONLY): the live backend's
+// `supported_providers()` is the source of truth; this hardcoded list only
+// feeds the visual-QA mock. Provider/model IDs are written once here and all
+// mock defaults below derive from it (no duplication).
 const supported = [
   {
     name: "openai",
@@ -123,6 +91,44 @@ const supported = [
     ],
   },
 ];
+const MOCK_DEFAULT_PROVIDER = supported[2].name;
+const MOCK_DEFAULT_MODEL = supported[2].models[0];
+
+const conversations = [
+  { id: 1, title: "Designing the composer", status: "active", created_at: hoursAgo(30), updated_at: hoursAgo(1) },
+  { id: 2, title: "Rust migration notes", status: "active", created_at: hoursAgo(50), updated_at: hoursAgo(5) },
+  { id: 3, title: "Old research thread", status: "archived", created_at: hoursAgo(200), updated_at: hoursAgo(96) },
+];
+
+const messages: MockMessage[] = [
+  { id: 1, conversation_id: 1, role: "user", content: "Hello", provider_id: null, model_name: null, created_at: hoursAgo(1) },
+  { id: 2, conversation_id: 1, role: "assistant", content: "Hello! How can I help you today?", provider_id: 1, model_name: MOCK_DEFAULT_MODEL, created_at: hoursAgo(1) + 20 },
+  { id: 3, conversation_id: 1, role: "user", content: "Summarize the Material 3 Expressive motion system in two sentences.", provider_id: null, model_name: null, created_at: hoursAgo(1) + 60 },
+];
+
+const prompts = [
+  { id: 1, title: "Weekly review", content: "Summarize this week's progress, list blockers, and propose the top three priorities for next week.", created_at: hoursAgo(20), updated_at: hoursAgo(2) },
+  { id: 2, title: "Code review checklist", content: "Review the attached diff for correctness, edge cases, naming, and test coverage. Flag anything that changes public behavior.", created_at: hoursAgo(40), updated_at: hoursAgo(10) },
+];
+
+const providers = [{ id: 1, name: MOCK_DEFAULT_PROVIDER, display_name: supported[2].display_name }];
+const credentialed = new Set<string>([MOCK_DEFAULT_PROVIDER]);
+const settings = new Map<string, string>([
+  ["provider.selected", MOCK_DEFAULT_PROVIDER],
+  ["provider.model", MOCK_DEFAULT_MODEL],
+  ["appearance.theme", "dark"],
+  ["agent.autonomy", "semi_autonomous"],
+]);
+
+const attachments: Array<{
+  id: number;
+  conversation_id: number;
+  message_id: number | null;
+  file_name: string;
+  file_path: string;
+  file_size_bytes: number | null;
+  mime_type: string | null;
+}> = [];
 
 // ---- Agent run mock state (Task 5.1) ----
 let nextAgentRunId = 1;
