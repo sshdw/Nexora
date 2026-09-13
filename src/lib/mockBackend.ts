@@ -741,6 +741,48 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
       }
       return null;
     }
+    case "conversation_context_stats": {
+      const convId = Number(requireArg(args, "conversation_context_stats", "conversationId"));
+      const conv = conversations.find((c) => c.id === convId);
+      if (!conv) throw { kind: "notFound", message: `conversation ${convId} does not exist` };
+      const convMessages = messages.filter((m) => m.conversation_id === convId);
+      const userCount = convMessages.filter((m) => m.role === "user").length;
+      const assistantCount = convMessages.filter((m) => m.role === "assistant").length;
+      const lastAssistant = [...convMessages].reverse().find((m) => m.role === "assistant");
+      const runIds = agentRuns.filter((r) => r.conversation_id === convId).map((r) => r.id);
+      let toolCallCount = 0;
+      let otherStepCount = 0;
+      for (const rid of runIds) {
+        for (const s of agentSteps.get(rid) ?? []) {
+          if (s.kind === "tool_call") toolCallCount++;
+          else otherStepCount++;
+        }
+      }
+      return {
+        conversation_id: conv.id,
+        title: conv.title,
+        provider: MOCK_DEFAULT_PROVIDER,
+        provider_display: supported.find((p) => p.name === MOCK_DEFAULT_PROVIDER)?.display_name ?? null,
+        model: lastAssistant?.model_name ?? MOCK_DEFAULT_MODEL,
+        context_limit: 128000,
+        total_tokens: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        reasoning_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        has_token_data: false,
+        total_cost_micro_usd: 0,
+        usage_percent: 0,
+        message_count: convMessages.length,
+        user_message_count: userCount,
+        assistant_message_count: assistantCount,
+        tool_call_count: toolCallCount,
+        other_step_count: otherStepCount,
+        created_at: conv.created_at,
+        updated_at: conv.updated_at,
+      };
+    }
     case "list_agent_runs": {
       const convId = Number(requireArg(args, "list_agent_runs", "conversationId"));
       return [...agentRuns].filter((r) => r.conversation_id === convId).sort((a, b) => b.started_at - a.started_at);
