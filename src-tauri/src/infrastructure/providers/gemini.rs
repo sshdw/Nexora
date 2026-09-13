@@ -342,6 +342,19 @@ fn generate_content_request(request: &AiRequest) -> GenerateContentRequest {
     }
 }
 
+/// Format a secret-free trace line for a thought signature.
+///
+/// Reports only presence (`present=true/false`) and byte length (`len=N`)
+/// per tool call so signature flow leaves a trace in logs; the opaque value
+/// itself is never formatted, logged, or returned.
+fn thought_signature_trace(context: &str, index: usize, signature: Option<&String>) -> String {
+    let (present, len) = match signature {
+        Some(value) if !value.is_empty() => (true, value.len()),
+        _ => (false, 0),
+    };
+    format!("gemini thought_signature {context} call={index} present={present} len={len}")
+}
+
 /// Build the Gemini parts for one request message.
 ///
 /// Assistant agent turns with structured tool calls produce an optional text
@@ -361,9 +374,14 @@ fn request_parts(message: &AiMessage) -> Vec<GeminiPart> {
                 function_response: None,
             });
         }
-        for call in &message.tool_calls {
+        for (index, call) in message.tool_calls.iter().enumerate() {
             let args = serde_json::from_str::<serde_json::Value>(&call.arguments)
                 .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::default()));
+            // Trace-level flow marker: presence + length only, never the value.
+            log::trace!(
+                "{}",
+                thought_signature_trace("request", index, call.thought_signature.as_ref())
+            );
             parts.push(GeminiPart {
                 text: None,
                 inline_data: None,
@@ -638,6 +656,15 @@ fn to_ai_response(
                 // the function call; pure text/thought parts never set it.
                 thought_signature: part.thought_signature,
             });
+            // Trace-level flow marker: presence + length only, never the value.
+            log::trace!(
+                "{}",
+                thought_signature_trace(
+                    "response",
+                    index,
+                    tool_calls[index].thought_signature.as_ref()
+                )
+            );
         }
     }
     if text_parts.is_empty() && tool_calls.is_empty() {
@@ -1802,6 +1829,42 @@ mod tests {
             ai.tool_calls[0].thought_signature.as_deref(),
             Some("sig-abc"),
             "the signature of the functionCall part travels with the call"
+        );
+    }
+
+    /// The trace helper reports presence + length per call and never the
+    /// opaque value itself (secret hygiene).
+    #[test]
+    fn thought_signature_trace_reports_presence_never_value() {
+        let secret = "sig-abc-secret".to_string();
+        let secret_len = secret.len();
+        let present = thought_signature_trace("response", 0, Some(&secret));
+        assert!(
+            present.contains("present=true"),
+            "trace line reports presence: {present}"
+        );
+        assert!(
+            present.contains(&format!("len={secret_len}")),
+            "trace line reports length: {present}"
+        );
+        assert!(
+            !present.contains(&secret),
+            "trace line must never carry the value"
+        );
+        let absent = thought_signature_trace("response", 1, None);
+        assert!(
+            absent.contains("present=false"),
+            "trace line reports absence: {absent}"
+        );
+        assert!(
+            absent.contains("len=0"),
+            "absent signature has zero length: {absent}"
+        );
+        let empty_inner = String::new();
+        let empty = thought_signature_trace("request", 2, Some(&empty_inner));
+        assert!(
+            empty.contains("present=false"),
+            "empty signature counts as absent: {empty}"
         );
     }
 
