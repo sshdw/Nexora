@@ -80,6 +80,11 @@ pub(crate) const SUPPORTED_MODELS: &[&str] = &[
 /// is agent-usable iff the tools leg returns 2xx. IDs that return 429 on both
 /// legs stay listed (rate-limited, not dead) only when explicitly noted;
 /// anything failing the chat leg is dropped, never re-added from the catalog.
+///
+/// 1.2.3 (2026-09-13): OpenRouter list re-gated — dropped `minimax-m3:free`,
+/// `minimax-m2.7:free`, `glm-5.2:free` (chat 404) and `ultra-550b-a55b:free`
+/// (no HTTP response twice); added four live-proven chat+tools 200 IDs.
+/// xKiro list untouched (all 8 chat 404, no live replacements proven).
 pub(crate) const XKIRO_NAME: &str = "xkiro";
 pub(crate) const XKIRO_DISPLAY_NAME: &str = "xKiro";
 pub(crate) const XKIRO_ENDPOINT: &str = "https://api.xkiro.com/v1/chat/completions";
@@ -97,14 +102,14 @@ pub(crate) const OPENROUTER_NAME: &str = "openrouter";
 pub(crate) const OPENROUTER_DISPLAY_NAME: &str = "OpenRouter";
 pub(crate) const OPENROUTER_ENDPOINT: &str = "https://openrouter.ai/api/v1/chat/completions";
 pub(crate) const OPENROUTER_MODELS: &[&str] = &[
-    "minimax/minimax-m3:free",
-    "minimax/minimax-m2.7:free",
     "inclusionai/ling-3.0-flash-fin:free",
     "nvidia/nemotron-3.5-lightning:free",
-    "nvidia/nemotron-3-ultra-550b-a55b:free",
     "nvidia/nemotron-3-super-120b-a12b:free",
     "cohere/north-mini-code:free",
-    "z-ai/glm-5.2:free",
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+    "inclusionai/ling-3.0-flash-sante:free",
+    "inclusionai/ling-3.0-flash-vl:free",
+    "liquid/lfm-2.5-2.6b:free",
 ];
 pub(crate) const NVIDIA_NAME: &str = "nvidia";
 pub(crate) const NVIDIA_DISPLAY_NAME: &str = "NVIDIA NIM";
@@ -641,6 +646,49 @@ mod tests {
             ],
             tools: Vec::new(),
             request_timeout: None,
+        }
+    }
+
+    #[test]
+    fn openrouter_models_match_smoke_gated_keep_list() {
+        // 1.2.3 recovery: every ID below returned chat 200 on a live POST to
+        // the OpenRouter `chat/completions` endpoint on 2026-09-13; the four
+        // dropped IDs failed it (`minimax-m3:free`, `minimax-m2.7:free`,
+        // `glm-5.2:free` chat 404, `ultra-550b-a55b:free` no HTTP response).
+        assert_eq!(
+            OPENROUTER_MODELS,
+            &[
+                "inclusionai/ling-3.0-flash-fin:free",
+                "nvidia/nemotron-3.5-lightning:free",
+                "nvidia/nemotron-3-super-120b-a12b:free",
+                "cohere/north-mini-code:free",
+                "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+                "inclusionai/ling-3.0-flash-sante:free",
+                "inclusionai/ling-3.0-flash-vl:free",
+                "liquid/lfm-2.5-2.6b:free",
+            ]
+        );
+        assert_eq!(OPENROUTER_MODELS[0], "inclusionai/ling-3.0-flash-fin:free");
+    }
+
+    #[test]
+    fn openrouter_tools_smoke_agent_usable_ids_are_supported() {
+        // Every listed ID returned tools-leg 200 on the same live smoke run,
+        // so the whole shortlist is agent-usable.
+        for model in [
+            "inclusionai/ling-3.0-flash-fin:free",
+            "nvidia/nemotron-3.5-lightning:free",
+            "nvidia/nemotron-3-super-120b-a12b:free",
+            "cohere/north-mini-code:free",
+            "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+            "inclusionai/ling-3.0-flash-sante:free",
+            "inclusionai/ling-3.0-flash-vl:free",
+            "liquid/lfm-2.5-2.6b:free",
+        ] {
+            assert!(
+                OPENROUTER_MODELS.contains(&model),
+                "tools 200 ID {model} must stay listed"
+            );
         }
     }
 

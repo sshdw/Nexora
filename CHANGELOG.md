@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.3] — 2026-09-13
+
+### Fixed
+
+- OpenRouter shortlist re-gated per live smoke (chat + tools legs, status
+  codes only): keep 4 (`inclusionai/ling-3.0-flash-fin:free`,
+  `nvidia/nemotron-3.5-lightning:free`,
+  `nvidia/nemotron-3-super-120b-a12b:free`,
+  `cohere/north-mini-code:free` — chat 200, tools 200 agent-usable);
+  dropped `minimax/minimax-m3:free`, `minimax/minimax-m2.7:free`,
+  `z-ai/glm-5.2:free` (chat 404) and
+  `nvidia/nemotron-3-ultra-550b-a55b:free` (no HTTP response twice);
+  added 4 live-proven replacements
+  (`nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free`,
+  `inclusionai/ling-3.0-flash-sante:free`,
+  `inclusionai/ling-3.0-flash-vl:free`, `liquid/lfm-2.5-2.6b:free` —
+  chat 200, tools 200). Default becomes
+  `inclusionai/ling-3.0-flash-fin:free`; pricing unchanged.
+- xKiro shortlist untouched: all 8 IDs chat 404 and no live-listed
+  replacements proven, so the list stays but is flagged stale; keys alive
+  (`/models` 200).
+
 ## [1.2.2] — 2026-09-13
 
 ### Fixed
