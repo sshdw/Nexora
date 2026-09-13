@@ -107,6 +107,10 @@ Backend tests run against in-memory SQLite instances using the same migrations a
 
 Capabilities outside the approved MVP (cloud sync, user accounts, collaboration, mobile/web apps, plugins) are explicitly out of scope — see [docs/SRS.md](docs/SRS.md).
 
+## License
+
+[MIT](LICENSE) © 2026 sshdw
+
 ## Documentation
 
 Approved specification documents live in [`docs/`](docs/):
