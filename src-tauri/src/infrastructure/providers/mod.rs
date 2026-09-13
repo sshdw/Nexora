@@ -111,12 +111,15 @@ mod tests {
             ]
         );
         for provider in &providers {
-            // Native providers keep their curated 3-model lists; the four
+            // Native OpenAI/Anthropic keep their curated 3-model lists; Gemini
+            // carries the live-smoke-gated 1.2.2 keep-list (7: chat 200 keep,
+            // tools 200 agent-usable, 429 stays, 404/503 dropped). The four
             // OpenAI-compatible providers carry smoke-gated shortlists
             // (xkiro 8, openrouter 8, nvidia 5, opencode_zen 5): an ID stays
             // listed iff a live POST to the provider's `chat/completions`
             // endpoint returns chat 2xx for it, and 429-only IDs stay listed.
             let expected = match provider.name.as_str() {
+                "gemini" => 7,
                 "xkiro" | "openrouter" => 8,
                 "nvidia" | "opencode_zen" => 5,
                 _ => 3,

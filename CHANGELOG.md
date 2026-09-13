@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.2] — 2026-09-13
+
+### Fixed
+
+- Gemini list replaced per live smoke (rotated key, chat + tools legs):
+  keep 7 (`gemini-3.6-flash`, `gemini-3.1-flash-lite`,
+  `gemini-3.1-pro-preview`, `gemini-flash-lite-latest`, `gemini-pro-latest`,
+  `gemini-3.5-flash`, `gemini-3.5-flash-lite` — chat 200 keep, tools 200
+  agent-usable, 429 stays); dropped `gemini-2.5-flash`,
+  `gemini-2.5-flash-lite`, `gemini-2.5-pro` (404) and `gemini-flash-latest`
+  (503). Default stays `gemini-3.6-flash`; pricing unchanged.
+
 ## [1.2.1] — 2026-09-12
 
 ### Fixed

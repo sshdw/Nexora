@@ -74,18 +74,34 @@ pub(crate) const PROVIDER_DISPLAY_NAME: &str = "Gemini";
 /// this set documents the currently supported models and anchors the
 /// model-selection tests.
 ///
+/// Live-smoke-gated 1.2.2 set (rotated key, 2026-09-13; D8 rule: chat 200
+/// keep, tools 200 agent-usable, 429 stays, 404/503 dropped):
+/// `gemini-3.6-flash` (default), `gemini-3.1-flash-lite`,
+/// `gemini-3.1-pro-preview` (429), `gemini-flash-lite-latest`,
+/// `gemini-pro-latest` (429), `gemini-3.5-flash`, `gemini-3.5-flash-lite`.
+/// Dropped: `gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemini-2.5-pro`
+/// (404), `gemini-flash-latest` (503).
+///
 /// Pricing is governed by the policy table in
 /// `crate::application::agent::pricing` (DATABASE.md В§7.8); the first entry
 /// is the provider default consumed as `models[0]` by the selection surface.
 /// The retired IDs this list replaces: `gemini-1.5-pro`, `gemini-1.5-flash`
 /// (shut down), and `gemini-2.0-flash` (retired June 1, 2026).
 pub(crate) const SUPPORTED_MODELS: &[&str] = &[
-    // Default: GA, current-generation, balanced cost/quality.
+    // Default: chat 200 + tools 200.
     "gemini-3.6-flash",
-    // Fast/cheap tier.
+    // Chat 200 + tools 200.
     "gemini-3.1-flash-lite",
-    // Best-quality reasoning tier (still Preview status upstream).
+    // Chat 429 stays per D8.
     "gemini-3.1-pro-preview",
+    // Chat 200 + tools 200.
+    "gemini-flash-lite-latest",
+    // Chat 429 stays per D8.
+    "gemini-pro-latest",
+    // Chat 200 + tools 200.
+    "gemini-3.5-flash",
+    // Chat 200 + tools 200.
+    "gemini-3.5-flash-lite",
 ];
 
 /// Concrete [`ProviderExecutor`] for Google Gemini.
@@ -818,10 +834,38 @@ mod tests {
 
     #[test]
     fn supported_models_include_sample_model() {
+        assert_eq!(SUPPORTED_MODELS[0], "gemini-3.6-flash");
+        assert_eq!(SUPPORTED_MODELS.len(), 7);
+        assert_eq!(
+            SUPPORTED_MODELS,
+            &[
+                "gemini-3.6-flash",
+                "gemini-3.1-flash-lite",
+                "gemini-3.1-pro-preview",
+                "gemini-flash-lite-latest",
+                "gemini-pro-latest",
+                "gemini-3.5-flash",
+                "gemini-3.5-flash-lite",
+            ]
+        );
         let request = sample_request();
-        // The model selected in tests is one of the currently supported
-        // Gemini models (DATABASE.md В§7.5: hardcoded model lists).
         assert!(SUPPORTED_MODELS.contains(&request.model.as_str()));
+    }
+
+    #[test]
+    fn tools_smoke_agent_usable_ids_are_supported() {
+        for model in [
+            "gemini-3.6-flash",
+            "gemini-3.1-flash-lite",
+            "gemini-flash-lite-latest",
+            "gemini-3.5-flash",
+            "gemini-3.5-flash-lite",
+        ] {
+            assert!(
+                SUPPORTED_MODELS.contains(&model),
+                "tools 200 ID {model} must stay listed"
+            );
+        }
     }
 
     #[test]
