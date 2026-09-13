@@ -97,6 +97,9 @@ impl From<rusqlite::Error> for DatabaseError {
 /// - v5: the spend-guard columns `spent_micro_usd` / `limit_micro_usd` and the
 ///   widened `status` CHECK (`spend_limit_exceeded`, Task 4.3) via a validated
 ///   rebuild of `agent_runs` (DATABASE.md §5).
+/// - v6: the per-folder history column `conversations.workspace_root`
+///   (`TEXT NULL CHECK (length <= 1024)`, no FK): the canonical workspace root
+///   a conversation belongs to, `NULL` for pre-picker rows.
 pub(crate) const MIGRATIONS: &[(i64, &str)] = &[
     // v1 — base tables and functional indexes (DATABASE.md §7, §8).
     (
@@ -344,6 +347,16 @@ ALTER TABLE agent_runs_new RENAME TO agent_runs;
 CREATE INDEX idx_agent_runs_conversation ON agent_runs (conversation_id);
 CREATE INDEX idx_agent_runs_started ON agent_runs (started_at);
 ",
+    ),
+    // v6 — per-folder chat history (workspace folder picker 1.2.4). The new
+    // `conversations.workspace_root` column records the canonical workspace
+    // root a conversation belongs to (`NULL` for pre-picker rows; no FK, the
+    // setting owns the root). Length bound mirrors the workspace guard
+    // (`application/workspace.rs::WORKSPACE_ROOT_MAX_LEN`).
+    (
+        6,
+        "ALTER TABLE conversations ADD COLUMN workspace_root TEXT \
+         CHECK (workspace_root IS NULL OR length(workspace_root) <= 1024);",
     ),
 ];
 
@@ -606,14 +619,14 @@ mod tests {
             );
         }
 
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5]);
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6]);
     }
 
     #[test]
     fn migration_state_is_recorded_correctly() {
         let conn = in_memory_migrated();
 
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5]);
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6]);
 
         let applied_at: i64 = conn
             .query_row(
@@ -627,17 +640,17 @@ mod tests {
         let version_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .expect("count schema_version rows");
-        assert_eq!(version_count, 5, "one row per applied migration");
+        assert_eq!(version_count, 6, "one row per applied migration");
     }
 
     #[test]
     fn re_running_migrations_is_a_no_op() {
         let mut conn = in_memory_migrated();
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5]);
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6]);
 
         migrate(&mut conn).expect("a second migration run must succeed");
 
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5]);
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6]);
         // The no-op run created or dropped nothing.
         assert!(schema_object_exists(&conn, "conversations", "table"));
         assert!(schema_object_exists(&conn, "conversations_fts", "table"));
@@ -666,7 +679,7 @@ mod tests {
             !schema_object_exists(&conn, "partial_table", "table"),
             "the valid part of the failed migration must roll back"
         );
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5]);
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6]);
     }
 
     #[test]
@@ -1276,7 +1289,7 @@ mod tests {
         // Migrate to v5 (and any later)
         migrate(&mut conn).expect("migrate to v5");
         // Schema version is 5
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5]);
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6]);
         // Row preserved, new columns NULL for pre-v5 rows
         let (status, spent, limit): (String, Option<i64>, Option<i64>) = conn
             .query_row(
@@ -1331,5 +1344,71 @@ mod tests {
             [],
         );
         assert!(bad_status.is_err(), "unknown status still rejected");
+    }
+
+    #[test]
+    fn v5_to_v6_preserves_rows_and_adds_nullable_workspace_root() {
+        // Build a v5-only DB: apply migrations 1..=5 manually, seed rows, then
+        // migrate to v6.
+        let mut conn = Connection::open_in_memory().expect("open in-memory");
+        configure(&conn).expect("configure");
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY CHECK (version > 0), applied_at INTEGER NOT NULL CHECK (applied_at > 0));",
+        )
+        .expect("create schema_version");
+        for &(version, sql) in MIGRATIONS.iter().filter(|(v, _)| *v <= 5) {
+            if version == 5 {
+                conn.execute_batch("PRAGMA foreign_keys=OFF;")
+                    .expect("fk off");
+                let result = apply_migration(&mut conn, version, sql);
+                conn.execute_batch("PRAGMA foreign_keys=ON;")
+                    .expect("fk on");
+                result.expect("apply v5");
+            } else {
+                apply_migration(&mut conn, version, sql).expect("apply v1..v5");
+            }
+        }
+        conn.execute("INSERT INTO conversations (title) VALUES ('keep me')", [])
+            .expect("seed conversation");
+        let conv_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO messages (conversation_id, role, content) VALUES (?1, 'user', 'hi')",
+            [conv_id],
+        )
+        .expect("seed message");
+        migrate(&mut conn).expect("migrate to v6");
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6]);
+        // Seeded row survives with a NULL workspace root.
+        let root: Option<String> = conn
+            .query_row(
+                "SELECT workspace_root FROM conversations WHERE id = ?1",
+                [conv_id],
+                |row| row.get(0),
+            )
+            .expect("read preserved conversation");
+        assert_eq!(root, None);
+        let messages: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1",
+                [conv_id],
+                |row| row.get(0),
+            )
+            .expect("count messages");
+        assert_eq!(messages, 1);
+        // New column accepts a root and rejects an overlong one.
+        conn.execute(
+            "UPDATE conversations SET workspace_root = ?1 WHERE id = ?2",
+            rusqlite::params![r"C:\work\proj", conv_id],
+        )
+        .expect("workspace root accepted");
+        let long_root = "r".repeat(1025);
+        let overlong = conn.execute(
+            "UPDATE conversations SET workspace_root = ?1 WHERE id = ?2",
+            rusqlite::params![long_root, conv_id],
+        );
+        assert!(
+            overlong.is_err(),
+            "overlong workspace root must be rejected"
+        );
     }
 }

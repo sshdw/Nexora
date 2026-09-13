@@ -202,7 +202,8 @@ mod tests {
                  status TEXT NOT NULL DEFAULT 'active'
                      CHECK(status IN ('active', 'archived')),
                  created_at INTEGER NOT NULL DEFAULT 1 CHECK(created_at > 0),
-                 updated_at INTEGER NOT NULL DEFAULT 1 CHECK(updated_at >= created_at)
+                 updated_at INTEGER NOT NULL DEFAULT 1 CHECK(updated_at >= created_at),
+                  workspace_root TEXT CHECK(workspace_root IS NULL OR length(workspace_root) <= 1024)
              );
              CREATE TABLE messages (
                  id INTEGER PRIMARY KEY,
@@ -312,6 +313,7 @@ mod tests {
                 status: "active".to_string(),
                 created_at: 1,
                 updated_at: 1,
+                workspace_root: None,
             }]
         );
     }
@@ -586,7 +588,8 @@ mod tests {
                  status TEXT NOT NULL DEFAULT 'active'
                      CHECK(status IN ('active', 'archived')),
                  created_at INTEGER NOT NULL DEFAULT 1 CHECK(created_at > 0),
-                 updated_at INTEGER NOT NULL DEFAULT 1 CHECK(updated_at >= created_at)
+                 updated_at INTEGER NOT NULL DEFAULT 1 CHECK(updated_at >= created_at),
+                  workspace_root TEXT CHECK(workspace_root IS NULL OR length(workspace_root) <= 1024)
              );",
         )
         .expect("create conversations-only schema");

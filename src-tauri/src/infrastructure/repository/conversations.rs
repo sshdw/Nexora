@@ -32,6 +32,9 @@ pub(crate) struct Conversation {
     pub created_at: i64,
     /// Last modification timestamp (`updated_at`).
     pub updated_at: i64,
+    /// Canonical workspace root the conversation belongs to (v6 per-folder
+    /// history; `None` for pre-picker rows).
+    pub workspace_root: Option<String>,
 }
 
 /// Repository for the `conversations` table.
@@ -156,7 +159,7 @@ impl ConversationRepository<'_> {
     pub(crate) fn read(&self, id: i64) -> Result<Option<Conversation>> {
         let conn = self.conn()?;
         match conn.query_row(
-            "SELECT id, title, status, created_at, updated_at \
+            "SELECT id, title, status, created_at, updated_at, workspace_root \
              FROM conversations WHERE id = ?1",
             [id],
             |row| {
@@ -166,6 +169,7 @@ impl ConversationRepository<'_> {
                     status: row.get(2)?,
                     created_at: row.get(3)?,
                     updated_at: row.get(4)?,
+                    workspace_root: row.get(5)?,
                 })
             },
         ) {
@@ -238,7 +242,7 @@ impl ConversationRepository<'_> {
     pub(crate) fn list(&self) -> Result<Vec<Conversation>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT id, title, status, created_at, updated_at \
+            "SELECT id, title, status, created_at, updated_at, workspace_root \
              FROM conversations ORDER BY updated_at DESC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -248,6 +252,7 @@ impl ConversationRepository<'_> {
                 status: row.get(2)?,
                 created_at: row.get(3)?,
                 updated_at: row.get(4)?,
+                workspace_root: row.get(5)?,
             })
         })?;
         let mut conversations = Vec::new();
