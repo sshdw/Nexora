@@ -695,27 +695,37 @@ fn send(
     body: &GenerateContentRequest,
     request_timeout: Option<Duration>,
 ) -> Result<GenerateContentResponse, GeminiError> {
-    let mut builder = client
-        .post(generate_content_url(endpoint, model))
-        .header("x-goog-api-key", credential)
-        .json(body);
-    if let Some(timeout) = request_timeout {
-        builder = builder.timeout(timeout);
-    }
-    let response = builder.send().map_err(|_| GeminiError::Network)?;
+    use crate::application::execution::{is_retryable_status, retry_delay, MAX_SEND_ATTEMPTS};
+    let mut attempts: u32 = 0;
+    loop {
+        attempts += 1;
+        let mut builder = client
+            .post(generate_content_url(endpoint, model))
+            .header("x-goog-api-key", credential)
+            .json(body);
+        if let Some(timeout) = request_timeout {
+            builder = builder.timeout(timeout);
+        }
+        let response = builder.send().map_err(|_| GeminiError::Network)?;
 
-    let status = response.status();
-    if status.is_success() {
-        response
-            .json::<GenerateContentResponse>()
-            .map_err(|_| GeminiError::UnexpectedResponse)
-    } else {
+        let status = response.status();
+        if status.is_success() {
+            return response
+                .json::<GenerateContentResponse>()
+                .map_err(|_| GeminiError::UnexpectedResponse);
+        }
+        let status_u16 = status.as_u16();
         let retry_after_secs = response
             .headers()
             .get("retry-after")
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.trim().parse::<u64>().ok());
-        Err(classify_status(status.as_u16(), retry_after_secs))
+        let error = classify_status(status_u16, retry_after_secs);
+        if is_retryable_status(status_u16) && attempts < MAX_SEND_ATTEMPTS {
+            std::thread::sleep(retry_delay(retry_after_secs));
+            continue;
+        }
+        return Err(error);
     }
 }
 
@@ -1167,43 +1177,29 @@ mod tests {
 
     #[test]
     fn status_429_maps_to_rate_limited_with_retry_after() {
-        use std::io::{Read, Write};
-        use std::net::TcpListener;
-
-        // Case 1: 429 with a valid integer Retry-After header.
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test server");
-        let addr = listener.local_addr().expect("local address");
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept connection");
-            let mut raw = Vec::new();
-            let mut buf = [0u8; 1024];
-            loop {
-                match stream.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        raw.extend_from_slice(&buf[..n]);
-                        if raw.windows(4).any(|w| w == b"\r\n\r\n") {
-                            break;
-                        }
-                    }
-                }
-            }
-            let response = "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nRetry-After: 30\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-            let _ = stream.write_all(response.as_bytes());
-            let _ = stream.flush();
-        });
-        let executor = GeminiExecutor::with_endpoint(format!("http://{addr}"));
+        // Bounded retry answers all three attempts; `Retry-After: 0` keeps the
+        // test fast while exercising the header-carry path.
+        let (endpoint, _count, server) = spawn_sequence_server(vec![
+            (429, String::new(), Some("0".to_string())),
+            (429, String::new(), Some("0".to_string())),
+            (429, String::new(), Some("0".to_string())),
+        ]);
+        let executor = GeminiExecutor::with_endpoint(endpoint);
         let result = executor.execute(&sample_request(), "sk-secret-example");
         assert!(matches!(
             result,
             Err(ExecutorError::RateLimited {
-                retry_after_secs: Some(30)
+                retry_after_secs: Some(0)
             })
         ));
-        let _ = server.join();
+        server.join().expect("server thread joins");
 
-        // Case 2: 429 without the header -> None.
-        let (endpoint, _captured, server) = spawn_server(429, "");
+        // Case 2: 429 without the header -> None (all three attempts).
+        let (endpoint, _count, server) = spawn_sequence_server(vec![
+            (429, String::new(), None),
+            (429, String::new(), None),
+            (429, String::new(), None),
+        ]);
         let executor = GeminiExecutor::with_endpoint(endpoint);
         let result = executor.execute(&sample_request(), "sk-secret-example");
         assert!(matches!(
@@ -1218,7 +1214,12 @@ mod tests {
     #[test]
     fn status_5xx_maps_to_provider_unavailable() {
         for status in [500, 503] {
-            let (endpoint, _captured, server) = spawn_server(status, "");
+            // Bounded retry serves all three attempts with the same status.
+            let (endpoint, _count, server) = spawn_sequence_server(vec![
+                (status, String::new(), None),
+                (status, String::new(), None),
+                (status, String::new(), None),
+            ]);
             let executor = GeminiExecutor::with_endpoint(endpoint);
             let result = executor.execute(&sample_request(), "sk-secret-example");
             assert!(
@@ -2092,5 +2093,115 @@ mod tests {
             value.get("tools").is_none(),
             "chat body must not contain a 'tools' key: {value}"
         );
+    }
+
+    /// Spawn a local HTTP server that serves the scripted `responses` in order,
+    /// one per accepted connection, and counts accepted connections.
+    fn spawn_sequence_server(
+        responses: Vec<(u16, String, Option<String>)>,
+    ) -> (
+        String,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        std::thread::JoinHandle<()>,
+    ) {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test server");
+        let addr = listener.local_addr().expect("local address");
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count_clone = std::sync::Arc::clone(&count);
+        let server = std::thread::spawn(move || {
+            for (status, body, retry_after) in responses {
+                let (mut stream, _) = listener.accept().expect("accept connection");
+                count_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let mut raw = Vec::new();
+                let mut buf = [0u8; 1024];
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+                loop {
+                    match stream.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            raw.extend_from_slice(&buf[..n]);
+                            if raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                                break;
+                            }
+                        }
+                    }
+                }
+                let retry_header = retry_after
+                    .map(|value| format!("Retry-After: {value}\r\n"))
+                    .unwrap_or_default();
+                let response = format!(
+                    "HTTP/1.1 {status} {}\r\nContent-Type: application/json\r\n{retry_header}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    reason(status),
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        (format!("http://{addr}"), count, server)
+    }
+
+    #[test]
+    fn retry_429_then_200_succeeds() {
+        use std::sync::atomic::Ordering;
+        let success = r#"{"modelVersion":"gemini-3.6-flash","candidates":[{"content":{"parts":[{"text":"pong"}]}}]}"#.to_string();
+        let (endpoint, count, server) = spawn_sequence_server(vec![
+            (429, String::new(), Some("0".to_string())),
+            (200, success, None),
+        ]);
+        let executor = GeminiExecutor::with_endpoint(endpoint);
+        let ai = executor
+            .execute(&sample_request(), "sk-secret-example")
+            .expect("429-then-200 must succeed");
+        server.join().expect("server thread joins");
+        assert_eq!(ai.content, "pong");
+        assert_eq!(ai.model, "gemini-3.6-flash");
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn retry_503_then_200_succeeds() {
+        use std::sync::atomic::Ordering;
+        let success = r#"{"modelVersion":"gemini-3.6-flash","candidates":[{"content":{"parts":[{"text":"pong"}]}}]}"#.to_string();
+        let (endpoint, count, server) = spawn_sequence_server(vec![
+            (503, String::new(), Some("0".to_string())),
+            (200, success, None),
+        ]);
+        let executor = GeminiExecutor::with_endpoint(endpoint);
+        let ai = executor
+            .execute(&sample_request(), "sk-secret-example")
+            .expect("503-then-200 must succeed");
+        server.join().expect("server thread joins");
+        assert_eq!(ai.content, "pong");
+        assert_eq!(ai.model, "gemini-3.6-flash");
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn retry_400_is_never_retried() {
+        use std::sync::atomic::Ordering;
+        let (endpoint, count, server) = spawn_sequence_server(vec![(400, String::new(), None)]);
+        let executor = GeminiExecutor::with_endpoint(endpoint);
+        let result = executor.execute(&sample_request(), "sk-secret-example");
+        server.join().expect("server thread joins");
+        assert!(matches!(result, Err(ExecutorError::InvalidRequest)));
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn retry_attempts_are_capped_at_three() {
+        use std::sync::atomic::Ordering;
+        let (endpoint, count, server) = spawn_sequence_server(vec![
+            (503, String::new(), None),
+            (503, String::new(), None),
+            (503, String::new(), None),
+        ]);
+        let executor = GeminiExecutor::with_endpoint(endpoint);
+        let result = executor.execute(&sample_request(), "sk-secret-example");
+        server.join().expect("server thread joins");
+        assert!(matches!(result, Err(ExecutorError::ProviderUnavailable)));
+        assert_eq!(count.load(Ordering::SeqCst), 3);
     }
 }
