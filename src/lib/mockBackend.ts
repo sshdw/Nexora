@@ -70,7 +70,7 @@ const supported = [
   {
     name: "gemini",
     display_name: "Gemini",
-    models: ["gemini-3.6-flash", "gemini-3.1-flash-lite", "gemini-3.1-pro-preview"],
+    models: ["gemini-3.6-flash", "gemini-3.1-flash-lite", "gemini-3.1-pro-preview", "gemini-flash-lite-latest", "gemini-pro-latest", "gemini-3.5-flash", "gemini-3.5-flash-lite"],
   },
   {
     name: "xkiro",
