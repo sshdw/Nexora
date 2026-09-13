@@ -53,3 +53,55 @@ jobs:
       - name: cargo test
         working-directory: src-tauri
         run: cargo test
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: npx tsc --noEmit
+        run: npx tsc --noEmit
+
+      - name: npx eslint src
+        run: npx eslint src
+
+  gates-windows:
+    name: Gates Windows (fmt / clippy / test)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install baseline Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Resolve pinned toolchain (src-tauri/rust-toolchain.toml)
+        working-directory: src-tauri
+        run: |
+          rustup component add rustfmt clippy
+          rustc --version
+          rustfmt --version
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri->target
+
+      - name: cargo fmt --check
+        working-directory: src-tauri
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        working-directory: src-tauri
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: cargo test
+        working-directory: src-tauri
+        run: cargo test

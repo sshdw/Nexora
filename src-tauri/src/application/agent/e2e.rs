@@ -58,7 +58,28 @@ fn e2e_db(tag: &str) -> (Database, PathBuf) {
 fn e2e_workspace(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("nexora-e2e-ws-{}", unique_suffix(tag)));
     std::fs::create_dir_all(&dir).expect("create e2e workspace");
-    dir
+    canonical_workspace(&dir)
+}
+
+/// Canonicalize a freshly created temp workspace so the returned root is
+/// already in the form the file tools compare against. On Windows the
+/// temp dir can sit behind a junction, 8.3 short name, or an alternate
+/// separator/drive-letter/case spelling (notably on CI runners); the
+/// tools' canonical re-check then rejects the non-canonical root with
+/// `PathTraversal`. Resolving once here keeps every downstream
+/// `resolve_path`/`is_within_workspace` comparison canonical-vs-canonical.
+/// The `\\?\` verbatim prefix is stripped so paths stay readable and
+/// comparable with non-verbatim joins.
+fn canonical_workspace(dir: &Path) -> PathBuf {
+    let canon = dir.canonicalize().expect("canonicalize temp workspace");
+    let text = canon.to_string_lossy();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    if let Some(rest) = text.strip_prefix(r"\\?\") {
+        return PathBuf::from(rest);
+    }
+    canon
 }
 
 fn cleanup_db(path: &Path) {
