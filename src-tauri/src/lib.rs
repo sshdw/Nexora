@@ -34,6 +34,7 @@ pub fn run() {
             commands::conversations::restore_conversation,
             commands::conversations::delete_conversation,
             commands::conversations::send_message,
+            commands::context::conversation_context_stats,
             commands::prompts::create_prompt,
             commands::prompts::list_prompts,
             commands::prompts::update_prompt,

@@ -483,3 +483,44 @@ export function pauseAgentRun(runId: number): Promise<void> {
 export function resumeAgentRun(runId: number): Promise<void> {
   return invoke<void>("resume_agent_run", { runId });
 }
+
+// ---- Context panel (read-only stats + diff render) ----------------------
+
+/** Read-only per-conversation context stats (`conversation_context_stats`).
+ * Token sums are `0` with `has_token_data: false` ("n/a") where no persisted
+ * usage exists; nothing is ever estimated silently. Timestamps are Unix
+ * seconds. */
+export interface ConversationContextStats {
+  conversation_id: number;
+  title: string;
+  provider: string | null;
+  provider_display: string | null;
+  model: string | null;
+  context_limit: number;
+  total_tokens: number;
+  input_tokens: number;
+  output_tokens: number;
+  reasoning_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  has_token_data: boolean;
+  total_cost_micro_usd: number;
+  usage_percent: number;
+  message_count: number;
+  user_message_count: number;
+  assistant_message_count: number;
+  tool_call_count: number;
+  other_step_count: number;
+  created_at: number;
+  updated_at: number;
+}
+
+/** Load one conversation's read-only context stats via
+ * `conversation_context_stats`. */
+export function conversationContextStats(
+  conversationId: number,
+): Promise<ConversationContextStats> {
+  return invoke<ConversationContextStats>("conversation_context_stats", {
+    conversationId,
+  });
+}
