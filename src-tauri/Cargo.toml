@@ -2,6 +2,7 @@
 name = "nexora"
 version = "1.2.2"
 description = "Local-first AI desktop application"
+license = "MIT"
 authors = ["Nexora Team"]
 edition = "2021"
 
