@@ -117,6 +117,19 @@ const AGENT_SYSTEM_PROMPT: &str = AGENT_SYSTEM_PROMPT_WINDOWS;
 #[cfg(not(windows))]
 const AGENT_SYSTEM_PROMPT: &str = AGENT_SYSTEM_PROMPT_POSIX;
 
+/// Format a secret-free trace line for a thought signature.
+///
+/// Reports only presence (`present=true/false`) and byte length (`len=N`)
+/// per tool call so signature flow leaves a trace in logs; the opaque value
+/// itself is never formatted, logged, or returned.
+fn thought_signature_trace(call_id: &str, signature: Option<&String>) -> String {
+    let (present, len) = match signature {
+        Some(value) if !value.is_empty() => (true, value.len()),
+        _ => (false, 0),
+    };
+    format!("agent thought_signature call_id={call_id} present={present} len={len}")
+}
+
 // ---------------------------------------------------------------------------
 // Error
 // ---------------------------------------------------------------------------
@@ -501,6 +514,11 @@ impl<'a> AgentRunner<'a> {
             // (`Error: ...`) so the model can recover on the next turn.
             let token: &CancellationToken = control.map_or(&idle_token, RunControl::token);
             for call in &response.tool_calls {
+                // Trace-level flow marker: presence + length only, never value.
+                log::trace!(
+                    "{}",
+                    thought_signature_trace(&call.id, call.thought_signature.as_ref())
+                );
                 self.check_cancellation(control)?;
                 // Task 4.1: approval gate evaluated at the per-tool-call
                 // boundary, before dispatch. Auto paths execute exactly as
@@ -975,6 +993,36 @@ mod tests {
         assert_eq!(history[4].tool_result.as_ref().expect("p2").call_id, "p2");
         assert_eq!(history[4].tool_result.as_ref().expect("p2").content, "beta");
         let _ = fs::remove_dir_all(&ws);
+    }
+
+    /// The trace helper reports presence + length per call and never the
+    /// opaque value itself (secret hygiene).
+    #[test]
+    fn thought_signature_trace_reports_presence_never_value() {
+        let secret = "sig-runner-secret".to_string();
+        let secret_len = secret.len();
+        let present = thought_signature_trace("c9", Some(&secret));
+        assert!(
+            present.contains("present=true"),
+            "trace line reports presence: {present}"
+        );
+        assert!(
+            present.contains(&format!("len={secret_len}")),
+            "trace line reports length: {present}"
+        );
+        assert!(
+            !present.contains(&secret),
+            "trace line must never carry the value"
+        );
+        let absent = thought_signature_trace("c9", None);
+        assert!(
+            absent.contains("present=false"),
+            "trace line reports absence: {absent}"
+        );
+        assert!(
+            absent.contains("len=0"),
+            "absent signature has zero length: {absent}"
+        );
     }
 
     #[test]
