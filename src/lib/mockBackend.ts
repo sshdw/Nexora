@@ -58,14 +58,14 @@ const supported = [
     name: "openrouter",
     display_name: "OpenRouter",
     models: [
-      "minimax/minimax-m3:free",
-      "minimax/minimax-m2.7:free",
       "inclusionai/ling-3.0-flash-fin:free",
       "nvidia/nemotron-3.5-lightning:free",
-      "nvidia/nemotron-3-ultra-550b-a55b:free",
       "nvidia/nemotron-3-super-120b-a12b:free",
       "cohere/north-mini-code:free",
-      "z-ai/glm-5.2:free",
+      "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+      "inclusionai/ling-3.0-flash-sante:free",
+      "inclusionai/ling-3.0-flash-vl:free",
+      "liquid/lfm-2.5-2.6b:free",
     ],
   },
   {
