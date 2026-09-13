@@ -116,7 +116,7 @@ function TerminalView({ step }: { step: AgentStepView }) {
   );
 }
 
-function DiffView({ observation }: { observation: string | null }) {
+export function DiffView({ observation }: { observation: string | null }) {
   if (!observation) return <span className="nex-agent-step-empty">No changes</span>;
   const lines = observation.split("\n");
   // Remove trailing empty line from final split if observation ends with newline

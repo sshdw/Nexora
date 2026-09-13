@@ -1,7 +1,7 @@
 /* ============================================================
-   Context panel — read-only per-conversation stats.
-   Layout only; primitives (.nex-tag) come from components.css.
-   All values via tokens.
+   Context panel — read-only per-conversation stats + diff list.
+   Layout only; primitives (.nex-tag, .nex-agent-diff*) come from
+   components.css / conversation.css. All values via tokens.
    ============================================================ */
 
 .nex-context-tabs {
@@ -101,4 +101,17 @@
   width: 8px;
   height: 8px;
   border-radius: var(--nex-sys-shape-corner-full);
+}
+
+.nex-context-file-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nex-sys-space-md);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.nex-context-file-header {
+  margin-bottom: var(--nex-sys-space-xs);
 }
