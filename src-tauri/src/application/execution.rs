@@ -340,6 +340,25 @@ impl std::fmt::Display for ExecutorError {
 
 impl std::error::Error for ExecutorError {}
 
+/// Maximum attempts for one provider HTTP send: the initial try plus up to two
+/// retries (bounded retry for 429/5xx only).
+pub(crate) const MAX_SEND_ATTEMPTS: u32 = 3;
+
+/// Upper bound honored for a provider `Retry-After` hint (seconds).
+pub(crate) const MAX_RETRY_DELAY_SECS: u64 = 30;
+
+/// Returns true iff `status` is retryable: HTTP 429 or any 5xx. All other
+/// statuses (including 400/401/402/403/404) are never retried.
+pub(crate) fn is_retryable_status(status: u16) -> bool {
+    status == 429 || (500..=599).contains(&status)
+}
+
+/// Bounded backoff for a retryable failure: `min(retry_after, 30s)`. A missing
+/// or unparsable `Retry-After` (already `None` at the call site) waits zero.
+pub(crate) fn retry_delay(retry_after_secs: Option<u64>) -> std::time::Duration {
+    std::time::Duration::from_secs(retry_after_secs.unwrap_or(0).min(MAX_RETRY_DELAY_SECS))
+}
+
 /// Provider-independent execution boundary (ARCHITECTURE.md §7).
 ///
 /// A provider-specific implementation of this trait performs the actual
@@ -875,5 +894,30 @@ mod tests {
             message: "boom".into(),
         };
         assert_eq!(err.to_string(), "the AI provider 'openai' failed: boom");
+    }
+
+    #[test]
+    fn retryable_status_is_only_429_and_5xx() {
+        assert!(is_retryable_status(429));
+        assert!(is_retryable_status(500));
+        assert!(is_retryable_status(503));
+        assert!(!is_retryable_status(400));
+        assert!(!is_retryable_status(401));
+        assert!(!is_retryable_status(402));
+        assert!(!is_retryable_status(403));
+        assert!(!is_retryable_status(404));
+        assert!(!is_retryable_status(422));
+    }
+
+    #[test]
+    fn retry_delay_caps_retry_after_at_30s() {
+        use std::time::Duration;
+        assert_eq!(MAX_SEND_ATTEMPTS, 3);
+        assert_eq!(MAX_RETRY_DELAY_SECS, 30);
+        assert_eq!(retry_delay(None), Duration::from_secs(0));
+        assert_eq!(retry_delay(Some(0)), Duration::from_secs(0));
+        assert_eq!(retry_delay(Some(5)), Duration::from_secs(5));
+        assert_eq!(retry_delay(Some(30)), Duration::from_secs(30));
+        assert_eq!(retry_delay(Some(120)), Duration::from_secs(30));
     }
 }
