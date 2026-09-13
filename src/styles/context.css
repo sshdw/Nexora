@@ -1,0 +1,104 @@
+/* ============================================================
+   Context panel — read-only per-conversation stats.
+   Layout only; primitives (.nex-tag) come from components.css.
+   All values via tokens.
+   ============================================================ */
+
+.nex-context-tabs {
+  display: flex;
+  align-items: center;
+  gap: var(--nex-sys-space-xs);
+  padding: var(--nex-sys-space-xs) var(--nex-sys-space-md);
+  background: var(--nex-sys-color-surface-container);
+  border-bottom: 1px solid var(--nex-sys-color-outline-variant);
+}
+
+.nex-context {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--nex-sys-space-lg) var(--nex-sys-space-xl);
+}
+
+.nex-context-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  column-gap: var(--nex-sys-space-xl);
+  row-gap: var(--nex-sys-space-md);
+  margin: 0;
+}
+
+.nex-context-cell {
+  min-width: 0;
+}
+
+.nex-context-label {
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-on-surface-tertiary);
+}
+
+.nex-context-value {
+  margin: var(--nex-sys-space-xxs) 0 0;
+  font-size: var(--nex-sys-type-size-body-large);
+  font-weight: var(--nex-sys-type-weight-semibold);
+  color: var(--nex-sys-color-on-surface);
+  overflow-wrap: anywhere;
+}
+
+.nex-context-section-title {
+  margin: var(--nex-sys-space-xl) 0 var(--nex-sys-space-sm);
+  font-size: var(--nex-sys-type-size-body-small);
+  font-weight: var(--nex-sys-type-weight-medium);
+  color: var(--nex-sys-color-on-surface-tertiary);
+}
+
+.nex-context-bar {
+  display: flex;
+  height: 8px;
+  overflow: hidden;
+  border-radius: var(--nex-sys-shape-corner-full);
+  background: var(--nex-sys-color-surface-container-high);
+}
+
+.nex-context-seg {
+  height: 100%;
+}
+
+.nex-context-seg-user {
+  background: var(--nex-sys-color-primary);
+}
+
+.nex-context-seg-assistant {
+  background: var(--nex-sys-color-success);
+}
+
+.nex-context-seg-tools {
+  background: var(--nex-sys-color-tertiary);
+}
+
+.nex-context-seg-other {
+  background: var(--nex-sys-color-on-surface-faint);
+}
+
+.nex-context-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--nex-sys-space-md);
+  margin: var(--nex-sys-space-sm) 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-on-surface-variant);
+}
+
+.nex-context-legend li {
+  display: flex;
+  align-items: center;
+  gap: var(--nex-sys-space-xxs);
+}
+
+.nex-context-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--nex-sys-shape-corner-full);
+}

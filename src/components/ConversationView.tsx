@@ -31,6 +31,7 @@ import { useAttachments } from "../lib/useAttachments";
 import { useConversation } from "../lib/useConversation";
 import Tooltip from "./Tooltip";
 import AgentRunSteps from "./AgentRunSteps";
+import ContextPanel from "./ContextPanel";
 import { ArrowUpIcon, CloseIcon, PaperclipIcon } from "./icons";
 import NexoraMark from "./NexoraMark";
 
@@ -71,6 +72,7 @@ export default function ConversationView({
   } = useAttachments(conversationId);
   const { runs, reload: reloadAgent } = useAgentRun(conversationId);
   const [agentMode, setAgentMode] = useState<boolean>(false);
+  const [viewMode, setViewMode] = useState<"chat" | "context">("chat");
   const [autonomyMode, setAutonomyMode] = useState<AutonomyMode>("semi_autonomous");
   const [agentBusy, setAgentBusy] = useState<boolean>(false);
   const [agentError, setAgentError] = useState<string | null>(null);
@@ -258,6 +260,32 @@ export default function ConversationView({
 
   return (
     <div className="nex-main-conversation">
+      <div className="nex-context-tabs">
+        <div className="nex-seg" role="tablist" aria-label="Conversation view">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={viewMode === "chat"}
+            className={viewMode === "chat" ? "is-active" : undefined}
+            onClick={() => setViewMode("chat")}
+          >
+            Chat
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={viewMode === "context"}
+            className={viewMode === "context" ? "is-active" : undefined}
+            onClick={() => setViewMode("context")}
+          >
+            Context
+          </button>
+        </div>
+      </div>
+      {viewMode === "context" ? (
+        <ContextPanel conversationId={conversationId} />
+      ) : (
+        <>
       <div className="nex-thread" ref={threadRef} aria-label="Messages">
         {loading ? (
           <p className="nex-thread-status nex-fade-in" role="status">
@@ -496,6 +524,8 @@ export default function ConversationView({
           )}
         </div>
       </div>
+        </>
+      )}
     </div>
   );
 }

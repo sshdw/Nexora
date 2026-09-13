@@ -7,6 +7,7 @@ import "./styles/theme.css";
 import "./styles.css";
 import "./styles/components.css";
 import "./styles/conversation.css";
+import "./styles/context.css";
 import "./styles/settings.css";
 import "./styles/prompts.css";
 import "./styles/importExport.css";
