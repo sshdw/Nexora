@@ -1,6 +1,6 @@
 [package]
 name = "nexora"
-version = "1.2.3"
+version = "1.2.4"
 description = "Local-first AI desktop application"
 license = "MIT"
 authors = ["Nexora Team"]

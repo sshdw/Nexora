@@ -95,9 +95,9 @@ const MOCK_DEFAULT_PROVIDER = supported[2].name;
 const MOCK_DEFAULT_MODEL = supported[2].models[0];
 
 const conversations = [
-  { id: 1, title: "Designing the composer", status: "active", created_at: hoursAgo(30), updated_at: hoursAgo(1) },
-  { id: 2, title: "Rust migration notes", status: "active", created_at: hoursAgo(50), updated_at: hoursAgo(5) },
-  { id: 3, title: "Old research thread", status: "archived", created_at: hoursAgo(200), updated_at: hoursAgo(96) },
+  { id: 1, title: "Designing the composer", status: "active", created_at: hoursAgo(30), updated_at: hoursAgo(1), workspace_root: null as string | null },
+  { id: 2, title: "Rust migration notes", status: "active", created_at: hoursAgo(50), updated_at: hoursAgo(5), workspace_root: null as string | null },
+  { id: 3, title: "Old research thread", status: "archived", created_at: hoursAgo(200), updated_at: hoursAgo(96), workspace_root: null as string | null },
 ];
 
 const messages: MockMessage[] = [
@@ -119,6 +119,10 @@ const settings = new Map<string, string>([
   ["appearance.theme", "dark"],
   ["agent.autonomy", "semi_autonomous"],
 ]);
+
+// ---- Agent workspace folder mock state (1.2.4) ----
+let mockWorkspaceRoot = "C:\\mock\\workspace";
+let mockWorkspaceRecent: string[] = ["C:\\mock\\workspace"];
 
 const attachments: Array<{
   id: number;
@@ -215,6 +219,7 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
         status: "active",
         created_at: now(),
         updated_at: now(),
+        workspace_root: mockWorkspaceRoot,
       });
       return id;
     }
@@ -385,6 +390,7 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
         status: "active",
         created_at: now(),
         updated_at: now(),
+        workspace_root: mockWorkspaceRoot,
       });
       return id;
     }
@@ -441,6 +447,30 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
       }
       return { content: "ok", model: String(args.model) };
     }
+    // ---- Agent workspace folder (1.2.4) ----
+    case "get_workspace_root":
+      return mockWorkspaceRoot;
+    case "set_workspace_root": {
+      const raw = String(args.path ?? "");
+      const trimmed = raw.trim();
+      if (!trimmed) throw { kind: "invalidInput", message: "invalid workspace root: path must not be empty" };
+      if (trimmed.length > 1024) throw { kind: "invalidInput", message: "invalid workspace root: path exceeds 1024 characters" };
+      const lowered = trimmed.toLowerCase().replace(/\//g, "\\");
+      const noTrail = lowered.replace(/\\+$/, "");
+      if (noTrail === "c:\\windows" || noTrail.startsWith("c:\\windows\\")) {
+        throw { kind: "invalidInput", message: "invalid workspace root: the Windows system directory is not allowed" };
+      }
+      if (/^[a-z]:$/.test(noTrail) || noTrail === "" || noTrail === "\\") {
+        throw { kind: "invalidInput", message: "invalid workspace root: a drive root is not allowed" };
+      }
+      mockWorkspaceRoot = trimmed;
+      mockWorkspaceRecent = [trimmed, ...mockWorkspaceRecent.filter((p) => p !== trimmed)].slice(0, 5);
+      settings.set("agent.workspace_root", trimmed);
+      settings.set("agent.workspace_recent", JSON.stringify(mockWorkspaceRecent));
+      return mockWorkspaceRoot;
+    }
+    case "list_workspace_recent":
+      return [...mockWorkspaceRecent];
     // ---- Agent runs (Task 5.1/5.2) ----
     case "start_agent_run": {
       const conversationId = Number(requireArg(args, "start_agent_run", "conversationId"));

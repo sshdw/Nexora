@@ -10,11 +10,11 @@ import { isCustomModelId, type ProvidersStore } from "../lib/useProviders";
  * (FR-013 clear-all), and Provider credentials (FR-014). Conversation and
  * export preferences have no defined implementation behavior and are therefore
  * intentionally absent (no invented MVP settings). */
-type SettingsSectionId = "appearance" | "provider" | "data" | "credentials";
+type SettingsSectionId = "appearance" | "provider" | "data" | "credentials" | "workspace";
 
 const NAV: { label: string; items: { id: SettingsSectionId; t: string }[] }[] = [
   { label: "General", items: [{ id: "appearance", t: "Appearance" }] },
-  { label: "AI", items: [{ id: "provider", t: "Provider & model" }] },
+  { label: "AI", items: [{ id: "provider", t: "Provider & model" }, { id: "workspace", t: "Workspace folder" }] },
   { label: "Data", items: [{ id: "data", t: "Data management" }] },
   { label: "Providers", items: [{ id: "credentials", t: "Credentials" }] },
 ];
@@ -30,6 +30,9 @@ export interface SettingsViewProps {
   store: ProvidersStore;
   /** Persisted appearance preference lifted in App so it loads at startup. */
   appearance: AppearanceStore;
+  /** Current agent workspace root (1.2.4, read-only here; change via sidebar). */
+  workspaceRoot: string | null;
+  workspaceLoading: boolean;
   /** Refresh conversation-dependent UI after all local data is cleared. */
   onDataCleared: () => void;
 }
@@ -38,6 +41,8 @@ export default function SettingsView({
   onClose,
   store,
   appearance,
+  workspaceRoot,
+  workspaceLoading,
   onDataCleared,
 }: SettingsViewProps) {
   const [section, setSection] = useState<SettingsSectionId>("appearance");
@@ -314,6 +319,24 @@ export default function SettingsView({
                     </p>
                   </div>
                 )}
+              </section>
+            )}
+
+            {section === "workspace" && (
+              <section className="nex-settings-section" aria-labelledby="workspace-heading">
+                <h3 id="workspace-heading" className="nex-settings-heading">
+                  Workspace folder
+                </h3>
+                <p className="nex-settings-hint">
+                  The folder the agent&apos;s tools are scoped to. Change it from the
+                  sidebar folder picker; the 5 most recent folders are kept there.
+                </p>
+                <div className="nex-settings-field">
+                  <span className="nex-settings-label">Current root</span>
+                  <p className="nex-settings-value" title={workspaceRoot ?? ""}>
+                    {workspaceLoading ? "Loading…" : (workspaceRoot ?? "Unset")}
+                  </p>
+                </div>
               </section>
             )}
 

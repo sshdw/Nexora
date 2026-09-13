@@ -9,11 +9,13 @@ import PromptLibraryView from "./components/PromptLibraryView";
 import SettingsView from "./components/SettingsView";
 import Sidebar from "./components/Sidebar";
 import Tooltip from "./components/Tooltip";
+import WorkspaceChip from "./components/WorkspaceChip";
 import type { Conversation } from "./lib/tauri";
 import { useAppearance } from "./lib/useAppearance";
 import { useConversations } from "./lib/useConversations";
 import { useImportExport } from "./lib/useImportExport";
 import { useProviders } from "./lib/useProviders";
+import { useWorkspace } from "./lib/useWorkspace";
 
 interface MainContentProps {
   selected: Conversation | undefined;
@@ -26,6 +28,8 @@ interface MainContentProps {
   onMessageSent: () => void;
   onNewConversation: () => void;
   onExport: (id: number) => void;
+  workspaceRoot: string | null;
+  workspaceLoading: boolean;
 }
 
 function MainContent({
@@ -39,6 +43,8 @@ function MainContent({
   onMessageSent,
   onNewConversation,
   onExport,
+  workspaceRoot,
+  workspaceLoading,
 }: MainContentProps) {
   if (!selected) {
     if (!hasConversations) {
@@ -85,6 +91,7 @@ function MainContent({
           )}
         </h2>
         <div className="nex-main-header-actions">
+          <WorkspaceChip root={workspaceRoot} loading={workspaceLoading} />
           <Tooltip label="Export conversation">
             <button
               type="button"
@@ -146,6 +153,9 @@ function App() {
   const io = useImportExport();
   const [exportTargetId, setExportTargetId] = useState<number | null>(null);
   const [importOpen, setImportOpen] = useState(false);
+  // Agent workspace folder (1.2.4): sidebar picker + header indicator share
+  // this store; Settings reads it read-only.
+  const workspace = useWorkspace();
 
   // After a successful import the conversation list is reloaded from the
   // backend (single source of truth) and the new conversation is opened.
@@ -240,6 +250,7 @@ function App() {
         onArchive={(id) => void archive(id)}
         onRestore={(id) => void restore(id)}
         onDelete={(id) => void remove(id)}
+        workspace={workspace}
       />
       <div className="nex-main">
         {libraryOpen ? (
@@ -253,6 +264,8 @@ function App() {
           <SettingsView
             store={providers}
             appearance={appearance}
+            workspaceRoot={workspace.root}
+            workspaceLoading={workspace.loading}
             onClose={() => setSettingsOpen(false)}
             onDataCleared={() => void reload()}
           />
@@ -268,6 +281,8 @@ function App() {
             onMessageSent={() => void reload()}
             onNewConversation={() => void handleNewConversation()}
             onExport={setExportTargetId}
+            workspaceRoot={workspace.root}
+            workspaceLoading={workspace.loading}
           />
         )}
       </div>
