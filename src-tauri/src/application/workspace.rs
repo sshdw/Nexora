@@ -127,6 +127,21 @@ pub(crate) fn validate_workspace_root(raw: &str) -> Result<PathBuf, WorkspaceErr
 /// `C:\Windows`-only guard so the agent cannot be scoped into a system
 /// directory on another drive or a Unix system tree.
 pub(crate) fn is_system_path(path: &Path) -> bool {
+    is_system_path_inner(path, true)
+}
+
+/// Whether `path` is a protected system location for file attachments
+/// (case-insensitive, either separator).
+///
+/// Same single blocklist as [`is_system_path`] except the `C:\Users` tree is
+/// excluded: every legitimate user file lives under `C:\Users`, so the
+/// workspace-root guard cannot be reused for attachments. The any-drive
+/// `%SystemRoot%` rule still applies.
+pub(crate) fn is_system_file_path(path: &Path) -> bool {
+    is_system_path_inner(path, false)
+}
+
+fn is_system_path_inner(path: &Path, include_users_tree: bool) -> bool {
     let normalized = normalize_guard_path(path);
     #[cfg(windows)]
     {
@@ -146,6 +161,9 @@ pub(crate) fn is_system_path(path: &Path) -> bool {
             r"c:\windows.old",
             r"c:\$recycle.bin",
         ] {
+            if !include_users_tree && entry == r"c:\users" {
+                continue;
+            }
             if normalized == entry || normalized.starts_with(&format!("{entry}\\")) {
                 return true;
             }
@@ -154,6 +172,7 @@ pub(crate) fn is_system_path(path: &Path) -> bool {
     }
     #[cfg(not(windows))]
     {
+        let _ = include_users_tree;
         for entry in [
             r"\etc",
             r"\usr",
@@ -235,7 +254,7 @@ pub(crate) fn is_drive_root(path: &Path) -> bool {
 
 /// Strip the Windows verbatim (`\\?\`) prefix so stored paths stay readable
 /// and comparable with non-verbatim joins.
-fn strip_verbatim(path: PathBuf) -> PathBuf {
+pub(crate) fn strip_verbatim(path: PathBuf) -> PathBuf {
     let text = path.to_string_lossy().to_string();
     if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
         return PathBuf::from(format!(r"\\{rest}"));
