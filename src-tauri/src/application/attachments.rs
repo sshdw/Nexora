@@ -908,7 +908,7 @@ mod tests {
     }
 
     #[test]
-    fn attachment_path_rejects_relative_and_missing_and_directory_and_unc() {
+    fn attachment_path_rejects_relative_and_missing_and_directory() {
         assert_eq!(
             invalid_file_path_reason("relative/notes.txt"),
             ("file_path", "must be an absolute path")
@@ -926,8 +926,28 @@ mod tests {
             invalid_file_path_reason(dir.to_string_lossy().as_ref()),
             ("file_path", "must be an existing regular file")
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn attachment_path_rejects_unc_network_path() {
+        // The backslash form is what a real Windows caller sends: the UNC
+        // prefix makes it absolute, so the UNC guard (check 5) fires.
         assert_eq!(
             invalid_file_path_reason(r"\\server\share\file.txt"),
+            ("file_path", "UNC network paths are not allowed")
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn attachment_path_rejects_unc_network_path() {
+        // The backslash form is relative on Unix (no leading `/`), so the
+        // absolute-path guard would fire before the UNC guard there. The
+        // forward-slash form is absolute on Unix, and `is_unc_text`
+        // normalizes `/` to `\`, so the UNC guard fires on both platforms.
+        assert_eq!(
+            invalid_file_path_reason("//server/share/file.txt"),
             ("file_path", "UNC network paths are not allowed")
         );
     }
@@ -971,7 +991,8 @@ mod tests {
     #[test]
     fn attachment_path_accepts_regular_file_as_canonical_and_user_profile() {
         // A regular temp file is accepted and the stored path is canonical.
-        // Temp dirs live under C:\Users\<user>\AppData\Local\Temp on Windows,
+        // Temp dirs live under C:\Users\<user>\AppData\Local\Temp on Windows
+        // (elsewhere, e.g. /tmp, on Unix — likewise outside the file guard),
         // so this also proves the C:\Users tree is NOT blocked for
         // attachments (unlike the workspace-root guard).
         let db = test_db();
