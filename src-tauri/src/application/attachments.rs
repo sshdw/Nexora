@@ -29,6 +29,11 @@
 //! `RAG`, `AST` analysis, and full-text search — is out of Phase 6 scope and is
 //! not implemented here.
 
+use std::path::{Path, PathBuf};
+
+use super::workspace::{
+    is_drive_root, is_system_file_path, is_unc_path, strip_verbatim, WORKSPACE_ROOT_MAX_LEN,
+};
 use crate::infrastructure::database::{Database, DatabaseError};
 use crate::infrastructure::repository::attachments::{Attachment, AttachmentRepository};
 use crate::infrastructure::repository::conversations::ConversationRepository;
@@ -101,10 +106,13 @@ impl<'a> AttachmentService<'a> {
             });
         }
 
+        let canonical = resolve_attachment_file_path(file_path)?;
+        let canonical_text = canonical.to_string_lossy().into_owned();
+
         let id = self.attachments.create(
             conversation_id,
             file_name,
-            file_path,
+            &canonical_text,
             file_size_bytes,
             mime_type,
         )?;
@@ -276,10 +284,128 @@ fn validate_attachment_input(
     }
     Ok(())
 }
+
+/// Resolve `raw` as an attachment file path and return its canonical form.
+///
+/// Checks run in exactly this order, mirroring [`super::workspace::validate_workspace_root`]:
+/// trim, reject empty / null-byte / overlong / relative / UNC / protected-system
+/// paths, canonicalize via the filesystem (non-existent paths fail here), then
+/// reject UNC / non-file / protected-system / drive-root canonical paths and
+/// overlong canonical text. The returned path is the canonicalized absolute
+/// path with any Windows verbatim prefix stripped, ready to store.
+///
+/// Every failure is the existing [`AttachmentError::InvalidInput`] with
+/// `field: "file_path"` and a static reason that never contains the path or
+/// file content. No extension/MIME allowlist and no user-profile sub-path
+/// blocklist are applied here.
+pub(crate) fn resolve_attachment_file_path(raw: &str) -> Result<PathBuf> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(AttachmentError::InvalidInput {
+            field: "file_path",
+            reason: "must not be empty",
+        });
+    }
+    if trimmed.contains('\0') {
+        return Err(AttachmentError::InvalidInput {
+            field: "file_path",
+            reason: "must not contain a null byte",
+        });
+    }
+    if trimmed.len() > WORKSPACE_ROOT_MAX_LEN {
+        return Err(AttachmentError::InvalidInput {
+            field: "file_path",
+            reason: "must be at most 1024 characters",
+        });
+    }
+    if !Path::new(trimmed).is_absolute() {
+        return Err(AttachmentError::InvalidInput {
+            field: "file_path",
+            reason: "must be an absolute path",
+        });
+    }
+    if is_unc_path(Path::new(trimmed)) {
+        return Err(AttachmentError::InvalidInput {
+            field: "file_path",
+            reason: "UNC network paths are not allowed",
+        });
+    }
+    if is_system_file_path(Path::new(trimmed)) {
+        return Err(AttachmentError::InvalidInput {
+            field: "file_path",
+            reason: "a protected system location is not allowed",
+        });
+    }
+    let canonical = std::fs::canonicalize(trimmed).map_err(|_| AttachmentError::InvalidInput {
+        field: "file_path",
+        reason: "path does not exist",
+    })?;
+    let canonical = strip_verbatim(canonical);
+    if is_unc_path(&canonical) {
+        return Err(AttachmentError::InvalidInput {
+            field: "file_path",
+            reason: "UNC network paths are not allowed",
+        });
+    }
+    if !canonical.is_file() {
+        return Err(AttachmentError::InvalidInput {
+            field: "file_path",
+            reason: "must be an existing regular file",
+        });
+    }
+    if is_system_file_path(&canonical) {
+        return Err(AttachmentError::InvalidInput {
+            field: "file_path",
+            reason: "a protected system location is not allowed",
+        });
+    }
+    if is_drive_root(&canonical) {
+        return Err(AttachmentError::InvalidInput {
+            field: "file_path",
+            reason: "a drive root is not allowed",
+        });
+    }
+    if canonical.to_string_lossy().len() > WORKSPACE_ROOT_MAX_LEN {
+        return Err(AttachmentError::InvalidInput {
+            field: "file_path",
+            reason: "canonical path exceeds 1024 characters",
+        });
+    }
+    Ok(canonical)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
     use rusqlite::Connection;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static FILE_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    /// Create a real temporary file with `contents` and return its path.
+    /// The service canonicalizes on attach, so callers must compare the
+    /// stored path against the canonical form, not this raw path.
+    fn temp_file(contents: &[u8]) -> PathBuf {
+        let id = FILE_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "nexora-attach-test-{}-{}-{id}.txt",
+            std::process::id(),
+            nanos
+        ));
+        std::fs::write(&path, contents).expect("write temp attachment file");
+        path
+    }
+
+    /// Canonical form of `path` as the service stores it.
+    fn canonical_str(path: &Path) -> String {
+        resolve_attachment_file_path(path.to_string_lossy().as_ref())
+            .expect("temp file resolves")
+            .to_string_lossy()
+            .into_owned()
+    }
 
     /// Build a service over an in-memory database whose schema mirrors the
     /// documented `conversations` / `attachments` tables (DATABASE.md §7.1,
@@ -355,12 +481,13 @@ mod tests {
         let db = test_db();
         let service = AttachmentService::new(&db);
         let conversation_id = create_conversation(&db);
+        let path = temp_file(b"notes body");
 
         let attachment = service
             .attach(
                 conversation_id,
                 "notes.txt",
-                "C:\\docs\\notes.txt",
+                path.to_string_lossy().as_ref(),
                 Some(12),
                 Some("text/plain"),
             )
@@ -371,12 +498,14 @@ mod tests {
         assert_eq!(attachment.conversation_id, conversation_id);
         assert_eq!(attachment.message_id, None);
         assert_eq!(attachment.file_name, "notes.txt");
-        assert_eq!(attachment.file_path, "C:\\docs\\notes.txt");
+        // The stored path is the canonical form, not the raw input.
+        assert_eq!(attachment.file_path, canonical_str(&path));
         assert_eq!(attachment.file_size_bytes, Some(12));
         assert_eq!(attachment.mime_type.as_deref(), Some("text/plain"));
 
         // The row is independently persisted through the repository.
         assert_eq!(read_attachment(&db, attachment.id), attachment);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -385,12 +514,26 @@ mod tests {
         let service = AttachmentService::new(&db);
         let first = create_conversation(&db);
         let second = create_conversation(&db);
+        let first_path = temp_file(b"a");
+        let second_path = temp_file(b"b");
 
         let first_file = service
-            .attach(first, "a.txt", "/tmp/a.txt", None, None)
+            .attach(
+                first,
+                "a.txt",
+                first_path.to_string_lossy().as_ref(),
+                None,
+                None,
+            )
             .expect("attach to first");
         let second_file = service
-            .attach(second, "b.txt", "/tmp/b.txt", None, None)
+            .attach(
+                second,
+                "b.txt",
+                second_path.to_string_lossy().as_ref(),
+                None,
+                None,
+            )
             .expect("attach to second");
 
         let first_drafts = service.list(first).expect("list first");
@@ -402,6 +545,8 @@ mod tests {
         assert_eq!(second_drafts.len(), 1);
         assert_eq!(second_drafts[0].id, second_file.id);
         assert_eq!(second_drafts[0].conversation_id, second);
+        let _ = std::fs::remove_file(&first_path);
+        let _ = std::fs::remove_file(&second_path);
     }
 
     #[test]
@@ -409,18 +554,26 @@ mod tests {
         let db = test_db();
         let service = AttachmentService::new(&db);
         let conversation_id = create_conversation(&db);
+        let first_path = temp_file(b"a");
+        let second_path = temp_file(b"b");
 
         let first = service
             .attach(
                 conversation_id,
                 "a.txt",
-                "/tmp/a.txt",
+                first_path.to_string_lossy().as_ref(),
                 Some(1),
                 Some("text/plain"),
             )
             .expect("attach first");
         let second = service
-            .attach(conversation_id, "b.txt", "/tmp/b.txt", Some(2), None)
+            .attach(
+                conversation_id,
+                "b.txt",
+                second_path.to_string_lossy().as_ref(),
+                Some(2),
+                None,
+            )
             .expect("attach second");
 
         let drafts = service.list(conversation_id).expect("list attachments");
@@ -437,8 +590,15 @@ mod tests {
         let db = test_db();
         let service = AttachmentService::new(&db);
         let conversation_id = create_conversation(&db);
+        let path = temp_file(b"note");
         let id = service
-            .attach(conversation_id, "note.txt", "/tmp/note.txt", None, None)
+            .attach(
+                conversation_id,
+                "note.txt",
+                path.to_string_lossy().as_ref(),
+                None,
+                None,
+            )
             .expect("attachment created")
             .id;
 
@@ -457,8 +617,15 @@ mod tests {
         let db = test_db();
         let service = AttachmentService::new(&db);
         let conversation_id = create_conversation(&db);
+        let path = temp_file(b"note");
         let id = service
-            .attach(conversation_id, "note.txt", "/tmp/note.txt", None, None)
+            .attach(
+                conversation_id,
+                "note.txt",
+                path.to_string_lossy().as_ref(),
+                None,
+                None,
+            )
             .expect("attachment created")
             .id;
 
@@ -473,12 +640,26 @@ mod tests {
         let db = test_db();
         let service = AttachmentService::new(&db);
         let conversation_id = create_conversation(&db);
+        let keep_path = temp_file(b"keep");
+        let gone_path = temp_file(b"gone");
         let keep = service
-            .attach(conversation_id, "keep.txt", "/tmp/keep.txt", None, None)
+            .attach(
+                conversation_id,
+                "keep.txt",
+                keep_path.to_string_lossy().as_ref(),
+                None,
+                None,
+            )
             .expect("attach kept file")
             .id;
         let gone = service
-            .attach(conversation_id, "gone.txt", "/tmp/gone.txt", None, None)
+            .attach(
+                conversation_id,
+                "gone.txt",
+                gone_path.to_string_lossy().as_ref(),
+                None,
+                None,
+            )
             .expect("attach removed file")
             .id;
 
@@ -632,11 +813,12 @@ mod tests {
         // upper/lower bounds the schema permits.
         let name = "x".repeat(255);
         let mime = "m".repeat(127);
+        let path = temp_file(b"boundary");
         let attachment = service
             .attach(
                 conversation_id,
                 &name,
-                "/tmp/boundary.txt",
+                path.to_string_lossy().as_ref(),
                 Some(0),
                 Some(&mime),
             )
@@ -655,19 +837,20 @@ mod tests {
         let db = test_db();
         let service = AttachmentService::new(&db);
         let conversation_id = create_conversation(&db);
+        let path = temp_file(b"xyz");
 
         let attachment = service
             .attach(
                 conversation_id,
                 "archive.xyz",
-                "/tmp/archive.xyz",
+                path.to_string_lossy().as_ref(),
                 Some(3),
                 Some("application/x-unknown"),
             )
             .expect("arbitrary file type accepted");
 
         assert_eq!(attachment.file_name, "archive.xyz");
-        assert_eq!(attachment.file_path, "/tmp/archive.xyz");
+        assert_eq!(attachment.file_path, canonical_str(&path));
         assert_eq!(
             attachment.mime_type.as_deref(),
             Some("application/x-unknown")
@@ -701,11 +884,135 @@ mod tests {
             .create("Chat", "active")
             .expect("conversation created");
         let service = AttachmentService::new(&db);
+        let path = temp_file(b"note");
 
         let err = service
-            .attach(conversation_id, "note.txt", "/tmp/note.txt", None, None)
+            .attach(
+                conversation_id,
+                "note.txt",
+                path.to_string_lossy().as_ref(),
+                None,
+                None,
+            )
             .expect_err("missing attachments table");
 
         assert!(matches!(err, AttachmentError::Database(_)));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    fn invalid_file_path_reason(raw: &str) -> (&'static str, &'static str) {
+        match resolve_attachment_file_path(raw) {
+            Err(AttachmentError::InvalidInput { field, reason }) => (field, reason),
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn attachment_path_rejects_relative_and_missing_and_directory() {
+        assert_eq!(
+            invalid_file_path_reason("relative/notes.txt"),
+            ("file_path", "must be an absolute path")
+        );
+        let missing = std::env::temp_dir().join("nexora-attach-missing-9f3c2a1e.txt");
+        let _ = std::fs::remove_file(&missing);
+        assert_eq!(
+            invalid_file_path_reason(missing.to_string_lossy().as_ref()),
+            ("file_path", "path does not exist")
+        );
+        let dir = std::env::temp_dir()
+            .canonicalize()
+            .unwrap_or_else(|_| std::env::temp_dir());
+        assert_eq!(
+            invalid_file_path_reason(dir.to_string_lossy().as_ref()),
+            ("file_path", "must be an existing regular file")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn attachment_path_rejects_unc_network_path() {
+        // The backslash form is what a real Windows caller sends: the UNC
+        // prefix makes it absolute, so the UNC guard (check 5) fires.
+        assert_eq!(
+            invalid_file_path_reason(r"\\server\share\file.txt"),
+            ("file_path", "UNC network paths are not allowed")
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn attachment_path_rejects_unc_network_path() {
+        // The backslash form is relative on Unix (no leading `/`), so the
+        // absolute-path guard would fire before the UNC guard there. The
+        // forward-slash form is absolute on Unix, and `is_unc_text`
+        // normalizes `/` to `\`, so the UNC guard fires on both platforms.
+        assert_eq!(
+            invalid_file_path_reason("//server/share/file.txt"),
+            ("file_path", "UNC network paths are not allowed")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn attachment_path_rejects_protected_location_and_drive_root() {
+        assert_eq!(
+            invalid_file_path_reason(r"C:\Windows\System32\definitely-missing.dll"),
+            ("file_path", "a protected system location is not allowed")
+        );
+        // A drive root is a directory, so it fails the regular-file check
+        // before the drive-root check; either way it must be rejected.
+        let (field, _) = invalid_file_path_reason(r"C:\");
+        assert_eq!(field, "file_path");
+        assert_eq!(
+            invalid_file_path_reason(""),
+            ("file_path", "must not be empty")
+        );
+        assert_eq!(
+            invalid_file_path_reason("C:\\tmp\0x.txt"),
+            ("file_path", "must not contain a null byte")
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn attachment_path_rejects_protected_location_and_drive_root() {
+        assert_eq!(
+            invalid_file_path_reason("/etc/definitely-missing-9f3c2a1e.conf"),
+            ("file_path", "a protected system location is not allowed")
+        );
+        let (field, _) = invalid_file_path_reason("/");
+        assert_eq!(field, "file_path");
+        assert_eq!(
+            invalid_file_path_reason(""),
+            ("file_path", "must not be empty")
+        );
+    }
+
+    #[test]
+    fn attachment_path_accepts_regular_file_as_canonical_and_user_profile() {
+        // A regular temp file is accepted and the stored path is canonical.
+        // Temp dirs live under C:\Users\<user>\AppData\Local\Temp on Windows
+        // (elsewhere, e.g. /tmp, on Unix — likewise outside the file guard),
+        // so this also proves the C:\Users tree is NOT blocked for
+        // attachments (unlike the workspace-root guard).
+        let db = test_db();
+        let service = AttachmentService::new(&db);
+        let conversation_id = create_conversation(&db);
+        let path = temp_file(b"hello");
+        let attachment = service
+            .attach(
+                conversation_id,
+                "hello.txt",
+                path.to_string_lossy().as_ref(),
+                None,
+                None,
+            )
+            .expect("temp file accepted");
+        assert_eq!(attachment.file_path, canonical_str(&path));
+        assert!(
+            attachment.file_path.contains("nexora-attach-test-"),
+            "stored canonical path keeps the temp file name"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 }

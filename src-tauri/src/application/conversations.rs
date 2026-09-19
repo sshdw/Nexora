@@ -602,6 +602,12 @@ fn provider_supports(provider: &str, family: AttachmentFamily) -> bool {
 /// Read one persisted attachment from disk through its stored `file_path` and
 /// convert it into a provider-safe [`AiAttachment`] (FR-008).
 ///
+/// The stored path is re-resolved through
+/// [`super::attachments::resolve_attachment_file_path`] immediately before
+/// reading, so a row whose path is now protected or no longer a regular file
+/// is refused with [`ConversationError::AttachmentUnreadable`] before any
+/// bytes are read.
+///
 /// - A size guard rejects files larger than [`MAX_ATTACHMENT_BYTES`] before
 ///   they are read into memory (using the recorded size first, then the real
 ///   filesystem metadata).
@@ -637,8 +643,11 @@ fn build_ai_attachment(attachment: &Attachment, provider: &str) -> Result<AiAtta
         });
     }
 
-    let bytes = fs::read(&attachment.file_path)
-        .map_err(|_| ConversationError::AttachmentUnreadable { name: name.clone() })?;
+    let bytes = fs::read(
+        &super::attachments::resolve_attachment_file_path(&attachment.file_path)
+            .map_err(|_| ConversationError::AttachmentUnreadable { name: name.clone() })?,
+    )
+    .map_err(|_| ConversationError::AttachmentUnreadable { name: name.clone() })?;
 
     let declared = attachment_family(attachment.mime_type.as_deref());
     let is_inline = matches!(
@@ -1883,5 +1892,98 @@ mod tests {
                 if max_bytes == MAX_ATTACHMENT_BYTES
         ));
         assert!(captured.borrow().is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn protected_stored_attachment_path_is_unreadable_before_any_read() {
+        let db = test_db();
+        let (service, captured) = succeeding_service(
+            &db,
+            AiResponse {
+                content: "unused".to_string(),
+                model: "unused".to_string(),
+                tool_calls: Vec::new(),
+                usage: None,
+            },
+        );
+        let conversation_id = service.create("Chat").expect("conversation created");
+        // A stored row pointing into a protected tree is refused before any
+        // bytes are read, even though the pre-canonicalize guard fires
+        // without touching the filesystem.
+        let protected = AttachmentRepository::new(&db)
+            .create(
+                conversation_id,
+                "evil.dll",
+                r"C:\Windows\System32\definitely-missing.dll",
+                Some(3),
+                Some("text/plain"),
+            )
+            .expect("draft attachment row created");
+
+        let err = service
+            .send_message(
+                conversation_id,
+                "hello",
+                "openai",
+                "gpt-4o-mini",
+                &[protected],
+            )
+            .expect_err("protected attachment");
+
+        assert!(matches!(
+            err,
+            ConversationError::AttachmentUnreadable { ref name } if name == "evil.dll"
+        ));
+        assert!(captured.borrow().is_none());
+        assert!(MessageRepository::new(&db)
+            .list_by_conversation(conversation_id)
+            .expect("list messages")
+            .is_empty());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn protected_stored_attachment_path_is_unreadable_before_any_read() {
+        let db = test_db();
+        let (service, captured) = succeeding_service(
+            &db,
+            AiResponse {
+                content: "unused".to_string(),
+                model: "unused".to_string(),
+                tool_calls: Vec::new(),
+                usage: None,
+            },
+        );
+        let conversation_id = service.create("Chat").expect("conversation created");
+        let protected = AttachmentRepository::new(&db)
+            .create(
+                conversation_id,
+                "evil.conf",
+                "/etc/definitely-missing-9f3c2a1e.conf",
+                Some(3),
+                Some("text/plain"),
+            )
+            .expect("draft attachment row created");
+
+        let err = service
+            .send_message(
+                conversation_id,
+                "hello",
+                "openai",
+                "gpt-4o-mini",
+                &[protected],
+            )
+            .expect_err("protected attachment");
+
+        assert!(matches!(
+            err,
+            ConversationError::AttachmentUnreadable { ref name } if name == "evil.conf"
+        ));
+        assert!(captured.borrow().is_none());
+        assert!(MessageRepository::new(&db)
+            .list_by_conversation(conversation_id)
+            .expect("list messages")
+            .is_empty());
     }
 }
