@@ -30,7 +30,7 @@ export interface SettingsViewProps {
   store: ProvidersStore;
   /** Persisted appearance preference lifted in App so it loads at startup. */
   appearance: AppearanceStore;
-  /** Current agent workspace root (1.2.4, read-only here; change via sidebar). */
+  /** Current agent workspace root (1.3.0, read-only here; change via sidebar). */
   workspaceRoot: string | null;
   workspaceLoading: boolean;
   /** Refresh conversation-dependent UI after all local data is cleared. */

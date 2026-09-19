@@ -120,7 +120,7 @@ const settings = new Map<string, string>([
   ["agent.autonomy", "semi_autonomous"],
 ]);
 
-// ---- Agent workspace folder mock state (1.2.4) ----
+// ---- Agent workspace folder mock state (1.3.0) ----
 let mockWorkspaceRoot = "C:\\mock\\workspace";
 let mockWorkspaceRecent: string[] = ["C:\\mock\\workspace"];
 
@@ -447,7 +447,7 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
       }
       return { content: "ok", model: String(args.model) };
     }
-    // ---- Agent workspace folder (1.2.4) ----
+    // ---- Agent workspace folder (1.3.0) ----
     case "get_workspace_root":
       return mockWorkspaceRoot;
     case "set_workspace_root": {

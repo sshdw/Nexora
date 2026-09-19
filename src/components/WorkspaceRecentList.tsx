@@ -6,7 +6,7 @@ export interface WorkspaceRecentListProps {
   store: WorkspaceStore;
 }
 
-/** Recent workspace folders dropdown (1.2.4): at most 5 entries,
+/** Recent workspace folders dropdown (1.3.0): at most 5 entries,
  * most-recent first. Selecting an entry persists it backend-side. */
 export default function WorkspaceRecentList({ store }: WorkspaceRecentListProps) {
   const [open, setOpen] = useState(false);

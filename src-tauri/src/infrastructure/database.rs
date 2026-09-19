@@ -15,8 +15,10 @@
 //! Business-table migrations materialize the DATABASE.md schema (§7–§11) via
 //! [`MIGRATIONS`]: the base tables and their functional indexes (v1), the FTS5
 //! search indexes and their synchronization triggers (v2), the
-//! `updated_at` maintenance triggers (v3), and the agent run persistence
-//! tables `agent_runs` / `agent_steps` (v4, Task 4.2).
+//! `updated_at` maintenance triggers (v3), the agent run persistence tables
+//! `agent_runs` / `agent_steps` (v4, Task 4.2), the spend-guard columns and
+//! widened status CHECK (v5, Task 4.3), and the per-folder
+//! `conversations.workspace_root` column (v6).
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -348,7 +350,7 @@ CREATE INDEX idx_agent_runs_conversation ON agent_runs (conversation_id);
 CREATE INDEX idx_agent_runs_started ON agent_runs (started_at);
 ",
     ),
-    // v6 — per-folder chat history (workspace folder picker 1.2.4). The new
+    // v6 — per-folder chat history (workspace folder picker 1.3.0). The new
     // `conversations.workspace_root` column records the canonical workspace
     // root a conversation belongs to (`NULL` for pre-picker rows; no FK, the
     // setting owns the root). Length bound mirrors the workspace guard

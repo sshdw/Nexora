@@ -528,7 +528,7 @@ export function conversationContextStats(
   });
 }
 
-// ---- Agent workspace folder (1.2.4) ------------------------------------
+// ---- Agent workspace folder (1.3.0) ------------------------------------
 // The agent's filesystem tools are scoped to one workspace root
 // (`agent.workspace_root` setting, canonicalized backend-side). The recent
 // list (`agent.workspace_recent`) holds at most 5 canonical paths,

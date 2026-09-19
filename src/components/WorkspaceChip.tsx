@@ -3,7 +3,7 @@ export interface WorkspaceChipProps {
   loading: boolean;
 }
 
-/** Header chip showing the current agent workspace folder (1.2.4). */
+/** Header chip showing the current agent workspace folder (1.3.0). */
 export default function WorkspaceChip({ root, loading }: WorkspaceChipProps) {
   const label = loading ? "Workspace…" : (root ?? "Workspace unset");
   const short = label.length > 48 ? `…${label.slice(-47)}` : label;

@@ -1,4 +1,4 @@
-//! Agent workspace folder state hook (1.2.4).
+//! Agent workspace folder state hook (1.3.0).
 //!
 //! Loads the effective root via `get_workspace_root` and the 5-entry recent
 //! list via `list_workspace_recent`. Folder picking uses the Tauri dialog

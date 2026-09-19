@@ -4,7 +4,7 @@ export interface WorkspaceFolderButtonProps {
   store: WorkspaceStore;
 }
 
-/** Sidebar folder-picker button (1.2.4): opens the native directory dialog
+/** Sidebar folder-picker button (1.3.0): opens the native directory dialog
  * (`dialog.open`) and persists the chosen root backend-side. */
 export default function WorkspaceFolderButton({ store }: WorkspaceFolderButtonProps) {
   return (

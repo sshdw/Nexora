@@ -153,7 +153,7 @@ function App() {
   const io = useImportExport();
   const [exportTargetId, setExportTargetId] = useState<number | null>(null);
   const [importOpen, setImportOpen] = useState(false);
-  // Agent workspace folder (1.2.4): sidebar picker + header indicator share
+  // Agent workspace folder (1.3.0): sidebar picker + header indicator share
   // this store; Settings reads it read-only.
   const workspace = useWorkspace();
 

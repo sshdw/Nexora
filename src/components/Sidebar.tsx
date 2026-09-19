@@ -33,7 +33,7 @@ export interface SidebarProps {
   onArchive: (id: number) => void;
   onRestore: (id: number) => void;
   onDelete: (id: number) => void;
-  /** Agent workspace folder store (1.2.4 folder picker + recent list). */
+  /** Agent workspace folder store (1.3.0 folder picker + recent list). */
   workspace: WorkspaceStore;
 }
 
