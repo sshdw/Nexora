@@ -480,6 +480,26 @@ pub(crate) fn resolve_autonomy_mode(db: &Database) -> AutonomyMode {
     }
 }
 
+/// Setting key backing the per-run spend guard (`agent.spend_limit_micro_usd`).
+pub(crate) const SPEND_LIMIT_KEY: &str = "agent.spend_limit_micro_usd";
+
+/// Resolve the persisted per-run spend limit in micro-USD, mirroring
+/// [`resolve_autonomy_mode`]: `None` means "no limit" and preserves today's
+/// behaviour. A stored value yields `Some` only when it parses as `u64` and
+/// is greater than zero; absent, unparseable, zero, or unreadable values
+/// all resolve to `None`.
+#[must_use]
+pub(crate) fn resolve_spend_limit(db: &Database) -> Option<u64> {
+    let svc = SettingsService::new(db);
+    match svc.read(SPEND_LIMIT_KEY) {
+        Ok(Some(value)) => match value.as_str().trim().parse::<u64>() {
+            Ok(limit) if limit > 0 => Some(limit),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn start_run(
     db: &Database,
@@ -1250,6 +1270,43 @@ mod tests {
             resolve_autonomy_mode(&db),
             crate::application::agent::approval::AutonomyMode::SemiAutonomous
         );
+    }
+
+    #[test]
+    fn resolve_spend_limit_unset_is_none() {
+        let db = crate::infrastructure::database::in_memory_database();
+        assert_eq!(resolve_spend_limit(&db), None);
+    }
+
+    #[test]
+    fn resolve_spend_limit_parses_positive_and_rejects_other_values() {
+        let db = crate::infrastructure::database::in_memory_database();
+        let svc = crate::application::settings::SettingsService::new(&db);
+        svc.write(SPEND_LIMIT_KEY, Some("250000")).expect("write");
+        assert_eq!(resolve_spend_limit(&db), Some(250_000));
+        for invalid in ["0", "abc", "", "-5", "  "] {
+            svc.write(SPEND_LIMIT_KEY, Some(invalid)).expect("write");
+            assert_eq!(
+                resolve_spend_limit(&db),
+                None,
+                "value {invalid:?} must resolve to no limit"
+            );
+        }
+        svc.delete(SPEND_LIMIT_KEY).expect("delete");
+        assert_eq!(resolve_spend_limit(&db), None);
+    }
+
+    #[test]
+    fn resolve_spend_limit_round_trip_through_settings_service() {
+        let db = crate::infrastructure::database::in_memory_database();
+        crate::application::settings::SettingsService::new(&db)
+            .write(SPEND_LIMIT_KEY, Some("1000000"))
+            .expect("write");
+        assert_eq!(resolve_spend_limit(&db), Some(1_000_000));
+        crate::application::settings::SettingsService::new(&db)
+            .delete(SPEND_LIMIT_KEY)
+            .expect("delete");
+        assert_eq!(resolve_spend_limit(&db), None);
     }
 
     #[test]

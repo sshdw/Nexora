@@ -4,6 +4,7 @@ import type { SupportedProvider } from "../lib/tauri";
 import { clearApplicationData } from "../lib/tauri";
 import type { AppearanceStore } from "../lib/useAppearance";
 import { isCustomModelId, type ProvidersStore } from "../lib/useProviders";
+import type { SpendLimitStore } from "../lib/useSpendLimit";
 
 /** Settings sections (Phase 10.8). Only approved areas with defined behavior
  * are offered: Appearance (theme), Provider & model (FR-004), Data management
@@ -33,6 +34,8 @@ export interface SettingsViewProps {
   /** Current agent workspace root (1.3.0, read-only here; change via sidebar). */
   workspaceRoot: string | null;
   workspaceLoading: boolean;
+  /** Per-run spend guard store lifted in App (single source). */
+  spendLimit: SpendLimitStore;
   /** Refresh conversation-dependent UI after all local data is cleared. */
   onDataCleared: () => void;
 }
@@ -43,6 +46,7 @@ export default function SettingsView({
   appearance,
   workspaceRoot,
   workspaceLoading,
+  spendLimit,
   onDataCleared,
 }: SettingsViewProps) {
   const [section, setSection] = useState<SettingsSectionId>("appearance");
@@ -101,6 +105,25 @@ export default function SettingsView({
     const value = customDraft ?? persistedCustom ?? "";
     if (!value || value === "__custom__") return;
     void store.selectModel(value);
+  };
+
+  /** Local spend-limit draft; null means the persisted value is shown. */
+  const [spendDraft, setSpendDraft] = useState<string | null>(null);
+  const spendValue =
+    spendDraft ?? (spendLimit.limitMicroUsd !== null ? String(spendLimit.limitMicroUsd) : "");
+  const commitSpendLimit = () => {
+    if (spendDraft === null) return;
+    const trimmed = spendDraft.trim();
+    if (trimmed === "") {
+      void spendLimit.setLimit(null).then((ok) => {
+        if (ok) setSpendDraft(null);
+      });
+      return;
+    }
+    const parsed = Number(trimmed);
+    void spendLimit.setLimit(parsed).then((ok) => {
+      if (ok) setSpendDraft(null);
+    });
   };
 
   const handleConnect = async (definition: SupportedProvider) => {
@@ -319,6 +342,27 @@ export default function SettingsView({
                     </p>
                   </div>
                 )}
+
+                <div className="nex-settings-field">
+                  <label className="nex-settings-label" htmlFor="spend-limit">
+                    Run cost limit (micro-USD)
+                  </label>
+                  <input
+                    id="spend-limit"
+                    className="nex-input"
+                    type="text"
+                    value={spendValue}
+                    placeholder="Empty = no limit"
+                    onChange={(event) => setSpendDraft(event.target.value)}
+                    onBlur={commitSpendLimit}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") commitSpendLimit();
+                    }}
+                  />
+                  <p className="nex-settings-hint">
+                    Empty = no limit. 1 USD = 1000000 micro-USD. Applies to new runs.
+                  </p>
+                </div>
               </section>
             )}
 

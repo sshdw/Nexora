@@ -15,6 +15,7 @@ import { useAppearance } from "./lib/useAppearance";
 import { useConversations } from "./lib/useConversations";
 import { useImportExport } from "./lib/useImportExport";
 import { useProviders } from "./lib/useProviders";
+import { useSpendLimit } from "./lib/useSpendLimit";
 import { useWorkspace } from "./lib/useWorkspace";
 
 interface MainContentProps {
@@ -156,6 +157,9 @@ function App() {
   // Agent workspace folder (1.3.0): sidebar picker + header indicator share
   // this store; Settings reads it read-only.
   const workspace = useWorkspace();
+  // Per-run spend guard (micro-USD budget): Settings edits it, new agent runs
+  // read it backend-side.
+  const spendLimit = useSpendLimit();
 
   // After a successful import the conversation list is reloaded from the
   // backend (single source of truth) and the new conversation is opened.
@@ -266,6 +270,7 @@ function App() {
             appearance={appearance}
             workspaceRoot={workspace.root}
             workspaceLoading={workspace.loading}
+            spendLimit={spendLimit}
             onClose={() => setSettingsOpen(false)}
             onDataCleared={() => void reload()}
           />
