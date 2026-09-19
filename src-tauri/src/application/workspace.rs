@@ -11,11 +11,13 @@
 //! - [`WORKSPACE_RECENT_KEY`] (`agent.workspace_recent`): a JSON array of up
 //!   to [`WORKSPACE_RECENT_MAX`] (5) canonical paths, most-recent first.
 //!
-//! The guard ([`validate_workspace_root`]) rejects non-existent paths,
-//! `C:\Windows` (and anything under it), and drive/filesystem roots before
-//! anything is persisted. [`push_recent`] maintains the 5-entry ring buffer.
-//! [`resolve_workspace_root`] is the single source the tool scope reads: the
-//! stored setting when it names an existing directory, else the default.
+//! The guard ([`validate_workspace_root`]) rejects non-existent paths, UNC
+//! network paths, per-platform system directories (and anything under them),
+//! and drive/filesystem roots before anything is persisted. [`push_recent`]
+//! maintains the 5-entry ring buffer. [`resolve_workspace_root`] re-validates
+//! the stored setting on every use (re-canonicalise + blocklist) and falls
+//! back to the default when it no longer resolves, so a path that becomes a
+//! symlink/junction after being saved cannot widen the tool scope.
 
 use std::path::{Path, PathBuf};
 
@@ -55,11 +57,11 @@ impl std::error::Error for WorkspaceError {}
 
 /// Validate `raw` as a workspace root candidate and return its canonical form.
 ///
-/// Steps: trim, reject empty / overlong / null-byte paths, canonicalize via
-/// the filesystem (non-existent paths fail here), require a directory, then
-/// reject `C:\Windows` (and children) and drive/filesystem roots. The returned
-/// path is the canonicalized absolute path with any Windows verbatim prefix
-/// stripped, ready to store.
+/// Steps: trim, reject empty / overlong / null-byte / UNC paths, canonicalize
+/// via the filesystem (non-existent paths fail here), require a directory,
+/// then reject per-platform system directories (and children) and
+/// drive/filesystem roots. The returned path is the canonicalized absolute
+/// path with any Windows verbatim prefix stripped, ready to store.
 pub(crate) fn validate_workspace_root(raw: &str) -> Result<PathBuf, WorkspaceError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -77,9 +79,19 @@ pub(crate) fn validate_workspace_root(raw: &str) -> Result<PathBuf, WorkspaceErr
             "path exceeds 1024 characters".to_string(),
         ));
     }
+    if is_unc_text(trimmed) {
+        return Err(WorkspaceError::Invalid(
+            "UNC network paths are not allowed".to_string(),
+        ));
+    }
     let canonical = std::fs::canonicalize(trimmed)
         .map_err(|_| WorkspaceError::Invalid("path does not exist".to_string()))?;
     let canonical = strip_verbatim(canonical);
+    if is_unc_path(&canonical) {
+        return Err(WorkspaceError::Invalid(
+            "UNC network paths are not allowed".to_string(),
+        ));
+    }
     if !canonical.is_dir() {
         return Err(WorkspaceError::Invalid(
             "path is not a directory".to_string(),
@@ -87,7 +99,7 @@ pub(crate) fn validate_workspace_root(raw: &str) -> Result<PathBuf, WorkspaceErr
     }
     if is_system_path(&canonical) {
         return Err(WorkspaceError::Invalid(
-            "the Windows system directory is not allowed".to_string(),
+            "a system directory is not allowed".to_string(),
         ));
     }
     if is_drive_root(&canonical) {
@@ -104,9 +116,87 @@ pub(crate) fn validate_workspace_root(raw: &str) -> Result<PathBuf, WorkspaceErr
     Ok(canonical)
 }
 
-/// Whether `path` is `C:\Windows` or lives under it (case-insensitive, either
-/// separator). Only the `C:` system directory is guarded, per spec.
+/// Whether `path` is a guarded system directory or lives under one
+/// (case-insensitive, either separator).
+///
+/// Windows: `%SystemRoot%` on any drive (`C:\Windows`, `D:\Windows`, ...),
+/// plus `C:\Program Files`, `C:\Program Files (x86)`, `C:\ProgramData`,
+/// `C:\Users`, `C:\Windows.old`, and `C:\$Recycle.Bin`. Unix: `/etc`, `/usr`,
+/// `/bin`, `/sbin`, `/boot`, `/dev`, `/proc`, `/sys`, `/System`, `/Library`.
+/// The active list is selected with `cfg(windows)`; this widens the previous
+/// `C:\Windows`-only guard so the agent cannot be scoped into a system
+/// directory on another drive or a Unix system tree.
 pub(crate) fn is_system_path(path: &Path) -> bool {
+    let normalized = normalize_guard_path(path);
+    #[cfg(windows)]
+    {
+        // `%SystemRoot%` on any drive: `<letter>:\Windows` or a child of it.
+        let bytes = normalized.as_bytes();
+        if normalized.len() >= 3 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
+            let rest = &normalized[2..];
+            if rest == r"\windows" || rest.starts_with(r"\windows\") {
+                return true;
+            }
+        }
+        for entry in [
+            r"c:\program files",
+            r"c:\program files (x86)",
+            r"c:\programdata",
+            r"c:\users",
+            r"c:\windows.old",
+            r"c:\$recycle.bin",
+        ] {
+            if normalized == entry || normalized.starts_with(&format!("{entry}\\")) {
+                return true;
+            }
+        }
+        false
+    }
+    #[cfg(not(windows))]
+    {
+        for entry in [
+            r"\etc",
+            r"\usr",
+            r"\bin",
+            r"\sbin",
+            r"\boot",
+            r"\dev",
+            r"\proc",
+            r"\sys",
+            r"\system",
+            r"\library",
+        ] {
+            if normalized == entry || normalized.starts_with(&format!("{entry}\\")) {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+/// Whether `path` is a UNC network path (`\\server\share`, either separator).
+/// Scoping the agent to a network share would hand tool access to a location
+/// outside the local machine's guard assumptions, so it is rejected.
+pub(crate) fn is_unc_path(path: &Path) -> bool {
+    is_unc_text(path.to_string_lossy().as_ref())
+}
+
+/// Whether raw path text names a UNC network path. Checked on the untrimmed
+/// input (before canonicalization) so non-existent shares still fail with the
+/// UNC reason rather than the generic missing-path reason. A verbatim `\\?\`
+/// prefix denotes a local path, not a share — except `\\?\UNC\server\share`,
+/// which is a share in verbatim form.
+fn is_unc_text(text: &str) -> bool {
+    let normalized = text.replace('/', "\\");
+    if let Some(rest) = normalized.strip_prefix(r"\\?\") {
+        return rest.len() > 4 && rest[..4].eq_ignore_ascii_case(r"UNC\");
+    }
+    normalized.starts_with(r"\\")
+}
+
+/// Lowercase, separator-agnostic, verbatim-prefix-free form of `path` for
+/// guard comparisons.
+fn normalize_guard_path(path: &Path) -> String {
     let mut text = path.to_string_lossy().to_string();
     if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
         text = format!(r"\\{rest}");
@@ -114,8 +204,7 @@ pub(crate) fn is_system_path(path: &Path) -> bool {
         text = rest.to_string();
     }
     let lowered = text.to_lowercase().replace('/', "\\");
-    let trimmed = lowered.trim_end_matches('\\');
-    trimmed == r"c:\windows" || trimmed.starts_with(r"c:\windows\")
+    lowered.trim_end_matches('\\').to_string()
 }
 
 /// Whether `path` is a drive root (`C:\`, `C:/`, `C:`) or a bare filesystem
@@ -191,17 +280,33 @@ pub(crate) fn push_recent(existing_raw: Option<&str>, new_root: &str) -> String 
 }
 
 /// Resolve the effective workspace root for tool scoping: the stored
-/// [`WORKSPACE_ROOT_KEY`] when it names an existing directory, else
+/// [`WORKSPACE_ROOT_KEY`] when it still validates as a workspace root, else
 /// `default_root` (the pre-picker `agent_workspace` behavior).
+///
+/// The stored path is re-validated on every use (re-canonicalise, then the
+/// UNC / system-directory / drive-root blocklist), not only when it is saved:
+/// a stored path can become a symlink or junction pointing at a guarded
+/// location after the fact, and must then fall back to the default.
 #[must_use]
 pub(crate) fn resolve_workspace_root(db: &Database, default_root: &Path) -> PathBuf {
     let stored = SettingsService::new(db).read(WORKSPACE_ROOT_KEY);
     if let Ok(Some(value)) = stored {
-        let trimmed = value.trim().to_string();
-        if !trimmed.is_empty() {
-            let candidate = PathBuf::from(&trimmed);
-            if candidate.is_dir() {
-                return candidate;
+        let trimmed = value.trim();
+        if !trimmed.is_empty()
+            && !trimmed.contains('\0')
+            && trimmed.len() <= WORKSPACE_ROOT_MAX_LEN
+            && !is_unc_text(trimmed)
+        {
+            if let Ok(canonical) = std::fs::canonicalize(trimmed) {
+                let canonical = strip_verbatim(canonical);
+                if canonical.is_dir()
+                    && !is_unc_path(&canonical)
+                    && !is_system_path(&canonical)
+                    && !is_drive_root(&canonical)
+                    && canonical.to_string_lossy().len() <= WORKSPACE_ROOT_MAX_LEN
+                {
+                    return canonical;
+                }
             }
         }
     }
@@ -215,8 +320,24 @@ mod tests {
 
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
+    fn test_base() -> PathBuf {
+        // The OS temp dir can itself sit under the blocklist (e.g. TEMP under
+        // `C:\Users`); in that case scratch under the crate target dir, which
+        // lives outside every blocklist entry on dev machines and is ignored
+        // by version control.
+        let tmp = std::env::temp_dir();
+        if !is_system_path(&tmp) && !is_drive_root(&tmp) {
+            return tmp;
+        }
+        let scratch = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("nexora-test-tmp");
+        std::fs::create_dir_all(&scratch).expect("create test scratch base");
+        scratch.canonicalize().unwrap_or(scratch)
+    }
+
     fn temp_dir() -> PathBuf {
-        let base = std::env::temp_dir();
+        let base = test_base();
         let id = COUNTER.fetch_add(1, Ordering::SeqCst);
         let dir = base.join(format!("nexora-workspace-test-{}-{id}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("create temp dir");
@@ -244,21 +365,82 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
-    fn guard_rejects_windows_system_directory() {
-        assert!(is_system_path(Path::new(r"C:\Windows")));
-        assert!(is_system_path(Path::new(r"c:\windows\system32")));
+    fn guard_rejects_windows_blocklist_entries() {
+        // Every Windows blocklist entry: the directory itself, a child, and a
+        // case/separator variant. Pure `is_system_path` checks (no FS needed)
+        // so each entry is covered even where the directory does not exist.
+        for entry in [
+            r"C:\Windows",
+            r"D:\Windows",
+            r"C:\Program Files",
+            r"C:\Program Files (x86)",
+            r"C:\ProgramData",
+            r"C:\Users",
+            r"C:\Windows.old",
+            r"C:\$Recycle.Bin",
+        ] {
+            assert!(is_system_path(Path::new(entry)), "{entry} blocked");
+            assert!(
+                is_system_path(&Path::new(entry).join("child")),
+                "{entry} child blocked"
+            );
+        }
+        assert!(is_system_path(Path::new(r"d:\windows\system32")));
         assert!(is_system_path(Path::new("C:/Windows")));
-        assert!(!is_system_path(Path::new(r"C:\Users\alice")));
+        assert!(is_system_path(Path::new(r"c:\PROGRAM FILES\app")));
+        assert!(is_system_path(Path::new(r"C:\Users\alice")));
+        assert!(!is_system_path(Path::new(r"C:\dev\proj")));
+        assert!(!is_system_path(Path::new(r"D:\data")));
         // End-to-end through the guard on Windows, where C:\Windows exists.
         if Path::new(r"C:\Windows").is_dir() {
             let err =
                 validate_workspace_root(r"C:\Windows").expect_err("system dir must be rejected");
             assert_eq!(
                 format!("{err}"),
-                "invalid workspace root: the Windows system directory is not allowed"
+                "invalid workspace root: a system directory is not allowed"
             );
         }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn guard_rejects_unix_blocklist_entries() {
+        for entry in [
+            "/etc", "/usr", "/bin", "/sbin", "/boot", "/dev", "/proc", "/sys", "/System",
+            "/Library",
+        ] {
+            assert!(is_system_path(Path::new(entry)), "{entry} blocked");
+            assert!(
+                is_system_path(&Path::new(entry).join("child")),
+                "{entry} child blocked"
+            );
+        }
+        assert!(!is_system_path(Path::new("/home/alice")));
+    }
+
+    #[test]
+    fn guard_rejects_unc_paths() {
+        assert!(is_unc_path(Path::new(r"\\server\share")));
+        assert!(is_unc_path(Path::new("//server/share")));
+        assert!(!is_unc_path(Path::new(r"C:\dev\proj")));
+        assert!(!is_unc_path(Path::new("/home/alice")));
+        // A verbatim local path is not a share; the verbatim UNC form is.
+        assert!(!is_unc_text(r"\\?\C:\dev\proj"));
+        assert!(is_unc_text(r"\\?\UNC\server\share"));
+        let err = validate_workspace_root(r"\\server\share\no-such-workspace-9f3c2a1e")
+            .expect_err("UNC must be rejected");
+        assert_eq!(
+            format!("{err}"),
+            "invalid workspace root: UNC network paths are not allowed"
+        );
+        let err = validate_workspace_root("//server/share/no-such-workspace-9f3c2a1e")
+            .expect_err("UNC with forward slashes must be rejected");
+        assert_eq!(
+            format!("{err}"),
+            "invalid workspace root: UNC network paths are not allowed"
+        );
     }
 
     #[test]
@@ -319,15 +501,13 @@ mod tests {
         let fallback = temp_dir();
         // No setting: the default (pre-picker behavior) is used.
         assert_eq!(resolve_workspace_root(&db, &fallback), fallback);
-        // A stored directory wins over the default.
+        // A stored directory wins over the default (returned canonicalized).
         let chosen = temp_dir();
         crate::application::settings::SettingsService::new(&db)
             .write(WORKSPACE_ROOT_KEY, Some(chosen.to_string_lossy().as_ref()))
             .expect("write setting");
-        assert_eq!(
-            resolve_workspace_root(&db, &fallback),
-            PathBuf::from(chosen.to_string_lossy().to_string())
-        );
+        let expected = strip_verbatim(std::fs::canonicalize(&chosen).expect("stored dir resolves"));
+        assert_eq!(resolve_workspace_root(&db, &fallback), expected);
         // A stored path that no longer exists falls back to the default.
         crate::application::settings::SettingsService::new(&db)
             .write(
@@ -336,7 +516,36 @@ mod tests {
             )
             .expect("write missing");
         assert_eq!(resolve_workspace_root(&db, &fallback), fallback);
+        // A stored directory deleted after being saved falls back too.
+        let doomed = temp_dir();
+        crate::application::settings::SettingsService::new(&db)
+            .write(WORKSPACE_ROOT_KEY, Some(doomed.to_string_lossy().as_ref()))
+            .expect("write doomed");
+        assert_eq!(
+            resolve_workspace_root(&db, &fallback),
+            strip_verbatim(doomed.canonicalize().unwrap_or(doomed.clone()))
+        );
+        std::fs::remove_dir_all(&doomed).expect("delete stored dir");
+        assert_eq!(resolve_workspace_root(&db, &fallback), fallback);
         let _ = std::fs::remove_dir_all(&fallback);
         let _ = std::fs::remove_dir_all(temp_dir());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn tool_scope_revalidates_stored_system_path() {
+        // A stored path inside the blocklist is rejected on every use, even
+        // though it names an existing directory: the guard re-runs at resolve
+        // time in case the value became a symlink/junction after being saved.
+        if !Path::new(r"C:\Windows").is_dir() {
+            return;
+        }
+        let db = crate::infrastructure::database::in_memory_database();
+        let fallback = temp_dir();
+        crate::application::settings::SettingsService::new(&db)
+            .write(WORKSPACE_ROOT_KEY, Some(r"C:\Windows"))
+            .expect("write system path");
+        assert_eq!(resolve_workspace_root(&db, &fallback), fallback);
+        let _ = std::fs::remove_dir_all(&fallback);
     }
 }
