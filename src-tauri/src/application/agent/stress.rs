@@ -838,7 +838,13 @@ fn stress_mode_switch_storm() {
 
     // Storm driver: cycles the mode every few milliseconds until the run ends.
     let done = Arc::new(AtomicBool::new(false));
+    // Set by the main thread the moment it observes `RunFrame::Finished`.
+    // `set_mode` returns false once the run leaves the registry, which the
+    // run thread drops around completion, so a `false` is benign iff the
+    // finish has already been observed; anything earlier is a genuine miss.
+    let run_finished = Arc::new(AtomicBool::new(false));
     let storm_done = Arc::clone(&done);
+    let storm_finished = Arc::clone(&run_finished);
     let storm_registry = Arc::clone(&registry);
     let storm = thread::spawn(move || {
         let modes = [
@@ -847,16 +853,22 @@ fn stress_mode_switch_storm() {
             AutonomyMode::FullAutonomous,
         ];
         let mut i = 0usize;
+        let mut hits = 0usize;
         let deadline = Instant::now() + Duration::from_secs(30);
-        while !storm_done.load(Ordering::Relaxed) {
+        while !storm_done.load(Ordering::Acquire) {
             assert!(Instant::now() < deadline, "mode storm exceeded its bound");
-            assert!(
-                storm_registry.set_mode(run_id, modes[i % modes.len()]),
-                "storm set_mode must hit the active run"
-            );
+            if storm_registry.set_mode(run_id, modes[i % modes.len()]) {
+                hits += 1;
+            } else {
+                assert!(
+                    storm_finished.load(Ordering::Acquire),
+                    "storm set_mode must hit the active run"
+                );
+            }
             i += 1;
             thread::sleep(Duration::from_millis(5));
         }
+        assert!(hits > 0, "mode storm must hit the active run at least once");
     });
 
     // Frame driver: approve every requested approval; tolerate the benign
@@ -890,6 +902,7 @@ fn stress_mode_switch_storm() {
             RunFrame::Finished { event, .. } => {
                 assert_eq!(event.status, "completed", "storm run must complete");
                 assert_eq!(event.final_content.as_deref(), Some("storm done"));
+                run_finished.store(true, Ordering::Release);
                 frames.push(frame);
                 break;
             }
@@ -897,7 +910,7 @@ fn stress_mode_switch_storm() {
         }
         frames.push(frame);
     }
-    done.store(true, Ordering::Relaxed);
+    done.store(true, Ordering::Release);
     storm.join().expect("storm thread joins");
 
     // No lost approvals: every request got exactly one resolution.
