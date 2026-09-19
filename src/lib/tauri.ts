@@ -15,6 +15,9 @@ export interface Conversation {
   status: "active" | "archived";
   created_at: number; // seconds since unix epoch
   updated_at: number; // seconds since unix epoch
+  /** Canonical workspace root the conversation belongs to (v6 per-folder
+   * history; `null` for pre-picker rows). */
+  workspace_root: string | null;
 }
 
 /** Safe, secret-free command error returned to the frontend (commands/error.rs). */
@@ -523,4 +526,26 @@ export function conversationContextStats(
   return invoke<ConversationContextStats>("conversation_context_stats", {
     conversationId,
   });
+}
+
+// ---- Agent workspace folder (1.3.0) ------------------------------------
+// The agent's filesystem tools are scoped to one workspace root
+// (`agent.workspace_root` setting, canonicalized backend-side). The recent
+// list (`agent.workspace_recent`) holds at most 5 canonical paths,
+// most-recent first.
+
+/** Effective workspace root for tool scoping (`get_workspace_root`). */
+export function getWorkspaceRoot(): Promise<string> {
+  return invoke<string>("get_workspace_root");
+}
+
+/** Validate, canonicalize, persist `path` and prepend it to the recent list
+ * (`set_workspace_root`). Returns the canonical path. */
+export function setWorkspaceRoot(path: string): Promise<string> {
+  return invoke<string>("set_workspace_root", { path });
+}
+
+/** Recent workspace roots, most-recent first (at most 5). */
+export function listWorkspaceRecent(): Promise<string[]> {
+  return invoke<string[]>("list_workspace_recent");
 }

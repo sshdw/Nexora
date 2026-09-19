@@ -1,10 +1,13 @@
 import type { CommandError, Conversation } from "../lib/tauri";
+import type { WorkspaceStore } from "../lib/useWorkspace";
 import ConversationList from "./ConversationList";
 import NewConversationButton from "./NewConversationButton";
 import NexoraMark from "./NexoraMark";
 import PromptLibraryEntry from "./PromptLibraryEntry";
 import SearchBox from "./SearchBox";
 import SettingsEntry from "./SettingsEntry";
+import WorkspaceFolderButton from "./WorkspaceFolderButton";
+import WorkspaceRecentList from "./WorkspaceRecentList";
 import { ImportIcon } from "./icons";
 
 export interface SidebarProps {
@@ -30,6 +33,8 @@ export interface SidebarProps {
   onArchive: (id: number) => void;
   onRestore: (id: number) => void;
   onDelete: (id: number) => void;
+  /** Agent workspace folder store (1.3.0 folder picker + recent list). */
+  workspace: WorkspaceStore;
 }
 
 export default function Sidebar({
@@ -52,6 +57,7 @@ export default function Sidebar({
   onArchive,
   onRestore,
   onDelete,
+  workspace,
 }: SidebarProps) {
   return (
     <aside className="nex-sidebar" aria-label="Nexora">
@@ -89,6 +95,13 @@ export default function Sidebar({
 
       <SettingsEntry onClick={onOpenSettings} />
       <PromptLibraryEntry active={libraryActive} onClick={onOpenPromptLibrary} />
+      <WorkspaceFolderButton store={workspace} />
+      <WorkspaceRecentList store={workspace} />
+      {workspace.error && (
+        <p className="nex-sidebar-error" role="alert">
+          {workspace.error.message}
+        </p>
+      )}
       <button
         type="button"
         className="nex-nav-entry"

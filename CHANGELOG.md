@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] — 2026-09-13
+
+### Added
+
+- Agent workspace folder picker: sidebar folder button (`dialog.open`),
+  header chip showing the current folder, 5-entry recent folders dropdown,
+  and the current root in Settings. New settings `agent.workspace_root`
+  (canonicalized, defaults to the pre-picker `agent_workspace` behavior) and
+  `agent.workspace_recent` (max 5, JSON); guard rejects `C:\Windows`, drive
+  roots, and non-existent paths; tool scope reads the setting root.
+- Per-folder chat history: forward-only migration v6 adds
+  `conversations.workspace_root TEXT NULL CHECK (length <= 1024)` (no FK;
+  `NULL` for pre-picker rows); downgrade refusal unchanged.
+
 ## [1.2.3] — 2026-09-13
 
 ### Fixed
@@ -182,6 +196,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > Note: tag `v0.3.0` exists remotely from the MVP era but carries no changelog entry; superseded by 1.0.0.
 
+[1.3.0]: https://github.com/sshdw/Nexora/releases/tag/v1.3.0
+[1.2.3]: https://github.com/sshdw/Nexora/releases/tag/v1.2.3
+[1.2.2]: https://github.com/sshdw/Nexora/releases/tag/v1.2.2
 [1.2.1]: https://github.com/sshdw/Nexora/releases/tag/v1.2.1
 [1.2.0]: https://github.com/sshdw/Nexora/releases/tag/v1.2.0
 [1.1.0]: https://github.com/sshdw/Nexora/releases/tag/v1.1.0

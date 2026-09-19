@@ -23,6 +23,10 @@
 use tauri::State;
 
 use crate::application::settings::SettingsService;
+use crate::application::workspace::{
+    parse_recent, WORKSPACE_RECENT_KEY, WORKSPACE_RECENT_MAX, WORKSPACE_ROOT_KEY,
+    WORKSPACE_ROOT_MAX_LEN,
+};
 use crate::infrastructure::database::Database;
 use crate::infrastructure::providers::supported_providers;
 
@@ -50,7 +54,7 @@ const VALID_AUTONOMY: &[&str] = &["supervised", "semi_autonomous", "full_autonom
 /// implementation (FR-012: invalid values are rejected before persistence).
 ///
 /// Rules:
-/// - Only the four explicitly supported keys may be written.
+/// - Only the six explicitly supported keys may be written.
 /// - A `None` value (clearing back to the default state) is always valid.
 /// - [`THEME_KEY`] accepts only the implemented themes (`dark`, `light`).
 /// - [`SELECTED_PROVIDER_KEY`] accepts only names returned by the build's
@@ -61,9 +65,18 @@ const VALID_AUTONOMY: &[&str] = &["supervised", "semi_autonomous", "full_autonom
 ///   or a custom model ID (1..=200 chars of `A-Za-z0-9._/:-+`, no `..`).
 /// - [`AUTONOMY_KEY`] accepts only the three autonomy modes
 ///   (`supervised`, `semi_autonomous`, `full_autonomous`).
+/// - [`WORKSPACE_ROOT_KEY`] accepts a non-empty path up to 1024 chars with no
+///   null byte. Full filesystem guard (existence, `C:\Windows`, drive roots,
+///   canonicalization) lives in the workspace commands
+///   (`commands/workspace.rs::set_workspace_root` via
+///   `application/workspace.rs::validate_workspace_root`); this syntactic
+///   check only keeps obvious junk out of the generic key/value path.
+/// - [`WORKSPACE_RECENT_KEY`] accepts a JSON array of at most 5 non-empty
+///   strings, each up to 1024 chars.
 ///
-/// No credential, payload, or path value can appear here: only the four
-/// keys above reach persistence, and none of them ever carries a secret.
+/// No credential, payload, or path value can appear here beyond the workspace
+/// root strings: only the six keys above reach persistence, and none of them
+/// ever carries a secret.
 fn validate_setting(key: &str, value: Option<&str>) -> Result<(), CommandError> {
     // Clearing a setting restores its default state; never an invalid value.
     let Some(value) = value else {
@@ -97,6 +110,37 @@ fn validate_setting(key: &str, value: Option<&str>) -> Result<(), CommandError> 
         }
         AUTONOMY_KEY => {
             if VALID_AUTONOMY.contains(&value) {
+                Ok(())
+            } else {
+                Err(rejected(key, value))
+            }
+        }
+        WORKSPACE_ROOT_KEY => {
+            if value.trim().is_empty()
+                || value.contains('\0')
+                || value.len() > WORKSPACE_ROOT_MAX_LEN
+            {
+                Err(rejected(key, value))
+            } else {
+                Ok(())
+            }
+        }
+        WORKSPACE_RECENT_KEY => {
+            let items = parse_recent(Some(value));
+            // `parse_recent` truncates to the max; a round-trip mismatch means
+            // the stored value was corrupt or overfull. Re-parse strictly:
+            // the value must be a JSON array of <= 5 non-empty <= 1024 strings.
+            let strict: bool = match serde_json::from_str::<Vec<String>>(value) {
+                Ok(list) => {
+                    list.len() <= WORKSPACE_RECENT_MAX
+                        && list
+                            .iter()
+                            .all(|s| !s.trim().is_empty() && s.len() <= WORKSPACE_ROOT_MAX_LEN)
+                        && items.len() == list.len()
+                }
+                Err(_) => false,
+            };
+            if strict {
                 Ok(())
             } else {
                 Err(rejected(key, value))
@@ -210,7 +254,7 @@ mod tests {
     }
 
     /// Clearing (`None`) restores a documented default state and is always
-    /// valid for every key вЂ” including keys that are otherwise unsupported.
+    /// valid for every key — including keys that are otherwise unsupported.
     #[test]
     fn clearing_is_always_allowed() {
         for key in [
@@ -218,6 +262,8 @@ mod tests {
             SELECTED_PROVIDER_KEY,
             SELECTED_MODEL_KEY,
             AUTONOMY_KEY,
+            WORKSPACE_ROOT_KEY,
+            WORKSPACE_RECENT_KEY,
         ] {
             assert!(validate_setting(key, None).is_ok());
         }
@@ -304,7 +350,7 @@ mod tests {
     #[test]
     fn unknown_keys_are_rejected() {
         // A provider name is not a valid value under an arbitrary key: only
-        // the four explicitly supported setting keys are writable.
+        // the six explicitly supported setting keys are writable.
         assert_rejected("appearance.mode", "dark");
         assert_rejected("export.format", "markdown");
         assert_rejected("", "dark");
@@ -322,5 +368,35 @@ mod tests {
         for mode in ["", "SemiAutonomous", "semi", "auto", "supervised "] {
             assert_rejected(AUTONOMY_KEY, mode);
         }
+    }
+
+    #[test]
+    fn workspace_root_values_are_accepted_syntactically() {
+        assert_accepted(WORKSPACE_ROOT_KEY, r"C:\Users\alice\work");
+        assert_accepted(WORKSPACE_ROOT_KEY, "/home/alice/work");
+    }
+
+    #[test]
+    fn workspace_root_junk_values_are_rejected() {
+        let overlong = "a".repeat(1025);
+        assert_rejected(WORKSPACE_ROOT_KEY, "");
+        assert_rejected(WORKSPACE_ROOT_KEY, "   ");
+        assert_rejected(WORKSPACE_ROOT_KEY, overlong.as_str());
+        assert_rejected(WORKSPACE_ROOT_KEY, "a\0b");
+    }
+
+    #[test]
+    fn workspace_recent_values_are_accepted() {
+        assert_accepted(WORKSPACE_RECENT_KEY, r#"["C:\\a"]"#);
+        assert_accepted(WORKSPACE_RECENT_KEY, r#"["a","b","c","d","e"]"#);
+        assert_accepted(WORKSPACE_RECENT_KEY, "[]");
+    }
+
+    #[test]
+    fn workspace_recent_overfull_or_corrupt_is_rejected() {
+        assert_rejected(WORKSPACE_RECENT_KEY, "not json");
+        assert_rejected(WORKSPACE_RECENT_KEY, r#"["a","b","c","d","e","f"]"#);
+        assert_rejected(WORKSPACE_RECENT_KEY, r#"[""]"#);
+        assert_rejected(WORKSPACE_RECENT_KEY, r#"{"a":1}"#);
     }
 }

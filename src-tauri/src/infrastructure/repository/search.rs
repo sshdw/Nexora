@@ -67,7 +67,7 @@ impl SearchRepository<'_> {
     pub(crate) fn search_conversations(&self, query: &str) -> Result<Vec<Conversation>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT c.id, c.title, c.status, c.created_at, c.updated_at \
+            "SELECT c.id, c.title, c.status, c.created_at, c.updated_at, c.workspace_root \
              FROM conversations_fts \
              JOIN conversations c ON c.id = conversations_fts.rowid \
              WHERE conversations_fts MATCH ?1 \
@@ -80,6 +80,7 @@ impl SearchRepository<'_> {
                 status: row.get(2)?,
                 created_at: row.get(3)?,
                 updated_at: row.get(4)?,
+                workspace_root: row.get(5)?,
             })
         })?;
         let mut conversations = Vec::new();

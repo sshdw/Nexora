@@ -24,3 +24,4 @@ pub mod prompts;
 pub mod providers;
 pub mod search;
 pub mod settings;
+pub mod workspace;

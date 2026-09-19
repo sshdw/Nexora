@@ -95,21 +95,26 @@ impl TauriAgentHost {
     }
 }
 
-/// The per-run agent workspace root: a dedicated subdirectory of the app-data
-/// dir that every workspace-bounded tool operates within. Created on demand;
-/// 5.2's settings UI can replace this with a user-chosen folder.
-fn workspace_root(app: &AppHandle) -> Result<PathBuf, CommandError> {
+/// The per-run agent workspace root: the stored `agent.workspace_root`
+/// setting when it names an existing directory, else the default
+/// `agent_workspace` subdirectory of the app-data dir (the pre-picker
+/// behavior). Created on demand. Anchor: `commands/agent.rs::workspace_root`.
+fn workspace_root(app: &AppHandle, db: &Database) -> Result<PathBuf, CommandError> {
     let base = app.path().app_data_dir().map_err(|err| {
         CommandError::new(
             ErrorKind::Io,
             format!("the application data directory is unavailable: {err}"),
         )
     })?;
-    let root = base.join("agent_workspace");
-    std::fs::create_dir_all(&root).map_err(|_| {
+    let fallback = base.join("agent_workspace");
+    let resolved = crate::application::workspace::resolve_workspace_root(db, &fallback);
+    if resolved != fallback {
+        return Ok(resolved);
+    }
+    std::fs::create_dir_all(&fallback).map_err(|_| {
         CommandError::new(ErrorKind::Io, "the agent workspace could not be created")
     })?;
-    Ok(root)
+    Ok(fallback)
 }
 
 /// Response returned immediately by [`start_agent_run`]: the run is fully
@@ -180,7 +185,7 @@ pub(crate) async fn start_agent_run(
                 })
             })?;
 
-        let root = workspace_root(&handle)?;
+        let root = workspace_root(&handle, db_ref)?;
         let host: Arc<dyn AgentRunHost> = Arc::new(TauriAgentHost::new(handle, db_client.clone()));
         // Resolve autonomy mode from settings (DP-AUTONOMY): default
         // semi_autonomous when unset/invalid.

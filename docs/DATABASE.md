@@ -67,6 +67,8 @@ Migrations follow a forward-only, incremental philosophy. Each migration is atom
 
 v5 introduces a validated rebuild pattern for `agent_runs`: when a `CHECK` widening cannot be expressed with `ALTER TABLE ADD COLUMN`, the migration rebuilds the table (`CREATE TABLE agent_runs_new` -> copy -> `DROP TABLE agent_runs` -> `RENAME`) with `PRAGMA foreign_keys=OFF` applied before the transaction and restored to `ON` after (SQLite cannot toggle `foreign_keys` inside a transaction). This pattern is limited to v5; all other migrations remain byte-identical plain transactions.
 
+v6 adds the `conversations.workspace_root` column as a plain additive `ALTER TABLE ADD COLUMN` transaction: forward-only, with no table rebuild, no foreign key, and no backfill, so pre-picker rows keep `NULL`.
+
 ---
 
 ## 6. Entity Relationship Overview
@@ -108,6 +110,7 @@ v5 introduces a validated rebuild pattern for `agent_runs`: when a `CHECK` widen
 | status | Archive state | TEXT | NO | `'active'` | `status IN ('active', 'archived')` | None | No | FR-006 |
 | created_at | Creation timestamp | INTEGER | NO | Current Unix timestamp | `created_at > 0` | None | No | Implementation Decision. Preserves chronological ordering required by FR-005. |
 | updated_at | Last modification timestamp | INTEGER | NO | Current Unix timestamp | `updated_at >= created_at` | None | No | Implementation Decision. Tracks recency for FR-006 active conversation listing and sorting. |
+| workspace_root | Denormalised workspace scope marker | TEXT | YES | NULL | `workspace_root IS NULL OR length(workspace_root) <= 1024` | None | No | Migration v6 (per-folder history). The canonical root is owned by the `agent.workspace_root` setting, so this column is a scope marker, not a foreign key; `NULL` for pre-picker rows. |
 
 ---
 
