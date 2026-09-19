@@ -1016,7 +1016,16 @@ fn e2e_spend_limit_trips() {
     let conversation_id = create_conversation(&db, "spend");
 
     // Heavy usage: input 400_000 tokens -> 2_000_000 micro, so limit 1M trips on first turn
-    let limit = 1_000_000u64;
+    // The limit travels through the persisted setting (the production wiring
+    // path): write the key, resolve it back, and run with the resolved value.
+    SettingsService::new(&db)
+        .write(
+            crate::application::agent::service::SPEND_LIMIT_KEY,
+            Some("1000000"),
+        )
+        .expect("write spend limit setting");
+    let limit = crate::application::agent::service::resolve_spend_limit(&db)
+        .expect("resolved spend limit must be present");
     let executor = Arc::new(ScriptedExecutor::new(vec![Ok(usage_response(
         "never final",
         400_000,

@@ -204,7 +204,7 @@ pub(crate) async fn start_agent_run(
                 model,
                 credential,
                 max_iterations: None,
-                spend_limit_micro_usd: None,
+                spend_limit_micro_usd: service::resolve_spend_limit(db_ref),
             },
             mode,
         )?;

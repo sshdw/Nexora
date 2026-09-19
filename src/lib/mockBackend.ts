@@ -118,6 +118,7 @@ const settings = new Map<string, string>([
   ["provider.model", MOCK_DEFAULT_MODEL],
   ["appearance.theme", "dark"],
   ["agent.autonomy", "semi_autonomous"],
+  ["agent.spend_limit_micro_usd", "1000000"],
 ]);
 
 // ---- Agent workspace folder mock state (1.3.0) ----
@@ -301,6 +302,11 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
         if (key === "agent.autonomy") {
           if (!["supervised", "semi_autonomous", "full_autonomous"].includes(strVal)) {
             throw { kind: "invalidInput", message: `value '${strVal}' is not a valid 'agent.autonomy' setting` };
+          }
+        }
+        if (key === "agent.spend_limit_micro_usd") {
+          if (!/^\d+$/.test(strVal.trim()) || Number(strVal.trim()) <= 0) {
+            throw { kind: "invalidInput", message: `value '${strVal}' is not a valid 'agent.spend_limit_micro_usd' setting` };
           }
         }
         // Mirror the Rust custom model rule (commands/settings.rs): a listed
