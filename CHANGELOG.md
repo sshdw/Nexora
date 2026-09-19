@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.2] — 2026-09-19
+
+### Fixed
+
+- The per-run spend guard is now reachable in a release build. `README.md` and earlier CHANGELOG
+  entries advertised a working "financial spend guard (per-run micro-USD budget)" and the terminal
+  `spend_limit_exceeded` state, but the only production entry point passed `None`, so the limit was
+  never set and the feature was unreachable in the binary.
+
+### Added
+
+- `agent.spend_limit_micro_usd` setting and a "Run cost limit (micro-USD)" field in the
+  Provider & model settings section. Empty means no limit; a positive integer caps the spend of new
+  agent runs. The stored value is resolved backend-side on every run.
+
 ## [1.3.1] — 2026-09-19
 
 ### Security
@@ -212,6 +227,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > Note: tag `v0.3.0` exists remotely from the MVP era but carries no changelog entry; superseded by 1.0.0.
 
+[1.3.2]: https://github.com/sshdw/Nexora/releases/tag/v1.3.2
 [1.3.1]: https://github.com/sshdw/Nexora/releases/tag/v1.3.1
 [1.3.0]: https://github.com/sshdw/Nexora/releases/tag/v1.3.0
 [1.2.3]: https://github.com/sshdw/Nexora/releases/tag/v1.2.3
