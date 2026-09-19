@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] — 2026-09-19
+
+### Security
+
+- Agent workspace guard widened beyond `C:\Windows`: `%SystemRoot%` on any drive,
+  `Program Files`, `Program Files (x86)`, `ProgramData`, `Users`, `Windows.old` and
+  `$Recycle.Bin`, the Unix system trees, UNC paths and drive roots are now rejected, and the
+  stored root is re-canonicalized and re-checked on every use.
+- Strict production CSP in `src-tauri/tauri.conf.json`: `script-src 'self'` with no
+  `unsafe-inline` and no `unsafe-eval`, plus `object-src 'none'` and `base-uri 'self'`; the
+  Vite dev server keeps a separate permissive `devCsp`.
+- Attachment file paths are validated in the backend: the path must be absolute, is
+  canonicalized and stored canonical, protected system locations, UNC paths and drive roots
+  are rejected, only existing regular files are accepted, and the stored path is re-validated
+  immediately before the file is read.
+
 ## [1.3.0] — 2026-09-13
 
 ### Added
@@ -196,6 +212,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > Note: tag `v0.3.0` exists remotely from the MVP era but carries no changelog entry; superseded by 1.0.0.
 
+[1.3.1]: https://github.com/sshdw/Nexora/releases/tag/v1.3.1
 [1.3.0]: https://github.com/sshdw/Nexora/releases/tag/v1.3.0
 [1.2.3]: https://github.com/sshdw/Nexora/releases/tag/v1.2.3
 [1.2.2]: https://github.com/sshdw/Nexora/releases/tag/v1.2.2
