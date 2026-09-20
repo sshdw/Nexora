@@ -197,6 +197,13 @@ impl std::error::Error for AgentError {
 
 impl From<ExecutorError> for AgentError {
     fn from(err: ExecutorError) -> Self {
+        // A provider call cancelled in flight is user cancellation, not a
+        // provider failure: it maps to `Cancelled` exactly like a park-cancel,
+        // so the terminal outcome, the `Cancelled` governance event, and the
+        // persisted `cancelled` status all agree.
+        if matches!(err, ExecutorError::Cancelled) {
+            return Self::Cancelled;
+        }
         Self::Provider(err)
     }
 }
@@ -498,7 +505,21 @@ impl<'a> AgentRunner<'a> {
                 request_timeout: Some(self.request_timeout),
             };
             let turn_started = Instant::now();
-            let response = self.executor.execute(&request, credential)?;
+            // The run's cancellation token travels into the provider call so
+            // an in-flight HTTP attempt aborts promptly instead of running to
+            // the wall-clock timeout. A call cancelled in flight reports
+            // `ExecutorError::Cancelled`: emit the governance event and abort
+            // without recording a model turn or dispatching any tool call —
+            // an abandoned call must never dispatch.
+            let token: &CancellationToken = control.map_or(&idle_token, RunControl::token);
+            let response = match self.executor.execute(&request, credential, token) {
+                Ok(response) => response,
+                Err(ExecutorError::Cancelled) => {
+                    self.emit(AgentRunEvent::Cancelled);
+                    return Err(AgentError::Cancelled);
+                }
+                Err(other) => return Err(other.into()),
+            };
             steps_taken += 1;
 
             // Task 4.2: record the completed model turn (D12) with its
@@ -559,7 +580,8 @@ impl<'a> AgentRunner<'a> {
             // AC-6: never drop a call вЂ” every returned call is dispatched and
             // observed. Failures are rendered through `ToolError`'s Display
             // (`Error: ...`) so the model can recover on the next turn.
-            let token: &CancellationToken = control.map_or(&idle_token, RunControl::token);
+            // (`token` is bound before the provider call above and shared
+            // with tool dispatch.)
             for call in &response.tool_calls {
                 // Trace-level flow marker: presence + length only, never value.
                 log::trace!(
@@ -827,6 +849,7 @@ mod tests {
             &self,
             request: &AiRequest,
             _credential: &str,
+            _token: &CancellationToken,
         ) -> Result<AiResponse, ExecutorError> {
             self.requests.borrow_mut().push(request.clone());
             self.steps
@@ -1576,7 +1599,9 @@ mod tests {
         assert!(!ToolRegistry::definitions().is_empty());
 
         let fake = FakeExecutor::new(vec![Ok(text_response("plain reply"))]);
-        let response = fake.execute(&plain, "cred").expect("plain execute");
+        let response = fake
+            .execute(&plain, "cred", &CancellationToken::new())
+            .expect("plain execute");
         assert_eq!(response.content, "plain reply");
         assert!(response.tool_calls.is_empty());
         assert_eq!(fake.requests.borrow().len(), 1);
@@ -1620,6 +1645,7 @@ mod tests {
             &self,
             request: &AiRequest,
             _credential: &str,
+            _token: &CancellationToken,
         ) -> Result<AiResponse, ExecutorError> {
             self.requests.borrow_mut().push(request.clone());
             let idx = self.requests.borrow().len() - 1;

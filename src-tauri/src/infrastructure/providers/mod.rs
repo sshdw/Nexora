@@ -13,6 +13,7 @@ pub mod anthropic;
 pub mod credentials;
 pub mod gemini;
 pub mod openai;
+pub mod transport;
 
 use serde::Serialize;
 

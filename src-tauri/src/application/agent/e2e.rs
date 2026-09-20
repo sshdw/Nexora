@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::application::agent::approval::AutonomyMode;
-use crate::application::agent::control::AgentRunEvent;
+use crate::application::agent::control::{AgentRunEvent, CancellationToken};
 use crate::application::agent::service::{
     start_run, AgentRunHost, AgentRunRegistry, AgentRunRequest, RunFrame,
 };
@@ -120,7 +120,12 @@ impl ScriptedExecutor {
 }
 
 impl ProviderExecutor for ScriptedExecutor {
-    fn execute(&self, request: &AiRequest, _credential: &str) -> Result<AiResponse, ExecutorError> {
+    fn execute(
+        &self,
+        request: &AiRequest,
+        _credential: &str,
+        _token: &CancellationToken,
+    ) -> Result<AiResponse, ExecutorError> {
         self.requests
             .lock()
             .expect("requests lock")
@@ -282,9 +287,14 @@ impl DelayedExecutor {
 }
 
 impl ProviderExecutor for DelayedExecutor {
-    fn execute(&self, request: &AiRequest, credential: &str) -> Result<AiResponse, ExecutorError> {
+    fn execute(
+        &self,
+        request: &AiRequest,
+        credential: &str,
+        token: &CancellationToken,
+    ) -> Result<AiResponse, ExecutorError> {
         std::thread::sleep(self.delay);
-        self.inner.execute(request, credential)
+        self.inner.execute(request, credential, token)
     }
 }
 
@@ -1909,6 +1919,177 @@ fn e2e_real_provider_smoke() {
     let runs = crate::application::agent::service::list_runs_for_conversation(&db, conversation_id)
         .expect("list runs");
     assert!(!runs.is_empty(), "real provider run must be persisted");
+
+    drop(db);
+    cleanup_db(&db_path);
+    let _ = std::fs::remove_dir_all(ws);
+}
+
+/// Entry-point proof: cancel during an in-flight provider request aborts the
+/// run promptly through the full service/registry path (`start_run` →
+/// run thread → runner → token-threaded executor → `Finished/cancelled`).
+///
+/// The provider is the real [`OpenAiExecutor`] pointed at a local server
+/// that holds the connection open for 30 s; the run is cancelled ~200 ms
+/// after the request goes in flight. A prompt abort (well under 5 s, never
+/// the 120 s wall-clock timeout) with a terminal `cancelled` status, a
+/// `Cancelled` governance event, no dispatched tool calls, and a user-only
+/// history proves the token travels end to end.
+/// Local provider that accepts one connection and then holds it open for
+/// 30 s: only a token abort (never the wall-clock timeout) can finish a run
+/// against it fast. Returns the endpoint URL, an in-flight flag set on
+/// accept, and the server thread (detached by the caller: it outlives the
+/// test by design).
+fn spawn_hanging_provider_server() -> (
+    String,
+    Arc<std::sync::atomic::AtomicBool>,
+    std::thread::JoinHandle<()>,
+) {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test server");
+    let addr = listener.local_addr().expect("local address");
+    let entered = Arc::new(AtomicBool::new(false));
+    let entered_clone = Arc::clone(&entered);
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept connection");
+        entered_clone.store(true, Ordering::SeqCst);
+        let mut raw = Vec::new();
+        let mut buf = [0u8; 1024];
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(35)));
+        loop {
+            match stream.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    raw.extend_from_slice(&buf[..n]);
+                    if raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+            }
+        }
+        // Hold the connection open far past any prompt-abort budget.
+        std::thread::sleep(Duration::from_secs(30));
+        let body = r#"{"model":"test-model","choices":[{"message":{"content":"too late"}}]}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(response.as_bytes());
+        let _ = stream.flush();
+    });
+    (format!("http://{addr}"), entered, server)
+}
+
+#[test]
+fn e2e_cancel_during_provider_request_aborts_promptly() {
+    use crate::infrastructure::providers::openai::OpenAiExecutor;
+    use std::sync::atomic::Ordering;
+
+    let (db, db_path) = e2e_db("cancel-flight");
+    let ws = e2e_workspace("cancel-flight-ws");
+    let conversation_id = create_conversation(&db, "cancel-flight");
+
+    let (endpoint, entered, server) = spawn_hanging_provider_server();
+
+    let registry = Arc::new(AgentRunRegistry::default());
+    let (tx, rx) = channel();
+    let host: Arc<dyn AgentRunHost> = Arc::new(E2eHost {
+        frames_tx: tx,
+        db: db.clone(),
+    });
+    let executor: Arc<dyn ProviderExecutor + Send + Sync> =
+        Arc::new(OpenAiExecutor::with_endpoint(endpoint));
+    let run_id = start_run(
+        &db,
+        Arc::clone(&registry),
+        host,
+        executor,
+        ws.clone(),
+        AgentRunRequest {
+            conversation_id,
+            user_request: "cancel me mid-flight".to_string(),
+            provider: "openai".to_string(),
+            model: "test-model".to_string(),
+            credential: "sk-test".to_string(),
+            max_iterations: None,
+            spend_limit_micro_usd: None,
+        },
+        AutonomyMode::SemiAutonomous,
+    )
+    .expect("start run");
+
+    // Cancel ~200 ms after the provider request goes in flight.
+    while !entered.load(Ordering::SeqCst) {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    std::thread::sleep(Duration::from_millis(200));
+    let cancel_started = std::time::Instant::now();
+    assert!(registry.cancel(run_id), "cancel must reach the active run");
+    let frames = collect_until_finished(&rx);
+    let elapsed = cancel_started.elapsed();
+    // The server thread is still sleeping its 30 s; detach it rather than
+    // joining so the test finishes promptly.
+    std::mem::forget(server);
+
+    let last = frames.last().expect("frames");
+    match last {
+        RunFrame::Finished { event, .. } => {
+            assert_eq!(event.status, "cancelled", "mid-flight cancel must cancel");
+            assert_eq!(event.final_content, None);
+        }
+        _ => panic!("last must be Finished"),
+    }
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "cancel during a provider request must abort promptly, waited {elapsed:?}"
+    );
+    assert!(
+        frames.iter().any(|frame| matches!(
+            frame,
+            RunFrame::Governance {
+                event: AgentRunEvent::Cancelled,
+                ..
+            }
+        )),
+        "a Cancelled governance event must be streamed"
+    );
+
+    // The abandoned turn recorded nothing dispatchable: no tool_call rows at
+    // all, and no step ever marked succeeded/failed.
+    let steps = AgentRunRepository::new(&db)
+        .list_steps(run_id)
+        .expect("steps");
+    assert!(
+        !steps.iter().any(|step| step.kind == "tool_call"),
+        "abandoned turn must dispatch no tool calls, got {steps:?}"
+    );
+    assert!(
+        !steps
+            .iter()
+            .any(|step| matches!(step.status.as_deref(), Some("succeeded" | "failed"))),
+        "no step may be marked succeeded/failed after a mid-flight cancel, got {steps:?}"
+    );
+
+    let run = AgentRunRepository::new(&db)
+        .read_run(run_id)
+        .expect("read")
+        .expect("exists");
+    assert_eq!(run.status, "cancelled");
+
+    // No assistant message persisted on cancel (plain-chat doctrine).
+    let history = ConversationService::new(&db)
+        .history(conversation_id)
+        .expect("history");
+    assert_eq!(
+        history.len(),
+        1,
+        "cancelled run must leave only the user message, got {}",
+        history.len()
+    );
+    assert_eq!(history[0].content, "cancel me mid-flight");
 
     drop(db);
     cleanup_db(&db_path);

@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::application::agent::approval::AutonomyMode;
-use crate::application::agent::control::AgentRunEvent;
+use crate::application::agent::control::{AgentRunEvent, CancellationToken};
 use crate::application::agent::pricing::cost_for_usage;
 use crate::application::agent::service::{
     start_run, AgentRunHost, AgentRunRegistry, AgentRunRequest, ResolveOutcome, RunFinished,
@@ -106,7 +106,12 @@ impl ScriptedExecutor {
 }
 
 impl ProviderExecutor for ScriptedExecutor {
-    fn execute(&self, request: &AiRequest, _credential: &str) -> Result<AiResponse, ExecutorError> {
+    fn execute(
+        &self,
+        request: &AiRequest,
+        _credential: &str,
+        _token: &CancellationToken,
+    ) -> Result<AiResponse, ExecutorError> {
         self.requests
             .lock()
             .expect("requests lock")

@@ -33,9 +33,10 @@
 //!   the duration of the call only; it is never persisted, logged, or returned.
 //! - The credential is sent only in the `x-goog-api-key` header via `reqwest`,
 //!   never in the body or URL.
-//! - Failed responses are classified by HTTP status **without reading the error
-//!   body**, so a provider diagnostic can never leak the credential or the
-//!   request payload into an error or log.
+//! - Failed responses are read and classified by HTTP status **plus the
+//!   `Retry-After` header and common JSON body shapes**; only the failure
+//!   *category* ever reaches an error or log — never the credential, the
+//!   request payload, or raw body text.
 //! - All failures collapse to the single provider-independent
 //!   [`ExecutorError::Failure`]; the internal [`GeminiError`] classification
 //!   (authentication, invalid request, provider/network, unexpected response) is
@@ -46,6 +47,7 @@
 // backticks. Allow it locally.
 #![allow(clippy::doc_markdown)]
 
+use crate::application::agent::control::CancellationToken;
 use crate::application::execution::{
     AiAttachmentPayload, AiMessage, AiRequest, AiResponse, AiRole, ExecutorError, ProviderExecutor,
 };
@@ -53,8 +55,9 @@ use crate::application::execution::{
 #[cfg(test)]
 use crate::application::execution::AiAttachment;
 
+use super::transport::{Credential, HttpClient, PostOutcome, PostRequest};
+
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
 
 /// Google AI Studio (Gemini API) base URL root, without the per-model
 /// `generateContent` path (the model is appended per request).
@@ -106,11 +109,12 @@ pub(crate) const SUPPORTED_MODELS: &[&str] = &[
 
 /// Concrete [`ProviderExecutor`] for Google Gemini.
 ///
-/// Stateless over the shared `reqwest` blocking client so it can be shared
-/// across requests; the per-request credential and request payload are passed
-/// into each [`ProviderExecutor::execute`] call and dropped on return.
+/// Stateless over the shared cancellable transport client so connections
+/// are pooled across requests; the per-request credential and request payload
+/// are passed into each [`ProviderExecutor::execute`] call and dropped on
+/// return.
 pub(crate) struct GeminiExecutor {
-    client: reqwest::blocking::Client,
+    client: HttpClient,
     endpoint: String,
 }
 
@@ -125,7 +129,7 @@ impl GeminiExecutor {
     /// service; the per-model `generateContent` path is appended by `send`).
     fn with_endpoint(endpoint: String) -> Self {
         Self {
-            client: reqwest::blocking::Client::new(),
+            client: HttpClient::new(),
             endpoint,
         }
     }
@@ -134,23 +138,57 @@ impl GeminiExecutor {
     ///
     /// Returns a provider-independent [`AiResponse`] on success, or a
     /// classified [`GeminiError`] describing the failure category.
-    fn run(&self, request: &AiRequest, credential: &str) -> Result<AiResponse, GeminiError> {
+    fn run(
+        &self,
+        request: &AiRequest,
+        credential: &str,
+        token: &CancellationToken,
+    ) -> Result<AiResponse, GeminiError> {
         let body = generate_content_request(request);
-        let response = send(
-            &self.client,
-            &self.endpoint,
-            &request.model,
-            credential,
-            &body,
-            request.request_timeout,
-        )?;
-        to_ai_response(response, &request.model)
+        let wire = serde_json::to_vec(&body).map_err(|_| GeminiError::UnexpectedResponse)?;
+        let outcome = self
+            .client
+            .post(
+                token,
+                &PostRequest {
+                    url: generate_content_url(&self.endpoint, &request.model),
+                    credential: Credential::Header {
+                        name: "x-goog-api-key",
+                        value: credential,
+                    },
+                    extra_headers: &[],
+                    body: &wire,
+                    timeout: request.request_timeout,
+                },
+            )
+            .map_err(|err| {
+                if matches!(err, ExecutorError::Cancelled) {
+                    GeminiError::Cancelled
+                } else {
+                    GeminiError::Network
+                }
+            })?;
+        match outcome {
+            PostOutcome::Success(bytes) => {
+                let response: GenerateContentResponse =
+                    serde_json::from_slice(&bytes).map_err(|_| GeminiError::UnexpectedResponse)?;
+                to_ai_response(response, &request.model)
+            }
+            PostOutcome::Failure(snapshot) => {
+                Err(classify_status(snapshot.status, snapshot.retry_after_secs))
+            }
+        }
     }
 }
 
 impl ProviderExecutor for GeminiExecutor {
-    fn execute(&self, request: &AiRequest, credential: &str) -> Result<AiResponse, ExecutorError> {
-        match self.run(request, credential) {
+    fn execute(
+        &self,
+        request: &AiRequest,
+        credential: &str,
+        token: &CancellationToken,
+    ) -> Result<AiResponse, ExecutorError> {
+        match self.run(request, credential, token) {
             Ok(response) => Ok(response),
             Err(error) => {
                 // Record only the classification category; never the credential
@@ -166,6 +204,7 @@ impl ProviderExecutor for GeminiExecutor {
                     GeminiError::ProviderUnavailable => ExecutorError::ProviderUnavailable,
                     GeminiError::UnexpectedResponse => ExecutorError::UnexpectedResponse,
                     GeminiError::Provider => ExecutorError::Failure,
+                    GeminiError::Cancelled => ExecutorError::Cancelled,
                 })
             }
         }
@@ -703,59 +742,6 @@ fn generate_content_url(endpoint: &str, model: &str) -> String {
     format!("{endpoint}/models/{model}:generateContent")
 }
 
-/// Perform the non-streaming HTTPS request.
-///
-/// The credential is placed only in the `x-goog-api-key` header (the Google AI
-/// Studio API key authentication), never in the body or URL. A non-success
-/// response is classified by status without reading its body, so provider
-/// diagnostics can never leak the credential or request payload.
-///
-/// `request_timeout` bounds the single blocking round trip (Task 3.2): the
-/// blocking client cannot be interrupted mid-flight, so the honest bound is a
-/// wall-clock timeout applied via `RequestBuilder::timeout`. `None` preserves
-/// the historical unbounded behavior byte-for-byte.
-fn send(
-    client: &reqwest::blocking::Client,
-    endpoint: &str,
-    model: &str,
-    credential: &str,
-    body: &GenerateContentRequest,
-    request_timeout: Option<Duration>,
-) -> Result<GenerateContentResponse, GeminiError> {
-    use crate::application::execution::{is_retryable_status, retry_delay, MAX_SEND_ATTEMPTS};
-    let mut attempts: u32 = 0;
-    loop {
-        attempts += 1;
-        let mut builder = client
-            .post(generate_content_url(endpoint, model))
-            .header("x-goog-api-key", credential)
-            .json(body);
-        if let Some(timeout) = request_timeout {
-            builder = builder.timeout(timeout);
-        }
-        let response = builder.send().map_err(|_| GeminiError::Network)?;
-
-        let status = response.status();
-        if status.is_success() {
-            return response
-                .json::<GenerateContentResponse>()
-                .map_err(|_| GeminiError::UnexpectedResponse);
-        }
-        let status_u16 = status.as_u16();
-        let retry_after_secs = response
-            .headers()
-            .get("retry-after")
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.trim().parse::<u64>().ok());
-        let error = classify_status(status_u16, retry_after_secs);
-        if is_retryable_status(status_u16) && attempts < MAX_SEND_ATTEMPTS {
-            std::thread::sleep(retry_delay(retry_after_secs));
-            continue;
-        }
-        return Err(error);
-    }
-}
-
 /// Classify a non-success HTTP status into a secret-free failure category.
 ///
 /// Google reports credential problems as **401 UNAUTHENTICATED** (missing or
@@ -809,6 +795,9 @@ enum GeminiError {
     /// The response was not a recognizable generation (e.g. missing text
     /// content or malformed JSON).
     UnexpectedResponse,
+    /// The run was cancelled before the request completed: the in-flight
+    /// attempt was aborted and no response was consumed.
+    Cancelled,
 }
 
 impl std::fmt::Display for GeminiError {
@@ -829,6 +818,7 @@ impl std::fmt::Display for GeminiError {
             Self::ProviderUnavailable => write!(f, "Gemini unavailable (5xx)"),
             Self::Provider => write!(f, "Gemini provider failure"),
             Self::UnexpectedResponse => write!(f, "Gemini returned an unexpected response"),
+            Self::Cancelled => write!(f, "Gemini request cancelled before completion"),
         }
     }
 }
@@ -1142,7 +1132,11 @@ mod tests {
         // authentication problem, not a generic provider failure.
         let (endpoint, _captured, server) = spawn_server(403, "");
         let executor = GeminiExecutor::with_endpoint(endpoint);
-        let result = executor.run(&sample_request(), "sk-secret-example");
+        let result = executor.run(
+            &sample_request(),
+            "sk-secret-example",
+            &CancellationToken::new(),
+        );
         assert!(matches!(result, Err(GeminiError::Authentication)));
         server.join().expect("server thread joins");
     }
@@ -1150,24 +1144,28 @@ mod tests {
     #[test]
     fn executor_maps_failure_to_boundary_failure() {
         let executor = GeminiExecutor {
-            client: reqwest::blocking::Client::new(),
+            client: HttpClient::new(),
             endpoint: "http://127.0.0.1:1".to_string(), // unreachable -> network failure
         };
         // The boundary surfaces the classified category (here: network), never a
         // Gemini-specific or secret-bearing type.
-        let result = executor.execute(&sample_request(), "sk-secret-example");
+        let result = executor.execute(
+            &sample_request(),
+            "sk-secret-example",
+            &CancellationToken::new(),
+        );
         assert!(matches!(result, Err(ExecutorError::Network)));
     }
 
     #[test]
     fn credential_never_appears_in_returned_error() {
         let executor = GeminiExecutor {
-            client: reqwest::blocking::Client::new(),
+            client: HttpClient::new(),
             endpoint: "http://127.0.0.1:1".to_string(),
         };
         let credential = "sk-secret-example";
         let err = executor
-            .execute(&sample_request(), credential)
+            .execute(&sample_request(), credential, &CancellationToken::new())
             .expect_err("unreachable endpoint must fail");
         // The classified boundary error carries a fixed, secret-free message.
         assert_eq!(
@@ -1180,7 +1178,11 @@ mod tests {
     #[test]
     fn run_classifies_network_failure() {
         let executor = GeminiExecutor::with_endpoint("http://127.0.0.1:1".to_string());
-        let result = executor.run(&sample_request(), "sk-secret-example");
+        let result = executor.run(
+            &sample_request(),
+            "sk-secret-example",
+            &CancellationToken::new(),
+        );
         assert!(matches!(result, Err(GeminiError::Network)));
     }
 
@@ -1188,7 +1190,11 @@ mod tests {
     fn run_classifies_authentication_failure() {
         let (endpoint, _captured, server) = spawn_server(401, "");
         let executor = GeminiExecutor::with_endpoint(endpoint);
-        let result = executor.run(&sample_request(), "sk-secret-example");
+        let result = executor.run(
+            &sample_request(),
+            "sk-secret-example",
+            &CancellationToken::new(),
+        );
         assert!(matches!(result, Err(GeminiError::Authentication)));
         server.join().expect("server thread joins");
     }
@@ -1197,7 +1203,11 @@ mod tests {
     fn run_classifies_invalid_request_failure() {
         let (endpoint, _captured, server) = spawn_server(400, "");
         let executor = GeminiExecutor::with_endpoint(endpoint);
-        let result = executor.run(&sample_request(), "sk-secret-example");
+        let result = executor.run(
+            &sample_request(),
+            "sk-secret-example",
+            &CancellationToken::new(),
+        );
         assert!(matches!(result, Err(GeminiError::InvalidRequest)));
         server.join().expect("server thread joins");
     }
@@ -1212,7 +1222,11 @@ mod tests {
             (429, String::new(), Some("0".to_string())),
         ]);
         let executor = GeminiExecutor::with_endpoint(endpoint);
-        let result = executor.execute(&sample_request(), "sk-secret-example");
+        let result = executor.execute(
+            &sample_request(),
+            "sk-secret-example",
+            &CancellationToken::new(),
+        );
         assert!(matches!(
             result,
             Err(ExecutorError::RateLimited {
@@ -1228,7 +1242,11 @@ mod tests {
             (429, String::new(), None),
         ]);
         let executor = GeminiExecutor::with_endpoint(endpoint);
-        let result = executor.execute(&sample_request(), "sk-secret-example");
+        let result = executor.execute(
+            &sample_request(),
+            "sk-secret-example",
+            &CancellationToken::new(),
+        );
         assert!(matches!(
             result,
             Err(ExecutorError::RateLimited {
@@ -1248,7 +1266,11 @@ mod tests {
                 (status, String::new(), None),
             ]);
             let executor = GeminiExecutor::with_endpoint(endpoint);
-            let result = executor.execute(&sample_request(), "sk-secret-example");
+            let result = executor.execute(
+                &sample_request(),
+                "sk-secret-example",
+                &CancellationToken::new(),
+            );
             assert!(
                 matches!(result, Err(ExecutorError::ProviderUnavailable)),
                 "status {status} should map to ProviderUnavailable, got {result:?}"
@@ -1261,7 +1283,11 @@ mod tests {
     fn other_client_errors_still_surface_as_failure() {
         let (endpoint, _captured, server) = spawn_server(422, "");
         let executor = GeminiExecutor::with_endpoint(endpoint);
-        let result = executor.execute(&sample_request(), "sk-secret-example");
+        let result = executor.execute(
+            &sample_request(),
+            "sk-secret-example",
+            &CancellationToken::new(),
+        );
         assert!(matches!(result, Err(ExecutorError::Failure)));
         server.join().expect("server thread joins");
     }
@@ -1272,7 +1298,11 @@ mod tests {
         // OpenAI-compatible path.
         let (endpoint, _captured, server) = spawn_server(404, "");
         let executor = GeminiExecutor::with_endpoint(endpoint);
-        let result = executor.execute(&sample_request(), "sk-secret-example");
+        let result = executor.execute(
+            &sample_request(),
+            "sk-secret-example",
+            &CancellationToken::new(),
+        );
         assert!(matches!(result, Err(ExecutorError::InvalidRequest)));
         server.join().expect("server thread joins");
     }
@@ -1283,7 +1313,11 @@ mod tests {
         let (endpoint, captured, server) = spawn_server(200, success_body);
         let executor = GeminiExecutor::with_endpoint(endpoint);
         executor
-            .run(&sample_request(), "sk-secret-example")
+            .run(
+                &sample_request(),
+                "sk-secret-example",
+                &CancellationToken::new(),
+            )
             .expect("round trip succeeds");
         server.join().expect("server thread joins");
 
@@ -1332,7 +1366,11 @@ mod tests {
         let (endpoint, _captured, server) = spawn_server(200, success_body);
         let executor = GeminiExecutor::with_endpoint(endpoint);
         let ai = executor
-            .execute(&sample_request(), "sk-secret-example")
+            .execute(
+                &sample_request(),
+                "sk-secret-example",
+                &CancellationToken::new(),
+            )
             .expect("round trip succeeds");
         server.join().expect("server thread joins");
 
@@ -1618,54 +1656,73 @@ mod tests {
         assert!(ai.tool_calls.is_empty());
     }
 
+    /// Timeouts are transport failures and therefore retried per the bounded
+    /// attempt cap (not fired once): three 200 ms attempts with the computed
+    /// backoff between them, then a classified `Network` failure. The server
+    /// accepts exactly three connections and answers none, so the hit count
+    /// proves the bound and the elapsed time proves the backoff.
     #[test]
     fn request_timeout_is_threaded_through_send() {
-        use std::io::{Read, Write};
+        use std::io::Read;
         use std::net::TcpListener;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
         use std::time::Duration;
 
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test server");
         let addr = listener.local_addr().expect("local address");
+        let count = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&count);
         let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept connection");
-            let mut raw = Vec::new();
-            let mut buf = [0u8; 1024];
-            loop {
-                match stream.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        raw.extend_from_slice(&buf[..n]);
-                        if raw.windows(4).any(|w| w == b"\r\n\r\n") {
-                            break;
+            for _ in 0..3 {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    break;
+                };
+                seen.fetch_add(1, Ordering::SeqCst);
+                let mut raw = Vec::new();
+                let mut buf = [0u8; 1024];
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                loop {
+                    match stream.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            raw.extend_from_slice(&buf[..n]);
+                            if raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                                break;
+                            }
                         }
                     }
                 }
+                // Answer nothing: every attempt must hit the per-request
+                // timeout instead of completing.
             }
-            std::thread::sleep(Duration::from_secs(2));
-            let body = r#"{"modelVersion":"gemini-3.6-flash","candidates":[{"content":{"parts":[{"text":"pong"}]}}]}"#;
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(),
-                body
-            );
-            let _ = stream.write_all(response.as_bytes());
-            let _ = stream.flush();
         });
         let executor = GeminiExecutor::with_endpoint(format!("http://{addr}"));
         let mut request = sample_request();
         request.request_timeout = Some(Duration::from_millis(200));
         let start = std::time::Instant::now();
-        let result = executor.execute(&request, "sk-secret-example");
+        let result = executor.execute(&request, "sk-secret-example", &CancellationToken::new());
         let elapsed = start.elapsed();
+        server.join().expect("server thread joins");
         assert!(
             matches!(result, Err(ExecutorError::Network)),
             "expected timeout to surface as ExecutorError::Network, got {result:?}"
         );
-        assert!(
-            elapsed < Duration::from_secs(1),
-            "timeout should fire quickly, elapsed={elapsed:?}"
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            3,
+            "a 200 ms timeout must be retried per the 3-attempt bound"
         );
-        let _ = server.join();
+        // Two computed backoffs separate the three attempts: [1.5, 2.5] s +
+        // [3, 5] s on top of the 3 × 200 ms timeouts.
+        assert!(
+            elapsed >= Duration::from_millis(4_500),
+            "retried timeouts must wait the computed backoff, elapsed={elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(30),
+            "retried timeouts must stay bounded, elapsed={elapsed:?}"
+        );
     }
 
     #[test]
@@ -2216,7 +2273,11 @@ mod tests {
         ]);
         let executor = GeminiExecutor::with_endpoint(endpoint);
         let ai = executor
-            .execute(&sample_request(), "sk-secret-example")
+            .execute(
+                &sample_request(),
+                "sk-secret-example",
+                &CancellationToken::new(),
+            )
             .expect("429-then-200 must succeed");
         server.join().expect("server thread joins");
         assert_eq!(ai.content, "pong");
@@ -2234,7 +2295,11 @@ mod tests {
         ]);
         let executor = GeminiExecutor::with_endpoint(endpoint);
         let ai = executor
-            .execute(&sample_request(), "sk-secret-example")
+            .execute(
+                &sample_request(),
+                "sk-secret-example",
+                &CancellationToken::new(),
+            )
             .expect("503-then-200 must succeed");
         server.join().expect("server thread joins");
         assert_eq!(ai.content, "pong");
@@ -2247,7 +2312,11 @@ mod tests {
         use std::sync::atomic::Ordering;
         let (endpoint, count, server) = spawn_sequence_server(vec![(400, String::new(), None)]);
         let executor = GeminiExecutor::with_endpoint(endpoint);
-        let result = executor.execute(&sample_request(), "sk-secret-example");
+        let result = executor.execute(
+            &sample_request(),
+            "sk-secret-example",
+            &CancellationToken::new(),
+        );
         server.join().expect("server thread joins");
         assert!(matches!(result, Err(ExecutorError::InvalidRequest)));
         assert_eq!(count.load(Ordering::SeqCst), 1);
@@ -2262,7 +2331,11 @@ mod tests {
             (503, String::new(), None),
         ]);
         let executor = GeminiExecutor::with_endpoint(endpoint);
-        let result = executor.execute(&sample_request(), "sk-secret-example");
+        let result = executor.execute(
+            &sample_request(),
+            "sk-secret-example",
+            &CancellationToken::new(),
+        );
         server.join().expect("server thread joins");
         assert!(matches!(result, Err(ExecutorError::ProviderUnavailable)));
         assert_eq!(count.load(Ordering::SeqCst), 3);

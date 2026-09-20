@@ -857,6 +857,7 @@ mod tests {
             &self,
             _request: &crate::application::execution::AiRequest,
             _credential: &str,
+            _token: &crate::application::agent::control::CancellationToken,
         ) -> Result<AiResponse, ExecutorError> {
             self.steps
                 .lock()
@@ -1535,9 +1536,10 @@ mod tests {
             &self,
             request: &crate::application::execution::AiRequest,
             credential: &str,
+            token: &crate::application::agent::control::CancellationToken,
         ) -> Result<AiResponse, ExecutorError> {
             std::thread::sleep(self.delay);
-            self.inner.execute(request, credential)
+            self.inner.execute(request, credential, token)
         }
     }
 

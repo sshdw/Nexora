@@ -157,6 +157,7 @@ pub(crate) async fn send_message(
 
 #[cfg(test)]
 mod tests {
+    use crate::application::agent::control::CancellationToken;
     use crate::application::execution::{AiMessage, AiRequest, AiRole, ProviderExecutor};
     use crate::infrastructure::providers::openai::{OpenAiExecutor, PROVIDER_NAME};
 
@@ -228,7 +229,7 @@ mod tests {
         // awaits the whole blocking pipeline moved onto the blocking pool.
         let ai = tauri::async_runtime::block_on(async {
             tauri::async_runtime::spawn_blocking(move || {
-                executor.execute(&request, "sk-secret-example")
+                executor.execute(&request, "sk-secret-example", &CancellationToken::new())
             })
             .await
             .expect("blocking task joins without panicking")
@@ -240,20 +241,24 @@ mod tests {
         assert_eq!(ai.model, "gpt-5.6-terra");
     }
 
-    /// Negative control documenting WHY the pipeline must go through
-    /// `spawn_blocking`: driven directly inside an async-runtime worker (the
-    /// regression's broken scheduling), the debug-build `reqwest::blocking`
-    /// stack aborts the task instead of completing it вЂ” which is precisely
-    /// what left the frontend invoke promise unresolved forever. Debug-only
-    /// because reqwest's shell-runtime check is `cfg(debug_assertions)`.
-    /// If this ever stops failing after a dependency upgrade, re-read the
-    /// `send_message` threading docs before touching anything.
+    /// Regression for BUG-005 (all sends hang indefinitely): the production
+    /// `send_message` path (conversations.rs:131) moves the whole blocking
+    /// pipeline - `SQLite`, attachment I/O, and the provider round trip - onto
+    /// the runtime blocking pool via `spawn_blocking`, awaited from the async
+    /// command. The cancellable transport runs each attempt on the runtime
+    /// while the calling thread waits on a channel, so execute is blocking
+    /// and must ride `spawn_blocking`: driven directly inside an async-runtime
+    /// worker, the blocking wait would starve the very worker the attempt
+    /// needs. Pinned here: awaited via `spawn_blocking`, a refused endpoint
+    /// completes with a classified error (bounded retries, no hang, no
+    /// aborted task) instead of leaving the frontend invoke promise
+    /// unresolved forever.
     #[test]
-    #[cfg(debug_assertions)]
-    fn negative_control_provider_call_directly_inside_an_async_worker_aborts() {
-        // Unreachable endpoint: if the call somehow ran, it fails fast with
-        // a connect error instead of hanging; the assertion below expects
-        // neither outcome but a dead task.
+    fn bug005_send_message_spawn_blocking_does_not_starve_runtime() {
+        use crate::application::execution::ExecutorError;
+        // Unreachable endpoint: refused connections retry per the bounded
+        // attempt cap, then classify as Network (two computed backoffs:
+        // [1.5, 2.5] s + [3, 5] s).
         let executor = OpenAiExecutor::with_endpoint("http://127.0.0.1:1".to_string());
         let request = AiRequest {
             provider: PROVIDER_NAME.to_string(),
@@ -269,17 +274,27 @@ mod tests {
             request_timeout: None,
         };
 
+        let start = std::time::Instant::now();
         let joined = tauri::async_runtime::block_on(async {
-            tauri::async_runtime::spawn(
-                async move { executor.execute(&request, "sk-secret-example") },
-            )
+            tauri::async_runtime::spawn_blocking(move || {
+                executor.execute(&request, "sk-secret-example", &CancellationToken::new())
+            })
             .await
         });
+        let elapsed = start.elapsed();
 
+        let result = joined.expect("blocking task must complete, not abort");
         assert!(
-            joined.is_err(),
-            "reqwest::blocking unexpectedly completed inside an async worker; \
-             the send_message threading constraint may have been lifted upstream"
+            matches!(result, Err(ExecutorError::Network)),
+            "refused endpoint must classify as Network, got {result:?}"
+        );
+        assert!(
+            elapsed >= std::time::Duration::from_millis(4_500),
+            "retries must wait the computed backoff, elapsed={elapsed:?}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(30),
+            "exhausted retries must stay bounded, elapsed={elapsed:?}"
         );
     }
 }

@@ -744,4 +744,28 @@ mod tests {
             "commands/agent.rs must not construct the runner directly"
         );
     }
+
+    /// Static wiring check mirroring the bridge pattern above: a provider
+    /// call cancelled in flight must route to the `cancelled` terminal
+    /// outcome end to end. The runner maps the provider's cancellation to
+    /// `AgentError::Cancelled`, and the shared terminal mapping turns that
+    /// into the `cancelled` run status — pinning both needles keeps the
+    /// route from silently breaking into an `error`/`Provider` mapping.
+    #[test]
+    fn provider_cancellation_routes_to_cancelled_outcome() {
+        const RUNNER: &str = include_str!("../application/agent/runner.rs");
+        const PERSISTENCE: &str = include_str!("../application/agent/persistence.rs");
+        assert!(
+            RUNNER.contains("ExecutorError::Cancelled"),
+            "runner.rs must route provider cancellation explicitly"
+        );
+        assert!(
+            RUNNER.contains("AgentRunEvent::Cancelled"),
+            "runner.rs must stream the Cancelled governance event on abort"
+        );
+        assert!(
+            PERSISTENCE.contains("\"cancelled\""),
+            "persistence.rs must map cancellation onto the cancelled status"
+        );
+    }
 }
