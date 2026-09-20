@@ -723,4 +723,25 @@ mod tests {
             );
         }
     }
+
+    /// Static wiring check: the production `start_agent_run` command must
+    /// route through the application-layer bridge (`service::start_run`) and
+    /// must not construct the runner directly. The last mile —
+    /// `commands::agent::start_agent_run` down to `service::start_run` —
+    /// cannot be driven from a test because it needs `State<'_, _>`, so this
+    /// source check pins the delegation instead. The runner needle is built
+    /// with `concat!` so this test's own source never matches it verbatim.
+    #[test]
+    fn start_agent_run_routes_through_service_bridge() {
+        const SOURCE: &str = include_str!("agent.rs");
+        assert!(
+            SOURCE.contains("service::start_run("),
+            "start_agent_run must delegate to the service bridge"
+        );
+        let runner_needle = concat!("AgentRunner", "::new");
+        assert!(
+            !SOURCE.contains(runner_needle),
+            "commands/agent.rs must not construct the runner directly"
+        );
+    }
 }

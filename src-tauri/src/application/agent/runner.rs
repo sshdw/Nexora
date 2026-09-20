@@ -71,6 +71,7 @@ use std::time::{Duration, Instant};
 
 use crate::application::agent::approval::{ApprovalDecision, ApprovalGate};
 use crate::application::agent::control::{AgentRunEvent, CancellationToken, RunControl};
+use crate::application::agent::history;
 use crate::application::agent::persistence::{
     mode_to_column, ActiveRunRecord, RunRecorder, DEFAULT_RECORDED_MODE,
 };
@@ -236,6 +237,9 @@ pub(crate) struct AgentRunner<'a> {
     /// Opt-in spend limit in micro-USD (Task 4.3). `None` means no financial
     /// guard; the loop keeps the exact pre-4.3 behaviour.
     spend_limit_micro_usd: Option<u64>,
+    /// Prior conversation turns carried into the next run (agent memory
+    /// slice). Empty by default; applied via [`Self::with_history`].
+    prior_messages: Vec<AiMessage>,
 }
 
 impl<'a> AgentRunner<'a> {
@@ -252,6 +256,7 @@ impl<'a> AgentRunner<'a> {
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             recorder: None,
             spend_limit_micro_usd: None,
+            prior_messages: Vec::new(),
         }
     }
 
@@ -324,6 +329,15 @@ impl<'a> AgentRunner<'a> {
     #[must_use]
     pub(crate) fn with_spend_limit(mut self, micro_usd: u64) -> Self {
         self.spend_limit_micro_usd = Some(micro_usd);
+        self
+    }
+
+    /// Carry prior conversation turns into the run (agent memory slice).
+    /// The history is windowed to [`history::DEFAULT_HISTORY_WINDOW`] at
+    /// loop start; an empty history keeps the exact pre-slice behaviour.
+    #[must_use]
+    pub(crate) fn with_history(mut self, history: Vec<AiMessage>) -> Self {
+        self.prior_messages = history;
         self
     }
 
@@ -413,25 +427,35 @@ impl<'a> AgentRunner<'a> {
         let control = self.control.as_ref();
         let base = self.max_iterations;
         let mut steps_taken: usize = 0;
-        // History opens with the fixed agent system prompt plus the user
-        // request; after every tool turn the assistant's own calls and each
-        // tool's result are appended natively (see module docs).
-        let mut messages = vec![
-            AiMessage {
-                role: AiRole::System,
-                content: AGENT_SYSTEM_PROMPT.to_string(),
-                attachments: Vec::new(),
-                tool_calls: Vec::new(),
-                tool_result: None,
-            },
-            AiMessage {
-                role: AiRole::User,
-                content: user_request.to_string(),
-                attachments: Vec::new(),
-                tool_calls: Vec::new(),
-                tool_result: None,
-            },
-        ];
+        // History opens with the fixed agent system prompt, the retained
+        // conversation tail (agent memory slice), and the user request;
+        // after every tool turn the assistant's own calls and each tool's
+        // result are appended natively (see module docs).
+        let windowed = history::window(&self.prior_messages, history::DEFAULT_HISTORY_WINDOW);
+        let system_content = if windowed.dropped == 0 {
+            AGENT_SYSTEM_PROMPT.to_string()
+        } else {
+            format!(
+                "{AGENT_SYSTEM_PROMPT}\n\n{}",
+                history::omitted_note(windowed.dropped)
+            )
+        };
+        let mut messages = Vec::with_capacity(windowed.messages.len() + 2);
+        messages.push(AiMessage {
+            role: AiRole::System,
+            content: system_content,
+            attachments: Vec::new(),
+            tool_calls: Vec::new(),
+            tool_result: None,
+        });
+        messages.extend(windowed.messages);
+        messages.push(AiMessage {
+            role: AiRole::User,
+            content: user_request.to_string(),
+            attachments: Vec::new(),
+            tool_calls: Vec::new(),
+            tool_result: None,
+        });
 
         loop {
             // ---- Step boundary: governance gates before the next LLM turn ----
@@ -858,6 +882,102 @@ mod tests {
         assert_eq!(AGENT_SYSTEM_PROMPT, AGENT_SYSTEM_PROMPT_WINDOWS);
         #[cfg(not(windows))]
         assert_eq!(AGENT_SYSTEM_PROMPT, AGENT_SYSTEM_PROMPT_POSIX);
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    fn user_message(content: &str) -> AiMessage {
+        AiMessage {
+            role: AiRole::User,
+            content: content.to_string(),
+            attachments: Vec::new(),
+            tool_calls: Vec::new(),
+            tool_result: None,
+        }
+    }
+
+    fn assistant_message(content: &str) -> AiMessage {
+        AiMessage {
+            role: AiRole::Assistant,
+            content: content.to_string(),
+            attachments: Vec::new(),
+            tool_calls: Vec::new(),
+            tool_result: None,
+        }
+    }
+
+    /// `with_history` carries prior turns into the first request as
+    /// [System, ..history.., User(current)]; with no truncation the system
+    /// prompt stays byte-for-byte exact.
+    #[test]
+    fn with_history_prepends_prior_turns_before_current_request() {
+        let ws = temp_workspace();
+        let fake = FakeExecutor::new(vec![Ok(text_response("done"))]);
+        let history = vec![
+            user_message("earlier question"),
+            assistant_message("earlier answer"),
+        ];
+        let runner = AgentRunner::new(&fake, &ws).with_history(history);
+
+        runner
+            .run("openai", "m", "cred", "current question")
+            .expect("finish");
+
+        let requests = fake.requests.borrow();
+        assert_eq!(requests.len(), 1);
+        let messages = &requests[0].messages;
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[0].role, AiRole::System);
+        assert_eq!(messages[0].content, AGENT_SYSTEM_PROMPT);
+        assert_eq!(messages[1].role, AiRole::User);
+        assert_eq!(messages[1].content, "earlier question");
+        assert_eq!(messages[2].role, AiRole::Assistant);
+        assert_eq!(messages[2].content, "earlier answer");
+        assert_eq!(messages[3].role, AiRole::User);
+        assert_eq!(messages[3].content, "current question");
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    /// A history longer than the window is truncated: the system prompt
+    /// carries the omission note and the dropped messages never reach the
+    /// request.
+    #[test]
+    fn with_history_beyond_window_truncates_with_omission_note() {
+        use crate::application::agent::history as agent_history;
+
+        let ws = temp_workspace();
+        let fake = FakeExecutor::new(vec![Ok(text_response("done"))]);
+        let mut history = Vec::new();
+        for i in 0..agent_history::DEFAULT_HISTORY_WINDOW + 5 {
+            history.push(user_message(&format!("question {i}")));
+            history.push(assistant_message(&format!("answer {i}")));
+        }
+        let dropped_question = history[0].content.clone();
+        let runner = AgentRunner::new(&fake, &ws).with_history(history);
+
+        runner
+            .run("openai", "m", "cred", "new question")
+            .expect("finish");
+
+        let requests = fake.requests.borrow();
+        assert_eq!(requests.len(), 1);
+        let messages = &requests[0].messages;
+        assert_eq!(messages[0].role, AiRole::System);
+        assert!(
+            messages[0].content.starts_with(AGENT_SYSTEM_PROMPT),
+            "truncated runs keep the agent system prompt first"
+        );
+        assert!(
+            messages[0].content.len() > AGENT_SYSTEM_PROMPT.len(),
+            "truncated runs append the omission note"
+        );
+        assert!(
+            !messages.iter().any(|m| m.content == dropped_question),
+            "dropped history must be absent from the request"
+        );
+        assert_eq!(
+            messages.last().expect("current turn").content,
+            "new question"
+        );
         let _ = fs::remove_dir_all(&ws);
     }
 
@@ -2203,11 +2323,14 @@ mod tests {
                 gate_for_driver.cancel();
                 panic!("first event must request approval for w1, got {ev1:?}");
             }
-            gate_for_driver.respond("w1", ApprovalDecision::Approved);
-            // Switch immediately: the earliest moment the next tool can see
-            // Full, with no `recv` in between that would let w2 park while
-            // still Supervised and strand `run` on a second approval.
             gate_for_driver.set_mode(AutonomyMode::FullAutonomous);
+            // Ordering matters (approval.rs:139 — an already-parked request
+            // is NOT auto-resolved by `set_mode`): the mode must be Full
+            // BEFORE `respond` wakes the runner, so w2 necessarily sees Full
+            // even if the runner executes w1 and evaluates w2 before this
+            // driver thread is rescheduled. Parked w1 still requires its
+            // own `respond`, so w1 semantics are unchanged.
+            gate_for_driver.respond("w1", ApprovalDecision::Approved);
             // Do not assume the next event is Completed: drain until
             // `Completed { steps: 3 }`, skipping ApprovalResolved / step /
             // tool events. Cap the drain so a flood cannot loop.
@@ -2221,6 +2344,12 @@ mod tests {
                     Ok(AgentRunEvent::Completed { steps }) => {
                         assert_eq!(steps, 3);
                         break;
+                    }
+                    Ok(AgentRunEvent::ApprovalRequested { call_id, .. }) if call_id == "w2" => {
+                        // Race relic on loaded CI: w2 parked before observing
+                        // the mode switch. Approve it and keep draining.
+                        gate_for_driver.respond("w2", ApprovalDecision::Approved);
+                        seen += 1;
                     }
                     Ok(AgentRunEvent::Cancelled) => {
                         gate_for_driver.cancel();

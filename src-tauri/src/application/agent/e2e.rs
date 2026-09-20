@@ -446,6 +446,147 @@ fn e2e_plain_chat_regression() {
     let _ = std::fs::remove_dir_all(ws);
 }
 
+/// Start one memory-slice run with the shared test provider/model/credential.
+fn start_memory_run(
+    db: &Database,
+    registry: &Arc<AgentRunRegistry>,
+    host: Arc<dyn AgentRunHost>,
+    executor: Arc<dyn ProviderExecutor + Send + Sync>,
+    workspace: PathBuf,
+    conversation_id: i64,
+    user_request: &str,
+) -> Result<i64, crate::application::agent::service::AgentRunError> {
+    start_run(
+        db,
+        Arc::clone(registry),
+        host,
+        executor,
+        workspace,
+        AgentRunRequest {
+            conversation_id,
+            user_request: user_request.to_string(),
+            provider: "openai".to_string(),
+            model: "test-model".to_string(),
+            credential: "sk-test".to_string(),
+            max_iterations: None,
+            spend_limit_micro_usd: None,
+        },
+        AutonomyMode::SemiAutonomous,
+    )
+}
+
+/// Assert the last frame is a `completed` finish, optionally with `final_content`.
+fn assert_finished_completed(last: Option<&RunFrame>, final_content: Option<&str>) {
+    match last {
+        Some(RunFrame::Finished { event, .. }) => {
+            assert_eq!(event.status, "completed");
+            if let Some(expected) = final_content {
+                assert_eq!(event.final_content.as_deref(), Some(expected));
+            }
+        }
+        other => panic!("last frame must be a completed Finished, got {other:?}"),
+    }
+}
+
+#[test]
+fn e2e_second_run_carries_first_run_history_exactly_once() {
+    let (db, db_path) = e2e_db("run-memory");
+    let ws = e2e_workspace("run-memory-ws");
+    let conversation_id = create_conversation(&db, "memory");
+
+    let run1_user = "first task marker alpha-seven";
+    let run1_answer = "first answer marker beta-nine";
+    let run2_user = "second task marker gamma-five";
+
+    let registry = Arc::new(AgentRunRegistry::default());
+
+    // Run 1: distinctive final text, persisted as the assistant turn.
+    let (tx, rx) = channel();
+    let host: Arc<dyn AgentRunHost> = Arc::new(E2eHost {
+        frames_tx: tx,
+        db: db.clone(),
+    });
+    start_memory_run(
+        &db,
+        &registry,
+        host,
+        Arc::new(ScriptedExecutor::new(vec![Ok(text_response(run1_answer))])),
+        ws.clone(),
+        conversation_id,
+        run1_user,
+    )
+    .expect("start run 1");
+    let frames = collect_until_finished(&rx);
+    assert_finished_completed(frames.last(), Some(run1_answer));
+
+    // Run 2: capture the request the runner actually receives. The release
+    // of run 1 races the Finished frame, so retry the claim briefly.
+    let (tx2, rx2) = channel();
+    let host2: Arc<dyn AgentRunHost> = Arc::new(E2eHost {
+        frames_tx: tx2,
+        db: db.clone(),
+    });
+    let executor2 = Arc::new(ScriptedExecutor::new(vec![Ok(text_response(
+        "second answer",
+    ))]));
+    let executor2_dyn: Arc<dyn ProviderExecutor + Send + Sync> = executor2.clone();
+    let mut started = false;
+    for _ in 0..100 {
+        match start_memory_run(
+            &db,
+            &registry,
+            Arc::clone(&host2),
+            Arc::clone(&executor2_dyn),
+            ws.clone(),
+            conversation_id,
+            run2_user,
+        ) {
+            Ok(_) => {
+                started = true;
+                break;
+            }
+            Err(crate::application::agent::service::AgentRunError::RunAlreadyActive { .. }) => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(other) => panic!("start run 2 failed: {other:?}"),
+        }
+    }
+    assert!(
+        started,
+        "run 2 must start after run 1 releases the conversation"
+    );
+    let frames2 = collect_until_finished(&rx2);
+    assert_finished_completed(frames2.last(), None);
+
+    let requests = executor2.requests.lock().expect("requests lock");
+    assert_eq!(requests.len(), 1, "run 2 must issue exactly one request");
+    let contents: Vec<&str> = requests[0]
+        .messages
+        .iter()
+        .map(|m| m.content.as_str())
+        .collect();
+    assert!(
+        contents.contains(&run1_user),
+        "run 2 must see the run-1 user text, got {contents:?}"
+    );
+    assert!(
+        contents.contains(&run1_answer),
+        "run 2 must see the run-1 assistant text, got {contents:?}"
+    );
+    // The duplication trap: the history is loaded BEFORE the current user
+    // message is persisted, so the current turn appears exactly once. A
+    // naive load-after-persist would see it twice.
+    assert_eq!(
+        contents.iter().filter(|&c| *c == run2_user).count(),
+        1,
+        "run-2 user text must occur exactly once, got {contents:?}"
+    );
+
+    drop(db);
+    cleanup_db(&db_path);
+    let _ = std::fs::remove_dir_all(ws);
+}
+
 #[test]
 #[allow(clippy::too_many_lines)]
 fn e2e_full_agent_journey() {

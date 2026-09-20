@@ -353,17 +353,79 @@ impl<'a> ConversationService<'a> {
         current_attachments: &[AiAttachment],
     ) -> Result<Vec<AiMessage>> {
         let history = self.messages.list_by_conversation(conversation_id)?;
+        self.build_history(
+            &history,
+            provider,
+            Some((current_message_id, current_attachments)),
+            AttachmentFailure::Fail,
+        )
+    }
+
+    /// Build the provider-independent history for an agent run in
+    /// `conversation_id` (agent memory slice): same load order (oldest ->
+    /// newest) and same [`AiMessage`] conversion as [`Self::ai_history`],
+    /// but an attachment that cannot be built is skipped with a `log::warn!`
+    /// instead of failing the call — an attachment moved or deleted months
+    /// ago must not make the agent unusable.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConversationError::NotFound`] when no conversation with
+    /// `conversation_id` exists; [`ConversationError::UnexpectedMessageRole`]
+    /// for a persisted role outside `user` / `assistant`; or
+    /// [`ConversationError::Database`] when any query fails. Attachment
+    /// build failures never surface as errors.
+    pub(crate) fn agent_history(
+        &self,
+        conversation_id: i64,
+        provider: &str,
+    ) -> Result<Vec<AiMessage>> {
+        if !self.conversations.exists(conversation_id)? {
+            return Err(ConversationError::NotFound {
+                id: conversation_id,
+            });
+        }
+        let history = self.messages.list_by_conversation(conversation_id)?;
+        self.build_history(&history, provider, None, AttachmentFailure::Skip)
+    }
+
+    /// Shared per-message conversion for [`Self::ai_history`] and
+    /// [`Self::agent_history`]: map each persisted message to an
+    /// [`AiMessage`], joining linked attachments per the failure `policy`.
+    ///
+    /// When `current` is `Some((id, attachments))`, the message with that id
+    /// reuses the already-built `attachments` instead of re-reading them from
+    /// disk (the plain-chat current-turn path).
+    fn build_history(
+        &self,
+        history: &[Message],
+        provider: &str,
+        current: Option<(i64, &[AiAttachment])>,
+        policy: AttachmentFailure,
+    ) -> Result<Vec<AiMessage>> {
         let mut messages = Vec::with_capacity(history.len());
-        for message in &history {
+        for message in history {
             let mut ai_message = ai_message_from(message)?;
             if ai_message.role == AiRole::User {
-                if message.id == current_message_id {
-                    ai_message.attachments = current_attachments.to_vec();
-                } else {
-                    for attachment in self.attachments.list_by_message(message.id)? {
-                        ai_message
-                            .attachments
-                            .push(build_ai_attachment(&attachment, provider)?);
+                match current {
+                    Some((current_id, current_attachments)) if message.id == current_id => {
+                        ai_message.attachments = current_attachments.to_vec();
+                    }
+                    _ => {
+                        for attachment in self.attachments.list_by_message(message.id)? {
+                            match build_ai_attachment(&attachment, provider) {
+                                Ok(payload) => ai_message.attachments.push(payload),
+                                Err(err) => match policy {
+                                    AttachmentFailure::Fail => return Err(err),
+                                    AttachmentFailure::Skip => {
+                                        log::warn!(
+                                            "agent history: skipping unreadable attachment '{}': {err}",
+                                            attachment.file_name
+                                        );
+                                    }
+                                },
+                            }
+                        }
                     }
                 }
             }
@@ -514,6 +576,21 @@ impl<'a> ConversationService<'a> {
     pub(crate) fn list(&self) -> Result<Vec<Conversation>> {
         Ok(self.conversations.list()?)
     }
+}
+
+/// What to do when a historical attachment cannot be rebuilt from disk.
+///
+/// Plain chat ([`ConversationService::ai_history`]) fails hard
+/// ([`AttachmentFailure::Fail`]); the agent history path
+/// ([`ConversationService::agent_history`]) skips the attachment with a
+/// warning ([`AttachmentFailure::Skip`]) so a moved or deleted file from
+/// months ago never makes the agent unusable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AttachmentFailure {
+    /// Propagate the attachment error to the caller.
+    Fail,
+    /// Log a warning and keep the message without that attachment.
+    Skip,
 }
 
 /// Map a persisted [`Message`] to the provider-independent [`AiMessage`] used
@@ -1856,6 +1933,50 @@ mod tests {
             .list_by_conversation(conversation_id)
             .expect("list messages")
             .is_empty());
+    }
+
+    #[test]
+    fn agent_history_skips_unreadable_attachment_instead_of_failing() {
+        let db = test_db();
+        let service = ConversationService::new(&db);
+        let conversation_id = service.create("Chat").expect("conversation created");
+        let message_id = service
+            .persist_user_message(conversation_id, "hello")
+            .expect("user message persisted");
+        // A linked row whose stored path does not exist on disk (file
+        // moved/deleted long ago): plain chat would fail hard, but the agent
+        // history degrades to the message without that attachment.
+        let ghost = AttachmentRepository::new(&db)
+            .create(
+                conversation_id,
+                "ghost.txt",
+                &std::env::temp_dir()
+                    .join(format!("nexora-missing-agent-{}.txt", std::process::id()))
+                    .to_string_lossy(),
+                Some(3),
+                Some("text/plain"),
+            )
+            .expect("attachment row created");
+        AttachmentRepository::new(&db)
+            .update_message_id(ghost, Some(message_id))
+            .expect("attachment linked");
+
+        let history = service
+            .agent_history(conversation_id, "openai")
+            .expect("agent history must not fail on a missing file");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].role, AiRole::User);
+        assert_eq!(history[0].content, "hello");
+        assert!(
+            history[0].attachments.is_empty(),
+            "unreadable attachment must be skipped, not carried"
+        );
+
+        // A missing conversation is still NotFound, not an empty history.
+        assert!(matches!(
+            service.agent_history(9999, "openai"),
+            Err(ConversationError::NotFound { id: 9999 })
+        ));
     }
 
     #[test]
