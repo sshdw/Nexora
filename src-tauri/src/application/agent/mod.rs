@@ -39,6 +39,7 @@ pub mod permissions;
 pub mod persistence;
 pub mod pricing;
 pub mod prompts;
+pub mod registry;
 pub mod runner;
 pub mod service;
 #[cfg(test)]
