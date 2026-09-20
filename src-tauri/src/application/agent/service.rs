@@ -44,7 +44,7 @@ use super::control::{AgentRunEvent, RunControl};
 use super::persistence::{mode_to_column, terminal_outcome, RunRecorder};
 use super::runner::AgentRunner;
 use crate::application::conversations::ConversationService;
-use crate::application::execution::{ExecutorRegistry, ProviderExecutor, RequestError};
+use crate::application::execution::{AiMessage, ExecutorRegistry, ProviderExecutor, RequestError};
 use crate::application::settings::SettingsService;
 use crate::infrastructure::database::Database;
 use crate::infrastructure::repository::agent_runs::{AgentRun, AgentRunRepository, AgentStep};
@@ -551,6 +551,23 @@ fn start_run_claimed(
     request: &AgentRunRequest,
     mode: AutonomyMode,
 ) -> Result<i64, AgentRunError> {
+    // Load the persisted history BEFORE persisting the current user
+    // message (agent memory slice): after the persist the current turn is
+    // already in the table, so loading first is what makes it appear exactly
+    // once in the run's context.
+    let history: Vec<AiMessage> = match ConversationService::new(db)
+        .agent_history(request.conversation_id, &request.provider)
+    {
+        Ok(history) => history,
+        Err(crate::application::conversations::ConversationError::NotFound { id }) => {
+            return Err(AgentRunError::ConversationNotFound { id });
+        }
+        Err(other) => {
+            log::warn!("agent run setup: history load failed, continuing empty: {other}");
+            Vec::new()
+        }
+    };
+
     // Persist the user message BEFORE spawning (design §3.2): a crash can
     // never lose it, and it appears in the thread immediately. No assistant
     // message is ever created unless the run later succeeds (plain-chat
@@ -606,6 +623,7 @@ fn start_run_claimed(
         control,
         gate,
         request.clone(),
+        history,
     )?;
     Ok(run_id)
 }
@@ -626,6 +644,7 @@ fn spawn_run(
     control: RunControl,
     gate: ApprovalGate,
     request: AgentRunRequest,
+    history: Vec<AiMessage>,
 ) -> Result<(), AgentRunError> {
     let (tx, rx): (Sender<AgentRunEvent>, Receiver<AgentRunEvent>) = mpsc::channel();
     // Terminal-frame channel: the run thread sends the `RunFinished` payload
@@ -654,6 +673,7 @@ fn spawn_run(
                 let mut runner = AgentRunner::new(executor.as_ref(), &workspace_root)
                     .with_control(control)
                     .with_approval_gate(gate)
+                    .with_history(history)
                     .with_event_sender(tx_for_recorder.clone());
                 if let Some(max_iterations) = run_request.max_iterations {
                     runner = runner.with_max_iterations(max_iterations);
