@@ -50,6 +50,7 @@ use crate::infrastructure::providers::openai::{
 use serde::{Deserialize, Serialize};
 
 use super::providers::{ProviderError, ProviderService};
+use crate::application::agent::control::CancellationToken;
 
 /// Application-layer result shared by request execution operations, unifying
 /// orchestration, persistence, and credential failures.
@@ -283,6 +284,11 @@ pub(crate) enum ExecutorError {
     UnexpectedResponse,
     /// The provider could not fulfil the request (catch-all).
     Failure,
+    /// The provider request was cancelled via the run's [`CancellationToken`]
+    /// before it completed. Abandoned tool calls on this path must never
+    /// dispatch: the runner maps this to `AgentError::Cancelled`, so no model
+    /// turn is recorded and no tool call is dispatched.
+    Cancelled,
 }
 
 impl std::fmt::Display for ExecutorError {
@@ -334,6 +340,10 @@ impl std::fmt::Display for ExecutorError {
                 write!(f, "the AI provider returned an unexpected response")
             }
             Self::Failure => write!(f, "the AI provider failed to fulfil the request"),
+            Self::Cancelled => write!(
+                f,
+                "the AI provider request was cancelled before it completed"
+            ),
         }
     }
 }
@@ -341,11 +351,16 @@ impl std::fmt::Display for ExecutorError {
 impl std::error::Error for ExecutorError {}
 
 /// Maximum attempts for one provider HTTP send: the initial try plus up to two
-/// retries (bounded retry for 429/5xx only).
+/// retries (bounded retry for 429/5xx and retryable network errors).
 pub(crate) const MAX_SEND_ATTEMPTS: u32 = 3;
 
 /// Upper bound honored for a provider `Retry-After` hint (seconds).
 pub(crate) const MAX_RETRY_DELAY_SECS: u64 = 30;
+
+/// Base backoff for a retryable failure without a usable `Retry-After` hint
+/// (milliseconds): doubled per consecutive retry, ±25% jitter, capped at
+/// [`MAX_RETRY_DELAY_SECS`]. The first retry waits ~2 s, the second ~4 s.
+pub(crate) const RETRY_BASE_DELAY_MS: u64 = 2_000;
 
 /// Returns true iff `status` is retryable: HTTP 429 or any 5xx. All other
 /// statuses (including 400/401/402/403/404) are never retried.
@@ -353,10 +368,58 @@ pub(crate) fn is_retryable_status(status: u16) -> bool {
     status == 429 || (500..=599).contains(&status)
 }
 
-/// Bounded backoff for a retryable failure: `min(retry_after, 30s)`. A missing
-/// or unparsable `Retry-After` (already `None` at the call site) waits zero.
-pub(crate) fn retry_delay(retry_after_secs: Option<u64>) -> std::time::Duration {
-    std::time::Duration::from_secs(retry_after_secs.unwrap_or(0).min(MAX_RETRY_DELAY_SECS))
+/// Computed backoff for the `retry_index`-th retry (0-based: 0 is the wait
+/// before the second attempt): `min(base * 2^retry_index, 30 s)` with ±25%
+/// jitter. Always strictly positive and never above [`MAX_RETRY_DELAY_SECS`].
+///
+/// The jitter source is a process-wide atomic counter mixed with the wall
+/// clock (`splitmix64`); it needs no RNG crate and its output is confined to
+/// `[0.75, 1.25]` by construction, so only bounds — never exact values — are
+/// asserted. `retry_index` saturates at 5 (2^5 × 2 s already exceeds the cap),
+/// so the shift can never overflow.
+pub(crate) fn backoff_delay(retry_index: u32) -> std::time::Duration {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    static JITTER_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let shift = retry_index.min(5);
+    let base_ms = RETRY_BASE_DELAY_MS.saturating_mul(1 << shift);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX)
+        });
+    let count = JITTER_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut mixed = nanos.wrapping_add(count.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+    // splitmix64: avalanche the counter/clock mix into a uniform u64.
+    mixed = mixed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = mixed;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    // Jitter factor in [0.75, 1.25]: 75 + (z % 51) percent, integer math —
+    // no float casts, no precision loss.
+    let percent = 75 + (z % 51);
+    let jittered_ms = base_ms.saturating_mul(percent) / 100;
+    Duration::from_millis(
+        jittered_ms
+            .min(MAX_RETRY_DELAY_SECS.saturating_mul(1_000))
+            .max(1),
+    )
+}
+
+/// Effective wait before the `retry_index`-th retry: an explicit provider
+/// `Retry-After` hint (header first, then body — already merged by the caller)
+/// is honored verbatim up to [`MAX_RETRY_DELAY_SECS`]; a missing hint falls
+/// back to the computed [`backoff_delay`], which is never zero.
+///
+/// An explicit `0` is honored as `0` (the provider asked for an immediate
+/// retry); only a *missing* hint computes a backoff.
+pub(crate) fn retry_delay(retry_after_secs: Option<u64>, retry_index: u32) -> std::time::Duration {
+    match retry_after_secs {
+        Some(secs) => std::time::Duration::from_secs(secs.min(MAX_RETRY_DELAY_SECS)),
+        None => backoff_delay(retry_index),
+    }
 }
 
 /// Provider-independent execution boundary (ARCHITECTURE.md §7).
@@ -371,6 +434,12 @@ pub(crate) fn retry_delay(retry_after_secs: Option<u64>) -> std::time::Duration 
 /// immediately before execution. Implementations must never log, persist, or
 /// embed `credential` into any error they return (ARCHITECTURE.md §9, §11,
 /// §12).
+///
+/// `token` is the run's [`CancellationToken`]: implementations must abort a
+/// cancelled in-flight request promptly (well under the wall-clock
+/// `request_timeout`) and report [`ExecutorError::Cancelled`], and must abort
+/// a pending retry backoff immediately. Callers without a run (plain chat)
+/// pass a fresh token that never fires.
 pub(crate) trait ProviderExecutor {
     /// Execute `request` against the provider using `credential`.
     ///
@@ -382,6 +451,7 @@ pub(crate) trait ProviderExecutor {
         &self,
         request: &AiRequest,
         credential: &str,
+        token: &CancellationToken,
     ) -> std::result::Result<AiResponse, ExecutorError>;
 }
 
@@ -588,9 +658,12 @@ impl<'a> RequestExecutionService<'a> {
         })?;
 
         // 5. Delegate to the provider-independent boundary. The credential is
-        //    moved only into this call and dropped when it returns.
+        //    moved only into this call and dropped when it returns. Plain
+        //    chat has no run to cancel, so it executes under a fresh token
+        //    that never fires; cancellation is an agent-run concern.
+        let idle_token = CancellationToken::new();
         executor
-            .execute(request, &credential)
+            .execute(request, &credential, &idle_token)
             .map_err(|err| RequestError::Execution {
                 name: request.provider.clone(),
                 message: err.to_string(),
@@ -885,6 +958,10 @@ mod tests {
             ExecutorError::Failure.to_string(),
             "the AI provider failed to fulfil the request"
         );
+        assert_eq!(
+            ExecutorError::Cancelled.to_string(),
+            "the AI provider request was cancelled before it completed"
+        );
     }
 
     #[test]
@@ -914,10 +991,59 @@ mod tests {
         use std::time::Duration;
         assert_eq!(MAX_SEND_ATTEMPTS, 3);
         assert_eq!(MAX_RETRY_DELAY_SECS, 30);
-        assert_eq!(retry_delay(None), Duration::from_secs(0));
-        assert_eq!(retry_delay(Some(0)), Duration::from_secs(0));
-        assert_eq!(retry_delay(Some(5)), Duration::from_secs(5));
-        assert_eq!(retry_delay(Some(30)), Duration::from_secs(30));
-        assert_eq!(retry_delay(Some(120)), Duration::from_secs(30));
+        // An explicit provider hint is honored verbatim up to the cap: an
+        // explicit 0 stays 0 (immediate retry, as before).
+        assert_eq!(retry_delay(Some(0), 0), Duration::from_secs(0));
+        assert_eq!(retry_delay(Some(5), 0), Duration::from_secs(5));
+        assert_eq!(retry_delay(Some(5), 1), Duration::from_secs(5));
+        assert_eq!(retry_delay(Some(30), 0), Duration::from_secs(30));
+        assert_eq!(retry_delay(Some(120), 0), Duration::from_secs(30));
+        assert_eq!(retry_delay(Some(9999), 2), Duration::from_secs(30));
+        // A missing hint no longer waits zero: it computes the jittered
+        // backoff for the retry index (bounds asserted exactly in
+        // `default_backoff_is_nonzero_with_jitter_bounds`).
+        for index in 0..3 {
+            let delay = retry_delay(None, index);
+            assert!(delay > Duration::from_secs(0));
+            assert!(delay <= Duration::from_secs(30));
+        }
+    }
+
+    #[test]
+    fn default_backoff_is_nonzero_with_jitter_bounds() {
+        // The computed backoff for retry index `i` is base 2 s × 2^i with
+        // ±25% jitter, capped at 30 s, always strictly positive. Jitter is
+        // nondeterministic by design, so only deterministic bounds are
+        // asserted — never exact equality.
+        for index in 0..8 {
+            let uncapped_ms = RETRY_BASE_DELAY_MS.saturating_mul(1 << index.min(5));
+            // Either side of the jitter band saturates at the cap: past the
+            // knee the delay pins at exactly 30 s.
+            let lower_ms = (uncapped_ms.saturating_mul(75) / 100).min(30_000);
+            let upper_ms = (uncapped_ms.saturating_mul(125) / 100).min(30_000);
+            let delay = backoff_delay(index);
+            assert!(
+                delay > std::time::Duration::from_secs(0),
+                "backoff for retry {index} must be nonzero, got {delay:?}"
+            );
+            assert!(
+                delay >= std::time::Duration::from_millis(lower_ms)
+                    && delay <= std::time::Duration::from_millis(upper_ms),
+                "backoff for retry {index} must lie in [0.75x, 1.25x] of \
+                 {uncapped_ms}ms capped at 30 s, got {delay:?}"
+            );
+            assert!(
+                delay <= std::time::Duration::from_secs(MAX_RETRY_DELAY_SECS),
+                "backoff for retry {index} must never exceed the 30 s cap"
+            );
+        }
+        // Spot bounds for the attempts the bounded retry loop actually uses:
+        // first retry ~2 s, second ~4 s.
+        let first = backoff_delay(0);
+        assert!(first >= std::time::Duration::from_millis(1_500));
+        assert!(first <= std::time::Duration::from_millis(2_500));
+        let second = backoff_delay(1);
+        assert!(second >= std::time::Duration::from_secs(3));
+        assert!(second <= std::time::Duration::from_secs(5));
     }
 }

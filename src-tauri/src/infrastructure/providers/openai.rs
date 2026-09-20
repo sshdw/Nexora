@@ -19,9 +19,10 @@
 //!   the duration of the call only; it is never persisted, logged, or returned.
 //! - The credential is sent only in the `Authorization` header via
 //!   `reqwest`'s `bearer_auth`, never in the body.
-//! - Failed responses are classified by HTTP status **without reading the
-//!   error body**, so a provider diagnostic can never leak the credential or
-//!   the request payload into an error or log.
+//! - Failed responses are read and classified by HTTP status **plus the
+//!   `Retry-After` header and common JSON body shapes**; only the failure
+//!   *category* ever reaches an error or log — never the credential, the
+//!   request payload, or raw body text.
 //! - All failures collapse to the single provider-independent
 //!   [`ExecutorError::Failure`]; the internal [`OpenAiError`] classification
 //!   (authentication, invalid request, provider/network, unexpected response)
@@ -32,6 +33,7 @@
 // `doc_markdown` pedantic lint flags as needing backticks. Allow it locally.
 #![allow(clippy::doc_markdown)]
 
+use crate::application::agent::control::CancellationToken;
 use crate::application::execution::{
     AiAttachmentPayload, AiMessage, AiRequest, AiResponse, AiRole, ExecutorError, ProviderExecutor,
 };
@@ -39,8 +41,8 @@ use crate::application::execution::{
 #[cfg(test)]
 use crate::application::execution::AiAttachment;
 
+use super::transport::{Credential, HttpClient, PostOutcome, PostRequest};
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
 
 /// OpenAI's Chat Completions endpoint.
 const ENDPOINT: &str = "https://api.openai.com/v1/chat/completions";
@@ -132,11 +134,12 @@ pub(crate) const OPENCODE_ZEN_MODELS: &[&str] = &[
     "mimo-v2.5-free",
 ];
 ///
-/// Stateless over the shared `reqwest` blocking client so it can be shared
-/// across requests; the per-request credential and request payload are passed
-/// into each [`ProviderExecutor::execute`] call and dropped on return.
+/// Stateless over the shared cancellable transport client so connections
+/// are pooled across requests; the per-request credential and request payload
+/// are passed into each [`ProviderExecutor::execute`] call and dropped on
+/// return.
 pub(crate) struct OpenAiExecutor {
-    client: reqwest::blocking::Client,
+    client: HttpClient,
     endpoint: String,
     name: &'static str,
     extra_headers: Vec<(&'static str, &'static str)>,
@@ -159,7 +162,7 @@ impl OpenAiExecutor {
     /// at `endpoint` (no extra headers).
     pub(crate) fn compatible(name: &'static str, endpoint: String) -> Self {
         Self {
-            client: reqwest::blocking::Client::new(),
+            client: HttpClient::new(),
             endpoint,
             name,
             extra_headers: Vec::new(),
@@ -174,7 +177,7 @@ impl OpenAiExecutor {
         headers: &[(&'static str, &'static str)],
     ) -> Self {
         Self {
-            client: reqwest::blocking::Client::new(),
+            client: HttpClient::new(),
             endpoint,
             name,
             extra_headers: headers.to_vec(),
@@ -185,23 +188,58 @@ impl OpenAiExecutor {
     ///
     /// Returns a provider-independent [`AiResponse`] on success, or a
     /// classified [`OpenAiError`] describing the failure category.
-    fn run(&self, request: &AiRequest, credential: &str) -> Result<AiResponse, OpenAiError> {
+    fn run(
+        &self,
+        request: &AiRequest,
+        credential: &str,
+        token: &CancellationToken,
+    ) -> Result<AiResponse, OpenAiError> {
         let body = chat_completion_request(request);
-        let response = send(
-            &self.client,
-            &self.endpoint,
-            credential,
-            &body,
-            request.request_timeout,
-            &self.extra_headers,
-        )?;
-        to_ai_response(response)
+        let wire = serde_json::to_vec(&body).map_err(|_| OpenAiError::UnexpectedResponse)?;
+        let outcome = self
+            .client
+            .post(
+                token,
+                &PostRequest {
+                    url: self.endpoint.clone(),
+                    credential: Credential::Bearer(credential),
+                    extra_headers: &self.extra_headers,
+                    body: &wire,
+                    timeout: request.request_timeout,
+                },
+            )
+            .map_err(|err| {
+                if matches!(err, ExecutorError::Cancelled) {
+                    OpenAiError::Cancelled
+                } else {
+                    // The shared transport only ever reports `Network` besides
+                    // cancellation; anything else would be a contract break,
+                    // surfaced here as a transport failure rather than a
+                    // success.
+                    OpenAiError::Network
+                }
+            })?;
+        match outcome {
+            PostOutcome::Success(bytes) => {
+                let response: ChatCompletionResponse =
+                    serde_json::from_slice(&bytes).map_err(|_| OpenAiError::UnexpectedResponse)?;
+                to_ai_response(response)
+            }
+            PostOutcome::Failure(snapshot) => {
+                Err(classify_status(snapshot.status, snapshot.retry_after_secs))
+            }
+        }
     }
 }
 
 impl ProviderExecutor for OpenAiExecutor {
-    fn execute(&self, request: &AiRequest, credential: &str) -> Result<AiResponse, ExecutorError> {
-        match self.run(request, credential) {
+    fn execute(
+        &self,
+        request: &AiRequest,
+        credential: &str,
+        token: &CancellationToken,
+    ) -> Result<AiResponse, ExecutorError> {
+        match self.run(request, credential, token) {
             Ok(response) => Ok(response),
             Err(error) => {
                 // Record only the classification category; never the credential
@@ -218,6 +256,7 @@ impl ProviderExecutor for OpenAiExecutor {
                     OpenAiError::ProviderUnavailable => ExecutorError::ProviderUnavailable,
                     OpenAiError::UnexpectedResponse => ExecutorError::UnexpectedResponse,
                     OpenAiError::Provider => ExecutorError::Failure,
+                    OpenAiError::Cancelled => ExecutorError::Cancelled,
                 })
             }
         }
@@ -452,58 +491,6 @@ struct OpenAiWireFunctionCall {
     name: String,
     arguments: String,
 }
-/// Perform the non-streaming HTTPS request.
-///
-/// The credential is placed only in the `Authorization` header. A non-success
-/// response is classified by status without reading its body.
-///
-/// `request_timeout` bounds the single blocking round trip (Task 3.2): the
-/// blocking client cannot be interrupted mid-flight, so the honest bound is a
-/// wall-clock timeout applied via `RequestBuilder::timeout`. `None` preserves
-/// the historical unbounded behavior byte-for-byte.
-fn send(
-    client: &reqwest::blocking::Client,
-    endpoint: &str,
-    credential: &str,
-    body: &ChatCompletionRequest,
-    request_timeout: Option<Duration>,
-    extra_headers: &[(&'static str, &'static str)],
-) -> Result<ChatCompletionResponse, OpenAiError> {
-    use crate::application::execution::{is_retryable_status, retry_delay, MAX_SEND_ATTEMPTS};
-    let mut attempts: u32 = 0;
-    loop {
-        attempts += 1;
-        let mut builder = client.post(endpoint).bearer_auth(credential);
-        for (key, value) in extra_headers {
-            builder = builder.header(*key, *value);
-        }
-        builder = builder.json(body);
-        if let Some(timeout) = request_timeout {
-            builder = builder.timeout(timeout);
-        }
-        let response = builder.send().map_err(|_| OpenAiError::Network)?;
-
-        let status = response.status();
-        if status.is_success() {
-            return response
-                .json::<ChatCompletionResponse>()
-                .map_err(|_| OpenAiError::UnexpectedResponse);
-        }
-        let status_u16 = status.as_u16();
-        let retry_after_secs = response
-            .headers()
-            .get("retry-after")
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.trim().parse::<u64>().ok());
-        let error = classify_status(status_u16, retry_after_secs);
-        if is_retryable_status(status_u16) && attempts < MAX_SEND_ATTEMPTS {
-            std::thread::sleep(retry_delay(retry_after_secs));
-            continue;
-        }
-        return Err(error);
-    }
-}
-
 /// Normalize a successful OpenAI response into the provider-independent
 /// [`AiResponse`], preserving the model that actually responded.
 fn to_ai_response(response: ChatCompletionResponse) -> Result<AiResponse, OpenAiError> {
@@ -550,9 +537,10 @@ fn to_ai_response(response: ChatCompletionResponse) -> Result<AiResponse, OpenAi
 
 /// Classify a non-success HTTP status into a secret-free failure category.
 ///
-/// `retry_after_secs` is the provider's `Retry-After` header parsed as integer
-/// seconds (absent or HTTP-date values are `None`) and is carried only by the
-/// 429 [`OpenAiError::RateLimited`] category.
+/// `retry_after_secs` is the merged provider `Retry-After` hint: the response
+/// header first, then common JSON body shapes (see
+/// [`super::transport::extract_retry_after`]), capped upstream. It is carried
+/// only by the 429 [`OpenAiError::RateLimited`] category.
 fn classify_status(status: u16, retry_after_secs: Option<u64>) -> OpenAiError {
     match status {
         400 | 404 => OpenAiError::InvalidRequest,
@@ -593,6 +581,9 @@ enum OpenAiError {
     /// The response was not a recognizable chat completion (e.g. missing
     /// content or malformed JSON).
     UnexpectedResponse,
+    /// The run was cancelled before the request completed: the in-flight
+    /// attempt was aborted and no response was consumed.
+    Cancelled,
 }
 
 impl std::fmt::Display for OpenAiError {
@@ -610,6 +601,7 @@ impl std::fmt::Display for OpenAiError {
             Self::Authentication => write!(f, "OpenAI rejected the credential (401)"),
             Self::Provider => write!(f, "OpenAI provider or network failure"),
             Self::UnexpectedResponse => write!(f, "OpenAI returned an unexpected response"),
+            Self::Cancelled => write!(f, "OpenAI request cancelled before completion"),
         }
     }
 }
@@ -834,14 +826,18 @@ mod tests {
     #[test]
     fn executor_maps_every_classified_failure_to_boundary_failure() {
         let executor = OpenAiExecutor {
-            client: reqwest::blocking::Client::new(),
+            client: HttpClient::new(),
             endpoint: "http://127.0.0.1:1".to_string(), // unreachable -> network failure
             name: PROVIDER_NAME,
             extra_headers: Vec::new(),
         };
         // The boundary surfaces the classified category (here: network), never an
         // OpenAI-specific or secret-bearing type.
-        let result = executor.execute(&sample_request(), "sk-secret-example");
+        let result = executor.execute(
+            &sample_request(),
+            "sk-secret-example",
+            &CancellationToken::new(),
+        );
         assert!(matches!(result, Err(ExecutorError::Network)));
     }
 
@@ -936,7 +932,11 @@ mod tests {
 
         let executor = OpenAiExecutor::with_endpoint(format!("http://{addr}"));
         let ai = executor
-            .execute(&sample_request(), "sk-secret-example")
+            .execute(
+                &sample_request(),
+                "sk-secret-example",
+                &CancellationToken::new(),
+            )
             .expect("round trip succeeds");
         server.join().expect("server thread joins");
 
@@ -957,7 +957,11 @@ mod tests {
             (429, String::new(), Some("0".to_string())),
         ]);
         let executor = OpenAiExecutor::with_endpoint(endpoint);
-        let result = executor.execute(&sample_request(), "sk-secret-example");
+        let result = executor.execute(
+            &sample_request(),
+            "sk-secret-example",
+            &CancellationToken::new(),
+        );
         assert!(matches!(
             result,
             Err(ExecutorError::RateLimited {
@@ -973,7 +977,11 @@ mod tests {
             (429, String::new(), None),
         ]);
         let executor = OpenAiExecutor::with_endpoint(endpoint);
-        let result = executor.execute(&sample_request(), "sk-secret-example");
+        let result = executor.execute(
+            &sample_request(),
+            "sk-secret-example",
+            &CancellationToken::new(),
+        );
         assert!(matches!(
             result,
             Err(ExecutorError::RateLimited {
@@ -993,7 +1001,11 @@ mod tests {
                 (status, String::new(), None),
             ]);
             let executor = OpenAiExecutor::with_endpoint(endpoint);
-            let result = executor.execute(&sample_request(), "sk-secret-example");
+            let result = executor.execute(
+                &sample_request(),
+                "sk-secret-example",
+                &CancellationToken::new(),
+            );
             assert!(
                 matches!(result, Err(ExecutorError::ProviderUnavailable)),
                 "status {status} should map to ProviderUnavailable, got {result:?}"
@@ -1029,7 +1041,11 @@ mod tests {
             let _ = stream.flush();
         });
         let executor = OpenAiExecutor::with_endpoint(format!("http://{addr}"));
-        let result = executor.execute(&sample_request(), "sk-secret-example");
+        let result = executor.execute(
+            &sample_request(),
+            "sk-secret-example",
+            &CancellationToken::new(),
+        );
         assert!(matches!(result, Err(ExecutorError::InvalidRequest)));
         let _ = server.join();
     }
@@ -1062,7 +1078,11 @@ mod tests {
         });
         let executor = OpenAiExecutor::with_endpoint(format!("http://{addr}"));
         let err = executor
-            .execute(&sample_request(), "sk-secret-example")
+            .execute(
+                &sample_request(),
+                "sk-secret-example",
+                &CancellationToken::new(),
+            )
             .expect_err("402 must fail");
         assert!(matches!(err, ExecutorError::PaymentRequired));
         // The boundary message names the remedy, never the body or credential.
@@ -1101,7 +1121,11 @@ mod tests {
             let _ = stream.flush();
         });
         let executor = OpenAiExecutor::with_endpoint(format!("http://{addr}"));
-        let result = executor.execute(&sample_request(), "sk-secret-example");
+        let result = executor.execute(
+            &sample_request(),
+            "sk-secret-example",
+            &CancellationToken::new(),
+        );
         assert!(matches!(result, Err(ExecutorError::Failure)));
         let _ = server.join();
     }
@@ -1341,18 +1365,245 @@ mod tests {
         );
     }
 
+    /// Timeouts are transport failures and therefore retried per the bounded
+    /// attempt cap (not fired once): three 200 ms attempts with the computed
+    /// backoff between them, then a classified `Network` failure. The server
+    /// accepts exactly three connections and answers none, so the hit count
+    /// proves the bound and the elapsed time proves the backoff.
     #[test]
     fn request_timeout_is_threaded_through_send() {
-        use std::io::{Read, Write};
+        use std::io::Read;
         use std::net::TcpListener;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
         use std::time::Duration;
 
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test server");
         let addr = listener.local_addr().expect("local address");
+        let count = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&count);
+        let server = std::thread::spawn(move || {
+            for _ in 0..3 {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    break;
+                };
+                seen.fetch_add(1, Ordering::SeqCst);
+                let mut raw = Vec::new();
+                let mut buf = [0u8; 1024];
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                loop {
+                    match stream.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            raw.extend_from_slice(&buf[..n]);
+                            if raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                                break;
+                            }
+                        }
+                    }
+                }
+                // Answer nothing: every attempt must hit the per-request
+                // timeout instead of completing.
+            }
+        });
+        let executor = OpenAiExecutor::with_endpoint(format!("http://{addr}"));
+        let mut request = sample_request();
+        request.request_timeout = Some(Duration::from_millis(200));
+        let start = std::time::Instant::now();
+        let result = executor.execute(&request, "sk-secret-example", &CancellationToken::new());
+        let elapsed = start.elapsed();
+        server.join().expect("server thread joins");
+        // Must be a classified boundary failure (timeout surfaces as Network).
+        assert!(
+            matches!(result, Err(ExecutorError::Network)),
+            "expected timeout to surface as ExecutorError::Network, got {result:?}"
+        );
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            3,
+            "a 200 ms timeout must be retried per the 3-attempt bound"
+        );
+        // Two computed backoffs separate the three attempts: [1.5, 2.5] s +
+        // [3, 5] s on top of the 3 × 200 ms timeouts.
+        assert!(
+            elapsed >= Duration::from_millis(4_500),
+            "retried timeouts must wait the computed backoff, elapsed={elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(30),
+            "retried timeouts must stay bounded, elapsed={elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn non_retryable_status_fires_once() {
+        use std::sync::atomic::Ordering;
+        // 400/401/403/404 each hit the local server exactly once: no retry,
+        // no backoff sleep.
+        for status in [400u16, 401, 403, 404] {
+            let (endpoint, count, server) =
+                spawn_sequence_server(vec![(status, String::new(), None)]);
+            let executor = OpenAiExecutor::with_endpoint(endpoint);
+            let result = executor.execute(
+                &sample_request(),
+                "sk-secret-example",
+                &CancellationToken::new(),
+            );
+            server.join().expect("server thread joins");
+            match status {
+                400 | 404 => assert!(
+                    matches!(result, Err(ExecutorError::InvalidRequest)),
+                    "status {status} must classify as InvalidRequest, got {result:?}"
+                ),
+                401 | 403 => assert!(
+                    matches!(result, Err(ExecutorError::Authentication)),
+                    "status {status} must classify as Authentication, got {result:?}"
+                ),
+                _ => unreachable!("scripted non-retryable status"),
+            }
+            assert_eq!(
+                count.load(Ordering::SeqCst),
+                1,
+                "status {status} must fire exactly once"
+            );
+        }
+    }
+
+    /// Refused connections are retried per the bounded attempt cap, then
+    /// surface as a classified `Network` failure. The endpoint is a port
+    /// whose listener was just dropped, so every attempt refuses fast; the
+    /// elapsed time (two computed backoffs) proves the retries happened.
+    #[test]
+    fn network_errors_are_retried_then_fail() {
+        use std::net::TcpListener;
+        use std::time::Duration;
+        let closed = TcpListener::bind("127.0.0.1:0").expect("bind probe listener");
+        let addr = closed.local_addr().expect("local address");
+        drop(closed);
+        let executor = OpenAiExecutor::with_endpoint(format!("http://{addr}"));
+        let start = std::time::Instant::now();
+        let result = executor.execute(
+            &sample_request(),
+            "sk-secret-example",
+            &CancellationToken::new(),
+        );
+        let elapsed = start.elapsed();
+        assert!(
+            matches!(result, Err(ExecutorError::Network)),
+            "exhausted refused connections must surface as Network, got {result:?}"
+        );
+        assert!(
+            elapsed >= Duration::from_millis(4_500),
+            "refused connections must be retried with backoff, elapsed={elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(30),
+            "exhausted retries must stay bounded, elapsed={elapsed:?}"
+        );
+    }
+
+    /// Error bodies are read for classification hints, but nothing
+    /// secret-bearing ever leaves the boundary: a 401 body carrying a live
+    /// credential still classifies as `Authentication` with a category-only
+    /// message, and a 429 body carrying both a secret and a `retry_after`
+    /// field honors the hint (proving the body was read) without surfacing
+    /// the secret.
+    #[test]
+    fn error_body_secret_never_leaves_boundary() {
+        // Sentinel shapes that must never escape: live-key prefixes and the
+        // exact secret values planted in the bodies below. ("credential" is
+        // deliberately not among them: the fixed category text names the
+        // credential-store concept — "rejected the stored credential" — while
+        // the negative control here is the body-carried *values*.)
+        const SECRET_SENTINELS: [&str; 5] = [
+            "sk-",
+            "secret",
+            "api_key",
+            "sk-live-sentinel-12345",
+            "sk-live-sentinel-67890",
+        ];
+        let secret_body = "{\"error\":{\"message\":\"invalid api_key \
+            sk-live-sentinel-12345, credential rejected\",\"type\":\"invalid_request_error\"}}"
+            .to_string();
+
+        // Case 1: 401 with a secret-carrying body.
+        let (endpoint, _count, server) = spawn_sequence_server(vec![(401, secret_body, None)]);
+        let executor = OpenAiExecutor::with_endpoint(endpoint);
+        let result = executor.execute(
+            &sample_request(),
+            "sk-secret-example",
+            &CancellationToken::new(),
+        );
+        server.join().expect("server thread joins");
+        assert!(
+            matches!(result, Err(ExecutorError::Authentication)),
+            "secret-carrying 401 must classify as Authentication, got {result:?}"
+        );
+        let message = result.expect_err("401 must fail").to_string();
+        for sentinel in SECRET_SENTINELS {
+            assert!(
+                !message.to_lowercase().contains(sentinel),
+                "boundary message must not contain body-carried secret {sentinel:?}: {message:?}"
+            );
+        }
+
+        // Case 2: 429 with a secret-carrying body that also carries a
+        // `retry_after` field. The hint is honored (body was read: the final
+        // error carries `Some(1)`), while the secret never surfaces.
+        let sneaky = "{\"error\":{\"message\":\"rate limited, secret \
+            sk-live-sentinel-67890\",\"retry_after\":1}}"
+            .to_string();
+        let (endpoint, _count, server) = spawn_sequence_server(vec![
+            (429, sneaky.clone(), None),
+            (429, sneaky.clone(), None),
+            (429, sneaky, None),
+        ]);
+        let executor = OpenAiExecutor::with_endpoint(endpoint);
+        let result = executor.execute(
+            &sample_request(),
+            "sk-secret-example",
+            &CancellationToken::new(),
+        );
+        server.join().expect("server thread joins");
+        assert!(
+            matches!(
+                result,
+                Err(ExecutorError::RateLimited {
+                    retry_after_secs: Some(1)
+                })
+            ),
+            "body retry_after must be honored, got {result:?}"
+        );
+        let message = result.expect_err("429 must fail").to_string();
+        for sentinel in SECRET_SENTINELS {
+            assert!(
+                !message.to_lowercase().contains(sentinel),
+                "boundary message must not contain body-carried secret {sentinel:?}: {message:?}"
+            );
+        }
+    }
+
+    /// A cancelled run aborts an in-flight request promptly: the server holds
+    /// the connection open for 30 s, the token fires at ~200 ms, and
+    /// `execute` must report `Cancelled` in well under 5 s — never after the
+    /// wall-clock timeout.
+    #[test]
+    fn cancel_aborts_in_flight_request_promptly() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test server");
+        let addr = listener.local_addr().expect("local address");
+        let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let entered_clone = Arc::clone(&entered);
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("accept connection");
+            entered_clone.store(true, std::sync::atomic::Ordering::SeqCst);
             let mut raw = Vec::new();
             let mut buf = [0u8; 1024];
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(35)));
             loop {
                 match stream.read(&mut buf) {
                     Ok(0) | Err(_) => break,
@@ -1364,32 +1615,45 @@ mod tests {
                     }
                 }
             }
-            std::thread::sleep(Duration::from_secs(2));
-            let body = r#"{"model":"gpt-5.6-terra","choices":[{"message":{"content":"pong"}}]}"#;
+            // Hold the connection open far past any prompt-abort budget.
+            std::thread::sleep(Duration::from_secs(30));
+            let body =
+                r#"{"model":"gpt-5.6-terra","choices":[{"message":{"content":"too late"}}]}"#;
             let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(),
-                body
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
             );
             let _ = stream.write_all(response.as_bytes());
             let _ = stream.flush();
         });
+
         let executor = OpenAiExecutor::with_endpoint(format!("http://{addr}"));
+        let token = CancellationToken::new();
+        let canceller = token.clone();
+        let driver = std::thread::spawn(move || {
+            while !entered.load(std::sync::atomic::Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            std::thread::sleep(Duration::from_millis(200));
+            canceller.cancel();
+        });
         let mut request = sample_request();
-        request.request_timeout = Some(Duration::from_millis(200));
+        request.request_timeout = Some(Duration::from_mins(2));
         let start = std::time::Instant::now();
-        let result = executor.execute(&request, "sk-secret-example");
+        let result = executor.execute(&request, "sk-secret-example", &token);
         let elapsed = start.elapsed();
-        // Must be a classified boundary failure (timeout surfaces as Network).
+        driver.join().expect("canceller joins");
+        // The server thread is still sleeping its 30 s; detach it rather than
+        // joining so the test finishes promptly.
+        std::mem::forget(server);
         assert!(
-            matches!(result, Err(ExecutorError::Network)),
-            "expected timeout to surface as ExecutorError::Network, got {result:?}"
+            matches!(result, Err(ExecutorError::Cancelled)),
+            "cancelled in-flight request must report Cancelled, got {result:?}"
         );
         assert!(
-            elapsed < Duration::from_secs(1),
-            "timeout should fire quickly, elapsed={elapsed:?}"
+            elapsed < Duration::from_secs(5),
+            "cancel must abort promptly, waited {elapsed:?}"
         );
-        let _ = server.join();
     }
     #[test]
     fn usage_present_maps_to_token_usage() {
@@ -1469,7 +1733,11 @@ mod tests {
 
         let executor = OpenAiExecutor::compatible(XKIRO_NAME, format!("http://{addr}"));
         let ai = executor
-            .execute(&sample_request(), "sk-secret-example")
+            .execute(
+                &sample_request(),
+                "sk-secret-example",
+                &CancellationToken::new(),
+            )
             .expect("round trip succeeds");
         server.join().expect("server thread joins");
 
@@ -1541,7 +1809,11 @@ mod tests {
             ],
         );
         let ai = executor
-            .execute(&sample_request(), "sk-secret-example")
+            .execute(
+                &sample_request(),
+                "sk-secret-example",
+                &CancellationToken::new(),
+            )
             .expect("round trip succeeds");
         let raw = server.join().expect("server thread joins");
 
@@ -1652,7 +1924,11 @@ mod tests {
         ]);
         let executor = OpenAiExecutor::with_endpoint(endpoint);
         let ai = executor
-            .execute(&sample_request(), "sk-secret-example")
+            .execute(
+                &sample_request(),
+                "sk-secret-example",
+                &CancellationToken::new(),
+            )
             .expect("429-then-200 must succeed");
         server.join().expect("server thread joins");
         assert_eq!(ai.content, "pong");
@@ -1671,7 +1947,11 @@ mod tests {
         ]);
         let executor = OpenAiExecutor::with_endpoint(endpoint);
         let ai = executor
-            .execute(&sample_request(), "sk-secret-example")
+            .execute(
+                &sample_request(),
+                "sk-secret-example",
+                &CancellationToken::new(),
+            )
             .expect("503-then-200 must succeed");
         server.join().expect("server thread joins");
         assert_eq!(ai.content, "pong");
@@ -1684,7 +1964,11 @@ mod tests {
         use std::sync::atomic::Ordering;
         let (endpoint, count, server) = spawn_sequence_server(vec![(400, String::new(), None)]);
         let executor = OpenAiExecutor::with_endpoint(endpoint);
-        let result = executor.execute(&sample_request(), "sk-secret-example");
+        let result = executor.execute(
+            &sample_request(),
+            "sk-secret-example",
+            &CancellationToken::new(),
+        );
         server.join().expect("server thread joins");
         assert!(matches!(result, Err(ExecutorError::InvalidRequest)));
         assert_eq!(count.load(Ordering::SeqCst), 1);
@@ -1699,7 +1983,11 @@ mod tests {
             (503, String::new(), None),
         ]);
         let executor = OpenAiExecutor::with_endpoint(endpoint);
-        let result = executor.execute(&sample_request(), "sk-secret-example");
+        let result = executor.execute(
+            &sample_request(),
+            "sk-secret-example",
+            &CancellationToken::new(),
+        );
         server.join().expect("server thread joins");
         assert!(matches!(result, Err(ExecutorError::ProviderUnavailable)));
         assert_eq!(count.load(Ordering::SeqCst), 3);

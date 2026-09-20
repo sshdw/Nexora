@@ -297,3 +297,35 @@ impl From<DataManagementError> for CommandError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::application::execution::ExecutorError;
+
+    /// A provider call cancelled in flight reaches the frontend through the
+    /// classified chain (`ExecutorError::Cancelled` → `RequestError::Execution`
+    /// → [`CommandError`]): the mapping is total over the error taxonomy, the
+    /// kind stays `Request`, and the message is the fixed category text —
+    /// never a credential, payload, or body fragment.
+    #[test]
+    fn cancelled_execution_maps_to_secret_free_request_error() {
+        const SECRET_SENTINELS: [&str; 4] = ["sk-", "secret", "credential", "api_key"];
+        let err = CommandError::from(RequestError::Execution {
+            name: "openai".into(),
+            message: ExecutorError::Cancelled.to_string(),
+        });
+        assert_eq!(err.kind, ErrorKind::Request);
+        assert_eq!(
+            err.message,
+            "the AI provider 'openai' failed: \
+             the AI provider request was cancelled before it completed"
+        );
+        for sentinel in SECRET_SENTINELS {
+            assert!(
+                !err.message.to_lowercase().contains(sentinel),
+                "cancelled mapping must stay secret-free, found {sentinel:?}"
+            );
+        }
+    }
+}
