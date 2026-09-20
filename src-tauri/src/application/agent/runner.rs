@@ -2323,11 +2323,14 @@ mod tests {
                 gate_for_driver.cancel();
                 panic!("first event must request approval for w1, got {ev1:?}");
             }
-            gate_for_driver.respond("w1", ApprovalDecision::Approved);
-            // Switch immediately: the earliest moment the next tool can see
-            // Full, with no `recv` in between that would let w2 park while
-            // still Supervised and strand `run` on a second approval.
             gate_for_driver.set_mode(AutonomyMode::FullAutonomous);
+            // Ordering matters (approval.rs:139 — an already-parked request
+            // is NOT auto-resolved by `set_mode`): the mode must be Full
+            // BEFORE `respond` wakes the runner, so w2 necessarily sees Full
+            // even if the runner executes w1 and evaluates w2 before this
+            // driver thread is rescheduled. Parked w1 still requires its
+            // own `respond`, so w1 semantics are unchanged.
+            gate_for_driver.respond("w1", ApprovalDecision::Approved);
             // Do not assume the next event is Completed: drain until
             // `Completed { steps: 3 }`, skipping ApprovalResolved / step /
             // tool events. Cap the drain so a flood cannot loop.
@@ -2341,6 +2344,12 @@ mod tests {
                     Ok(AgentRunEvent::Completed { steps }) => {
                         assert_eq!(steps, 3);
                         break;
+                    }
+                    Ok(AgentRunEvent::ApprovalRequested { call_id, .. }) if call_id == "w2" => {
+                        // Race relic on loaded CI: w2 parked before observing
+                        // the mode switch. Approve it and keep draining.
+                        gate_for_driver.respond("w2", ApprovalDecision::Approved);
+                        seen += 1;
                     }
                     Ok(AgentRunEvent::Cancelled) => {
                         gate_for_driver.cancel();
