@@ -286,22 +286,42 @@ impl AgentRunRegistry {
     /// Resolve a parked approval. See [`ResolveOutcome`] for the outcomes.
     #[must_use]
     pub(crate) fn resolve(&self, run_id: i64, call_id: &str, approved: bool) -> ResolveOutcome {
+        self.resolve_with_scope(run_id, call_id, approved, None).0
+    }
+
+    /// Resolve with M1-core scope (`None`/`"single"` = one call;
+    /// `"group"` = rest of the group, session-sticky for the run).
+    /// Returns the outcome plus pending `(tool_name, group_key)` when resolved.
+    #[must_use]
+    pub(crate) fn resolve_with_scope(
+        &self,
+        run_id: i64,
+        call_id: &str,
+        approved: bool,
+        scope: Option<&str>,
+    ) -> (ResolveOutcome, Option<(String, Option<String>)>) {
         let runs = self
             .runs
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(entry) = runs.get(&run_id) else {
-            return ResolveOutcome::RunNotActive;
+            return (ResolveOutcome::RunNotActive, None);
         };
         let decision = if approved {
             ApprovalDecision::Approved
         } else {
             ApprovalDecision::Denied
         };
-        if entry.gate.respond(call_id, decision) {
-            ResolveOutcome::Resolved
+        let scope_group = matches!(scope, Some("group"));
+        // Capture pending metadata before the decision clears it.
+        let pending = entry.gate.pending_info(call_id);
+        if entry.gate.respond_with_scope(call_id, decision, scope) {
+            // `respond_with_scope` already recorded the sticky verdict when
+            // `scope == "group"`; nothing further to do here.
+            let _ = scope_group;
+            (ResolveOutcome::Resolved, pending)
         } else {
-            ResolveOutcome::NoPendingApproval
+            (ResolveOutcome::NoPendingApproval, None)
         }
     }
 
@@ -725,9 +745,11 @@ fn spawn_run(
                 let recorder = RunRecorder::new(&db)
                     .with_run_id(run_id)
                     .with_events(&tx_for_recorder);
+                let permission_store = super::permissions::PermissionStore::load(&db);
                 let mut runner = AgentRunner::new(executor.as_ref(), &workspace_root)
                     .with_control(control)
                     .with_approval_gate(gate)
+                    .with_permission_store(permission_store)
                     .with_history(history)
                     .with_action_summary(action_summary)
                     .with_event_sender(tx_for_recorder.clone());
@@ -1651,5 +1673,164 @@ mod tests {
             crate::application::agent::approval::AutonomyMode::FullAutonomous
         ));
         let _ = std::fs::remove_dir_all(temp_workspace("inactive-controls"));
+    }
+
+    /// Entry-point proof (M1-core reachability gate, T1 pattern): a deny rule
+    /// persisted before `start_run` denies through the production bridge —
+    /// `list_agent_steps` shows the denied approval with its `rule_id`.
+    #[test]
+    fn entry_point_deny_rule_run_shows_denied_with_rule_id() {
+        let (db, workspace, rx, host) = setup("entry-deny");
+        let registry = Arc::new(AgentRunRegistry::default());
+        let conversation_id = ConversationService::new(&db)
+            .create("entry-deny")
+            .expect("conversation");
+        crate::application::agent::permissions::insert_rule(
+            &db,
+            "coding",
+            "write_file",
+            None,
+            crate::application::agent::permissions::RuleEffect::Deny,
+            10,
+        )
+        .expect("insert deny rule");
+        let inserted_id: i64 = db
+            .lock()
+            .expect("lock")
+            .query_row(
+                "SELECT id FROM permission_rules WHERE tool_pattern = 'write_file'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read rule id");
+        let run_id = start_run(
+            &db,
+            Arc::clone(&registry),
+            Arc::clone(&host) as Arc<dyn AgentRunHost>,
+            Arc::new(ScriptedExecutor::new(vec![
+                Ok(tool_response("w", "write_file")),
+                Ok(text_response("recovered")),
+            ])),
+            workspace,
+            request(conversation_id, "deny me"),
+            crate::application::agent::approval::AutonomyMode::SemiAutonomous,
+        )
+        .expect("start");
+        let frames = collect_frames(&rx);
+        assert!(matches!(frames.last().unwrap(), RunFrame::Finished { .. }));
+        // Reachability: the service bridge consulted the store (no park).
+        assert!(
+            !frames.iter().any(|frame| matches!(
+                frame,
+                RunFrame::Governance {
+                    event: AgentRunEvent::ApprovalRequested { .. },
+                    ..
+                }
+            )),
+            "deny-rule runs never park"
+        );
+        let steps = list_steps_for_run(&db, run_id).expect("steps");
+        let approval = steps
+            .iter()
+            .find(|step| step.kind == "approval")
+            .expect("approval step");
+        assert_eq!(approval.status.as_deref(), Some("denied"));
+        assert_eq!(approval.rule_id, Some(inserted_id));
+        assert_eq!(approval.decided_by.as_deref(), Some("rule"));
+        assert!(approval
+            .observation
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("denied by rule:"));
+        assert!(!steps.iter().any(|step| step.kind == "tool_call"));
+        let _ = std::fs::remove_dir_all(temp_workspace("entry-deny"));
+    }
+
+    /// Entry-point proof (grouping): a group-scope resolve through the
+    /// registry makes the second same-group park auto-resolve with a shared
+    /// `group_key`.
+    #[test]
+    fn entry_point_group_scope_second_call_shares_group_key() {
+        let (db, workspace, rx, host) = setup("entry-group");
+        let registry = Arc::new(AgentRunRegistry::default());
+        let conversation_id = ConversationService::new(&db)
+            .create("entry-group")
+            .expect("conversation");
+        let run_id = start_run(
+            &db,
+            Arc::clone(&registry),
+            Arc::clone(&host) as Arc<dyn AgentRunHost>,
+            Arc::new(ScriptedExecutor::new(vec![
+                Ok(AiResponse {
+                    content: String::new(),
+                    model: "test-model".to_string(),
+                    tool_calls: vec![
+                        ToolCall {
+                            id: "g1".to_string(),
+                            name: "write_file".to_string(),
+                            arguments: serde_json::json!({"path": "grp/a.txt", "content": "1"})
+                                .to_string(),
+                            thought_signature: None,
+                        },
+                        ToolCall {
+                            id: "g2".to_string(),
+                            name: "write_file".to_string(),
+                            arguments: serde_json::json!({"path": "grp/b.txt", "content": "2"})
+                                .to_string(),
+                            thought_signature: None,
+                        },
+                    ],
+                    usage: None,
+                }),
+                Ok(text_response("done")),
+            ])),
+            workspace,
+            request(conversation_id, "group me"),
+            crate::application::agent::approval::AutonomyMode::SemiAutonomous,
+        )
+        .expect("start");
+        // First park resolves with group scope through the registry (the IPC
+        // command's path); the second same-group call auto-resolves.
+        let call_id = loop {
+            let frame = rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("approval frame");
+            if let RunFrame::Governance {
+                event: AgentRunEvent::ApprovalRequested { call_id, .. },
+                ..
+            } = frame
+            {
+                break call_id;
+            }
+        };
+        let (outcome, _) = registry.resolve_with_scope(run_id, &call_id, true, Some("group"));
+        assert_eq!(outcome, ResolveOutcome::Resolved);
+        let frames = collect_frames(&rx);
+        assert!(matches!(frames.last().unwrap(), RunFrame::Finished { .. }));
+        // The first park was consumed by the wait loop above; the collected
+        // tail must contain no further park (the second group call
+        // auto-resolves without parking).
+        let tail_parks = frames
+            .iter()
+            .filter(|frame| {
+                matches!(
+                    frame,
+                    RunFrame::Governance {
+                        event: AgentRunEvent::ApprovalRequested { .. },
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(tail_parks, 0, "second group call must not park");
+        let steps = list_steps_for_run(&db, run_id).expect("steps");
+        let approvals: Vec<_> = steps
+            .iter()
+            .filter(|step| step.kind == "approval")
+            .collect();
+        assert_eq!(approvals.len(), 2);
+        assert_eq!(approvals[0].group_key, approvals[1].group_key);
+        assert!(approvals[0].group_key.is_some());
+        let _ = std::fs::remove_dir_all(temp_workspace("entry-group"));
     }
 }

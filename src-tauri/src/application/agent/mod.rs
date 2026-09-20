@@ -32,6 +32,7 @@ pub mod control;
 #[cfg(test)]
 mod e2e;
 pub mod history;
+pub mod permissions;
 pub mod persistence;
 pub mod pricing;
 pub mod runner;

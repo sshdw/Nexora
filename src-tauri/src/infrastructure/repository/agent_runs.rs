@@ -72,7 +72,8 @@ pub(crate) struct AgentRun {
 /// interpretation or business meaning; `kind` holds the column value
 /// (`'model_turn'` / `'tool_call'` / `'approval'`) and `status` the optional
 /// tool call outcome (`'succeeded'` / `'failed'` / `'denied'` /
-/// `'cancelled'`).
+/// `'cancelled'`). M1-core adds `rule_id` / `group_key` / `decided_by`
+/// provenance (all `None` for pre-v7 rows).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct AgentStep {
     /// Surrogate primary key (`id`).
@@ -95,6 +96,15 @@ pub(crate) struct AgentStep {
     pub started_at: i64,
     /// Step duration in milliseconds (`duration_ms`).
     pub duration_ms: Option<i64>,
+    /// Authoring permission rule (`rule_id`, M1-core), `None` for
+    /// ladder/user decisions and pre-v7 rows.
+    pub rule_id: Option<i64>,
+    /// Session-sticky group key (`group_key`, M1-core), `None` for
+    /// ungrouped steps and pre-v7 rows.
+    pub group_key: Option<String>,
+    /// Who decided the step (`decided_by`: `'user'` / `'rule'` / `'system'`,
+    /// M1-core), `None` for pre-v7 rows.
+    pub decided_by: Option<String>,
 }
 
 /// Repository for the `agent_runs` and `agent_steps` tables.
@@ -301,12 +311,16 @@ impl AgentRunRepository<'_> {
         observation: Option<&str>,
         status: Option<&str>,
         duration_ms: Option<i64>,
+        rule_id: Option<i64>,
+        group_key: Option<&str>,
+        decided_by: Option<&str>,
     ) -> Result<i64> {
         let conn = self.conn()?;
         conn.execute(
             "INSERT INTO agent_steps \
-                 (run_id, seq, kind, tool_name, arguments, observation, status, duration_ms) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 (run_id, seq, kind, tool_name, arguments, observation, status, duration_ms, \
+                  rule_id, group_key, decided_by) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 run_id,
                 seq,
@@ -315,7 +329,10 @@ impl AgentRunRepository<'_> {
                 arguments,
                 observation,
                 status,
-                duration_ms
+                duration_ms,
+                rule_id,
+                group_key,
+                decided_by
             ],
         )?;
         Ok(conn.last_insert_rowid())
@@ -349,7 +366,7 @@ impl AgentRunRepository<'_> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, run_id, seq, kind, tool_name, arguments, observation, status, \
-             started_at, duration_ms FROM agent_steps WHERE run_id = ?1 ORDER BY seq",
+             started_at, duration_ms, rule_id, group_key, decided_by FROM agent_steps WHERE run_id = ?1 ORDER BY seq",
         )?;
         let rows = stmt.query_map([run_id], |row| {
             Ok(AgentStep {
@@ -363,6 +380,9 @@ impl AgentRunRepository<'_> {
                 status: row.get(7)?,
                 started_at: row.get(8)?,
                 duration_ms: row.get(9)?,
+                rule_id: row.get(10)?,
+                group_key: row.get(11)?,
+                decided_by: row.get(12)?,
             })
         })?;
         let mut steps = Vec::new();
@@ -399,6 +419,32 @@ mod tests {
 
     fn repo(db: &Database) -> AgentRunRepository<'_> {
         AgentRunRepository::new(db)
+    }
+
+    /// Append one step with anonymous provenance (all other optional columns
+    /// `None` except the given `status` / `duration_ms`).
+    fn append_checked(
+        runs: &AgentRunRepository<'_>,
+        run_id: i64,
+        seq: i64,
+        kind: &str,
+        tool_name: Option<&str>,
+        status: Option<&str>,
+        duration_ms: Option<i64>,
+    ) -> Result<i64> {
+        runs.append_step(
+            run_id,
+            seq,
+            kind,
+            tool_name,
+            None,
+            None,
+            status,
+            duration_ms,
+            None,
+            None,
+            None,
+        )
     }
 
     #[test]
@@ -452,6 +498,9 @@ mod tests {
                 Some("thinking"),
                 None,
                 None,
+                None,
+                None,
+                None,
             )
             .expect("step 1");
         let step2 = runs
@@ -464,6 +513,9 @@ mod tests {
                 Some("wrote 5 bytes"),
                 Some("succeeded"),
                 Some(12),
+                None,
+                None,
+                None,
             )
             .expect("step 2");
 
@@ -487,13 +539,28 @@ mod tests {
         let runs = repo(&db);
 
         let run_id = runs.create_run(None, "m", "supervised").expect("run");
-        runs.append_step(run_id, 1, "model_turn", None, None, None, None, None)
-            .expect("first step");
+        runs.append_step(
+            run_id,
+            1,
+            "model_turn",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("first step");
         let duplicate = runs.append_step(
             run_id,
             1,
             "tool_call",
             Some("read_file"),
+            None,
+            None,
+            None,
             None,
             None,
             None,
@@ -511,10 +578,34 @@ mod tests {
         let runs = repo(&db);
 
         let run_id = runs.create_run(None, "m", "supervised").expect("run");
-        runs.append_step(run_id, 1, "model_turn", None, None, None, None, None)
-            .expect("step 1");
-        runs.append_step(run_id, 2, "model_turn", None, None, None, None, None)
-            .expect("step 2");
+        runs.append_step(
+            run_id,
+            1,
+            "model_turn",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("step 1");
+        runs.append_step(
+            run_id,
+            2,
+            "model_turn",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("step 2");
 
         runs.delete_run(run_id).expect("delete run");
         assert!(runs.read_run(run_id).expect("read").is_none());
@@ -537,8 +628,20 @@ mod tests {
         let run_id = runs
             .create_run(Some(conv_id), "m", "semi_autonomous")
             .expect("linked run");
-        runs.append_step(run_id, 1, "model_turn", None, None, None, None, None)
-            .expect("step");
+        runs.append_step(
+            run_id,
+            1,
+            "model_turn",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("step");
 
         let listed = runs
             .list_runs_by_conversation(conv_id)
@@ -580,44 +683,39 @@ mod tests {
             "unknown run status must be rejected"
         );
         assert!(
-            runs.append_step(run_id, 1, "divination", None, None, None, None, None)
-                .is_err(),
+            append_checked(&runs, run_id, 1, "divination", None, None, None).is_err(),
             "unknown step kind must be rejected"
         );
         assert!(
-            runs.append_step(run_id, 0, "model_turn", None, None, None, None, None)
-                .is_err(),
+            append_checked(&runs, run_id, 0, "model_turn", None, None, None).is_err(),
             "seq < 1 must be rejected"
         );
         assert!(
-            runs.append_step(
+            append_checked(
+                &runs,
                 run_id,
                 1,
                 "tool_call",
                 Some("read_file"),
-                None,
-                None,
                 Some("meh"),
-                None,
+                None
             )
             .is_err(),
             "unknown step status must be rejected"
         );
         assert!(
-            runs.append_step(run_id, 2, "tool_call", Some(""), None, None, None, None)
-                .is_err(),
+            append_checked(&runs, run_id, 2, "tool_call", Some(""), None, None).is_err(),
             "empty tool_name must be rejected"
         );
         assert!(
-            runs.append_step(
+            append_checked(
+                &runs,
                 run_id,
                 2,
                 "tool_call",
                 Some("read_file"),
                 None,
-                None,
-                None,
-                Some(-1),
+                Some(-1)
             )
             .is_err(),
             "negative duration_ms must be rejected"

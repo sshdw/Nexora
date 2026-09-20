@@ -70,11 +70,12 @@ use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
 use crate::application::agent::action_memory::{self, ActionSummary};
-use crate::application::agent::approval::{ApprovalDecision, ApprovalGate};
+use crate::application::agent::approval::{ApprovalDecision, ApprovalGate, AutonomyMode};
 use crate::application::agent::control::{AgentRunEvent, CancellationToken, RunControl};
 use crate::application::agent::history;
+use crate::application::agent::permissions::{self, PermissionOutcome, PermissionStore};
 use crate::application::agent::persistence::{
-    mode_to_column, ActiveRunRecord, RunRecorder, DEFAULT_RECORDED_MODE,
+    mode_to_column, ActiveRunRecord, RunRecorder, StepProvenance, DEFAULT_RECORDED_MODE,
 };
 use crate::application::agent::pricing;
 use crate::application::agent::tools::ToolRegistry;
@@ -118,6 +119,51 @@ const AGENT_SYSTEM_PROMPT: &str = AGENT_SYSTEM_PROMPT_WINDOWS;
 /// The fixed agent system prompt assembled for this build target.
 #[cfg(not(windows))]
 const AGENT_SYSTEM_PROMPT: &str = AGENT_SYSTEM_PROMPT_POSIX;
+
+/// Frozen model-facing denial observation (M1-core): provenance travels in
+/// the persisted step only.
+fn denied_tool_message(call: &crate::application::execution::ToolCall) -> AiMessage {
+    AiMessage {
+        role: AiRole::Tool,
+        content: String::new(),
+        attachments: Vec::new(),
+        tool_calls: Vec::new(),
+        tool_result: Some(crate::application::execution::AiToolResult {
+            call_id: call.id.clone(),
+            name: call.name.clone(),
+            content: "Error: tool execution was denied by the user".to_string(),
+        }),
+    }
+}
+
+/// Wrap a tool observation as a native `Tool` message.
+fn tool_message(call: &crate::application::execution::ToolCall, observation: &str) -> AiMessage {
+    AiMessage {
+        role: AiRole::Tool,
+        content: String::new(),
+        attachments: Vec::new(),
+        tool_calls: Vec::new(),
+        tool_result: Some(crate::application::execution::AiToolResult {
+            call_id: call.id.clone(),
+            name: call.name.clone(),
+            content: observation.to_string(),
+        }),
+    }
+}
+
+/// Classify a dispatch outcome into `(observation, status)` honouring
+/// cancellation.
+fn classify_outcome(
+    outcome: Result<String, crate::application::agent::tools::ToolError>,
+    token: &CancellationToken,
+) -> (String, &'static str) {
+    match outcome {
+        Ok(output) if token.is_cancelled() => (output, "cancelled"),
+        Ok(output) => (output, "succeeded"),
+        Err(tool_error) if token.is_cancelled() => (tool_error.to_string(), "cancelled"),
+        Err(tool_error) => (tool_error.to_string(), "failed"),
+    }
+}
 
 /// Format a secret-free trace line for a thought signature.
 ///
@@ -232,6 +278,9 @@ pub(crate) struct AgentRunner<'a> {
     /// Optional three-tier approval gate (Task 4.1). When `None` the loop keeps
     /// the exact deterministic pre-4.1 behaviour; no approval is ever required.
     approval_gate: Option<ApprovalGate>,
+    /// Optional persistent permission rules (M1-core). When `None` every call
+    /// falls back to the ladder; every run is implicitly `"coding"` (M2).
+    permission_store: Option<PermissionStore>,
     /// Optional governance-event channel (Task 3.2); Milestone 5 bridges it to
     /// Tauri events. Delivery is best-effort.
     event_sender: Option<Sender<AgentRunEvent>>,
@@ -263,6 +312,7 @@ impl<'a> AgentRunner<'a> {
             max_iterations: DEFAULT_MAX_ITERATIONS,
             control: None,
             approval_gate: None,
+            permission_store: None,
             event_sender: None,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             recorder: None,
@@ -304,6 +354,14 @@ impl<'a> AgentRunner<'a> {
             gate.set_token(control.token().clone());
         }
         self.approval_gate = Some(gate);
+        self
+    }
+
+    /// Attach the persistent permission store (M1-core). The store is a
+    /// snapshot loaded at run start; every run is implicitly `"coding"`.
+    #[must_use]
+    pub(crate) fn with_permission_store(mut self, store: PermissionStore) -> Self {
+        self.permission_store = Some(store);
         self
     }
 
@@ -582,6 +640,14 @@ impl<'a> AgentRunner<'a> {
             // (`Error: ...`) so the model can recover on the next turn.
             // (`token` is bound before the provider call above and shared
             // with tool dispatch.)
+            let batch_groups: Vec<String> = response
+                .tool_calls
+                .iter()
+                .map(|call| {
+                    let path = permissions::extract_path(&call.name, &call.arguments);
+                    permissions::group_key("coding", &call.name, path.as_deref())
+                })
+                .collect();
             for call in &response.tool_calls {
                 // Trace-level flow marker: presence + length only, never value.
                 log::trace!(
@@ -589,6 +655,135 @@ impl<'a> AgentRunner<'a> {
                     thought_signature_trace(&call.id, call.thought_signature.as_ref())
                 );
                 self.check_cancellation(control)?;
+                let request_path = permissions::extract_path(&call.name, &call.arguments);
+                let call_group_key =
+                    permissions::group_key("coding", &call.name, request_path.as_deref());
+                let call_group_size = batch_groups
+                    .iter()
+                    .filter(|key| *key == &call_group_key)
+                    .count();
+                // M1-core: session-sticky group auto-resolve (run lifetime).
+                if let Some(gate) = &self.approval_gate {
+                    if let Some(sticky) = gate.group_decision(&call_group_key) {
+                        let approved = matches!(sticky, ApprovalDecision::Approved);
+                        if let Some(rec) = record.as_mut() {
+                            if approved {
+                                rec.approval_with_provenance(
+                                    call,
+                                    true,
+                                    StepProvenance::user(Some(&call_group_key)),
+                                );
+                            } else {
+                                rec.approval_denied_by_group(call, &call_group_key);
+                            }
+                        }
+                        if !approved {
+                            messages.push(denied_tool_message(call));
+                            continue;
+                        }
+                        let dispatch_started = Instant::now();
+                        let outcome = ToolRegistry::execute_with_cancellation(
+                            call,
+                            &self.workspace_root,
+                            token,
+                        );
+                        let dispatch_ms = i64::try_from(dispatch_started.elapsed().as_millis())
+                            .unwrap_or(i64::MAX);
+                        let (observation, tool_status) = classify_outcome(outcome, token);
+                        messages.push(tool_message(call, &observation));
+                        if let Some(rec) = record.as_mut() {
+                            rec.tool_call_with_provenance(
+                                call,
+                                &observation,
+                                tool_status,
+                                Some(dispatch_ms),
+                                StepProvenance::user(Some(&call_group_key)),
+                            );
+                        }
+                        continue;
+                    }
+                }
+                // M1-core: persistent rules before the gate. Unknown tools skip the store.
+                if permissions::is_known_tool(&call.name) {
+                    if let Some(store) = &self.permission_store {
+                        if let Some(outcome) = store.decide(
+                            "coding",
+                            &call.name,
+                            request_path.as_deref(),
+                            crate::application::agent::approval::RiskClass::classify(&call.name),
+                        ) {
+                            let mode = self
+                                .approval_gate
+                                .as_ref()
+                                .map_or(AutonomyMode::Supervised, ApprovalGate::mode);
+                            match outcome {
+                                PermissionOutcome::Deny { rule_id, .. } => {
+                                    if let Some(rec) = record.as_mut() {
+                                        rec.approval_with_provenance(
+                                            call,
+                                            false,
+                                            StepProvenance::rule(rule_id),
+                                        );
+                                    }
+                                    messages.push(denied_tool_message(call));
+                                    continue;
+                                }
+                                PermissionOutcome::Allow { rule_id } => {
+                                    if !matches!(mode, AutonomyMode::Supervised) {
+                                        let dispatch_started = Instant::now();
+                                        let outcome = ToolRegistry::execute_with_cancellation(
+                                            call,
+                                            &self.workspace_root,
+                                            token,
+                                        );
+                                        let dispatch_ms =
+                                            i64::try_from(dispatch_started.elapsed().as_millis())
+                                                .unwrap_or(i64::MAX);
+                                        let (observation, tool_status) =
+                                            classify_outcome(outcome, token);
+                                        messages.push(tool_message(call, &observation));
+                                        if let Some(rec) = record.as_mut() {
+                                            rec.tool_call_with_provenance(
+                                                call,
+                                                &observation,
+                                                tool_status,
+                                                Some(dispatch_ms),
+                                                StepProvenance::rule(rule_id),
+                                            );
+                                        }
+                                        continue;
+                                    }
+                                }
+                                PermissionOutcome::Ask { rule_id } => {
+                                    if matches!(mode, AutonomyMode::FullAutonomous) {
+                                        let dispatch_started = Instant::now();
+                                        let outcome = ToolRegistry::execute_with_cancellation(
+                                            call,
+                                            &self.workspace_root,
+                                            token,
+                                        );
+                                        let dispatch_ms =
+                                            i64::try_from(dispatch_started.elapsed().as_millis())
+                                                .unwrap_or(i64::MAX);
+                                        let (observation, tool_status) =
+                                            classify_outcome(outcome, token);
+                                        messages.push(tool_message(call, &observation));
+                                        if let Some(rec) = record.as_mut() {
+                                            rec.tool_call_with_provenance(
+                                                call,
+                                                &observation,
+                                                tool_status,
+                                                Some(dispatch_ms),
+                                                StepProvenance::rule(rule_id),
+                                            );
+                                        }
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 // Task 4.1: approval gate evaluated at the per-tool-call
                 // boundary, before dispatch. Auto paths execute exactly as
                 // before; denied calls become a controlled observation and the
@@ -597,11 +792,13 @@ impl<'a> AgentRunner<'a> {
                     if gate.needs_approval(call) {
                         // INVARIANT: once ApprovalRequested is emitted, a pending entry for that call_id exists,
                         // so a concurrent resolve cannot hit NoPendingApproval — the race is closed by construction.
-                        gate.prepare_pending(call);
+                        gate.prepare_pending_with_group(call, Some(call_group_key.clone()));
                         self.emit(AgentRunEvent::ApprovalRequested {
                             call_id: call.id.clone(),
                             name: call.name.clone(),
                             arguments: call.arguments.clone(),
+                            group_key: Some(call_group_key.clone()),
+                            group_size: call_group_size,
                         });
                         let Ok(decision) = gate.request_approval(call) else {
                             // Task 4.2: cancellation ended the parked wait вЂ”
@@ -615,7 +812,11 @@ impl<'a> AgentRunner<'a> {
                         let approved = matches!(decision, ApprovalDecision::Approved);
                         // Task 4.2: record the parked approval decision (D12).
                         if let Some(rec) = record.as_mut() {
-                            rec.approval(call, approved);
+                            rec.approval_with_provenance(
+                                call,
+                                approved,
+                                StepProvenance::user(Some(&call_group_key)),
+                            );
                         }
                         self.emit(AgentRunEvent::ApprovalResolved {
                             call_id: call.id.clone(),
@@ -667,7 +868,24 @@ impl<'a> AgentRunner<'a> {
                     }),
                 });
                 if let Some(rec) = record.as_mut() {
-                    rec.tool_call(call, &observation, tool_status, Some(dispatch_ms));
+                    // M1-core provenance: parked-then-approved tool calls inherit
+                    // `user`; ladder-auto executions are `system`.
+                    let provenance = if self
+                        .approval_gate
+                        .as_ref()
+                        .is_some_and(|gate| gate.needs_approval(call))
+                    {
+                        StepProvenance::user(Some(call_group_key.as_str()))
+                    } else {
+                        StepProvenance::system()
+                    };
+                    rec.tool_call_with_provenance(
+                        call,
+                        &observation,
+                        tool_status,
+                        Some(dispatch_ms),
+                        provenance,
+                    );
                 }
             }
         }
@@ -3078,6 +3296,342 @@ mod tests {
             .run("openai", "m", "cred", "q")
             .expect("at limit completes");
         assert_eq!(ans, "done");
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    // -----------------------------------------------------------------------
+    // M1-core permission rules + grouping
+    // -----------------------------------------------------------------------
+
+    use crate::application::agent::permissions::{PermissionStore, RuleEffect};
+
+    #[test]
+    fn supervised_ignores_allow_rules() {
+        let db = in_memory_database();
+        let ws = temp_workspace();
+        crate::application::agent::permissions::insert_rule(
+            &db,
+            "coding",
+            "write_file",
+            None,
+            RuleEffect::Allow,
+            10,
+        )
+        .expect("insert allow");
+        let store = PermissionStore::load(&db);
+        let gate = ApprovalGate::new(AutonomyMode::Supervised);
+        let gate_for_driver = gate.clone();
+        let (tx, rx) = channel();
+        let fake = FakeExecutor::new(vec![
+            Ok(AiResponse {
+                content: String::new(),
+                model: "m".to_string(),
+                tool_calls: vec![approval_call(
+                    "w1",
+                    "write_file",
+                    serde_json::json!({"path": "supervised.txt", "content": "1"}),
+                )],
+                usage: None,
+            }),
+            Ok(text_response("ok")),
+        ]);
+        let runner = AgentRunner::new(&fake, &ws)
+            .with_approval_gate(gate)
+            .with_permission_store(store)
+            .with_run_recorder(RunRecorder::new(&db))
+            .with_event_sender(tx);
+        let driver = thread::spawn(move || {
+            // Allow is ignored under Supervised: the call must still park.
+            let ev = rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("ApprovalRequested");
+            assert!(
+                matches!(ev, AgentRunEvent::ApprovalRequested { .. }),
+                "Allow + Supervised still parks, got {ev:?}"
+            );
+            assert!(gate_for_driver.respond("w1", ApprovalDecision::Approved));
+            rx.recv_timeout(Duration::from_secs(5))
+                .expect("ApprovalResolved");
+            rx.recv_timeout(Duration::from_secs(5)).expect("Completed")
+        });
+        let answer = runner.run("openai", "m", "cred", "q").expect("completes");
+        assert_eq!(answer, "ok");
+        driver.join().expect("driver joins");
+        assert_eq!(fs::read_to_string(ws.join("supervised.txt")).unwrap(), "1");
+        // Parked approval carries user provenance, not rule.
+        let runs = AgentRunRepository::new(&db);
+        let run = &runs.list_runs_by_started_at_desc().expect("list")[0];
+        let steps = runs.list_steps(run.id).expect("steps");
+        let approval = steps
+            .iter()
+            .find(|s| s.kind == "approval")
+            .expect("approval step");
+        assert_eq!(approval.decided_by.as_deref(), Some("user"));
+        assert_eq!(approval.rule_id, None);
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn full_autonomous_deny_rule_still_denies() {
+        let db = in_memory_database();
+        let ws = temp_workspace();
+        let deny_id = crate::application::agent::permissions::insert_rule(
+            &db,
+            "coding",
+            "write_file",
+            None,
+            RuleEffect::Deny,
+            10,
+        )
+        .expect("insert deny");
+        let store = PermissionStore::load(&db);
+        let (tx, rx) = channel();
+        let fake = FakeExecutor::new(vec![
+            Ok(AiResponse {
+                content: String::new(),
+                model: "m".to_string(),
+                tool_calls: vec![approval_call(
+                    "w1",
+                    "write_file",
+                    serde_json::json!({"path": "blocked.txt", "content": "x"}),
+                )],
+                usage: None,
+            }),
+            Ok(text_response("recovered")),
+        ]);
+        let runner = AgentRunner::new(&fake, &ws)
+            .with_approval_gate(ApprovalGate::new(AutonomyMode::FullAutonomous))
+            .with_permission_store(store)
+            .with_run_recorder(RunRecorder::new(&db))
+            .with_event_sender(tx);
+        let answer = runner.run("openai", "m", "cred", "q").expect("completes");
+        assert_eq!(answer, "recovered");
+        // Never dispatched, never parked (no approval-branch events; the
+        // terminal Completed event still fires).
+        assert!(
+            fs::read_to_string(ws.join("blocked.txt")).is_err(),
+            "deny must not dispatch"
+        );
+        let mut saw_approval_branch = false;
+        while let Ok(ev) = rx.try_recv() {
+            if matches!(
+                ev,
+                AgentRunEvent::ApprovalRequested { .. } | AgentRunEvent::ApprovalResolved { .. }
+            ) {
+                saw_approval_branch = true;
+            }
+        }
+        assert!(
+            !saw_approval_branch,
+            "deny floor parks nothing and emits no approval event"
+        );
+        let runs = AgentRunRepository::new(&db);
+        let run = &runs.list_runs_by_started_at_desc().expect("list")[0];
+        let steps = runs.list_steps(run.id).expect("steps");
+        let approval = steps
+            .iter()
+            .find(|s| s.kind == "approval")
+            .expect("approval step");
+        assert_eq!(approval.status.as_deref(), Some("denied"));
+        assert_eq!(approval.rule_id, Some(deny_id));
+        assert_eq!(approval.decided_by.as_deref(), Some("rule"));
+        assert!(
+            !steps.iter().any(|s| s.kind == "tool_call"),
+            "denied call is never dispatched"
+        );
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn allow_rule_skips_park_with_rule_provenance() {
+        let db = in_memory_database();
+        let ws = temp_workspace();
+        let allow_id = crate::application::agent::permissions::insert_rule(
+            &db,
+            "coding",
+            "write_file",
+            None,
+            RuleEffect::Allow,
+            10,
+        )
+        .expect("insert allow");
+        let store = PermissionStore::load(&db);
+        let (tx, rx) = channel();
+        let fake = FakeExecutor::new(vec![
+            Ok(AiResponse {
+                content: String::new(),
+                model: "m".to_string(),
+                tool_calls: vec![approval_call(
+                    "w1",
+                    "write_file",
+                    serde_json::json!({"path": "allowed.txt", "content": "ok"}),
+                )],
+                usage: None,
+            }),
+            Ok(text_response("done")),
+        ]);
+        let runner = AgentRunner::new(&fake, &ws)
+            .with_approval_gate(ApprovalGate::new(AutonomyMode::SemiAutonomous))
+            .with_permission_store(store)
+            .with_run_recorder(RunRecorder::new(&db))
+            .with_event_sender(tx);
+        let answer = runner.run("openai", "m", "cred", "q").expect("completes");
+        assert_eq!(answer, "done");
+        assert_eq!(fs::read_to_string(ws.join("allowed.txt")).unwrap(), "ok");
+        // No park: no ApprovalRequested event.
+        let mut saw_approval = false;
+        while let Ok(ev) = rx.try_recv() {
+            if matches!(ev, AgentRunEvent::ApprovalRequested { .. }) {
+                saw_approval = true;
+            }
+        }
+        assert!(!saw_approval, "Allow rule must skip the park");
+        let runs = AgentRunRepository::new(&db);
+        let run = &runs.list_runs_by_started_at_desc().expect("list")[0];
+        let steps = runs.list_steps(run.id).expect("steps");
+        let tool = steps
+            .iter()
+            .find(|s| s.kind == "tool_call")
+            .expect("tool step");
+        assert_eq!(tool.rule_id, Some(allow_id));
+        assert_eq!(tool.decided_by.as_deref(), Some("rule"));
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn denied_by_rule_never_dispatches_and_keeps_verbatim_observation() {
+        let db = in_memory_database();
+        let ws = temp_workspace();
+        let deny_id = crate::application::agent::permissions::insert_rule(
+            &db,
+            "coding",
+            "write_file",
+            None,
+            RuleEffect::Deny,
+            10,
+        )
+        .expect("insert deny");
+        let store = PermissionStore::load(&db);
+        let fake = FakeExecutor::new(vec![
+            Ok(AiResponse {
+                content: String::new(),
+                model: "m".to_string(),
+                tool_calls: vec![approval_call(
+                    "w1",
+                    "write_file",
+                    serde_json::json!({"path": "nope.txt", "content": "x"}),
+                )],
+                usage: None,
+            }),
+            Ok(text_response("recovered")),
+        ]);
+        let runner = AgentRunner::new(&fake, &ws)
+            .with_approval_gate(ApprovalGate::new(AutonomyMode::SemiAutonomous))
+            .with_permission_store(store)
+            .with_run_recorder(RunRecorder::new(&db));
+        let answer = runner.run("openai", "m", "cred", "q").expect("completes");
+        assert_eq!(answer, "recovered");
+        assert!(fs::read_to_string(ws.join("nope.txt")).is_err());
+        // Model-facing denial string is byte-exact.
+        let requests = fake.requests.borrow();
+        assert_eq!(requests.len(), 2);
+        let history = &requests[1].messages;
+        let result = history[3].tool_result.as_ref().expect("tool result");
+        assert_eq!(
+            result.content,
+            "Error: tool execution was denied by the user"
+        );
+        // Ledger keeps rule provenance.
+        let runs = AgentRunRepository::new(&db);
+        let run = &runs.list_runs_by_started_at_desc().expect("list")[0];
+        let steps = runs.list_steps(run.id).expect("steps");
+        let approval = steps
+            .iter()
+            .find(|s| s.kind == "approval")
+            .expect("approval");
+        assert_eq!(approval.status.as_deref(), Some("denied"));
+        let observation = approval.observation.as_deref().unwrap_or("");
+        assert!(
+            observation.starts_with("denied by rule:"),
+            "observation {observation:?} must start with denied by rule:"
+        );
+        assert_eq!(approval.rule_id, Some(deny_id));
+        assert_eq!(approval.decided_by.as_deref(), Some("rule"));
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn group_scope_second_call_auto_resolves_with_shared_group_key() {
+        let db = in_memory_database();
+        let ws = temp_workspace();
+        let gate = ApprovalGate::new(AutonomyMode::SemiAutonomous);
+        let gate_for_driver = gate.clone();
+        let (tx, rx) = channel();
+        let fake = FakeExecutor::new(vec![
+            Ok(AiResponse {
+                content: String::new(),
+                model: "m".to_string(),
+                tool_calls: vec![
+                    approval_call(
+                        "w1",
+                        "write_file",
+                        serde_json::json!({"path": "g/a.txt", "content": "1"}),
+                    ),
+                    approval_call(
+                        "w2",
+                        "write_file",
+                        serde_json::json!({"path": "g/b.txt", "content": "2"}),
+                    ),
+                ],
+                usage: None,
+            }),
+            Ok(text_response("done")),
+        ]);
+        let runner = AgentRunner::new(&fake, &ws)
+            .with_approval_gate(gate)
+            .with_run_recorder(RunRecorder::new(&db))
+            .with_event_sender(tx);
+        let driver = thread::spawn(move || {
+            // First park resolves with group scope; the second same-group call
+            // must auto-resolve without a second park.
+            let mut requested = 0;
+            loop {
+                match rx.recv_timeout(Duration::from_secs(5)).expect("event") {
+                    AgentRunEvent::ApprovalRequested { call_id, .. } => {
+                        requested += 1;
+                        assert_eq!(call_id, "w1", "only the first call may park");
+                        assert!(gate_for_driver.respond_with_scope(
+                            "w1",
+                            ApprovalDecision::Approved,
+                            Some("group")
+                        ));
+                    }
+                    AgentRunEvent::Completed { .. } => break,
+                    _ => {}
+                }
+                assert!(requested <= 1, "second call must not park");
+            }
+            assert_eq!(requested, 1, "exactly one park for the group");
+        });
+        let answer = runner.run("openai", "m", "cred", "q").expect("completes");
+        assert_eq!(answer, "done");
+        driver.join().expect("driver joins");
+        assert_eq!(fs::read_to_string(ws.join("g/a.txt")).unwrap(), "1");
+        assert_eq!(fs::read_to_string(ws.join("g/b.txt")).unwrap(), "2");
+        let runs = AgentRunRepository::new(&db);
+        let run = &runs.list_runs_by_started_at_desc().expect("list")[0];
+        let steps = runs.list_steps(run.id).expect("steps");
+        let approvals: Vec<_> = steps.iter().filter(|s| s.kind == "approval").collect();
+        assert_eq!(
+            approvals.len(),
+            2,
+            "both group decisions are ledger artifacts, got {approvals:?}"
+        );
+        assert_eq!(
+            approvals[0].group_key, approvals[1].group_key,
+            "group steps share one group_key"
+        );
+        assert!(approvals[0].group_key.is_some(), "group_key must be set");
         let _ = fs::remove_dir_all(&ws);
     }
 }

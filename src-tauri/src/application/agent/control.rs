@@ -112,6 +112,14 @@ pub(crate) enum AgentRunEvent {
         name: String,
         /// Raw JSON arguments for the call.
         arguments: String,
+        /// Session-sticky group key (`preset:tool:parent-or-*`, M1-core).
+        /// Additive: existing fields are untouched.
+        #[serde(default)]
+        group_key: Option<String>,
+        /// Number of same-group calls in the current batch (M1-core).
+        /// Additive: existing fields are untouched.
+        #[serde(default)]
+        group_size: usize,
     },
     /// A parked approval was resolved (Task 4.1).
     ApprovalResolved {

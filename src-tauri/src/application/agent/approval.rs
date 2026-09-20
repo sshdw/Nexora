@@ -70,12 +70,19 @@ pub(crate) enum ApprovalDecision {
 struct PendingApproval {
     id: String,
     decision: Option<ApprovalDecision>,
+    /// Tool name for the pending call (M1-core grouping).
+    tool_name: String,
+    /// Session-sticky group key for the pending call (M1-core).
+    group_key: Option<String>,
 }
 
 #[derive(Debug)]
 struct GateState {
     mode: AutonomyMode,
     pending: Option<PendingApproval>,
+    /// Session-sticky group decisions for this run (M1-core): further
+    /// same-group parks auto-resolve identically without parking.
+    group_decisions: std::collections::HashMap<String, ApprovalDecision>,
 }
 
 // ---------------------------------------------------------------------------
@@ -101,6 +108,7 @@ impl ApprovalGate {
             state: Arc::new(Mutex::new(GateState {
                 mode,
                 pending: None,
+                group_decisions: std::collections::HashMap::new(),
             })),
             signal: Arc::new(Condvar::new()),
         }
@@ -115,6 +123,7 @@ impl ApprovalGate {
             state: Arc::new(Mutex::new(GateState {
                 mode,
                 pending: None,
+                group_decisions: std::collections::HashMap::new(),
             })),
             signal: Arc::new(Condvar::new()),
         }
@@ -186,6 +195,11 @@ impl ApprovalGate {
     /// emission that follows can be resolved immediately without a race.
     /// Called by the runner before emitting the event; does not notify.
     pub(crate) fn prepare_pending(&self, call: &ToolCall) {
+        self.prepare_pending_with_group(call, None);
+    }
+
+    /// Pre-register a pending entry with M1-core grouping metadata.
+    pub(crate) fn prepare_pending_with_group(&self, call: &ToolCall, group_key: Option<String>) {
         let mut state = self.lock_state();
         match state.pending.as_ref() {
             Some(existing) if existing.id == call.id => {
@@ -195,6 +209,8 @@ impl ApprovalGate {
                 state.pending = Some(PendingApproval {
                     id: call.id.clone(),
                     decision: None,
+                    tool_name: call.name.clone(),
+                    group_key,
                 });
             }
         }
@@ -238,6 +254,8 @@ impl ApprovalGate {
                     state.pending = Some(PendingApproval {
                         id: call.id.clone(),
                         decision: None,
+                        tool_name: call.name.clone(),
+                        group_key: None,
                     });
                 }
             }
@@ -284,15 +302,54 @@ impl ApprovalGate {
     /// Resolve a parked approval. Returns `true` when a pending request with
     /// `request_id` existed and was resolved.
     pub(crate) fn respond(&self, request_id: &str, decision: ApprovalDecision) -> bool {
+        self.respond_with_scope(request_id, decision, None)
+    }
+
+    /// Resolve a parked approval with an M1-core scope: `None`/`"single"`
+    /// resolves one call; `"group"` additionally records the decision as the
+    /// session-sticky verdict for the pending call's group key (run lifetime).
+    /// Returns `true` when a pending request existed and was resolved.
+    /// The pending entry is kept until `request_approval` consumes it; the
+    /// group verdict is stored atomically under the same lock so the runner
+    /// cannot wake before the sticky is visible.
+    pub(crate) fn respond_with_scope(
+        &self,
+        request_id: &str,
+        decision: ApprovalDecision,
+        scope: Option<&str>,
+    ) -> bool {
         let mut state = self.lock_state();
         if let Some(pending) = state.pending.as_mut() {
             if pending.id == request_id && pending.decision.is_none() {
                 pending.decision = Some(decision);
+                if scope == Some("group") {
+                    if let Some(group_key) = pending.group_key.clone() {
+                        state.group_decisions.insert(group_key, decision);
+                    }
+                }
                 self.signal.notify_all();
                 return true;
             }
         }
         false
+    }
+
+    /// Session-sticky verdict for `group_key`, if a group-scope resolution
+    /// recorded one in this run.
+    pub(crate) fn group_decision(&self, group_key: &str) -> Option<ApprovalDecision> {
+        self.lock_state().group_decisions.get(group_key).copied()
+    }
+
+    /// Pending tool/group metadata for `request_id` (M1-core command bridge).
+    pub(crate) fn pending_info(&self, request_id: &str) -> Option<(String, Option<String>)> {
+        let state = self.lock_state();
+        state.pending.as_ref().and_then(|pending| {
+            if pending.id == request_id {
+                Some((pending.tool_name.clone(), pending.group_key.clone()))
+            } else {
+                None
+            }
+        })
     }
 
     #[cfg(test)]

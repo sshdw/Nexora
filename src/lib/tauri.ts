@@ -369,6 +369,9 @@ export interface AgentStep {
   status: string | null;
   started_at: number;
   duration_ms: number | null;
+  rule_id: number | null;
+  group_key: string | null;
+  decided_by: string | null;
 }
 
 /** Step payload of a `RunFrame::Step` frame (Task 5.1). */
@@ -396,7 +399,7 @@ export type GovernanceEventPayload =
   | { type: "resumed" }
   | { type: "budget_exhausted"; max_steps: number }
   | { type: "spend_limit_exceeded"; spent_micro: number; limit_micro: number }
-  | { type: "approval_requested"; call_id: string; name: string; arguments: string }
+  | { type: "approval_requested"; call_id: string; name: string; arguments: string; group_key: string | null; group_size: number }
   | { type: "approval_resolved"; call_id: string; approved: boolean }
   | { type: "cancelled" }
   | { type: "completed"; steps: number };
@@ -431,16 +434,18 @@ export function cancelAgentRun(runId: number): Promise<void> {
   return invoke<void>("cancel_agent_run", { runId });
 }
 
-/** Resolve a parked approval (Task 5.1). */
+/** Resolve a parked approval (Task 5.1; M1-core adds optional group scope). */
 export function resolveAgentApproval(
   runId: number,
   callId: string,
   approved: boolean,
+  scope?: "single" | "group",
 ): Promise<void> {
   return invoke<void>("resolve_agent_approval", {
     runId,
     callId,
     approved,
+    scope: scope ?? null,
   });
 }
 
@@ -462,6 +467,43 @@ export function listAgentRuns(conversationId: number): Promise<AgentRun[]> {
 /** List the steps of one run (rehydration, Task 5.1). */
 export function listAgentSteps(runId: number): Promise<AgentStep[]> {
   return invoke<AgentStep[]>("list_agent_steps", { runId });
+}
+
+// ---- Agent permission rules (M1-core) ----------------------------------
+
+/** One `permission_rules` row (M1-core). */
+export interface PermissionRule {
+  id: number;
+  preset: string;
+  tool_pattern: string;
+  path_pattern: string | null;
+  effect: "allow" | "ask" | "deny";
+  priority: number;
+}
+
+/** Add one persistent permission rule (M1-core). */
+export function addPermissionRule(
+  preset: string,
+  toolPattern: string,
+  pathPattern: string | null,
+  effect: "allow" | "ask" | "deny",
+): Promise<number> {
+  return invoke<number>("add_permission_rule", {
+    preset,
+    toolPattern,
+    pathPattern,
+    effect,
+  });
+}
+
+/** Remove one persistent permission rule by id (M1-core). */
+export function removePermissionRule(id: number): Promise<void> {
+  return invoke<void>("remove_permission_rule", { id });
+}
+
+/** List persistent permission rules (M1-core). */
+export function listPermissionRules(): Promise<PermissionRule[]> {
+  return invoke<PermissionRule[]>("list_permission_rules");
 }
 
 // ---- Agent mode & pause (Task 5.2) ------------------------------------

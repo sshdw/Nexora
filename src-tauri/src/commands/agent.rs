@@ -35,6 +35,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::application::agent::approval::AutonomyMode;
+use crate::application::agent::permissions::{self, PermissionRule, RuleEffect};
 use crate::application::agent::service::{
     self, AgentRunError, AgentRunHost, AgentRunRegistry, AgentRunRequest, ResolveOutcome, RunFrame,
 };
@@ -245,15 +246,30 @@ pub(crate) fn cancel_agent_run(
 }
 
 /// Resolve a parked approval (5.1 minimum; 5.2 polishes the UX).
+///
+/// M1-core `scope`: `None`/`"single"` resolves one call; `"group"` records
+/// the verdict as the session-sticky decision for the call's group and, for
+/// approved non-shell groups, persists an `allow` rule (`priority=200`).
 #[tauri::command]
 pub(crate) fn resolve_agent_approval(
     run_id: i64,
     call_id: String,
     approved: bool,
+    scope: Option<String>,
     registry: State<'_, ManagedRegistry>,
+    db: State<'_, Database>,
 ) -> Result<(), CommandError> {
-    match registry.resolve(run_id, &call_id, approved) {
-        ResolveOutcome::Resolved => Ok(()),
+    let scope_ref = scope.as_deref();
+    if let Some(value) = scope_ref {
+        if value != "single" && value != "group" {
+            return Err(CommandError::new(
+                ErrorKind::InvalidInput,
+                "scope must be 'single' or 'group'",
+            ));
+        }
+    }
+    let (outcome, pending) = registry.resolve_with_scope(run_id, &call_id, approved, scope_ref);
+    match outcome {
         ResolveOutcome::RunNotActive => Err(CommandError::new(
             ErrorKind::NotFound,
             format!("no active agent run with id {run_id}"),
@@ -262,7 +278,61 @@ pub(crate) fn resolve_agent_approval(
             ErrorKind::NotFound,
             "the run has no pending approval for that call",
         )),
+        ResolveOutcome::Resolved => {
+            // M1-core persistent "never ask for this pattern": group-scope
+            // approvals for non-shell tools persist an allow rule. Shell
+            // groups never persist (they always park except FullAutonomous).
+            if scope_ref == Some("group") && approved {
+                if let Some((tool_name, group_key)) = pending {
+                    if tool_name != "execute_command" {
+                        let path_pattern = group_path_pattern(group_key.as_deref());
+                        let _ = insert_group_allow_rule(
+                            db.inner(),
+                            &tool_name,
+                            path_pattern.as_deref(),
+                        );
+                    }
+                }
+            }
+            Ok(())
+        }
     }
+}
+
+/// Extract the rule `path_pattern` from a `preset:tool:path` group key.
+/// `*` path groups persist as `*` (match-any); otherwise the parent dir.
+fn group_path_pattern(group_key: Option<&str>) -> Option<String> {
+    let key = group_key?;
+    let mut parts = key.splitn(3, ':');
+    let _preset = parts.next()?;
+    let _tool = parts.next()?;
+    let path = parts.next()?;
+    if path == "*" || path.is_empty() {
+        Some("*".to_string())
+    } else {
+        Some(path.to_string())
+    }
+}
+
+/// Best-effort insert of the group-allow rule (`effect='allow'`,
+/// `priority=200`). Failures (e.g. duplicate) are ignored: the session-sticky
+/// verdict already governs this run. Shell tools never persist (defense in
+/// depth alongside the caller's guard): shell groups always park except
+/// under `FullAutonomous`.
+fn insert_group_allow_rule(db: &Database, tool_name: &str, path_pattern: Option<&str>) -> bool {
+    if tool_name == "execute_command" || tool_name == "*" {
+        return false;
+    }
+    let pattern = path_pattern.unwrap_or("*");
+    permissions::insert_rule(
+        db,
+        "coding",
+        tool_name,
+        Some(pattern),
+        RuleEffect::Allow,
+        200,
+    )
+    .is_ok()
 }
 
 /// Grant `extra_steps` further iterations to a budget-parked (or running)
@@ -367,6 +437,116 @@ pub(crate) fn list_agent_steps(
     db: State<'_, Database>,
 ) -> Result<Vec<AgentStep>, CommandError> {
     service::list_steps_for_run(db.inner(), run_id).map_err(Into::into)
+}
+
+/// Add one persistent permission rule (M1-core).
+///
+/// `preset` is `coding`/`document`/`*`; `tool_pattern` is a tool name or `*`
+/// (1..64 chars); `path_pattern` is `None` (no path dimension) or 1..1024
+/// chars (`*` = match-any); `effect` is `allow`/`ask`/`deny`. Persistent
+/// `allow` for `execute_command` (or `*`, which includes the shell) is
+/// rejected: shell groups always park except under `FullAutonomous`.
+#[tauri::command]
+pub(crate) fn add_permission_rule(
+    preset: String,
+    tool_pattern: String,
+    path_pattern: Option<String>,
+    effect: String,
+    db: State<'_, Database>,
+) -> Result<i64, CommandError> {
+    validate_new_rule(&preset, &tool_pattern, path_pattern.as_deref(), &effect)?;
+    let rule_effect = match effect.as_str() {
+        "allow" => RuleEffect::Allow,
+        "ask" => RuleEffect::Ask,
+        "deny" => RuleEffect::Deny,
+        _ => {
+            return Err(CommandError::new(
+                ErrorKind::InvalidInput,
+                "effect must be 'allow', 'ask', or 'deny'",
+            ));
+        }
+    };
+    match permissions::insert_rule(
+        db.inner(),
+        &preset,
+        &tool_pattern,
+        path_pattern.as_deref(),
+        rule_effect,
+        100,
+    ) {
+        Ok(id) => Ok(id),
+        Err(err) => {
+            log::warn!("add_permission_rule insert failed: {err}");
+            Err(CommandError::new(
+                ErrorKind::InvalidInput,
+                "the permission rule could not be added",
+            ))
+        }
+    }
+}
+
+/// Validate a new rule against the v7 CHECKs plus the shell-allow ban.
+/// Never echoes argument content beyond the fixed vocabularies.
+fn validate_new_rule(
+    preset: &str,
+    tool_pattern: &str,
+    path_pattern: Option<&str>,
+    effect: &str,
+) -> Result<(), CommandError> {
+    if !matches!(preset, "coding" | "document" | "*") {
+        return Err(CommandError::new(
+            ErrorKind::InvalidInput,
+            "preset must be 'coding', 'document', or '*'",
+        ));
+    }
+    if tool_pattern.is_empty() || tool_pattern.len() > 64 {
+        return Err(CommandError::new(
+            ErrorKind::InvalidInput,
+            "tool pattern must be 1..64 characters",
+        ));
+    }
+    if let Some(path) = path_pattern {
+        if path.is_empty() || path.len() > 1024 {
+            return Err(CommandError::new(
+                ErrorKind::InvalidInput,
+                "path pattern must be 1..1024 characters",
+            ));
+        }
+    }
+    if !matches!(effect, "allow" | "ask" | "deny") {
+        return Err(CommandError::new(
+            ErrorKind::InvalidInput,
+            "effect must be 'allow', 'ask', or 'deny'",
+        ));
+    }
+    if effect == "allow" && (tool_pattern == "execute_command" || tool_pattern == "*") {
+        return Err(CommandError::new(
+            ErrorKind::InvalidInput,
+            "persistent allow is not available for shell commands",
+        ));
+    }
+    Ok(())
+}
+
+/// Remove one persistent permission rule by id (M1-core).
+#[tauri::command]
+pub(crate) fn remove_permission_rule(id: i64, db: State<'_, Database>) -> Result<(), CommandError> {
+    match permissions::delete_rule(db.inner(), id) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(CommandError::new(
+            ErrorKind::NotFound,
+            format!("no permission rule with id {id}"),
+        )),
+        Err(err) => Err(CommandError::from(err)),
+    }
+}
+
+/// List persistent permission rules ordered `priority ASC, id ASC` (M1-core).
+#[tauri::command]
+pub(crate) fn list_permission_rules(
+    db: State<'_, Database>,
+) -> Result<Vec<PermissionRule>, CommandError> {
+    permissions::list_rules(db.inner()).map_err(CommandError::from)
 }
 
 impl From<AgentRunError> for CommandError {
@@ -668,9 +848,9 @@ mod tests {
     fn ipc_args_are_camel_case() {
         let calls = extract_invoke_arg_literals(TAURI_TS);
         // Non-vacuous: the parser must see the 27 non-agent call sites plus
-        // the 9 agent ones (36 invoke sites carry an argument object).
+        // the 11 agent ones with argument objects (36 + add/remove).
         assert!(
-            calls.len() >= 36,
+            calls.len() >= 38,
             "naming-parity parser found only {} invoke calls in src/lib/tauri.ts; \
              it must parse every call site to be a real guard",
             calls.len()
@@ -691,19 +871,28 @@ mod tests {
     /// no missing key.
     #[test]
     fn agent_command_arg_keys_match_rust_params() {
-        const AGENT_COMMANDS: [(&str, &[&str]); 9] = [
+        const AGENT_COMMANDS: [(&str, &[&str]); 12] = [
             (
                 "start_agent_run",
                 &["conversationId", "content", "provider", "model"],
             ),
             ("cancel_agent_run", &["runId"]),
-            ("resolve_agent_approval", &["runId", "callId", "approved"]),
+            (
+                "resolve_agent_approval",
+                &["runId", "callId", "approved", "scope"],
+            ),
             ("extend_agent_run", &["runId", "extraSteps"]),
             ("list_agent_runs", &["conversationId"]),
             ("list_agent_steps", &["runId"]),
             ("agent_set_mode", &["runId", "mode"]),
             ("pause_agent_run", &["runId"]),
             ("resume_agent_run", &["runId"]),
+            (
+                "add_permission_rule",
+                &["preset", "toolPattern", "pathPattern", "effect"],
+            ),
+            ("remove_permission_rule", &["id"]),
+            ("list_permission_rules", &[]),
         ];
         let calls = extract_invoke_arg_literals(TAURI_TS);
         for (command, want) in AGENT_COMMANDS {
@@ -751,6 +940,53 @@ mod tests {
     /// `AgentError::Cancelled`, and the shared terminal mapping turns that
     /// into the `cancelled` run status — pinning both needles keeps the
     /// route from silently breaking into an `error`/`Provider` mapping.
+    #[test]
+    fn shell_never_gets_persistent_allow() {
+        // Direct validation: persistent allow for the shell is InvalidInput.
+        let err = validate_new_rule("coding", "execute_command", Some("*"), "allow")
+            .expect_err("shell allow must be rejected");
+        assert_eq!(err.kind, ErrorKind::InvalidInput);
+        let wildcard = validate_new_rule("coding", "*", Some("*"), "allow")
+            .expect_err("wildcard allow includes the shell and must be rejected");
+        assert_eq!(wildcard.kind, ErrorKind::InvalidInput);
+        // Non-shell allow validates.
+        validate_new_rule("coding", "write_file", Some("*"), "allow")
+            .expect("non-shell allow valid");
+        // Group path never persists shell-allow rows (the v7 seed is an
+        // ask row for the shell, which must survive untouched).
+        let db = crate::infrastructure::database::in_memory_database();
+        insert_group_allow_rule(&db, "execute_command", Some("*"));
+        let rules = permissions::list_rules(&db).expect("list rules");
+        assert!(
+            rules
+                .iter()
+                .all(|rule| !(rule.tool_pattern == "execute_command"
+                    && rule.effect == RuleEffect::Allow)),
+            "no shell-allow row may persist via the group path, got {rules:?}"
+        );
+        insert_group_allow_rule(&db, "write_file", Some("*"));
+        let rules = permissions::list_rules(&db).expect("list rules");
+        let persisted = rules
+            .iter()
+            .find(|rule| rule.tool_pattern == "write_file")
+            .expect("write_file rule persisted via group path");
+        assert_eq!(persisted.effect, RuleEffect::Allow);
+        assert_eq!(persisted.priority, 200);
+    }
+
+    #[test]
+    fn resolve_agent_approval_scope_routes_through_registry() {
+        const SOURCE: &str = include_str!("agent.rs");
+        assert!(
+            SOURCE.contains("resolve_with_scope("),
+            "resolve_agent_approval must route group scope through the registry"
+        );
+        assert!(
+            SOURCE.contains("insert_group_allow_rule("),
+            "group-scope approvals must offer the persistent group-allow path"
+        );
+    }
+
     #[test]
     fn provider_cancellation_routes_to_cancelled_outcome() {
         const RUNNER: &str = include_str!("../application/agent/runner.rs");
