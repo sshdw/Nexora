@@ -39,6 +39,7 @@ use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 
+use super::action_memory::{self, ActionSummary, AgentStepView};
 use super::approval::{ApprovalDecision, ApprovalGate, AutonomyMode};
 use super::control::{AgentRunEvent, RunControl};
 use super::persistence::{mode_to_column, terminal_outcome, RunRecorder};
@@ -541,6 +542,51 @@ pub(crate) fn start_run(
     started
 }
 
+/// Load the Layer-2 action trace for `conversation_id` (best-effort): the
+/// newest [`action_memory::MAX_PRIOR_RUNS`] non-live runs with their `seq`
+/// -ordered steps, mapped onto [`AgentStepView`] and compressed by
+/// [`action_memory::summarize`].
+///
+/// Any failure yields an empty trace and the run continues. Only counts are
+/// logged — argument/observation content travels in-memory only, never into
+/// logs and never beyond the prompt.
+fn load_action_summary(db: &Database, conversation_id: i64) -> ActionSummary {
+    let repo = AgentRunRepository::new(db);
+    let runs = match repo.list_runs_by_conversation(conversation_id) {
+        Ok(runs) => runs,
+        Err(err) => {
+            log::warn!("agent run setup: action trace load failed, continuing empty: {err}");
+            return action_memory::summarize(&[]);
+        }
+    };
+    let mut steps_by_run: Vec<(i64, Vec<AgentStepView>)> = Vec::new();
+    for run in runs
+        .iter()
+        .filter(|run| run.status != "running")
+        .take(action_memory::MAX_PRIOR_RUNS)
+    {
+        match repo.list_steps(run.id) {
+            Ok(steps) => steps_by_run.push((
+                run.id,
+                steps
+                    .into_iter()
+                    .map(|step| AgentStepView {
+                        tool_name: step.tool_name.unwrap_or_default(),
+                        arguments: step.arguments.unwrap_or_default(),
+                        observation: step.observation.unwrap_or_default(),
+                        status: step.status.unwrap_or_default(),
+                    })
+                    .collect(),
+            )),
+            Err(err) => {
+                log::warn!("agent run setup: action trace load failed, continuing empty: {err}");
+                return action_memory::summarize(&[]);
+            }
+        }
+    }
+    action_memory::summarize(&steps_by_run)
+}
+
 /// The post-claim setup: user message, run row, registration, spawn.
 fn start_run_claimed(
     db: &Database,
@@ -567,6 +613,13 @@ fn start_run_claimed(
             Vec::new()
         }
     };
+
+    // Load the prior action trace AFTER the text history (which stays first)
+    // and BEFORE persisting the current user message. The current run row is
+    // created below, so no live row exists yet here — and any live row is
+    // still excluded defensively. Best-effort: any failure keeps the run
+    // going with an empty trace.
+    let action_summary = load_action_summary(db, request.conversation_id);
 
     // Persist the user message BEFORE spawning (design §3.2): a crash can
     // never lose it, and it appears in the thread immediately. No assistant
@@ -624,6 +677,7 @@ fn start_run_claimed(
         gate,
         request.clone(),
         history,
+        action_summary,
     )?;
     Ok(run_id)
 }
@@ -645,6 +699,7 @@ fn spawn_run(
     gate: ApprovalGate,
     request: AgentRunRequest,
     history: Vec<AiMessage>,
+    action_summary: ActionSummary,
 ) -> Result<(), AgentRunError> {
     let (tx, rx): (Sender<AgentRunEvent>, Receiver<AgentRunEvent>) = mpsc::channel();
     // Terminal-frame channel: the run thread sends the `RunFinished` payload
@@ -674,6 +729,7 @@ fn spawn_run(
                     .with_control(control)
                     .with_approval_gate(gate)
                     .with_history(history)
+                    .with_action_summary(action_summary)
                     .with_event_sender(tx_for_recorder.clone());
                 if let Some(max_iterations) = run_request.max_iterations {
                     runner = runner.with_max_iterations(max_iterations);

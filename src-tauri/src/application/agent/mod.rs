@@ -26,6 +26,7 @@
 //!   frames, tracks active runs (`service::AgentRunRegistry`), and links runs
 //!   to conversations (D50).
 
+pub mod action_memory;
 pub mod approval;
 pub mod control;
 #[cfg(test)]
