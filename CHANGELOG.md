@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.3] - 2026-09-20
+
+### Added
+
+- **Agent — conversation memory (Layer 1)**: agent runs now load the persisted
+  conversation history (bounded 20-message window, alignment to a user turn, and an
+  omission note in the system prompt when older turns were dropped) (2026-09-20).
+- **Agent — action memory (Layer 2)**: agent runs now see a compact trace of the
+  prior runs' executed tool calls (last 3 runs, max 30 lines, denied steps included)
+  appended to the system prompt, so the agent remembers what it DID, not only what it
+  said (2026-09-20).
+
+### Fixed
+
+- Test-only CI stabilization: deterministic mode-switch and pause/resume handshakes
+  for flaky runner timings (2026-09-20).
+
 ## [1.3.2] — 2026-09-19
 
 ### Fixed
@@ -227,6 +244,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > Note: tag `v0.3.0` exists remotely from the MVP era but carries no changelog entry; superseded by 1.0.0.
 
+[1.3.3]: https://github.com/sshdw/Nexora/releases/tag/v1.3.3
 [1.3.2]: https://github.com/sshdw/Nexora/releases/tag/v1.3.2
 [1.3.1]: https://github.com/sshdw/Nexora/releases/tag/v1.3.1
 [1.3.0]: https://github.com/sshdw/Nexora/releases/tag/v1.3.0
