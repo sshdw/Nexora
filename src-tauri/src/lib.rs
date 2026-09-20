@@ -5,6 +5,21 @@ mod infrastructure;
 
 use tauri::Manager;
 
+/// Sweep orphaned 'running' agent runs from crashed sessions to 'error' at
+/// startup (Task 5.2, DP-8): only `status='running'` rows are touched; all
+/// other statuses and row counts untouched.
+fn sweep_orphaned_agent_runs(db: &infrastructure::database::Database) {
+    let swept = crate::infrastructure::repository::agent_runs::AgentRunRepository::new(db)
+        .fail_orphaned_running_runs("run interrupted by application shutdown")
+        .unwrap_or_else(|err| {
+            log::warn!("orphaned run sweep failed: {err}");
+            0
+        });
+    if swept > 0 {
+        log::info!("swept {swept} orphaned agent runs to error");
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 /// Run the Tauri desktop application.
 ///
@@ -76,6 +91,9 @@ pub fn run() {
             commands::agent::resume_agent_run,
             commands::agent::list_agent_runs,
             commands::agent::list_agent_steps,
+            commands::agent::add_permission_rule,
+            commands::agent::remove_permission_rule,
+            commands::agent::list_permission_rules,
         ])
         .setup(|app| {
             // Locate the per-user application data directory and ensure it
@@ -104,22 +122,7 @@ pub fn run() {
             // and record the applied schema version; startup fails loudly if it
             // is not (DATABASE.md §4–§5).
             let db = app.state::<infrastructure::database::Database>();
-            // Sweep orphaned 'running' runs from crashed sessions to 'error'
-            // at startup (Task 5.2, DP-8): only status='running' rows are
-            // touched; all other statuses and row counts untouched.
-            {
-                let swept = crate::infrastructure::repository::agent_runs::AgentRunRepository::new(
-                    db.inner(),
-                )
-                .fail_orphaned_running_runs("run interrupted by application shutdown")
-                .unwrap_or_else(|err| {
-                    log::warn!("orphaned run sweep failed: {err}");
-                    0
-                });
-                if swept > 0 {
-                    log::info!("swept {swept} orphaned agent runs to error");
-                }
-            }
+            sweep_orphaned_agent_runs(&db);
             let conn = db.lock()?;
             let version: i64 = conn.query_row(
                 "SELECT COALESCE(MAX(version), 0) FROM schema_version",

@@ -102,6 +102,10 @@ impl From<rusqlite::Error> for DatabaseError {
 /// - v6: the per-folder history column `conversations.workspace_root`
 ///   (`TEXT NULL CHECK (length <= 1024)`, no FK): the canonical workspace root
 ///   a conversation belongs to, `NULL` for pre-picker rows.
+/// - v7: the persistent permission rules table `permission_rules` (M1-core)
+///   with its documented columns, defaults, CHECKs and UNIQUE, seeded with
+///   the coding shell-ask row, plus the `agent_steps` provenance columns
+///   `rule_id` / `group_key` / `decided_by` via a validated rebuild.
 pub(crate) const MIGRATIONS: &[(i64, &str)] = &[
     // v1 — base tables and functional indexes (DATABASE.md §7, §8).
     (
@@ -360,6 +364,60 @@ CREATE INDEX idx_agent_runs_started ON agent_runs (started_at);
         "ALTER TABLE conversations ADD COLUMN workspace_root TEXT \
          CHECK (workspace_root IS NULL OR length(workspace_root) <= 1024);",
     ),
+    // v7 — persistent permission rules (M1-core) + agent_steps provenance.
+    // `permission_rules` holds ordered, revocable rules; `agent_steps` gains
+    // `rule_id` / `group_key` / `decided_by` via a table rebuild (the v5
+    // precedent: SQLite cannot ADD a REFERENCES column with the needed
+    // constraints through a bare ALTER, and the rebuild keeps the FK graph
+    // validated). Existing step rows keep NULL provenance.
+    (
+        7,
+        r"CREATE TABLE permission_rules (
+    id INTEGER PRIMARY KEY CHECK (id > 0),
+    preset TEXT NOT NULL CHECK (preset IN ('coding', 'document', '*')),
+    tool_pattern TEXT NOT NULL CHECK (length(tool_pattern) > 0 AND length(tool_pattern) <= 64),
+    path_pattern TEXT CHECK (path_pattern IS NULL OR (length(path_pattern) > 0 AND length(path_pattern) <= 1024)),
+    effect TEXT NOT NULL CHECK (effect IN ('allow', 'ask', 'deny')),
+    priority INTEGER NOT NULL DEFAULT 100 CHECK (priority >= 0),
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()) CHECK (created_at > 0),
+    UNIQUE (preset, tool_pattern, path_pattern)
+);
+
+INSERT INTO permission_rules (preset, tool_pattern, path_pattern, effect, priority)
+    VALUES ('coding', 'execute_command', '*', 'ask', 50);
+
+CREATE TABLE agent_steps_new (
+    id INTEGER PRIMARY KEY CHECK (id > 0),
+    run_id INTEGER NOT NULL
+        CHECK (run_id > 0)
+        REFERENCES agent_runs (id) ON DELETE CASCADE,
+    seq INTEGER NOT NULL CHECK (seq >= 1),
+    kind TEXT NOT NULL CHECK (kind IN ('model_turn', 'tool_call', 'approval')),
+    tool_name TEXT CHECK (tool_name IS NULL OR length(tool_name) > 0),
+    arguments TEXT,
+    observation TEXT,
+    status TEXT
+        CHECK (status IS NULL OR status IN ('succeeded', 'failed', 'denied', 'cancelled')),
+    started_at INTEGER NOT NULL DEFAULT (unixepoch()) CHECK (started_at > 0),
+    duration_ms INTEGER CHECK (duration_ms IS NULL OR duration_ms >= 0),
+    rule_id INTEGER NULL REFERENCES permission_rules(id) ON DELETE SET NULL,
+    group_key TEXT NULL CHECK (group_key IS NULL OR length(group_key) <= 256),
+    decided_by TEXT NULL CHECK (decided_by IS NULL OR decided_by IN ('user', 'rule', 'system')),
+    UNIQUE (run_id, seq)
+);
+
+INSERT INTO agent_steps_new
+    (id, run_id, seq, kind, tool_name, arguments, observation, status, started_at, duration_ms)
+    SELECT id, run_id, seq, kind, tool_name, arguments, observation, status, started_at, duration_ms
+    FROM agent_steps;
+
+DROP TABLE agent_steps;
+ALTER TABLE agent_steps_new RENAME TO agent_steps;
+
+CREATE INDEX idx_agent_steps_run_seq
+    ON agent_steps (run_id, seq);
+",
+    ),
 ];
 
 /// Open the `SQLite` database at `path`, apply connection pragmas, and run any
@@ -412,11 +470,13 @@ fn migrate(conn: &mut Connection) -> Result<(), DatabaseError> {
         if version <= current {
             continue;
         }
-        if version == 5 {
-            // v5 rebuilds agent_runs, a parent of agent_steps; SQLite cannot
-            // hold the FK while dropping the parent, and PRAGMA foreign_keys
-            // cannot be toggled inside the transaction that apply_migration
-            // opens. The toggle is therefore applied here, outside the tx.
+        if version == 5 || version == 7 {
+            // v5 rebuilds agent_runs, a parent of agent_steps; v7 rebuilds
+            // agent_steps itself (adding provenance columns with a new FK to
+            // permission_rules). SQLite cannot hold the FK graph while
+            // dropping/recreating, and PRAGMA foreign_keys cannot be toggled
+            // inside the transaction that apply_migration opens. The toggle
+            // is therefore applied here, outside the tx.
             conn.execute_batch("PRAGMA foreign_keys=OFF;")?;
             let result = apply_migration(conn, version, sql);
             // Restore enforcement for all subsequent work.
@@ -573,6 +633,7 @@ mod tests {
             "attachments",
             "conversations",
             "messages",
+            "permission_rules",
             "prompts",
             "providers",
         ] {
@@ -621,14 +682,14 @@ mod tests {
             );
         }
 
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6]);
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7]);
     }
 
     #[test]
     fn migration_state_is_recorded_correctly() {
         let conn = in_memory_migrated();
 
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6]);
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7]);
 
         let applied_at: i64 = conn
             .query_row(
@@ -642,17 +703,17 @@ mod tests {
         let version_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .expect("count schema_version rows");
-        assert_eq!(version_count, 6, "one row per applied migration");
+        assert_eq!(version_count, 7, "one row per applied migration");
     }
 
     #[test]
     fn re_running_migrations_is_a_no_op() {
         let mut conn = in_memory_migrated();
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6]);
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7]);
 
         migrate(&mut conn).expect("a second migration run must succeed");
 
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6]);
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7]);
         // The no-op run created or dropped nothing.
         assert!(schema_object_exists(&conn, "conversations", "table"));
         assert!(schema_object_exists(&conn, "conversations_fts", "table"));
@@ -681,7 +742,7 @@ mod tests {
             !schema_object_exists(&conn, "partial_table", "table"),
             "the valid part of the failed migration must roll back"
         );
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6]);
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7]);
     }
 
     #[test]
@@ -1291,7 +1352,7 @@ mod tests {
         // Migrate to v5 (and any later)
         migrate(&mut conn).expect("migrate to v5");
         // Schema version is 5
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6]);
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7]);
         // Row preserved, new columns NULL for pre-v5 rows
         let (status, spent, limit): (String, Option<i64>, Option<i64>) = conn
             .query_row(
@@ -1379,7 +1440,7 @@ mod tests {
         )
         .expect("seed message");
         migrate(&mut conn).expect("migrate to v6");
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6]);
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7]);
         // Seeded row survives with a NULL workspace root.
         let root: Option<String> = conn
             .query_row(
@@ -1412,5 +1473,133 @@ mod tests {
             overlong.is_err(),
             "overlong workspace root must be rejected"
         );
+    }
+
+    /// Build a v6-only in-memory database with one completed run and one
+    /// `model_turn` step; returns the connection and the run id.
+    fn v6_database_with_run_and_step() -> (Connection, i64) {
+        let mut conn = Connection::open_in_memory().expect("open in-memory");
+        configure(&conn).expect("configure");
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY CHECK (version > 0), applied_at INTEGER NOT NULL CHECK (applied_at > 0));",
+        )
+        .expect("create schema_version");
+        for &(version, sql) in MIGRATIONS.iter().filter(|(v, _)| *v <= 6) {
+            if version == 5 {
+                conn.execute_batch("PRAGMA foreign_keys=OFF;")
+                    .expect("fk off");
+                let result = apply_migration(&mut conn, version, sql);
+                conn.execute_batch("PRAGMA foreign_keys=ON;")
+                    .expect("fk on");
+                result.expect("apply v5");
+            } else {
+                apply_migration(&mut conn, version, sql).expect("apply v1..v6");
+            }
+        }
+        conn.execute(
+            "INSERT INTO agent_runs (model, mode, status) VALUES ('m', 'supervised', 'completed')",
+            [],
+        )
+        .expect("seed run");
+        let run_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO agent_steps (run_id, seq, kind) VALUES (?1, 1, 'model_turn')",
+            [run_id],
+        )
+        .expect("seed step");
+        (conn, run_id)
+    }
+
+    #[test]
+    fn v7_adds_permission_rules_and_step_provenance_preserving_rows() {
+        // Build a v6-only DB (mirrors the v5 test), then migrate to v7.
+        let (mut conn, run_id) = v6_database_with_run_and_step();
+        migrate(&mut conn).expect("migrate to v7");
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7]);
+        // Old rows intact with NULL provenance.
+        let (kind, rule_id, group_key, decided_by): (
+            String,
+            Option<i64>,
+            Option<String>,
+            Option<String>,
+        ) = conn
+            .query_row(
+                "SELECT kind, rule_id, group_key, decided_by FROM agent_steps WHERE run_id = ?1",
+                [run_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("read preserved step");
+        assert_eq!(kind, "model_turn");
+        assert_eq!(rule_id, None, "pre-v7 rule_id is NULL");
+        assert_eq!(group_key, None, "pre-v7 group_key is NULL");
+        assert_eq!(decided_by, None, "pre-v7 decided_by is NULL");
+        // Seed present.
+        let seed: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM permission_rules WHERE preset = 'coding' \
+                 AND tool_pattern = 'execute_command' AND path_pattern = '*' \
+                 AND effect = 'ask' AND priority = 50",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count seed");
+        assert_eq!(seed, 1, "v7 seeds the coding shell-ask row");
+        // UNIQUE enforced.
+        let dup = conn.execute(
+            "INSERT INTO permission_rules (preset, tool_pattern, path_pattern, effect) \
+             VALUES ('coding', 'execute_command', '*', 'ask')",
+            [],
+        );
+        assert!(
+            dup.is_err(),
+            "UNIQUE(preset, tool_pattern, path_pattern) must reject"
+        );
+        // CHECKs enforced.
+        assert!(
+            conn.execute(
+                "INSERT INTO permission_rules (preset, tool_pattern, effect) \
+                 VALUES ('nope', 'read_file', 'allow')",
+                [],
+            )
+            .is_err(),
+            "bad preset must be rejected"
+        );
+        assert!(
+            conn.execute(
+                "INSERT INTO permission_rules (preset, tool_pattern, effect) \
+                 VALUES ('coding', '', 'allow')",
+                [],
+            )
+            .is_err(),
+            "empty tool_pattern must be rejected"
+        );
+        assert!(
+            conn.execute(
+                "INSERT INTO permission_rules (preset, tool_pattern, effect) \
+                 VALUES ('coding', 'read_file', 'maybe')",
+                [],
+            )
+            .is_err(),
+            "bad effect must be rejected"
+        );
+        assert!(
+            conn.execute(
+                "INSERT INTO agent_steps (run_id, seq, kind, decided_by) \
+                 VALUES (?1, 2, 'model_turn', 'nobody')",
+                [run_id],
+            )
+            .is_err(),
+            "bad decided_by must be rejected"
+        );
+        // Index recreated.
+        assert!(
+            schema_object_exists(&conn, "idx_agent_steps_run_seq", "index"),
+            "idx_agent_steps_run_seq must survive the rebuild"
+        );
+        // FK still ON after rebuild.
+        let fk_on: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .expect("fk pragma");
+        assert_eq!(fk_on, 1, "FK must be ON after v7");
     }
 }

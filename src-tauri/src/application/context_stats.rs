@@ -339,6 +339,9 @@ mod tests {
             Some("thinking"),
             None,
             None,
+            None,
+            None,
+            None,
         )
         .expect("model step");
         runs.append_step(
@@ -350,6 +353,9 @@ mod tests {
             Some("--- a/a.txt\n+++ b/a.txt\n@@ -0,0 +1 @@\n+x\n"),
             Some("succeeded"),
             Some(5),
+            None,
+            None,
+            None,
         )
         .expect("tool step");
         runs.append_step(
@@ -360,6 +366,9 @@ mod tests {
             None,
             Some("approved"),
             Some("succeeded"),
+            None,
+            None,
+            None,
             None,
         )
         .expect("approval step");

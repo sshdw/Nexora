@@ -199,6 +199,9 @@ impl<'a> RunRecorder<'a> {
         observation: Option<&str>,
         status: Option<&str>,
         duration_ms: Option<i64>,
+        rule_id: Option<i64>,
+        group_key: Option<&str>,
+        decided_by: Option<&str>,
     ) -> Result<(), DatabaseError> {
         let repo = AgentRunRepository::new(self.db);
         let result = repo.append_step(
@@ -210,6 +213,9 @@ impl<'a> RunRecorder<'a> {
             observation,
             status,
             duration_ms,
+            rule_id,
+            group_key,
+            decided_by,
         );
         match &result {
             Err(err) => log::warn!(
@@ -271,6 +277,73 @@ impl<'a> RunRecorder<'a> {
     }
 }
 
+/// M1-core provenance triple carried on `agent_steps` rows (`rule_id` /
+/// `group_key` / `decided_by`, all `None` for pre-v7 rows and ladder-auto
+/// model turns).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct StepProvenance<'a> {
+    /// Authoring permission rule, if the decision came from one.
+    pub rule_id: Option<i64>,
+    /// Session-sticky group key (`preset:tool:parent-or-*`), if grouped.
+    pub group_key: Option<&'a str>,
+    /// Who decided: `'user'` / `'rule'` / `'system'`.
+    pub decided_by: Option<&'a str>,
+}
+
+impl<'a> StepProvenance<'a> {
+    /// No provenance (pre-v7 shape; ladder-auto model turns).
+    #[must_use]
+    pub(crate) const fn anonymous() -> Self {
+        Self {
+            rule_id: None,
+            group_key: None,
+            decided_by: None,
+        }
+    }
+
+    /// A parked user resolution, optionally grouped.
+    #[must_use]
+    pub(crate) const fn user(group_key: Option<&'a str>) -> Self {
+        Self {
+            rule_id: None,
+            group_key,
+            decided_by: Some("user"),
+        }
+    }
+
+    /// A permission-rule verdict.
+    #[must_use]
+    pub(crate) const fn rule(rule_id: Option<i64>) -> Self {
+        Self {
+            rule_id,
+            group_key: None,
+            decided_by: Some("rule"),
+        }
+    }
+
+    /// A ladder-auto execution.
+    #[must_use]
+    pub(crate) const fn system() -> Self {
+        Self {
+            rule_id: None,
+            group_key: None,
+            decided_by: Some("system"),
+        }
+    }
+}
+
+/// One not-yet-sequenced `agent_steps` row (M1-core): the step payload plus
+/// its provenance triple, sequenced by [`ActiveRunRecord::append`].
+struct PendingStep<'a> {
+    kind: &'a str,
+    tool_name: Option<&'a str>,
+    arguments: Option<&'a str>,
+    observation: Option<&'a str>,
+    status: Option<&'a str>,
+    duration_ms: Option<i64>,
+    provenance: StepProvenance<'a>,
+}
+
 /// Per-run recording state owned by one `AgentRunner::run` invocation
 /// (Task 4.2): the run row id, the next step `seq`, and the number of
 /// successfully recorded steps (`total_steps`, D12).
@@ -304,14 +377,15 @@ impl<'a> ActiveRunRecord<'a> {
     /// carries the model's own narration / final text; `duration_ms` the
     /// provider round-trip duration (DATABASE.md §7.9).
     pub(crate) fn model_turn(&mut self, observation: &str, duration_ms: Option<i64>) {
-        self.append(
-            "model_turn",
-            None,
-            None,
-            Some(observation),
-            None,
+        self.append(&PendingStep {
+            kind: "model_turn",
+            tool_name: None,
+            arguments: None,
+            observation: Some(observation),
+            status: None,
             duration_ms,
-        );
+            provenance: StepProvenance::anonymous(),
+        });
     }
 
     /// Record one `tool_call` step for a dispatched call (DATABASE.md
@@ -324,46 +398,106 @@ impl<'a> ActiveRunRecord<'a> {
         status: &str,
         duration_ms: Option<i64>,
     ) {
-        self.append(
-            "tool_call",
-            Some(&call.name),
-            Some(&call.arguments),
-            Some(observation),
-            Some(status),
+        self.tool_call_with_provenance(
+            call,
+            observation,
+            status,
             duration_ms,
+            StepProvenance::anonymous(),
         );
+    }
+
+    /// Record a dispatched `tool_call` with M1-core provenance.
+    pub(crate) fn tool_call_with_provenance(
+        &mut self,
+        call: &ToolCall,
+        observation: &str,
+        status: &str,
+        duration_ms: Option<i64>,
+        provenance: StepProvenance<'_>,
+    ) {
+        self.append(&PendingStep {
+            kind: "tool_call",
+            tool_name: Some(&call.name),
+            arguments: Some(&call.arguments),
+            observation: Some(observation),
+            status: Some(status),
+            duration_ms,
+            provenance,
+        });
     }
 
     /// Record one `approval` step for a parked approval decision resolved by
     /// the user (DATABASE.md §7.9): `succeeded` when approved, `denied` when
     /// denied.
     pub(crate) fn approval(&mut self, call: &ToolCall, approved: bool) {
+        self.approval_with_provenance(call, approved, StepProvenance::user(None));
+    }
+
+    /// Record an `approval` step with M1-core provenance (`decided_by` is
+    /// `'user'` for parked resolutions, `'rule'` for rule denials, `'system'`
+    /// for auto/cancel paths; `observation` keeps the frozen user vocabulary
+    /// (`approved`/`denied`) and uses `denied by rule:<id>` for the new rule
+    /// denial origin).
+    pub(crate) fn approval_with_provenance(
+        &mut self,
+        call: &ToolCall,
+        approved: bool,
+        provenance: StepProvenance<'_>,
+    ) {
+        // Frozen user vocabulary (`approved`/`denied`) is preserved for
+        // parked resolutions so existing denial asserts stay green; the
+        // group/session sticky path records its own `denied by group`
+        // observation via `approval_denied_by_group`.
         let (status, observation) = if approved {
-            ("succeeded", "approved")
+            ("succeeded", "approved".to_string())
+        } else if provenance.decided_by == Some("rule") {
+            if let Some(id) = provenance.rule_id {
+                ("denied", format!("denied by rule:{id}"))
+            } else {
+                ("denied", "denied".to_string())
+            }
         } else {
-            ("denied", "denied")
+            ("denied", "denied".to_string())
         };
-        self.append(
-            "approval",
-            Some(&call.name),
-            Some(&call.arguments),
-            Some(observation),
-            Some(status),
-            None,
-        );
+        self.append(&PendingStep {
+            kind: "approval",
+            tool_name: Some(&call.name),
+            arguments: Some(&call.arguments),
+            observation: Some(&observation),
+            status: Some(status),
+            duration_ms: None,
+            provenance,
+        });
+    }
+
+    /// Record a group-inherited denial (M1-core session-sticky): the
+    /// observation uses the group vocabulary while `decided_by` stays
+    /// `'user'` (the sticky verdict inherits the original user decision).
+    pub(crate) fn approval_denied_by_group(&mut self, call: &ToolCall, group_key: &str) {
+        self.append(&PendingStep {
+            kind: "approval",
+            tool_name: Some(&call.name),
+            arguments: Some(&call.arguments),
+            observation: Some("denied by group"),
+            status: Some("denied"),
+            duration_ms: None,
+            provenance: StepProvenance::user(Some(group_key)),
+        });
     }
 
     /// Record one `approval` step whose parked wait was ended by
     /// cancellation (DATABASE.md §7.9).
     pub(crate) fn approval_cancelled(&mut self, call: &ToolCall) {
-        self.append(
-            "approval",
-            Some(&call.name),
-            Some(&call.arguments),
-            Some("cancelled by the user"),
-            Some("cancelled"),
-            None,
-        );
+        self.append(&PendingStep {
+            kind: "approval",
+            tool_name: Some(&call.name),
+            arguments: Some(&call.arguments),
+            observation: Some("cancelled by the user"),
+            status: Some("cancelled"),
+            duration_ms: None,
+            provenance: StepProvenance::system(),
+        });
     }
 
     /// Append one step with the next `seq`. Best-effort: a failed insert is
@@ -371,15 +505,7 @@ impl<'a> ActiveRunRecord<'a> {
     /// reuses the same `seq`, `total_steps` counts only successfully
     /// persisted steps, and successful inserts stay gap-free and strictly
     /// increasing (D12; CF-01).
-    fn append(
-        &mut self,
-        kind: &str,
-        tool_name: Option<&str>,
-        arguments: Option<&str>,
-        observation: Option<&str>,
-        status: Option<&str>,
-        duration_ms: Option<i64>,
-    ) {
+    fn append(&mut self, step: &PendingStep<'_>) {
         let Some(run_id) = self.run_id else {
             return;
         };
@@ -389,12 +515,15 @@ impl<'a> ActiveRunRecord<'a> {
             .insert_step(
                 run_id,
                 seq,
-                kind,
-                tool_name,
-                arguments,
-                observation,
-                status,
-                duration_ms,
+                step.kind,
+                step.tool_name,
+                step.arguments,
+                step.observation,
+                step.status,
+                step.duration_ms,
+                step.provenance.rule_id,
+                step.provenance.group_key,
+                step.provenance.decided_by,
             )
             .is_ok()
         {
