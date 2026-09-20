@@ -28,13 +28,17 @@
 
 pub mod action_memory;
 pub mod approval;
+pub mod budget;
 pub mod control;
+pub mod dispatch;
 #[cfg(test)]
 mod e2e;
+pub mod errors;
 pub mod history;
 pub mod permissions;
 pub mod persistence;
 pub mod pricing;
+pub mod prompts;
 pub mod runner;
 pub mod service;
 #[cfg(test)]

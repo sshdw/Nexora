@@ -1,5 +1,5 @@
 //! Agent execution service: the multi-step agent `ReAct` loop (ROADMAP.md
-//! Phase 3 вЂ” Task 3.1).
+//! Phase 3 РІР‚вЂќ Task 3.1).
 //!
 //! [`AgentRunner`] orchestrates the existing provider-independent execution
 //! layer ([`ProviderExecutor`]) and the existing native workspace tools
@@ -15,8 +15,8 @@
 //!
 //! The runner owns only orchestration: it never executes shell commands,
 //! touches the filesystem outside the configured workspace root, or formats
-//! provider payloads. Every returned tool call вЂ” including unknown tools,
-//! malformed arguments, and failing invocations вЂ” is dispatched through
+//! provider payloads. Every returned tool call РІР‚вЂќ including unknown tools,
+//! malformed arguments, and failing invocations РІР‚вЂќ is dispatched through
 //! [`ToolRegistry`] and converted into a native tool-result message that is
 //! appended to the conversation history for the next model turn.
 //!
@@ -44,9 +44,9 @@
 //!
 //! Task 4.2 layers opt-in persistence on top of that: with an attached
 //! [`RunRecorder`] ([`AgentRunner::with_run_recorder`]) the run is persisted
-//! to `agent_runs` (DATABASE.md В§7.8) from start to termination on every exit
+//! to `agent_runs` (DATABASE.md Р’В§7.8) from start to termination on every exit
 //! path, and each model turn, dispatched tool call, and parked approval
-//! decision is appended to `agent_steps` (В§7.9, D12) вЂ” all best-effort, so
+//! decision is appended to `agent_steps` (Р’В§7.9, D12) РІР‚вЂќ all best-effort, so
 //! persistence failures never panic the loop and never change the run's
 //! semantics. When no recorder is attached the loop keeps the exact pre-4.2
 //! behaviour and writes nothing.
@@ -63,196 +63,29 @@
 //! `tool_calls`/role `tool`, Anthropic `tool_use`/`tool_result`), so the
 //! model always sees its own calls and the results they produced. Unlike the
 //! historical plain-user-text fence, these roles are in-flight only: they
-//! are never persisted (DATABASE.md §7.2 stays user/assistant/system).
+//! are never persisted (DATABASE.md В§7.2 stays user/assistant/system).
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
-use crate::application::agent::action_memory::{self, ActionSummary};
-use crate::application::agent::approval::{ApprovalDecision, ApprovalGate, AutonomyMode};
+use crate::application::agent::action_memory::ActionSummary;
+use crate::application::agent::approval::ApprovalGate;
 use crate::application::agent::control::{AgentRunEvent, CancellationToken, RunControl};
-use crate::application::agent::history;
-use crate::application::agent::permissions::{self, PermissionOutcome, PermissionStore};
+use crate::application::agent::permissions::PermissionStore;
 use crate::application::agent::persistence::{
-    mode_to_column, ActiveRunRecord, RunRecorder, StepProvenance, DEFAULT_RECORDED_MODE,
+    mode_to_column, ActiveRunRecord, RunRecorder, DEFAULT_RECORDED_MODE,
 };
-use crate::application::agent::pricing;
 use crate::application::agent::tools::ToolRegistry;
 use crate::application::execution::{
     AiMessage, AiRequest, AiRole, ExecutorError, ProviderExecutor,
 };
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/// Default upper bound on consecutive model turns executed by one run.
-///
-/// A repeatedly tool-calling model cannot loop forever: after this many
-/// iterations the run terminates deterministically with
-/// [`AgentError::BudgetExhausted`] (AC-9). This is the fixed base bound;
-/// adaptive budgets extend it via [`RunControl::extend_steps`] (Task 3.2).
-pub(crate) const DEFAULT_MAX_ITERATIONS: usize = 10;
-
-/// Default wall-clock timeout bound applied to each blocking provider
-/// request emitted by the runner (Task 3.2).
-///
-/// The blocking `reqwest` client cannot be interrupted mid-flight, so the
-/// honest bound for "terminate running LLM HTTP requests" is a per-request
-/// timeout. The provider-independent [`AiRequest`] carries
-/// `request_timeout: Option<Duration>`; the runner always sets it to this
-/// default unless overridden via [`AgentRunner::with_request_timeout`].
-pub(crate) const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::new(120, 0);
-
-/// Fixed system prompt for Windows hosts (the primary target).
-const AGENT_SYSTEM_PROMPT_WINDOWS: &str = "You are Nexora, a desktop agent working on the user's machine.\n\nEnvironment:\n- The operating system is Windows; execute_command runs each command through cmd.exe, so Unix shell utilities such as ls, cat or grep are unavailable - use their Windows equivalents (dir, type, findstr).\n- The file tools read_file, write_file and list_directory operate inside a dedicated agent workspace directory. Relative paths resolve against the workspace, paths outside it are rejected, and execute_command runs with the workspace as its current directory.\n\nWorkflow:\n- Call a tool whenever the task needs one. Every call you make comes back as a tool result that you must use to continue.\n- A turn that only calls tools is not a final answer: when the task is done, reply to the user directly, without tool calls.\n- If a tool returns an error, read it, fix the arguments or choose another approach; never repeat an identical failing call.\n- Reply in the user's language.";
-
-/// Fixed system prompt for POSIX hosts; the Environment section states the
-/// shell accordingly.
-const AGENT_SYSTEM_PROMPT_POSIX: &str = "You are Nexora, a desktop agent working on the user's machine.\n\nEnvironment:\n- execute_command runs each command through the POSIX shell (sh).\n- The file tools read_file, write_file and list_directory operate inside a dedicated agent workspace directory. Relative paths resolve against the workspace, paths outside it are rejected, and execute_command runs with the workspace as its current directory.\n\nWorkflow:\n- Call a tool whenever the task needs one. Every call you make comes back as a tool result that you must use to continue.\n- A turn that only calls tools is not a final answer: when the task is done, reply to the user directly, without tool calls.\n- If a tool returns an error, read it, fix the arguments or choose another approach; never repeat an identical failing call.\n- Reply in the user's language.";
-
-/// The fixed agent system prompt assembled for this build target.
-#[cfg(windows)]
-const AGENT_SYSTEM_PROMPT: &str = AGENT_SYSTEM_PROMPT_WINDOWS;
-
-/// The fixed agent system prompt assembled for this build target.
-#[cfg(not(windows))]
-const AGENT_SYSTEM_PROMPT: &str = AGENT_SYSTEM_PROMPT_POSIX;
-
-/// Frozen model-facing denial observation (M1-core): provenance travels in
-/// the persisted step only.
-fn denied_tool_message(call: &crate::application::execution::ToolCall) -> AiMessage {
-    AiMessage {
-        role: AiRole::Tool,
-        content: String::new(),
-        attachments: Vec::new(),
-        tool_calls: Vec::new(),
-        tool_result: Some(crate::application::execution::AiToolResult {
-            call_id: call.id.clone(),
-            name: call.name.clone(),
-            content: "Error: tool execution was denied by the user".to_string(),
-        }),
-    }
-}
-
-/// Wrap a tool observation as a native `Tool` message.
-fn tool_message(call: &crate::application::execution::ToolCall, observation: &str) -> AiMessage {
-    AiMessage {
-        role: AiRole::Tool,
-        content: String::new(),
-        attachments: Vec::new(),
-        tool_calls: Vec::new(),
-        tool_result: Some(crate::application::execution::AiToolResult {
-            call_id: call.id.clone(),
-            name: call.name.clone(),
-            content: observation.to_string(),
-        }),
-    }
-}
-
-/// Classify a dispatch outcome into `(observation, status)` honouring
-/// cancellation.
-fn classify_outcome(
-    outcome: Result<String, crate::application::agent::tools::ToolError>,
-    token: &CancellationToken,
-) -> (String, &'static str) {
-    match outcome {
-        Ok(output) if token.is_cancelled() => (output, "cancelled"),
-        Ok(output) => (output, "succeeded"),
-        Err(tool_error) if token.is_cancelled() => (tool_error.to_string(), "cancelled"),
-        Err(tool_error) => (tool_error.to_string(), "failed"),
-    }
-}
-
-/// Format a secret-free trace line for a thought signature.
-///
-/// Reports only presence (`present=true/false`) and byte length (`len=N`)
-/// per tool call so signature flow leaves a trace in logs; the opaque value
-/// itself is never formatted, logged, or returned.
-fn thought_signature_trace(call_id: &str, signature: Option<&String>) -> String {
-    let (present, len) = match signature {
-        Some(value) if !value.is_empty() => (true, value.len()),
-        _ => (false, 0),
-    };
-    format!("agent thought_signature call_id={call_id} present={present} len={len}")
-}
-
-// ---------------------------------------------------------------------------
-// Error
-// ---------------------------------------------------------------------------
-
-/// Classified agent-loop failure. Carries no secret payload and never embeds
-/// credential material (ARCHITECTURE.md В§9, В§11): the provider variant wraps
-/// the already-classified [`ExecutorError`].
-#[derive(Debug)]
-pub(crate) enum AgentError {
-    /// The provider failed to fulfil one of the loop's requests. The
-    /// classified [`ExecutorError`] passes through verbatim to the run
-    /// error text (its Display is rendered unchanged).
-    Provider(ExecutorError),
-    /// The iteration budget was exhausted before the model produced a final
-    /// answer. With no [`RunControl`] attached this aborts outright; with one
-    /// attached the run first parked at the boundary awaiting `extend_steps`
-    /// and only aborts if it was instead cancelled.
-    BudgetExhausted(usize),
-    /// The spend guard tripped: billed spend exceeded the configured per-run
-    /// limit (Task 4.3). `spent_micro` includes the tripping turn's cost.
-    SpendLimitExceeded { spent_micro: u64, limit_micro: u64 },
-    /// The provider returned neither tool calls nor usable final content.
-    EmptyResponse,
-    /// A user cancelled the run via [`RunControl::cancel`] (or cancellation
-    /// was observed during a tool execution).
-    Cancelled,
-}
-
-impl std::fmt::Display for AgentError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Provider(err) => write!(f, "{err}"),
-            Self::BudgetExhausted(max) => write!(
-                f,
-                "agent stopped: reached the {max}-step limit without a final answer"
-            ),
-            Self::SpendLimitExceeded {
-                spent_micro,
-                limit_micro,
-            } => write!(
-                f,
-                "agent stopped: spend limit exceeded (spent {spent_micro} micro-USD of {limit_micro} micro-USD)"
-            ),
-            Self::EmptyResponse => {
-                write!(f, "agent stopped: the model returned an empty response")
-            }
-            Self::Cancelled => write!(f, "agent stopped: cancelled by the user"),
-        }
-    }
-}
-
-impl std::error::Error for AgentError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Provider(err) => Some(err),
-            Self::BudgetExhausted(_)
-            | Self::SpendLimitExceeded { .. }
-            | Self::EmptyResponse
-            | Self::Cancelled => None,
-        }
-    }
-}
-
-impl From<ExecutorError> for AgentError {
-    fn from(err: ExecutorError) -> Self {
-        // A provider call cancelled in flight is user cancellation, not a
-        // provider failure: it maps to `Cancelled` exactly like a park-cancel,
-        // so the terminal outcome, the `Cancelled` governance event, and the
-        // persisted `cancelled` status all agree.
-        if matches!(err, ExecutorError::Cancelled) {
-            return Self::Cancelled;
-        }
-        Self::Provider(err)
-    }
-}
+use super::budget;
+pub(crate) use super::budget::{DEFAULT_MAX_ITERATIONS, DEFAULT_REQUEST_TIMEOUT};
+use super::dispatch;
+pub(crate) use super::errors::AgentError;
+use super::prompts;
 
 // ---------------------------------------------------------------------------
 // Runner
@@ -289,7 +122,7 @@ pub(crate) struct AgentRunner<'a> {
     /// Opt-in run recorder (Task 4.2). When `None` nothing is persisted and
     /// the loop keeps the exact pre-4.2 behaviour; when attached, the run and
     /// its structured steps are persisted to `agent_runs` / `agent_steps`
-    /// (DATABASE.md В§7.8, В§7.9) best-effort.
+    /// (DATABASE.md Р’В§7.8, Р’В§7.9) best-effort.
     recorder: Option<RunRecorder<'a>>,
     /// Opt-in spend limit in micro-USD (Task 4.3). `None` means no financial
     /// guard; the loop keeps the exact pre-4.3 behaviour.
@@ -375,7 +208,7 @@ impl<'a> AgentRunner<'a> {
 
     /// Attach the opt-in run recorder (Task 4.2): the run and its structured
     /// steps are persisted to `agent_runs` / `agent_steps` (DATABASE.md
-    /// В§7.8, В§7.9) best-effort. When no recorder is attached the loop keeps
+    /// Р’В§7.8, Р’В§7.9) best-effort. When no recorder is attached the loop keeps
     /// the exact pre-4.2 behaviour and writes nothing. The recorded mode is
     /// the attached [`ApprovalGate`]'s current [`AutonomyMode`], or
     /// [`DEFAULT_RECORDED_MODE`] without a gate; `conversation_id` stays
@@ -449,7 +282,7 @@ impl<'a> AgentRunner<'a> {
     /// Task 4.2: when a [`RunRecorder`] is attached, the run is persisted to
     /// `agent_runs` from start to termination on every exit path, and each
     /// model turn, dispatched tool call, and parked approval decision is
-    /// appended to `agent_steps` (DATABASE.md В§7.8, В§7.9) вЂ” all best-effort,
+    /// appended to `agent_steps` (DATABASE.md Р’В§7.8, Р’В§7.9) РІР‚вЂќ all best-effort,
     /// so persistence failures never change the run's semantics.
     pub(crate) fn run(
         &self,
@@ -507,43 +340,12 @@ impl<'a> AgentRunner<'a> {
         let base = self.max_iterations;
         let mut steps_taken: usize = 0;
         // History opens with the fixed agent system prompt, the retained
-        // conversation tail (agent memory slice), and the user request;
-        // after every tool turn the assistant's own calls and each tool's
-        // result are appended natively (see module docs).
-        let windowed = history::window(&self.prior_messages, history::DEFAULT_HISTORY_WINDOW);
-        let mut system_content = if windowed.dropped == 0 {
-            AGENT_SYSTEM_PROMPT.to_string()
-        } else {
-            format!(
-                "{AGENT_SYSTEM_PROMPT}\n\n{}",
-                history::omitted_note(windowed.dropped)
-            )
-        };
-        // Layer-2 action memory: the prior action trace follows the Layer-1
-        // note, separated by a blank line. An empty summary appends zero
-        // bytes, so runs without prior actions keep the exact prompt.
-        if let Some(summary) = &self.action_summary {
-            if let Some(note) = action_memory::system_note(summary) {
-                system_content.push_str("\n\n");
-                system_content.push_str(&note);
-            }
-        }
-        let mut messages = Vec::with_capacity(windowed.messages.len() + 2);
-        messages.push(AiMessage {
-            role: AiRole::System,
-            content: system_content,
-            attachments: Vec::new(),
-            tool_calls: Vec::new(),
-            tool_result: None,
-        });
-        messages.extend(windowed.messages);
-        messages.push(AiMessage {
-            role: AiRole::User,
-            content: user_request.to_string(),
-            attachments: Vec::new(),
-            tool_calls: Vec::new(),
-            tool_result: None,
-        });
+        // conversation tail and the user request (assembled in `prompts`).
+        let mut messages = prompts::build_initial_messages(
+            &self.prior_messages,
+            self.action_summary.as_ref(),
+            user_request,
+        );
 
         loop {
             // ---- Step boundary: governance gates before the next LLM turn ----
@@ -551,9 +353,9 @@ impl<'a> AgentRunner<'a> {
             // Cancellation is the highest-priority gate: it is checked before
             // any LLM work, again after every provider call, and between tool
             // dispatches so a cancellation never waits for further work.
-            self.check_cancellation(control)?;
-            self.honor_pause(control)?;
-            self.honor_allowance(control, base, steps_taken)?;
+            dispatch::check_cancellation(control, self.event_sender.as_ref())?;
+            dispatch::honor_pause(control, self.event_sender.as_ref())?;
+            budget::honor_allowance(control, base, steps_taken, self.event_sender.as_ref())?;
 
             let request = AiRequest {
                 provider: provider.to_string(),
@@ -567,13 +369,13 @@ impl<'a> AgentRunner<'a> {
             // an in-flight HTTP attempt aborts promptly instead of running to
             // the wall-clock timeout. A call cancelled in flight reports
             // `ExecutorError::Cancelled`: emit the governance event and abort
-            // without recording a model turn or dispatching any tool call —
+            // without recording a model turn or dispatching any tool call вЂ”
             // an abandoned call must never dispatch.
             let token: &CancellationToken = control.map_or(&idle_token, RunControl::token);
             let response = match self.executor.execute(&request, credential, token) {
                 Ok(response) => response,
                 Err(ExecutorError::Cancelled) => {
-                    self.emit(AgentRunEvent::Cancelled);
+                    dispatch::emit(self.event_sender.as_ref(), AgentRunEvent::Cancelled);
                     return Err(AgentError::Cancelled);
                 }
                 Err(other) => return Err(other.into()),
@@ -588,30 +390,16 @@ impl<'a> AgentRunner<'a> {
                 rec.model_turn(&response.content, Some(duration_ms));
             }
 
-            self.check_cancellation(control)?;
+            dispatch::check_cancellation(control, self.event_sender.as_ref())?;
 
-            // Task 4.3: spend guard — accumulate billed cost for this turn
-            // (only when a consumer exists) and trip if the limit is exceeded.
-            // Usage absent is counted as $0 (count-as-known). Known-free
-            // model IDs bill $0 regardless of usage.
-            if let Some(usage) = response.usage {
-                if self.spend_limit_micro_usd.is_some() || record.is_some() {
-                    let cost = pricing::cost_for_model_usage(model, usage);
-                    *spent_micro_usd = spent_micro_usd.saturating_add(cost);
-                    if let Some(limit) = self.spend_limit_micro_usd {
-                        if *spent_micro_usd > limit {
-                            self.emit(AgentRunEvent::SpendLimitExceeded {
-                                spent_micro: *spent_micro_usd,
-                                limit_micro: limit,
-                            });
-                            return Err(AgentError::SpendLimitExceeded {
-                                spent_micro: *spent_micro_usd,
-                                limit_micro: limit,
-                            });
-                        }
-                    }
-                }
-            }
+            budget::check_spend_guard(
+                model,
+                response.usage,
+                self.spend_limit_micro_usd,
+                record.is_some(),
+                spent_micro_usd,
+                self.event_sender.as_ref(),
+            )?;
 
             if response.tool_calls.is_empty() {
                 // AC-2: no tool calls means the model is done. Usable final
@@ -620,11 +408,14 @@ impl<'a> AgentRunner<'a> {
                 if response.content.trim().is_empty() {
                     return Err(AgentError::EmptyResponse);
                 }
-                self.emit(AgentRunEvent::Completed { steps: steps_taken });
+                dispatch::emit(
+                    self.event_sender.as_ref(),
+                    AgentRunEvent::Completed { steps: steps_taken },
+                );
                 return Ok(response.content);
             }
 
-            // The model's own turn — narration plus every returned tool call —
+            // The model's own turn вЂ” narration plus every returned tool call вЂ”
             // is appended unconditionally so the model always sees what it
             // called; the individual observations follow as Tool messages.
             messages.push(AiMessage {
@@ -635,329 +426,18 @@ impl<'a> AgentRunner<'a> {
                 tool_result: None,
             });
 
-            // AC-6: never drop a call вЂ” every returned call is dispatched and
-            // observed. Failures are rendered through `ToolError`'s Display
-            // (`Error: ...`) so the model can recover on the next turn.
-            // (`token` is bound before the provider call above and shared
-            // with tool dispatch.)
-            let batch_groups: Vec<String> = response
-                .tool_calls
-                .iter()
-                .map(|call| {
-                    let path = permissions::extract_path(&call.name, &call.arguments);
-                    permissions::group_key("coding", &call.name, path.as_deref())
-                })
-                .collect();
-            for call in &response.tool_calls {
-                // Trace-level flow marker: presence + length only, never value.
-                log::trace!(
-                    "{}",
-                    thought_signature_trace(&call.id, call.thought_signature.as_ref())
-                );
-                self.check_cancellation(control)?;
-                let request_path = permissions::extract_path(&call.name, &call.arguments);
-                let call_group_key =
-                    permissions::group_key("coding", &call.name, request_path.as_deref());
-                let call_group_size = batch_groups
-                    .iter()
-                    .filter(|key| *key == &call_group_key)
-                    .count();
-                // M1-core: session-sticky group auto-resolve (run lifetime).
-                if let Some(gate) = &self.approval_gate {
-                    if let Some(sticky) = gate.group_decision(&call_group_key) {
-                        let approved = matches!(sticky, ApprovalDecision::Approved);
-                        if let Some(rec) = record.as_mut() {
-                            if approved {
-                                rec.approval_with_provenance(
-                                    call,
-                                    true,
-                                    StepProvenance::user(Some(&call_group_key)),
-                                );
-                            } else {
-                                rec.approval_denied_by_group(call, &call_group_key);
-                            }
-                        }
-                        if !approved {
-                            messages.push(denied_tool_message(call));
-                            continue;
-                        }
-                        let dispatch_started = Instant::now();
-                        let outcome = ToolRegistry::execute_with_cancellation(
-                            call,
-                            &self.workspace_root,
-                            token,
-                        );
-                        let dispatch_ms = i64::try_from(dispatch_started.elapsed().as_millis())
-                            .unwrap_or(i64::MAX);
-                        let (observation, tool_status) = classify_outcome(outcome, token);
-                        messages.push(tool_message(call, &observation));
-                        if let Some(rec) = record.as_mut() {
-                            rec.tool_call_with_provenance(
-                                call,
-                                &observation,
-                                tool_status,
-                                Some(dispatch_ms),
-                                StepProvenance::user(Some(&call_group_key)),
-                            );
-                        }
-                        continue;
-                    }
-                }
-                // M1-core: persistent rules before the gate. Unknown tools skip the store.
-                if permissions::is_known_tool(&call.name) {
-                    if let Some(store) = &self.permission_store {
-                        if let Some(outcome) = store.decide(
-                            "coding",
-                            &call.name,
-                            request_path.as_deref(),
-                            crate::application::agent::approval::RiskClass::classify(&call.name),
-                        ) {
-                            let mode = self
-                                .approval_gate
-                                .as_ref()
-                                .map_or(AutonomyMode::Supervised, ApprovalGate::mode);
-                            match outcome {
-                                PermissionOutcome::Deny { rule_id, .. } => {
-                                    if let Some(rec) = record.as_mut() {
-                                        rec.approval_with_provenance(
-                                            call,
-                                            false,
-                                            StepProvenance::rule(rule_id),
-                                        );
-                                    }
-                                    messages.push(denied_tool_message(call));
-                                    continue;
-                                }
-                                PermissionOutcome::Allow { rule_id } => {
-                                    if !matches!(mode, AutonomyMode::Supervised) {
-                                        let dispatch_started = Instant::now();
-                                        let outcome = ToolRegistry::execute_with_cancellation(
-                                            call,
-                                            &self.workspace_root,
-                                            token,
-                                        );
-                                        let dispatch_ms =
-                                            i64::try_from(dispatch_started.elapsed().as_millis())
-                                                .unwrap_or(i64::MAX);
-                                        let (observation, tool_status) =
-                                            classify_outcome(outcome, token);
-                                        messages.push(tool_message(call, &observation));
-                                        if let Some(rec) = record.as_mut() {
-                                            rec.tool_call_with_provenance(
-                                                call,
-                                                &observation,
-                                                tool_status,
-                                                Some(dispatch_ms),
-                                                StepProvenance::rule(rule_id),
-                                            );
-                                        }
-                                        continue;
-                                    }
-                                }
-                                PermissionOutcome::Ask { rule_id } => {
-                                    if matches!(mode, AutonomyMode::FullAutonomous) {
-                                        let dispatch_started = Instant::now();
-                                        let outcome = ToolRegistry::execute_with_cancellation(
-                                            call,
-                                            &self.workspace_root,
-                                            token,
-                                        );
-                                        let dispatch_ms =
-                                            i64::try_from(dispatch_started.elapsed().as_millis())
-                                                .unwrap_or(i64::MAX);
-                                        let (observation, tool_status) =
-                                            classify_outcome(outcome, token);
-                                        messages.push(tool_message(call, &observation));
-                                        if let Some(rec) = record.as_mut() {
-                                            rec.tool_call_with_provenance(
-                                                call,
-                                                &observation,
-                                                tool_status,
-                                                Some(dispatch_ms),
-                                                StepProvenance::rule(rule_id),
-                                            );
-                                        }
-                                        continue;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                // Task 4.1: approval gate evaluated at the per-tool-call
-                // boundary, before dispatch. Auto paths execute exactly as
-                // before; denied calls become a controlled observation and the
-                // loop continues; cancellation while parked aborts.
-                if let Some(gate) = &self.approval_gate {
-                    if gate.needs_approval(call) {
-                        // INVARIANT: once ApprovalRequested is emitted, a pending entry for that call_id exists,
-                        // so a concurrent resolve cannot hit NoPendingApproval — the race is closed by construction.
-                        gate.prepare_pending_with_group(call, Some(call_group_key.clone()));
-                        self.emit(AgentRunEvent::ApprovalRequested {
-                            call_id: call.id.clone(),
-                            name: call.name.clone(),
-                            arguments: call.arguments.clone(),
-                            group_key: Some(call_group_key.clone()),
-                            group_size: call_group_size,
-                        });
-                        let Ok(decision) = gate.request_approval(call) else {
-                            // Task 4.2: cancellation ended the parked wait вЂ”
-                            // record the `cancelled` approval step (D12).
-                            if let Some(rec) = record.as_mut() {
-                                rec.approval_cancelled(call);
-                            }
-                            self.emit(AgentRunEvent::Cancelled);
-                            return Err(AgentError::Cancelled);
-                        };
-                        let approved = matches!(decision, ApprovalDecision::Approved);
-                        // Task 4.2: record the parked approval decision (D12).
-                        if let Some(rec) = record.as_mut() {
-                            rec.approval_with_provenance(
-                                call,
-                                approved,
-                                StepProvenance::user(Some(&call_group_key)),
-                            );
-                        }
-                        self.emit(AgentRunEvent::ApprovalResolved {
-                            call_id: call.id.clone(),
-                            approved,
-                        });
-                        if !approved {
-                            messages.push(AiMessage {
-                                role: AiRole::Tool,
-                                content: String::new(),
-                                attachments: Vec::new(),
-                                tool_calls: Vec::new(),
-                                tool_result: Some(crate::application::execution::AiToolResult {
-                                    call_id: call.id.clone(),
-                                    name: call.name.clone(),
-                                    content: "Error: tool execution was denied by the user"
-                                        .to_string(),
-                                }),
-                            });
-                            continue;
-                        }
-                    }
-                }
-                // Task 4.2: the dispatched call (approved or ungated) is
-                // recorded with its raw arguments, observation, and outcome
-                // (D12). A cancellation observed by the tool records as
-                // `cancelled`; everything else is `succeeded` or `failed`.
-                let dispatch_started = Instant::now();
-                let outcome =
-                    ToolRegistry::execute_with_cancellation(call, &self.workspace_root, token);
-                let dispatch_ms =
-                    i64::try_from(dispatch_started.elapsed().as_millis()).unwrap_or(i64::MAX);
-                let (observation, tool_status) = match outcome {
-                    Ok(output) if token.is_cancelled() => (output, "cancelled"),
-                    Ok(output) => (output, "succeeded"),
-                    Err(tool_error) if token.is_cancelled() => {
-                        (tool_error.to_string(), "cancelled")
-                    }
-                    Err(tool_error) => (tool_error.to_string(), "failed"),
-                };
-                messages.push(AiMessage {
-                    role: AiRole::Tool,
-                    content: String::new(),
-                    attachments: Vec::new(),
-                    tool_calls: Vec::new(),
-                    tool_result: Some(crate::application::execution::AiToolResult {
-                        call_id: call.id.clone(),
-                        name: call.name.clone(),
-                        content: observation.clone(),
-                    }),
-                });
-                if let Some(rec) = record.as_mut() {
-                    // M1-core provenance: parked-then-approved tool calls inherit
-                    // `user`; ladder-auto executions are `system`.
-                    let provenance = if self
-                        .approval_gate
-                        .as_ref()
-                        .is_some_and(|gate| gate.needs_approval(call))
-                    {
-                        StepProvenance::user(Some(call_group_key.as_str()))
-                    } else {
-                        StepProvenance::system()
-                    };
-                    rec.tool_call_with_provenance(
-                        call,
-                        &observation,
-                        tool_status,
-                        Some(dispatch_ms),
-                        provenance,
-                    );
-                }
-            }
-        }
-    }
-
-    /// Emit a governance event on the optional channel, best-effort.
-    fn emit(&self, event: AgentRunEvent) {
-        if let Some(tx) = &self.event_sender {
-            let _ = tx.send(event);
-        }
-    }
-
-    /// Return `Err(AgentError::Cancelled)` when cancellation was observed.
-    fn check_cancellation(&self, control: Option<&RunControl>) -> Result<(), AgentError> {
-        if matches!(control, Some(c) if c.is_cancelled()) {
-            self.emit(AgentRunEvent::Cancelled);
-            return Err(AgentError::Cancelled);
-        }
-        Ok(())
-    }
-
-    /// Honour a pending user pause at this step boundary. Emits `Paused`,
-    /// blocks until `resume` (emitting `Resumed`) or `cancel` (aborting);
-    /// cancelling while paused wakes the loop (no deadlock).
-    fn honor_pause(&self, control: Option<&RunControl>) -> Result<(), AgentError> {
-        let Some(c) = control else {
-            return Ok(());
-        };
-        if !c.pause_pending() {
-            return Ok(());
-        }
-        self.emit(AgentRunEvent::Paused);
-        if c.wait_while_paused() {
-            self.emit(AgentRunEvent::Resumed);
-            Ok(())
-        } else {
-            self.emit(AgentRunEvent::Cancelled);
-            Err(AgentError::Cancelled)
-        }
-    }
-
-    /// Honour the step budget at this boundary.
-    ///
-    /// With a control attached, exhaustion parks the loop on
-    /// `wait_for_allowance` until `extend_steps` continues it or `cancel`
-    /// aborts it (`resume` alone grants no steps). Without a control, the
-    /// Task 3.1 deterministic behaviour is preserved: exhaustion returns
-    /// `AgentError::BudgetExhausted` immediately.
-    fn honor_allowance(
-        &self,
-        control: Option<&RunControl>,
-        base: usize,
-        taken: usize,
-    ) -> Result<(), AgentError> {
-        let Some(c) = control else {
-            if taken >= base {
-                return Err(AgentError::BudgetExhausted(base));
-            }
-            return Ok(());
-        };
-        let allowance = c.allowance(base);
-        if taken < allowance {
-            return Ok(());
-        }
-        self.emit(AgentRunEvent::BudgetExhausted {
-            max_steps: allowance,
-        });
-        if c.wait_for_allowance(base, taken) {
-            Ok(())
-        } else {
-            self.emit(AgentRunEvent::Cancelled);
-            Err(AgentError::Cancelled)
+            // AC-6: dispatch every returned call through the per-tool-call
+            // pipeline (permission rules, approval gate, execution and
+            // observation recording) in `dispatch`.
+            let ctx = dispatch::DispatchCtx {
+                workspace_root: &self.workspace_root,
+                token,
+                control,
+                approval_gate: self.approval_gate.as_ref(),
+                permission_store: self.permission_store.as_ref(),
+                sender: self.event_sender.as_ref(),
+            };
+            dispatch::dispatch_tool_calls(&ctx, &response.tool_calls, &mut messages, &mut record)?;
         }
     }
 }
@@ -965,117 +445,17 @@ impl<'a> AgentRunner<'a> {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
+    use super::test_support::*;
     use super::*;
-    use crate::application::execution::{AiResponse, ToolCall};
-    use std::cell::RefCell;
     use std::fs;
-    use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::mpsc::channel;
-    use std::sync::Arc;
     use std::thread;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
-    static COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-    fn temp_workspace() -> PathBuf {
-        let base = std::env::temp_dir();
-        let id = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir = base.join(format!(
-            "nexora-runner-test-{pid}-{id}-{nanos}",
-            pid = std::process::id(),
-            id = id,
-            nanos = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock after epoch")
-                .as_nanos()
-        ));
-        fs::create_dir_all(&dir).expect("create temp workspace");
-        canonical_workspace(&dir)
-    }
-
-    /// Canonicalize a freshly created temp workspace so the returned root is
-    /// already in the form the file tools compare against. On Windows the
-    /// temp dir can sit behind a junction, 8.3 short name, or an alternate
-    /// separator/drive-letter/case spelling (notably on CI runners); the
-    /// tools' canonical re-check then rejects the non-canonical root with
-    /// `PathTraversal`. Resolving once here keeps every downstream
-    /// `resolve_path`/`is_within_workspace` comparison canonical-vs-canonical.
-    /// The `\\?\` verbatim prefix is stripped so paths stay readable and
-    /// comparable with non-verbatim joins.
-    fn canonical_workspace(dir: &Path) -> PathBuf {
-        let canon = dir.canonicalize().expect("canonicalize temp workspace");
-        let text = canon.to_string_lossy();
-        if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
-            return PathBuf::from(format!(r"\\{rest}"));
-        }
-        if let Some(rest) = text.strip_prefix(r"\\?\") {
-            return PathBuf::from(rest);
-        }
-        canon
-    }
-
-    fn text_response(content: &str) -> AiResponse {
-        AiResponse {
-            content: content.to_string(),
-            model: "test-model".to_string(),
-            tool_calls: Vec::new(),
-            usage: None,
-        }
-    }
-
-    #[allow(clippy::needless_pass_by_value)] // JSON literals read best at call sites
-    fn call_tool(id: &str, name: &str, arguments: serde_json::Value) -> ToolCall {
-        ToolCall {
-            id: id.to_string(),
-            name: name.to_string(),
-            arguments: arguments.to_string(),
-            thought_signature: None,
-        }
-    }
-
-    fn raw_call(id: &str, name: &str, arguments: &str) -> ToolCall {
-        ToolCall {
-            id: id.to_string(),
-            name: name.to_string(),
-            arguments: arguments.to_string(),
-            thought_signature: None,
-        }
-    }
-
-    /// Scripted [`ProviderExecutor`] fake: replays prepared responses in order
-    /// and records every incoming request. Never performs network I/O.
-    struct FakeExecutor {
-        steps: RefCell<std::vec::IntoIter<Result<AiResponse, ExecutorError>>>,
-        requests: RefCell<Vec<AiRequest>>,
-    }
-
-    impl FakeExecutor {
-        fn new(steps: Vec<Result<AiResponse, ExecutorError>>) -> Self {
-            Self {
-                steps: RefCell::new(steps.into_iter()),
-                requests: RefCell::new(Vec::new()),
-            }
-        }
-    }
-
-    impl ProviderExecutor for FakeExecutor {
-        fn execute(
-            &self,
-            request: &AiRequest,
-            _credential: &str,
-            _token: &CancellationToken,
-        ) -> Result<AiResponse, ExecutorError> {
-            self.requests.borrow_mut().push(request.clone());
-            self.steps
-                .borrow_mut()
-                .next()
-                .expect("fake executor script exhausted")
-        }
-    }
+    use crate::application::agent::approval::{ApprovalDecision, AutonomyMode};
+    use crate::application::execution::{AiResponse, ExecutorError};
 
     #[test]
     fn immediate_final_text_finishes_without_second_iteration() {
@@ -1111,690 +491,6 @@ mod tests {
         let _ = fs::remove_dir_all(&ws);
     }
 
-    /// Every request the runner emits opens with the fixed agent system
-    /// prompt (exact equality, including the target-specific Environment
-    /// section chosen at compile time).
-    #[test]
-    fn every_request_starts_with_the_agent_system_prompt() {
-        let ws = temp_workspace();
-        let fake = FakeExecutor::new(vec![
-            Ok(AiResponse {
-                content: String::new(),
-                model: "m".to_string(),
-                tool_calls: vec![ToolCall {
-                    id: "s1".to_string(),
-                    name: "list_directory".to_string(),
-                    arguments: "{}".to_string(),
-                    thought_signature: None,
-                }],
-                usage: None,
-            }),
-            Ok(text_response("done")),
-        ]);
-        let runner = AgentRunner::new(&fake, &ws);
-
-        runner.run("openai", "m", "cred", "hello").expect("finish");
-
-        let requests = fake.requests.borrow();
-        assert_eq!(requests.len(), 2);
-        for request in requests.iter() {
-            assert_eq!(request.messages[0].role, AiRole::System);
-            assert_eq!(request.messages[0].content, AGENT_SYSTEM_PROMPT);
-        }
-        // The prompt text is the compile-time target variant.
-        #[cfg(windows)]
-        assert_eq!(AGENT_SYSTEM_PROMPT, AGENT_SYSTEM_PROMPT_WINDOWS);
-        #[cfg(not(windows))]
-        assert_eq!(AGENT_SYSTEM_PROMPT, AGENT_SYSTEM_PROMPT_POSIX);
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    fn user_message(content: &str) -> AiMessage {
-        AiMessage {
-            role: AiRole::User,
-            content: content.to_string(),
-            attachments: Vec::new(),
-            tool_calls: Vec::new(),
-            tool_result: None,
-        }
-    }
-
-    fn assistant_message(content: &str) -> AiMessage {
-        AiMessage {
-            role: AiRole::Assistant,
-            content: content.to_string(),
-            attachments: Vec::new(),
-            tool_calls: Vec::new(),
-            tool_result: None,
-        }
-    }
-
-    /// An empty action summary appends zero bytes: the system prompt stays
-    /// byte-for-byte identical to the Layer-1 output.
-    #[test]
-    fn with_empty_action_summary_leaves_system_prompt_byte_identical() {
-        let ws = temp_workspace();
-        let fake = FakeExecutor::new(vec![Ok(text_response("done"))]);
-        let runner = AgentRunner::new(&fake, &ws).with_action_summary(ActionSummary {
-            lines: Vec::new(),
-            omitted_runs: 0,
-            omitted_steps: 0,
-        });
-
-        runner.run("openai", "m", "cred", "hi").expect("finish");
-
-        let requests = fake.requests.borrow();
-        assert_eq!(requests.len(), 1);
-        let messages = &requests[0].messages;
-        assert_eq!(messages.len(), 2);
-        assert_eq!(messages[0].role, AiRole::System);
-        assert_eq!(messages[0].content, AGENT_SYSTEM_PROMPT);
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    /// A non-empty action summary is appended after the system prompt,
-    /// separated by a blank line, with the current turn last.
-    #[test]
-    fn with_action_summary_appends_trace_after_system_prompt() {
-        let ws = temp_workspace();
-        let fake = FakeExecutor::new(vec![Ok(text_response("done"))]);
-        let runner =
-            AgentRunner::new(&fake, &ws).with_action_summary(action_memory::summarize(&[(
-                12,
-                vec![action_memory::AgentStepView {
-                    tool_name: "read_file".to_string(),
-                    arguments: r#"{"path": "a.txt"}"#.to_string(),
-                    observation: "content".to_string(),
-                    status: "succeeded".to_string(),
-                }],
-            )]));
-
-        runner.run("openai", "m", "cred", "hi").expect("finish");
-
-        let requests = fake.requests.borrow();
-        let system = &requests[0].messages[0].content;
-        assert!(
-            system.starts_with(AGENT_SYSTEM_PROMPT),
-            "trace follows the system prompt"
-        );
-        assert!(system.contains("Prior action trace"), "{system}");
-        assert!(system.contains("run 12: read_file(a.txt)"), "{system}");
-        assert_eq!(
-            requests[0].messages.last().expect("current turn").content,
-            "hi"
-        );
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    /// `with_history` carries prior turns into the first request as
-    /// [System, ..history.., User(current)]; with no truncation the system
-    /// prompt stays byte-for-byte exact.
-    #[test]
-    fn with_history_prepends_prior_turns_before_current_request() {
-        let ws = temp_workspace();
-        let fake = FakeExecutor::new(vec![Ok(text_response("done"))]);
-        let history = vec![
-            user_message("earlier question"),
-            assistant_message("earlier answer"),
-        ];
-        let runner = AgentRunner::new(&fake, &ws).with_history(history);
-
-        runner
-            .run("openai", "m", "cred", "current question")
-            .expect("finish");
-
-        let requests = fake.requests.borrow();
-        assert_eq!(requests.len(), 1);
-        let messages = &requests[0].messages;
-        assert_eq!(messages.len(), 4);
-        assert_eq!(messages[0].role, AiRole::System);
-        assert_eq!(messages[0].content, AGENT_SYSTEM_PROMPT);
-        assert_eq!(messages[1].role, AiRole::User);
-        assert_eq!(messages[1].content, "earlier question");
-        assert_eq!(messages[2].role, AiRole::Assistant);
-        assert_eq!(messages[2].content, "earlier answer");
-        assert_eq!(messages[3].role, AiRole::User);
-        assert_eq!(messages[3].content, "current question");
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    /// A history longer than the window is truncated: the system prompt
-    /// carries the omission note and the dropped messages never reach the
-    /// request.
-    #[test]
-    fn with_history_beyond_window_truncates_with_omission_note() {
-        use crate::application::agent::history as agent_history;
-
-        let ws = temp_workspace();
-        let fake = FakeExecutor::new(vec![Ok(text_response("done"))]);
-        let mut history = Vec::new();
-        for i in 0..agent_history::DEFAULT_HISTORY_WINDOW + 5 {
-            history.push(user_message(&format!("question {i}")));
-            history.push(assistant_message(&format!("answer {i}")));
-        }
-        let dropped_question = history[0].content.clone();
-        let runner = AgentRunner::new(&fake, &ws).with_history(history);
-
-        runner
-            .run("openai", "m", "cred", "new question")
-            .expect("finish");
-
-        let requests = fake.requests.borrow();
-        assert_eq!(requests.len(), 1);
-        let messages = &requests[0].messages;
-        assert_eq!(messages[0].role, AiRole::System);
-        assert!(
-            messages[0].content.starts_with(AGENT_SYSTEM_PROMPT),
-            "truncated runs keep the agent system prompt first"
-        );
-        assert!(
-            messages[0].content.len() > AGENT_SYSTEM_PROMPT.len(),
-            "truncated runs append the omission note"
-        );
-        assert!(
-            !messages.iter().any(|m| m.content == dropped_question),
-            "dropped history must be absent from the request"
-        );
-        assert_eq!(
-            messages.last().expect("current turn").content,
-            "new question"
-        );
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    /// After one tool turn the second request's history is exactly
-    /// [System, User, Assistant{narration, call verbatim incl.
-    /// `thought_signature`}, `Tool{call_id, name, observation}`].
-    #[test]
-    fn second_request_history_carries_assistant_calls_and_tool_results() {
-        let ws = temp_workspace();
-        let fake = FakeExecutor::new(vec![
-            Ok(AiResponse {
-                content: "Let me check.".to_string(),
-                model: "m".to_string(),
-                tool_calls: vec![ToolCall {
-                    id: "c9".to_string(),
-                    name: "list_directory".to_string(),
-                    arguments: "{\"path\":\".\"}".to_string(),
-                    thought_signature: Some("sig-abc".to_string()),
-                }],
-                usage: None,
-            }),
-            Ok(text_response("listed")),
-        ]);
-        let runner = AgentRunner::new(&fake, &ws);
-
-        runner
-            .run("openai", "m", "cred", "list it")
-            .expect("finish");
-
-        let history = &fake.requests.borrow()[1].messages;
-        assert_eq!(history.len(), 4);
-
-        assert_eq!(
-            history[0],
-            AiMessage {
-                role: AiRole::System,
-                content: AGENT_SYSTEM_PROMPT.to_string(),
-                attachments: Vec::new(),
-                tool_calls: Vec::new(),
-                tool_result: None,
-            }
-        );
-        assert_eq!(
-            history[1],
-            AiMessage {
-                role: AiRole::User,
-                content: "list it".to_string(),
-                attachments: Vec::new(),
-                tool_calls: Vec::new(),
-                tool_result: None,
-            }
-        );
-        assert_eq!(
-            history[2],
-            AiMessage {
-                role: AiRole::Assistant,
-                content: "Let me check.".to_string(),
-                attachments: Vec::new(),
-                tool_calls: vec![ToolCall {
-                    id: "c9".to_string(),
-                    name: "list_directory".to_string(),
-                    arguments: "{\"path\":\".\"}".to_string(),
-                    thought_signature: Some("sig-abc".to_string()),
-                }],
-                tool_result: None,
-            }
-        );
-        assert_eq!(history[3].role, AiRole::Tool);
-        assert_eq!(history[3].content, "");
-        let result = history[3].tool_result.as_ref().expect("result present");
-        assert_eq!(result.call_id, "c9");
-        assert_eq!(result.name, "list_directory");
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    /// Two calls in one response: the Assistant message carries both calls
-    /// and the two Tool messages follow in the same order — the wire ordering
-    /// contract (all function calls first, then all results).
-    #[test]
-    fn parallel_tool_calls_keep_call_then_result_ordering() {
-        let ws = temp_workspace();
-        let fake = FakeExecutor::new(vec![
-            Ok(AiResponse {
-                content: String::new(),
-                model: "m".to_string(),
-                tool_calls: vec![
-                    ToolCall {
-                        id: "p1".to_string(),
-                        name: "read_file".to_string(),
-                        arguments: "{\"path\":\"a.txt\"}".to_string(),
-                        thought_signature: Some("sig-first".to_string()),
-                    },
-                    ToolCall {
-                        id: "p2".to_string(),
-                        name: "read_file".to_string(),
-                        arguments: "{\"path\":\"b.txt\"}".to_string(),
-                        // Parallel calls: only the first carries a signature.
-                        thought_signature: None,
-                    },
-                ],
-                usage: None,
-            }),
-            Ok(text_response("both read")),
-        ]);
-        fs::write(ws.join("a.txt"), "alpha").expect("seed a");
-        fs::write(ws.join("b.txt"), "beta").expect("seed b");
-        let runner = AgentRunner::new(&fake, &ws);
-
-        runner
-            .run("openai", "m", "cred", "read both")
-            .expect("finish");
-
-        let history = &fake.requests.borrow()[1].messages;
-        assert_eq!(history.len(), 5);
-        // All function calls first, in order, signatures verbatim.
-        assert_eq!(history[2].role, AiRole::Assistant);
-        assert_eq!(history[2].tool_calls.len(), 2);
-        assert_eq!(history[2].tool_calls[0].id, "p1");
-        assert_eq!(
-            history[2].tool_calls[0].thought_signature.as_deref(),
-            Some("sig-first")
-        );
-        assert_eq!(history[2].tool_calls[1].id, "p2");
-        assert_eq!(history[2].tool_calls[1].thought_signature, None);
-        // Then all results, in the same call order.
-        assert_eq!(history[3].role, AiRole::Tool);
-        assert_eq!(history[3].tool_result.as_ref().expect("p1").call_id, "p1");
-        assert_eq!(
-            history[3].tool_result.as_ref().expect("p1").content,
-            "alpha"
-        );
-        assert_eq!(history[4].role, AiRole::Tool);
-        assert_eq!(history[4].tool_result.as_ref().expect("p2").call_id, "p2");
-        assert_eq!(history[4].tool_result.as_ref().expect("p2").content, "beta");
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    /// The trace helper reports presence + length per call and never the
-    /// opaque value itself (secret hygiene).
-    #[test]
-    fn thought_signature_trace_reports_presence_never_value() {
-        let secret = "sig-runner-secret".to_string();
-        let secret_len = secret.len();
-        let present = thought_signature_trace("c9", Some(&secret));
-        assert!(
-            present.contains("present=true"),
-            "trace line reports presence: {present}"
-        );
-        assert!(
-            present.contains(&format!("len={secret_len}")),
-            "trace line reports length: {present}"
-        );
-        assert!(
-            !present.contains(&secret),
-            "trace line must never carry the value"
-        );
-        let absent = thought_signature_trace("c9", None);
-        assert!(
-            absent.contains("present=false"),
-            "trace line reports absence: {absent}"
-        );
-        assert!(
-            absent.contains("len=0"),
-            "absent signature has zero length: {absent}"
-        );
-    }
-
-    #[test]
-    fn single_tool_call_executes_and_observation_feeds_back_to_final_answer() {
-        let ws = temp_workspace();
-        let fake = FakeExecutor::new(vec![
-            Ok(AiResponse {
-                content: String::new(),
-                model: "test-model".to_string(),
-                tool_calls: vec![call_tool(
-                    "c1",
-                    "write_file",
-                    serde_json::json!({
-                        "path": "notes.txt",
-                        "content": "react-loop"
-                    }),
-                )],
-                usage: None,
-            }),
-            Ok(text_response("wrote notes.txt")),
-        ]);
-        let runner = AgentRunner::new(&fake, &ws);
-
-        let answer = runner
-            .run("openai", "m", "cred", "create notes")
-            .expect("finish");
-        assert_eq!(answer, "wrote notes.txt");
-
-        // The tool really executed inside the workspace.
-        assert_eq!(
-            fs::read_to_string(ws.join("notes.txt")).expect("file"),
-            "react-loop"
-        );
-
-        let requests = fake.requests.borrow();
-        assert_eq!(requests.len(), 2);
-        // History of the second request: [System, User, Assistant{calls},
-        // Tool{observation}] — the model sees its own call and the result.
-        let history = &requests[1].messages;
-        assert_eq!(history.len(), 4);
-        assert_eq!(history[0].role, AiRole::System);
-        assert_eq!(history[0].content, AGENT_SYSTEM_PROMPT);
-        assert_eq!(history[1].role, AiRole::User);
-        assert_eq!(history[1].content, "create notes");
-        assert_eq!(history[2].role, AiRole::Assistant);
-        assert_eq!(history[2].content, "");
-        assert_eq!(history[2].tool_calls.len(), 1);
-        assert_eq!(history[2].tool_calls[0].id, "c1");
-        assert_eq!(history[2].tool_calls[0].name, "write_file");
-        assert_eq!(history[3].role, AiRole::Tool);
-        let result = history[3]
-            .tool_result
-            .as_ref()
-            .expect("tool result present");
-        assert_eq!(result.call_id, "c1");
-        assert_eq!(result.name, "write_file");
-        assert_eq!(
-            result.content,
-            "--- a/notes.txt\n+++ b/notes.txt\n@@ -0,0 +1,1 @@\n+react-loop\n"
-        );
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    #[test]
-    fn multiple_tool_calls_in_one_response_are_all_handled() {
-        let ws = temp_workspace();
-        let fake = FakeExecutor::new(vec![
-            Ok(AiResponse {
-                content: "planning two writes".to_string(),
-                model: "test-model".to_string(),
-                tool_calls: vec![
-                    call_tool(
-                        "a",
-                        "write_file",
-                        serde_json::json!({
-                            "path": "one.txt", "content": "1"
-                        }),
-                    ),
-                    call_tool(
-                        "b",
-                        "write_file",
-                        serde_json::json!({
-                            "path": "two.txt", "content": "2"
-                        }),
-                    ),
-                    call_tool("c", "read_file", serde_json::json!({"path": "one.txt"})),
-                ],
-                usage: None,
-            }),
-            Ok(text_response("did everything")),
-        ]);
-        let runner = AgentRunner::new(&fake, &ws);
-
-        let answer = runner.run("openai", "m", "cred", "go").expect("finish");
-        assert_eq!(answer, "did everything");
-
-        // All three calls actually executed, none dropped (AC-6).
-        assert_eq!(fs::read_to_string(ws.join("one.txt")).unwrap(), "1");
-        assert_eq!(fs::read_to_string(ws.join("two.txt")).unwrap(), "2");
-
-        let requests = fake.requests.borrow();
-        assert_eq!(requests.len(), 2);
-        // [System, User, Assistant{narration + 3 calls}, Tool, Tool, Tool] —
-        // results follow the calls in original order (AC-6).
-        let history = &requests[1].messages;
-        assert_eq!(history.len(), 6);
-        assert_eq!(history[0].role, AiRole::System);
-        assert_eq!(history[1].role, AiRole::User);
-        assert_eq!(history[2].role, AiRole::Assistant);
-        assert_eq!(history[2].content, "planning two writes");
-        assert_eq!(history[2].tool_calls.len(), 3);
-        let tail = &history[3..];
-        assert_eq!(tail[0].role, AiRole::Tool);
-        assert_eq!(tail[0].tool_result.as_ref().expect("a").call_id, "a");
-        assert_eq!(
-            tail[0].tool_result.as_ref().expect("a").content,
-            "--- a/one.txt\n+++ b/one.txt\n@@ -0,0 +1,1 @@\n+1\n"
-        );
-        assert_eq!(tail[1].tool_result.as_ref().expect("b").call_id, "b");
-        assert_eq!(
-            tail[1].tool_result.as_ref().expect("b").content,
-            "--- a/two.txt\n+++ b/two.txt\n@@ -0,0 +1,1 @@\n+2\n"
-        );
-        assert_eq!(tail[2].tool_result.as_ref().expect("c").call_id, "c");
-        assert_eq!(tail[2].tool_result.as_ref().expect("c").name, "read_file");
-        assert_eq!(tail[2].tool_result.as_ref().expect("c").content, "1");
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    #[test]
-    fn unknown_tool_becomes_controlled_observation_and_loop_continues() {
-        let ws = temp_workspace();
-        let fake = FakeExecutor::new(vec![
-            Ok(AiResponse {
-                content: String::new(),
-                model: "test-model".to_string(),
-                tool_calls: vec![raw_call("u1", "does_not_exist", "{}")],
-                usage: None,
-            }),
-            Ok(text_response("recovered")),
-        ]);
-        let runner = AgentRunner::new(&fake, &ws);
-
-        let answer = runner.run("openai", "m", "cred", "try").expect("finish");
-        assert_eq!(answer, "recovered");
-
-        let history = &fake.requests.borrow()[1].messages;
-        assert_eq!(history.len(), 4);
-        assert_eq!(history[0].role, AiRole::System);
-        assert_eq!(history[0].content, AGENT_SYSTEM_PROMPT);
-        assert_eq!(history[1].role, AiRole::User);
-        assert_eq!(history[1].content, "try");
-        assert_eq!(history[2].role, AiRole::Assistant);
-        assert_eq!(history[2].tool_calls[0].id, "u1");
-        assert_eq!(history[3].role, AiRole::Tool);
-        let result = history[3]
-            .tool_result
-            .as_ref()
-            .expect("tool result present");
-        assert_eq!(result.call_id, "u1");
-        assert_eq!(result.name, "does_not_exist");
-        assert!(
-            result.content.contains("unknown tool"),
-            "unknown-tool observation missing: {}",
-            result.content
-        );
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    #[test]
-    fn malformed_arguments_become_error_observation_without_panic() {
-        let ws = temp_workspace();
-        let fake = FakeExecutor::new(vec![
-            Ok(AiResponse {
-                content: String::new(),
-                model: "test-model".to_string(),
-                tool_calls: vec![raw_call("bad", "write_file", "not json at all")],
-                usage: None,
-            }),
-            Ok(text_response("handled")),
-        ]);
-        let runner = AgentRunner::new(&fake, &ws);
-
-        let answer = runner.run("openai", "m", "cred", "x").expect("finish");
-        assert_eq!(answer, "handled");
-
-        let history = &fake.requests.borrow()[1].messages;
-        assert_eq!(history.len(), 4);
-        assert_eq!(history[3].role, AiRole::Tool);
-        let result = history[3]
-            .tool_result
-            .as_ref()
-            .expect("tool result present");
-        assert!(
-            result.content.contains("invalid arguments"),
-            "malformed-arguments observation missing: {}",
-            result.content
-        );
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    #[test]
-    fn tool_execution_failure_is_an_observation_and_run_stays_controlled() {
-        let ws = temp_workspace();
-        let fake = FakeExecutor::new(vec![
-            Ok(AiResponse {
-                content: String::new(),
-                model: "test-model".to_string(),
-                tool_calls: vec![call_tool(
-                    "esc",
-                    "read_file",
-                    serde_json::json!({
-                        "path": "../../outside.txt"
-                    }),
-                )],
-                usage: None,
-            }),
-            Ok(text_response("kept going")),
-        ]);
-        let runner = AgentRunner::new(&fake, &ws);
-
-        let answer = runner.run("openai", "m", "cred", "sneak").expect("finish");
-        assert_eq!(answer, "kept going");
-
-        let history = &fake.requests.borrow()[1].messages;
-        assert_eq!(history[3].role, AiRole::Tool);
-        let result = history[3]
-            .tool_result
-            .as_ref()
-            .expect("tool result present");
-        assert!(
-            result.content.contains("outside workspace"),
-            "escape observation missing: {}",
-            result.content
-        );
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    #[test]
-    fn iteration_budget_exhaustion_terminates_deterministically() {
-        let ws = temp_workspace();
-        // Always demands another tool call: would loop forever unbounded.
-        let step = || {
-            Ok(AiResponse {
-                content: String::new(),
-                model: "test-model".to_string(),
-                tool_calls: vec![call_tool("loop", "list_directory", serde_json::json!({}))],
-                usage: None,
-            })
-        };
-        let fake = FakeExecutor::new(vec![step(), step(), step()]);
-        let runner = AgentRunner::new(&fake, &ws).with_max_iterations(3);
-
-        let err = runner
-            .run("openai", "m", "cred", "loop")
-            .expect_err("must exhaust");
-        match err {
-            AgentError::BudgetExhausted(3) => {}
-            other => panic!("expected BudgetExhausted(3), got: {other:?}"),
-        }
-        assert_eq!(fake.requests.borrow().len(), 3);
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    #[test]
-    fn zero_iteration_budget_terminates_before_any_model_turn() {
-        let ws = temp_workspace();
-        let fake = FakeExecutor::new(vec![Ok(text_response("never reached"))]);
-        let runner = AgentRunner::new(&fake, &ws).with_max_iterations(0);
-
-        assert!(matches!(
-            runner
-                .run("openai", "m", "cred", "q")
-                .expect_err("exhausted"),
-            AgentError::BudgetExhausted(0)
-        ));
-        assert!(fake.requests.borrow().is_empty());
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    #[test]
-    fn provider_failure_is_propagated_as_classified_error() {
-        let ws = temp_workspace();
-        let fake = FakeExecutor::new(vec![Err(ExecutorError::Failure)]);
-        let runner = AgentRunner::new(&fake, &ws);
-
-        let err = runner
-            .run("openai", "m", "cred", "q")
-            .expect_err("provider failed");
-        assert!(matches!(err, AgentError::Provider(_)));
-        // Exactly one attempt: failures are not retried here.
-        assert_eq!(fake.requests.borrow().len(), 1);
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    #[test]
-    fn mid_loop_provider_failure_leaves_no_partial_success() {
-        let ws = temp_workspace();
-        let fake = FakeExecutor::new(vec![
-            Ok(AiResponse {
-                content: String::new(),
-                model: "test-model".to_string(),
-                tool_calls: vec![call_tool("t", "list_directory", serde_json::json!({}))],
-                usage: None,
-            }),
-            Err(ExecutorError::Failure),
-        ]);
-        let runner = AgentRunner::new(&fake, &ws);
-
-        let err = runner
-            .run("openai", "m", "cred", "q")
-            .expect_err("second turn fails");
-        assert!(matches!(err, AgentError::Provider(_)));
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    #[test]
-    fn empty_text_without_tool_calls_is_a_controlled_failure() {
-        let ws = temp_workspace();
-        let fake = FakeExecutor::new(vec![Ok(text_response("   "))]);
-        let runner = AgentRunner::new(&fake, &ws);
-
-        assert!(matches!(
-            runner
-                .run("openai", "m", "cred", "q")
-                .expect_err("empty answer"),
-            AgentError::EmptyResponse
-        ));
-        let _ = fs::remove_dir_all(&ws);
-    }
-
     #[test]
     fn non_agent_chat_request_shape_is_unaffected_by_runner() {
         // Regression guard (AC-12): a plain text-only request built exactly as
@@ -1823,995 +519,6 @@ mod tests {
         assert_eq!(response.content, "plain reply");
         assert!(response.tool_calls.is_empty());
         assert_eq!(fake.requests.borrow().len(), 1);
-    }
-
-    /// A scripted executor that can force the runner to park *between* turns:
-    /// at `block_at` (the 0-based execute index) it signals `entered` and then
-    /// spins until `release` while the test drives governance, then returns
-    /// the next scripted response. Deterministic and network-free.
-    struct GatedExecutor {
-        steps: RefCell<std::vec::IntoIter<Result<AiResponse, ExecutorError>>>,
-        requests: RefCell<Vec<AiRequest>>,
-        block_at: usize,
-        entered: Arc<AtomicBool>,
-        release: Arc<AtomicBool>,
-    }
-
-    impl GatedExecutor {
-        fn new(
-            steps: Vec<Result<AiResponse, ExecutorError>>,
-            block_at: usize,
-        ) -> (Self, Arc<AtomicBool>, Arc<AtomicBool>) {
-            let entered = Arc::new(AtomicBool::new(false));
-            let release = Arc::new(AtomicBool::new(false));
-            (
-                Self {
-                    steps: RefCell::new(steps.into_iter()),
-                    requests: RefCell::new(Vec::new()),
-                    block_at,
-                    entered: Arc::clone(&entered),
-                    release: Arc::clone(&release),
-                },
-                entered,
-                release,
-            )
-        }
-    }
-
-    impl ProviderExecutor for GatedExecutor {
-        fn execute(
-            &self,
-            request: &AiRequest,
-            _credential: &str,
-            _token: &CancellationToken,
-        ) -> Result<AiResponse, ExecutorError> {
-            self.requests.borrow_mut().push(request.clone());
-            let idx = self.requests.borrow().len() - 1;
-            if idx == self.block_at {
-                self.entered.store(true, Ordering::SeqCst);
-                while !self.release.load(Ordering::SeqCst) {
-                    std::hint::spin_loop();
-                }
-            }
-            self.steps
-                .borrow_mut()
-                .next()
-                .expect("gated executor script exhausted")
-        }
-    }
-
-    /// Wait (bounded) until `flag` becomes true.
-    fn wait_flag(flag: &AtomicBool) {
-        let start = Instant::now();
-        while !flag.load(Ordering::SeqCst) {
-            std::hint::spin_loop();
-            assert!(
-                start.elapsed() < Duration::from_secs(5),
-                "flag never became true in time"
-            );
-        }
-    }
-
-    /// A scripted non-terminal turn that only produces a tool call.
-    fn tool_step(id: &str) -> AiResponse {
-        AiResponse {
-            content: String::new(),
-            model: "m".to_string(),
-            tool_calls: vec![call_tool(id, "list_directory", serde_json::json!({}))],
-            usage: None,
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Step governor & cancellation (Task 3.2)
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn control_activity_is_seen_by_attached_run_control() {
-        // The handle is cheaply cloneable and every clone governs the same
-        // underlying state.
-        let control = RunControl::new();
-        let other = control.clone();
-        other.extend_steps(4);
-        assert_eq!(control.extra_steps(), 4);
-        assert_eq!(control.allowance(10), 14);
-        assert!(!control.is_cancelled());
-        other.cancel();
-        assert!(control.is_cancelled());
-    }
-
-    #[test]
-    fn fixed_budget_without_control_still_hard_stops_deterministically() {
-        let ws = temp_workspace();
-        let fake = FakeExecutor::new(vec![
-            Ok(tool_step("a")),
-            Ok(tool_step("b")),
-            Ok(text_response("later")),
-        ]);
-        let runner = AgentRunner::new(&fake, &ws).with_max_iterations(2);
-        let err = runner
-            .run("openai", "m", "cred", "q")
-            .expect_err("must exhaust");
-        assert!(matches!(err, AgentError::BudgetExhausted(2)));
-        // Exactly the fixed allowance ran; no silent continuation.
-        assert_eq!(fake.requests.borrow().len(), 2);
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    #[test]
-    fn exhausted_budget_extend_continues_then_completes() {
-        let ws = temp_workspace();
-        let control = RunControl::new();
-        let (tx, rx) = channel();
-        let fake = FakeExecutor::new(vec![
-            Ok(tool_step("a")),
-            Ok(tool_step("b")),
-            Ok(text_response("done")),
-        ]);
-        let runner = AgentRunner::new(&fake, &ws)
-            .with_max_iterations(2)
-            .with_control(control.clone())
-            .with_event_sender(tx);
-
-        let driver = thread::spawn(move || {
-            let first = rx.recv_timeout(Duration::from_secs(5)).expect("event");
-            control.extend_steps(1);
-            let done = rx.recv_timeout(Duration::from_secs(5)).expect("event");
-            (first, done)
-        });
-
-        let answer = runner.run("openai", "m", "cred", "go").expect("completes");
-        let (first, done) = driver.join().expect("driver joins");
-        assert_eq!(
-            first,
-            AgentRunEvent::BudgetExhausted { max_steps: 2 },
-            "first governance event must be the exhaustion"
-        );
-        assert_eq!(done, AgentRunEvent::Completed { steps: 3 });
-        assert_eq!(answer, "done");
-        assert_eq!(fake.requests.borrow().len(), 3);
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    #[test]
-    fn exhausted_budget_cancel_aborts_with_cancelled() {
-        let ws = temp_workspace();
-        let control = RunControl::new();
-        let (tx, rx) = channel();
-        let fake = FakeExecutor::new(vec![Ok(tool_step("a"))]);
-        let runner = AgentRunner::new(&fake, &ws)
-            .with_max_iterations(1)
-            .with_control(control.clone())
-            .with_event_sender(tx);
-
-        let driver = thread::spawn(move || {
-            let first = rx.recv_timeout(Duration::from_secs(5)).expect("event");
-            control.cancel();
-            let second = rx.recv_timeout(Duration::from_secs(5)).expect("event");
-            (first, second)
-        });
-
-        let err = runner
-            .run("openai", "m", "cred", "q")
-            .expect_err("must cancel");
-        let (first, second) = driver.join().expect("driver joins");
-        assert_eq!(first, AgentRunEvent::BudgetExhausted { max_steps: 1 });
-        assert_eq!(second, AgentRunEvent::Cancelled);
-        assert!(matches!(err, AgentError::Cancelled));
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    #[test]
-    fn resume_does_not_end_an_exhausted_budget_wait() {
-        let ws = temp_workspace();
-        let control = RunControl::new();
-        let fake = FakeExecutor::new(vec![Ok(tool_step("a")), Ok(text_response("step"))]);
-        let (tx, rx) = channel();
-        let runner = AgentRunner::new(&fake, &ws)
-            .with_max_iterations(1)
-            .with_control(control.clone())
-            .with_event_sender(tx);
-
-        let driver = thread::spawn(move || {
-            let first = rx.recv_timeout(Duration::from_secs(5)).expect("event");
-            // resume() alone must NOT grant any steps while parked over budget.
-            control.resume();
-            // Still parked: no further event (=> no Completed) unless extended.
-            let stale = rx.recv_timeout(Duration::from_millis(300));
-            assert!(
-                stale.is_err(),
-                "resume() must not unpark an exhausted-budget wait: got {stale:?}"
-            );
-            control.extend_steps(1);
-            let done = rx.recv_timeout(Duration::from_secs(5)).expect("event");
-            (first, done)
-        });
-
-        let answer = runner
-            .run("openai", "m", "cred", "q")
-            .expect("completes after extension");
-        let (first, done) = driver.join().expect("driver joins");
-        assert_eq!(first, AgentRunEvent::BudgetExhausted { max_steps: 1 });
-        assert_eq!(done, AgentRunEvent::Completed { steps: 2 });
-        assert_eq!(answer, "step");
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    #[test]
-    fn pause_then_resume_mid_run_emits_events_and_continues() {
-        let ws = temp_workspace();
-        let control = RunControl::new();
-        // Pause before the run starts: it will park at the very first step
-        // boundary.
-        control.pause();
-        let (tx, rx) = channel();
-        let fake = FakeExecutor::new(vec![
-            Ok(tool_step("a")),
-            Ok(tool_step("b")),
-            Ok(text_response("ok")),
-        ]);
-        let runner = AgentRunner::new(&fake, &ws)
-            .with_max_iterations(3)
-            .with_control(control.clone())
-            .with_event_sender(tx);
-
-        let driver = thread::spawn(move || {
-            let paused = rx.recv_timeout(Duration::from_secs(5)).expect("event");
-            control.resume();
-            let resumed = rx.recv_timeout(Duration::from_secs(5)).expect("event");
-            let completed = rx.recv_timeout(Duration::from_secs(5)).expect("event");
-            (paused, resumed, completed)
-        });
-
-        let answer = runner.run("openai", "m", "cred", "q").expect("completes");
-        let (paused, resumed, completed) = driver.join().expect("driver joins");
-        assert_eq!(paused, AgentRunEvent::Paused);
-        assert_eq!(resumed, AgentRunEvent::Resumed);
-        assert_eq!(completed, AgentRunEvent::Completed { steps: 3 });
-        assert_eq!(answer, "ok");
-        assert_eq!(fake.requests.borrow().len(), 3);
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    #[test]
-    fn cancelling_while_paused_wakes_the_loop_without_deadlock() {
-        let ws = temp_workspace();
-        let control = RunControl::new();
-        control.pause();
-        let (tx, rx) = channel();
-        let fake = FakeExecutor::new(vec![Ok(text_response("never"))]);
-        let runner = AgentRunner::new(&fake, &ws)
-            .with_control(control.clone())
-            .with_event_sender(tx);
-
-        let driver = thread::spawn(move || {
-            let paused = rx.recv_timeout(Duration::from_secs(5)).expect("event");
-            control.cancel();
-            let cancelled = rx.recv_timeout(Duration::from_secs(5)).expect("event");
-            (paused, cancelled)
-        });
-
-        let err = runner
-            .run("openai", "m", "cred", "q")
-            .expect_err("must cancel");
-        let (paused, cancelled) = driver.join().expect("driver joins");
-        assert_eq!(paused, AgentRunEvent::Paused);
-        assert_eq!(cancelled, AgentRunEvent::Cancelled);
-        assert!(matches!(err, AgentError::Cancelled));
-        // Zero model turns: nothing ran after the parked pause.
-        assert!(fake.requests.borrow().is_empty());
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    #[test]
-    fn cancellation_between_provider_calls_stops_further_work() {
-        let ws = temp_workspace();
-        let control = RunControl::new();
-        let (tx, rx) = channel();
-        let (gated, entered, release) = GatedExecutor::new(
-            vec![
-                // Turn 1: dispatch one real workspace write.
-                Ok(AiResponse {
-                    content: String::new(),
-                    model: "m".to_string(),
-                    tool_calls: vec![call_tool(
-                        "w1",
-                        "write_file",
-                        serde_json::json!({ "path": "a.txt", "content": "1" }),
-                    )],
-                    usage: None,
-                }),
-                // Turn 2 (block_at = 1): parks until the test cancels, then
-                // yields a fresh tool call that must never run.
-                Ok(AiResponse {
-                    content: String::new(),
-                    model: "m".to_string(),
-                    tool_calls: vec![call_tool(
-                        "w2",
-                        "write_file",
-                        serde_json::json!({ "path": "b.txt", "content": "2" }),
-                    )],
-                    usage: None,
-                }),
-                Ok(text_response("never")),
-            ],
-            1,
-        );
-        let runner = AgentRunner::new(&gated, &ws)
-            .with_max_iterations(3)
-            .with_control(control.clone())
-            .with_event_sender(tx);
-
-        let driver = thread::spawn(move || {
-            // Wait until the second provider call is actually mid-flight.
-            wait_flag(&entered);
-            control.cancel();
-            // Release the blocked second call so the runner can observe cancel.
-            release.store(true, Ordering::SeqCst);
-            // The runner aborts with the Cancelled event.
-            rx.recv_timeout(Duration::from_secs(5)).expect("event")
-        });
-
-        let err = runner
-            .run("openai", "m", "cred", "q")
-            .expect_err("must cancel");
-        // Cancellation surfaces after the in-flight call returns; the pending
-        // tool call of turn 2 must never be dispatched.
-        let cancelled = driver.join().expect("driver joins");
-        assert_eq!(cancelled, AgentRunEvent::Cancelled);
-        assert!(matches!(err, AgentError::Cancelled));
-        assert_eq!(gated.requests.borrow().len(), 2, "only two LLM turns ran");
-        assert!(
-            fs::read_to_string(ws.join("a.txt")).is_ok(),
-            "turn-1 tool ran"
-        );
-        assert!(
-            fs::read_to_string(ws.join("b.txt")).is_err(),
-            "turn-2 tool must not run after cancellation"
-        );
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    #[test]
-    fn runner_requests_carry_default_request_timeout_and_override_flows_through() {
-        let ws = temp_workspace();
-        let default_fake = FakeExecutor::new(vec![Ok(text_response("ok"))]);
-        let default_runner = AgentRunner::new(&default_fake, &ws);
-        default_runner
-            .run("openai", "m", "cred", "q")
-            .expect("finish");
-        let captured = &default_fake.requests.borrow()[0];
-        assert_eq!(
-            captured.request_timeout,
-            Some(DEFAULT_REQUEST_TIMEOUT),
-            "runner applies its configurable default timeout to every request"
-        );
-        let _ = fs::remove_dir_all(&ws);
-
-        // A custom timeout overrides it.
-        let custom_fake = FakeExecutor::new(vec![Ok(text_response("ok"))]);
-        let custom = Duration::from_secs(7);
-        let custom_runner = AgentRunner::new(&custom_fake, &ws).with_request_timeout(custom);
-        custom_runner
-            .run("openai", "m", "cred", "q")
-            .expect("finish");
-        assert_eq!(
-            custom_fake.requests.borrow()[0].request_timeout,
-            Some(custom)
-        );
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    // -----------------------------------------------------------------------
-    // Three-tier approval gate (Task 4.1)
-    // -----------------------------------------------------------------------
-
-    use crate::application::agent::approval::{ApprovalDecision, ApprovalGate, AutonomyMode};
-
-    #[allow(clippy::needless_pass_by_value)]
-    fn approval_call(id: &str, name: &str, arguments: serde_json::Value) -> ToolCall {
-        ToolCall {
-            id: id.to_string(),
-            name: name.to_string(),
-            arguments: arguments.to_string(),
-            thought_signature: None,
-        }
-    }
-
-    #[allow(dead_code)]
-    fn run_with_gate(
-        ws: &std::path::Path,
-        gate: ApprovalGate,
-        steps: Vec<Result<AiResponse, ExecutorError>>,
-        control: Option<RunControl>,
-    ) -> (Result<String, AgentError>, Vec<AgentRunEvent>) {
-        let (tx, rx) = channel();
-        let fake = FakeExecutor::new(steps);
-        let mut runner = AgentRunner::new(&fake, ws)
-            .with_approval_gate(gate)
-            .with_event_sender(tx);
-        if let Some(c) = control {
-            runner = runner.with_control(c);
-        }
-        let res = runner.run("openai", "m", "cred", "q");
-        let mut events = Vec::new();
-        while let Ok(ev) = rx.try_recv() {
-            events.push(ev);
-        }
-        (res, events)
-    }
-
-    #[test]
-    fn approval_matrix_supervised_read_requires_approval() {
-        let ws = temp_workspace();
-        let gate = ApprovalGate::new(AutonomyMode::Supervised);
-        let gate_clone = gate.clone();
-        let (tx, rx) = channel();
-        let fake = FakeExecutor::new(vec![
-            Ok(AiResponse {
-                content: String::new(),
-                model: "m".to_string(),
-                tool_calls: vec![approval_call(
-                    "r1",
-                    "read_file",
-                    serde_json::json!({"path": "exists.txt"}),
-                )],
-                usage: None,
-            }),
-            Ok(text_response("done")),
-        ]);
-        // Create a file to read.
-        fs::write(ws.join("exists.txt"), "hello").expect("write");
-        let runner = AgentRunner::new(&fake, &ws)
-            .with_approval_gate(gate_clone)
-            .with_event_sender(tx);
-        let gate_for_driver = gate.clone();
-        let driver = thread::spawn(move || {
-            let ev = rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("ApprovalRequested");
-            assert!(
-                matches!(ev, AgentRunEvent::ApprovalRequested { call_id, name, .. } if call_id=="r1" && name=="read_file")
-            );
-            assert!(gate_for_driver.respond("r1", ApprovalDecision::Approved));
-            let ev2 = rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("ApprovalResolved");
-            assert!(
-                matches!(ev2, AgentRunEvent::ApprovalResolved { call_id, approved } if call_id=="r1" && approved)
-            );
-            rx.recv_timeout(Duration::from_secs(5)).expect("Completed")
-        });
-        let answer = runner.run("openai", "m", "cred", "q").expect("completes");
-        assert_eq!(answer, "done");
-        let completed = driver.join().expect("driver");
-        assert_eq!(completed, AgentRunEvent::Completed { steps: 2 });
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    #[test]
-    fn approval_matrix_supervised_mutating_requires_approval() {
-        let ws = temp_workspace();
-        let gate = ApprovalGate::new(AutonomyMode::Supervised);
-        let gate_clone = gate.clone();
-        let (tx, rx) = channel();
-        let fake = FakeExecutor::new(vec![
-            Ok(AiResponse {
-                content: String::new(),
-                model: "m".to_string(),
-                tool_calls: vec![approval_call(
-                    "w1",
-                    "write_file",
-                    serde_json::json!({"path": "out.txt", "content": "hi"}),
-                )],
-                usage: None,
-            }),
-            Ok(text_response("done")),
-        ]);
-        let runner = AgentRunner::new(&fake, &ws)
-            .with_approval_gate(gate_clone)
-            .with_event_sender(tx);
-        let gate_for_driver = gate.clone();
-        let driver = thread::spawn(move || {
-            let ev = rx.recv_timeout(Duration::from_secs(5)).expect("requested");
-            assert!(
-                matches!(ev, AgentRunEvent::ApprovalRequested { call_id, .. } if call_id=="w1")
-            );
-            gate_for_driver.respond("w1", ApprovalDecision::Approved);
-            let ev2 = rx.recv_timeout(Duration::from_secs(5)).expect("resolved");
-            assert!(matches!(
-                ev2,
-                AgentRunEvent::ApprovalResolved { approved: true, .. }
-            ));
-            rx.recv_timeout(Duration::from_secs(5)).expect("completed")
-        });
-        runner.run("openai", "m", "cred", "q").expect("completes");
-        assert_eq!(fs::read_to_string(ws.join("out.txt")).expect("file"), "hi");
-        let completed = driver.join().expect("driver");
-        assert_eq!(completed, AgentRunEvent::Completed { steps: 2 });
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    #[test]
-    fn approval_matrix_semi_read_auto_approved_no_events() {
-        let ws = temp_workspace();
-        let gate = ApprovalGate::new(AutonomyMode::SemiAutonomous);
-        let (tx, rx) = channel();
-        fs::write(ws.join("a.txt"), "content").expect("write");
-        let fake = FakeExecutor::new(vec![
-            Ok(AiResponse {
-                content: String::new(),
-                model: "m".to_string(),
-                tool_calls: vec![approval_call(
-                    "r1",
-                    "read_file",
-                    serde_json::json!({"path": "a.txt"}),
-                )],
-                usage: None,
-            }),
-            Ok(text_response("ok")),
-        ]);
-        let runner = AgentRunner::new(&fake, &ws)
-            .with_approval_gate(gate)
-            .with_event_sender(tx);
-        let answer = runner.run("openai", "m", "cred", "q").expect("auto");
-        assert_eq!(answer, "ok");
-        // No approval events for auto path; only Completed may be present.
-        let mut saw_approval = false;
-        while let Ok(ev) = rx.try_recv() {
-            if matches!(
-                ev,
-                AgentRunEvent::ApprovalRequested { .. } | AgentRunEvent::ApprovalResolved { .. }
-            ) {
-                saw_approval = true;
-            }
-        }
-        assert!(!saw_approval, "auto path must not emit approval events");
-        // File still there, tool executed.
-        assert_eq!(fs::read_to_string(ws.join("a.txt")).unwrap(), "content");
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    #[test]
-    fn approval_matrix_semi_mutating_requires_approval() {
-        let ws = temp_workspace();
-        let gate = ApprovalGate::new(AutonomyMode::SemiAutonomous);
-        let gate_clone = gate.clone();
-        let (tx, rx) = channel();
-        let fake = FakeExecutor::new(vec![
-            Ok(AiResponse {
-                content: String::new(),
-                model: "m".to_string(),
-                tool_calls: vec![approval_call(
-                    "w1",
-                    "execute_command",
-                    serde_json::json!({"command": "echo hi"}),
-                )],
-                usage: None,
-            }),
-            Ok(text_response("done")),
-        ]);
-        let runner = AgentRunner::new(&fake, &ws)
-            .with_approval_gate(gate_clone)
-            .with_event_sender(tx);
-        let gate_for_driver = gate.clone();
-        let driver = thread::spawn(move || {
-            let ev = rx.recv_timeout(Duration::from_secs(5)).expect("requested");
-            assert!(
-                matches!(ev, AgentRunEvent::ApprovalRequested { name, .. } if name=="execute_command")
-            );
-            gate_for_driver.respond("w1", ApprovalDecision::Approved);
-            rx.recv_timeout(Duration::from_secs(5)).expect("resolved");
-            rx.recv_timeout(Duration::from_secs(5)).expect("completed")
-        });
-        runner.run("openai", "m", "cred", "q").expect("completes");
-        driver.join().expect("driver");
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    #[test]
-    fn approval_matrix_full_read_auto() {
-        let ws = temp_workspace();
-        let gate = ApprovalGate::new(AutonomyMode::FullAutonomous);
-        let fake = FakeExecutor::new(vec![
-            Ok(AiResponse {
-                content: String::new(),
-                model: "m".to_string(),
-                tool_calls: vec![approval_call("r1", "list_directory", serde_json::json!({}))],
-                usage: None,
-            }),
-            Ok(text_response("listed")),
-        ]);
-        let runner = AgentRunner::new(&fake, &ws).with_approval_gate(gate);
-        let answer = runner.run("openai", "m", "cred", "q").expect("auto");
-        assert_eq!(answer, "listed");
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    #[test]
-    fn approval_matrix_full_mutating_auto() {
-        let ws = temp_workspace();
-        let gate = ApprovalGate::new(AutonomyMode::FullAutonomous);
-        let fake = FakeExecutor::new(vec![
-            Ok(AiResponse {
-                content: String::new(),
-                model: "m".to_string(),
-                tool_calls: vec![approval_call(
-                    "w1",
-                    "write_file",
-                    serde_json::json!({"path": "auto.txt", "content": "x"}),
-                )],
-                usage: None,
-            }),
-            Ok(text_response("ok")),
-        ]);
-        let runner = AgentRunner::new(&fake, &ws).with_approval_gate(gate);
-        runner.run("openai", "m", "cred", "q").expect("auto");
-        assert_eq!(fs::read_to_string(ws.join("auto.txt")).unwrap(), "x");
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    #[test]
-    fn denied_call_becomes_observation_and_loop_continues() {
-        let ws = temp_workspace();
-        let gate = ApprovalGate::new(AutonomyMode::SemiAutonomous);
-        let gate_clone = gate.clone();
-        let (tx, rx) = channel();
-        let fake = FakeExecutor::new(vec![
-            Ok(AiResponse {
-                content: String::new(),
-                model: "m".to_string(),
-                tool_calls: vec![approval_call(
-                    "w1",
-                    "write_file",
-                    serde_json::json!({"path": "should_not_exist.txt", "content": "bad"}),
-                )],
-                usage: None,
-            }),
-            Ok(text_response("recovered")),
-        ]);
-        let runner = AgentRunner::new(&fake, &ws)
-            .with_approval_gate(gate_clone)
-            .with_event_sender(tx);
-        let gate_for_driver = gate.clone();
-        let driver = thread::spawn(move || {
-            let ev = rx.recv_timeout(Duration::from_secs(5)).expect("requested");
-            assert!(matches!(ev, AgentRunEvent::ApprovalRequested { .. }));
-            gate_for_driver.respond("w1", ApprovalDecision::Denied);
-            let ev2 = rx.recv_timeout(Duration::from_secs(5)).expect("resolved");
-            assert!(matches!(
-                ev2,
-                AgentRunEvent::ApprovalResolved {
-                    approved: false,
-                    ..
-                }
-            ));
-            rx.recv_timeout(Duration::from_secs(5)).expect("completed")
-        });
-        let answer = runner.run("openai", "m", "cred", "q").expect("completes");
-        assert_eq!(answer, "recovered");
-        driver.join().expect("driver");
-        // Denied tool must not have executed.
-        assert!(fs::read_to_string(ws.join("should_not_exist.txt")).is_err());
-        // The denied observation was fed to the next LLM turn as a Tool
-        // message with the verbatim denial text.
-        let requests = fake.requests.borrow();
-        assert_eq!(requests.len(), 2);
-        let history = &requests[1].messages;
-        assert_eq!(history[3].role, AiRole::Tool);
-        let result = history[3]
-            .tool_result
-            .as_ref()
-            .expect("tool result present");
-        assert_eq!(
-            result.content, "Error: tool execution was denied by the user",
-            "denied observation must be verbatim"
-        );
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    #[test]
-    fn cancel_while_awaiting_approval_aborts_with_cancelled_no_deadlock() {
-        let ws = temp_workspace();
-        let control = RunControl::new();
-        let gate = ApprovalGate::with_token(AutonomyMode::Supervised, control.token().clone());
-        let (tx, rx) = channel();
-        let fake = FakeExecutor::new(vec![Ok(AiResponse {
-            content: String::new(),
-            model: "m".to_string(),
-            tool_calls: vec![approval_call(
-                "c1",
-                "write_file",
-                serde_json::json!({"path": "x.txt", "content": "y"}),
-            )],
-            usage: None,
-        })]);
-        let runner = AgentRunner::new(&fake, &ws)
-            .with_control(control.clone())
-            .with_approval_gate(gate)
-            .with_event_sender(tx);
-        let driver = thread::spawn(move || {
-            let ev = rx.recv_timeout(Duration::from_secs(5)).expect("requested");
-            assert!(matches!(ev, AgentRunEvent::ApprovalRequested { .. }));
-            control.cancel();
-            rx.recv_timeout(Duration::from_secs(5)).expect("cancelled")
-        });
-        let err = runner
-            .run("openai", "m", "cred", "q")
-            .expect_err("cancelled");
-        assert!(matches!(err, AgentError::Cancelled));
-        let cancelled = driver.join().expect("driver");
-        assert_eq!(cancelled, AgentRunEvent::Cancelled);
-        // No file should have been written; no further LLM work.
-        assert!(fs::read_to_string(ws.join("x.txt")).is_err());
-        assert_eq!(fake.requests.borrow().len(), 1);
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    #[test]
-    fn cancel_via_gate_while_parked_also_aborts() {
-        let ws = temp_workspace();
-        let gate = ApprovalGate::new(AutonomyMode::Supervised);
-        let gate_clone = gate.clone();
-        let (tx, rx) = channel();
-        let fake = FakeExecutor::new(vec![Ok(AiResponse {
-            content: String::new(),
-            model: "m".to_string(),
-            tool_calls: vec![approval_call(
-                "c1",
-                "read_file",
-                serde_json::json!({"path": "a.txt"}),
-            )],
-            usage: None,
-        })]);
-        let runner = AgentRunner::new(&fake, &ws)
-            .with_approval_gate(gate_clone)
-            .with_event_sender(tx);
-        let gate_for_driver = gate.clone();
-        let driver = thread::spawn(move || {
-            let _ = rx.recv_timeout(Duration::from_secs(5)).expect("requested");
-            gate_for_driver.cancel();
-            rx.recv_timeout(Duration::from_secs(5)).expect("cancelled")
-        });
-        let err = runner
-            .run("openai", "m", "cred", "q")
-            .expect_err("cancelled");
-        assert!(matches!(err, AgentError::Cancelled));
-        driver.join().expect("driver");
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    #[test]
-    fn runtime_mode_switch_mid_run_changes_next_decision() {
-        let ws = temp_workspace();
-        let gate = ApprovalGate::new(AutonomyMode::Supervised);
-        let gate_clone = gate.clone();
-        let (tx, rx) = channel();
-        let fake = FakeExecutor::new(vec![
-            Ok(AiResponse {
-                content: String::new(),
-                model: "m".to_string(),
-                tool_calls: vec![approval_call(
-                    "w1",
-                    "write_file",
-                    serde_json::json!({"path": "first.txt", "content": "1"}),
-                )],
-                usage: None,
-            }),
-            Ok(AiResponse {
-                content: String::new(),
-                model: "m".to_string(),
-                tool_calls: vec![approval_call(
-                    "w2",
-                    "write_file",
-                    serde_json::json!({"path": "second.txt", "content": "2"}),
-                )],
-                usage: None,
-            }),
-            Ok(text_response("done")),
-        ]);
-        let runner = AgentRunner::new(&fake, &ws)
-            .with_approval_gate(gate_clone)
-            .with_event_sender(tx);
-        // Hang fuse: `run` must stay on this thread (`AgentRunner` holds
-        // `&dyn ProviderExecutor`, which is not `Send`, so it cannot move to
-        // a spawned thread without touching production bounds), so a watchdog
-        // cancels the gate if the run has not finished within 10s. A parked
-        // run then aborts instead of hanging the suite forever. The watchdog
-        // stands down the moment the run reports back, so a passing run
-        // costs no extra seconds.
-        let fuse_fired = Arc::new(AtomicBool::new(false));
-        let (finish_tx, finish_rx) = channel();
-        let watchdog = {
-            let fuse_fired = fuse_fired.clone();
-            let gate = gate.clone();
-            thread::spawn(move || {
-                if finish_rx.recv_timeout(Duration::from_secs(10)).is_err() {
-                    fuse_fired.store(true, Ordering::SeqCst);
-                    gate.cancel();
-                }
-            })
-        };
-        // Every driver failure cancels first: otherwise a parked run would
-        // never return and the suite would hang on `run` below.
-        let gate_for_driver = gate.clone();
-        let driver = thread::spawn(move || {
-            // First tool requires approval in Supervised.
-            let Ok(ev1) = rx.recv_timeout(Duration::from_secs(5)) else {
-                gate_for_driver.cancel();
-                panic!("first requested: timed out");
-            };
-            let w1_requested =
-                matches!(&ev1, AgentRunEvent::ApprovalRequested { call_id, .. } if call_id == "w1");
-            if !w1_requested {
-                gate_for_driver.cancel();
-                panic!("first event must request approval for w1, got {ev1:?}");
-            }
-            gate_for_driver.set_mode(AutonomyMode::FullAutonomous);
-            // Ordering matters (approval.rs:139 — an already-parked request
-            // is NOT auto-resolved by `set_mode`): the mode must be Full
-            // BEFORE `respond` wakes the runner, so w2 necessarily sees Full
-            // even if the runner executes w1 and evaluates w2 before this
-            // driver thread is rescheduled. Parked w1 still requires its
-            // own `respond`, so w1 semantics are unchanged.
-            gate_for_driver.respond("w1", ApprovalDecision::Approved);
-            // Do not assume the next event is Completed: drain until
-            // `Completed { steps: 3 }`, skipping ApprovalResolved / step /
-            // tool events. Cap the drain so a flood cannot loop.
-            let mut seen = 0;
-            loop {
-                if seen >= 32 {
-                    gate_for_driver.cancel();
-                    panic!("too many events without Completed");
-                }
-                match rx.recv_timeout(Duration::from_secs(5)) {
-                    Ok(AgentRunEvent::Completed { steps }) => {
-                        assert_eq!(steps, 3);
-                        break;
-                    }
-                    Ok(AgentRunEvent::ApprovalRequested { call_id, .. }) if call_id == "w2" => {
-                        // Race relic on loaded CI: w2 parked before observing
-                        // the mode switch. Approve it and keep draining.
-                        gate_for_driver.respond("w2", ApprovalDecision::Approved);
-                        seen += 1;
-                    }
-                    Ok(AgentRunEvent::Cancelled) => {
-                        gate_for_driver.cancel();
-                        panic!("unexpected terminal: Cancelled");
-                    }
-                    Ok(_) => {
-                        seen += 1;
-                    }
-                    Err(_) => {
-                        gate_for_driver.cancel();
-                        panic!("timed out waiting for Completed");
-                    }
-                }
-            }
-        });
-        let result = runner.run("openai", "m", "cred", "q");
-        let _ = finish_tx.send(());
-        watchdog.join().expect("watchdog joins");
-        assert!(!fuse_fired.load(Ordering::SeqCst), "run hung");
-        let answer = result.expect("completes");
-        assert_eq!(answer, "done");
-        driver.join().expect("driver");
-        assert_eq!(fs::read_to_string(ws.join("first.txt")).unwrap(), "1");
-        assert_eq!(fs::read_to_string(ws.join("second.txt")).unwrap(), "2");
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    #[test]
-    fn no_gate_default_path_unchanged() {
-        let ws = temp_workspace();
-        let fake = FakeExecutor::new(vec![
-            Ok(AiResponse {
-                content: String::new(),
-                model: "m".to_string(),
-                tool_calls: vec![approval_call(
-                    "w1",
-                    "write_file",
-                    serde_json::json!({"path": "no_gate.txt", "content": "ok"}),
-                )],
-                usage: None,
-            }),
-            Ok(text_response("done")),
-        ]);
-        let runner = AgentRunner::new(&fake, &ws);
-        let answer = runner.run("openai", "m", "cred", "q").expect("completes");
-        assert_eq!(answer, "done");
-        assert_eq!(fs::read_to_string(ws.join("no_gate.txt")).unwrap(), "ok");
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    #[test]
-    fn approval_gate_builder_is_additive_and_cloneable() {
-        let ws = temp_workspace();
-        let gate = ApprovalGate::new(AutonomyMode::Supervised);
-        let control = RunControl::new();
-        let fake = FakeExecutor::new(vec![Ok(text_response("hi"))]);
-        // Order: control then gate.
-        let runner1 = AgentRunner::new(&fake, &ws)
-            .with_control(control.clone())
-            .with_approval_gate(gate.clone());
-        let fake2 = FakeExecutor::new(vec![Ok(text_response("hi"))]);
-        // Order: gate then control.
-        let runner2 = AgentRunner::new(&fake2, &ws)
-            .with_approval_gate(gate.clone())
-            .with_control(control.clone());
-        // Both should be constructible and behave identically for auto path.
-        // FullAutonomous gate with no approval needed should complete regardless of order.
-        let full_gate = ApprovalGate::new(AutonomyMode::FullAutonomous);
-        let fake3 = FakeExecutor::new(vec![Ok(text_response("ok"))]);
-        let r = AgentRunner::new(&fake3, &ws)
-            .with_control(control)
-            .with_approval_gate(full_gate);
-        let ans = r.run("openai", "m", "cred", "q").expect("ok");
-        assert_eq!(ans, "ok");
-        drop(runner1);
-        drop(runner2);
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    #[test]
-    fn approval_immediate_resolve_after_requested_proceeds_without_race() {
-        // Deterministic regression for the emit-before-park race: upon receiving
-        // ApprovalRequested, immediately resolve via respond (no sleep) and expect
-        // the call to proceed as approved.
-        let ws = temp_workspace();
-        let gate = ApprovalGate::new(AutonomyMode::Supervised);
-        let gate_clone = gate.clone();
-        let (tx, rx) = channel();
-        let fake = FakeExecutor::new(vec![
-            Ok(AiResponse {
-                content: String::new(),
-                model: "m".to_string(),
-                tool_calls: vec![approval_call(
-                    "race-1",
-                    "write_file",
-                    serde_json::json!({"path": "immediate.txt", "content": "immediate ok"}),
-                )],
-                usage: None,
-            }),
-            Ok(text_response("done after immediate approve")),
-        ]);
-        let runner = AgentRunner::new(&fake, &ws)
-            .with_approval_gate(gate_clone)
-            .with_event_sender(tx);
-        let gate_for_driver = gate.clone();
-        let driver = thread::spawn(move || {
-            let ev = rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("ApprovalRequested");
-            assert!(
-                matches!(ev, AgentRunEvent::ApprovalRequested { call_id, .. } if call_id == "race-1")
-            );
-            // Immediate resolve — must succeed; the race is closed by construction
-            // because prepare_pending ran before the emit.
-            let resolved = gate_for_driver.respond("race-1", ApprovalDecision::Approved);
-            assert!(
-                resolved,
-                "immediate respond must succeed — race closed by construction"
-            );
-            let ev2 = rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("ApprovalResolved");
-            assert!(matches!(
-                ev2,
-                AgentRunEvent::ApprovalResolved { approved: true, .. }
-            ));
-            rx.recv_timeout(Duration::from_secs(5)).expect("Completed")
-        });
-        let answer = runner
-            .run("openai", "m", "cred", "q")
-            .expect("run completes after immediate approval");
-        assert_eq!(answer, "done after immediate approve");
-        assert_eq!(
-            fs::read_to_string(ws.join("immediate.txt")).expect("file written"),
-            "immediate ok"
-        );
-        driver.join().expect("driver");
-        let _ = fs::remove_dir_all(&ws);
     }
 
     // -----------------------------------------------------------------------
@@ -3072,13 +779,255 @@ mod tests {
         assert_eq!(run.mode, "semi_autonomous", "the gate's mode is recorded");
         let _ = fs::remove_dir_all(&ws);
     }
-    // -----------------------------------------------------------------------
-    // Spend guard (Task 4.3)
-    // -----------------------------------------------------------------------
+}
 
-    use crate::application::execution::TokenUsage;
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::cell::RefCell;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::mpsc::channel;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
-    fn usage_response(content: &str, input: u64, output: u64) -> AiResponse {
+    use super::{AgentError, AgentRunner};
+    use crate::application::agent::approval::ApprovalGate;
+    use crate::application::agent::control::{AgentRunEvent, CancellationToken, RunControl};
+    use crate::application::execution::{
+        AiMessage, AiRequest, AiResponse, AiRole, ExecutorError, ProviderExecutor, TokenUsage,
+        ToolCall,
+    };
+
+    pub(crate) static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    pub(crate) fn temp_workspace() -> PathBuf {
+        let base = std::env::temp_dir();
+        let id = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir = base.join(format!(
+            "nexora-runner-test-{pid}-{id}-{nanos}",
+            pid = std::process::id(),
+            id = id,
+            nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).expect("create temp workspace");
+        canonical_workspace(&dir)
+    }
+
+    /// Canonicalize a freshly created temp workspace so the returned root is
+    /// already in the form the file tools compare against. On Windows the
+    /// temp dir can sit behind a junction, 8.3 short name, or an alternate
+    /// separator/drive-letter/case spelling (notably on CI runners); the
+    /// tools' canonical re-check then rejects the non-canonical root with
+    /// `PathTraversal`. Resolving once here keeps every downstream
+    /// `resolve_path`/`is_within_workspace` comparison canonical-vs-canonical.
+    /// The `\\?\` verbatim prefix is stripped so paths stay readable and
+    /// comparable with non-verbatim joins.
+    pub(crate) fn canonical_workspace(dir: &Path) -> PathBuf {
+        let canon = dir.canonicalize().expect("canonicalize temp workspace");
+        let text = canon.to_string_lossy();
+        if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{rest}"));
+        }
+        if let Some(rest) = text.strip_prefix(r"\\?\") {
+            return PathBuf::from(rest);
+        }
+        canon
+    }
+
+    pub(crate) fn text_response(content: &str) -> AiResponse {
+        AiResponse {
+            content: content.to_string(),
+            model: "test-model".to_string(),
+            tool_calls: Vec::new(),
+            usage: None,
+        }
+    }
+
+    #[allow(clippy::needless_pass_by_value)] // JSON literals read best at call sites
+    pub(crate) fn call_tool(id: &str, name: &str, arguments: serde_json::Value) -> ToolCall {
+        ToolCall {
+            id: id.to_string(),
+            name: name.to_string(),
+            arguments: arguments.to_string(),
+            thought_signature: None,
+        }
+    }
+
+    pub(crate) fn raw_call(id: &str, name: &str, arguments: &str) -> ToolCall {
+        ToolCall {
+            id: id.to_string(),
+            name: name.to_string(),
+            arguments: arguments.to_string(),
+            thought_signature: None,
+        }
+    }
+
+    /// Scripted [`ProviderExecutor`] fake: replays prepared responses in order
+    /// and records every incoming request. Never performs network I/O.
+    pub(crate) struct FakeExecutor {
+        pub(crate) steps: RefCell<std::vec::IntoIter<Result<AiResponse, ExecutorError>>>,
+        pub(crate) requests: RefCell<Vec<AiRequest>>,
+    }
+
+    impl FakeExecutor {
+        pub(crate) fn new(steps: Vec<Result<AiResponse, ExecutorError>>) -> Self {
+            Self {
+                steps: RefCell::new(steps.into_iter()),
+                requests: RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl ProviderExecutor for FakeExecutor {
+        fn execute(
+            &self,
+            request: &AiRequest,
+            _credential: &str,
+            _token: &CancellationToken,
+        ) -> Result<AiResponse, ExecutorError> {
+            self.requests.borrow_mut().push(request.clone());
+            self.steps
+                .borrow_mut()
+                .next()
+                .expect("fake executor script exhausted")
+        }
+    }
+
+    pub(crate) fn user_message(content: &str) -> AiMessage {
+        AiMessage {
+            role: AiRole::User,
+            content: content.to_string(),
+            attachments: Vec::new(),
+            tool_calls: Vec::new(),
+            tool_result: None,
+        }
+    }
+
+    pub(crate) fn assistant_message(content: &str) -> AiMessage {
+        AiMessage {
+            role: AiRole::Assistant,
+            content: content.to_string(),
+            attachments: Vec::new(),
+            tool_calls: Vec::new(),
+            tool_result: None,
+        }
+    }
+
+    /// A scripted executor that can force the runner to park *between* turns:
+    /// at `block_at` (the 0-based execute index) it signals `entered` and then
+    /// spins until `release` while the test drives governance, then returns
+    /// the next scripted response. Deterministic and network-free.
+    pub(crate) struct GatedExecutor {
+        pub(crate) steps: RefCell<std::vec::IntoIter<Result<AiResponse, ExecutorError>>>,
+        pub(crate) requests: RefCell<Vec<AiRequest>>,
+        pub(crate) block_at: usize,
+        pub(crate) entered: Arc<AtomicBool>,
+        pub(crate) release: Arc<AtomicBool>,
+    }
+
+    impl GatedExecutor {
+        pub(crate) fn new(
+            steps: Vec<Result<AiResponse, ExecutorError>>,
+            block_at: usize,
+        ) -> (Self, Arc<AtomicBool>, Arc<AtomicBool>) {
+            let entered = Arc::new(AtomicBool::new(false));
+            let release = Arc::new(AtomicBool::new(false));
+            (
+                Self {
+                    steps: RefCell::new(steps.into_iter()),
+                    requests: RefCell::new(Vec::new()),
+                    block_at,
+                    entered: Arc::clone(&entered),
+                    release: Arc::clone(&release),
+                },
+                entered,
+                release,
+            )
+        }
+    }
+
+    impl ProviderExecutor for GatedExecutor {
+        fn execute(
+            &self,
+            request: &AiRequest,
+            _credential: &str,
+            _token: &CancellationToken,
+        ) -> Result<AiResponse, ExecutorError> {
+            self.requests.borrow_mut().push(request.clone());
+            let idx = self.requests.borrow().len() - 1;
+            if idx == self.block_at {
+                self.entered.store(true, Ordering::SeqCst);
+                while !self.release.load(Ordering::SeqCst) {
+                    std::hint::spin_loop();
+                }
+            }
+            self.steps
+                .borrow_mut()
+                .next()
+                .expect("gated executor script exhausted")
+        }
+    }
+
+    /// Wait (bounded) until `flag` becomes true.
+    pub(crate) fn wait_flag(flag: &AtomicBool) {
+        let start = Instant::now();
+        while !flag.load(Ordering::SeqCst) {
+            std::hint::spin_loop();
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "flag never became true in time"
+            );
+        }
+    }
+
+    /// A scripted non-terminal turn that only produces a tool call.
+    pub(crate) fn tool_step(id: &str) -> AiResponse {
+        AiResponse {
+            content: String::new(),
+            model: "m".to_string(),
+            tool_calls: vec![call_tool(id, "list_directory", serde_json::json!({}))],
+            usage: None,
+        }
+    }
+
+    #[allow(clippy::needless_pass_by_value)]
+    pub(crate) fn approval_call(id: &str, name: &str, arguments: serde_json::Value) -> ToolCall {
+        ToolCall {
+            id: id.to_string(),
+            name: name.to_string(),
+            arguments: arguments.to_string(),
+            thought_signature: None,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn run_with_gate(
+        ws: &std::path::Path,
+        gate: ApprovalGate,
+        steps: Vec<Result<AiResponse, ExecutorError>>,
+        control: Option<RunControl>,
+    ) -> (Result<String, AgentError>, Vec<AgentRunEvent>) {
+        let (tx, rx) = channel();
+        let fake = FakeExecutor::new(steps);
+        let mut runner = AgentRunner::new(&fake, ws)
+            .with_approval_gate(gate)
+            .with_event_sender(tx);
+        if let Some(c) = control {
+            runner = runner.with_control(c);
+        }
+        let res = runner.run("openai", "m", "cred", "q");
+        let mut events = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            events.push(ev);
+        }
+        (res, events)
+    }
+
+    pub(crate) fn usage_response(content: &str, input: u64, output: u64) -> AiResponse {
         AiResponse {
             content: content.to_string(),
             model: "test-model".to_string(),
@@ -3090,7 +1039,7 @@ mod tests {
         }
     }
 
-    fn usage_tool_response(id: &str, input: u64, output: u64) -> AiResponse {
+    pub(crate) fn usage_tool_response(id: &str, input: u64, output: u64) -> AiResponse {
         AiResponse {
             content: String::new(),
             model: "test-model".to_string(),
@@ -3100,538 +1049,5 @@ mod tests {
                 output_tokens: output,
             }),
         }
-    }
-
-    #[test]
-    fn spend_guard_trips_exactly_on_exceed() {
-        let ws = temp_workspace();
-        // Each turn costs 1_000_000 micro (200_000 input tokens * 5_000_000 / 1M)
-        let cheap = |id| usage_tool_response(id, 200_000, 0);
-        let fake = FakeExecutor::new(vec![
-            Ok(cheap("a")),
-            Ok(cheap("b")),
-            Ok(usage_response("final", 200_000, 0)),
-        ]);
-        let limit = 2_500_000u64; // 2.5M, so 2*1M=2M under, 3*1M=3M over
-        let (tx, rx) = channel();
-        let runner = AgentRunner::new(&fake, &ws)
-            .with_spend_limit(limit)
-            .with_event_sender(tx);
-        let err = runner
-            .run("openai", "m", "cred", "q")
-            .expect_err("must trip");
-        match err {
-            AgentError::SpendLimitExceeded {
-                spent_micro,
-                limit_micro,
-            } => {
-                assert_eq!(spent_micro, 3_000_000);
-                assert_eq!(limit_micro, limit);
-            }
-            other => panic!("expected SpendLimitExceeded, got {other:?}"),
-        }
-        // Event payload correct
-        let ev = rx.recv_timeout(Duration::from_secs(2)).expect("event");
-        assert_eq!(
-            ev,
-            AgentRunEvent::SpendLimitExceeded {
-                spent_micro: 3_000_000,
-                limit_micro: limit
-            }
-        );
-        // Two tool calls ran (first two turns), third was final but tripped before return
-        assert_eq!(fake.requests.borrow().len(), 3);
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    #[test]
-    fn spend_guard_no_limit_behaves_identical() {
-        let ws = temp_workspace();
-        // Same script as above, but no limit — must complete normally
-        let fake = FakeExecutor::new(vec![
-            Ok(AiResponse {
-                content: String::new(),
-                model: "m".to_string(),
-                tool_calls: vec![call_tool("a", "list_directory", serde_json::json!({}))],
-                usage: Some(TokenUsage {
-                    input_tokens: 200_000,
-                    output_tokens: 0,
-                }),
-            }),
-            Ok(text_response("done")),
-        ]);
-        let runner = AgentRunner::new(&fake, &ws);
-        let ans = runner.run("openai", "m", "cred", "q").expect("completes");
-        assert_eq!(ans, "done");
-        assert_eq!(fake.requests.borrow().len(), 2);
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    #[test]
-    fn spend_guard_usage_none_adds_zero() {
-        let ws = temp_workspace();
-        // First turn: usage None (cost 0), second: cheap 1M, limit 500k -> second trips
-        // Actually first None adds 0, spent 0, second 1M >500k trips
-        let fake = FakeExecutor::new(vec![
-            Ok(AiResponse {
-                content: String::new(),
-                model: "m".to_string(),
-                tool_calls: vec![call_tool("a", "list_directory", serde_json::json!({}))],
-                usage: None,
-            }),
-            Ok(usage_tool_response("b", 200_000, 0)),
-            Ok(text_response("never")),
-        ]);
-        let runner = AgentRunner::new(&fake, &ws).with_spend_limit(500_000);
-        let err = runner
-            .run("openai", "m", "cred", "q")
-            .expect_err("trips on second");
-        assert!(matches!(err, AgentError::SpendLimitExceeded { .. }));
-        // Only 2 turns ran (first None + second that tripped)
-        assert_eq!(fake.requests.borrow().len(), 2);
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    #[test]
-    fn spend_guard_event_and_error_payload_correct() {
-        let ws = temp_workspace();
-        let fake = FakeExecutor::new(vec![Ok(usage_response("hi", 400_000, 0))]);
-        // 400k *5M/1M =2_000_000
-        let limit = 1_000_000u64;
-        let (tx, rx) = channel();
-        let runner = AgentRunner::new(&fake, &ws)
-            .with_spend_limit(limit)
-            .with_event_sender(tx);
-        let err = runner.run("openai", "m", "cred", "q").expect_err("trips");
-        match &err {
-            AgentError::SpendLimitExceeded {
-                spent_micro,
-                limit_micro,
-            } => {
-                assert_eq!(*spent_micro, 2_000_000);
-                assert_eq!(*limit_micro, limit);
-                // Display contains integers, no secrets
-                let s = format!("{err}");
-                assert!(s.contains("2000000"));
-                assert!(s.contains("1000000"));
-            }
-            _ => panic!("wrong error"),
-        }
-        let ev = rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        match ev {
-            AgentRunEvent::SpendLimitExceeded {
-                spent_micro,
-                limit_micro,
-            } => {
-                assert_eq!(spent_micro, 2_000_000);
-                assert_eq!(limit_micro, limit);
-            }
-            _ => panic!("wrong event"),
-        }
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    #[test]
-    fn spend_guard_recorder_persists_status_and_spend() {
-        let db = in_memory_database();
-        let ws = temp_workspace();
-        let fake = FakeExecutor::new(vec![Ok(usage_response("hi", 400_000, 0))]);
-        let runner = AgentRunner::new(&fake, &ws)
-            .with_spend_limit(1_000_000)
-            .with_run_recorder(RunRecorder::new(&db));
-        let err = runner.run("openai", "m", "cred", "q").expect_err("trips");
-        assert!(matches!(err, AgentError::SpendLimitExceeded { .. }));
-        let runs = AgentRunRepository::new(&db);
-        let run = runs.list_runs_by_started_at_desc().expect("list")[0].clone();
-        assert_eq!(run.status, "spend_limit_exceeded");
-        assert_eq!(run.spent_micro_usd, Some(2_000_000));
-        assert_eq!(run.limit_micro_usd, Some(1_000_000));
-        assert_eq!(run.error, None);
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    #[test]
-    fn spend_guard_non_recorded_still_emits_event() {
-        let ws = temp_workspace();
-        let fake = FakeExecutor::new(vec![Ok(usage_response("hi", 400_000, 0))]);
-        let (tx, rx) = channel();
-        let runner = AgentRunner::new(&fake, &ws)
-            .with_spend_limit(1_000_000)
-            .with_event_sender(tx);
-        let err = runner.run("openai", "m", "cred", "q").expect_err("trips");
-        assert!(matches!(err, AgentError::SpendLimitExceeded { .. }));
-        let ev = rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        assert!(matches!(ev, AgentRunEvent::SpendLimitExceeded { .. }));
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    #[test]
-    fn spend_guard_step_governor_untouched() {
-        let ws = temp_workspace();
-        // BudgetExhausted should still happen when max_iterations hit, even with a spend limit that is not tripped
-        let fake = FakeExecutor::new(vec![
-            Ok(usage_tool_response("a", 10, 0)), // cost tiny 50 micro
-            Ok(usage_tool_response("b", 10, 0)),
-            Ok(text_response("later")),
-        ]);
-        let runner = AgentRunner::new(&fake, &ws)
-            .with_max_iterations(2)
-            .with_spend_limit(10_000_000); // high, not tripped
-        let err = runner.run("openai", "m", "cred", "q").expect_err("budget");
-        assert!(matches!(err, AgentError::BudgetExhausted(2)));
-        assert_eq!(fake.requests.borrow().len(), 2);
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    #[test]
-    fn spend_guard_exactly_at_limit_does_not_trip() {
-        let ws = temp_workspace();
-        // Cost 1M per turn, limit 2M, two turns exactly at limit -> should complete
-        let fake = FakeExecutor::new(vec![
-            Ok(usage_tool_response("a", 200_000, 0)),
-            Ok(usage_response("done", 200_000, 0)),
-        ]);
-        let runner = AgentRunner::new(&fake, &ws).with_spend_limit(2_000_000);
-        let ans = runner
-            .run("openai", "m", "cred", "q")
-            .expect("at limit completes");
-        assert_eq!(ans, "done");
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    // -----------------------------------------------------------------------
-    // M1-core permission rules + grouping
-    // -----------------------------------------------------------------------
-
-    use crate::application::agent::permissions::{PermissionStore, RuleEffect};
-
-    #[test]
-    fn supervised_ignores_allow_rules() {
-        let db = in_memory_database();
-        let ws = temp_workspace();
-        crate::application::agent::permissions::insert_rule(
-            &db,
-            "coding",
-            "write_file",
-            None,
-            RuleEffect::Allow,
-            10,
-        )
-        .expect("insert allow");
-        let store = PermissionStore::load(&db);
-        let gate = ApprovalGate::new(AutonomyMode::Supervised);
-        let gate_for_driver = gate.clone();
-        let (tx, rx) = channel();
-        let fake = FakeExecutor::new(vec![
-            Ok(AiResponse {
-                content: String::new(),
-                model: "m".to_string(),
-                tool_calls: vec![approval_call(
-                    "w1",
-                    "write_file",
-                    serde_json::json!({"path": "supervised.txt", "content": "1"}),
-                )],
-                usage: None,
-            }),
-            Ok(text_response("ok")),
-        ]);
-        let runner = AgentRunner::new(&fake, &ws)
-            .with_approval_gate(gate)
-            .with_permission_store(store)
-            .with_run_recorder(RunRecorder::new(&db))
-            .with_event_sender(tx);
-        let driver = thread::spawn(move || {
-            // Allow is ignored under Supervised: the call must still park.
-            let ev = rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("ApprovalRequested");
-            assert!(
-                matches!(ev, AgentRunEvent::ApprovalRequested { .. }),
-                "Allow + Supervised still parks, got {ev:?}"
-            );
-            assert!(gate_for_driver.respond("w1", ApprovalDecision::Approved));
-            rx.recv_timeout(Duration::from_secs(5))
-                .expect("ApprovalResolved");
-            rx.recv_timeout(Duration::from_secs(5)).expect("Completed")
-        });
-        let answer = runner.run("openai", "m", "cred", "q").expect("completes");
-        assert_eq!(answer, "ok");
-        driver.join().expect("driver joins");
-        assert_eq!(fs::read_to_string(ws.join("supervised.txt")).unwrap(), "1");
-        // Parked approval carries user provenance, not rule.
-        let runs = AgentRunRepository::new(&db);
-        let run = &runs.list_runs_by_started_at_desc().expect("list")[0];
-        let steps = runs.list_steps(run.id).expect("steps");
-        let approval = steps
-            .iter()
-            .find(|s| s.kind == "approval")
-            .expect("approval step");
-        assert_eq!(approval.decided_by.as_deref(), Some("user"));
-        assert_eq!(approval.rule_id, None);
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    #[test]
-    fn full_autonomous_deny_rule_still_denies() {
-        let db = in_memory_database();
-        let ws = temp_workspace();
-        let deny_id = crate::application::agent::permissions::insert_rule(
-            &db,
-            "coding",
-            "write_file",
-            None,
-            RuleEffect::Deny,
-            10,
-        )
-        .expect("insert deny");
-        let store = PermissionStore::load(&db);
-        let (tx, rx) = channel();
-        let fake = FakeExecutor::new(vec![
-            Ok(AiResponse {
-                content: String::new(),
-                model: "m".to_string(),
-                tool_calls: vec![approval_call(
-                    "w1",
-                    "write_file",
-                    serde_json::json!({"path": "blocked.txt", "content": "x"}),
-                )],
-                usage: None,
-            }),
-            Ok(text_response("recovered")),
-        ]);
-        let runner = AgentRunner::new(&fake, &ws)
-            .with_approval_gate(ApprovalGate::new(AutonomyMode::FullAutonomous))
-            .with_permission_store(store)
-            .with_run_recorder(RunRecorder::new(&db))
-            .with_event_sender(tx);
-        let answer = runner.run("openai", "m", "cred", "q").expect("completes");
-        assert_eq!(answer, "recovered");
-        // Never dispatched, never parked (no approval-branch events; the
-        // terminal Completed event still fires).
-        assert!(
-            fs::read_to_string(ws.join("blocked.txt")).is_err(),
-            "deny must not dispatch"
-        );
-        let mut saw_approval_branch = false;
-        while let Ok(ev) = rx.try_recv() {
-            if matches!(
-                ev,
-                AgentRunEvent::ApprovalRequested { .. } | AgentRunEvent::ApprovalResolved { .. }
-            ) {
-                saw_approval_branch = true;
-            }
-        }
-        assert!(
-            !saw_approval_branch,
-            "deny floor parks nothing and emits no approval event"
-        );
-        let runs = AgentRunRepository::new(&db);
-        let run = &runs.list_runs_by_started_at_desc().expect("list")[0];
-        let steps = runs.list_steps(run.id).expect("steps");
-        let approval = steps
-            .iter()
-            .find(|s| s.kind == "approval")
-            .expect("approval step");
-        assert_eq!(approval.status.as_deref(), Some("denied"));
-        assert_eq!(approval.rule_id, Some(deny_id));
-        assert_eq!(approval.decided_by.as_deref(), Some("rule"));
-        assert!(
-            !steps.iter().any(|s| s.kind == "tool_call"),
-            "denied call is never dispatched"
-        );
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    #[test]
-    fn allow_rule_skips_park_with_rule_provenance() {
-        let db = in_memory_database();
-        let ws = temp_workspace();
-        let allow_id = crate::application::agent::permissions::insert_rule(
-            &db,
-            "coding",
-            "write_file",
-            None,
-            RuleEffect::Allow,
-            10,
-        )
-        .expect("insert allow");
-        let store = PermissionStore::load(&db);
-        let (tx, rx) = channel();
-        let fake = FakeExecutor::new(vec![
-            Ok(AiResponse {
-                content: String::new(),
-                model: "m".to_string(),
-                tool_calls: vec![approval_call(
-                    "w1",
-                    "write_file",
-                    serde_json::json!({"path": "allowed.txt", "content": "ok"}),
-                )],
-                usage: None,
-            }),
-            Ok(text_response("done")),
-        ]);
-        let runner = AgentRunner::new(&fake, &ws)
-            .with_approval_gate(ApprovalGate::new(AutonomyMode::SemiAutonomous))
-            .with_permission_store(store)
-            .with_run_recorder(RunRecorder::new(&db))
-            .with_event_sender(tx);
-        let answer = runner.run("openai", "m", "cred", "q").expect("completes");
-        assert_eq!(answer, "done");
-        assert_eq!(fs::read_to_string(ws.join("allowed.txt")).unwrap(), "ok");
-        // No park: no ApprovalRequested event.
-        let mut saw_approval = false;
-        while let Ok(ev) = rx.try_recv() {
-            if matches!(ev, AgentRunEvent::ApprovalRequested { .. }) {
-                saw_approval = true;
-            }
-        }
-        assert!(!saw_approval, "Allow rule must skip the park");
-        let runs = AgentRunRepository::new(&db);
-        let run = &runs.list_runs_by_started_at_desc().expect("list")[0];
-        let steps = runs.list_steps(run.id).expect("steps");
-        let tool = steps
-            .iter()
-            .find(|s| s.kind == "tool_call")
-            .expect("tool step");
-        assert_eq!(tool.rule_id, Some(allow_id));
-        assert_eq!(tool.decided_by.as_deref(), Some("rule"));
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    #[test]
-    fn denied_by_rule_never_dispatches_and_keeps_verbatim_observation() {
-        let db = in_memory_database();
-        let ws = temp_workspace();
-        let deny_id = crate::application::agent::permissions::insert_rule(
-            &db,
-            "coding",
-            "write_file",
-            None,
-            RuleEffect::Deny,
-            10,
-        )
-        .expect("insert deny");
-        let store = PermissionStore::load(&db);
-        let fake = FakeExecutor::new(vec![
-            Ok(AiResponse {
-                content: String::new(),
-                model: "m".to_string(),
-                tool_calls: vec![approval_call(
-                    "w1",
-                    "write_file",
-                    serde_json::json!({"path": "nope.txt", "content": "x"}),
-                )],
-                usage: None,
-            }),
-            Ok(text_response("recovered")),
-        ]);
-        let runner = AgentRunner::new(&fake, &ws)
-            .with_approval_gate(ApprovalGate::new(AutonomyMode::SemiAutonomous))
-            .with_permission_store(store)
-            .with_run_recorder(RunRecorder::new(&db));
-        let answer = runner.run("openai", "m", "cred", "q").expect("completes");
-        assert_eq!(answer, "recovered");
-        assert!(fs::read_to_string(ws.join("nope.txt")).is_err());
-        // Model-facing denial string is byte-exact.
-        let requests = fake.requests.borrow();
-        assert_eq!(requests.len(), 2);
-        let history = &requests[1].messages;
-        let result = history[3].tool_result.as_ref().expect("tool result");
-        assert_eq!(
-            result.content,
-            "Error: tool execution was denied by the user"
-        );
-        // Ledger keeps rule provenance.
-        let runs = AgentRunRepository::new(&db);
-        let run = &runs.list_runs_by_started_at_desc().expect("list")[0];
-        let steps = runs.list_steps(run.id).expect("steps");
-        let approval = steps
-            .iter()
-            .find(|s| s.kind == "approval")
-            .expect("approval");
-        assert_eq!(approval.status.as_deref(), Some("denied"));
-        let observation = approval.observation.as_deref().unwrap_or("");
-        assert!(
-            observation.starts_with("denied by rule:"),
-            "observation {observation:?} must start with denied by rule:"
-        );
-        assert_eq!(approval.rule_id, Some(deny_id));
-        assert_eq!(approval.decided_by.as_deref(), Some("rule"));
-        let _ = fs::remove_dir_all(&ws);
-    }
-
-    #[test]
-    fn group_scope_second_call_auto_resolves_with_shared_group_key() {
-        let db = in_memory_database();
-        let ws = temp_workspace();
-        let gate = ApprovalGate::new(AutonomyMode::SemiAutonomous);
-        let gate_for_driver = gate.clone();
-        let (tx, rx) = channel();
-        let fake = FakeExecutor::new(vec![
-            Ok(AiResponse {
-                content: String::new(),
-                model: "m".to_string(),
-                tool_calls: vec![
-                    approval_call(
-                        "w1",
-                        "write_file",
-                        serde_json::json!({"path": "g/a.txt", "content": "1"}),
-                    ),
-                    approval_call(
-                        "w2",
-                        "write_file",
-                        serde_json::json!({"path": "g/b.txt", "content": "2"}),
-                    ),
-                ],
-                usage: None,
-            }),
-            Ok(text_response("done")),
-        ]);
-        let runner = AgentRunner::new(&fake, &ws)
-            .with_approval_gate(gate)
-            .with_run_recorder(RunRecorder::new(&db))
-            .with_event_sender(tx);
-        let driver = thread::spawn(move || {
-            // First park resolves with group scope; the second same-group call
-            // must auto-resolve without a second park.
-            let mut requested = 0;
-            loop {
-                match rx.recv_timeout(Duration::from_secs(5)).expect("event") {
-                    AgentRunEvent::ApprovalRequested { call_id, .. } => {
-                        requested += 1;
-                        assert_eq!(call_id, "w1", "only the first call may park");
-                        assert!(gate_for_driver.respond_with_scope(
-                            "w1",
-                            ApprovalDecision::Approved,
-                            Some("group")
-                        ));
-                    }
-                    AgentRunEvent::Completed { .. } => break,
-                    _ => {}
-                }
-                assert!(requested <= 1, "second call must not park");
-            }
-            assert_eq!(requested, 1, "exactly one park for the group");
-        });
-        let answer = runner.run("openai", "m", "cred", "q").expect("completes");
-        assert_eq!(answer, "done");
-        driver.join().expect("driver joins");
-        assert_eq!(fs::read_to_string(ws.join("g/a.txt")).unwrap(), "1");
-        assert_eq!(fs::read_to_string(ws.join("g/b.txt")).unwrap(), "2");
-        let runs = AgentRunRepository::new(&db);
-        let run = &runs.list_runs_by_started_at_desc().expect("list")[0];
-        let steps = runs.list_steps(run.id).expect("steps");
-        let approvals: Vec<_> = steps.iter().filter(|s| s.kind == "approval").collect();
-        assert_eq!(
-            approvals.len(),
-            2,
-            "both group decisions are ledger artifacts, got {approvals:?}"
-        );
-        assert_eq!(
-            approvals[0].group_key, approvals[1].group_key,
-            "group steps share one group_key"
-        );
-        assert!(approvals[0].group_key.is_some(), "group_key must be set");
-        let _ = fs::remove_dir_all(&ws);
     }
 }
