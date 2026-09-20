@@ -587,6 +587,140 @@ fn e2e_second_run_carries_first_run_history_exactly_once() {
     let _ = std::fs::remove_dir_all(ws);
 }
 
+/// Start one memory-slice run, retrying the DP-4 claim while the previous
+/// run's release races its Finished frame.
+fn start_memory_run_retry(
+    db: &Database,
+    registry: &Arc<AgentRunRegistry>,
+    host: &Arc<dyn AgentRunHost>,
+    executor: &Arc<dyn ProviderExecutor + Send + Sync>,
+    workspace: &Path,
+    conversation_id: i64,
+    user_request: &str,
+) -> i64 {
+    for _ in 0..100 {
+        match start_memory_run(
+            db,
+            registry,
+            Arc::clone(host),
+            Arc::clone(executor),
+            workspace.to_path_buf(),
+            conversation_id,
+            user_request,
+        ) {
+            Ok(run_id) => return run_id,
+            Err(crate::application::agent::service::AgentRunError::RunAlreadyActive { .. }) => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(other) => panic!("retry start failed: {other:?}"),
+        }
+    }
+    panic!("run did not start after the prior run released the conversation");
+}
+
+#[test]
+fn e2e_second_run_receives_prior_action_trace() {
+    let (db, db_path) = e2e_db("action-memory");
+    let ws = e2e_workspace("action-memory-ws");
+    let conversation_id = create_conversation(&db, "actions");
+    std::fs::write(ws.join("action-probe.txt"), "action trace seed content").expect("seed file");
+
+    let registry = Arc::new(AgentRunRegistry::default());
+
+    // Run 1: a REAL read_file tool call (ReadOnly, so SemiAutonomous
+    // auto-approves with no driver), then final text. With no prior runs
+    // the system prompt must carry no trace block at all.
+    let (tx, rx) = channel();
+    let host: Arc<dyn AgentRunHost> = Arc::new(E2eHost {
+        frames_tx: tx,
+        db: db.clone(),
+    });
+    let executor1 = Arc::new(ScriptedExecutor::new(vec![
+        Ok(tool_response(
+            "r1",
+            "read_file",
+            serde_json::json!({"path": "action-probe.txt"}),
+            None,
+        )),
+        Ok(text_response("first done")),
+    ]));
+    let executor1_dyn: Arc<dyn ProviderExecutor + Send + Sync> = executor1.clone();
+    start_memory_run(
+        &db,
+        &registry,
+        host,
+        executor1_dyn,
+        ws.clone(),
+        conversation_id,
+        "read the probe file",
+    )
+    .expect("start run 1");
+    let frames = collect_until_finished(&rx);
+    assert_finished_completed(frames.last(), Some("first done"));
+
+    let first_requests = executor1.requests.lock().expect("requests lock");
+    let first_system = first_requests[0].messages[0].content.clone();
+    assert!(
+        !first_system.contains("Prior action trace"),
+        "run 1 has no prior runs, so its prompt must carry no trace block"
+    );
+    drop(first_requests);
+
+    // Run 2 captures the request the runner actually receives.
+    let (tx2, rx2) = channel();
+    let host2: Arc<dyn AgentRunHost> = Arc::new(E2eHost {
+        frames_tx: tx2,
+        db: db.clone(),
+    });
+    let executor2 = Arc::new(ScriptedExecutor::new(vec![Ok(text_response(
+        "second done",
+    ))]));
+    let executor2_dyn: Arc<dyn ProviderExecutor + Send + Sync> = executor2.clone();
+    start_memory_run_retry(
+        &db,
+        &registry,
+        &host2,
+        &executor2_dyn,
+        &ws,
+        conversation_id,
+        "what did you read",
+    );
+    let frames2 = collect_until_finished(&rx2);
+    assert_finished_completed(frames2.last(), Some("second done"));
+
+    let requests = executor2.requests.lock().expect("requests lock");
+    assert_eq!(requests.len(), 1, "run 2 must issue exactly one request");
+    let system = requests[0].messages[0].content.clone();
+    assert!(
+        system.contains("Prior action trace"),
+        "run 2 must carry the trace block, got: {system}"
+    );
+    // Exactly one trace line names the executed call, its path, and its
+    // outcome: the executed action reaches the next run exactly once.
+    let trace_lines: Vec<&str> = system
+        .lines()
+        .filter(|line| {
+            line.contains("read_file")
+                && line.contains("action-probe.txt")
+                && line.contains("succeeded")
+        })
+        .collect();
+    assert_eq!(
+        trace_lines.len(),
+        1,
+        "exactly one trace line must describe the read, got: {system}"
+    );
+    assert_eq!(
+        system.matches("Prior action trace").count(),
+        1,
+        "the trace block must appear exactly once, got: {system}"
+    );
+
+    drop(db);
+    cleanup_db(&db_path);
+    let _ = std::fs::remove_dir_all(ws);
+}
+
 #[test]
 #[allow(clippy::too_many_lines)]
 fn e2e_full_agent_journey() {

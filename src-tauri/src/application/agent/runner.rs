@@ -69,6 +69,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
+use crate::application::agent::action_memory::{self, ActionSummary};
 use crate::application::agent::approval::{ApprovalDecision, ApprovalGate};
 use crate::application::agent::control::{AgentRunEvent, CancellationToken, RunControl};
 use crate::application::agent::history;
@@ -240,6 +241,9 @@ pub(crate) struct AgentRunner<'a> {
     /// Prior conversation turns carried into the next run (agent memory
     /// slice). Empty by default; applied via [`Self::with_history`].
     prior_messages: Vec<AiMessage>,
+    /// Prior runs' compressed action trace (Layer-2 action memory). `None`
+    /// by default; applied via [`Self::with_action_summary`].
+    action_summary: Option<ActionSummary>,
 }
 
 impl<'a> AgentRunner<'a> {
@@ -257,6 +261,7 @@ impl<'a> AgentRunner<'a> {
             recorder: None,
             spend_limit_micro_usd: None,
             prior_messages: Vec::new(),
+            action_summary: None,
         }
     }
 
@@ -338,6 +343,15 @@ impl<'a> AgentRunner<'a> {
     #[must_use]
     pub(crate) fn with_history(mut self, history: Vec<AiMessage>) -> Self {
         self.prior_messages = history;
+        self
+    }
+
+    /// Carry prior runs' compressed action trace into the run (Layer-2
+    /// action memory). `None` (the default) leaves the system prompt
+    /// byte-identical; an empty summary likewise appends nothing.
+    #[must_use]
+    pub(crate) fn with_action_summary(mut self, summary: ActionSummary) -> Self {
+        self.action_summary = Some(summary);
         self
     }
 
@@ -432,7 +446,7 @@ impl<'a> AgentRunner<'a> {
         // after every tool turn the assistant's own calls and each tool's
         // result are appended natively (see module docs).
         let windowed = history::window(&self.prior_messages, history::DEFAULT_HISTORY_WINDOW);
-        let system_content = if windowed.dropped == 0 {
+        let mut system_content = if windowed.dropped == 0 {
             AGENT_SYSTEM_PROMPT.to_string()
         } else {
             format!(
@@ -440,6 +454,15 @@ impl<'a> AgentRunner<'a> {
                 history::omitted_note(windowed.dropped)
             )
         };
+        // Layer-2 action memory: the prior action trace follows the Layer-1
+        // note, separated by a blank line. An empty summary appends zero
+        // bytes, so runs without prior actions keep the exact prompt.
+        if let Some(summary) = &self.action_summary {
+            if let Some(note) = action_memory::system_note(summary) {
+                system_content.push_str("\n\n");
+                system_content.push_str(&note);
+            }
+        }
         let mut messages = Vec::with_capacity(windowed.messages.len() + 2);
         messages.push(AiMessage {
             role: AiRole::System,
@@ -903,6 +926,63 @@ mod tests {
             tool_calls: Vec::new(),
             tool_result: None,
         }
+    }
+
+    /// An empty action summary appends zero bytes: the system prompt stays
+    /// byte-for-byte identical to the Layer-1 output.
+    #[test]
+    fn with_empty_action_summary_leaves_system_prompt_byte_identical() {
+        let ws = temp_workspace();
+        let fake = FakeExecutor::new(vec![Ok(text_response("done"))]);
+        let runner = AgentRunner::new(&fake, &ws).with_action_summary(ActionSummary {
+            lines: Vec::new(),
+            omitted_runs: 0,
+            omitted_steps: 0,
+        });
+
+        runner.run("openai", "m", "cred", "hi").expect("finish");
+
+        let requests = fake.requests.borrow();
+        assert_eq!(requests.len(), 1);
+        let messages = &requests[0].messages;
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, AiRole::System);
+        assert_eq!(messages[0].content, AGENT_SYSTEM_PROMPT);
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    /// A non-empty action summary is appended after the system prompt,
+    /// separated by a blank line, with the current turn last.
+    #[test]
+    fn with_action_summary_appends_trace_after_system_prompt() {
+        let ws = temp_workspace();
+        let fake = FakeExecutor::new(vec![Ok(text_response("done"))]);
+        let runner =
+            AgentRunner::new(&fake, &ws).with_action_summary(action_memory::summarize(&[(
+                12,
+                vec![action_memory::AgentStepView {
+                    tool_name: "read_file".to_string(),
+                    arguments: r#"{"path": "a.txt"}"#.to_string(),
+                    observation: "content".to_string(),
+                    status: "succeeded".to_string(),
+                }],
+            )]));
+
+        runner.run("openai", "m", "cred", "hi").expect("finish");
+
+        let requests = fake.requests.borrow();
+        let system = &requests[0].messages[0].content;
+        assert!(
+            system.starts_with(AGENT_SYSTEM_PROMPT),
+            "trace follows the system prompt"
+        );
+        assert!(system.contains("Prior action trace"), "{system}");
+        assert!(system.contains("run 12: read_file(a.txt)"), "{system}");
+        assert_eq!(
+            requests[0].messages.last().expect("current turn").content,
+            "hi"
+        );
+        let _ = fs::remove_dir_all(&ws);
     }
 
     /// `with_history` carries prior turns into the first request as

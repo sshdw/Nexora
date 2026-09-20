@@ -39,6 +39,7 @@ use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 
+use super::action_memory::{self, ActionSummary, AgentStepView};
 use super::approval::{ApprovalDecision, ApprovalGate, AutonomyMode};
 use super::control::{AgentRunEvent, RunControl};
 use super::persistence::{mode_to_column, terminal_outcome, RunRecorder};
@@ -541,6 +542,51 @@ pub(crate) fn start_run(
     started
 }
 
+/// Load the Layer-2 action trace for `conversation_id` (best-effort): the
+/// newest [`action_memory::MAX_PRIOR_RUNS`] non-live runs with their `seq`
+/// -ordered steps, mapped onto [`AgentStepView`] and compressed by
+/// [`action_memory::summarize`].
+///
+/// Any failure yields an empty trace and the run continues. Only counts are
+/// logged — argument/observation content travels in-memory only, never into
+/// logs and never beyond the prompt.
+fn load_action_summary(db: &Database, conversation_id: i64) -> ActionSummary {
+    let repo = AgentRunRepository::new(db);
+    let runs = match repo.list_runs_by_conversation(conversation_id) {
+        Ok(runs) => runs,
+        Err(err) => {
+            log::warn!("agent run setup: action trace load failed, continuing empty: {err}");
+            return action_memory::summarize(&[]);
+        }
+    };
+    let mut steps_by_run: Vec<(i64, Vec<AgentStepView>)> = Vec::new();
+    for run in runs
+        .iter()
+        .filter(|run| run.status != "running")
+        .take(action_memory::MAX_PRIOR_RUNS)
+    {
+        match repo.list_steps(run.id) {
+            Ok(steps) => steps_by_run.push((
+                run.id,
+                steps
+                    .into_iter()
+                    .map(|step| AgentStepView {
+                        tool_name: step.tool_name.unwrap_or_default(),
+                        arguments: step.arguments.unwrap_or_default(),
+                        observation: step.observation.unwrap_or_default(),
+                        status: step.status.unwrap_or_default(),
+                    })
+                    .collect(),
+            )),
+            Err(err) => {
+                log::warn!("agent run setup: action trace load failed, continuing empty: {err}");
+                return action_memory::summarize(&[]);
+            }
+        }
+    }
+    action_memory::summarize(&steps_by_run)
+}
+
 /// The post-claim setup: user message, run row, registration, spawn.
 fn start_run_claimed(
     db: &Database,
@@ -567,6 +613,13 @@ fn start_run_claimed(
             Vec::new()
         }
     };
+
+    // Load the prior action trace AFTER the text history (which stays first)
+    // and BEFORE persisting the current user message. The current run row is
+    // created below, so no live row exists yet here — and any live row is
+    // still excluded defensively. Best-effort: any failure keeps the run
+    // going with an empty trace.
+    let action_summary = load_action_summary(db, request.conversation_id);
 
     // Persist the user message BEFORE spawning (design §3.2): a crash can
     // never lose it, and it appears in the thread immediately. No assistant
@@ -624,6 +677,7 @@ fn start_run_claimed(
         gate,
         request.clone(),
         history,
+        action_summary,
     )?;
     Ok(run_id)
 }
@@ -645,6 +699,7 @@ fn spawn_run(
     gate: ApprovalGate,
     request: AgentRunRequest,
     history: Vec<AiMessage>,
+    action_summary: ActionSummary,
 ) -> Result<(), AgentRunError> {
     let (tx, rx): (Sender<AgentRunEvent>, Receiver<AgentRunEvent>) = mpsc::channel();
     // Terminal-frame channel: the run thread sends the `RunFinished` payload
@@ -674,6 +729,7 @@ fn spawn_run(
                     .with_control(control)
                     .with_approval_gate(gate)
                     .with_history(history)
+                    .with_action_summary(action_summary)
                     .with_event_sender(tx_for_recorder.clone());
                 if let Some(max_iterations) = run_request.max_iterations {
                     runner = runner.with_max_iterations(max_iterations);
@@ -1458,37 +1514,95 @@ mod tests {
         );
     }
 
+    /// Local per-turn delay wrapper: sleeps before each provider turn so the
+    /// run thread stays alive long enough for the pause handshake below.
+    struct DelayedExecutor {
+        inner: ScriptedExecutor,
+        delay: Duration,
+    }
+
+    impl DelayedExecutor {
+        fn new(steps: Vec<Result<AiResponse, ExecutorError>>, delay: Duration) -> Self {
+            Self {
+                inner: ScriptedExecutor::new(steps),
+                delay,
+            }
+        }
+    }
+
+    impl ProviderExecutor for DelayedExecutor {
+        fn execute(
+            &self,
+            request: &crate::application::execution::AiRequest,
+            credential: &str,
+        ) -> Result<AiResponse, ExecutorError> {
+            std::thread::sleep(self.delay);
+            self.inner.execute(request, credential)
+        }
+    }
+
     #[test]
     fn pause_resume_round_trip_allows_run_to_continue_to_completion() {
         let (db, workspace, rx, host) = setup("pause-resume");
         let registry = Arc::new(AgentRunRegistry::default());
         let conversation_id = ConversationService::new(&db).create("conv").expect("conv");
-        // Create a run that will be paused at first step boundary: pre-pause the control via registry after start but before next turn.
-        // Simpler: start, then immediately pause via registry, then resume after Paused event.
+        // Deterministic pause handshake: per-turn delay keeps the run thread
+        // alive so `pause` can land before the run finishes on fast runners.
         let mut req = request(conversation_id, "pause me");
         req.max_iterations = Some(10);
         let run_id = start_run(
             &db,
             Arc::clone(&registry),
             Arc::clone(&host) as Arc<dyn AgentRunHost>,
-            Arc::new(ScriptedExecutor::new(vec![
-                Ok(tool_response("a", "list_directory")),
-                Ok(tool_response("b", "list_directory")),
-                Ok(text_response("done after pause")),
-            ])),
+            Arc::new(DelayedExecutor::new(
+                vec![
+                    Ok(tool_response("a", "list_directory")),
+                    Ok(tool_response("b", "list_directory")),
+                    Ok(text_response("done after pause")),
+                ],
+                Duration::from_millis(200),
+            )),
             workspace,
             req,
             crate::application::agent::approval::AutonomyMode::SemiAutonomous,
         )
         .expect("start");
-        // Wait for first governance event? Instead we exercise pause/resume via registry directly:
-        // The runner will check pause at next step boundary; we pause now.
-        assert!(registry.pause(run_id));
-        // Give runner a moment to hit pause (it checks at step boundary before next LLM turn)
-        std::thread::sleep(Duration::from_millis(100));
+        // Retry pause while the run is still active; fail fast if it finished first.
+        let mut paused = false;
+        for _ in 0..50 {
+            if registry.pause(run_id) {
+                paused = true;
+                break;
+            }
+            assert!(
+                registry.is_active(run_id),
+                "run finished before pause could land"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(paused, "pause never landed while run was active");
+        // Wait for the Paused governance frame, keeping drained frames.
+        let mut frames = Vec::new();
+        loop {
+            let frame = rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("paused frame");
+            let is_paused = matches!(
+                frame,
+                RunFrame::Governance {
+                    event: AgentRunEvent::Paused,
+                    ..
+                }
+            );
+            frames.push(frame);
+            if is_paused {
+                break;
+            }
+        }
         // Now resume: run should continue
         assert!(registry.resume(run_id));
-        let frames = collect_frames(&rx);
+        let rest = collect_frames(&rx);
+        frames.extend(rest);
         let RunFrame::Finished { event, .. } = frames.last().expect("frames") else {
             panic!("last must be finished");
         };
