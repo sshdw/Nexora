@@ -1513,4 +1513,135 @@ mod tests {
         assert!(approvals[0].group_key.is_some());
         let _ = std::fs::remove_dir_all(temp_workspace("entry-group"));
     }
+
+    /// Entry-point proof for the new tools: a run whose scripted provider
+    /// returns `edit_file` then `search_files` calls completes, the edit
+    /// lands on disk, and the (spilled) search observation is visible via
+    /// `list_steps_for_run`.
+    #[test]
+    fn new_tools_run_end_to_end_with_spilled_observation() {
+        use std::fmt::Write as _;
+        let (db, workspace, rx, host) = setup("newtools");
+        std::fs::write(workspace.join("target.txt"), "alpha beta gamma").expect("seed target");
+        // 200 long matching lines push the search observation past the 20KB
+        // budget so the spill notice path is exercised end to end.
+        let mut corpus = String::new();
+        for i in 0..200 {
+            let _ = writeln!(corpus, "haystack marker line {i:03} {}", "z".repeat(140));
+        }
+        std::fs::write(workspace.join("corpus.txt"), &corpus).expect("seed corpus");
+
+        let edit_call = tool_call_with(
+            "edit-1",
+            "edit_file",
+            &serde_json::json!({"path": "target.txt", "old_text": "beta", "new_text": "BETA"}),
+        );
+        let search_call = tool_call_with(
+            "search-1",
+            "search_files",
+            &serde_json::json!({"pattern": "haystack marker", "max_matches": 200}),
+        );
+        let scripted = ScriptedCalls::new(vec![
+            Ok(AiResponse {
+                content: String::new(),
+                model: "test-model".to_string(),
+                tool_calls: vec![edit_call],
+                usage: None,
+            }),
+            Ok(AiResponse {
+                content: String::new(),
+                model: "test-model".to_string(),
+                tool_calls: vec![search_call],
+                usage: None,
+            }),
+            Ok(text_response("done")),
+        ]);
+
+        let registry = Arc::new(AgentRunRegistry::default());
+        let conversation_id = ConversationService::new(&db)
+            .create("conv")
+            .expect("conversation");
+        let run_id = start_run(
+            &db,
+            Arc::clone(&registry),
+            Arc::clone(&host) as Arc<dyn AgentRunHost>,
+            Arc::new(scripted),
+            workspace.clone(),
+            request(conversation_id, "edit then search"),
+            crate::application::agent::approval::AutonomyMode::FullAutonomous,
+        )
+        .expect("start");
+        let frames = collect_frames(&rx);
+        assert!(
+            matches!(frames.last().unwrap(), RunFrame::Finished { .. }),
+            "run must complete"
+        );
+
+        // The edit landed on disk through the service/registry path.
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("target.txt")).unwrap(),
+            "alpha BETA gamma"
+        );
+
+        // Both tool observations are persisted and visible via list steps.
+        let steps = list_steps_for_run(&db, run_id).expect("steps");
+        let tool_steps: Vec<_> = steps.iter().filter(|s| s.kind == "tool_call").collect();
+        assert_eq!(tool_steps.len(), 2);
+        assert_eq!(tool_steps[0].tool_name.as_deref(), Some("edit_file"));
+        assert_eq!(tool_steps[0].status.as_deref(), Some("succeeded"));
+        assert_eq!(tool_steps[1].tool_name.as_deref(), Some("search_files"));
+        assert_eq!(tool_steps[1].status.as_deref(), Some("succeeded"));
+        let search_observation = tool_steps[1].observation.clone().unwrap_or_default();
+        assert!(
+            search_observation.contains("[truncated: "),
+            "large search observation must carry the spill notice"
+        );
+        assert!(search_observation.contains("full output spilled to "));
+        // The spilled file exists and holds the full pre-truncation bytes.
+        let start = search_observation.find("spilled to ").expect("notice") + "spilled to ".len();
+        let end = search_observation.rfind(']').expect("notice end");
+        let spill_path = std::path::PathBuf::from(search_observation[start..end].trim());
+        let spilled = std::fs::read(&spill_path).expect("spill file exists");
+        assert!(spilled.len() > 20 * 1024, "spill holds the full output");
+        assert!(String::from_utf8_lossy(&spilled).contains("haystack marker line 199"));
+        let _ = std::fs::remove_dir_all(temp_workspace("newtools"));
+    }
+
+    /// Scripted executor honouring per-call tool arguments (unlike
+    /// [`ScriptedExecutor`], whose helper fixes arguments to `{}`).
+    struct ScriptedCalls {
+        steps: Mutex<VecDeque<Result<AiResponse, ExecutorError>>>,
+    }
+
+    impl ScriptedCalls {
+        fn new(steps: Vec<Result<AiResponse, ExecutorError>>) -> Self {
+            Self {
+                steps: Mutex::new(steps.into()),
+            }
+        }
+    }
+
+    impl ProviderExecutor for ScriptedCalls {
+        fn execute(
+            &self,
+            _request: &crate::application::execution::AiRequest,
+            _credential: &str,
+            _token: &crate::application::agent::control::CancellationToken,
+        ) -> Result<AiResponse, ExecutorError> {
+            self.steps
+                .lock()
+                .expect("script lock")
+                .pop_front()
+                .unwrap_or(Err(ExecutorError::Failure))
+        }
+    }
+
+    fn tool_call_with(id: &str, name: &str, arguments: &serde_json::Value) -> ToolCall {
+        ToolCall {
+            id: id.to_string(),
+            name: name.to_string(),
+            arguments: arguments.to_string(),
+            thought_signature: None,
+        }
+    }
 }

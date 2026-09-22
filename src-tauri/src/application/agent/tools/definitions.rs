@@ -1,96 +1,175 @@
 //! Native tool definitions for the agent workspace tools.
-//! JSON-Schema descriptions of the four tools; execution lives in sibling modules.
+//! JSON-Schema descriptions of the six tools; execution lives in sibling modules.
 
 use super::ToolRegistry;
 use crate::application::execution::ToolDefinition;
 
 impl ToolRegistry {
-    /// Return JSON-Schema [`ToolDefinition`]s for the four native tools.
+    /// Return JSON-Schema [`ToolDefinition`]s for the six native tools.
     pub(crate) fn definitions() -> Vec<ToolDefinition> {
         vec![
-            ToolDefinition {
-                name: "execute_command".to_string(),
-                description: "Run a shell command with a 30s timeout, capturing stdout and stderr. Executes inside the workspace. Output is truncated to 20KB.".to_string(),
-                parameters: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "command": {
-                            "type": "string",
-                            "description": "Shell command to execute (e.g. \"echo hello\" or \"cargo test\")"
-                        },
-                        "cwd": {
-                            "type": "string",
-                            "description": "Working directory relative to workspace root (optional). Must be inside workspace."
-                        }
-                    },
-                    "required": ["command"],
-                    "additionalProperties": false
-                }),
-            },
-            ToolDefinition {
-                name: "read_file".to_string(),
-                description: "Read a file inside the workspace. Supports line offset and limit for large files.".to_string(),
-                parameters: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Path to the file relative to workspace root"
-                        },
-                        "offset_lines": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "description": "Line offset to start reading from (0-indexed)"
-                        },
-                        "limit_lines": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "description": "Maximum number of lines to return"
-                        }
-                    },
-                    "required": ["path"],
-                    "additionalProperties": false
-                }),
-            },
-            ToolDefinition {
-                name: "write_file".to_string(),
-                description: "Write or overwrite a file inside the workspace, creating parent directories as needed.".to_string(),
-                parameters: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Destination path relative to workspace root"
-                        },
-                        "content": {
-                            "type": "string",
-                            "description": "Text content to write"
-                        }
-                    },
-                    "required": ["path", "content"],
-                    "additionalProperties": false
-                }),
-            },
-            ToolDefinition {
-                name: "list_directory".to_string(),
-                description: "List directory contents inside the workspace. Use recursive=true to walk subdirectories.".to_string(),
-                parameters: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Directory path relative to workspace root (defaults to workspace root)"
-                        },
-                        "recursive": {
-                            "type": "boolean",
-                            "description": "Whether to list recursively"
-                        }
-                    },
-                    "required": [],
-                    "additionalProperties": false
-                }),
-            },
+            execute_command_definition(),
+            read_file_definition(),
+            write_file_definition(),
+            list_directory_definition(),
+            edit_file_definition(),
+            search_files_definition(),
         ]
+    }
+}
+
+fn execute_command_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "execute_command".to_string(),
+        description: "Run a shell command with a 30s timeout, capturing stdout and stderr. Executes inside the workspace. Output is truncated to 20KB.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "Shell command to execute (e.g. \"echo hello\" or \"cargo test\")"
+                },
+                "cwd": {
+                    "type": "string",
+                    "description": "Working directory relative to workspace root (optional). Must be inside workspace."
+                }
+            },
+            "required": ["command"],
+            "additionalProperties": false
+        }),
+    }
+}
+
+fn read_file_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "read_file".to_string(),
+        description:
+            "Read a file inside the workspace. Supports line offset and limit for large files."
+                .to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to the file relative to workspace root"
+                },
+                "offset_lines": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Line offset to start reading from (0-indexed)"
+                },
+                "limit_lines": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Maximum number of lines to return"
+                }
+            },
+            "required": ["path"],
+            "additionalProperties": false
+        }),
+    }
+}
+
+fn write_file_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "write_file".to_string(),
+        description:
+            "Write or overwrite a file inside the workspace, creating parent directories as needed."
+                .to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Destination path relative to workspace root"
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Text content to write"
+                }
+            },
+            "required": ["path", "content"],
+            "additionalProperties": false
+        }),
+    }
+}
+
+fn list_directory_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "list_directory".to_string(),
+        description: "List directory contents inside the workspace. Use recursive=true to walk subdirectories.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Directory path relative to workspace root (defaults to workspace root)"
+                },
+                "recursive": {
+                    "type": "boolean",
+                    "description": "Whether to list recursively"
+                }
+            },
+            "required": [],
+            "additionalProperties": false
+        }),
+    }
+}
+
+fn edit_file_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "edit_file".to_string(),
+        description: "Replace one exact occurrence of old_text with new_text, or insert new_text verbatim directly after the single occurrence of insert_after. Supply exactly one of old_text or insert_after. The anchor must occur exactly once: zero matches fail with 'no exact match found' and two or more matches fail rather than guessing. Confined to the workspace; the file must be valid UTF-8. Returns a unified diff of the change.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to the file relative to workspace root"
+                },
+                "old_text": {
+                    "type": "string",
+                    "description": "Exact text to replace (must occur exactly once in the file)"
+                },
+                "new_text": {
+                    "type": "string",
+                    "description": "Replacement text (replace mode) or text to insert verbatim directly after the anchor (insert mode); include any newlines"
+                },
+                "insert_after": {
+                    "type": "string",
+                    "description": "Anchor text; new_text is inserted verbatim directly after its single occurrence"
+                }
+            },
+            "required": ["path", "new_text"],
+            "additionalProperties": false
+        }),
+    }
+}
+
+fn search_files_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "search_files".to_string(),
+        description: "Search file contents inside the workspace with a regex-lite pattern; one path:line:text hit per matching line. Supported syntax: literal characters, . (any single character), * + ? quantifiers on the preceding element, ^ start and $ end anchors, and classes \\d \\D \\w \\W \\s \\S. Groups (), alternation |, character classes [], and {n,m} counts are NOT supported and match literally. Matching is case-sensitive and bounded (patterns over 10KB rejected; huge single lines scanned under a step budget). Binary files, files over 5MB, unreadable files, and symbolic links are skipped; the walk never leaves the workspace. Long lines are middle-truncated with an edge-kept notice.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Regex-lite pattern (see tool description for the supported subset)"
+                },
+                "directory": {
+                    "type": "string",
+                    "description": "Directory scope relative to workspace root (defaults to workspace root)"
+                },
+                "max_matches": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Maximum matches to return (default 50, hard cap 200)"
+                }
+            },
+            "required": ["pattern"],
+            "additionalProperties": false
+        }),
     }
 }
 
@@ -100,12 +179,14 @@ mod tests {
     #[test]
     fn definitions_produce_valid_objects() {
         let defs = ToolRegistry::definitions();
-        assert_eq!(defs.len(), 4);
+        assert_eq!(defs.len(), 6);
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
         assert!(names.contains(&"execute_command"));
         assert!(names.contains(&"read_file"));
         assert!(names.contains(&"write_file"));
         assert!(names.contains(&"list_directory"));
+        assert!(names.contains(&"edit_file"));
+        assert!(names.contains(&"search_files"));
         for def in &defs {
             assert!(!def.name.is_empty());
             assert!(!def.description.is_empty());
@@ -137,6 +218,19 @@ mod tests {
         let lprops = list.parameters["properties"].as_object().unwrap();
         assert!(lprops.contains_key("path"));
         assert!(lprops.contains_key("recursive"));
+
+        let edit = defs.iter().find(|d| d.name == "edit_file").unwrap();
+        let eprops = edit.parameters["properties"].as_object().unwrap();
+        assert!(eprops.contains_key("path"));
+        assert!(eprops.contains_key("old_text"));
+        assert!(eprops.contains_key("new_text"));
+        assert!(eprops.contains_key("insert_after"));
+
+        let search = defs.iter().find(|d| d.name == "search_files").unwrap();
+        let sprops = search.parameters["properties"].as_object().unwrap();
+        assert!(sprops.contains_key("pattern"));
+        assert!(sprops.contains_key("directory"));
+        assert!(sprops.contains_key("max_matches"));
     }
 
     #[test]
