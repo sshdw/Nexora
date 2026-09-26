@@ -44,6 +44,7 @@ use super::control::{AgentRunEvent, RunControl};
 use super::permissions::RunPreset;
 use super::persistence::{mode_to_column, terminal_outcome, RunRecorder};
 use super::runner::AgentRunner;
+use crate::application::context_stats::context_limit_for;
 use crate::application::conversations::ConversationService;
 use crate::application::execution::{AiMessage, ExecutorRegistry, ProviderExecutor, RequestError};
 use crate::application::settings::SettingsService;
@@ -555,6 +556,14 @@ fn spawn_run(
                     .with_run_id(run_id)
                     .with_events(&tx_for_recorder);
                 let permission_store = super::permissions::PermissionStore::load(&db);
+                // Task T4 wiring: the run's model window enables the proactive
+                // compaction trigger (`usable_context_tokens` + `decide`);
+                // without it the trigger stays dormant (limit `0`) and only
+                // reactive overflow recovery runs.
+                let context_limit = context_limit_for(
+                    Some(run_request.provider.as_str()),
+                    Some(run_request.model.as_str()),
+                );
                 let mut runner = AgentRunner::new(executor.as_ref(), &workspace_root)
                     .with_control(control)
                     .with_approval_gate(gate)
@@ -562,6 +571,7 @@ fn spawn_run(
                     .with_permission_store(permission_store)
                     .with_history(history)
                     .with_action_summary(action_summary)
+                    .with_context_limit(context_limit)
                     .with_event_sender(tx_for_recorder.clone());
                 if let Some(max_iterations) = run_request.max_iterations {
                     runner = runner.with_max_iterations(max_iterations);
@@ -1297,6 +1307,85 @@ mod tests {
         let run = runs.iter().find(|r| r.id == run_id).expect("run");
         assert_eq!(run.mode, "supervised");
         let _ = std::fs::remove_dir_all(temp_workspace("mode-persist"));
+    }
+
+    /// Task T4 wiring: `spawn_run` resolves the model window via
+    /// [`context_limit_for`] (the same call the run thread makes), so the
+    /// proactive trigger has a usable window; a `0` limit (unwired) or
+    /// unknown usage keeps it dormant. Reactive overflow recovery is
+    /// untouched (covered by the runner/compaction suites).
+    #[test]
+    fn wired_context_limit_activates_proactive_compaction_and_zero_stays_dormant() {
+        use crate::application::agent::compaction::{
+            usable_context_tokens, ContextAction, ContextGovernor,
+        };
+        use crate::application::execution::{AiMessage, AiRole, TokenUsage};
+
+        fn user(content: &str) -> AiMessage {
+            AiMessage {
+                role: AiRole::User,
+                content: content.to_string(),
+                attachments: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_result: None,
+            }
+        }
+
+        // Foldable history (> 2 messages) so `decide` reaches the trigger.
+        let history = vec![user("one"), user("two"), user("three")];
+
+        // Wired: resolve exactly as `spawn_run` does, for one model per
+        // provider. Every wired limit yields a usable window and an
+        // over-threshold observation compacts on `Threshold`.
+        for (provider, model) in [
+            ("openai", "gpt-5.6-terra"),
+            ("anthropic", "claude-sonnet-5"),
+            ("gemini", "gemini-3.6-flash"),
+        ] {
+            let wired = context_limit_for(Some(provider), Some(model));
+            let usable = usable_context_tokens(wired);
+            assert!(
+                usable > 0,
+                "wired limit for {provider}/{model} must leave a usable window"
+            );
+            let mut governor = ContextGovernor::new();
+            governor.observe(Some(TokenUsage {
+                input_tokens: usable.saturating_add(1),
+                output_tokens: 0,
+            }));
+            match governor.decide(&history, wired) {
+                ContextAction::Compact(reason) => assert_eq!(
+                    reason.as_str(),
+                    "threshold",
+                    "wired {provider}/{model} must compact on Threshold"
+                ),
+                other => panic!("wired {provider}/{model} must Compact, got {other:?}"),
+            }
+        }
+
+        // Dormant: limit `0` (no wired window) always proceeds, even at
+        // maximum reported usage.
+        let wired_openai = context_limit_for(Some("openai"), Some("gpt-5.6-terra"));
+        assert!(usable_context_tokens(wired_openai) > 0);
+        let mut dormant = ContextGovernor::new();
+        dormant.observe(Some(TokenUsage {
+            input_tokens: u64::MAX,
+            output_tokens: 0,
+        }));
+        assert_eq!(
+            dormant.decide(&history, 0),
+            ContextAction::Proceed,
+            "limit 0 must keep the proactive trigger dormant"
+        );
+
+        // Dormant: unknown usage (`None`) never triggers, even when wired.
+        let mut unknown = ContextGovernor::new();
+        unknown.observe(None);
+        assert_eq!(
+            unknown.decide(&history, wired_openai),
+            ContextAction::Proceed,
+            "unknown usage must never trigger"
+        );
     }
 
     /// Local per-turn delay wrapper: sleeps before each provider turn so the

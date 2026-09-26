@@ -31,10 +31,21 @@ pub(crate) const DEFAULT_CONTEXT_LIMIT: u64 = 128_000;
 ///
 /// Provider names are the internal `providers.name` values (`openai`,
 /// `anthropic`, `gemini`, ...); compat providers ride the OpenAI-compatible
-/// path and fall back to the default. Model matching is substring-based only
-/// for the `gemini` family so unknown future IDs stay honest via the default.
+/// path and fall back to the default. Known model IDs resolve first via
+/// [`model_context_limit`] (currently pinned to their provider's
+/// conservative window — see below); anything unlisted falls through to the
+/// provider fallback, then the `gemini`-substring rule, then the default.
+///
+/// Code is the source of truth for windows: `docs/Nexora-AI-Model-Catalog-*`
+/// is research-only and claims larger per-model windows (e.g. ~1.05M) that
+/// diverge from these conservative defaults, so no per-model bump is applied
+/// without live verification. A smaller (earlier-compacting) window is the
+/// safe direction for the proactive trigger.
 #[must_use]
 pub(crate) fn context_limit_for(provider: Option<&str>, model: Option<&str>) -> u64 {
+    if let Some(limit) = model.and_then(model_context_limit) {
+        return limit;
+    }
     match provider {
         Some("anthropic") => ANTHROPIC_CONTEXT_LIMIT,
         Some("gemini") => GEMINI_CONTEXT_LIMIT,
@@ -46,6 +57,35 @@ pub(crate) fn context_limit_for(provider: Option<&str>, model: Option<&str>) -> 
                 DEFAULT_CONTEXT_LIMIT
             }
         }
+    }
+}
+
+/// Per-model window for every ID in the current `SUPPORTED_MODELS` lists
+/// (`infrastructure::providers::{openai,anthropic,gemini}`).
+///
+/// Each ID maps to its provider's conservative window constant above —
+/// pinning the value per model (so a future verified bump touches one arm)
+/// without inventing numbers from the research-only catalog. Returns `None`
+/// for unlisted IDs so [`context_limit_for`] falls through to the provider
+/// fallback.
+#[must_use]
+fn model_context_limit(model: &str) -> Option<u64> {
+    match model {
+        // `openai::SUPPORTED_MODELS`.
+        "gpt-5.6-terra" | "gpt-5.6-luna" | "gpt-5.6-sol" => Some(OPENAI_CONTEXT_LIMIT),
+        // `anthropic::SUPPORTED_MODELS`.
+        "claude-sonnet-5" | "claude-haiku-4-5-20251001" | "claude-opus-4-8" => {
+            Some(ANTHROPIC_CONTEXT_LIMIT)
+        }
+        // `gemini::SUPPORTED_MODELS`.
+        "gemini-3.6-flash"
+        | "gemini-3.1-flash-lite"
+        | "gemini-3.1-pro-preview"
+        | "gemini-flash-lite-latest"
+        | "gemini-pro-latest"
+        | "gemini-3.5-flash"
+        | "gemini-3.5-flash-lite" => Some(GEMINI_CONTEXT_LIMIT),
+        _ => None,
     }
 }
 
@@ -408,6 +448,79 @@ mod tests {
         assert_eq!(context_limit_for(None, None), DEFAULT_CONTEXT_LIMIT);
         assert_eq!(
             context_limit_for(Some("xkiro"), Some("qwen/qwen3.5-plus:free")),
+            DEFAULT_CONTEXT_LIMIT
+        );
+    }
+
+    #[test]
+    fn supported_model_ids_pin_to_provider_windows() {
+        // Every ID in the three `SUPPORTED_MODELS` lists resolves to its
+        // provider's conservative window — including when the provider is
+        // unknown/missing, so the model arm (not the fallback) owns the value.
+        for model in ["gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-sol"] {
+            assert_eq!(
+                context_limit_for(Some("openai"), Some(model)),
+                OPENAI_CONTEXT_LIMIT,
+                "openai model {model}"
+            );
+            assert_eq!(
+                context_limit_for(None, Some(model)),
+                OPENAI_CONTEXT_LIMIT,
+                "openai model {model} without provider"
+            );
+            assert_eq!(model_context_limit(model), Some(OPENAI_CONTEXT_LIMIT));
+        }
+        for model in [
+            "claude-sonnet-5",
+            "claude-haiku-4-5-20251001",
+            "claude-opus-4-8",
+        ] {
+            assert_eq!(
+                context_limit_for(Some("anthropic"), Some(model)),
+                ANTHROPIC_CONTEXT_LIMIT,
+                "anthropic model {model}"
+            );
+            assert_eq!(
+                context_limit_for(None, Some(model)),
+                ANTHROPIC_CONTEXT_LIMIT,
+                "anthropic model {model} without provider"
+            );
+            assert_eq!(model_context_limit(model), Some(ANTHROPIC_CONTEXT_LIMIT));
+        }
+        for model in [
+            "gemini-3.6-flash",
+            "gemini-3.1-flash-lite",
+            "gemini-3.1-pro-preview",
+            "gemini-flash-lite-latest",
+            "gemini-pro-latest",
+            "gemini-3.5-flash",
+            "gemini-3.5-flash-lite",
+        ] {
+            assert_eq!(
+                context_limit_for(Some("gemini"), Some(model)),
+                GEMINI_CONTEXT_LIMIT,
+                "gemini model {model}"
+            );
+            assert_eq!(
+                context_limit_for(None, Some(model)),
+                GEMINI_CONTEXT_LIMIT,
+                "gemini model {model} without provider"
+            );
+            assert_eq!(model_context_limit(model), Some(GEMINI_CONTEXT_LIMIT));
+        }
+        // Unlisted IDs keep the old behavior: provider fallback, then the
+        // `gemini`-substring rule, then the default.
+        assert_eq!(model_context_limit("gpt-5.6-future"), None);
+        assert_eq!(
+            context_limit_for(Some("openai"), Some("gpt-5.6-future")),
+            OPENAI_CONTEXT_LIMIT
+        );
+        assert_eq!(
+            context_limit_for(Some("unknown"), Some("gemini-next-1")),
+            GEMINI_CONTEXT_LIMIT
+        );
+        assert_eq!(
+            context_limit_for(Some("unknown"), Some("something-else")),
             DEFAULT_CONTEXT_LIMIT
         );
     }
