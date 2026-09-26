@@ -37,6 +37,9 @@ jobs:
     name: rust (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
     strategy:
       fail-fast: false
       matrix:
@@ -54,7 +57,8 @@ jobs:
             libgtk-3-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
-            pkg-config
+            pkg-config \
+            mold
 
       - name: Install baseline Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -68,10 +72,18 @@ jobs:
           rustc --version
           cargo clippy --version
 
+      - name: sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
       - name: Cache
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri->target
+          shared-key: ${{ runner.os }}-cargo
+
+      - name: Set mold RUSTFLAGS (Linux only)
+        if: runner.os == 'Linux'
+        run: echo "RUSTFLAGS=-C link-arg=-fuse-ld=mold" >> $GITHUB_ENV
 
       - name: cargo clippy
         working-directory: src-tauri
