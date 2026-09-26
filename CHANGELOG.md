@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-09-26
+
+### Added
+
+- **Agent — cancellable provider transport with honest retries (T1)**: provider
+  sends are cancellable and only 429/5xx-class failures are retried; terminal
+  failures (e.g. context-length) are returned without retry (2026-09-26).
+- **Agent — persistent permission rules with group decisions (T2)**: approval
+  decisions persist as rules with group scope, and a shell-allow floor keeps
+  shell execution gated even under allow rules (2026-09-26).
+- **Agent — edit_file and search_files tools with spill-backed truncation (T3)**:
+  two new agent tools backed by spill-to-disk truncation for large outputs
+  (2026-09-26).
+- **Agent — in-run context compaction (T4)**: proactive threshold gate (0.8) plus
+  reactive overflow recovery (max 2 recoveries per run) with middle-out history
+  pruning; failed summarizers emit `CompactionFailed` and the run continues
+  uncompacted (2026-09-26).
+- **Agent — coding/document run presets (T5)**: Coding (default) keeps all six
+  tools; Document structurally bans shell — `execute_command` is hidden from the
+  tool schema and denied deterministically on dispatch (2026-09-26).
+
+### Changed
+
+- **Agent — god-object splits (S1–S3)**: `runner.rs` split into
+  prompts/budget/dispatch/errors modules, `tools.rs` into
+  definitions/executor/output modules, and the run registry split out of
+  `service.rs`; no behavior change (2026-09-26).
+- **CI — parallel jobs with shared cache**: CI jobs run in parallel with a shared
+  cargo cache, sccache, and the mold linker on Linux (2026-09-26).
+
 ## [1.3.3] - 2026-09-20
 
 ### Added
@@ -244,6 +274,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > Note: tag `v0.3.0` exists remotely from the MVP era but carries no changelog entry; superseded by 1.0.0.
 
+[1.5.0]: https://github.com/sshdw/Nexora/releases/tag/v1.5.0
 [1.3.3]: https://github.com/sshdw/Nexora/releases/tag/v1.3.3
 [1.3.2]: https://github.com/sshdw/Nexora/releases/tag/v1.3.2
 [1.3.1]: https://github.com/sshdw/Nexora/releases/tag/v1.3.1
