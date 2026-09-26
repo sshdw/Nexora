@@ -149,7 +149,7 @@ fn edit_file_definition() -> ToolDefinition {
 fn search_files_definition() -> ToolDefinition {
     ToolDefinition {
         name: "search_files".to_string(),
-        description: "Search file contents inside the workspace with a regex-lite pattern; one path:line:text hit per matching line. Supported syntax: literal characters, . (any single character), * + ? quantifiers on the preceding element, ^ start and $ end anchors, and classes \\d \\D \\w \\W \\s \\S. Groups (), alternation |, character classes [], and {n,m} counts are NOT supported and match literally. Matching is case-sensitive and bounded (patterns over 10KB rejected; huge single lines scanned under a step budget). Binary files, files over 5MB, unreadable files, and symbolic links are skipped; the walk never leaves the workspace. Long lines are middle-truncated with an edge-kept notice.".to_string(),
+        description: "Search file contents inside the workspace with a regex-lite pattern; one path:line:text hit per matching line. Supported syntax: literal characters, . (any single character), * + ? quantifiers on the preceding element, ^ start and $ end anchors, and classes \\d \\D \\w \\W \\s \\S. Groups (), alternation |, character classes [], and {n,m} counts are NOT supported and match literally. Matching is case-sensitive and bounded (patterns over 10KB rejected; huge single lines scanned under a step budget). Binary files, files over 5MB, unreadable files, and symbolic links are skipped; the walk never leaves the workspace. Long lines are middle-truncated with an edge-kept notice. `path` is an alias of `directory` (either scopes the search).".to_string(),
         parameters: serde_json::json!({
             "type": "object",
             "properties": {
@@ -159,7 +159,11 @@ fn search_files_definition() -> ToolDefinition {
                 },
                 "directory": {
                     "type": "string",
-                    "description": "Directory scope relative to workspace root (defaults to workspace root)"
+                    "description": "Directory scope relative to workspace root (defaults to workspace root; `path` is an alias)"
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Alias of `directory`: directory scope relative to workspace root"
                 },
                 "max_matches": {
                     "type": "integer",
@@ -231,6 +235,24 @@ mod tests {
         assert!(sprops.contains_key("pattern"));
         assert!(sprops.contains_key("directory"));
         assert!(sprops.contains_key("max_matches"));
+    }
+
+    #[test]
+    fn search_files_schema_documents_path_alias() {
+        // `path` is a documented alias of `directory` (the executor already
+        // falls back to it); the schema must advertise both.
+        let defs = ToolRegistry::definitions();
+        let search = defs.iter().find(|d| d.name == "search_files").unwrap();
+        assert!(
+            search
+                .description
+                .contains("`path` is an alias of `directory`"),
+            "alias must be documented: {}",
+            search.description
+        );
+        let sprops = search.parameters["properties"].as_object().unwrap();
+        assert!(sprops.contains_key("path"));
+        assert!(sprops.contains_key("directory"));
     }
 
     #[test]

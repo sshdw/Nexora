@@ -37,9 +37,11 @@ pub(crate) fn truncate_with_spill_dir(s: String, spill_dir: &Path) -> String {
     if s.len() <= MAX_OUTPUT_BYTES {
         return s;
     }
-    // Find char boundaries for head/tail
-    let head_end = find_char_boundary(&s, TRUNCATE_HEAD);
-    let tail_start = find_char_boundary(&s, s.len().saturating_sub(TRUNCATE_TAIL));
+    // Find char boundaries for head/tail: the head walks back to the start
+    // of the char containing the cut, the tail walks forward to the next
+    // boundary so the retained tail never starts mid-char.
+    let head_end = find_char_boundary(&s, TRUNCATE_HEAD, false);
+    let tail_start = find_char_boundary(&s, s.len().saturating_sub(TRUNCATE_TAIL), true);
     let head = &s[..head_end];
     let tail = &s[tail_start..];
     let kept = head.len() + tail.len();
@@ -103,24 +105,29 @@ fn io_reason(e: &std::io::Error) -> String {
     one_line.chars().take(200).collect()
 }
 
-fn find_char_boundary(s: &str, mut index: usize) -> usize {
+/// Snap `index` to a valid UTF-8 char boundary in `s`.
+///
+/// The head walks back (keeps slightly less, always safe); the tail walks
+/// forward to the next boundary (keeps slightly less, never starts mid-char).
+fn find_char_boundary(s: &str, index: usize, for_tail: bool) -> usize {
     if index >= s.len() {
         return s.len();
     }
-    while !s.is_char_boundary(index) && index > 0 {
-        index -= 1;
+    if s.is_char_boundary(index) {
+        return index;
     }
-    // If we moved back, try to go forward to nearest valid near original?
-    // Simpler: walk back until boundary, that's valid.
-    // If index was inside a char, we backtrack to start of char, slightly less than requested but safe.
-    // For tail, we want to start at a boundary at or after desired index.
-    // For tail we should walk forward.
-    // This function is used for both head (walk back) and tail (should walk forward).
-    // For tail we pass s.len() - TAIL, we should walk forward to next boundary.
-    // Handle tail specially: if not boundary, walk forward.
-    // Our current call for tail uses index that may be inside char; backing up is also safe (shows slightly more).
-    // Acceptable.
-    index
+    if for_tail {
+        let mut forward = index + 1;
+        while forward < s.len() && !s.is_char_boundary(forward) {
+            forward += 1;
+        }
+        return forward.min(s.len());
+    }
+    let mut back = index;
+    while back > 0 && !s.is_char_boundary(back) {
+        back -= 1;
+    }
+    back
 }
 
 // ---------------------------------------------------------------------------
@@ -568,6 +575,21 @@ mod tests {
         // Head/tail content still present around the legacy marker.
         assert!(out.contains("output truncated"));
         let _ = fs::remove_dir_all(bucket_root());
+    }
+
+    #[test]
+    fn char_boundary_head_walks_back_tail_walks_forward() {
+        // 'é' occupies bytes 1..3, so index 2 is mid-char.
+        let s = "aébc";
+        assert!(!s.is_char_boundary(2));
+        assert_eq!(find_char_boundary(s, 2, false), 1);
+        assert_eq!(find_char_boundary(s, 2, true), 3);
+        // Boundary indexes are identity in both directions.
+        assert_eq!(find_char_boundary(s, 1, false), 1);
+        assert_eq!(find_char_boundary(s, 1, true), 1);
+        // Past-end clamps to the string end.
+        assert_eq!(find_char_boundary(s, 99, false), s.len());
+        assert_eq!(find_char_boundary(s, 99, true), s.len());
     }
 
     fn bucket_root() -> std::path::PathBuf {
