@@ -443,6 +443,26 @@ pub(crate) fn summary_prompt_for_slice(head: &[AiMessage]) -> String {
 /// returns the history unchanged. `percent >= 100` clears every tool result:
 /// the final ladder rung must leave nothing behind for the failure message
 /// ("even after removing all tool responses") to stay honest.
+/// Contiguous middle-out window over `len` tool results: exactly `count`
+/// positions centered on the middle (`len / 2`), left-biased on ties so a
+/// single drop takes the just-left-of-center entry. Clamped so the window
+/// always holds `min(count, len)` positions.
+#[must_use]
+pub(crate) fn middle_out_window(len: usize, count: usize) -> Range<usize> {
+    let count = count.min(len);
+    let middle = len / 2;
+    let start = middle
+        .saturating_sub(count.div_ceil(2))
+        .min(len.saturating_sub(count));
+    start..start.saturating_add(count)
+}
+
+/// Keep the summarizer input fittable: drop `percent` of the tool-result
+/// messages, middle-out (oldest and newest context survive longest), keeping
+/// every survivor in order. `percent == 0` — or no tool results at all —
+/// returns the history unchanged. `percent >= 100` clears every tool result:
+/// the final ladder rung must leave nothing behind for the failure message
+/// ("even after removing all tool responses") to stay honest.
 #[must_use]
 pub(crate) fn filter_tool_responses(messages: &[AiMessage], percent: u8) -> Vec<AiMessage> {
     if percent == 0 {
@@ -467,24 +487,9 @@ pub(crate) fn filter_tool_responses(messages: &[AiMessage], percent: u8) -> Vec<
     let num_to_remove = ((tool_indices.len() * usize::from(percent)) / 100)
         .max(1)
         .min(tool_indices.len());
-    let middle = tool_indices.len() / 2;
     let mut drop = vec![false; messages.len()];
-    for step in 0..num_to_remove {
-        let offset = step / 2;
-        let position = if step % 2 == 0 {
-            if middle > offset {
-                Some(tool_indices[middle - offset - 1])
-            } else {
-                None
-            }
-        } else if middle + offset < tool_indices.len() {
-            Some(tool_indices[middle + offset])
-        } else {
-            None
-        };
-        if let Some(index) = position {
-            drop[index] = true;
-        }
+    for position in middle_out_window(tool_indices.len(), num_to_remove) {
+        drop[tool_indices[position]] = true;
     }
     messages
         .iter()
@@ -926,6 +931,33 @@ mod tests {
         // Histories without tool results pass through untouched.
         let plain = vec![system(), user("hi")];
         assert_eq!(filter_tool_responses(&plain, 100), plain);
+    }
+
+    #[test]
+    fn single_tool_result_drops_at_partial_rung() {
+        let (call, result) = assistant_with_tool("1", "read_file", "only");
+        let messages = vec![system(), user("request"), call, result];
+        // floor(1 * percent / 100) is 0, so the min-1 rule must still drop
+        // the lone tool result at every partial rung.
+        for percent in [10, 20, 50] {
+            let kept = filter_tool_responses(&messages, percent);
+            assert!(
+                kept.iter()
+                    .find_map(|message| message.tool_result.as_ref())
+                    .is_none(),
+                "N=1 at {percent}% must drop the single tool result"
+            );
+            assert_eq!(kept.len(), messages.len() - 1);
+        }
+    }
+
+    #[test]
+    fn middle_out_window_covers_all_when_count_equals_len() {
+        // The loop-path index selection must be able to cover every tool
+        // result, so a full-count window leaves no survivor behind.
+        assert_eq!(middle_out_window(3, 3), 0..3);
+        assert_eq!(middle_out_window(1, 1), 0..1);
+        assert_eq!(middle_out_window(5, 1), 1..2);
     }
 
     #[test]
