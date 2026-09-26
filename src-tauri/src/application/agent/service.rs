@@ -1578,14 +1578,25 @@ mod tests {
         );
 
         // The edit landed on disk through the service/registry path.
-        assert_eq!(
-            std::fs::read_to_string(workspace.join("target.txt")).unwrap(),
-            "alpha BETA gamma"
-        );
-
         // Both tool observations are persisted and visible via list steps.
         let steps = list_steps_for_run(&db, run_id).expect("steps");
         let tool_steps: Vec<_> = steps.iter().filter(|s| s.kind == "tool_call").collect();
+        let step_debug: Vec<_> = tool_steps
+            .iter()
+            .map(|s| {
+                (
+                    s.tool_name.clone(),
+                    s.status.clone(),
+                    s.observation.clone().unwrap_or_default(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("target.txt")).unwrap(),
+            "alpha BETA gamma",
+            "edit must land on disk; tool steps: {step_debug:?}"
+        );
+
         assert_eq!(tool_steps.len(), 2);
         assert_eq!(tool_steps[0].tool_name.as_deref(), Some("edit_file"));
         assert_eq!(tool_steps[0].status.as_deref(), Some("succeeded"));
