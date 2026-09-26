@@ -724,7 +724,11 @@ mod tests {
             std::env::temp_dir().join(format!("nexora-agent-bridge-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("workspace dir");
-        dir
+        // Canonical-vs-canonical: on Windows the temp dir can sit behind an
+        // 8.3 short name (notably `RUNNER~1` on CI runners); the tools'
+        // canonical re-check then rejects the raw root with `PathTraversal`.
+        // Same one-time resolve as the tools/runner test supports.
+        crate::application::agent::tools::test_support::canonical_workspace(&dir)
     }
 
     fn collect_frames(rx: &Receiver<RunFrame>) -> Vec<RunFrame> {
@@ -1584,11 +1588,11 @@ mod tests {
         let step_debug: Vec<_> = tool_steps
             .iter()
             .map(|s| {
-                (
-                    s.tool_name.clone(),
-                    s.status.clone(),
-                    s.observation.clone().unwrap_or_default(),
-                )
+                let obs = s.observation.clone().unwrap_or_default();
+                // First line only: full observations (e.g. spilled search
+                // output) would flood the failure log.
+                let short: String = obs.lines().next().unwrap_or("").chars().take(200).collect();
+                (s.tool_name.clone(), s.status.clone(), short)
             })
             .collect();
         assert_eq!(
