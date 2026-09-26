@@ -2066,7 +2066,7 @@ mod tests {
         }
     }
 
-    /// Test (a): the four real tool definitions, serialized through
+    /// Test (a): the six real tool definitions, serialized through
     /// `generate_content_request`, contain none of the JSON-Schema keys Gemini
     /// rejects; read_file's parameters equal the exact reduced shape; the
     /// empty `required` of list_directory is dropped entirely.
@@ -2078,8 +2078,8 @@ mod tests {
             serde_json::from_str(&serde_json::to_string(&body).expect("serialize")).expect("parse");
         let declarations = value["tools"][0]["functionDeclarations"]
             .as_array()
-            .expect("four function declarations");
-        assert_eq!(declarations.len(), 4, "all four tools are declared");
+            .expect("six function declarations");
+        assert_eq!(declarations.len(), 6, "all six tools are declared");
 
         for declaration in declarations {
             let parameters = &declaration["parameters"];
@@ -2146,6 +2146,18 @@ mod tests {
             serde_json::json!(["path", "content"]),
             "write_file keeps its required array"
         );
+        assert_eq!(
+            declarations[4]["parameters"]["required"],
+            serde_json::json!(["path", "new_text"]),
+            "edit_file keeps its required array"
+        );
+        assert_eq!(declarations[4]["name"], "edit_file");
+        assert_eq!(
+            declarations[5]["parameters"]["required"],
+            serde_json::json!(["pattern"]),
+            "search_files keeps its required array"
+        );
+        assert_eq!(declarations[5]["name"], "search_files");
     }
 
     /// Test (b): the reduction is a Gemini wire adapter only. The shared

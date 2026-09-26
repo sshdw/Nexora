@@ -3,6 +3,9 @@
 //! Keeps model-visible output within the context budget; no execution logic.
 
 use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_OUTPUT_BYTES: usize = 20 * 1024; // 20 KB
 const TRUNCATE_HEAD: usize = 10 * 1024;
@@ -16,6 +19,21 @@ const LCS_CELL_LIMIT: usize = 4_000_000;
 // ---------------------------------------------------------------------------
 
 pub(crate) fn truncate_output(s: String) -> String {
+    truncate_output_for_run(s, "adhoc")
+}
+
+/// [`truncate_output`] bucketed under one agent run.
+///
+/// `run_id` selects `std::env::temp_dir()/nexora-spills/<run_id>/` and is
+/// sanitised to a filename-safe bucket so caller-controlled text can never
+/// escape the spill root. Spilling is best-effort: any I/O failure degrades
+/// to the inline notice, never to an error.
+pub(crate) fn truncate_output_for_run(s: String, run_id: &str) -> String {
+    truncate_with_spill_dir(s, &spill_root().join(sanitize_bucket(run_id)))
+}
+
+/// Test seam: truncate `s`, spilling the full bytes into `spill_dir`.
+pub(crate) fn truncate_with_spill_dir(s: String, spill_dir: &Path) -> String {
     if s.len() <= MAX_OUTPUT_BYTES {
         return s;
     }
@@ -24,12 +42,65 @@ pub(crate) fn truncate_output(s: String) -> String {
     let tail_start = find_char_boundary(&s, s.len().saturating_sub(TRUNCATE_TAIL));
     let head = &s[..head_end];
     let tail = &s[tail_start..];
+    let kept = head.len() + tail.len();
+    let total = s.len();
+    let notice = match spill_bytes(spill_dir, s.as_bytes()) {
+        Ok(path) => format!(
+            "[truncated: {kept}/{total} bytes, full output spilled to {}]",
+            path.display()
+        ),
+        Err(reason) => format!("[truncated: {kept}/{total} bytes, spill unavailable: {reason}]"),
+    };
     format!(
-        "{head}\n... [output truncated, {} bytes total, showing first {} and last {} bytes] ...\n{tail}",
-        s.len(),
+        "{head}\n... [output truncated, {total} bytes total, showing first {} and last {} bytes] ...\n{tail}\n{notice}",
         head.len(),
         tail.len()
     )
+}
+
+fn spill_root() -> PathBuf {
+    std::env::temp_dir().join("nexora-spills")
+}
+
+/// Filename-safe bucket: only ASCII alphanumerics, `-`, `_` survive.
+fn sanitize_bucket(run_id: &str) -> String {
+    let cleaned: String = run_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let trimmed = cleaned.trim_matches('_');
+    let short: String = trimmed.chars().take(64).collect();
+    if short.is_empty() {
+        "adhoc".to_string()
+    } else {
+        short
+    }
+}
+
+static SPILL_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Persist the full pre-truncation bytes to a unique file under `spill_dir`.
+fn spill_bytes(spill_dir: &Path, full: &[u8]) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(spill_dir).map_err(|e| io_reason(&e))?;
+    let id = SPILL_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let path = spill_dir.join(format!("spill-{}-{id}-{nanos}.txt", std::process::id()));
+    std::fs::write(&path, full).map_err(|e| io_reason(&e))?;
+    Ok(path)
+}
+
+/// Single-line, bounded, content-free I/O reason for the inline notice.
+fn io_reason(e: &std::io::Error) -> String {
+    let one_line = e.to_string().replace(['\r', '\n'], " ");
+    one_line.chars().take(200).collect()
 }
 
 fn find_char_boundary(s: &str, mut index: usize) -> usize {
@@ -448,5 +519,80 @@ mod tests {
             "many hunks diff should be bounded"
         );
         let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn truncation_appends_spill_notice_with_byte_counts() {
+        let total = 30 * 1024;
+        let content = "X".repeat(total);
+        let bucket = test_spill_bucket("notice");
+        let out = truncate_with_spill_dir(content.clone(), &bucket);
+        // Machine-readable notice with exact kept/total byte counts.
+        let kept = 10 * 1024 + 10 * 1024;
+        let prefix = format!("[truncated: {kept}/{total} bytes, full output spilled to ");
+        assert!(
+            out.contains(&prefix),
+            "spill notice with exact counts missing: tail={}",
+            out_lines_tail(&out)
+        );
+        // Legacy silent-form marker is preserved alongside the notice.
+        assert!(out.contains("output truncated"));
+        assert!(out.contains("bytes total"));
+        // The spill path in the notice exists and holds the full bytes.
+        let spill_path = notice_spill_path(&out);
+        let spilled = fs::read(&spill_path).expect("spill file must exist");
+        assert_eq!(spilled.len(), total);
+        assert_eq!(spilled, content.as_bytes());
+        let _ = fs::remove_dir_all(bucket_root());
+    }
+
+    #[test]
+    fn spill_failure_falls_back_to_inline_only() {
+        // A regular file where the spill directory should be makes
+        // `create_dir_all` fail; truncation must still succeed inline.
+        let blocker = bucket_root().join("blocker-file");
+        fs::create_dir_all(bucket_root()).expect("bucket root");
+        fs::write(&blocker, "in the way").expect("blocker file");
+        let out = truncate_with_spill_dir("Y".repeat(30 * 1024), &blocker);
+        assert!(
+            out.contains("[truncated: "),
+            "truncation notice missing: tail={}",
+            out_lines_tail(&out)
+        );
+        assert!(
+            out.contains("spill unavailable: "),
+            "spill failure reason missing: tail={}",
+            out_lines_tail(&out)
+        );
+        assert!(!out.contains("spilled to "), "no spill path expected");
+        // Head/tail content still present around the legacy marker.
+        assert!(out.contains("output truncated"));
+        let _ = fs::remove_dir_all(bucket_root());
+    }
+
+    fn bucket_root() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("nexora-tools-spill-test-{}", std::process::id()))
+    }
+
+    fn test_spill_bucket(tag: &str) -> std::path::PathBuf {
+        let dir = bucket_root().join(tag);
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("test spill bucket");
+        dir
+    }
+
+    fn out_lines_tail(out: &str) -> String {
+        out.lines().last().unwrap_or("").to_string()
+    }
+
+    /// Extract the spill file path from the `[truncated: ... spilled to <path>]` notice.
+    fn notice_spill_path(out: &str) -> std::path::PathBuf {
+        let line = out
+            .lines()
+            .find(|l| l.contains("full output spilled to "))
+            .expect("notice line");
+        let start = line.find("spilled to ").expect("marker") + "spilled to ".len();
+        let end = line.rfind(']').expect("closing bracket");
+        std::path::PathBuf::from(line[start..end].trim())
     }
 }

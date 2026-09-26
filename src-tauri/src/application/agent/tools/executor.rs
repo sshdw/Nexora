@@ -112,6 +112,8 @@ impl ToolRegistry {
             ),
             "read_file" => Self::read_file(&args, workspace_root),
             "write_file" => Self::write_file(&args, workspace_root),
+            "edit_file" => Self::edit_file(&args, workspace_root),
+            "search_files" => Self::search_files(&args, workspace_root),
             "list_directory" => Self::list_directory(&args, workspace_root),
             other => Err(ToolError::UnknownTool(other.to_string())),
         }
@@ -364,6 +366,172 @@ impl ToolRegistry {
         Ok(truncate_output(diff))
     }
 
+    /// Exact-once in-place edit: `old_text`/`new_text` replace mode or
+    /// `insert_after`/`new_text` insert mode (exactly one of the two anchors).
+    ///
+    /// The anchor must occur exactly once: zero matches fail with
+    /// `no exact match found`, two or more fail with
+    /// `pattern matches N locations, refusing to guess` — the tool never
+    /// guesses. New text is spliced verbatim (callers include newlines).
+    /// Files must be valid UTF-8; the workspace guard is shared with
+    /// `read_file`/`write_file`.
+    fn edit_file(args: &Value, workspace_root: &Path) -> Result<String, ToolError> {
+        let path = args.get("path").and_then(Value::as_str).ok_or_else(|| {
+            ToolError::InvalidArguments("missing required field 'path'".to_string())
+        })?;
+        if path.trim().is_empty() {
+            return Err(ToolError::InvalidArguments(
+                "field 'path' must not be empty".to_string(),
+            ));
+        }
+        let new_text = args
+            .get("new_text")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                ToolError::InvalidArguments("missing required field 'new_text'".to_string())
+            })?;
+        let old_text = args.get("old_text").and_then(Value::as_str);
+        let insert_after = args.get("insert_after").and_then(Value::as_str);
+        let anchor = match (old_text, insert_after) {
+            (Some(_), Some(_)) => {
+                return Err(ToolError::InvalidArguments(
+                    "supply exactly one of 'old_text' or 'insert_after'".to_string(),
+                ));
+            }
+            (None, None) => {
+                return Err(ToolError::InvalidArguments(
+                    "missing required field 'old_text' or 'insert_after'".to_string(),
+                ));
+            }
+            (Some(old), None) => EditAnchor::Replace(old),
+            (None, Some(after)) => EditAnchor::InsertAfter(after),
+        };
+        if anchor.text().is_empty() {
+            return Err(ToolError::InvalidArguments(
+                "anchor text must not be empty".to_string(),
+            ));
+        }
+
+        let resolved = resolve_path(workspace_root, path)?;
+        if !resolved.exists() {
+            return Err(ToolError::Io(format!("file not found: '{path}'")));
+        }
+        if resolved.is_dir() {
+            return Err(ToolError::Io(format!(
+                "path is a directory, not a file: '{path}'"
+            )));
+        }
+        let bytes = std::fs::read(&resolved)
+            .map_err(|e| ToolError::Io(format!("failed to read file '{path}': {e}")))?;
+        let content = String::from_utf8(bytes).map_err(|_| {
+            ToolError::Io(format!("file is not valid UTF-8, cannot edit: '{path}'"))
+        })?;
+
+        let occurrences = content.match_indices(anchor.text()).count();
+        if occurrences == 0 {
+            return Err(ToolError::Io("no exact match found".to_string()));
+        }
+        if occurrences > 1 {
+            return Err(ToolError::Io(format!(
+                "pattern matches {occurrences} locations, refusing to guess"
+            )));
+        }
+        let updated = match anchor {
+            EditAnchor::Replace(old) => content.replacen(old, new_text, 1),
+            EditAnchor::InsertAfter(after) => {
+                content.replacen(after, &format!("{after}{new_text}"), 1)
+            }
+        };
+
+        std::fs::write(&resolved, &updated)
+            .map_err(|e| ToolError::Io(format!("failed to write file '{path}': {e}")))?;
+
+        Ok(truncate_output(unified_diff(path, &content, &updated)))
+    }
+
+    /// Regex-lite grep over the workspace: one `path:line:text` hit per
+    /// matching line, honouring `max_matches` (default 50, hard cap 200).
+    ///
+    /// Binary files (NUL-byte heuristic), files over 5 MiB, unreadable files,
+    /// and symbolic links are skipped; the walk never leaves the workspace.
+    /// Long lines are middle-truncated with an edge-kept notice.
+    fn search_files(args: &Value, workspace_root: &Path) -> Result<String, ToolError> {
+        let pattern = args.get("pattern").and_then(Value::as_str).ok_or_else(|| {
+            ToolError::InvalidArguments("missing required field 'pattern'".to_string())
+        })?;
+        if pattern.is_empty() {
+            return Err(ToolError::InvalidArguments(
+                "field 'pattern' must not be empty".to_string(),
+            ));
+        }
+        if pattern.len() > MAX_SEARCH_PATTERN_BYTES {
+            return Err(ToolError::InvalidArguments(format!(
+                "field 'pattern' exceeds {MAX_SEARCH_PATTERN_BYTES} bytes"
+            )));
+        }
+        let regex = LiteRegex::compile(pattern);
+        let scope_arg = args
+            .get("directory")
+            .and_then(Value::as_str)
+            .or_else(|| args.get("path").and_then(Value::as_str));
+        let scope = match scope_arg {
+            Some(dir) if !dir.trim().is_empty() => resolve_path(workspace_root, dir)?,
+            _ => workspace_root.to_path_buf(),
+        };
+        if !scope.exists() {
+            return Err(ToolError::Io(format!(
+                "directory not found: '{}'",
+                scope_arg.unwrap_or("")
+            )));
+        }
+        if !scope.is_dir() {
+            return Err(ToolError::Io(format!(
+                "search scope is not a directory: '{}'",
+                scope_arg.unwrap_or("")
+            )));
+        }
+        if !is_within_workspace(workspace_root, &scope) {
+            return Err(ToolError::PathTraversal(
+                scope_arg.unwrap_or("").to_string(),
+            ));
+        }
+        let max_matches = match args.get("max_matches") {
+            None => SEARCH_DEFAULT_MAX_MATCHES,
+            Some(value) => {
+                let raw = value.as_u64().ok_or_else(|| {
+                    ToolError::InvalidArguments(
+                        "field 'max_matches' must be a non-negative integer".to_string(),
+                    )
+                })?;
+                usize::try_from(raw)
+                    .unwrap_or(usize::MAX)
+                    .clamp(1, SEARCH_HARD_CAP_MATCHES)
+            }
+        };
+
+        let mut hits: Vec<String> = Vec::new();
+        let mut capped = false;
+        walk_search(
+            &scope,
+            workspace_root,
+            &regex,
+            max_matches,
+            &mut hits,
+            &mut capped,
+        )?;
+        if hits.is_empty() {
+            return Ok("(no matches)".to_string());
+        }
+        let mut out = hits.join("\n");
+        if capped {
+            let _ = writeln!(
+                out,
+                "\n[match cap reached: showing first {max_matches} matches (cap {SEARCH_HARD_CAP_MATCHES})]"
+            );
+        }
+        Ok(truncate_output(out))
+    }
+
     fn list_directory(args: &Value, workspace_root: &Path) -> Result<String, ToolError> {
         let path_opt = args.get("path").and_then(Value::as_str);
         let recursive = args
@@ -575,6 +743,356 @@ fn drain_reader(stream: &mut StreamReader, grace: Duration, out: &mut Vec<u8>) -
         }
         None => false,
     }
+}
+
+/// Edit mode selected by which anchor argument was supplied.
+#[derive(Debug, Clone, Copy)]
+enum EditAnchor<'a> {
+    Replace(&'a str),
+    InsertAfter(&'a str),
+}
+
+impl<'a> EditAnchor<'a> {
+    fn text(self) -> &'a str {
+        match self {
+            Self::Replace(old) | Self::InsertAfter(old) => old,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Regex-lite search (`search_files`)
+// ---------------------------------------------------------------------------
+
+/// Default/maximum matches returned by `search_files`.
+const SEARCH_DEFAULT_MAX_MATCHES: usize = 50;
+const SEARCH_HARD_CAP_MATCHES: usize = 200;
+/// Patterns longer than this are rejected rather than compiled.
+const MAX_SEARCH_PATTERN_BYTES: usize = 10 * 1024;
+/// Files larger than this are skipped (binary-ish / unbounded-read guard).
+const MAX_SEARCH_FILE_BYTES: u64 = 5 * 1024 * 1024;
+/// Bytes sniffed for NUL when deciding a file is binary.
+const BINARY_SNIFF_BYTES: usize = 8000;
+/// Display budget for one hit line before middle truncation.
+const SEARCH_LINE_BUDGET_BYTES: usize = 1000;
+const SEARCH_LINE_EDGE_BYTES: usize = 500;
+/// Total atom tests for one line before the match gives up (hang guard for
+/// pathological quantifiers on huge single-line files).
+const SEARCH_MATCH_STEP_BUDGET: usize = 200_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SearchAtom {
+    Lit(char),
+    Dot,
+    Digit,
+    NotDigit,
+    Word,
+    NotWord,
+    Space,
+    NotSpace,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SearchQuant {
+    One,
+    ZeroMore,
+    OneMore,
+    ZeroOne,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SearchToken {
+    atom: SearchAtom,
+    quant: SearchQuant,
+}
+
+/// Regex-lite pattern: literals, `.`, `*`/`+`/`?` on the preceding element,
+/// `^`/`$` anchors, `\d \D \w \W \s \S`. Every other metacharacter
+/// (`( ) [ ] { } |`) matches literally. Matching is case-sensitive.
+#[derive(Debug, Clone)]
+struct LiteRegex {
+    anchored_start: bool,
+    anchored_end: bool,
+    tokens: Vec<SearchToken>,
+}
+
+impl LiteRegex {
+    fn compile(pattern: &str) -> Self {
+        let mut anchored_start = false;
+        let mut body = pattern;
+        if let Some(rest) = body.strip_prefix('^') {
+            anchored_start = true;
+            body = rest;
+        }
+        let mut anchored_end = false;
+        let mut tokens: Vec<SearchToken> = Vec::new();
+        let mut chars = body.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '\\' => {
+                    let atom = match chars.next() {
+                        None => SearchAtom::Lit('\\'),
+                        Some('d') => SearchAtom::Digit,
+                        Some('D') => SearchAtom::NotDigit,
+                        Some('w') => SearchAtom::Word,
+                        Some('W') => SearchAtom::NotWord,
+                        Some('s') => SearchAtom::Space,
+                        Some('S') => SearchAtom::NotSpace,
+                        Some(other) => SearchAtom::Lit(other),
+                    };
+                    tokens.push(SearchToken {
+                        atom,
+                        quant: SearchQuant::One,
+                    });
+                }
+                '.' => tokens.push(SearchToken {
+                    atom: SearchAtom::Dot,
+                    quant: SearchQuant::One,
+                }),
+                // A trailing unescaped `$` anchors; anywhere else it is literal.
+                // (`\$` is consumed by the escape arm above, so it stays literal.)
+                '$' if chars.peek().is_none() => anchored_end = true,
+                '*' | '+' | '?' => {
+                    if let Some(last) = tokens.last_mut() {
+                        last.quant = match c {
+                            '*' => SearchQuant::ZeroMore,
+                            '+' => SearchQuant::OneMore,
+                            _ => SearchQuant::ZeroOne,
+                        };
+                    } else {
+                        tokens.push(SearchToken {
+                            atom: SearchAtom::Lit(c),
+                            quant: SearchQuant::One,
+                        });
+                    }
+                }
+                other => tokens.push(SearchToken {
+                    atom: SearchAtom::Lit(other),
+                    quant: SearchQuant::One,
+                }),
+            }
+        }
+        Self {
+            anchored_start,
+            anchored_end,
+            tokens,
+        }
+    }
+
+    fn is_match(&self, line: &str) -> bool {
+        let chars: Vec<char> = line.chars().collect();
+        if self.anchored_start {
+            let mut budget = SEARCH_MATCH_STEP_BUDGET;
+            self.match_at(&chars, 0, &mut budget)
+                .is_some_and(|end| !self.anchored_end || end == chars.len())
+        } else {
+            (0..=chars.len()).any(|start| {
+                let mut budget = SEARCH_MATCH_STEP_BUDGET;
+                self.match_at(&chars, start, &mut budget)
+                    .is_some_and(|end| !self.anchored_end || end == chars.len())
+            })
+        }
+    }
+
+    fn match_at(&self, chars: &[char], start: usize, budget: &mut usize) -> Option<usize> {
+        self.match_tokens(0, chars, start, budget)
+    }
+
+    fn match_tokens(
+        &self,
+        token_index: usize,
+        chars: &[char],
+        char_index: usize,
+        budget: &mut usize,
+    ) -> Option<usize> {
+        if token_index == self.tokens.len() {
+            return Some(char_index);
+        }
+        let token = &self.tokens[token_index];
+        match token.quant {
+            SearchQuant::One => {
+                if char_index < chars.len()
+                    && Self::atom_matches(token.atom, chars, char_index, budget)
+                {
+                    self.match_tokens(token_index + 1, chars, char_index + 1, budget)
+                } else {
+                    None
+                }
+            }
+            SearchQuant::ZeroOne => {
+                if char_index < chars.len()
+                    && Self::atom_matches(token.atom, chars, char_index, budget)
+                {
+                    if let Some(end) =
+                        self.match_tokens(token_index + 1, chars, char_index + 1, budget)
+                    {
+                        return Some(end);
+                    }
+                }
+                self.match_tokens(token_index + 1, chars, char_index, budget)
+            }
+            SearchQuant::ZeroMore | SearchQuant::OneMore => {
+                let minimum = usize::from(token.quant == SearchQuant::OneMore);
+                let mut run = 0;
+                while char_index + run < chars.len()
+                    && Self::atom_matches(token.atom, chars, char_index + run, budget)
+                {
+                    run += 1;
+                }
+                let mut take = run;
+                loop {
+                    if take >= minimum {
+                        if let Some(end) =
+                            self.match_tokens(token_index + 1, chars, char_index + take, budget)
+                        {
+                            return Some(end);
+                        }
+                    }
+                    if take == 0 {
+                        break;
+                    }
+                    take -= 1;
+                    if take < minimum {
+                        break;
+                    }
+                }
+                None
+            }
+        }
+    }
+
+    fn atom_matches(atom: SearchAtom, chars: &[char], index: usize, budget: &mut usize) -> bool {
+        if *budget == 0 {
+            return false;
+        }
+        *budget -= 1;
+        let c = chars[index];
+        match atom {
+            SearchAtom::Lit(literal) => literal == c,
+            SearchAtom::Dot => true,
+            SearchAtom::Digit => c.is_ascii_digit(),
+            SearchAtom::NotDigit => !c.is_ascii_digit(),
+            SearchAtom::Word => c.is_alphanumeric() || c == '_',
+            SearchAtom::NotWord => !(c.is_alphanumeric() || c == '_'),
+            SearchAtom::Space => c.is_whitespace(),
+            SearchAtom::NotSpace => !c.is_whitespace(),
+        }
+    }
+}
+
+fn walk_search(
+    dir: &Path,
+    workspace_root: &Path,
+    regex: &LiteRegex,
+    max_matches: usize,
+    hits: &mut Vec<String>,
+    capped: &mut bool,
+) -> Result<(), ToolError> {
+    let entries = std::fs::read_dir(dir)
+        .map_err(|e| ToolError::Io(format!("failed to read directory: {e}")))?;
+    let mut paths: Vec<std::path::PathBuf> = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| ToolError::Io(format!("failed to read entry: {e}")))?;
+        // Symbolic links are never followed (symlink escapes stay excluded).
+        if entry
+            .file_type()
+            .map_err(|e| ToolError::Io(format!("failed to get file type: {e}")))?
+            .is_symlink()
+        {
+            continue;
+        }
+        paths.push(entry.path());
+    }
+    paths.sort();
+    for path in paths {
+        if *capped {
+            return Ok(());
+        }
+        // Defense against races/odd mounts: never leave the workspace.
+        if !is_within_workspace(workspace_root, &path) {
+            continue;
+        }
+        if path.is_dir() {
+            walk_search(&path, workspace_root, regex, max_matches, hits, capped)?;
+        } else if path.is_file() {
+            search_one_file(&path, workspace_root, regex, max_matches, hits, capped)?;
+        }
+    }
+    Ok(())
+}
+
+fn search_one_file(
+    path: &Path,
+    workspace_root: &Path,
+    regex: &LiteRegex,
+    max_matches: usize,
+    hits: &mut Vec<String>,
+    capped: &mut bool,
+) -> Result<(), ToolError> {
+    let metadata = std::fs::metadata(path)
+        .map_err(|e| ToolError::Io(format!("failed to read file metadata: {e}")))?;
+    if metadata.len() > MAX_SEARCH_FILE_BYTES {
+        return Ok(());
+    }
+    let bytes =
+        std::fs::read(path).map_err(|e| ToolError::Io(format!("failed to read file: {e}")))?;
+    if bytes.iter().take(BINARY_SNIFF_BYTES).any(|byte| *byte == 0) {
+        return Ok(());
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    let relative = path
+        .strip_prefix(workspace_root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/");
+    for (index, line) in text.lines().enumerate() {
+        if regex.is_match(line) {
+            if hits.len() >= max_matches {
+                *capped = true;
+                return Ok(());
+            }
+            hits.push(format!(
+                "{}:{}:{}",
+                relative,
+                index + 1,
+                shorten_hit_line(line)
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Middle-truncate one hit line, keeping both edges with a notice.
+fn shorten_hit_line(line: &str) -> String {
+    if line.len() <= SEARCH_LINE_BUDGET_BYTES {
+        return line.to_string();
+    }
+    let head_end = floor_char_boundary(line, SEARCH_LINE_EDGE_BYTES);
+    let tail_start = ceil_char_boundary(line, line.len().saturating_sub(SEARCH_LINE_EDGE_BYTES));
+    format!(
+        "{}... [line truncated, {} bytes, showing first {} and last {} bytes] ...{}",
+        &line[..head_end],
+        line.len(),
+        head_end,
+        line.len() - tail_start,
+        &line[tail_start..]
+    )
+}
+
+fn floor_char_boundary(s: &str, mut index: usize) -> usize {
+    index = std::cmp::min(index, s.len());
+    while index > 0 && !s.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
+}
+
+fn ceil_char_boundary(s: &str, mut index: usize) -> usize {
+    index = std::cmp::min(index, s.len());
+    while index < s.len() && !s.is_char_boundary(index) {
+        index += 1;
+    }
+    index
 }
 
 fn resolve_path(workspace_root: &Path, requested: &str) -> Result<PathBuf, ToolError> {
@@ -1214,6 +1732,264 @@ mod tests {
             !ws.join("new_keep.txt").exists(),
             "cancelled write must not create file"
         );
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn edit_file_replaces_exact_once() {
+        let ws = temp_workspace();
+        fs::write(ws.join("note.txt"), "hello brave world").expect("seed");
+        let edit = call(
+            "edit_file",
+            serde_json::json!({"path": "note.txt", "old_text": "brave", "new_text": "cold"}),
+        );
+        let out = ToolRegistry::execute(&edit, &ws).expect("exact-once replace");
+        assert!(
+            out.contains("-hello brave world"),
+            "diff must show removal: {out}"
+        );
+        assert!(
+            out.contains("+hello cold world"),
+            "diff must show addition: {out}"
+        );
+        assert_eq!(
+            fs::read_to_string(ws.join("note.txt")).unwrap(),
+            "hello cold world"
+        );
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn edit_file_no_match_errors() {
+        let ws = temp_workspace();
+        fs::write(ws.join("note.txt"), "hello world").expect("seed");
+        let edit = call(
+            "edit_file",
+            serde_json::json!({"path": "note.txt", "old_text": "absent", "new_text": "x"}),
+        );
+        let res = ToolRegistry::execute(&edit, &ws);
+        assert!(res.is_err(), "zero matches must fail");
+        assert_eq!(res.unwrap_err().to_string(), "Error: no exact match found");
+        // File untouched.
+        assert_eq!(
+            fs::read_to_string(ws.join("note.txt")).unwrap(),
+            "hello world"
+        );
+        // Insert mode with a missing anchor fails the same way.
+        let insert = call(
+            "edit_file",
+            serde_json::json!({"path": "note.txt", "insert_after": "absent", "new_text": "x"}),
+        );
+        let res_insert = ToolRegistry::execute(&insert, &ws);
+        assert!(res_insert.is_err());
+        assert_eq!(
+            res_insert.unwrap_err().to_string(),
+            "Error: no exact match found"
+        );
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn edit_file_multi_match_refuses() {
+        let ws = temp_workspace();
+        fs::write(ws.join("note.txt"), "aaa bbb aaa").expect("seed");
+        let edit = call(
+            "edit_file",
+            serde_json::json!({"path": "note.txt", "old_text": "aaa", "new_text": "zzz"}),
+        );
+        let res = ToolRegistry::execute(&edit, &ws);
+        assert!(res.is_err(), "ambiguous matches must fail");
+        assert_eq!(
+            res.unwrap_err().to_string(),
+            "Error: pattern matches 2 locations, refusing to guess"
+        );
+        // No fuzzy repair: the file is byte-identical afterwards.
+        assert_eq!(
+            fs::read_to_string(ws.join("note.txt")).unwrap(),
+            "aaa bbb aaa"
+        );
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn edit_file_insert_after_anchor() {
+        let ws = temp_workspace();
+        fs::write(ws.join("list.txt"), "line1\nline2\nline3").expect("seed");
+        let insert = call(
+            "edit_file",
+            serde_json::json!({"path": "list.txt", "insert_after": "line2", "new_text": "\ninserted"}),
+        );
+        let out = ToolRegistry::execute(&insert, &ws).expect("insert");
+        assert!(out.contains("+inserted"), "diff must show insertion: {out}");
+        assert_eq!(
+            fs::read_to_string(ws.join("list.txt")).unwrap(),
+            "line1\nline2\ninserted\nline3"
+        );
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn edit_file_rejects_outside_workspace() {
+        let ws = temp_workspace();
+        fs::write(ws.join("inner.txt"), "unique-inner-content").expect("seed");
+        // Traversal payload.
+        let traversal = call(
+            "edit_file",
+            serde_json::json!({"path": "../outside.txt", "old_text": "a", "new_text": "b"}),
+        );
+        let res = ToolRegistry::execute(&traversal, &ws);
+        assert!(res.is_err(), "traversal must be rejected");
+        assert!(res.unwrap_err().to_string().starts_with("Error:"));
+        // Absolute path outside the workspace.
+        let abs_outside = if cfg!(windows) {
+            "C:\\Windows\\System32\\drivers\\etc\\hosts"
+        } else {
+            "/etc/passwd"
+        };
+        let absolute = call(
+            "edit_file",
+            serde_json::json!({"path": abs_outside, "old_text": "a", "new_text": "b"}),
+        );
+        assert!(
+            ToolRegistry::execute(&absolute, &ws).is_err(),
+            "absolute outside path must be rejected"
+        );
+        // Symlink escape: a link inside the workspace pointing outside must
+        // not become an editing backdoor.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let outside_dir = temp_workspace();
+            fs::write(outside_dir.join("secret.txt"), "outer-secret").expect("outside seed");
+            let link = ws.join("escape.txt");
+            symlink(outside_dir.join("secret.txt"), &link).expect("symlink");
+            let via_link = call(
+                "edit_file",
+                serde_json::json!({"path": "escape.txt", "old_text": "outer-secret", "new_text": "pwned"}),
+            );
+            let res_link = ToolRegistry::execute(&via_link, &ws);
+            assert!(res_link.is_err(), "symlink escape must be rejected");
+            assert_eq!(
+                fs::read_to_string(outside_dir.join("secret.txt")).unwrap(),
+                "outer-secret",
+                "outside file must be untouched"
+            );
+            let _ = fs::remove_dir_all(&outside_dir);
+        }
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn search_files_finds_pattern_with_caps() {
+        let ws = temp_workspace();
+        let mut body = String::new();
+        for i in 0..10 {
+            let _ = writeln!(body, "needle in haystack {i}");
+        }
+        body.push_str("no match here\n");
+        fs::write(ws.join("hay.txt"), &body).expect("seed");
+
+        // Literal match finds every matching line.
+        let find = call("search_files", serde_json::json!({"pattern": "needle"}));
+        let out = ToolRegistry::execute(&find, &ws).expect("search");
+        assert_eq!(out.lines().filter(|l| l.contains("needle")).count(), 10);
+        assert!(
+            out.contains("hay.txt:1:"),
+            "hit shape is path:line:text: {out}"
+        );
+
+        // Regex subset: `.+`, `\d`, anchors.
+        let digits = call(
+            "search_files",
+            serde_json::json!({"pattern": "^needle.+\\d$"}),
+        );
+        let out_digits = ToolRegistry::execute(&digits, &ws).expect("anchored class search");
+        assert_eq!(out_digits.lines().count(), 10);
+
+        // max_matches is honoured and the cap notice is honest.
+        let capped = call(
+            "search_files",
+            serde_json::json!({"pattern": "needle", "max_matches": 4}),
+        );
+        let out_capped = ToolRegistry::execute(&capped, &ws).expect("capped search");
+        assert_eq!(
+            out_capped.lines().filter(|l| l.contains("needle")).count(),
+            4
+        );
+        assert!(out_capped.contains("[match cap reached: showing first 4 matches"));
+
+        // Hard cap: a request above 200 is clamped, never honoured literally.
+        let mut big = String::new();
+        for _ in 0..300 {
+            big.push_str("capped-needle\n");
+        }
+        fs::write(ws.join("big.txt"), &big).expect("seed big");
+        let hard = call(
+            "search_files",
+            serde_json::json!({"pattern": "capped-needle", "max_matches": 5000}),
+        );
+        let out_hard = ToolRegistry::execute(&hard, &ws).expect("hard-cap search");
+        assert_eq!(
+            out_hard
+                .lines()
+                .filter(|l| l.contains("capped-needle"))
+                .count(),
+            200
+        );
+        assert!(out_hard.contains("(cap 200)"));
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn search_files_skips_binary_and_stays_in_workspace() {
+        let ws = temp_workspace();
+        fs::write(ws.join("plain.txt"), "visible-needle here").expect("seed text");
+        // Binary file containing the same pattern plus NUL bytes is skipped.
+        let mut binary = b"visible-needle here".to_vec();
+        binary.extend_from_slice(&[0, 1, 2, 3]);
+        binary.extend_from_slice(b"visible-needle again");
+        fs::write(ws.join("blob.bin"), &binary).expect("seed binary");
+
+        let find = call(
+            "search_files",
+            serde_json::json!({"pattern": "visible-needle"}),
+        );
+        let out = ToolRegistry::execute(&find, &ws).expect("search");
+        assert!(out.contains("plain.txt"), "text hit missing: {out}");
+        assert!(
+            !out.contains("blob.bin"),
+            "binary hit must be skipped: {out}"
+        );
+
+        // Traversal scope is rejected.
+        let bad_scope = call(
+            "search_files",
+            serde_json::json!({"pattern": "visible-needle", "directory": "../"}),
+        );
+        assert!(
+            ToolRegistry::execute(&bad_scope, &ws).is_err(),
+            "scope outside workspace must be rejected"
+        );
+
+        // Symlink escape: a link inside the workspace pointing at an outside
+        // file must not leak the outside file's contents.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let outside_dir = temp_workspace();
+            fs::write(outside_dir.join("secret.txt"), "escaped-needle-xyz").expect("outside seed");
+            symlink(outside_dir.join("secret.txt"), ws.join("leak.txt")).expect("symlink");
+            let leak = call(
+                "search_files",
+                serde_json::json!({"pattern": "escaped-needle-xyz"}),
+            );
+            let out_leak = ToolRegistry::execute(&leak, &ws).expect("search runs");
+            assert!(
+                !out_leak.contains("escaped-needle-xyz"),
+                "symlink target outside workspace must stay excluded: {out_leak}"
+            );
+            let _ = fs::remove_dir_all(&outside_dir);
+        }
         let _ = fs::remove_dir_all(&ws);
     }
 }

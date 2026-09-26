@@ -24,11 +24,11 @@ use crate::application::execution::ToolCall;
 /// Risk class of a workspace tool, conservative by design.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RiskClass {
-    /// `read_file`, `list_directory`.
+    /// `read_file`, `list_directory`, `search_files`.
     ReadOnly,
-    /// `write_file`, `execute_command`, and any unknown tool. Every shell
-    /// command counts as mutating because the shell cannot be statically
-    /// classified.
+    /// `write_file`, `edit_file`, `execute_command`, and any unknown tool.
+    /// Every shell command counts as mutating because the shell cannot be
+    /// statically classified.
     Mutating,
 }
 
@@ -37,7 +37,7 @@ impl RiskClass {
     #[must_use]
     pub(crate) fn classify(name: &str) -> Self {
         match name {
-            "read_file" | "list_directory" => Self::ReadOnly,
+            "read_file" | "list_directory" | "search_files" => Self::ReadOnly,
             _ => Self::Mutating,
         }
     }
@@ -402,6 +402,12 @@ mod tests {
         // Unknown tools are conservative.
         assert_eq!(RiskClass::classify("does_not_exist"), RiskClass::Mutating);
         assert_eq!(RiskClass::classify(""), RiskClass::Mutating);
+    }
+
+    #[test]
+    fn risk_class_maps_new_tools() {
+        assert_eq!(RiskClass::classify("search_files"), RiskClass::ReadOnly);
+        assert_eq!(RiskClass::classify("edit_file"), RiskClass::Mutating);
     }
 
     #[test]

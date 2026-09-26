@@ -1,6 +1,6 @@
 //! Safe workspace tool execution: shell and filesystem.
 //!
-//! Provides the four native agent tools behind a central [`ToolRegistry`].
+//! Provides the six native agent tools behind a central [`ToolRegistry`].
 //! All filesystem access is confined to `workspace_root` via path
 //! canonicalization / lexical normalisation. Shell execution is bounded by a
 //! hard timeout, bounded output capture, a bounded reader-drain grace, and
@@ -17,7 +17,7 @@ pub(crate) use executor::ToolError;
 // Registry
 // ---------------------------------------------------------------------------
 
-/// Central dispatcher for the four native workspace tools.
+/// Central dispatcher for the six native workspace tools.
 pub(crate) struct ToolRegistry;
 
 #[cfg(test)]
