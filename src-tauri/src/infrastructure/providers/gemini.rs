@@ -175,7 +175,11 @@ impl GeminiExecutor {
                 to_ai_response(response, &request.model)
             }
             PostOutcome::Failure(snapshot) => {
-                Err(classify_status(snapshot.status, snapshot.retry_after_secs))
+                if snapshot.is_context_length_exceeded {
+                    Err(GeminiError::ContextLengthExceeded)
+                } else {
+                    Err(classify_status(snapshot.status, snapshot.retry_after_secs))
+                }
             }
         }
     }
@@ -196,6 +200,7 @@ impl ProviderExecutor for GeminiExecutor {
                 log::warn!("gemini request failed: {error}");
                 Err(match error {
                     GeminiError::InvalidRequest => ExecutorError::InvalidRequest,
+                    GeminiError::ContextLengthExceeded => ExecutorError::ContextLengthExceeded,
                     GeminiError::Authentication => ExecutorError::Authentication,
                     GeminiError::Network => ExecutorError::Network,
                     GeminiError::RateLimited { retry_after_secs } => {
@@ -781,6 +786,10 @@ enum GeminiError {
     /// The Gemini endpoint rejected the request as malformed (HTTP 400) or
     /// addressed an unknown model/route (HTTP 404).
     InvalidRequest,
+    /// The prompt exceeds the model context window: a client-error status
+    /// whose body names the context window or token limit. Never retried;
+    /// the agent loop treats it as a compaction trigger.
+    ContextLengthExceeded,
     /// The credential was rejected (HTTP 401).
     Authentication,
     /// A network/transport failure (connection refused, DNS, timeout, ...).
@@ -809,6 +818,9 @@ impl std::fmt::Display for GeminiError {
                  model and that the stored Gemini API key is valid and not restricted \
                  (Google reports invalid keys as 400)"
             ),
+            Self::ContextLengthExceeded => {
+                write!(f, "the Gemini prompt exceeds the model context window")
+            }
             Self::Authentication => write!(
                 f,
                 "Gemini rejected the stored credential or its access (401/403)"
@@ -2331,6 +2343,27 @@ mod tests {
         );
         server.join().expect("server thread joins");
         assert!(matches!(result, Err(ExecutorError::InvalidRequest)));
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn status_400_with_context_body_maps_to_context_length_exceeded() {
+        use std::sync::atomic::Ordering;
+        // A 400 naming the token limit is a compaction trigger, not a
+        // malformed request — and, like every 400, it fires exactly once.
+        let body = r#"{"error":{"code":400,"message":"Request exceeds the maximum number of tokens allowed","status":"INVALID_ARGUMENT"}}"#.to_string();
+        let (endpoint, count, server) = spawn_sequence_server(vec![(400, body, None)]);
+        let executor = GeminiExecutor::with_endpoint(endpoint);
+        let result = executor.execute(
+            &sample_request(),
+            "sk-secret-example",
+            &CancellationToken::new(),
+        );
+        server.join().expect("server thread joins");
+        assert!(
+            matches!(result, Err(ExecutorError::ContextLengthExceeded)),
+            "context-length 400 must classify as ContextLengthExceeded, got {result:?}"
+        );
         assert_eq!(count.load(Ordering::SeqCst), 1);
     }
 

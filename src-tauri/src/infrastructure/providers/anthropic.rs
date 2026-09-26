@@ -164,7 +164,11 @@ impl AnthropicExecutor {
                 to_ai_response(response)
             }
             PostOutcome::Failure(snapshot) => {
-                Err(classify_status(snapshot.status, snapshot.retry_after_secs))
+                if snapshot.is_context_length_exceeded {
+                    Err(AnthropicError::ContextLengthExceeded)
+                } else {
+                    Err(classify_status(snapshot.status, snapshot.retry_after_secs))
+                }
             }
         }
     }
@@ -185,6 +189,7 @@ impl ProviderExecutor for AnthropicExecutor {
                 log::warn!("anthropic request failed: {error}");
                 Err(match error {
                     AnthropicError::InvalidRequest => ExecutorError::InvalidRequest,
+                    AnthropicError::ContextLengthExceeded => ExecutorError::ContextLengthExceeded,
                     AnthropicError::Authentication => ExecutorError::Authentication,
                     AnthropicError::Network => ExecutorError::Network,
                     AnthropicError::RateLimited { retry_after_secs } => {
@@ -553,6 +558,10 @@ enum AnthropicError {
     /// The Anthropic endpoint rejected the request as malformed (HTTP 400) or
     /// addressed an unknown model/route (HTTP 404).
     InvalidRequest,
+    /// The prompt exceeds the model context window: a client-error status
+    /// whose body names the context window or token limit. Never retried;
+    /// the agent loop treats it as a compaction trigger.
+    ContextLengthExceeded,
     /// The credential was rejected (HTTP 401).
     Authentication,
     /// A network/transport failure (connection refused, DNS, timeout, ...).
@@ -576,6 +585,9 @@ impl std::fmt::Display for AnthropicError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidRequest => write!(f, "the Anthropic request was invalid (400)"),
+            Self::ContextLengthExceeded => {
+                write!(f, "the Anthropic prompt exceeds the model context window")
+            }
             Self::Authentication => write!(f, "Anthropic rejected the credential (401)"),
             Self::Network => write!(f, "Anthropic network or transport failure"),
             Self::RateLimited { .. } => write!(f, "Anthropic rate limit (429)"),
@@ -1733,6 +1745,27 @@ mod tests {
         );
         server.join().expect("server thread joins");
         assert!(matches!(result, Err(ExecutorError::InvalidRequest)));
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn status_400_with_context_body_maps_to_context_length_exceeded() {
+        use std::sync::atomic::Ordering;
+        // A 400 naming an over-long prompt is a compaction trigger, not a
+        // malformed request — and, like every 400, it fires exactly once.
+        let body = r#"{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 200000 tokens > 100000 maximum"}}"#.to_string();
+        let (endpoint, count, server) = spawn_sequence_server(vec![(400, body, None)]);
+        let executor = AnthropicExecutor::with_endpoint(endpoint);
+        let result = executor.execute(
+            &sample_request(),
+            "sk-secret-example",
+            &CancellationToken::new(),
+        );
+        server.join().expect("server thread joins");
+        assert!(
+            matches!(result, Err(ExecutorError::ContextLengthExceeded)),
+            "context-length 400 must classify as ContextLengthExceeded, got {result:?}"
+        );
         assert_eq!(count.load(Ordering::SeqCst), 1);
     }
 

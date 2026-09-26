@@ -402,7 +402,10 @@ export type GovernanceEventPayload =
   | { type: "approval_requested"; call_id: string; name: string; arguments: string; group_key: string | null; group_size: number }
   | { type: "approval_resolved"; call_id: string; approved: boolean }
   | { type: "cancelled" }
-  | { type: "completed"; steps: number };
+  | { type: "completed"; steps: number }
+  | { type: "compaction_started"; reason: string; messages: number }
+  | { type: "compaction_finished"; reason: string; summarized: number; retained: number }
+  | { type: "compaction_failed"; reason: string };
 
 /** One `agent-run-event` frame (Task 5.1 design §2.4). */
 export type AgentRunEventPayload =

@@ -129,6 +129,11 @@ pub(crate) struct ErrorSnapshot {
     /// Merged `Retry-After` hint in seconds (header wins over body), already
     /// capped upstream by [`retry_delay`]; meaningful for 429.
     pub retry_after_secs: Option<u64>,
+    /// True when a client-error status (400/404/413/422) carries an error
+    /// body naming the context window or token limit. Providers map this to
+    /// a category-only context-length error; the raw body itself is consumed
+    /// here and never stored or surfaced.
+    pub is_context_length_exceeded: bool,
 }
 
 /// Outcome of [`HttpClient::post`]: success bytes for the provider to parse,
@@ -203,6 +208,7 @@ impl HttpClient {
                     return Ok(PostOutcome::Failure(ErrorSnapshot {
                         status,
                         retry_after_secs: merged,
+                        is_context_length_exceeded: body_signals_context_length(status, &body),
                     }));
                 }
             }
@@ -414,6 +420,70 @@ pub(crate) fn effective_retry_after(header_secs: Option<u64>, body: &[u8]) -> Op
     header_secs.or_else(|| extract_retry_after(body))
 }
 
+/// Statuses whose bodies may carry a context-length report: malformed or
+/// oversized requests (400/404/413/422). Retryable statuses (429/5xx) never
+/// count: their bodies describe rate limits or outages, not the window.
+fn is_context_length_status(status: u16) -> bool {
+    matches!(status, 400 | 404 | 413 | 422)
+}
+
+/// Substrings naming an exhausted model context window, matched
+/// ASCII-case-insensitively against the raw error body. The list stays narrow
+/// on purpose: a genuine malformed request (unknown model, bad schema) names
+/// none of these and keeps its `InvalidRequest` classification.
+const CONTEXT_LENGTH_MARKERS: &[&str] = &[
+    "context_length_exceeded",
+    "context-length-exceeded",
+    "context length",
+    "maximum context",
+    "max context",
+    "context window",
+    "prompt is too long",
+    "prompt too long",
+    "prompt_too_long",
+    "too many tokens",
+    "token limit",
+    "token_limit",
+    "max_tokens",
+    "maximum tokens",
+    "input too long",
+    "input exceeds",
+    "exceeds the maximum",
+    "exceeded maximum",
+];
+
+/// True when `status` is a client-error shape and `body` names the context
+/// window or token limit. Category-only: the body text is scanned here and
+/// only the boolean leaves this module.
+pub(crate) fn body_signals_context_length(status: u16, body: &[u8]) -> bool {
+    if !is_context_length_status(status) || body.is_empty() {
+        return false;
+    }
+    let text = String::from_utf8_lossy(body);
+    let bytes = text.as_bytes();
+    for marker in CONTEXT_LENGTH_MARKERS {
+        let needle = marker.as_bytes();
+        if needle.len() > bytes.len() {
+            continue;
+        }
+        // ASCII case-insensitive substring search without allocating a
+        // lowered copy of the whole body (bodies are bounded, markers tiny).
+        for start in 0..=bytes.len() - needle.len() {
+            let mut matched = true;
+            for (offset, &expected) in needle.iter().enumerate() {
+                if bytes[start + offset].to_ascii_lowercase() != expected {
+                    matched = false;
+                    break;
+                }
+            }
+            if matched {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Sleep `duration` in slices, returning `false` the moment `token` fires so
 /// a cancel during backoff aborts immediately instead of sleeping it out.
 fn sleep_cancellable(token: &CancellationToken, duration: Duration) -> bool {
@@ -622,6 +692,77 @@ mod tests {
         assert_eq!(snapshot.status, 400);
         assert_eq!(count.load(Ordering::SeqCst), 1);
         server.join().expect("server thread joins");
+    }
+
+    #[test]
+    fn context_length_body_flags_snapshot_without_retry() {
+        // A 400 naming the context window flags the snapshot for
+        // context-length classification — and, like every non-retryable
+        // status, fires exactly once (no elapsed assert: this is a
+        // classification proof, not a timing proof).
+        let client = HttpClient::new();
+        let body = br#"{"error":{"code":"context_length_exceeded","message":"This model's maximum context length is 128000 tokens."}}"#.to_vec();
+        let (endpoint, count, server) = spawn_scripted(vec![(400, body, None)]);
+        let outcome = client
+            .post(&idle_token(), &post_to(endpoint, b"{}"))
+            .expect("transport resolves");
+        let PostOutcome::Failure(snapshot) = outcome else {
+            panic!("400 must surface as a failure snapshot");
+        };
+        assert_eq!(snapshot.status, 400);
+        assert!(snapshot.is_context_length_exceeded);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        server.join().expect("server thread joins");
+
+        // A plain 400 without window language stays unflagged.
+        let (endpoint, count, server) = spawn_scripted(vec![(400, b"{}".to_vec(), None)]);
+        let outcome = client
+            .post(&idle_token(), &post_to(endpoint, b"{}"))
+            .expect("transport resolves");
+        let PostOutcome::Failure(snapshot) = outcome else {
+            panic!("400 must surface as a failure snapshot");
+        };
+        assert!(!snapshot.is_context_length_exceeded);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        server.join().expect("server thread joins");
+    }
+
+    #[test]
+    fn body_signals_context_length_matches_window_language_only() {
+        // Positive shapes across providers (case-insensitive).
+        for body in [
+            br#"{"code":"context_length_exceeded"}"#.as_slice(),
+            br#"{"error":"Maximum context length exceeded"}"#.as_slice(),
+            br#"{"message":"prompt is too long"}"#.as_slice(),
+            br#"{"message":"Too many tokens for this model"}"#.as_slice(),
+            br#"{"message":"input exceeds the maximum allowed"}"#.as_slice(),
+        ] {
+            assert!(
+                body_signals_context_length(400, body),
+                "must flag: {}",
+                String::from_utf8_lossy(body)
+            );
+        }
+        // Negative shapes: genuine malformed requests, rate limits, outages.
+        for body in [
+            br#"{"error":"unknown model 'gpt-9'}"#.as_slice(),
+            br#"{"error":"invalid_request_error: bad schema"}"#.as_slice(),
+            br#"{"error":"rate limit exceeded, retry later"}"#.as_slice(),
+            b"{}".as_slice(),
+            b"".as_slice(),
+        ] {
+            assert!(
+                !body_signals_context_length(400, body),
+                "must not flag: {}",
+                String::from_utf8_lossy(body)
+            );
+        }
+        // Retryable statuses never count, even with window language.
+        assert!(!body_signals_context_length(
+            429,
+            b"maximum context length is fine, slow down"
+        ));
+        assert!(!body_signals_context_length(500, b"context window intact"));
     }
 
     #[test]
