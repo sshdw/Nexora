@@ -23,6 +23,12 @@ jobs:
         with:
           components: rustfmt
 
+      - name: Resolve pinned toolchain (src-tauri/rust-toolchain.toml)
+        working-directory: src-tauri
+        run: |
+          rustup component add rustfmt
+          rustfmt --version
+
       - name: cargo fmt --check
         working-directory: src-tauri
         run: cargo fmt --all -- --check
