@@ -443,8 +443,6 @@ const CONTEXT_LENGTH_MARKERS: &[&str] = &[
     "prompt_too_long",
     "too many tokens",
     "token limit",
-    "token_limit",
-    "max_tokens",
     "maximum tokens",
     "input too long",
     "input exceeds",
@@ -763,6 +761,12 @@ mod tests {
             b"maximum context length is fine, slow down"
         ));
         assert!(!body_signals_context_length(500, b"context window intact"));
+        // A bare parameter name is not an overflow report: a missing
+        // `max_tokens` field is a malformed request, not an exhausted window.
+        assert!(!body_signals_context_length(
+            400,
+            br#"{"error":"max_tokens parameter is required"}"#
+        ));
     }
 
     #[test]

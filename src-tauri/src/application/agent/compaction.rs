@@ -958,6 +958,11 @@ mod tests {
         assert_eq!(middle_out_window(3, 3), 0..3);
         assert_eq!(middle_out_window(1, 1), 0..1);
         assert_eq!(middle_out_window(5, 1), 1..2);
+        // Accepted left-bias: (5,3) skews left to preserve the (5,1)->1..2 contract.
+        assert_eq!(middle_out_window(5, 3), 0..3);
+        assert_eq!(middle_out_window(6, 3), 1..4);
+        assert_eq!(middle_out_window(5, 2), 1..3);
+        assert_eq!(middle_out_window(4, 2), 1..3);
     }
 
     #[test]
