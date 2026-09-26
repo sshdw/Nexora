@@ -191,6 +191,10 @@ pub(crate) async fn start_agent_run(
         // Resolve autonomy mode from settings (DP-AUTONOMY): default
         // semi_autonomous when unset/invalid.
         let mode = service::resolve_autonomy_mode(db_ref);
+        // Resolve run preset from settings (T5): default coding when
+        // unset/invalid. Document runs hide the shell from the schema and
+        // deny it structurally on dispatch.
+        let preset = service::resolve_preset(db_ref);
 
         let run_id = service::start_run(
             db_ref,
@@ -208,6 +212,7 @@ pub(crate) async fn start_agent_run(
                 spend_limit_micro_usd: service::resolve_spend_limit(db_ref),
             },
             mode,
+            preset,
         )?;
         Ok::<StartAgentRunResponse, CommandError>(StartAgentRunResponse { run_id })
     })
@@ -288,6 +293,7 @@ pub(crate) fn resolve_agent_approval(
                         let path_pattern = group_path_pattern(group_key.as_deref());
                         let _ = insert_group_allow_rule(
                             db.inner(),
+                            group_preset(group_key.as_deref()),
                             &tool_name,
                             path_pattern.as_deref(),
                         );
@@ -296,6 +302,17 @@ pub(crate) fn resolve_agent_approval(
             }
             Ok(())
         }
+    }
+}
+
+/// Extract the rule `preset` from a `preset:tool:path` group key (T5: group
+/// keys are preset-scoped, so a document run's group approval persists a
+/// document-scoped rule). Unknown shapes fall back to `"coding"`, the
+/// pre-T5 behavior.
+fn group_preset(group_key: Option<&str>) -> &str {
+    match group_key.and_then(|key| key.split(':').next()) {
+        Some("document") => "document",
+        _ => "coding",
     }
 }
 
@@ -319,20 +336,17 @@ fn group_path_pattern(group_key: Option<&str>) -> Option<String> {
 /// verdict already governs this run. Shell tools never persist (defense in
 /// depth alongside the caller's guard): shell groups always park except
 /// under `FullAutonomous`.
-fn insert_group_allow_rule(db: &Database, tool_name: &str, path_pattern: Option<&str>) -> bool {
+fn insert_group_allow_rule(
+    db: &Database,
+    preset: &str,
+    tool_name: &str,
+    path_pattern: Option<&str>,
+) -> bool {
     if tool_name == "execute_command" || tool_name == "*" {
         return false;
     }
     let pattern = path_pattern.unwrap_or("*");
-    permissions::insert_rule(
-        db,
-        "coding",
-        tool_name,
-        Some(pattern),
-        RuleEffect::Allow,
-        200,
-    )
-    .is_ok()
+    permissions::insert_rule(db, preset, tool_name, Some(pattern), RuleEffect::Allow, 200).is_ok()
 }
 
 /// Grant `extra_steps` further iterations to a budget-parked (or running)
@@ -955,7 +969,7 @@ mod tests {
         // Group path never persists shell-allow rows (the v7 seed is an
         // ask row for the shell, which must survive untouched).
         let db = crate::infrastructure::database::in_memory_database();
-        insert_group_allow_rule(&db, "execute_command", Some("*"));
+        insert_group_allow_rule(&db, "coding", "execute_command", Some("*"));
         let rules = permissions::list_rules(&db).expect("list rules");
         assert!(
             rules
@@ -964,7 +978,7 @@ mod tests {
                     && rule.effect == RuleEffect::Allow)),
             "no shell-allow row may persist via the group path, got {rules:?}"
         );
-        insert_group_allow_rule(&db, "write_file", Some("*"));
+        insert_group_allow_rule(&db, "coding", "write_file", Some("*"));
         let rules = permissions::list_rules(&db).expect("list rules");
         let persisted = rules
             .iter()
@@ -1003,5 +1017,33 @@ mod tests {
             PERSISTENCE.contains("\"cancelled\""),
             "persistence.rs must map cancellation onto the cancelled status"
         );
+    }
+
+    #[test]
+    fn group_preset_routes_rule_scope_from_group_key() {
+        // Group keys are preset-scoped (`preset:tool:path`), so a document
+        // run's group approval persists a document-scoped rule; unknown
+        // shapes keep the pre-T5 coding fallback.
+        assert_eq!(group_preset(Some("document:write_file:docs")), "document");
+        assert_eq!(group_preset(Some("coding:write_file:docs")), "coding");
+        assert_eq!(group_preset(Some("coding:write_file:*")), "coding");
+        assert_eq!(group_preset(None), "coding");
+        assert_eq!(group_preset(Some("bogus")), "coding");
+        assert_eq!(group_preset(Some("")), "coding");
+
+        let db = crate::infrastructure::database::in_memory_database();
+        assert!(insert_group_allow_rule(
+            &db,
+            group_preset(Some("document:write_file:docs")),
+            "write_file",
+            Some("docs"),
+        ));
+        let rules = permissions::list_rules(&db).expect("list rules");
+        let persisted = rules
+            .iter()
+            .find(|rule| rule.tool_pattern == "write_file")
+            .expect("write_file rule persisted via group path");
+        assert_eq!(persisted.preset, "document");
+        assert_eq!(persisted.effect, RuleEffect::Allow);
     }
 }

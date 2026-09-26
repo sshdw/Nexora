@@ -41,6 +41,7 @@ use serde::Serialize;
 use super::action_memory::{self, ActionSummary, AgentStepView};
 use super::approval::{ApprovalGate, AutonomyMode};
 use super::control::{AgentRunEvent, RunControl};
+use super::permissions::RunPreset;
 use super::persistence::{mode_to_column, terminal_outcome, RunRecorder};
 use super::runner::AgentRunner;
 use crate::application::conversations::ConversationService;
@@ -278,6 +279,31 @@ pub(crate) fn resolve_autonomy_mode(db: &Database) -> AutonomyMode {
     }
 }
 
+/// Setting key backing the run preset (`agent.preset`).
+pub(crate) const PRESET_KEY: &str = "agent.preset";
+
+/// Parse a persisted preset string into [`RunPreset`], defaulting to
+/// `Coding` for missing, empty, or invalid values (T5 — mirrors the autonomy
+/// pattern above: the default preserves today's behavior everywhere).
+#[must_use]
+pub(crate) fn parse_preset(value: Option<&str>) -> RunPreset {
+    match value {
+        Some("document") => RunPreset::Document,
+        _ => RunPreset::Coding,
+    }
+}
+
+/// Resolve the persisted run preset from `app_settings` (`agent.preset`),
+/// defaulting to `Coding` when unset or invalid.
+#[must_use]
+pub(crate) fn resolve_preset(db: &Database) -> RunPreset {
+    let svc = SettingsService::new(db);
+    match svc.read(PRESET_KEY) {
+        Ok(Some(value)) => parse_preset(Some(value.as_str())),
+        _ => RunPreset::Coding,
+    }
+}
+
 /// Setting key backing the per-run spend guard (`agent.spend_limit_micro_usd`).
 pub(crate) const SPEND_LIMIT_KEY: &str = "agent.spend_limit_micro_usd";
 
@@ -298,7 +324,7 @@ pub(crate) fn resolve_spend_limit(db: &Database) -> Option<u64> {
     }
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
 pub(crate) fn start_run(
     db: &Database,
     registry: Arc<AgentRunRegistry>,
@@ -307,6 +333,7 @@ pub(crate) fn start_run(
     workspace_root: PathBuf,
     request: AgentRunRequest,
     mode: AutonomyMode,
+    preset: RunPreset,
 ) -> Result<i64, AgentRunError> {
     ExecutorRegistry::new()
         .resolve_owned(&request.provider)
@@ -332,6 +359,7 @@ pub(crate) fn start_run(
         workspace_root,
         &request,
         mode,
+        preset,
     );
     if started.is_err() {
         registry.unclaim_conversation(request.conversation_id);
@@ -385,6 +413,7 @@ fn load_action_summary(db: &Database, conversation_id: i64) -> ActionSummary {
 }
 
 /// The post-claim setup: user message, run row, registration, spawn.
+#[allow(clippy::too_many_arguments)]
 fn start_run_claimed(
     db: &Database,
     registry: &Arc<AgentRunRegistry>,
@@ -393,6 +422,7 @@ fn start_run_claimed(
     workspace_root: PathBuf,
     request: &AgentRunRequest,
     mode: AutonomyMode,
+    preset: RunPreset,
 ) -> Result<i64, AgentRunError> {
     // Load the persisted history BEFORE persisting the current user
     // message (agent memory slice): after the persist the current turn is
@@ -472,6 +502,7 @@ fn start_run_claimed(
         run_id,
         control,
         gate,
+        preset,
         request.clone(),
         history,
         action_summary,
@@ -494,6 +525,7 @@ fn spawn_run(
     run_id: i64,
     control: RunControl,
     gate: ApprovalGate,
+    preset: RunPreset,
     request: AgentRunRequest,
     history: Vec<AiMessage>,
     action_summary: ActionSummary,
@@ -526,6 +558,7 @@ fn spawn_run(
                 let mut runner = AgentRunner::new(executor.as_ref(), &workspace_root)
                     .with_control(control)
                     .with_approval_gate(gate)
+                    .with_preset(preset)
                     .with_permission_store(permission_store)
                     .with_history(history)
                     .with_action_summary(action_summary)
@@ -794,6 +827,7 @@ mod tests {
             workspace,
             request(conversation_id, "do things"),
             crate::application::agent::approval::AutonomyMode::SemiAutonomous,
+            RunPreset::Coding,
         )
         .expect("start");
 
@@ -891,6 +925,7 @@ mod tests {
             workspace,
             request(conversation_id, "mutate something"),
             crate::application::agent::approval::AutonomyMode::SemiAutonomous,
+            RunPreset::Coding,
         )
         .expect("start");
 
@@ -918,6 +953,7 @@ mod tests {
             temp_workspace("approval-second"),
             request(conversation_id, "second"),
             crate::application::agent::approval::AutonomyMode::SemiAutonomous,
+            RunPreset::Coding,
         );
         assert!(
             matches!(second, Err(AgentRunError::RunAlreadyActive { .. })),
@@ -962,6 +998,7 @@ mod tests {
             workspace,
             request(conversation_id, "cancel me"),
             crate::application::agent::approval::AutonomyMode::SemiAutonomous,
+            RunPreset::Coding,
         )
         .expect("start");
 
@@ -1019,6 +1056,7 @@ mod tests {
             workspace,
             req,
             crate::application::agent::approval::AutonomyMode::SemiAutonomous,
+            RunPreset::Coding,
         )
         .expect("start");
 
@@ -1066,6 +1104,7 @@ mod tests {
             workspace,
             request(conversation_id, "explode"),
             crate::application::agent::approval::AutonomyMode::SemiAutonomous,
+            RunPreset::Coding,
         )
         .expect("start");
 
@@ -1154,6 +1193,44 @@ mod tests {
     }
 
     #[test]
+    fn parse_preset_defaults_to_coding() {
+        assert_eq!(parse_preset(Some("coding")), RunPreset::Coding);
+        assert_eq!(parse_preset(Some("document")), RunPreset::Document);
+        // Invalid, None, empty all default to coding
+        assert_eq!(parse_preset(None), RunPreset::Coding);
+        assert_eq!(parse_preset(Some("")), RunPreset::Coding);
+        assert_eq!(parse_preset(Some("garbage")), RunPreset::Coding);
+        assert_eq!(parse_preset(Some("Document")), RunPreset::Coding);
+    }
+
+    #[test]
+    fn resolve_preset_reads_setting_and_defaults() {
+        let db = crate::infrastructure::database::in_memory_database();
+        // Default when unset
+        assert_eq!(resolve_preset(&db), RunPreset::Coding);
+        // Document
+        crate::application::settings::SettingsService::new(&db)
+            .write(PRESET_KEY, Some("document"))
+            .expect("write");
+        assert_eq!(resolve_preset(&db), RunPreset::Document);
+        // Coding
+        crate::application::settings::SettingsService::new(&db)
+            .write(PRESET_KEY, Some("coding"))
+            .expect("write");
+        assert_eq!(resolve_preset(&db), RunPreset::Coding);
+        // Invalid legacy defaults to coding
+        crate::application::settings::SettingsService::new(&db)
+            .write(PRESET_KEY, Some("legacy"))
+            .expect("write");
+        assert_eq!(resolve_preset(&db), RunPreset::Coding);
+        // Clearing restores default
+        crate::application::settings::SettingsService::new(&db)
+            .delete(PRESET_KEY)
+            .expect("delete");
+        assert_eq!(resolve_preset(&db), RunPreset::Coding);
+    }
+
+    #[test]
     fn resolve_spend_limit_unset_is_none() {
         let db = crate::infrastructure::database::in_memory_database();
         assert_eq!(resolve_spend_limit(&db), None);
@@ -1212,6 +1289,7 @@ mod tests {
             workspace.clone(),
             request(conversation_id, "hello"),
             mode,
+            RunPreset::Coding,
         )
         .expect("start");
         // Verify persisted row has mode column = supervised
@@ -1273,6 +1351,7 @@ mod tests {
             workspace,
             req,
             crate::application::agent::approval::AutonomyMode::SemiAutonomous,
+            RunPreset::Coding,
         )
         .expect("start");
         // Retry pause while the run is still active; fail fast if it finished first.
@@ -1339,6 +1418,7 @@ mod tests {
             workspace,
             request(conversation_id, "hi"),
             crate::application::agent::approval::AutonomyMode::SemiAutonomous,
+            RunPreset::Coding,
         )
         .expect("start");
         let frames = collect_frames(&rx);
@@ -1398,6 +1478,7 @@ mod tests {
             workspace,
             request(conversation_id, "deny me"),
             crate::application::agent::approval::AutonomyMode::SemiAutonomous,
+            RunPreset::Coding,
         )
         .expect("start");
         let frames = collect_frames(&rx);
@@ -1471,6 +1552,7 @@ mod tests {
             workspace,
             request(conversation_id, "group me"),
             crate::application::agent::approval::AutonomyMode::SemiAutonomous,
+            RunPreset::Coding,
         )
         .expect("start");
         // First park resolves with group scope through the registry (the IPC
@@ -1573,6 +1655,7 @@ mod tests {
             workspace.clone(),
             request(conversation_id, "edit then search"),
             crate::application::agent::approval::AutonomyMode::FullAutonomous,
+            RunPreset::Coding,
         )
         .expect("start");
         let frames = collect_frames(&rx);

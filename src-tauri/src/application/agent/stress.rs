@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 
 use crate::application::agent::approval::AutonomyMode;
 use crate::application::agent::control::{AgentRunEvent, CancellationToken};
+use crate::application::agent::permissions::RunPreset;
 use crate::application::agent::pricing::cost_for_usage;
 use crate::application::agent::service::{
     start_run, AgentRunHost, AgentRunRegistry, AgentRunRequest, ResolveOutcome, RunFinished,
@@ -284,6 +285,7 @@ fn start_stress_run(
             spend_limit_micro_usd,
         },
         mode,
+        RunPreset::Coding,
     )
     .expect("start stress run")
 }
@@ -1291,6 +1293,7 @@ fn stress_duplicate_start_under_concurrency() {
                             spend_limit_micro_usd: None,
                         },
                         AutonomyMode::FullAutonomous,
+                        RunPreset::Coding,
                     );
                     let rejected = matches!(
                         outcome,

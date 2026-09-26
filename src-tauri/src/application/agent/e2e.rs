@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use crate::application::agent::approval::AutonomyMode;
 use crate::application::agent::control::{AgentRunEvent, CancellationToken};
+use crate::application::agent::permissions::RunPreset;
 use crate::application::agent::service::{
     start_run, AgentRunHost, AgentRunRegistry, AgentRunRequest, RunFrame,
 };
@@ -482,6 +483,7 @@ fn start_memory_run(
             spend_limit_micro_usd: None,
         },
         AutonomyMode::SemiAutonomous,
+        RunPreset::Coding,
     )
 }
 
@@ -789,6 +791,7 @@ fn e2e_full_agent_journey() {
             spend_limit_micro_usd: None,
         },
         AutonomyMode::SemiAutonomous,
+        RunPreset::Coding,
     )
     .expect("start run");
 
@@ -968,6 +971,7 @@ fn e2e_approval_denied_writes_nothing() {
             spend_limit_micro_usd: None,
         },
         AutonomyMode::SemiAutonomous,
+        RunPreset::Coding,
     )
     .expect("start");
 
@@ -1074,6 +1078,7 @@ fn e2e_budget_park_extend_completes() {
             spend_limit_micro_usd: None,
         },
         AutonomyMode::SemiAutonomous,
+        RunPreset::Coding,
     )
     .expect("start");
 
@@ -1153,6 +1158,7 @@ fn e2e_cancel_from_approval_park() {
             spend_limit_micro_usd: None,
         },
         AutonomyMode::SemiAutonomous,
+        RunPreset::Coding,
     )
     .expect("start");
 
@@ -1242,6 +1248,7 @@ fn e2e_pause_resume_completes() {
             spend_limit_micro_usd: None,
         },
         AutonomyMode::SemiAutonomous,
+        RunPreset::Coding,
     )
     .expect("start");
 
@@ -1340,6 +1347,7 @@ fn e2e_spend_limit_trips() {
             spend_limit_micro_usd: Some(limit),
         },
         AutonomyMode::SemiAutonomous,
+        RunPreset::Coding,
     )
     .expect("start");
 
@@ -1465,6 +1473,7 @@ fn e2e_duplicate_run_rejected_parallel_ok() {
             spend_limit_micro_usd: None,
         },
         AutonomyMode::SemiAutonomous,
+        RunPreset::Coding,
     )
     .expect("first start");
 
@@ -1485,6 +1494,7 @@ fn e2e_duplicate_run_rejected_parallel_ok() {
             spend_limit_micro_usd: None,
         },
         AutonomyMode::SemiAutonomous,
+        RunPreset::Coding,
     );
     assert!(
         matches!(
@@ -1511,6 +1521,7 @@ fn e2e_duplicate_run_rejected_parallel_ok() {
             spend_limit_micro_usd: None,
         },
         AutonomyMode::SemiAutonomous,
+        RunPreset::Coding,
     )
     .expect("second conversation start must succeed");
 
@@ -1607,6 +1618,7 @@ fn e2e_autonomy_setting_respected() {
             spend_limit_micro_usd: None,
         },
         mode,
+        RunPreset::Coding,
     )
     .expect("start");
 
@@ -1864,6 +1876,7 @@ fn e2e_real_provider_smoke() {
             spend_limit_micro_usd: None,
         },
         AutonomyMode::SemiAutonomous,
+        RunPreset::Coding,
     ) {
         Ok(id) => id,
         Err(err) => {
@@ -2024,6 +2037,7 @@ fn e2e_cancel_during_provider_request_aborts_promptly() {
             spend_limit_micro_usd: None,
         },
         AutonomyMode::SemiAutonomous,
+        RunPreset::Coding,
     )
     .expect("start run");
 

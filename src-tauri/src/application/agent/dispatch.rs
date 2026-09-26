@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use crate::application::agent::approval::{ApprovalDecision, ApprovalGate, AutonomyMode};
 use crate::application::agent::control::{AgentRunEvent, CancellationToken, RunControl};
-use crate::application::agent::permissions::{self, PermissionOutcome, PermissionStore};
+use crate::application::agent::permissions::{self, PermissionOutcome, PermissionStore, RunPreset};
 use crate::application::agent::persistence::{ActiveRunRecord, StepProvenance};
 use crate::application::agent::tools::ToolRegistry;
 use crate::application::execution::{AiMessage, AiRole, ToolCall};
@@ -14,6 +14,7 @@ use crate::application::execution::{AiMessage, AiRole, ToolCall};
 use super::errors::AgentError;
 use super::prompts::{
     classify_outcome, denied_tool_message, thought_signature_trace, tool_message,
+    DOCUMENT_SHELL_DENIAL,
 };
 
 /// Read-only view of runner state for one dispatch batch.
@@ -26,6 +27,9 @@ pub(crate) struct DispatchCtx<'a> {
     pub control: Option<&'a RunControl>,
     pub approval_gate: Option<&'a ApprovalGate>,
     pub permission_store: Option<&'a PermissionStore>,
+    /// Run preset (T5): the schema filter and the structural shell ban both
+    /// key off this. `Coding` preserves the exact pre-T5 pipeline.
+    pub preset: RunPreset,
     pub sender: Option<&'a Sender<AgentRunEvent>>,
 }
 
@@ -83,11 +87,12 @@ pub(crate) fn dispatch_tool_calls(
     // AC-6: never drop a call — every returned call is dispatched and
     // observed. Failures are rendered through `ToolError`'s Display
     // (`Error: ...`) so the model can recover on the next turn.
+    let preset = ctx.preset.as_str();
     let batch_groups: Vec<String> = calls
         .iter()
         .map(|call| {
             let path = permissions::extract_path(&call.name, &call.arguments);
-            permissions::group_key("coding", &call.name, path.as_deref())
+            permissions::group_key(preset, &call.name, path.as_deref())
         })
         .collect();
     for call in calls {
@@ -109,8 +114,29 @@ fn dispatch_one(
     record: &mut Option<&mut ActiveRunRecord<'_>>,
     batch_groups: &[String],
 ) -> Result<(), AgentError> {
+    // T5 structural shell ban (deny-floor): a document run never exposes
+    // `execute_command`, so it is denied deterministically here — before the
+    // sticky-group path, the permission store (even an `allow` rule must not
+    // pass), and the approval ladder. No `ApprovalRequested` is emitted and
+    // nothing parks: the denial is a controlled observation and the loop
+    // continues. Unknown tools keep their existing controlled-observation
+    // path below.
+    if ctx.preset == RunPreset::Document && call.name == "execute_command" {
+        messages.push(tool_message(call, DOCUMENT_SHELL_DENIAL));
+        if let Some(rec) = record.as_mut() {
+            rec.tool_call_with_provenance(
+                call,
+                DOCUMENT_SHELL_DENIAL,
+                "denied",
+                None,
+                StepProvenance::system(),
+            );
+        }
+        return Ok(());
+    }
     let request_path = permissions::extract_path(&call.name, &call.arguments);
-    let call_group_key = permissions::group_key("coding", &call.name, request_path.as_deref());
+    let call_group_key =
+        permissions::group_key(ctx.preset.as_str(), &call.name, request_path.as_deref());
     let call_group_size = batch_groups
         .iter()
         .filter(|key| *key == &call_group_key)
@@ -190,7 +216,7 @@ fn handle_permission_store_decision(
     if permissions::is_known_tool(&call.name) {
         if let Some(store) = ctx.permission_store {
             if let Some(outcome) = store.decide(
-                "coding",
+                ctx.preset.as_str(),
                 &call.name,
                 request_path,
                 crate::application::agent::approval::RiskClass::classify(&call.name),
@@ -1610,5 +1636,261 @@ mod tests {
         );
         assert!(approvals[0].group_key.is_some(), "group_key must be set");
         let _ = fs::remove_dir_all(&ws);
+    }
+
+    // -----------------------------------------------------------------------
+    // T5 — Document preset: structural shell ban
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn document_preset_shell_is_structurally_denied_without_approval() {
+        // A document run never exposes the shell: the smuggled call becomes
+        // a controlled denial observation without ever parking for approval,
+        // and the run still completes.
+        let ws = temp_workspace();
+        let gate = ApprovalGate::new(AutonomyMode::SemiAutonomous);
+        let (tx, rx) = channel();
+        let fake = FakeExecutor::new(vec![
+            Ok(AiResponse {
+                content: String::new(),
+                model: "m".to_string(),
+                tool_calls: vec![approval_call(
+                    "s1",
+                    "execute_command",
+                    serde_json::json!({"command": "echo should-never-run"}),
+                )],
+                usage: None,
+            }),
+            Ok(text_response("done without shell")),
+        ]);
+        let db = in_memory_database();
+        let runner = AgentRunner::new(&fake, &ws)
+            .with_preset(RunPreset::Document)
+            .with_approval_gate(gate)
+            .with_run_recorder(RunRecorder::new(&db))
+            .with_event_sender(tx);
+        let answer = runner.run("openai", "m", "cred", "q").expect("completes");
+        assert_eq!(answer, "done without shell");
+
+        // No approval park happened: the denial never emits ApprovalRequested.
+        let mut saw_approval = false;
+        while let Ok(ev) = rx.try_recv() {
+            if matches!(
+                ev,
+                AgentRunEvent::ApprovalRequested { .. } | AgentRunEvent::ApprovalResolved { .. }
+            ) {
+                saw_approval = true;
+            }
+        }
+        assert!(
+            !saw_approval,
+            "structural denial must never park for approval"
+        );
+
+        // The denial observation fed back to the next LLM turn is frozen.
+        let history = &fake.requests.borrow()[1].messages;
+        assert_eq!(history[3].role, AiRole::Tool);
+        let result = history[3]
+            .tool_result
+            .as_ref()
+            .expect("tool result present");
+        assert_eq!(result.call_id, "s1");
+        assert_eq!(result.name, "execute_command");
+        assert_eq!(result.content, DOCUMENT_SHELL_DENIAL);
+
+        // Persisted as a denied tool_call step (no approval step exists).
+        let runs = AgentRunRepository::new(&db);
+        let run = &runs.list_runs_by_started_at_desc().expect("list runs")[0];
+        let steps = runs.list_steps(run.id).expect("list steps");
+        let denied: Vec<_> = steps
+            .iter()
+            .filter(|s| s.kind == "tool_call" && s.status.as_deref() == Some("denied"))
+            .collect();
+        assert_eq!(denied.len(), 1, "one structural denial step, got {steps:?}");
+        assert_eq!(denied[0].tool_name.as_deref(), Some("execute_command"));
+        assert_eq!(
+            denied[0].observation.as_deref(),
+            Some(DOCUMENT_SHELL_DENIAL)
+        );
+        assert!(
+            !steps.iter().any(|s| s.kind == "approval"),
+            "no approval step may exist for a structural denial, got {steps:?}"
+        );
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn document_preset_allow_rule_cannot_reinstate_shell() {
+        // Deny-floor: even a stored `allow` rule for the shell must not pass
+        // the structural ban. `FullAutonomous` is chosen deliberately: any
+        // leak through the store would execute the call instead of parking.
+        let store = PermissionStore::from_rules(vec![permissions::PermissionRule {
+            id: 1,
+            preset: "document".to_string(),
+            tool_pattern: "execute_command".to_string(),
+            path_pattern: None,
+            effect: permissions::RuleEffect::Allow,
+            priority: 0,
+        }]);
+        let ws = temp_workspace();
+        let gate = ApprovalGate::new(AutonomyMode::FullAutonomous);
+        let (tx, rx) = channel();
+        let fake = FakeExecutor::new(vec![
+            Ok(AiResponse {
+                content: String::new(),
+                model: "m".to_string(),
+                tool_calls: vec![approval_call(
+                    "s1",
+                    "execute_command",
+                    serde_json::json!({"command": "echo should-never-run"}),
+                )],
+                usage: None,
+            }),
+            Ok(text_response("recovered")),
+        ]);
+        let runner = AgentRunner::new(&fake, &ws)
+            .with_preset(RunPreset::Document)
+            .with_approval_gate(gate)
+            .with_permission_store(store)
+            .with_event_sender(tx);
+        let answer = runner.run("openai", "m", "cred", "q").expect("completes");
+        assert_eq!(answer, "recovered");
+
+        let mut saw_approval = false;
+        while let Ok(ev) = rx.try_recv() {
+            if matches!(
+                ev,
+                AgentRunEvent::ApprovalRequested { .. } | AgentRunEvent::ApprovalResolved { .. }
+            ) {
+                saw_approval = true;
+            }
+        }
+        assert!(
+            !saw_approval,
+            "an allow rule must not lift the structural ban into a park"
+        );
+        let history = &fake.requests.borrow()[1].messages;
+        let result = history[3]
+            .tool_result
+            .as_ref()
+            .expect("tool result present");
+        assert_eq!(
+            result.content, DOCUMENT_SHELL_DENIAL,
+            "allow rule must not pass: the shell stays denied"
+        );
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn coding_preset_shell_still_parks_per_ladder() {
+        // Frozen coding behavior: without an explicit preset the run is
+        // `Coding`, so the shell follows the autonomy ladder and parks in
+        // `SemiAutonomous` exactly as before.
+        let ws = temp_workspace();
+        let gate = ApprovalGate::new(AutonomyMode::SemiAutonomous);
+        let gate_clone = gate.clone();
+        let (tx, rx) = channel();
+        let fake = FakeExecutor::new(vec![
+            Ok(AiResponse {
+                content: String::new(),
+                model: "m".to_string(),
+                tool_calls: vec![approval_call(
+                    "s1",
+                    "execute_command",
+                    serde_json::json!({"command": "echo hi"}),
+                )],
+                usage: None,
+            }),
+            Ok(text_response("done")),
+        ]);
+        let runner = AgentRunner::new(&fake, &ws)
+            .with_approval_gate(gate_clone)
+            .with_event_sender(tx);
+        let gate_for_driver = gate.clone();
+        let driver = thread::spawn(move || {
+            let ev = rx.recv_timeout(Duration::from_secs(5)).expect("requested");
+            assert!(
+                matches!(ev, AgentRunEvent::ApprovalRequested { name, .. } if name=="execute_command")
+            );
+            gate_for_driver.respond("s1", ApprovalDecision::Approved);
+            rx.recv_timeout(Duration::from_secs(5)).expect("resolved");
+            rx.recv_timeout(Duration::from_secs(5)).expect("completed")
+        });
+        runner.run("openai", "m", "cred", "q").expect("completes");
+        driver.join().expect("driver");
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn permission_store_lookup_uses_run_preset() {
+        // A document-scoped deny rule fires only for document runs: the same
+        // store denies `read_file` under `Document` and lets it execute under
+        // `Coding`. `FullAutonomous` keeps both runs park-free so the store
+        // decision is the only variable.
+        fn document_deny_read() -> PermissionStore {
+            PermissionStore::from_rules(vec![permissions::PermissionRule {
+                id: 7,
+                preset: "document".to_string(),
+                tool_pattern: "read_file".to_string(),
+                path_pattern: None,
+                effect: permissions::RuleEffect::Deny,
+                priority: 0,
+            }])
+        }
+        fn read_probe(id: &str) -> AiResponse {
+            AiResponse {
+                content: String::new(),
+                model: "m".to_string(),
+                tool_calls: vec![approval_call(
+                    id,
+                    "read_file",
+                    serde_json::json!({"path": "probe.txt"}),
+                )],
+                usage: None,
+            }
+        }
+
+        // Document run: the document-scoped rule denies the read.
+        let ws = temp_workspace();
+        fs::write(ws.join("probe.txt"), "seeded").expect("seed probe");
+        let fake = FakeExecutor::new(vec![Ok(read_probe("r1")), Ok(text_response("denied ok"))]);
+        let runner = AgentRunner::new(&fake, &ws)
+            .with_preset(RunPreset::Document)
+            .with_approval_gate(ApprovalGate::new(AutonomyMode::FullAutonomous))
+            .with_permission_store(document_deny_read());
+        let answer = runner.run("openai", "m", "cred", "q").expect("completes");
+        assert_eq!(answer, "denied ok");
+        let history = &fake.requests.borrow()[1].messages;
+        let result = history[3]
+            .tool_result
+            .as_ref()
+            .expect("tool result present");
+        assert_eq!(
+            result.content, "Error: tool execution was denied by the user",
+            "document run must hit the document-scoped deny rule"
+        );
+
+        // Coding run: the same store has no coding-scoped rule, so the read
+        // falls back to the ladder and executes.
+        let ws2 = temp_workspace();
+        fs::write(ws2.join("probe.txt"), "seeded").expect("seed probe");
+        let fake2 = FakeExecutor::new(vec![Ok(read_probe("r2")), Ok(text_response("read ok"))]);
+        let runner2 = AgentRunner::new(&fake2, &ws2)
+            .with_preset(RunPreset::Coding)
+            .with_approval_gate(ApprovalGate::new(AutonomyMode::FullAutonomous))
+            .with_permission_store(document_deny_read());
+        let answer2 = runner2.run("openai", "m", "cred", "q").expect("completes");
+        assert_eq!(answer2, "read ok");
+        let history2 = &fake2.requests.borrow()[1].messages;
+        let result2 = history2[3]
+            .tool_result
+            .as_ref()
+            .expect("tool result present");
+        assert_eq!(
+            result2.content, "seeded",
+            "coding run must ignore the document-scoped rule and execute"
+        );
+        let _ = fs::remove_dir_all(&ws);
+        let _ = fs::remove_dir_all(&ws2);
     }
 }
