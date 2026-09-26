@@ -6,16 +6,41 @@ on:
   pull_request:
     branches: [main]
 
+# Wall-clock split: fmt (no build), Rust gates per OS (clippy + test share
+# one target dir per job), and the frontend gates run concurrently instead
+# of sequentially. Same commands as the sequential layout, only regrouped.
 jobs:
-  gates:
-    name: Gates (fmt / clippy / test)
+  fmt:
+    name: fmt
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install baseline Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: cargo fmt --check
+        working-directory: src-tauri
+        run: cargo fmt --all -- --check
+
+  rust:
+    name: rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install Tauri system dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -42,10 +67,6 @@ jobs:
         with:
           workspaces: src-tauri->target
 
-      - name: cargo fmt --check
-        working-directory: src-tauri
-        run: cargo fmt --all -- --check
-
       - name: cargo clippy
         working-directory: src-tauri
         run: cargo clippy --all-targets --all-features -- -D warnings
@@ -53,6 +74,14 @@ jobs:
       - name: cargo test
         working-directory: src-tauri
         run: cargo test
+
+  frontend:
+    name: frontend
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -68,40 +97,3 @@ jobs:
 
       - name: npx eslint src
         run: npx eslint src
-
-  gates-windows:
-    name: Gates Windows (fmt / clippy / test)
-    runs-on: windows-latest
-    timeout-minutes: 20
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install baseline Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - name: Resolve pinned toolchain (src-tauri/rust-toolchain.toml)
-        working-directory: src-tauri
-        run: |
-          rustup component add rustfmt clippy
-          rustc --version
-          rustfmt --version
-
-      - name: Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri->target
-
-      - name: cargo fmt --check
-        working-directory: src-tauri
-        run: cargo fmt --all -- --check
-
-      - name: cargo clippy
-        working-directory: src-tauri
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
-      - name: cargo test
-        working-directory: src-tauri
-        run: cargo test

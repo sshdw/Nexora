@@ -1739,10 +1739,14 @@ mod tests {
     #[test]
     fn retry_attempts_are_capped_at_three() {
         use std::sync::atomic::Ordering;
+        // `Retry-After: 0` keeps this a cap proof, not a timing proof: the
+        // attempt bound and classification are what matter here, and a zero
+        // hint retries immediately. Real-backoff timing is proven once in the
+        // transport `retry_after_*` test instead of slept out per provider.
         let (endpoint, count, server) = spawn_sequence_server(vec![
-            (503, String::new(), None),
-            (503, String::new(), None),
-            (503, String::new(), None),
+            (503, String::new(), Some("0".to_string())),
+            (503, String::new(), Some("0".to_string())),
+            (503, String::new(), Some("0".to_string())),
         ]);
         let executor = AnthropicExecutor::with_endpoint(endpoint);
         let result = executor.execute(
