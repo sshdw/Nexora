@@ -2,8 +2,13 @@
 //!
 //! Rules live in `permission_rules` (migration v7, forward-only) and are
 //! evaluated per tool call before the approval ladder (`approval.rs`). Every
-//! run is implicitly `"coding"` (M2): rules with `preset IN ('coding','*')`
-//! are evaluated; `preset='document'` rows are storable but inert until M2.
+//! run carries a [`RunPreset`] (`Coding` default): rules with `preset IN
+//! (run_preset,'*')` are evaluated; rows for the other preset stay inert.
+//!
+//! A `Document` run additionally bans the shell structurally: `dispatch`
+//! rejects `execute_command` deterministically before the store, the ladder,
+//! and the sticky-group path, so even an `allow` rule must not pass
+//! (deny-floor).
 //!
 //! Matching (normative):
 //! 1. Candidates: `preset IN (run_preset,'*')` AND `tool_pattern IN
@@ -23,6 +28,33 @@ use serde::Serialize;
 
 use crate::application::agent::approval::RiskClass;
 use crate::infrastructure::database::{Database, DatabaseError};
+
+/// Run preset (T5): which tool surface a run may use.
+///
+/// `Coding` (the default) exposes all six native tools. `Document` exposes
+/// all except `execute_command`: the schema filter
+/// ([`crate::application::agent::tools::ToolRegistry::definitions_for_preset`])
+/// hides the shell from the model, and the dispatch layer denies it
+/// deterministically (deny-floor: even an `allow` rule must not pass).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum RunPreset {
+    /// Full tool surface (default everywhere unless explicitly set).
+    #[default]
+    Coding,
+    /// No shell: schema hides `execute_command`, dispatch denies it.
+    Document,
+}
+
+impl RunPreset {
+    /// Column/`group_key` value (`"coding"` / `"document"`).
+    #[must_use]
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Coding => "coding",
+            Self::Document => "document",
+        }
+    }
+}
 
 /// Effect of a permission rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

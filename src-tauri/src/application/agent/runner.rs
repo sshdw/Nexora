@@ -73,6 +73,7 @@ use crate::application::agent::action_memory::ActionSummary;
 use crate::application::agent::approval::ApprovalGate;
 use crate::application::agent::control::{AgentRunEvent, CancellationToken, RunControl};
 use crate::application::agent::permissions::PermissionStore;
+use crate::application::agent::permissions::RunPreset;
 use crate::application::agent::persistence::{
     mode_to_column, ActiveRunRecord, RunRecorder, DEFAULT_RECORDED_MODE,
 };
@@ -113,8 +114,13 @@ pub(crate) struct AgentRunner<'a> {
     /// the exact deterministic pre-4.1 behaviour; no approval is ever required.
     approval_gate: Option<ApprovalGate>,
     /// Optional persistent permission rules (M1-core). When `None` every call
-    /// falls back to the ladder; every run is implicitly `"coding"` (M2).
+    /// falls back to the ladder; rules are evaluated for the run's preset.
     permission_store: Option<PermissionStore>,
+    /// Run preset (T5): `Coding` exposes all six tools, `Document` hides the
+    /// shell from the schema and denies it structurally on dispatch.
+    /// `Coding` by default, so runs without an explicit preset keep the exact
+    /// pre-T5 behavior.
+    preset: RunPreset,
     /// Optional governance-event channel (Task 3.2); Milestone 5 bridges it to
     /// Tauri events. Delivery is best-effort.
     event_sender: Option<Sender<AgentRunEvent>>,
@@ -181,6 +187,7 @@ impl<'a> AgentRunner<'a> {
             control: None,
             approval_gate: None,
             permission_store: None,
+            preset: RunPreset::Coding,
             event_sender: None,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             recorder: None,
@@ -227,10 +234,20 @@ impl<'a> AgentRunner<'a> {
     }
 
     /// Attach the persistent permission store (M1-core). The store is a
-    /// snapshot loaded at run start; every run is implicitly `"coding"`.
+    /// snapshot loaded at run start; rules are evaluated for the run's preset.
     #[must_use]
     pub(crate) fn with_permission_store(mut self, store: PermissionStore) -> Self {
         self.permission_store = Some(store);
+        self
+    }
+
+    /// Set the run preset (T5). `Coding` (the default) exposes all six tools;
+    /// `Document` hides the shell from the schema and denies it structurally
+    /// on dispatch. Mid-run preset switches are out of scope (use the
+    /// approval-gate mode switch for autonomy changes).
+    #[must_use]
+    pub(crate) fn with_preset(mut self, preset: RunPreset) -> Self {
+        self.preset = preset;
         self
     }
 
@@ -458,7 +475,7 @@ impl<'a> AgentRunner<'a> {
         mut record: Option<&mut ActiveRunRecord<'_>>,
         spent_micro_usd: &mut u64,
     ) -> Result<String, AgentError> {
-        let tools = ToolRegistry::definitions();
+        let tools = ToolRegistry::definitions_for_preset(self.preset);
         // A control never cancelled the plan: when the runner has no attached
         // control it dispatches tools through a never-firing token so the
         // undisputed Task 3.1 behaviour is preserved exactly.
@@ -680,6 +697,7 @@ impl<'a> AgentRunner<'a> {
                 control,
                 approval_gate: self.approval_gate.as_ref(),
                 permission_store: self.permission_store.as_ref(),
+                preset: self.preset,
                 sender: self.event_sender.as_ref(),
             };
             dispatch::dispatch_tool_calls(&ctx, &response.tool_calls, &mut messages, &mut record)?;
@@ -733,6 +751,26 @@ mod tests {
         for (sent, exp) in first.tools.iter().zip(&expected) {
             assert_eq!(sent, exp);
         }
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn document_preset_first_request_hides_shell_tool() {
+        // The LLM turn of a document run sees the filtered schema (T5); the
+        // summarizer path stays tool-free (pinned by the compaction tests).
+        let ws = temp_workspace();
+        let fake = FakeExecutor::new(vec![Ok(text_response("ok"))]);
+        let runner = AgentRunner::new(&fake, &ws).with_preset(RunPreset::Document);
+
+        runner.run("openai", "m", "cred", "hi").expect("finish");
+
+        let first = &fake.requests.borrow()[0];
+        let expected = ToolRegistry::definitions_for_preset(RunPreset::Document);
+        assert_eq!(first.tools, expected);
+        assert!(
+            !first.tools.iter().any(|t| t.name == "execute_command"),
+            "document schema must not offer the shell"
+        );
         let _ = fs::remove_dir_all(&ws);
     }
 

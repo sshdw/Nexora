@@ -2,10 +2,14 @@
 //! JSON-Schema descriptions of the six tools; execution lives in sibling modules.
 
 use super::ToolRegistry;
+use crate::application::agent::permissions::RunPreset;
 use crate::application::execution::ToolDefinition;
 
 impl ToolRegistry {
     /// Return JSON-Schema [`ToolDefinition`]s for the six native tools.
+    ///
+    /// Coding alias: the default preset exposes the full surface, so this
+    /// stays byte-for-byte the pre-T5 list.
     pub(crate) fn definitions() -> Vec<ToolDefinition> {
         vec![
             execute_command_definition(),
@@ -15,6 +19,20 @@ impl ToolRegistry {
             edit_file_definition(),
             search_files_definition(),
         ]
+    }
+
+    /// Return the tool schema for `preset` (T5): `Coding` exposes all six
+    /// tools; `Document` exposes all except `execute_command` (structural
+    /// shell ban — dispatch denies the shell deterministically even if a
+    /// rule or a smuggled call lets it through).
+    pub(crate) fn definitions_for_preset(preset: RunPreset) -> Vec<ToolDefinition> {
+        match preset {
+            RunPreset::Coding => Self::definitions(),
+            RunPreset::Document => Self::definitions()
+                .into_iter()
+                .filter(|def| def.name != "execute_command")
+                .collect(),
+        }
     }
 }
 
@@ -270,5 +288,43 @@ mod tests {
             let back: ToolDefinition = serde_json::from_str(&json).unwrap();
             assert_eq!(def, back);
         }
+    }
+
+    #[test]
+    fn preset_matrices_coding_has_shell_document_has_not() {
+        // Coding exposes the full surface; document exposes all except the
+        // shell; the other five tools are present in both.
+        let coding = ToolRegistry::definitions_for_preset(RunPreset::Coding);
+        let document = ToolRegistry::definitions_for_preset(RunPreset::Document);
+        let coding_names: Vec<&str> = coding.iter().map(|d| d.name.as_str()).collect();
+        let document_names: Vec<&str> = document.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(coding.len(), 6, "coding exposes all six tools");
+        assert!(
+            coding_names.contains(&"execute_command"),
+            "coding keeps the shell, got {coding_names:?}"
+        );
+        assert_eq!(document.len(), 5, "document drops exactly the shell");
+        assert!(
+            !document_names.contains(&"execute_command"),
+            "document must not expose the shell, got {document_names:?}"
+        );
+        for tool in [
+            "read_file",
+            "write_file",
+            "list_directory",
+            "edit_file",
+            "search_files",
+        ] {
+            assert!(
+                coding_names.contains(&tool),
+                "coding must expose {tool}, got {coding_names:?}"
+            );
+            assert!(
+                document_names.contains(&tool),
+                "document must expose {tool}, got {document_names:?}"
+            );
+        }
+        // `definitions()` stays the coding alias (frozen coding behavior).
+        assert_eq!(ToolRegistry::definitions(), coding);
     }
 }

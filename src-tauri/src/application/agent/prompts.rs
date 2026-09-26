@@ -20,6 +20,12 @@ pub(crate) const AGENT_SYSTEM_PROMPT: &str = AGENT_SYSTEM_PROMPT_WINDOWS;
 #[cfg(not(windows))]
 pub(crate) const AGENT_SYSTEM_PROMPT: &str = AGENT_SYSTEM_PROMPT_POSIX;
 
+/// Frozen model-facing structural denial (T5): document runs never expose
+/// the shell, so a smuggled `execute_command` call becomes this controlled
+/// observation instead of parking for approval or executing.
+pub(crate) const DOCUMENT_SHELL_DENIAL: &str =
+    "Error: execute_command is not available in the document preset";
+
 /// Frozen model-facing denial observation (M1-core): provenance travels in
 /// the persisted step only.
 pub(crate) fn denied_tool_message(call: &crate::application::execution::ToolCall) -> AiMessage {
