@@ -59,14 +59,14 @@ jobs:
       - name: Install baseline Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: clippy
 
       - name: Resolve pinned toolchain (src-tauri/rust-toolchain.toml)
         working-directory: src-tauri
         run: |
-          rustup component add rustfmt clippy
+          rustup component add clippy
           rustc --version
-          rustfmt --version
+          cargo clippy --version
 
       - name: Cache
         uses: Swatinem/rust-cache@v2
