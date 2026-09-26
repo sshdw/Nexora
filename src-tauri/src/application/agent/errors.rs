@@ -25,6 +25,14 @@ pub(crate) enum AgentError {
     SpendLimitExceeded { spent_micro: u64, limit_micro: u64 },
     /// The provider returned neither tool calls nor usable final content.
     EmptyResponse,
+    /// Context recovery was exhausted: the run hit the per-run overflow
+    /// cap ([`super::compaction::MAX_CONTEXT_ERROR_COMPACTIONS`]) and a
+    /// further provider overflow (or an already-exhausted governor at the
+    /// step boundary) terminated the run. Unlike the retryable
+    /// [`ExecutorError::ContextLengthExceeded`] — which triggers one
+    /// in-place compaction and a resend — this variant is terminal only and
+    /// is never produced by the provider classifiers.
+    ContextExhausted,
     /// A user cancelled the run via [`RunControl::cancel`] (or cancellation
     /// was observed during a tool execution).
     Cancelled,
@@ -48,6 +56,12 @@ impl std::fmt::Display for AgentError {
             Self::EmptyResponse => {
                 write!(f, "agent stopped: the model returned an empty response")
             }
+            Self::ContextExhausted => {
+                write!(
+                    f,
+                    "agent stopped: context window exhausted after recovery attempts"
+                )
+            }
             Self::Cancelled => write!(f, "agent stopped: cancelled by the user"),
         }
     }
@@ -60,6 +74,7 @@ impl std::error::Error for AgentError {
             Self::BudgetExhausted(_)
             | Self::SpendLimitExceeded { .. }
             | Self::EmptyResponse
+            | Self::ContextExhausted
             | Self::Cancelled => None,
         }
     }

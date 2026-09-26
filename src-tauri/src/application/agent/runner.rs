@@ -511,7 +511,7 @@ impl<'a> AgentRunner<'a> {
             match governor.decide(&messages, context_limit) {
                 ContextAction::Proceed => {}
                 ContextAction::Exhausted => {
-                    return Err(AgentError::Provider(ExecutorError::ContextLengthExceeded));
+                    return Err(AgentError::ContextExhausted);
                 }
                 ContextAction::Compact(reason) => {
                     let scope = CompactionScope {
@@ -636,6 +636,12 @@ impl<'a> AgentRunner<'a> {
                         }
                     }
                     continue;
+                }
+                Err(ExecutorError::ContextLengthExceeded) => {
+                    // Past the per-run recovery cap (the guard above refused):
+                    // terminal exhaustion, distinct from the retryable
+                    // overflow that triggers a compaction and a resend.
+                    return Err(AgentError::ContextExhausted);
                 }
                 Err(other) => return Err(other.into()),
             };
@@ -878,11 +884,12 @@ mod tests {
             .run("openai", "m", "cred", "q")
             .expect_err("cap exhaustion terminates the run");
         assert!(
-            matches!(
-                err,
-                AgentError::Provider(ExecutorError::ContextLengthExceeded)
-            ),
-            "terminal error stays the classified overflow, got {err:?}"
+            matches!(err, AgentError::ContextExhausted),
+            "terminal error is the distinct exhausted-recovery variant, got {err:?}"
+        );
+        assert!(
+            !matches!(err, AgentError::Provider(_)),
+            "exhausted recovery must not surface as a bare retryable overflow, got {err:?}"
         );
         // Three turns plus two single-rung summarizer calls: nothing retried,
         // nothing else issued.
@@ -914,6 +921,52 @@ mod tests {
                 .any(|event| matches!(event, AgentRunEvent::CompactionFinished { .. })),
             "no compaction ever completed"
         );
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn exhausted_recovery_terminal_variant_is_distinct_from_retryable_overflow() {
+        // Past-cap overflow terminates with the distinct `ContextExhausted`
+        // variant — never the bare retryable overflow — with a Display text
+        // the UI can tell apart, while the persisted terminal outcome stays
+        // an `error` status carrying that text. No prior history here (unlike
+        // `failed_summarizer_continues_uncompacted_until_cap`): every plan is
+        // empty so no summarizer call is issued — three terminal turns only.
+        let ws = temp_workspace();
+        let fake = FakeExecutor::new(vec![
+            Err(ExecutorError::ContextLengthExceeded),
+            Err(ExecutorError::ContextLengthExceeded),
+            Err(ExecutorError::ContextLengthExceeded),
+        ]);
+        let runner = AgentRunner::new(&fake, &ws);
+
+        let err = runner
+            .run("openai", "m", "cred", "q")
+            .expect_err("third overflow exhausts recovery");
+        assert!(
+            matches!(err, AgentError::ContextExhausted),
+            "exhausted path returns the distinct variant, got {err:?}"
+        );
+        let retryable = AgentError::Provider(ExecutorError::ContextLengthExceeded).to_string();
+        assert_ne!(
+            err.to_string(),
+            retryable,
+            "exhausted Display must differ from the retryable overflow text"
+        );
+        assert!(
+            err.to_string().contains("exhausted"),
+            "exhausted Display names the exhaustion, got {:?}",
+            err.to_string()
+        );
+        let (status, final_content, error) =
+            crate::application::agent::persistence::terminal_outcome(&Err(err));
+        assert_eq!(status, "error");
+        assert_eq!(final_content, None);
+        let error = error.expect("exhausted recovery records error text");
+        assert_ne!(error, retryable);
+        assert!(error.contains("exhausted"), "got {error:?}");
+        // Three terminal turns; the empty plan issues no summarizer calls.
+        assert_eq!(fake.requests.borrow().len(), 3);
         let _ = fs::remove_dir_all(&ws);
     }
 

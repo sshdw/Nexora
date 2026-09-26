@@ -27,9 +27,11 @@
 //! - **Finalize:** on every exit path the run row is finalized — `Ok`
 //!   content → `completed` + `final_content`; [`AgentError::Cancelled`] →
 //!   `cancelled`; [`AgentError::BudgetExhausted`] → `budget_exhausted`;
-//!   [`AgentError::EmptyResponse`] / [`AgentError::Provider`] → `error` +
-//!   the classified error `Display` text (never a secret,
-//!   DATABASE.md §14).
+//!   [`AgentError::EmptyResponse`] / [`AgentError::Provider`] /
+//!   [`AgentError::ContextExhausted`] → `error` + the classified error
+//!   `Display` text (never a secret, DATABASE.md §14). `ContextExhausted`
+//!   keeps the `error` status but carries a distinct Display text so the UI
+//!   can tell exhausted recovery apart from a retryable overflow.
 //!
 //! # Best-effort failure policy
 //!
@@ -81,6 +83,10 @@ pub(crate) fn terminal_outcome(
         Err(AgentError::Cancelled) => ("cancelled", None, None),
         Err(AgentError::BudgetExhausted(_)) => ("budget_exhausted", None, None),
         Err(AgentError::SpendLimitExceeded { .. }) => ("spend_limit_exceeded", None, None),
+        // `ContextExhausted` falls through to the `error` arm below: it
+        // keeps the `error` status (no schema change) and its distinct
+        // Display text lets the UI tell exhausted recovery apart from a
+        // retryable overflow.
         Err(err) => ("error", None, Some(err.to_string())),
     }
 }
