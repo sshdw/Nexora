@@ -104,6 +104,35 @@ pub(crate) enum AgentRunEvent {
         /// Configured per-run limit, micro-USD.
         limit_micro: u64,
     },
+    /// A context compaction began: the run folds older turns into a summary
+    /// (Task T4). `reason` is `"threshold"` (proactive, usage crossed
+    /// `COMPACTION_THRESHOLD`) or `"overflow"` (reactive, the provider
+    /// reported `ContextLengthExceeded`); `messages` is the in-run history
+    /// length being compacted.
+    CompactionStarted {
+        /// `"threshold"` or `"overflow"`.
+        reason: String,
+        /// In-run history length at compaction time.
+        messages: usize,
+    },
+    /// A context compaction finished: the head was folded into a summary.
+    /// `summarized` counts the folded messages, `retained` the verbatim
+    /// tail; the summary itself travels as a normal user message, so no
+    /// step is recorded and the persisted `seq` contract is untouched.
+    CompactionFinished {
+        /// `"threshold"` or `"overflow"`.
+        reason: String,
+        /// Messages folded into the summary.
+        summarized: usize,
+        /// Messages retained verbatim after the summary.
+        retained: usize,
+    },
+    /// A context compaction failed (empty plan or a failed summarizer call):
+    /// the run continues uncompacted and never fails for this alone.
+    CompactionFailed {
+        /// `"threshold"` or `"overflow"`.
+        reason: String,
+    },
     /// A tool call is awaiting user approval (Task 4.1).
     ApprovalRequested {
         /// Provider-assigned identifier for the pending tool call.

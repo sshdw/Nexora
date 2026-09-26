@@ -226,7 +226,11 @@ impl OpenAiExecutor {
                 to_ai_response(response)
             }
             PostOutcome::Failure(snapshot) => {
-                Err(classify_status(snapshot.status, snapshot.retry_after_secs))
+                if snapshot.is_context_length_exceeded {
+                    Err(OpenAiError::ContextLengthExceeded)
+                } else {
+                    Err(classify_status(snapshot.status, snapshot.retry_after_secs))
+                }
             }
         }
     }
@@ -247,6 +251,7 @@ impl ProviderExecutor for OpenAiExecutor {
                 log::warn!("{name} request failed: {error}", name = self.name);
                 Err(match error {
                     OpenAiError::InvalidRequest => ExecutorError::InvalidRequest,
+                    OpenAiError::ContextLengthExceeded => ExecutorError::ContextLengthExceeded,
                     OpenAiError::Authentication => ExecutorError::Authentication,
                     OpenAiError::Network => ExecutorError::Network,
                     OpenAiError::PaymentRequired => ExecutorError::PaymentRequired,
@@ -564,6 +569,10 @@ fn classify_status(status: u16, retry_after_secs: Option<u64>) -> OpenAiError {
 enum OpenAiError {
     /// The OpenAI endpoint rejected the request as malformed (HTTP 400).
     InvalidRequest,
+    /// The prompt exceeds the model context window: a client-error status
+    /// whose body names the context window or token limit. Never retried;
+    /// the agent loop treats it as a compaction trigger.
+    ContextLengthExceeded,
     /// A network/transport failure (connection refused, DNS, timeout, ...).
     Network,
     /// The provider reported insufficient credits/quota (HTTP 402): the
@@ -590,6 +599,9 @@ impl std::fmt::Display for OpenAiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidRequest => write!(f, "the OpenAI request was invalid (400)"),
+            Self::ContextLengthExceeded => {
+                write!(f, "the OpenAI prompt exceeds the model context window")
+            }
             Self::Network => write!(f, "OpenAI network or transport failure"),
             Self::PaymentRequired => write!(
                 f,
@@ -1971,6 +1983,27 @@ mod tests {
         );
         server.join().expect("server thread joins");
         assert!(matches!(result, Err(ExecutorError::InvalidRequest)));
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn status_400_with_context_body_maps_to_context_length_exceeded() {
+        use std::sync::atomic::Ordering;
+        // A 400 naming the context window is a compaction trigger, not a
+        // malformed request — and, like every 400, it fires exactly once.
+        let body = r#"{"error":{"message":"This model's maximum context length is 128000 tokens","type":"invalid_request_error","code":"context_length_exceeded"}}"#.to_string();
+        let (endpoint, count, server) = spawn_sequence_server(vec![(400, body, None)]);
+        let executor = OpenAiExecutor::with_endpoint(endpoint);
+        let result = executor.execute(
+            &sample_request(),
+            "sk-secret-example",
+            &CancellationToken::new(),
+        );
+        server.join().expect("server thread joins");
+        assert!(
+            matches!(result, Err(ExecutorError::ContextLengthExceeded)),
+            "context-length 400 must classify as ContextLengthExceeded, got {result:?}"
+        );
         assert_eq!(count.load(Ordering::SeqCst), 1);
     }
 

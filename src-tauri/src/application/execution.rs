@@ -280,6 +280,12 @@ pub(crate) enum ExecutorError {
     Authentication,
     /// The provider rejected the request as invalid (HTTP 400).
     InvalidRequest,
+    /// The provider rejected the request because the prompt exceeds the
+    /// model context window. Detected from the error body/message text at
+    /// the provider boundary (a 400/404/413/422 naming the context window
+    /// or token limit); never retried, and handled by the agent loop as a
+    /// compaction trigger instead of a terminal failure.
+    ContextLengthExceeded,
     /// The provider returned an unexpected response.
     UnexpectedResponse,
     /// The provider could not fulfil the request (catch-all).
@@ -334,6 +340,12 @@ impl std::fmt::Display for ExecutorError {
                 write!(
                     f,
                     "the AI provider rejected the request as invalid (HTTP 400)"
+                )
+            }
+            Self::ContextLengthExceeded => {
+                write!(
+                    f,
+                    "the AI provider rejected the request: prompt exceeds the model context window"
                 )
             }
             Self::UnexpectedResponse => {

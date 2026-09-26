@@ -83,6 +83,7 @@ use crate::application::execution::{
 
 use super::budget;
 pub(crate) use super::budget::{DEFAULT_MAX_ITERATIONS, DEFAULT_REQUEST_TIMEOUT};
+use super::compaction::{self, CompactionReason, ContextAction, ContextGovernor};
 use super::dispatch;
 pub(crate) use super::errors::AgentError;
 use super::prompts;
@@ -133,6 +134,40 @@ pub(crate) struct AgentRunner<'a> {
     /// Prior runs' compressed action trace (Layer-2 action memory). `None`
     /// by default; applied via [`Self::with_action_summary`].
     action_summary: Option<ActionSummary>,
+    /// Model context window in tokens (Task T4). `None` (the default)
+    /// disables the proactive trigger — usage has no window to compare
+    /// against — while reactive overflow recovery stays live. Applied via
+    /// [`Self::with_context_limit`].
+    context_limit_tokens: Option<u64>,
+}
+
+/// Outcome of one in-place compaction attempt (Task T4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompactionOutcome {
+    /// The head was folded; carries folded/retained message counts.
+    Compacted {
+        /// Messages folded into the summary.
+        summarized: usize,
+        /// Messages retained verbatim after the summary.
+        retained: usize,
+    },
+    /// The plan had nothing worth folding; the history is untouched.
+    NothingToFold,
+    /// The plan existed but the summarizer failed; the history is
+    /// untouched and the run continues uncompacted.
+    Failed,
+    /// Cancellation was observed during the summarizer call.
+    Cancelled,
+}
+
+/// Request-scoped inputs for one compaction attempt (Task T4). Bundles the
+/// borrow set so the helper signatures stay small.
+struct CompactionScope<'a> {
+    provider: &'a str,
+    model: &'a str,
+    credential: &'a str,
+    token: &'a CancellationToken,
+    context_limit: u64,
 }
 
 impl<'a> AgentRunner<'a> {
@@ -152,6 +187,7 @@ impl<'a> AgentRunner<'a> {
             spend_limit_micro_usd: None,
             prior_messages: Vec::new(),
             action_summary: None,
+            context_limit_tokens: None,
         }
     }
 
@@ -253,6 +289,15 @@ impl<'a> AgentRunner<'a> {
         self
     }
 
+    /// Set the model context window in tokens (Task T4). Enables the
+    /// proactive compaction trigger; without it only reactive overflow
+    /// recovery runs. `0` keeps the trigger dormant (no usable window).
+    #[must_use]
+    pub(crate) fn with_context_limit(mut self, context_limit_tokens: u64) -> Self {
+        self.context_limit_tokens = Some(context_limit_tokens);
+        self
+    }
+
     /// Execute the `ReAct` loop for one user request.
     ///
     /// Sends the initial request augmented with the [`ToolRegistry`]
@@ -317,6 +362,88 @@ impl<'a> AgentRunner<'a> {
         result
     }
 
+    /// Summarize the folded head of `messages` through the runner's own
+    /// executor with no tools: one request per rung of the
+    /// [`compaction::REMOVAL_PERCENTAGES`] ladder, dropping tool results
+    /// middle-out while the summarizer itself reports overflow. Any other
+    /// failure (including cancellation) aborts the ladder immediately.
+    fn summarize(
+        &self,
+        scope: &CompactionScope<'_>,
+        head: &[AiMessage],
+    ) -> Result<String, ExecutorError> {
+        let mut last_error = ExecutorError::Failure;
+        for percent in compaction::REMOVAL_PERCENTAGES {
+            let filtered = compaction::filter_tool_responses(head, percent);
+            let request = AiRequest {
+                provider: scope.provider.to_string(),
+                model: scope.model.to_string(),
+                messages: vec![AiMessage {
+                    role: AiRole::User,
+                    content: compaction::summary_prompt_for_slice(&filtered),
+                    attachments: Vec::new(),
+                    tool_calls: Vec::new(),
+                    tool_result: None,
+                }],
+                tools: Vec::new(),
+                request_timeout: Some(self.request_timeout),
+            };
+            match self
+                .executor
+                .execute(&request, scope.credential, scope.token)
+            {
+                Ok(response) if !response.content.trim().is_empty() => {
+                    return Ok(response.content);
+                }
+                Ok(_) => {
+                    // An empty summary folds nothing: try the next rung.
+                    last_error = ExecutorError::Failure;
+                }
+                Err(ExecutorError::ContextLengthExceeded) => {
+                    last_error = ExecutorError::ContextLengthExceeded;
+                }
+                Err(other) => return Err(other),
+            }
+        }
+        Err(last_error)
+    }
+
+    /// Fold the older turns of `messages` into a summary in place (Task T4):
+    /// plan the tail, prune stale tool outputs outside it, summarize the
+    /// head, and rebuild the history. In-run history only — nothing here is
+    /// persisted, and no step is recorded, so the `seq` contract is untouched.
+    fn compact_in_place(
+        &self,
+        messages: &mut Vec<AiMessage>,
+        governor: &mut ContextGovernor,
+        reason: CompactionReason,
+        scope: &CompactionScope<'_>,
+    ) -> CompactionOutcome {
+        let usable = compaction::usable_context_tokens(scope.context_limit);
+        let budget = compaction::preserve_recent_budget(usable);
+        let plan = compaction::plan_compaction(messages, budget);
+        if plan.summarize.is_empty() {
+            return CompactionOutcome::NothingToFold;
+        }
+        let _freed = compaction::prune_tool_outputs(messages, &plan.retain);
+        let head: Vec<AiMessage> = messages[plan.summarize.clone()].to_vec();
+        match self.summarize(scope, &head) {
+            Ok(summary) => {
+                let summarized = plan.summarize.len();
+                let retained = plan.retain.len();
+                compaction::apply_compaction(messages, &summary, &plan);
+                governor.note_compaction(reason);
+                CompactionOutcome::Compacted {
+                    summarized,
+                    retained,
+                }
+            }
+            Err(ExecutorError::Cancelled) => CompactionOutcome::Cancelled,
+            Err(_) if scope.token.is_cancelled() => CompactionOutcome::Cancelled,
+            Err(_) => CompactionOutcome::Failed,
+        }
+    }
+
     /// The deterministic `ReAct` loop proper (Task 3.1 semantics with the
     /// Task 3.2 governance and Task 4.1 approval layers), optionally
     /// recording each model turn, dispatched tool call, and parked approval
@@ -339,6 +466,11 @@ impl<'a> AgentRunner<'a> {
         let control = self.control.as_ref();
         let base = self.max_iterations;
         let mut steps_taken: usize = 0;
+        // Task T4: run-scoped compaction state (never persisted) plus the
+        // model window the proactive trigger compares against (`0` keeps the
+        // trigger dormant; reactive overflow recovery needs no window).
+        let mut governor = ContextGovernor::new();
+        let context_limit = self.context_limit_tokens.unwrap_or(0);
         // History opens with the fixed agent system prompt, the retained
         // conversation tail and the user request (assembled in `prompts`).
         let mut messages = prompts::build_initial_messages(
@@ -356,6 +488,59 @@ impl<'a> AgentRunner<'a> {
             dispatch::check_cancellation(control, self.event_sender.as_ref())?;
             dispatch::honor_pause(control, self.event_sender.as_ref())?;
             budget::honor_allowance(control, base, steps_taken, self.event_sender.as_ref())?;
+            // Proactive context compaction (Task T4) runs after the
+            // governance gates — the cancel → pause → allowance order is
+            // load-bearing — and before the next request is built.
+            match governor.decide(&messages, context_limit) {
+                ContextAction::Proceed => {}
+                ContextAction::Exhausted => {
+                    return Err(AgentError::Provider(ExecutorError::ContextLengthExceeded));
+                }
+                ContextAction::Compact(reason) => {
+                    let scope = CompactionScope {
+                        provider,
+                        model,
+                        credential,
+                        token: control.map_or(&idle_token, RunControl::token),
+                        context_limit,
+                    };
+                    let reason_text = reason.as_str().to_string();
+                    dispatch::emit(
+                        self.event_sender.as_ref(),
+                        AgentRunEvent::CompactionStarted {
+                            reason: reason_text.clone(),
+                            messages: messages.len(),
+                        },
+                    );
+                    match self.compact_in_place(&mut messages, &mut governor, reason, &scope) {
+                        CompactionOutcome::Compacted {
+                            summarized,
+                            retained,
+                        } => {
+                            dispatch::emit(
+                                self.event_sender.as_ref(),
+                                AgentRunEvent::CompactionFinished {
+                                    reason: reason_text,
+                                    summarized,
+                                    retained,
+                                },
+                            );
+                        }
+                        CompactionOutcome::NothingToFold | CompactionOutcome::Failed => {
+                            dispatch::emit(
+                                self.event_sender.as_ref(),
+                                AgentRunEvent::CompactionFailed {
+                                    reason: reason_text,
+                                },
+                            );
+                        }
+                        CompactionOutcome::Cancelled => {
+                            dispatch::emit(self.event_sender.as_ref(), AgentRunEvent::Cancelled);
+                            return Err(AgentError::Cancelled);
+                        }
+                    }
+                }
+            }
 
             let request = AiRequest {
                 provider: provider.to_string(),
@@ -378,9 +563,69 @@ impl<'a> AgentRunner<'a> {
                     dispatch::emit(self.event_sender.as_ref(), AgentRunEvent::Cancelled);
                     return Err(AgentError::Cancelled);
                 }
+                Err(error @ ExecutorError::ContextLengthExceeded)
+                    if governor.note_provider_error(&error) =>
+                {
+                    // Reactive overflow recovery (Task T4): fold the history
+                    // in place, then re-send the same turn once, now
+                    // compacted. Past the per-run cap the guard above refuses
+                    // and the error below terminates the run.
+                    dispatch::emit(
+                        self.event_sender.as_ref(),
+                        AgentRunEvent::CompactionStarted {
+                            reason: CompactionReason::Overflow.as_str().to_string(),
+                            messages: messages.len(),
+                        },
+                    );
+                    let scope = CompactionScope {
+                        provider,
+                        model,
+                        credential,
+                        token,
+                        context_limit,
+                    };
+                    match self.compact_in_place(
+                        &mut messages,
+                        &mut governor,
+                        CompactionReason::Overflow,
+                        &scope,
+                    ) {
+                        CompactionOutcome::Compacted {
+                            summarized,
+                            retained,
+                        } => {
+                            dispatch::emit(
+                                self.event_sender.as_ref(),
+                                AgentRunEvent::CompactionFinished {
+                                    reason: CompactionReason::Overflow.as_str().to_string(),
+                                    summarized,
+                                    retained,
+                                },
+                            );
+                        }
+                        CompactionOutcome::NothingToFold | CompactionOutcome::Failed => {
+                            // A failed summarizer never fails the run: continue
+                            // uncompacted and let the cap bound the retries.
+                            dispatch::emit(
+                                self.event_sender.as_ref(),
+                                AgentRunEvent::CompactionFailed {
+                                    reason: CompactionReason::Overflow.as_str().to_string(),
+                                },
+                            );
+                        }
+                        CompactionOutcome::Cancelled => {
+                            dispatch::emit(self.event_sender.as_ref(), AgentRunEvent::Cancelled);
+                            return Err(AgentError::Cancelled);
+                        }
+                    }
+                    continue;
+                }
                 Err(other) => return Err(other.into()),
             };
             steps_taken += 1;
+            // Task T4: feed the turn's usage to the compaction governor so the
+            // next step boundary can decide the proactive trigger.
+            governor.observe(response.usage);
 
             // Task 4.2: record the completed model turn (D12) with its
             // provider round-trip duration.
@@ -519,6 +764,225 @@ mod tests {
         assert_eq!(response.content, "plain reply");
         assert!(response.tool_calls.is_empty());
         assert_eq!(fake.requests.borrow().len(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Task T4 — Context compaction
+    // -----------------------------------------------------------------------
+
+    use crate::application::agent::compaction::SUMMARY_PREFIX;
+
+    /// Build one assistant+tool exchange with a distinctive large output for
+    /// compaction tests (never dispatched: carried in as prior history).
+    fn history_exchange(id: &str, output: &str) -> Vec<AiMessage> {
+        use crate::application::execution::{AiToolResult, ToolCall};
+        vec![
+            AiMessage {
+                role: AiRole::Assistant,
+                content: String::new(),
+                attachments: Vec::new(),
+                tool_calls: vec![ToolCall {
+                    id: id.to_string(),
+                    name: "read_file".to_string(),
+                    arguments: "{}".to_string(),
+                    thought_signature: None,
+                }],
+                tool_result: None,
+            },
+            AiMessage {
+                role: AiRole::Tool,
+                content: String::new(),
+                attachments: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_result: Some(AiToolResult {
+                    call_id: id.to_string(),
+                    name: "read_file".to_string(),
+                    content: output.to_string(),
+                }),
+            },
+        ]
+    }
+
+    fn drain_events(rx: &std::sync::mpsc::Receiver<AgentRunEvent>) -> Vec<AgentRunEvent> {
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+        events
+    }
+
+    #[test]
+    fn failed_summarizer_continues_uncompacted_until_cap() {
+        // Every turn overflows and every summarizer call fails: the run must
+        // survive each failed compaction (CompactionFailed, resend
+        // uncompacted) and terminate only when the per-run recovery cap is
+        // exhausted — never fail *because* compaction failed. Prior history
+        // over the minimum tail budget makes every plan non-empty, so the
+        // summarizer is really attempted.
+        let ws = temp_workspace();
+        let mut history = Vec::new();
+        history.extend(history_exchange("h1", &"x".repeat(3_000)));
+        history.extend(history_exchange("h2", &"x".repeat(3_000)));
+        history.extend(history_exchange("h3", &"x".repeat(3_000)));
+        let fake = FakeExecutor::new(vec![
+            Err(ExecutorError::ContextLengthExceeded),
+            Err(ExecutorError::Failure),
+            Err(ExecutorError::ContextLengthExceeded),
+            Err(ExecutorError::Failure),
+            Err(ExecutorError::ContextLengthExceeded),
+        ]);
+        let (tx, rx) = channel();
+        let runner = AgentRunner::new(&fake, &ws)
+            .with_history(history)
+            .with_event_sender(tx);
+
+        let err = runner
+            .run("openai", "m", "cred", "q")
+            .expect_err("cap exhaustion terminates the run");
+        assert!(
+            matches!(
+                err,
+                AgentError::Provider(ExecutorError::ContextLengthExceeded)
+            ),
+            "terminal error stays the classified overflow, got {err:?}"
+        );
+        // Three turns plus two single-rung summarizer calls: nothing retried,
+        // nothing else issued.
+        assert_eq!(fake.requests.borrow().len(), 5);
+        let events = drain_events(&rx);
+        let started = events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    AgentRunEvent::CompactionStarted { reason, .. } if reason == "overflow"
+                )
+            })
+            .count();
+        let failed = events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    AgentRunEvent::CompactionFailed { reason } if reason == "overflow"
+                )
+            })
+            .count();
+        assert_eq!(started, 2, "one recovery attempt per allowed overflow");
+        assert_eq!(failed, 2, "each failed summarizer emits CompactionFailed");
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, AgentRunEvent::CompactionFinished { .. })),
+            "no compaction ever completed"
+        );
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn proactive_compaction_folds_head_and_keeps_tail() {
+        // Three large prior exchanges plus one live tool turn push usage past
+        // the threshold: the next boundary compacts, the summarizer sees no
+        // tools, and the re-sent history is [System, summary, tail, continue].
+        let ws = temp_workspace();
+        let mut history = Vec::new();
+        history.extend(history_exchange(
+            "h1",
+            &format!("HIST-ALPHA-OLD {}", "x".repeat(4_000)),
+        ));
+        history.extend(history_exchange(
+            "h2",
+            &format!("HIST-BETA-MID {}", "x".repeat(4_000)),
+        ));
+        history.extend(history_exchange(
+            "h3",
+            &format!("HIST-GAMMA-NEW {}", "x".repeat(4_000)),
+        ));
+        let fake = FakeExecutor::new(vec![
+            Ok(usage_tool_response("t0", 9_000, 10)),
+            Ok(text_response("folded early work across alpha")),
+            Ok(usage_response("final answer", 100, 10)),
+        ]);
+        let (tx, rx) = channel();
+        let runner = AgentRunner::new(&fake, &ws)
+            .with_history(history)
+            .with_context_limit(30_000)
+            .with_event_sender(tx);
+
+        let answer = runner
+            .run("openai", "m", "cred", "run the task")
+            .expect("compacted run completes");
+        assert_eq!(answer, "final answer");
+        assert_eq!(fake.requests.borrow().len(), 3);
+
+        // The summarizer call carries the prompt with no tools.
+        let summarizer = &fake.requests.borrow()[1];
+        assert!(summarizer.tools.is_empty(), "summarizer must run tool-free");
+        assert!(
+            summarizer.messages.len() == 1
+                && summarizer.messages[0].content.contains("HIST-ALPHA-OLD"),
+            "summarizer input folds the old head"
+        );
+
+        // The re-sent history keeps the tail verbatim under the summary.
+        let resent = &fake.requests.borrow()[2];
+        assert_eq!(resent.messages[0].role, AiRole::System);
+        assert_eq!(resent.messages[1].role, AiRole::User);
+        assert!(
+            resent.messages[1].content.starts_with(SUMMARY_PREFIX),
+            "summary travels as a normal user message with the prefix"
+        );
+        assert!(resent.messages[1]
+            .content
+            .contains("folded early work across alpha"));
+        let resent_text = resent
+            .messages
+            .iter()
+            .map(|message| {
+                let mut parts = vec![message.content.clone()];
+                for call in &message.tool_calls {
+                    parts.push(call.arguments.clone());
+                }
+                if let Some(result) = &message.tool_result {
+                    parts.push(result.content.clone());
+                }
+                parts.join("\n")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            resent_text.contains("HIST-GAMMA-NEW"),
+            "the newest tail survives compaction"
+        );
+        assert!(
+            !resent_text.contains("HIST-ALPHA-OLD"),
+            "the folded head leaves the re-sent history"
+        );
+        assert_eq!(
+            resent.messages.last().expect("continue").content,
+            crate::application::agent::compaction::CONTINUE_TEXT
+        );
+
+        let events = drain_events(&rx);
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                AgentRunEvent::CompactionStarted { reason, .. } if reason == "threshold"
+            )),
+            "proactive compaction starts, got {events:?}"
+        );
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                AgentRunEvent::CompactionFinished {
+                    reason,
+                    summarized,
+                    retained,
+                } if reason == "threshold" && *summarized > 0 && *retained > 0
+            )),
+            "proactive compaction finishes with folded and retained counts, got {events:?}"
+        );
+        let _ = fs::remove_dir_all(&ws);
     }
 
     // -----------------------------------------------------------------------

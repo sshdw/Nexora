@@ -25,10 +25,14 @@
 //!   streams every governance/step event to the frontend as `agent-run-event`
 //!   frames, tracks active runs (`service::AgentRunRegistry`), and links runs
 //!   to conversations (D50).
+//! - Task T4 — Context Compaction ([`compaction`]): pure threshold-triggered
+//!   and overflow-driven folding of older in-run turns into a summary, with
+//!   a verbatim retained tail (`compaction::ContextGovernor`).
 
 pub mod action_memory;
 pub mod approval;
 pub mod budget;
+pub mod compaction;
 pub mod control;
 pub mod dispatch;
 #[cfg(test)]
