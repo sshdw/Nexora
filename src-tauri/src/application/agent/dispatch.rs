@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use crate::application::agent::approval::{ApprovalDecision, ApprovalGate, AutonomyMode};
 use crate::application::agent::control::{AgentRunEvent, CancellationToken, RunControl};
+use crate::application::agent::governance::{audit, AuditEvent, AuditLog, GateOutcome};
 use crate::application::agent::permissions::{self, PermissionOutcome, PermissionStore, RunPreset};
 use crate::application::agent::persistence::{ActiveRunRecord, StepProvenance};
 use crate::application::agent::tools::ToolRegistry;
@@ -32,6 +33,10 @@ pub(crate) struct DispatchCtx<'a> {
     /// key off this. `Coding` preserves the exact pre-T5 pipeline.
     pub preset: RunPreset,
     pub sender: Option<&'a Sender<AgentRunEvent>>,
+    /// Optional run-scoped audit trail (WS-B.2): every approval park records
+    /// its gate decision here, secret-free. `None` keeps the exact pre-B.2
+    /// pipeline.
+    pub audit: Option<&'a AuditLog>,
 }
 
 /// Emit a governance event on the optional channel, best-effort.
@@ -316,6 +321,14 @@ fn park_for_approval(
                 super::lifecycle::RunState::Running,
                 super::lifecycle::RunState::AwaitingApproval,
             );
+            // WS-B.2: the park is recorded on the run-scoped audit trail
+            // (secret-free: fixed vocabulary only, no call content).
+            audit(
+                ctx.audit,
+                super::lifecycle::RunState::Running,
+                super::lifecycle::RunState::AwaitingApproval,
+                AuditEvent::ApprovalParked,
+            );
             gate.prepare_pending_with_group(call, Some(group_key.to_owned()));
             emit(
                 ctx.sender,
@@ -337,6 +350,14 @@ fn park_for_approval(
                     super::lifecycle::RunState::AwaitingApproval,
                     super::lifecycle::RunState::Cancelled,
                 );
+                // WS-B.2: every park resolves to a recorded gate decision —
+                // cancellation included.
+                audit(
+                    ctx.audit,
+                    super::lifecycle::RunState::AwaitingApproval,
+                    super::lifecycle::RunState::Cancelled,
+                    AuditEvent::ApprovalCancelled,
+                );
                 emit(ctx.sender, AgentRunEvent::Cancelled);
                 return Err(AgentError::Cancelled);
             };
@@ -349,6 +370,23 @@ fn park_for_approval(
                 super::lifecycle::RunState::AwaitingApproval,
                 super::lifecycle::RunState::Running,
             );
+            // WS-B.2: the gate decision is recorded on the run-scoped audit
+            // trail (fixed `approved` / `denied` vocabulary, no call content).
+            // The #65 ladder itself is reused unchanged — never bypassed, never
+            // remapped.
+            let outcome = if approved {
+                GateOutcome::Approved
+            } else {
+                GateOutcome::Denied
+            };
+            if let Some(event) = AuditEvent::for_gate(outcome) {
+                audit(
+                    ctx.audit,
+                    super::lifecycle::RunState::AwaitingApproval,
+                    super::lifecycle::RunState::Running,
+                    event,
+                );
+            }
             emit(
                 ctx.sender,
                 AgentRunEvent::ApprovalResolved {

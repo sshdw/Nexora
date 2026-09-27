@@ -67,11 +67,13 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::application::agent::action_memory::ActionSummary;
 use crate::application::agent::approval::ApprovalGate;
 use crate::application::agent::control::{AgentRunEvent, CancellationToken, RunControl};
+use crate::application::agent::governance::{AuditLog, RunBudget};
 use crate::application::agent::permissions::PermissionStore;
 use crate::application::agent::permissions::RunPreset;
 use crate::application::agent::persistence::{
@@ -87,7 +89,7 @@ pub(crate) use super::budget::{DEFAULT_MAX_ITERATIONS, DEFAULT_REQUEST_TIMEOUT};
 use super::compaction::{self, CompactionReason, ContextAction, ContextGovernor};
 use super::dispatch;
 pub(crate) use super::errors::AgentError;
-use super::lifecycle::{observe_transition, RunState};
+use super::lifecycle::{observe_transition, BudgetHandles, RunState};
 use super::prompts;
 
 // ---------------------------------------------------------------------------
@@ -135,6 +137,10 @@ pub(crate) struct AgentRunner<'a> {
     /// Opt-in spend limit in micro-USD (Task 4.3). `None` means no financial
     /// guard; the loop keeps the exact pre-4.3 behaviour.
     spend_limit_micro_usd: Option<u64>,
+    /// Optional run-scoped audit trail (WS-B.2): the in-memory accessory to
+    /// the persistence row. When `None` nothing is recorded and the loop
+    /// keeps the exact pre-B.2 behaviour.
+    audit_log: Option<Arc<AuditLog>>,
     /// Prior conversation turns carried into the next run (agent memory
     /// slice). Empty by default; applied via [`Self::with_history`].
     prior_messages: Vec<AiMessage>,
@@ -198,6 +204,7 @@ impl<'a> AgentRunner<'a> {
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             recorder: None,
             spend_limit_micro_usd: None,
+            audit_log: None,
             prior_messages: Vec::new(),
             action_summary: None,
             context_limit_tokens: None,
@@ -292,6 +299,27 @@ impl<'a> AgentRunner<'a> {
     #[must_use]
     pub(crate) fn with_spend_limit(mut self, micro_usd: u64) -> Self {
         self.spend_limit_micro_usd = Some(micro_usd);
+        self
+    }
+
+    /// Apply the lifecycle [`BudgetHandles`] contract to this run (WS-B.2):
+    /// the step cap overrides `max_iterations`, the spend cap overrides the
+    /// spend limit. Consumption is gated by the resolved [`RunBudget`], never
+    /// the model choice.
+    #[must_use]
+    pub(crate) fn with_budget(mut self, handles: BudgetHandles) -> Self {
+        let budget = RunBudget::from_handles(handles);
+        self.max_iterations = budget.max_steps();
+        self.spend_limit_micro_usd = budget.spend_limit_micro_usd();
+        self
+    }
+
+    /// Attach the run-scoped audit trail (WS-B.2): budget parks/terminals and
+    /// approval-gate decisions are appended secret-free and in order. When no
+    /// trail is attached the loop keeps the exact pre-B.2 behaviour.
+    #[must_use]
+    pub(crate) fn with_audit_log(mut self, log: Arc<AuditLog>) -> Self {
+        self.audit_log = Some(log);
         self
     }
 
@@ -499,7 +527,11 @@ impl<'a> AgentRunner<'a> {
         // undisputed Task 3.1 behaviour is preserved exactly.
         let idle_token = CancellationToken::new();
         let control = self.control.as_ref();
-        let base = self.max_iterations;
+        // WS-B.2: the lifecycle budget contract resolved once per run; the
+        // enforcement points below consume this struct (never the raw caps),
+        // so budgets gate consumption, not model choice.
+        let run_budget = RunBudget::new(self.max_iterations, self.spend_limit_micro_usd);
+        let audit = self.audit_log.as_deref();
         let mut steps_taken: usize = 0;
         // Task T4: run-scoped compaction state (never persisted) plus the
         // model window the proactive trigger compares against (`0` keeps the
@@ -522,7 +554,13 @@ impl<'a> AgentRunner<'a> {
             // dispatches so a cancellation never waits for further work.
             dispatch::check_cancellation(control, self.event_sender.as_ref())?;
             dispatch::honor_pause(control, self.event_sender.as_ref())?;
-            budget::honor_allowance(control, base, steps_taken, self.event_sender.as_ref())?;
+            budget::honor_allowance(
+                control,
+                &run_budget,
+                steps_taken,
+                self.event_sender.as_ref(),
+                audit,
+            )?;
             // Proactive context compaction (Task T4) runs after the
             // governance gates — the cancel → pause → allowance order is
             // load-bearing — and before the next request is built.
@@ -694,12 +732,13 @@ impl<'a> AgentRunner<'a> {
             dispatch::check_cancellation(control, self.event_sender.as_ref())?;
 
             budget::check_spend_guard(
+                &run_budget,
                 model,
                 response.usage,
-                self.spend_limit_micro_usd,
                 record.is_some(),
                 spent_micro_usd,
                 self.event_sender.as_ref(),
+                audit,
             )?;
 
             if response.tool_calls.is_empty() {
@@ -740,6 +779,7 @@ impl<'a> AgentRunner<'a> {
                 permission_store: self.permission_store.as_ref(),
                 preset: self.preset,
                 sender: self.event_sender.as_ref(),
+                audit,
             };
             dispatch::dispatch_tool_calls(&ctx, &response.tool_calls, &mut messages, &mut record)?;
         }

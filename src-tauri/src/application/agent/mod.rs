@@ -25,6 +25,12 @@
 //!   streams every governance/step event to the frontend as `agent-run-event`
 //!   frames, tracks active runs (`service::AgentRunRegistry`), and links runs
 //!   to conversations (D50).
+//! - WS-B.2 — Budgets, Gates, Audit ([`governance`]): the enforceable
+//!   [`governance::RunBudget`] resolved from the lifecycle [`lifecycle`]
+//!   `BudgetHandles` contract, [`governance::GateOutcome`] checkpoints reusing
+//!   the #65 ladder unchanged, and the append-only in-memory
+//!   [`governance::AuditLog`] accessory to the persistence row (no new table,
+//!   secret-free by construction).
 //! - Task T4 — Context Compaction ([`compaction`]): pure threshold-triggered
 //!   and overflow-driven folding of older in-run turns into a summary, with
 //!   a verbatim retained tail (`compaction::ContextGovernor`).
@@ -38,6 +44,7 @@ pub mod dispatch;
 #[cfg(test)]
 mod e2e;
 pub mod errors;
+pub mod governance;
 pub mod history;
 pub mod lifecycle;
 pub mod permissions;
