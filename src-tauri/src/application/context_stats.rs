@@ -84,8 +84,8 @@ fn model_context_limit(model: &str) -> Option<u64> {
         "gemini-3.6-flash" | "gemini-3.1-pro-preview" | "gemini-pro-latest" => {
             Some(GEMINI_CONTEXT_LIMIT)
         }
-        // Unverified gemini-lite windows: conservative baseline until
-        // live-verified.
+        // Conservative baseline for unverified gemini windows (lite +
+        // unverified flash) until live-verified.
         "gemini-3.1-flash-lite"
         | "gemini-flash-lite-latest"
         | "gemini-3.5-flash"
