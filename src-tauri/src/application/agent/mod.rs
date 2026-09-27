@@ -1,7 +1,7 @@
 //! Agent workspace: tools and execution loop.
 //!
 //! - Task 2 — Core Workspace Tools ([`tools`]): self-contained safe tool
-//!   execution for the autonomous agent. Exposes the four native workspace
+//!   execution for the autonomous agent. Exposes the six native workspace
 //!   tools via [`ToolRegistry`]; intentionally isolated from the conversation
 //!   and database layers.
 //! - Task 3.1 — Agent Runner ([`runner`]): the deterministic `ReAct` loop

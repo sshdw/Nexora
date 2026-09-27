@@ -233,14 +233,17 @@ fn specificity(rule: &PermissionRule) -> u8 {
 
 /// Extract the request path from a tool call's raw JSON arguments.
 ///
-/// File tools (`read_file`, `write_file`) normalise to the parent directory;
-/// directory tools (`list_directory` `path`, `execute_command` `cwd`) use the
-/// directory itself. Returns `None` for pathless calls (or unparseable args).
+/// File tools (`read_file`, `write_file`, `edit_file`) normalise to the
+/// parent directory; directory tools (`list_directory` `path`,
+/// `execute_command` `cwd`) use the directory itself; `search_files` uses its
+/// scope (`directory`, with `path` as alias — mirroring the executor's
+/// fallback). Returns `None` for pathless calls (or unparseable args); a
+/// `None` request only matches pathless (`NULL`/`'*'`) rules.
 #[must_use]
 pub(crate) fn extract_path(tool_name: &str, arguments_json: &str) -> Option<String> {
     let args: serde_json::Value = serde_json::from_str(arguments_json).ok()?;
     match tool_name {
-        "read_file" | "write_file" => {
+        "read_file" | "write_file" | "edit_file" => {
             let path = args.get("path")?.as_str()?;
             if path.trim().is_empty() {
                 return None;
@@ -253,6 +256,16 @@ pub(crate) fn extract_path(tool_name: &str, arguments_json: &str) -> Option<Stri
                 return None;
             }
             Some(normalize_dir(path))
+        }
+        "search_files" => {
+            let scope = args
+                .get("directory")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| args.get("path").and_then(serde_json::Value::as_str))?;
+            if scope.trim().is_empty() {
+                return None;
+            }
+            Some(normalize_dir(scope))
         }
         "execute_command" => {
             let cwd = args.get("cwd")?.as_str()?;
@@ -316,13 +329,18 @@ pub(crate) fn group_key(preset: &str, tool_name: &str, path: Option<&str>) -> St
     key
 }
 
-/// Whether a tool name is one of the four native tools (unknown tools never
+/// Whether a tool name is one of the six native tools (unknown tools never
 /// reach the store).
 #[must_use]
 pub(crate) fn is_known_tool(name: &str) -> bool {
     matches!(
         name,
-        "read_file" | "list_directory" | "write_file" | "execute_command"
+        "read_file"
+            | "list_directory"
+            | "write_file"
+            | "execute_command"
+            | "edit_file"
+            | "search_files"
     )
 }
 
@@ -537,5 +555,157 @@ mod tests {
                 .is_none(),
             "removed rule must fall back to the ladder"
         );
+    }
+
+    #[test]
+    fn known_tool_gate_covers_all_six_tools() {
+        // H-2: `edit_file`/`search_files` used to bypass the store here.
+        for tool in [
+            "read_file",
+            "list_directory",
+            "write_file",
+            "execute_command",
+            "edit_file",
+            "search_files",
+        ] {
+            assert!(is_known_tool(tool), "{tool} must reach the store");
+        }
+        assert!(!is_known_tool("unknown_tool"));
+        assert!(!is_known_tool(""));
+    }
+
+    #[test]
+    fn extract_path_covers_edit_file_and_search_files() {
+        // edit_file behaves like the other file tools: parent directory.
+        assert_eq!(
+            extract_path(
+                "edit_file",
+                r#"{"path": "src/note.txt", "old_text": "a", "new_text": "b"}"#
+            )
+            .as_deref(),
+            Some("src")
+        );
+        assert_eq!(
+            extract_path(
+                "edit_file",
+                r#"{"path": "note.txt", "old_text": "a", "new_text": "b"}"#
+            )
+            .as_deref(),
+            Some("*")
+        );
+        assert_eq!(
+            extract_path("edit_file", r#"{"old_text": "a", "new_text": "b"}"#),
+            None
+        );
+        assert_eq!(
+            extract_path(
+                "edit_file",
+                r#"{"path": "  ", "old_text": "a", "new_text": "b"}"#
+            ),
+            None
+        );
+        // search_files uses its scope: `directory`, with `path` as alias
+        // (mirroring the executor's fallback); missing/empty means root.
+        assert_eq!(
+            extract_path("search_files", r#"{"pattern": "x", "directory": "src"}"#).as_deref(),
+            Some("src")
+        );
+        assert_eq!(
+            extract_path("search_files", r#"{"pattern": "x", "path": "docs"}"#).as_deref(),
+            Some("docs")
+        );
+        assert_eq!(
+            extract_path(
+                "search_files",
+                r#"{"pattern": "x", "directory": "src", "path": "docs"}"#
+            )
+            .as_deref(),
+            Some("src"),
+            "directory wins over the path alias"
+        );
+        assert_eq!(extract_path("search_files", r#"{"pattern": "x"}"#), None);
+        assert_eq!(
+            extract_path("search_files", r#"{"pattern": "x", "directory": ""}"#),
+            None
+        );
+        assert_eq!(extract_path("search_files", "not json"), None);
+        // Untouched arms keep their behavior.
+        assert_eq!(
+            extract_path("write_file", r#"{"path": "a/b.txt", "content": "x"}"#).as_deref(),
+            Some("a")
+        );
+        assert_eq!(extract_path("unknown_tool", r#"{"path": "a"}"#), None);
+    }
+
+    #[test]
+    fn path_scoped_rules_hit_extracted_edit_and_search_paths() {
+        // A rule on `private` matches the extracted parent of an edit target
+        // under it, and the extracted scope of a search within it — so
+        // path-scoped rules and group keys work for the two newly covered
+        // tools exactly like for the original four.
+        let store = PermissionStore::from_rules(vec![
+            rule(
+                1,
+                "coding",
+                "edit_file",
+                Some("private"),
+                RuleEffect::Deny,
+                0,
+            ),
+            rule(
+                2,
+                "coding",
+                "search_files",
+                Some("private"),
+                RuleEffect::Deny,
+                0,
+            ),
+        ]);
+        let edit_path = extract_path(
+            "edit_file",
+            r#"{"path": "private/note.txt", "old_text": "a", "new_text": "b"}"#,
+        );
+        assert_eq!(edit_path.as_deref(), Some("private"));
+        assert_eq!(
+            group_key("coding", "edit_file", edit_path.as_deref()),
+            "coding:edit_file:private"
+        );
+        assert!(store
+            .decide(
+                "coding",
+                "edit_file",
+                edit_path.as_deref(),
+                RiskClass::Mutating
+            )
+            .is_some());
+        let search_path = extract_path(
+            "search_files",
+            r#"{"pattern": "x", "directory": "private/sub"}"#,
+        );
+        assert_eq!(search_path.as_deref(), Some("private/sub"));
+        assert_eq!(
+            group_key("coding", "search_files", search_path.as_deref()),
+            "coding:search_files:private/sub"
+        );
+        assert!(store
+            .decide(
+                "coding",
+                "search_files",
+                search_path.as_deref(),
+                RiskClass::ReadOnly
+            )
+            .is_some());
+        // Outside the scope nothing matches (falls back to the ladder).
+        assert!(store
+            .decide("coding", "edit_file", Some("public"), RiskClass::Mutating)
+            .is_none());
+        assert!(store
+            .decide(
+                "coding",
+                "search_files",
+                Some("public"),
+                RiskClass::ReadOnly
+            )
+            .is_none());
     }
 }
