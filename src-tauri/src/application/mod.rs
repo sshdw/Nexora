@@ -11,6 +11,8 @@
 //! [`search::LocalSearchService`] (ROADMAP.md Phase 7 — Local Search),
 //! [`export::ExportService`] (ROADMAP.md Phase 8.1 — Conversation Export), and
 //! [`import::ImportService`] (ROADMAP.md Phase 8.2 — Conversation Import).
+//! [`routing::RoutingService`] persists ordered provider→model routing
+//! profiles through the settings store with capability-aware resolution.
 
 // This crate has no application-layer consumer yet (Tauri commands arrive in
 // later tasks), so service items not yet referenced are intentionally unused.
@@ -28,6 +30,7 @@ pub mod export;
 pub mod import;
 pub mod prompts;
 pub mod providers;
+pub mod routing;
 pub mod search;
 pub mod settings;
 pub mod workspace;

@@ -62,6 +62,7 @@ pub fn run() {
             commands::providers::supported_providers,
             commands::providers::list_available_providers,
             commands::providers::is_provider_available,
+            commands::providers::provider_health,
             commands::providers::create_provider,
             commands::providers::remove_provider,
             commands::credentials::add_provider_credential,
