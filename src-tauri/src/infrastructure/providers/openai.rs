@@ -605,8 +605,14 @@ impl OpenAiExecutor {
     ) -> Result<AiResponse, OpenAiError> {
         // Fail closed on a misconfigured endpoint before any network
         // activity: the error is category-only (never the URL or credential).
+        // The diagnostic log carries only the sanitized endpoint (no userinfo,
+        // query, or fragment) so a secret-bearing URL can never leak.
         if validate_base_url(&self.endpoint).is_err() {
-            log::warn!("{name} request failed: invalid endpoint", name = self.name);
+            let safe_endpoint = super::transport::sanitize_url(&self.endpoint);
+            log::warn!(
+                "{name} request failed: invalid endpoint {safe_endpoint}",
+                name = self.name
+            );
             return Err(OpenAiError::InvalidRequest);
         }
         // Capability-gated tool calling: an endpoint without function-calling
@@ -1015,19 +1021,30 @@ fn to_ai_response(response: ChatCompletionResponse) -> Result<AiResponse, OpenAi
 
 /// Classify a non-success HTTP status into a secret-free failure category.
 ///
+/// Mirrors the unified [`super::transport::map_http_error`] table so every
+/// provider maps a status to the same category: 401/403 auth, 402 payment,
+/// 413 context, 400/404 invalid (the 400-classifier promotes window language
+/// via the snapshot flag before this runs), 429 rate-limit, 5xx unavailable.
+///
 /// `retry_after_secs` is the merged provider `Retry-After` hint: the response
 /// header first, then common JSON body shapes (see
 /// [`super::transport::extract_retry_after`]), capped upstream. It is carried
 /// only by the 429 [`OpenAiError::RateLimited`] category.
 fn classify_status(status: u16, retry_after_secs: Option<u64>) -> OpenAiError {
-    match status {
-        400 | 404 => OpenAiError::InvalidRequest,
-        401 | 403 => OpenAiError::Authentication,
-        // 402 (OpenRouter insufficient credits/quota) is distinct from 401/403:
-        // the credential is valid but the account cannot pay for this call.
-        402 => OpenAiError::PaymentRequired,
-        429 => OpenAiError::RateLimited { retry_after_secs },
-        s if s >= 500 => OpenAiError::ProviderUnavailable,
+    // Single-table delegation: the unified transport mapping owns the
+    // status→category table, this only translates the shared category back
+    // into the provider-local error (the snapshot context flag is handled by
+    // the caller before this runs, so `false` here covers the bare-413 arm
+    // inside the shared table as well).
+    match super::transport::map_http_error(status, retry_after_secs, false) {
+        ExecutorError::Authentication => OpenAiError::Authentication,
+        ExecutorError::PaymentRequired => OpenAiError::PaymentRequired,
+        ExecutorError::ContextLengthExceeded => OpenAiError::ContextLengthExceeded,
+        ExecutorError::InvalidRequest => OpenAiError::InvalidRequest,
+        ExecutorError::RateLimited { retry_after_secs } => {
+            OpenAiError::RateLimited { retry_after_secs }
+        }
+        ExecutorError::ProviderUnavailable => OpenAiError::ProviderUnavailable,
         _ => OpenAiError::Provider,
     }
 }

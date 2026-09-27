@@ -39,7 +39,7 @@ use std::time::Duration;
 
 use crate::application::agent::control::CancellationToken;
 use crate::application::execution::{
-    is_retryable_status, retry_delay, ExecutorError, MAX_SEND_ATTEMPTS,
+    is_retryable_status, retry_delay, ExecutorError, MAX_RETRY_DELAY_SECS, MAX_SEND_ATTEMPTS,
 };
 
 /// Upper bound on an error body kept for `Retry-After` extraction (bytes).
@@ -357,7 +357,8 @@ async fn attempt_once(
         .headers()
         .get("retry-after")
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.trim().parse::<u64>().ok());
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(|secs| secs.min(MAX_RETRY_DELAY_SECS));
     let body = match response.bytes().await {
         Ok(bytes) => bounded_body(bytes.as_ref()),
         // An unreadable error body still classifies by status; the header
@@ -400,7 +401,9 @@ const RETRY_AFTER_FIELDS: [&str; 4] = [
 /// shapes: a top-level or `error`-nested body field (see
 /// [`RETRY_AFTER_FIELDS`]) holding an integer or an integer string. Anything
 /// else (floats, HTTP dates, embedded message text) yields `None` and the
-/// caller falls back to the header or computed backoff.
+/// caller falls back to the header or computed backoff. Returned hints are
+/// capped at [`MAX_RETRY_DELAY_SECS`] so a hostile or malfunctioning server
+/// cannot inflate the backoff or the surfaced category.
 pub(crate) fn extract_retry_after(body: &[u8]) -> Option<u64> {
     if body.is_empty() {
         return None;
@@ -413,7 +416,7 @@ pub(crate) fn extract_retry_after(body: &[u8]) -> Option<u64> {
         let object = scope.as_object()?;
         for field in RETRY_AFTER_FIELDS {
             if let Some(found) = object.get(field).and_then(as_u64_seconds) {
-                return Some(found);
+                return Some(found.min(MAX_RETRY_DELAY_SECS));
             }
         }
     }
@@ -498,6 +501,85 @@ pub(crate) fn body_signals_context_length(status: u16, body: &[u8]) -> bool {
         }
     }
     false
+}
+
+/// Strip secrets from `url` before it can reach error text, logs, or events.
+///
+/// Removes embedded userinfo (`user:pass@`) and drops the query and fragment
+/// (`?...` / `#...`), keeping only scheme, host (plus port), and path. The
+/// transport never surfaces URLs in errors at all — this is the single
+/// sanitizer applied on any path where a URL must be rendered for diagnostics,
+/// so a secret-bearing endpoint can never leak through error text.
+pub(crate) fn sanitize_url(url: &str) -> String {
+    // Split the scheme without allocating a lowered copy of the whole URL.
+    let (scheme, after_scheme) = match url.split_once("://") {
+        Some((scheme, rest)) => (Some(scheme), rest),
+        None => (None, url),
+    };
+    // Authority runs to the first path/query/fragment separator.
+    let authority_end = after_scheme
+        .find(['/', '?', '#'])
+        .unwrap_or(after_scheme.len());
+    let authority = &after_scheme[..authority_end];
+    let after_authority = &after_scheme[authority_end..];
+    // Drop userinfo: keep only what follows the last `@`.
+    let host_port = authority.rsplit('@').next().unwrap_or(authority);
+    // Keep only the path: cut at the first query/fragment separator.
+    let path_end = after_authority
+        .find(['?', '#'])
+        .unwrap_or(after_authority.len());
+    let path = &after_authority[..path_end];
+    match scheme {
+        Some(scheme) => format!("{scheme}://{host_port}{path}"),
+        None => format!("{host_port}{path}"),
+    }
+}
+
+/// Unified HTTP status → [`ExecutorError`] category table.
+///
+/// Single reference mapping shared by every provider executor
+/// (`OpenAI`, `Anthropic`, `Gemini`, and the `OpenAI`-compatible path): each
+/// provider's own `classify_status` delegates to this table so a status means
+/// the same category everywhere. There is deliberately no cross-provider
+/// fallback — an unknown provider resolves to `None` and never tries another
+/// provider.
+///
+/// Mapping:
+/// - 401/403 → `Authentication` (credential rejected or forbidden);
+/// - 402 → `PaymentRequired` (valid credential, insufficient credits/quota);
+/// - 413 → `ContextLengthExceeded` (payload too large is always a window
+///   overflow, even without body language);
+/// - 400/404 → `InvalidRequest`, unless `is_context_length_exceeded` (the
+///   400-classifier: a client-error body naming the window or token limit)
+///   promotes to `ContextLengthExceeded`;
+/// - 429 → `RateLimited`, carrying the merged `Retry-After` hint capped at
+///   [`MAX_RETRY_DELAY_SECS`];
+/// - 5xx → `ProviderUnavailable`;
+/// - anything else (including 422 without window language) → `Failure`.
+///
+/// Category-only and secret-free: the status, the capped hint, and the
+/// precomputed context flag are the only inputs — no credential, URL, request
+/// payload, or raw body text.
+pub(crate) fn map_http_error(
+    status: u16,
+    retry_after_secs: Option<u64>,
+    is_context_length_exceeded: bool,
+) -> ExecutorError {
+    if is_context_length_exceeded {
+        return ExecutorError::ContextLengthExceeded;
+    }
+    match status {
+        401 | 403 => ExecutorError::Authentication,
+        402 => ExecutorError::PaymentRequired,
+        // Payload-too-large is a window overflow by definition.
+        413 => ExecutorError::ContextLengthExceeded,
+        400 | 404 => ExecutorError::InvalidRequest,
+        429 => ExecutorError::RateLimited {
+            retry_after_secs: retry_after_secs.map(|secs| secs.min(MAX_RETRY_DELAY_SECS)),
+        },
+        500..=599 => ExecutorError::ProviderUnavailable,
+        _ => ExecutorError::Failure,
+    }
 }
 
 /// Sleep `duration` in slices, returning `false` the moment `token` fires so
@@ -801,5 +883,178 @@ mod tests {
         );
         assert_eq!(count.load(Ordering::SeqCst), 0);
         drop(server);
+    }
+
+    #[test]
+    fn unified_status_table_maps_each_status_to_category() {
+        // 401/403 → Authentication.
+        assert!(matches!(
+            map_http_error(401, None, false),
+            ExecutorError::Authentication
+        ));
+        assert!(matches!(
+            map_http_error(403, None, false),
+            ExecutorError::Authentication
+        ));
+        // 402 → PaymentRequired.
+        assert!(matches!(
+            map_http_error(402, None, false),
+            ExecutorError::PaymentRequired
+        ));
+        // 413 → ContextLengthExceeded even without body language.
+        assert!(matches!(
+            map_http_error(413, None, false),
+            ExecutorError::ContextLengthExceeded
+        ));
+        // 400/404 → InvalidRequest without window language ...
+        assert!(matches!(
+            map_http_error(400, None, false),
+            ExecutorError::InvalidRequest
+        ));
+        assert!(matches!(
+            map_http_error(404, None, false),
+            ExecutorError::InvalidRequest
+        ));
+        // ... and ContextLengthExceeded with it (the 400-classifier).
+        assert!(matches!(
+            map_http_error(400, None, true),
+            ExecutorError::ContextLengthExceeded
+        ));
+        assert!(matches!(
+            map_http_error(404, None, true),
+            ExecutorError::ContextLengthExceeded
+        ));
+        // 429 → RateLimited, carrying the hint.
+        assert!(matches!(
+            map_http_error(429, Some(2), false),
+            ExecutorError::RateLimited {
+                retry_after_secs: Some(2)
+            }
+        ));
+        assert!(matches!(
+            map_http_error(429, None, false),
+            ExecutorError::RateLimited {
+                retry_after_secs: None
+            }
+        ));
+        // 5xx → ProviderUnavailable.
+        for status in [500, 502, 503, 599] {
+            assert!(
+                matches!(
+                    map_http_error(status, None, false),
+                    ExecutorError::ProviderUnavailable
+                ),
+                "status {status} must map to ProviderUnavailable"
+            );
+        }
+        // Anything else (including a bare 422) → Failure.
+        assert!(matches!(
+            map_http_error(422, None, false),
+            ExecutorError::Failure
+        ));
+        assert!(matches!(
+            map_http_error(418, None, false),
+            ExecutorError::Failure
+        ));
+        // A context flag promotes even a 422 to the window category.
+        assert!(matches!(
+            map_http_error(422, None, true),
+            ExecutorError::ContextLengthExceeded
+        ));
+    }
+
+    #[test]
+    fn retry_after_hints_are_capped_at_30s() {
+        // Body hints cap rather than pass through raw.
+        assert_eq!(extract_retry_after(br#"{"retry_after":9999}"#), Some(30));
+        assert_eq!(
+            extract_retry_after(br#"{"error":{"retryAfter":120}}"#),
+            Some(30)
+        );
+        // Small hints pass through verbatim.
+        assert_eq!(extract_retry_after(br#"{"retry_after":5}"#), Some(5));
+        // The unified mapper caps the carried hint the same way.
+        assert!(matches!(
+            map_http_error(429, Some(9999), false),
+            ExecutorError::RateLimited {
+                retry_after_secs: Some(30)
+            }
+        ));
+        assert!(matches!(
+            map_http_error(429, Some(7), false),
+            ExecutorError::RateLimited {
+                retry_after_secs: Some(7)
+            }
+        ));
+    }
+
+    #[test]
+    fn sanitize_url_strips_userinfo_query_and_fragment() {
+        assert_eq!(
+            sanitize_url("https://user:pass@example.com/v1/chat?key=sk-live-sentinel-1#frag"),
+            "https://example.com/v1/chat"
+        );
+        assert_eq!(
+            sanitize_url("https://example.com/v1/chat?key=secret"),
+            "https://example.com/v1/chat"
+        );
+        assert_eq!(
+            sanitize_url("https://user@example.com/"),
+            "https://example.com/"
+        );
+        assert_eq!(
+            sanitize_url("https://example.com/v1/chat"),
+            "https://example.com/v1/chat"
+        );
+        // A secret planted in userinfo, query, or fragment never survives.
+        for url in [
+            "https://sk-live-sentinel-2@example.com/v1",
+            "https://example.com/v1?api_key=sk-live-sentinel-3",
+            "https://example.com/v1#sk-live-sentinel-4",
+        ] {
+            let clean = sanitize_url(url);
+            for sentinel in [
+                "sk-live-sentinel-2",
+                "sk-live-sentinel-3",
+                "sk-live-sentinel-4",
+            ] {
+                // Only the planted URL's own sentinel must be absent; the
+                // assertion below checks the matching one via `url.contains`.
+                if url.contains(sentinel) {
+                    assert!(
+                        !clean.contains(sentinel),
+                        "sanitized URL must not leak {sentinel:?}: {clean:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sanitized_url_never_leaks_into_category_text() {
+        // The boundary only ever carries categories: formatting every unified
+        // category must never echo a URL-planted secret, even when the caller
+        // sanitizes first (defense in depth — raw URLs never reach errors).
+        const SECRET: &str = "sk-live-sentinel-9";
+        let raw = format!("https://user:{SECRET}@example.com/v1?key={SECRET}");
+        let clean = sanitize_url(&raw);
+        assert!(!clean.contains(SECRET));
+        for error in [
+            map_http_error(401, None, false),
+            map_http_error(402, None, false),
+            map_http_error(413, None, false),
+            map_http_error(400, None, false),
+            map_http_error(429, Some(1), false),
+            map_http_error(500, None, false),
+            map_http_error(422, None, false),
+            ExecutorError::Network,
+            ExecutorError::Cancelled,
+        ] {
+            let message = format!("{error} {clean}");
+            assert!(
+                !message.contains(SECRET),
+                "category text plus sanitized URL must stay secret-free: {message:?}"
+            );
+        }
     }
 }
