@@ -23,8 +23,7 @@
 use tauri::State;
 
 use crate::application::routing::{
-    RouteEntry, AGENT_PROFILE_KEY, CHAT_PROFILE_KEY, MAX_MODEL_LEN, MAX_PROFILE_ENTRIES,
-    MAX_PROVIDER_LEN,
+    is_valid_custom_model_id, RoutingProfile, AGENT_PROFILE_KEY, CHAT_PROFILE_KEY,
 };
 use crate::application::settings::SettingsService;
 use crate::application::workspace::{
@@ -170,57 +169,13 @@ fn validate_setting(key: &str, value: Option<&str>) -> Result<(), CommandError> 
     }
 }
 
-/// Routing profiles accepted for [`CHAT_PROFILE_KEY`] / [`AGENT_PROFILE_KEY`]:
-/// a JSON array of 1..=[`MAX_PROFILE_ENTRIES`] `{provider, model}` entries
-/// where each provider is a build-supported name and each model is either
-/// listed for that provider or a valid custom model ID (same charset rule as
-/// [`SELECTED_MODEL_KEY`]).
+/// Routing profiles accepted for [`CHAT_PROFILE_KEY`] / [`AGENT_PROFILE_KEY`].
+///
+/// No independent logic lives here: validity is decided solely by
+/// [`RoutingProfile::from_json`] (parse plus the single shared validation),
+/// so the command gate and the service load/save paths agree exactly.
 fn is_valid_routing_profile(value: &str) -> bool {
-    let entries: Vec<RouteEntry> = match serde_json::from_str(value) {
-        Ok(entries) => entries,
-        Err(_) => return false,
-    };
-    if entries.is_empty() || entries.len() > MAX_PROFILE_ENTRIES {
-        return false;
-    }
-    let registry = supported_providers();
-    entries.iter().all(|entry| {
-        !entry.provider.is_empty()
-            && entry.provider.len() <= MAX_PROVIDER_LEN
-            && !entry.model.is_empty()
-            && entry.model.len() <= MAX_MODEL_LEN
-            && registry.iter().any(|known| {
-                known.name == entry.provider
-                    && (known.models.iter().any(|listed| listed == &entry.model)
-                        || is_valid_custom_model_id(&entry.model))
-            })
-    })
-}
-
-/// Custom model IDs accepted for [`SELECTED_MODEL_KEY`] alongside the listed
-/// shortlist IDs: length 1..=200 bytes, charset `A-Za-z0-9._/:-+`, no
-/// whitespace/controls, and no `..` parent-traversal segment.
-fn is_valid_custom_model_id(value: &str) -> bool {
-    if value.is_empty() || value.len() > 200 {
-        return false;
-    }
-    if value.contains("..") {
-        return false;
-    }
-    value.bytes().all(|byte| {
-        matches!(
-            byte,
-            b'A'..=b'Z'
-                | b'a'..=b'z'
-                | b'0'..=b'9'
-                | b'.'
-                | b'_'
-                | b'/'
-                | b':'
-                | b'-'
-                | b'+'
-        )
-    })
+    RoutingProfile::from_json(value).is_ok()
 }
 
 /// Build the uniform secret-free rejection for an out-of-domain value.
@@ -476,7 +431,7 @@ mod tests {
     fn routing_profiles_reject_malformed_or_out_of_domain_values() {
         let overlong_model = "a".repeat(201);
         let oversized = serde_json::to_string(
-            &(0..=MAX_PROFILE_ENTRIES)
+            &(0..=crate::application::routing::MAX_PROFILE_ENTRIES)
                 .map(|_| serde_json::json!({"provider": "openai", "model": "x"}))
                 .collect::<Vec<_>>(),
         )
@@ -496,6 +451,69 @@ mod tests {
         for value in &bad {
             assert_rejected(CHAT_PROFILE_KEY, value);
             assert_rejected(AGENT_PROFILE_KEY, value);
+        }
+    }
+
+    #[test]
+    fn routing_gate_agrees_with_profile_validation() {
+        // The command gate delegates to `RoutingProfile::from_json`, so it
+        // must accept/reject exactly the same inputs as the service path.
+        // Covers the pinned cases: empty profile and invalid-model-for-
+        // provider rejected on both paths, valid profiles accepted on both.
+        let listed = supported_providers()
+            .into_iter()
+            .find(|known| known.name == "openai")
+            .expect("openai must be registered")
+            .models
+            .into_iter()
+            .next()
+            .expect("openai must list a model");
+        let overlong = "a".repeat(201);
+        let oversized = serde_json::to_string(
+            &(0..=crate::application::routing::MAX_PROFILE_ENTRIES)
+                .map(|_| serde_json::json!({"provider": "openai", "model": "x"}))
+                .collect::<Vec<_>>(),
+        )
+        .expect("encode oversized profile");
+        let cases = [
+            (
+                serde_json::json!([{"provider": "openai", "model": listed}]).to_string(),
+                true,
+            ),
+            (
+                serde_json::json!([{"provider": "openai", "model": "my-custom.model:v1"}])
+                    .to_string(),
+                true,
+            ),
+            ("[]".to_string(), false),
+            (
+                r#"[{"provider": "openai", "model": "gpt 5"}]"#.to_string(),
+                false,
+            ),
+            (
+                r#"[{"provider": "ghost-provider", "model": "x"}]"#.to_string(),
+                false,
+            ),
+            (
+                format!(r#"[{{"provider": "openai", "model": "{overlong}"}}]"#),
+                false,
+            ),
+            (oversized, false),
+            ("not json".to_string(), false),
+        ];
+        for (raw, expected) in &cases {
+            assert_eq!(
+                RoutingProfile::from_json(raw).is_ok(),
+                *expected,
+                "service path verdict for {raw:?}"
+            );
+            for key in [CHAT_PROFILE_KEY, AGENT_PROFILE_KEY] {
+                assert_eq!(
+                    validate_setting(key, Some(raw)).is_ok(),
+                    *expected,
+                    "command gate verdict for {key} {raw:?}"
+                );
+            }
         }
     }
 }

@@ -781,6 +781,15 @@ pub(crate) struct ExecutorRegistry {
     executors: Vec<(&'static str, Arc<dyn ProviderExecutor + Send + Sync>)>,
 }
 
+/// Shared registry for local, non-executing lookups such as health probes.
+///
+/// Resolving an executor performs no I/O, but building a registry constructs
+/// one HTTP client per provider, so repeated probes share a single instance
+/// instead of rebuilding it per call. The registry holds no credentials and
+/// performs no requests; sharing it changes no execution behavior.
+static SHARED_REGISTRY: std::sync::LazyLock<ExecutorRegistry> =
+    std::sync::LazyLock::new(ExecutorRegistry::new);
+
 impl ExecutorRegistry {
     /// Build a registry that has every supported concrete provider registered.
     ///
@@ -828,6 +837,13 @@ impl ExecutorRegistry {
                 ),
             ],
         }
+    }
+
+    /// Borrow the shared registry for local lookups that never execute a
+    /// request (e.g. health probes). Request execution keeps building its
+    /// own registry per service; this handle is lookup-only.
+    pub(crate) fn shared() -> &'static Self {
+        &SHARED_REGISTRY
     }
 
     /// Resolve the executor registered for `name`, if any.

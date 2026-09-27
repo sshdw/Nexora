@@ -84,27 +84,31 @@ impl RoutingProfile {
     ///
     /// Chat defaults to the first provider's first model; agent defaults to
     /// that provider's first tool-capable model (falling back to the first
-    /// model when the provider lists none, so the default is never empty
-    /// while a provider is registered).
+    /// model when the provider lists no tool-capable one, so the default
+    /// still resolves text-first rather than vanishing).
     #[must_use]
     pub(crate) fn default_for(task: TaskKind) -> Self {
-        // Both tasks currently default to the registry head; the match keeps
-        // the per-task selection point explicit so chat/agent can diverge
-        // without changing call sites.
-        match task {
-            TaskKind::Chat | TaskKind::Agent => {
-                let registry = crate::infrastructure::providers::supported_providers();
-                let Some(first) = registry.first() else {
-                    return Self::default();
-                };
-                let model = first.models.first().cloned().unwrap_or_default();
-                Self {
-                    entries: vec![RouteEntry {
-                        provider: first.name.clone(),
-                        model,
-                    }],
-                }
-            }
+        // The match keeps the per-task selection point explicit so
+        // chat/agent can diverge further without changing call sites.
+        let require_tools = matches!(task, TaskKind::Agent);
+        let registry = crate::infrastructure::providers::supported_providers();
+        let Some(first) = registry.first() else {
+            return Self::default();
+        };
+        let model = if require_tools {
+            crate::application::execution::recommended_models(&first.name, true)
+                .into_iter()
+                .next()
+                .or_else(|| first.models.first().cloned())
+                .unwrap_or_default()
+        } else {
+            first.models.first().cloned().unwrap_or_default()
+        };
+        Self {
+            entries: vec![RouteEntry {
+                provider: first.name.clone(),
+                model,
+            }],
         }
     }
 
@@ -137,9 +141,22 @@ impl RoutingProfile {
         serde_json::to_string(&self.entries).map_err(|_| RoutingError::Serialization)
     }
 
-    /// Check structural bounds: entry count, non-empty identifiers within
-    /// length limits, and provider membership in the build's registry.
-    fn validate(&self) -> Result<(), RoutingError> {
+    /// Check structural bounds: a non-empty entry list within the count cap,
+    /// identifiers within length limits, a build-supported provider per
+    /// entry, and a model that is either listed for that provider or a valid
+    /// custom model ID.
+    ///
+    /// This is the single source of truth for profile validity: both the
+    /// settings-command gate and the service load/save paths funnel through
+    /// it (via [`Self::from_json`] / [`Self::to_json`]), so they agree
+    /// exactly. Capability gating beyond listed-or-custom membership stays at
+    /// resolution time ([`resolve_route`]).
+    pub(crate) fn validate(&self) -> Result<(), RoutingError> {
+        if self.entries.is_empty() {
+            return Err(RoutingError::InvalidProfile {
+                reason: "routing profile lists no entries",
+            });
+        }
         if self.entries.len() > MAX_PROFILE_ENTRIES {
             return Err(RoutingError::InvalidProfile {
                 reason: "routing profile lists too many entries",
@@ -156,14 +173,51 @@ impl RoutingProfile {
                     reason: "routing profile entry has an invalid provider or model",
                 });
             }
-            if !registry.iter().any(|known| known.name == entry.provider) {
+            let Some(known) = registry.iter().find(|known| known.name == entry.provider) else {
                 return Err(RoutingError::InvalidProfile {
                     reason: "routing profile entry names an unsupported provider",
+                });
+            };
+            if !known.models.iter().any(|listed| listed == &entry.model)
+                && !is_valid_custom_model_id(&entry.model)
+            {
+                return Err(RoutingError::InvalidProfile {
+                    reason: "routing profile entry names a model outside the provider's models",
                 });
             }
         }
         Ok(())
     }
+}
+
+/// Custom model IDs accepted alongside the listed shortlist IDs: length
+/// 1..=200 bytes, charset `A-Za-z0-9._/:-+`, no whitespace/controls, and no
+/// `..` parent-traversal segment.
+///
+/// Single definition shared by the routing-profile validation above and the
+/// settings-command gate for `provider.model`, so both paths classify custom
+/// IDs identically.
+pub(crate) fn is_valid_custom_model_id(value: &str) -> bool {
+    if value.is_empty() || value.len() > MAX_MODEL_LEN {
+        return false;
+    }
+    if value.contains("..") {
+        return false;
+    }
+    value.bytes().all(|byte| {
+        matches!(
+            byte,
+            b'A'..=b'Z'
+                | b'a'..=b'z'
+                | b'0'..=b'9'
+                | b'.'
+                | b'_'
+                | b'/'
+                | b':'
+                | b'-'
+                | b'+'
+        )
+    })
 }
 
 /// Resolve the first profile entry whose model passes the existing
@@ -407,6 +461,41 @@ mod tests {
     }
 
     #[test]
+    fn agent_default_is_tool_capable_while_chat_default_is_first_listed() {
+        let registry = crate::infrastructure::providers::supported_providers();
+        let first = registry.first().expect("build must register a provider");
+        let chat = RoutingProfile::default_for(TaskKind::Chat);
+        assert_eq!(
+            chat.entries,
+            vec![entry(
+                &first.name,
+                first.models.first().cloned().unwrap_or_default().as_str()
+            )],
+            "chat default stays the registry head"
+        );
+        let agent = RoutingProfile::default_for(TaskKind::Agent);
+        assert_eq!(agent.entries.len(), 1);
+        let head = &agent.entries[0];
+        assert_eq!(head.provider, first.name);
+        // The agent default passes tool gating wherever the provider lists a
+        // tool-capable model; otherwise it falls back to the first model.
+        let gated = crate::application::execution::recommended_models(&head.provider, true);
+        if gated.is_empty() {
+            assert_eq!(
+                head.model,
+                first.models.first().cloned().unwrap_or_default()
+            );
+        } else {
+            assert!(
+                gated.contains(&head.model),
+                "agent default {:?} must be tool-capable for {:?}",
+                head.model,
+                head.provider
+            );
+        }
+    }
+
+    #[test]
     fn save_then_load_round_trips() {
         let db = test_db();
         let service = RoutingService::new(&db);
@@ -447,10 +536,12 @@ mod tests {
         let bad_inputs = [
             "not json at all",
             "{\"entries\": []}",
+            "[]",
             "[{\"provider\": \"openai\"}]",
             "[{\"provider\": \"ghost-provider\", \"model\": \"x\"}]",
             "[{\"provider\": \"\", \"model\": \"x\"}]",
             "[{\"provider\": \"openai\", \"model\": \"\"}]",
+            "[{\"provider\": \"openai\", \"model\": \"gpt 5\"}]",
             "[",
         ];
         for raw in bad_inputs {

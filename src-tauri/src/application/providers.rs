@@ -153,7 +153,7 @@ impl<'a> ProviderService<'a> {
         let configured = self.read_by_name(name)?.is_some();
         let credentialed = Self::has_credentials(name)?;
         let executable = name == COMPAT_NAME
-            || super::execution::ExecutorRegistry::new()
+            || super::execution::ExecutorRegistry::shared()
                 .resolve(name)
                 .is_some();
         Ok(ProviderHealth {
@@ -241,7 +241,8 @@ pub(crate) struct ProviderHealth {
     pub has_configuration: bool,
     /// Whether the OS keyring holds a credential for this name.
     pub has_credential: bool,
-    /// When the probe ran, in Unix seconds.
+    /// When the probe ran, in Unix seconds. `0` means the system clock was
+    /// unavailable at probe time — treat it as "unknown", never as the epoch.
     pub last_checked: u64,
 }
 
@@ -283,6 +284,9 @@ fn classify_health(signals: HealthSignals) -> ProviderHealthStatus {
 }
 
 /// Current wall-clock time in Unix seconds for `last_checked` timestamps.
+///
+/// Returns `0` when the system clock is unavailable (before the Unix epoch);
+/// callers surface that as "unknown", never as the epoch itself.
 fn unix_now_seconds() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
