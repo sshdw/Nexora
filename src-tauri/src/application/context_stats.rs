@@ -24,6 +24,9 @@ pub(crate) const OPENAI_CONTEXT_LIMIT: u64 = 128_000;
 pub(crate) const ANTHROPIC_CONTEXT_LIMIT: u64 = 200_000;
 /// Context window for Gemini-hosted models (conservative documented default).
 pub(crate) const GEMINI_CONTEXT_LIMIT: u64 = 1_048_576;
+/// Conservative baseline for unverified gemini-lite windows until
+/// live-verified; architecture effective = min(requested, capability).
+pub(crate) const GEMINI_LITE_CONTEXT_LIMIT: u64 = 128_000;
 /// Fallback when the provider/model is unknown or has no committed window.
 pub(crate) const DEFAULT_CONTEXT_LIMIT: u64 = 128_000;
 
@@ -77,14 +80,16 @@ fn model_context_limit(model: &str) -> Option<u64> {
         "claude-sonnet-5" | "claude-haiku-4-5-20251001" | "claude-opus-4-8" => {
             Some(ANTHROPIC_CONTEXT_LIMIT)
         }
-        // `gemini::SUPPORTED_MODELS`.
-        "gemini-3.6-flash"
-        | "gemini-3.1-flash-lite"
-        | "gemini-3.1-pro-preview"
+        // `gemini::SUPPORTED_MODELS` (non-lite, verified window).
+        "gemini-3.6-flash" | "gemini-3.1-pro-preview" | "gemini-pro-latest" => {
+            Some(GEMINI_CONTEXT_LIMIT)
+        }
+        // Conservative baseline for unverified gemini windows (lite +
+        // unverified flash) until live-verified.
+        "gemini-3.1-flash-lite"
         | "gemini-flash-lite-latest"
-        | "gemini-pro-latest"
         | "gemini-3.5-flash"
-        | "gemini-3.5-flash-lite" => Some(GEMINI_CONTEXT_LIMIT),
+        | "gemini-3.5-flash-lite" => Some(GEMINI_LITE_CONTEXT_LIMIT),
         _ => None,
     }
 }
@@ -489,12 +494,8 @@ mod tests {
         }
         for model in [
             "gemini-3.6-flash",
-            "gemini-3.1-flash-lite",
             "gemini-3.1-pro-preview",
-            "gemini-flash-lite-latest",
             "gemini-pro-latest",
-            "gemini-3.5-flash",
-            "gemini-3.5-flash-lite",
         ] {
             assert_eq!(
                 context_limit_for(Some("gemini"), Some(model)),
@@ -507,6 +508,24 @@ mod tests {
                 "gemini model {model} without provider"
             );
             assert_eq!(model_context_limit(model), Some(GEMINI_CONTEXT_LIMIT));
+        }
+        for model in [
+            "gemini-3.1-flash-lite",
+            "gemini-flash-lite-latest",
+            "gemini-3.5-flash",
+            "gemini-3.5-flash-lite",
+        ] {
+            assert_eq!(
+                context_limit_for(Some("gemini"), Some(model)),
+                GEMINI_LITE_CONTEXT_LIMIT,
+                "gemini lite model {model}"
+            );
+            assert_eq!(
+                context_limit_for(None, Some(model)),
+                GEMINI_LITE_CONTEXT_LIMIT,
+                "gemini lite model {model} without provider"
+            );
+            assert_eq!(model_context_limit(model), Some(GEMINI_LITE_CONTEXT_LIMIT));
         }
         // Unlisted IDs keep the old behavior: provider fallback, then the
         // `gemini`-substring rule, then the default.
