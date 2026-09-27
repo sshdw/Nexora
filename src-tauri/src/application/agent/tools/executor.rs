@@ -293,6 +293,13 @@ impl ToolRegistry {
         if !resolved.exists() {
             return Err(ToolError::Io(format!("file not found: '{path}'")));
         }
+        // TOCTOU guard: re-verify the canonical target before following it.
+        verify_existing_within(
+            workspace_root,
+            &canonical_root(workspace_root),
+            &resolved,
+            path,
+        )?;
         if resolved.is_dir() {
             return Err(ToolError::Io(format!(
                 "path is a directory, not a file: '{path}'"
@@ -333,11 +340,16 @@ impl ToolRegistry {
         })?;
 
         let resolved = resolve_path(workspace_root, path)?;
+        let canon_ws = canonical_root(workspace_root);
 
         // Read old content before writing (same path validation as read_file). For
         // new files the diff is against empty; for existing files the bytes are
         // read lossily so binary files still produce a diff without panicking.
+        // A pre-existing symlink escaping the workspace is rejected first so the
+        // read itself never follows an outside link.
+        reject_final_symlink_escape(&canon_ws, &resolved, path)?;
         let old_content = if resolved.exists() {
+            verify_existing_within(workspace_root, &canon_ws, &resolved, path)?;
             match std::fs::read(&resolved) {
                 Ok(bytes) => String::from_utf8_lossy(&bytes).to_string(),
                 Err(_) => String::new(),
@@ -348,19 +360,39 @@ impl ToolRegistry {
 
         if let Some(parent) = resolved.parent() {
             if !parent.as_os_str().is_empty() {
-                // Validate parent is within workspace
-                let parent_within = is_within_workspace(workspace_root, parent);
-                if !parent_within {
+                // Lexical guard (unchanged behavior for in-workspace paths).
+                if !is_within_workspace(workspace_root, parent) {
                     return Err(ToolError::PathTraversal(path.to_string()));
                 }
-                std::fs::create_dir_all(parent).map_err(|e| {
-                    ToolError::Io(format!("failed to create parent directories: {e}"))
-                })?;
+                // Create parents one level at a time so a symlink component
+                // pointing outside is rejected *before* anything is created
+                // through it; each created level is canonicalized and
+                // re-verified (canonicalize-after-create).
+                ensure_parent_dirs(workspace_root, &canon_ws, parent, path)?;
             }
         }
 
+        // The final component itself may be a symlink pointing outside
+        // (single-level escape): re-check after the parents exist, just before
+        // the write that would follow the link.
+        reject_final_symlink_escape(&canon_ws, &resolved, path)?;
         std::fs::write(&resolved, content)
             .map_err(|e| ToolError::Io(format!("failed to write file '{path}': {e}")))?;
+
+        // Backstop for a link swapped in between the pre-write check and the
+        // write (TOCTOU): the written file must canonicalize inside the
+        // workspace, otherwise report traversal instead of success.
+        if let Ok(canon_file) = resolved.canonicalize() {
+            if !is_within_workspace(&canon_ws, &canon_file) {
+                return Err(ToolError::PathTraversal(path.to_string()));
+            }
+        } else if let Some(parent) = resolved.parent() {
+            if let Ok(canon_parent) = parent.canonicalize() {
+                if !is_within_workspace(&canon_ws, &canon_parent) {
+                    return Err(ToolError::PathTraversal(path.to_string()));
+                }
+            }
+        }
 
         let diff = unified_diff(path, &old_content, content);
         Ok(truncate_output(diff))
@@ -416,6 +448,10 @@ impl ToolRegistry {
         if !resolved.exists() {
             return Err(ToolError::Io(format!("file not found: '{path}'")));
         }
+        // Re-verify through symlink_metadata (TOCTOU guard): the link may have
+        // been swapped between `resolve_path` and use.
+        let canon_ws = canonical_root(workspace_root);
+        verify_existing_within(workspace_root, &canon_ws, &resolved, path)?;
         if resolved.is_dir() {
             return Err(ToolError::Io(format!(
                 "path is a directory, not a file: '{path}'"
@@ -443,6 +479,9 @@ impl ToolRegistry {
             }
         };
 
+        // Re-verify just before the write that follows the (possibly linked)
+        // path, so a swap between read and write cannot redirect the edit.
+        verify_existing_within(workspace_root, &canon_ws, &resolved, path)?;
         std::fs::write(&resolved, &updated)
             .map_err(|e| ToolError::Io(format!("failed to write file '{path}': {e}")))?;
 
@@ -495,6 +534,13 @@ impl ToolRegistry {
                 scope_arg.unwrap_or("").to_string(),
             ));
         }
+        // Canonical re-verification (TOCTOU guard before the walk starts).
+        verify_existing_within(
+            workspace_root,
+            &canonical_root(workspace_root),
+            &scope,
+            scope_arg.unwrap_or(""),
+        )?;
         let max_matches = match args.get("max_matches") {
             None => SEARCH_DEFAULT_MAX_MATCHES,
             Some(value) => {
@@ -565,6 +611,13 @@ impl ToolRegistry {
         if !is_within_workspace(workspace_root, &target) {
             return Err(ToolError::PathTraversal(path_opt.unwrap_or("").to_string()));
         }
+        // Canonical re-verification (TOCTOU guard before the directory is read).
+        verify_existing_within(
+            workspace_root,
+            &canonical_root(workspace_root),
+            &target,
+            path_opt.unwrap_or(""),
+        )?;
 
         let mut entries = Vec::new();
         if recursive {
@@ -626,6 +679,10 @@ fn validated_command_args(
             workspace_root.to_path_buf()
         } else {
             let p = resolve_path(workspace_root, cwd)?;
+            // TOCTOU guard: the directory may have been swapped for a link
+            // between `resolve_path` and the spawn below; re-verify the
+            // canonical target before it becomes a child process cwd.
+            verify_existing_within(workspace_root, &canonical_root(workspace_root), &p, cwd)?;
             if p.is_file() {
                 return Err(ToolError::InvalidArguments(format!(
                     "cwd '{cwd}' is a file, not a directory"
@@ -1012,6 +1069,16 @@ fn walk_search(
         if !is_within_workspace(workspace_root, &path) {
             continue;
         }
+        // TOCTOU guard: the entry may have been swapped for a link after the
+        // listing above; never follow a path whose canonical target escaped.
+        if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
+            continue;
+        }
+        if let Ok(canon) = path.canonicalize() {
+            if !is_within_workspace(workspace_root, &canon) {
+                continue;
+            }
+        }
         if path.is_dir() {
             walk_search(&path, workspace_root, regex, max_matches, hits, capped)?;
         } else if path.is_file() {
@@ -1114,11 +1181,20 @@ fn resolve_path(workspace_root: &Path, requested: &str) -> Result<PathBuf, ToolE
         return Err(ToolError::PathTraversal(requested.to_string()));
     }
 
+    // Canonical check over every existing path prefix. The lexical check above
+    // cannot see through symlinks, and checking only the final component (or
+    // only the immediate parent) misses the depth>=2 escape where an
+    // intermediate component is a link to the outside while deeper parents do
+    // not exist yet (e.g. `ws/link/newsub/file.txt` with `link` -> outside):
+    // walking each existing prefix catches the escape at the `link` level.
+    let canon_ws = canonical_root(workspace_root);
+    check_prefixes_for_escape(workspace_root, &canon_ws, &joined, requested)?;
+
     // Also ensure normalized joined still within workspace after resolving symlinks if exists
     // If file exists, try canonicalize and re-check
     if joined.exists() {
         if let Ok(canonical) = joined.canonicalize() {
-            if !is_within_workspace(workspace_root, &canonical) {
+            if !is_within_workspace(&canon_ws, &canonical) {
                 return Err(ToolError::PathTraversal(requested.to_string()));
             }
             // Return canonical for existing file to be precise
@@ -1126,22 +1202,238 @@ fn resolve_path(workspace_root: &Path, requested: &str) -> Result<PathBuf, ToolE
             // For existing we can return canonical
             return Ok(canonical);
         }
-    } else {
-        // For non-existing, check parent canonical
-        if let Some(parent) = joined.parent() {
-            if parent.exists() {
-                if let Ok(parent_canonical) = parent.canonicalize() {
-                    if !is_within_workspace(workspace_root, &parent_canonical) {
-                        return Err(ToolError::PathTraversal(requested.to_string()));
-                    }
-                    // Also check parent's normalized parent + file name stays within
-                    // Already covered by lexical check
-                }
-            }
-        }
+    } else if std::fs::symlink_metadata(&joined).is_ok() {
+        // Dangling final symlink: `exists` follows links and reports false,
+        // but a write would follow the link target. Resolve the link itself.
+        verify_prefix_within(workspace_root, &canon_ws, &joined, requested)?;
     }
 
     Ok(normalize_lexically(&joined))
+}
+
+/// Canonical form of the workspace root for escape comparisons. The root
+/// exists in every tool call, so `canonicalize` succeeds; the lexical
+/// fallback only covers exotic failure modes without changing behavior.
+fn canonical_root(workspace_root: &Path) -> PathBuf {
+    workspace_root
+        .canonicalize()
+        .unwrap_or_else(|_| normalize_lexically(&absolutize(workspace_root)))
+}
+
+/// Reject `requested` when any existing prefix of `joined` (intermediate
+/// directory, final file, or dangling link) resolves outside the workspace.
+/// Non-existent prefixes are skipped: they will be created through
+/// [`ensure_parent_dirs`], which re-verifies after each level.
+fn check_prefixes_for_escape(
+    workspace_root: &Path,
+    canon_ws: &Path,
+    joined: &Path,
+    requested: &str,
+) -> Result<(), ToolError> {
+    for prefix in existing_prefixes(workspace_root, joined) {
+        verify_prefix_within(workspace_root, canon_ws, &prefix, requested)?;
+    }
+    Ok(())
+}
+
+/// Lexical prefixes of `joined` below the workspace root that currently exist
+/// on disk (existence via `symlink_metadata`, so dangling links count).
+/// Ordered outermost-first so the escape is reported at the link level.
+fn existing_prefixes(workspace_root: &Path, joined: &Path) -> Vec<PathBuf> {
+    let lex = normalize_lexically(joined);
+    let ws_norm = normalize_lexically(&absolutize(workspace_root));
+    let ws_count = ws_norm.components().count();
+    let comps: Vec<std::path::Component<'_>> = lex.components().collect();
+    if comps.len() < ws_count {
+        return Vec::new();
+    }
+    let mut prefix = workspace_root.to_path_buf();
+    let mut out = Vec::with_capacity(comps.len().saturating_sub(ws_count));
+    for comp in &comps[ws_count..] {
+        prefix.push(comp.as_os_str());
+        if std::fs::symlink_metadata(&prefix).is_ok() {
+            out.push(prefix.clone());
+        }
+    }
+    out
+}
+
+/// Verify one existing prefix stays inside the workspace after resolving
+/// links. Uses `symlink_metadata` (never follows) first: links are resolved
+/// explicitly via `canonicalize` (live target) or `read_link` against the
+/// canonical parent (dangling target); regular files/dirs are canonicalized
+/// to catch mount or rename oddities.
+fn verify_prefix_within(
+    workspace_root: &Path,
+    canon_ws: &Path,
+    prefix: &Path,
+    requested: &str,
+) -> Result<(), ToolError> {
+    let meta = match std::fs::symlink_metadata(prefix) {
+        Ok(meta) => meta,
+        // Raced away between the existence check and now: nothing to follow.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => {
+            return Err(ToolError::Io(format!(
+                "failed to read path metadata for '{requested}': {e}"
+            )));
+        }
+    };
+    if meta.file_type().is_symlink() {
+        if let Ok(canon) = prefix.canonicalize() {
+            if !is_within_workspace(canon_ws, &canon) {
+                return Err(ToolError::PathTraversal(requested.to_string()));
+            }
+        } else {
+            // Dangling link: resolve its target against the canonical parent
+            // so `link -> /outside` (or `../outside`) is still caught even
+            // though `canonicalize` cannot complete.
+            let target = std::fs::read_link(prefix).map_err(|e| {
+                ToolError::Io(format!("failed to read link for '{requested}': {e}"))
+            })?;
+            let parent = prefix.parent().unwrap_or(workspace_root);
+            let parent_canon = parent
+                .canonicalize()
+                .unwrap_or_else(|_| normalize_lexically(parent));
+            let target_path = PathBuf::from(&target);
+            let resolved = if target_path.is_absolute() {
+                target_path
+            } else {
+                parent_canon.join(target)
+            };
+            if !is_within_workspace(canon_ws, &normalize_lexically(&resolved)) {
+                return Err(ToolError::PathTraversal(requested.to_string()));
+            }
+        }
+    } else if let Ok(canon) = prefix.canonicalize() {
+        if !is_within_workspace(canon_ws, &canon) {
+            return Err(ToolError::PathTraversal(requested.to_string()));
+        }
+    }
+    Ok(())
+}
+
+/// Re-verify an existing file/directory just before use (TOCTOU guard for
+/// read/edit/command-cwd/list/search-scope after `resolve_path`).
+fn verify_existing_within(
+    workspace_root: &Path,
+    canon_ws: &Path,
+    path: &Path,
+    requested: &str,
+) -> Result<(), ToolError> {
+    verify_prefix_within(workspace_root, canon_ws, path, requested)
+}
+
+/// Reject when the final write target is itself a link escaping the
+/// workspace. A write would follow the link, so this must run after the
+/// parents exist and immediately before `fs::write`.
+fn reject_final_symlink_escape(
+    canon_ws: &Path,
+    resolved: &Path,
+    requested: &str,
+) -> Result<(), ToolError> {
+    let meta = match std::fs::symlink_metadata(resolved) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => {
+            return Err(ToolError::Io(format!(
+                "failed to read path metadata for '{requested}': {e}"
+            )));
+        }
+    };
+    if meta.file_type().is_symlink() {
+        if let Ok(canon) = resolved.canonicalize() {
+            if !is_within_workspace(canon_ws, &canon) {
+                return Err(ToolError::PathTraversal(requested.to_string()));
+            }
+        } else {
+            let target = std::fs::read_link(resolved).map_err(|e| {
+                ToolError::Io(format!("failed to read link for '{requested}': {e}"))
+            })?;
+            let parent = resolved.parent().unwrap_or(resolved);
+            let parent_canon = parent
+                .canonicalize()
+                .unwrap_or_else(|_| normalize_lexically(parent));
+            let target_path = PathBuf::from(&target);
+            let relocated = if target_path.is_absolute() {
+                target_path
+            } else {
+                parent_canon.join(target)
+            };
+            if !is_within_workspace(canon_ws, &normalize_lexically(&relocated)) {
+                return Err(ToolError::PathTraversal(requested.to_string()));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Create a lexically-within-workspace parent chain one level at a time,
+/// refusing to pass through a link that points outside *before* creating
+/// anything beneath it. Every pre-existing level and every freshly created
+/// level is canonicalized and re-verified (canonicalize-after-create), so a
+/// `ws/link/newsub` write with `link -> outside` fails at `link` without
+/// creating `outside/newsub`.
+fn ensure_parent_dirs(
+    workspace_root: &Path,
+    canon_ws: &Path,
+    parent: &Path,
+    requested: &str,
+) -> Result<(), ToolError> {
+    let lex = normalize_lexically(parent);
+    let ws_norm = normalize_lexically(&absolutize(workspace_root));
+    let ws_count = ws_norm.components().count();
+    let comps: Vec<std::path::Component<'_>> = lex.components().collect();
+    if comps.len() < ws_count {
+        return Err(ToolError::PathTraversal(requested.to_string()));
+    }
+    let mut prefix = workspace_root.to_path_buf();
+    for comp in &comps[ws_count..] {
+        prefix.push(comp.as_os_str());
+        match std::fs::symlink_metadata(&prefix) {
+            Ok(_) => {
+                // Already there (dir, file, or link): must resolve inside.
+                verify_prefix_within(workspace_root, canon_ws, &prefix, requested)?;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                match std::fs::create_dir(&prefix) {
+                    Ok(()) => {}
+                    Err(create_err) => {
+                        // Lost a creation race: re-verify whatever is there
+                        // now; an escape still reports traversal, anything
+                        // else keeps the original I/O error.
+                        if std::fs::symlink_metadata(&prefix).is_ok() {
+                            verify_prefix_within(workspace_root, canon_ws, &prefix, requested)?;
+                        }
+                        return Err(ToolError::Io(format!(
+                            "failed to create parent directories: {create_err}"
+                        )));
+                    }
+                }
+                // Canonicalize-after-create: the new directory must land
+                // inside the workspace.
+                let canon = prefix.canonicalize().map_err(|e| {
+                    ToolError::Io(format!("failed to create parent directories: {e}"))
+                })?;
+                if !is_within_workspace(canon_ws, &canon) {
+                    return Err(ToolError::PathTraversal(requested.to_string()));
+                }
+            }
+            Err(e) => {
+                return Err(ToolError::Io(format!(
+                    "failed to read path metadata for '{requested}': {e}"
+                )));
+            }
+        }
+    }
+    // Final re-verification of the now-fully-existing parent.
+    let canon_parent = parent
+        .canonicalize()
+        .map_err(|e| ToolError::Io(format!("failed to create parent directories: {e}")))?;
+    if !is_within_workspace(canon_ws, &canon_parent) {
+        return Err(ToolError::PathTraversal(requested.to_string()));
+    }
+    Ok(())
 }
 
 fn is_within_workspace(workspace_root: &Path, target: &Path) -> bool {
@@ -1277,6 +1569,16 @@ fn walk_recursive(
         let name = entry.file_name().to_string_lossy().to_string();
         out.push(format!("{kind}: {rel} (name: {name})"));
         if ft.is_dir() {
+            // Never descend through a symlink, even one swapped in after the
+            // `read_dir` above; symlinks stay listed as files, never followed.
+            if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
+                continue;
+            }
+            if let Ok(canon) = path.canonicalize() {
+                if !is_within_workspace(workspace_root, &canon) {
+                    continue;
+                }
+            }
             walk_recursive(&path, workspace_root, out)?;
         }
     }
@@ -1991,5 +2293,92 @@ mod tests {
             let _ = fs::remove_dir_all(&outside_dir);
         }
         let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn write_file_blocks_nested_symlink_escape_at_depth_two() {
+        // H-1 regression: `ws/link` is a symlink to the outside and `newsub`
+        // does not exist yet. The old code skipped the canonical check because
+        // the immediate parent (`ws/link/newsub`) was missing, then
+        // `create_dir_all` followed the link and the write landed outside.
+        use std::os::unix::fs::symlink;
+        let ws = temp_workspace();
+        let outside_dir = temp_workspace();
+        symlink(&outside_dir, ws.join("link")).expect("symlink ws/link -> outside");
+
+        let write = call(
+            "write_file",
+            serde_json::json!({"path": "link/newsub/file.txt", "content": "pwned"}),
+        );
+        let res = ToolRegistry::execute(&write, &ws);
+        assert!(
+            matches!(res, Err(ToolError::PathTraversal(_))),
+            "depth-2 symlink escape must be PathTraversal, got {res:?}"
+        );
+
+        // Nothing may have been created through the link: the outside
+        // directory must be untouched.
+        assert!(
+            !outside_dir.join("newsub").exists(),
+            "outside dir must not gain newsub via the link"
+        );
+        assert!(
+            !outside_dir.join("newsub/file.txt").exists(),
+            "outside file must not be created"
+        );
+        let _ = fs::remove_dir_all(&ws);
+        let _ = fs::remove_dir_all(&outside_dir);
+    }
+
+    #[test]
+    fn write_file_allows_legit_nested_write() {
+        // The hardening must not change behavior for in-workspace paths:
+        // a genuinely nested write still creates its parents and reads back.
+        let ws = temp_workspace();
+        let write = call(
+            "write_file",
+            serde_json::json!({"path": "a/b/c.txt", "content": "nested ok"}),
+        );
+        ToolRegistry::execute(&write, &ws).expect("nested in-workspace write succeeds");
+        assert_eq!(
+            fs::read_to_string(ws.join("a/b/c.txt")).expect("nested file exists"),
+            "nested ok"
+        );
+        let read = call("read_file", serde_json::json!({"path": "a/b/c.txt"}));
+        assert_eq!(
+            ToolRegistry::execute(&read, &ws).expect("read back"),
+            "nested ok"
+        );
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn write_file_blocks_single_level_symlink_escape() {
+        // Single-level escapes were already rejected; they must stay rejected
+        // after the H-1 rework (no behavior change, same error class).
+        use std::os::unix::fs::symlink;
+        let ws = temp_workspace();
+        let outside_dir = temp_workspace();
+        fs::write(outside_dir.join("secret.txt"), "outer-secret").expect("outside seed");
+        symlink(outside_dir.join("secret.txt"), ws.join("escape.txt")).expect("symlink");
+
+        let write = call(
+            "write_file",
+            serde_json::json!({"path": "escape.txt", "content": "pwned"}),
+        );
+        let res = ToolRegistry::execute(&write, &ws);
+        assert!(
+            matches!(res, Err(ToolError::PathTraversal(_))),
+            "single-level symlink escape must stay PathTraversal, got {res:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(outside_dir.join("secret.txt")).expect("outside seed"),
+            "outer-secret",
+            "outside file must be untouched"
+        );
+        let _ = fs::remove_dir_all(&ws);
+        let _ = fs::remove_dir_all(&outside_dir);
     }
 }
