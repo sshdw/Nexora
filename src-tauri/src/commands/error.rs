@@ -11,6 +11,7 @@
 use serde::Serialize;
 
 use crate::application::attachments::AttachmentError;
+use crate::application::compat::CompatError;
 use crate::application::conversations::ConversationError;
 use crate::application::data_management::DataManagementError;
 use crate::application::execution::RequestError;
@@ -119,6 +120,17 @@ impl From<ProviderError> for CommandError {
     }
 }
 
+impl From<CompatError> for CommandError {
+    fn from(err: CompatError) -> Self {
+        match err {
+            // Stored endpoint data failed validation: a caller-supplied value
+            // was rejected. The reason is already a secret-free category.
+            CompatError::InvalidStoredData { reason } => Self::new(ErrorKind::InvalidInput, reason),
+            CompatError::Database(inner) => Self::from(inner),
+        }
+    }
+}
+
 impl From<RequestError> for CommandError {
     fn from(err: RequestError) -> Self {
         match err {
@@ -138,6 +150,9 @@ impl From<RequestError> for CommandError {
                 ErrorKind::Request,
                 format!("the AI provider '{name}' has no registered executor"),
             ),
+            RequestError::InvalidCompatEndpoint { reason } => {
+                Self::new(ErrorKind::InvalidInput, reason)
+            }
             RequestError::Execution { name, message } => Self::new(
                 ErrorKind::Request,
                 format!("the AI provider '{name}' failed: {message}"),

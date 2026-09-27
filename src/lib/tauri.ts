@@ -120,6 +120,51 @@ export function isProviderAvailable(name: string): Promise<boolean> {
   return invoke<boolean>("is_provider_available", { name });
 }
 
+// ---- OpenAI-compatible endpoint (custom base URL) ----------------------
+// The endpoint metadata (base URL, model, organization, headers) is plain
+// settings; the API key stays in the OS keyring under `openai_compat` and
+// only its presence is ever exposed.
+
+/** User configuration for the generic OpenAI-compatible endpoint
+ * (`openai_compat`). Field names mirror the Rust struct (snake_case).
+ * Carries no secret — the key is keyring-only. */
+export interface CompatConfig {
+  base_url: string;
+  model: string;
+  organization: string | null;
+  headers: [string, string][];
+  supports_tools: boolean;
+}
+
+/** UI-facing status of the OpenAI-compatible endpoint: presence booleans
+ * plus readiness. Carries metadata only — never a secret value. */
+export interface CompatStatus {
+  has_base_url: boolean;
+  base_url_valid: boolean;
+  has_model: boolean;
+  has_organization: boolean;
+  header_count: number;
+  has_credential: boolean;
+  ready: boolean;
+}
+
+/** Read the stored OpenAI-compatible endpoint configuration. */
+export function getCompatConfig(): Promise<CompatConfig> {
+  return invoke<CompatConfig>("get_compat_config");
+}
+
+/** Persist the OpenAI-compatible endpoint configuration. The backend
+ * validates it and rejects it unchanged on failure. */
+export function setCompatConfig(config: CompatConfig): Promise<void> {
+  return invoke<void>("set_compat_config", { config });
+}
+
+/** Report the UI-facing status (presence booleans + readiness) of the
+ * OpenAI-compatible endpoint. */
+export function compatStatus(): Promise<CompatStatus> {
+  return invoke<CompatStatus>("compat_status");
+}
+
 // ---- Credentials -----------------------------------------------------
 // Values stay in the OS secure keyring; only presence is ever exposed.
 
