@@ -12,6 +12,7 @@ use crate::application::agent::tools::ToolRegistry;
 use crate::application::execution::{AiMessage, AiRole, ToolCall};
 
 use super::errors::AgentError;
+use super::lifecycle::{observe_transition, RunState};
 use super::prompts::{
     classify_outcome, denied_tool_message, thought_signature_trace, tool_message,
     DOCUMENT_SHELL_DENIAL,
@@ -46,6 +47,7 @@ pub(crate) fn check_cancellation(
     sender: Option<&Sender<AgentRunEvent>>,
 ) -> Result<(), AgentError> {
     if matches!(control, Some(c) if c.is_cancelled()) {
+        observe_transition(RunState::Running, RunState::Cancelled);
         emit(sender, AgentRunEvent::Cancelled);
         return Err(AgentError::Cancelled);
     }
@@ -65,11 +67,14 @@ pub(crate) fn honor_pause(
     if !c.pause_pending() {
         return Ok(());
     }
+    observe_transition(RunState::Running, RunState::Paused);
     emit(sender, AgentRunEvent::Paused);
     if c.wait_while_paused() {
+        observe_transition(RunState::Paused, RunState::Running);
         emit(sender, AgentRunEvent::Resumed);
         Ok(())
     } else {
+        observe_transition(RunState::Paused, RunState::Cancelled);
         emit(sender, AgentRunEvent::Cancelled);
         Err(AgentError::Cancelled)
     }
@@ -307,6 +312,10 @@ fn park_for_approval(
         if gate.needs_approval(call) {
             // INVARIANT: once ApprovalRequested is emitted, a pending entry for that call_id exists,
             // so a concurrent resolve cannot hit NoPendingApproval вЂ” the race is closed by construction.
+            super::lifecycle::observe_transition(
+                super::lifecycle::RunState::Running,
+                super::lifecycle::RunState::AwaitingApproval,
+            );
             gate.prepare_pending_with_group(call, Some(group_key.to_owned()));
             emit(
                 ctx.sender,
@@ -324,6 +333,10 @@ fn park_for_approval(
                 if let Some(rec) = record.as_mut() {
                     rec.approval_cancelled(call);
                 }
+                super::lifecycle::observe_transition(
+                    super::lifecycle::RunState::AwaitingApproval,
+                    super::lifecycle::RunState::Cancelled,
+                );
                 emit(ctx.sender, AgentRunEvent::Cancelled);
                 return Err(AgentError::Cancelled);
             };
@@ -332,6 +345,10 @@ fn park_for_approval(
             if let Some(rec) = record.as_mut() {
                 rec.approval_with_provenance(call, approved, StepProvenance::user(Some(group_key)));
             }
+            super::lifecycle::observe_transition(
+                super::lifecycle::RunState::AwaitingApproval,
+                super::lifecycle::RunState::Running,
+            );
             emit(
                 ctx.sender,
                 AgentRunEvent::ApprovalResolved {
