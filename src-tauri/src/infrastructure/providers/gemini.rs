@@ -203,6 +203,7 @@ impl ProviderExecutor for GeminiExecutor {
                     GeminiError::InvalidRequest => ExecutorError::InvalidRequest,
                     GeminiError::ContextLengthExceeded => ExecutorError::ContextLengthExceeded,
                     GeminiError::Authentication => ExecutorError::Authentication,
+                    GeminiError::PaymentRequired => ExecutorError::PaymentRequired,
                     GeminiError::Network => ExecutorError::Network,
                     GeminiError::RateLimited { retry_after_secs } => {
                         ExecutorError::RateLimited { retry_after_secs }
@@ -750,6 +751,9 @@ fn generate_content_url(endpoint: &str, model: &str) -> String {
 
 /// Classify a non-success HTTP status into a secret-free failure category.
 ///
+/// Mirrors the unified [`super::transport::map_http_error`] table so every
+/// provider maps a status to the same category.
+///
 /// Google reports credential problems as **401 UNAUTHENTICATED** (missing or
 /// malformed key) and **403 PERMISSION_DENIED** (the key lacks access: wrong
 /// key, restricted/unrestricted-key policy rejection, or the API is disabled
@@ -764,14 +768,18 @@ fn generate_content_url(endpoint: &str, model: &str) -> String {
 /// seconds (absent or HTTP-date values are `None`) and is carried only by the
 /// 429 [`GeminiError::RateLimited`] category.
 fn classify_status(status: u16, retry_after_secs: Option<u64>) -> GeminiError {
-    match status {
-        // 404 (unknown model/route) is a malformed request like 400, matching
-        // the OpenAI-compatible path.
-        400 | 404 => GeminiError::InvalidRequest,
-        // Credential/access problems (see above): actionable for the user.
-        401 | 403 => GeminiError::Authentication,
-        429 => GeminiError::RateLimited { retry_after_secs },
-        s if s >= 500 => GeminiError::ProviderUnavailable,
+    // Single-table delegation: the unified transport mapping owns the
+    // status→category table (the snapshot context flag is handled by the
+    // caller, so `false` here still covers a bare 413 via the shared table).
+    match super::transport::map_http_error(status, retry_after_secs, false) {
+        ExecutorError::Authentication => GeminiError::Authentication,
+        ExecutorError::PaymentRequired => GeminiError::PaymentRequired,
+        ExecutorError::ContextLengthExceeded => GeminiError::ContextLengthExceeded,
+        ExecutorError::InvalidRequest => GeminiError::InvalidRequest,
+        ExecutorError::RateLimited { retry_after_secs } => {
+            GeminiError::RateLimited { retry_after_secs }
+        }
+        ExecutorError::ProviderUnavailable => GeminiError::ProviderUnavailable,
         _ => GeminiError::Provider,
     }
 }
@@ -793,6 +801,9 @@ enum GeminiError {
     ContextLengthExceeded,
     /// The credential was rejected (HTTP 401).
     Authentication,
+    /// The provider reported insufficient credits/quota (HTTP 402): the
+    /// credential is valid but the account cannot pay for this call.
+    PaymentRequired,
     /// A network/transport failure (connection refused, DNS, timeout, ...).
     Network,
     /// The provider rate limited the request (HTTP 429), carrying the
@@ -825,6 +836,11 @@ impl std::fmt::Display for GeminiError {
             Self::Authentication => write!(
                 f,
                 "Gemini rejected the stored credential or its access (401/403)"
+            ),
+            Self::PaymentRequired => write!(
+                f,
+                "provider reported insufficient credits/quota (HTTP 402); \
+                 top up or switch to a free-tier ID"
             ),
             Self::Network => write!(f, "Gemini network or transport failure"),
             Self::RateLimited { .. } => write!(f, "Gemini rate limit (429)"),

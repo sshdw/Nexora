@@ -635,6 +635,27 @@ pub(crate) fn is_retryable_status(status: u16) -> bool {
     status == 429 || (500..=599).contains(&status)
 }
 
+/// Returns true iff a classified [`ExecutorError`] is worth retrying.
+///
+/// Retry table (bounded by [`MAX_SEND_ATTEMPTS`], waited with jittered
+/// [`backoff_delay`] or the capped `Retry-After` hint via [`retry_delay`]):
+/// - retry: `RateLimited` (429), `ProviderUnavailable` (5xx), `Network`
+///   (refused/DNS/timeout/reset);
+/// - never: `Authentication` (401/403), `ContextLengthExceeded` (413 and the
+///   400-classifier), usage failures (`InvalidRequest`, `PaymentRequired`,
+///   `UnexpectedResponse`, `Failure`), and `Cancelled`.
+///
+/// There is deliberately no cross-provider fallback: a terminal failure for
+/// one provider never tries another provider.
+pub(crate) fn should_retry(error: &ExecutorError) -> bool {
+    matches!(
+        error,
+        ExecutorError::RateLimited { .. }
+            | ExecutorError::ProviderUnavailable
+            | ExecutorError::Network
+    )
+}
+
 /// Computed backoff for the `retry_index`-th retry (0-based: 0 is the wait
 /// before the second attempt): `min(base * 2^retry_index, 30 s)` with ±25%
 /// jitter. Always strictly positive and never above [`MAX_RETRY_DELAY_SECS`].
@@ -1666,5 +1687,96 @@ mod tests {
                 "compat error must stay secret-free, found {sentinel:?}"
             );
         }
+    }
+
+    #[test]
+    fn should_retry_retries_only_rate_limit_server_and_network() {
+        // Retry: rate-limit (with or without hint), server outage, transport.
+        assert!(should_retry(&ExecutorError::RateLimited {
+            retry_after_secs: Some(2)
+        }));
+        assert!(should_retry(&ExecutorError::RateLimited {
+            retry_after_secs: None
+        }));
+        assert!(should_retry(&ExecutorError::ProviderUnavailable));
+        assert!(should_retry(&ExecutorError::Network));
+        // Never: auth, context, and usage failures — retrying burns quota or
+        // loops on a request that can never succeed.
+        assert!(!should_retry(&ExecutorError::Authentication));
+        assert!(!should_retry(&ExecutorError::ContextLengthExceeded));
+        assert!(!should_retry(&ExecutorError::InvalidRequest));
+        assert!(!should_retry(&ExecutorError::PaymentRequired));
+        assert!(!should_retry(&ExecutorError::UnexpectedResponse));
+        assert!(!should_retry(&ExecutorError::Failure));
+        assert!(!should_retry(&ExecutorError::Cancelled));
+    }
+
+    #[test]
+    fn executor_error_stays_category_only_and_secret_free() {
+        // Same pattern as the provider secret-hygiene test: every boundary
+        // category formats to fixed text that can never echo a credential,
+        // URL secret, request payload, or raw body.
+        const SECRET_SENTINELS: [&str; 5] = [
+            "sk-",
+            "secret",
+            "api_key",
+            "sk-live-sentinel-12345",
+            "bearer",
+        ];
+        let errors = [
+            ExecutorError::Network,
+            ExecutorError::RateLimited {
+                retry_after_secs: None,
+            },
+            ExecutorError::RateLimited {
+                retry_after_secs: Some(7),
+            },
+            ExecutorError::ProviderUnavailable,
+            ExecutorError::PaymentRequired,
+            ExecutorError::Authentication,
+            ExecutorError::InvalidRequest,
+            ExecutorError::ContextLengthExceeded,
+            ExecutorError::UnexpectedResponse,
+            ExecutorError::Failure,
+            ExecutorError::Cancelled,
+        ];
+        for error in &errors {
+            let message = error.to_string();
+            assert!(!message.is_empty(), "category text must be non-empty");
+            for sentinel in SECRET_SENTINELS {
+                assert!(
+                    !message.to_lowercase().contains(sentinel),
+                    "category text must stay secret-free, found {sentinel:?} in {message:?}"
+                );
+            }
+        }
+        // The credential value itself never appears, even verbatim.
+        let credential = "sk-live-sentinel-12345";
+        for error in &errors {
+            assert!(
+                !error.to_string().contains(credential),
+                "credential must never appear in {error:?}"
+            );
+            assert!(
+                !format!("{error:?}").contains(credential),
+                "credential must never appear in debug {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_provider_never_falls_back_to_another_provider() {
+        // No-fallback pin: an unknown name resolves to `None` on both lookup
+        // shapes and yields empty model projections — it never silently tries
+        // another provider's executor or models.
+        let registry = ExecutorRegistry::new();
+        assert!(registry.resolve("ghost-provider").is_none());
+        assert!(registry.resolve_owned("ghost-provider").is_none());
+        assert!(models_for_provider("ghost-provider").is_empty());
+        assert!(recommended_models("ghost-provider", false).is_empty());
+        assert!(recommended_models("ghost-provider", true).is_empty());
+        // Sanity: a known provider still resolves (the pin only forbids the
+        // unknown → known fallback, not normal resolution).
+        assert!(registry.resolve(PROVIDER_NAME).is_some());
     }
 }

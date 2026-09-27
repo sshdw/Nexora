@@ -192,6 +192,7 @@ impl ProviderExecutor for AnthropicExecutor {
                     AnthropicError::InvalidRequest => ExecutorError::InvalidRequest,
                     AnthropicError::ContextLengthExceeded => ExecutorError::ContextLengthExceeded,
                     AnthropicError::Authentication => ExecutorError::Authentication,
+                    AnthropicError::PaymentRequired => ExecutorError::PaymentRequired,
                     AnthropicError::Network => ExecutorError::Network,
                     AnthropicError::RateLimited { retry_after_secs } => {
                         ExecutorError::RateLimited { retry_after_secs }
@@ -532,18 +533,28 @@ fn to_ai_response(response: AnthropicResponse) -> Result<AiResponse, AnthropicEr
 
 /// Classify a non-success HTTP status into a secret-free failure category.
 ///
+/// Mirrors the unified [`super::transport::map_http_error`] table so every
+/// provider maps a status to the same category: 401/403 auth, 402 payment,
+/// 413 context, 400/404 invalid (the 400-classifier promotes window language
+/// via the snapshot flag before this runs), 429 rate-limit, 5xx unavailable.
+///
 /// `retry_after_secs` is the merged provider `Retry-After` hint: the response
 /// header first, then common JSON body shapes (see
 /// [`super::transport::extract_retry_after`]), capped upstream. It is carried
 /// only by the 429 [`AnthropicError::RateLimited`] category.
 fn classify_status(status: u16, retry_after_secs: Option<u64>) -> AnthropicError {
-    match status {
-        // 404 (unknown model/route) is a malformed request like 400, matching
-        // the OpenAI-compatible path.
-        400 | 404 => AnthropicError::InvalidRequest,
-        401 | 403 => AnthropicError::Authentication,
-        429 => AnthropicError::RateLimited { retry_after_secs },
-        s if s >= 500 => AnthropicError::ProviderUnavailable,
+    // Single-table delegation: the unified transport mapping owns the
+    // status→category table (the snapshot context flag is handled by the
+    // caller, so `false` here still covers a bare 413 via the shared table).
+    match super::transport::map_http_error(status, retry_after_secs, false) {
+        ExecutorError::Authentication => AnthropicError::Authentication,
+        ExecutorError::PaymentRequired => AnthropicError::PaymentRequired,
+        ExecutorError::ContextLengthExceeded => AnthropicError::ContextLengthExceeded,
+        ExecutorError::InvalidRequest => AnthropicError::InvalidRequest,
+        ExecutorError::RateLimited { retry_after_secs } => {
+            AnthropicError::RateLimited { retry_after_secs }
+        }
+        ExecutorError::ProviderUnavailable => AnthropicError::ProviderUnavailable,
         _ => AnthropicError::Provider,
     }
 }
@@ -565,6 +576,9 @@ enum AnthropicError {
     ContextLengthExceeded,
     /// The credential was rejected (HTTP 401).
     Authentication,
+    /// The provider reported insufficient credits/quota (HTTP 402): the
+    /// credential is valid but the account cannot pay for this call.
+    PaymentRequired,
     /// A network/transport failure (connection refused, DNS, timeout, ...).
     Network,
     /// The provider rate limited the request (HTTP 429), carrying the
@@ -590,6 +604,11 @@ impl std::fmt::Display for AnthropicError {
                 write!(f, "the Anthropic prompt exceeds the model context window")
             }
             Self::Authentication => write!(f, "Anthropic rejected the credential (401)"),
+            Self::PaymentRequired => write!(
+                f,
+                "provider reported insufficient credits/quota (HTTP 402); \
+                 top up or switch to a free-tier ID"
+            ),
             Self::Network => write!(f, "Anthropic network or transport failure"),
             Self::RateLimited { .. } => write!(f, "Anthropic rate limit (429)"),
             Self::ProviderUnavailable => write!(f, "Anthropic unavailable (5xx)"),
