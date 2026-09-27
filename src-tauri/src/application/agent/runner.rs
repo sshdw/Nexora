@@ -79,7 +79,7 @@ use crate::application::agent::persistence::{
 };
 use crate::application::agent::tools::ToolRegistry;
 use crate::application::execution::{
-    AiMessage, AiRequest, AiRole, ExecutorError, ProviderExecutor,
+    AiMessage, AiRequest, AiRole, ExecutorError, ModelConfig, ProviderExecutor,
 };
 
 use super::budget;
@@ -145,6 +145,11 @@ pub(crate) struct AgentRunner<'a> {
     /// against — while reactive overflow recovery stays live. Applied via
     /// [`Self::with_context_limit`].
     context_limit_tokens: Option<u64>,
+    /// Per-request model selection overrides (temperature / output-token
+    /// cap). `None` (the default) keeps the historical wire shape; applied
+    /// via [`Self::with_model_config`] and threaded into every provider
+    /// request the runner builds.
+    model_config: Option<ModelConfig>,
 }
 
 /// Outcome of one in-place compaction attempt (Task T4).
@@ -195,6 +200,7 @@ impl<'a> AgentRunner<'a> {
             prior_messages: Vec::new(),
             action_summary: None,
             context_limit_tokens: None,
+            model_config: None,
         }
     }
 
@@ -315,6 +321,16 @@ impl<'a> AgentRunner<'a> {
         self
     }
 
+    /// Attach per-request model selection overrides (temperature /
+    /// output-token cap). `None` (the default) keeps the historical wire
+    /// shape: no `temperature` or `max_tokens` member is sent. Executors
+    /// serialize the overrides only where the endpoint supports them.
+    #[must_use]
+    pub(crate) fn with_model_config(mut self, config: ModelConfig) -> Self {
+        self.model_config = Some(config);
+        self
+    }
+
     /// Execute the `ReAct` loop for one user request.
     ///
     /// Sends the initial request augmented with the [`ToolRegistry`]
@@ -403,6 +419,7 @@ impl<'a> AgentRunner<'a> {
                     tool_result: None,
                 }],
                 tools: Vec::new(),
+                model_config: self.model_config.clone(),
                 request_timeout: Some(self.request_timeout),
             };
             match self
@@ -564,6 +581,7 @@ impl<'a> AgentRunner<'a> {
                 model: model.to_string(),
                 messages: messages.clone(),
                 tools: tools.clone(),
+                model_config: self.model_config.clone(),
                 request_timeout: Some(self.request_timeout),
             };
             let turn_started = Instant::now();
@@ -796,6 +814,7 @@ mod tests {
                 tool_result: None,
             }],
             tools: Vec::new(),
+            model_config: None,
             request_timeout: None,
         };
         assert!(plain.tools.is_empty());

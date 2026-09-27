@@ -35,7 +35,8 @@
 
 use crate::application::agent::control::CancellationToken;
 use crate::application::execution::{
-    AiAttachmentPayload, AiMessage, AiRequest, AiResponse, AiRole, ExecutorError, ProviderExecutor,
+    model_info_for, AiAttachmentPayload, AiMessage, AiRequest, AiResponse, AiRole, ExecutorError,
+    ModelConfig, ProviderExecutor,
 };
 // `AiAttachment` is referenced only by this module's unit tests.
 #[cfg(test)]
@@ -133,7 +134,381 @@ pub(crate) const OPENCODE_ZEN_MODELS: &[&str] = &[
     "big-pickle",
     "mimo-v2.5-free",
 ];
+/// User-configured OpenAI-compatible endpoint identity (DATABASE.md §7.5).
 ///
+/// Unlike the curated providers above, this entry carries no hardcoded model
+/// shortlist: the base URL, model, organization, and extra headers come from
+/// the user's own configuration (persisted as plain settings), while the API
+/// key lives only in the OS keyring under this name (ARCHITECTURE.md §12).
+/// The endpoint speaks the OpenAI Chat Completions wire shape through the
+/// shared [`OpenAiExecutor`].
+pub(crate) const COMPAT_NAME: &str = "openai_compat";
+/// User-facing label for the configurable endpoint.
+pub(crate) const COMPAT_DISPLAY_NAME: &str = "OpenAI Compatible";
+///
+/// Maximum accepted base-URL length (characters): generous for paths and
+/// ports, bounded against runaway values.
+const MAX_BASE_URL_LEN: usize = 2_048;
+/// Maximum accepted model identifier length (characters).
+const MAX_MODEL_LEN: usize = 256;
+/// Maximum accepted organization identifier length (characters).
+const MAX_ORGANIZATION_LEN: usize = 128;
+/// Maximum number of user-configured extra headers.
+const MAX_EXTRA_HEADERS: usize = 16;
+/// Maximum accepted header name/value lengths (characters).
+const MAX_HEADER_NAME_LEN: usize = 64;
+const MAX_HEADER_VALUE_LEN: usize = 2_048;
+
+/// User configuration for the generic OpenAI-compatible endpoint.
+///
+/// Deliberately carries **no secret**: the API key is keyed by [`COMPAT_NAME`]
+/// in the OS keyring and travels only as the call-scoped `credential`
+/// argument. Every field here is non-sensitive endpoint metadata safe to
+/// persist as plain settings and to surface to the UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct CompatConfig {
+    /// Fully-qualified Chat Completions URL, e.g.
+    /// `https://proxy.example.com/v1/chat/completions`.
+    pub base_url: String,
+    /// Model identifier sent verbatim as the request `model`.
+    pub model: String,
+    /// Optional organization identifier, sent as `OpenAI-Organization`.
+    #[serde(default)]
+    pub organization: Option<String>,
+    /// Optional extra request headers (`name`, `value` pairs).
+    #[serde(default)]
+    pub headers: Vec<(String, String)>,
+    /// Whether the endpoint accepts function-calling tools. When `false`,
+    /// tools are never serialized (graceful degrade via capabilities).
+    #[serde(default = "default_compat_tools_supported")]
+    pub supports_tools: bool,
+}
+
+/// Default for [`CompatConfig::supports_tools`]: most OpenAI-compatible
+/// endpoints accept function calling; the user toggles it off for endpoints
+/// that reject the `tools` member.
+fn default_compat_tools_supported() -> bool {
+    true
+}
+
+impl Default for CompatConfig {
+    fn default() -> Self {
+        Self {
+            base_url: String::new(),
+            model: String::new(),
+            organization: None,
+            headers: Vec::new(),
+            supports_tools: default_compat_tools_supported(),
+        }
+    }
+}
+
+/// Field-level presence of a [`CompatConfig`] for the UI.
+///
+/// Presence booleans only — no secret material exists on this path by
+/// construction (the key lives in the keyring and is reported separately via
+/// `has_provider_credential`). `base_url_valid` is the [`CompatConfig::validate`]
+/// URL verdict so the UI can prompt before a request is ever attempted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(clippy::struct_excessive_bools)]
+pub(crate) struct CompatFieldPresence {
+    /// A base URL value is configured (non-blank).
+    pub has_base_url: bool,
+    /// The configured base URL passes validation.
+    pub base_url_valid: bool,
+    /// A model identifier is configured (non-blank).
+    pub has_model: bool,
+    /// An organization identifier is configured.
+    pub has_organization: bool,
+    /// Number of configured extra headers.
+    pub header_count: usize,
+}
+
+/// Secret-free validation failures for a [`CompatConfig`].
+///
+/// Category-only: variants never echo the URL (which may embed credentials),
+/// header names/values (which may carry alternate secrets), or any key
+/// material — only the offending *category* and safe limits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CompatConfigError {
+    /// No base URL is configured.
+    MissingBaseUrl,
+    /// The base URL does not use the `http` or `https` scheme.
+    UnsupportedScheme,
+    /// The base URL has no host to connect to.
+    MissingHost,
+    /// The base URL embeds `user:password@` credentials.
+    CredentialsInUrl,
+    /// The base URL carries an unparsable port.
+    InvalidPort,
+    /// The base URL contains control characters or ASCII whitespace.
+    InvalidCharacters,
+    /// The base URL exceeds [`MAX_BASE_URL_LEN`].
+    BaseUrlTooLong,
+    /// No model identifier is configured.
+    MissingModel,
+    /// The model identifier contains control characters or ASCII whitespace.
+    InvalidModel,
+    /// The model identifier exceeds [`MAX_MODEL_LEN`].
+    ModelTooLong,
+    /// The organization identifier is malformed.
+    InvalidOrganization,
+    /// More than [`MAX_EXTRA_HEADERS`] extra headers are configured.
+    TooManyHeaders,
+    /// An extra header name is malformed or reserved.
+    InvalidHeaderName,
+    /// An extra header value is malformed (e.g. carries CR/LF).
+    InvalidHeaderValue,
+}
+
+impl std::fmt::Display for CompatConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingBaseUrl => write!(f, "no base URL is configured"),
+            Self::UnsupportedScheme => {
+                write!(f, "the base URL must use the http or https scheme")
+            }
+            Self::MissingHost => write!(f, "the base URL has no host"),
+            Self::CredentialsInUrl => write!(
+                f,
+                "the base URL must not embed credentials; the API key belongs in the OS keyring"
+            ),
+            Self::InvalidPort => write!(f, "the base URL carries an invalid port"),
+            Self::InvalidCharacters => {
+                write!(f, "the base URL contains control characters or whitespace")
+            }
+            Self::BaseUrlTooLong => {
+                write!(f, "the base URL exceeds {MAX_BASE_URL_LEN} characters")
+            }
+            Self::MissingModel => write!(f, "no model is configured"),
+            Self::InvalidModel => {
+                write!(f, "the model contains control characters or whitespace")
+            }
+            Self::ModelTooLong => write!(f, "the model exceeds {MAX_MODEL_LEN} characters"),
+            Self::InvalidOrganization => write!(f, "the organization identifier is invalid"),
+            Self::TooManyHeaders => {
+                write!(
+                    f,
+                    "at most {MAX_EXTRA_HEADERS} extra headers may be configured"
+                )
+            }
+            Self::InvalidHeaderName => write!(f, "an extra header name is invalid or reserved"),
+            Self::InvalidHeaderValue => write!(f, "an extra header value is invalid"),
+        }
+    }
+}
+
+impl std::error::Error for CompatConfigError {}
+
+impl CompatConfig {
+    /// Validate every field, returning the first failure category.
+    ///
+    /// Pure and secret-free: the returned [`CompatConfigError`] never echoes
+    /// the URL, header names/values, or any key material — only the failure
+    /// category and safe limits.
+    pub(crate) fn validate(&self) -> Result<(), CompatConfigError> {
+        validate_base_url(&self.base_url)?;
+        validate_model(&self.model)?;
+        if let Some(organization) = self.organization.as_deref() {
+            validate_organization(organization)?;
+        }
+        validate_headers(&self.headers)?;
+        Ok(())
+    }
+
+    /// The endpoint URL to send to: the trimmed base URL.
+    ///
+    /// Callers must [`Self::validate`] first; the executor re-validates and
+    /// fails closed, so an unvalidated config can never send to a surprising
+    /// target.
+    pub(crate) fn normalized_endpoint(&self) -> String {
+        self.base_url.trim().to_string()
+    }
+
+    /// Project the field-level [`CompatFieldPresence`] for the UI.
+    ///
+    /// Presence booleans only; credential presence is composed separately by
+    /// the application layer from the keyring.
+    #[must_use]
+    pub(crate) fn field_presence(&self) -> CompatFieldPresence {
+        let base_url = self.base_url.trim();
+        CompatFieldPresence {
+            has_base_url: !base_url.is_empty(),
+            base_url_valid: validate_base_url(&self.base_url).is_ok(),
+            has_model: !self.model.trim().is_empty(),
+            has_organization: self
+                .organization
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty()),
+            header_count: self.headers.len(),
+        }
+    }
+}
+
+/// Validate a candidate base URL without fetching it (local-first).
+///
+/// Accepts `http`/`https` URLs with a non-empty host, an optional numeric
+/// port, and any path/query. Rejects embedded `user:password@` credentials
+/// (the key belongs in the keyring), control characters, and ASCII
+/// whitespace. Category-only failures: the URL itself is never echoed.
+fn validate_base_url(url: &str) -> Result<(), CompatConfigError> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return Err(CompatConfigError::MissingBaseUrl);
+    }
+    if trimmed.len() > MAX_BASE_URL_LEN {
+        return Err(CompatConfigError::BaseUrlTooLong);
+    }
+    if trimmed
+        .bytes()
+        .any(|byte| byte.is_ascii_control() || byte == b' ')
+    {
+        return Err(CompatConfigError::InvalidCharacters);
+    }
+    // Scheme split without allocating a lowered copy of the whole URL.
+    let Some(after_scheme) = trimmed.split_once("://").map(|(_, rest)| rest) else {
+        return Err(CompatConfigError::UnsupportedScheme);
+    };
+    let scheme_len = trimmed.len() - after_scheme.len() - "://".len();
+    if !trimmed[..scheme_len].eq_ignore_ascii_case("http")
+        && !trimmed[..scheme_len].eq_ignore_ascii_case("https")
+    {
+        return Err(CompatConfigError::UnsupportedScheme);
+    }
+    // Authority runs to the first path/query/fragment separator.
+    let authority_end = after_scheme
+        .find(['/', '?', '#'])
+        .unwrap_or(after_scheme.len());
+    let authority = &after_scheme[..authority_end];
+    if authority.is_empty() {
+        return Err(CompatConfigError::MissingHost);
+    }
+    // Embedded credentials (`user@`, `user:pass@`) belong in the keyring,
+    // never in the stored URL — and must never be echoed back.
+    if authority.contains('@') {
+        return Err(CompatConfigError::CredentialsInUrl);
+    }
+    // Optional numeric port after the host (`[v6]` hosts keep their brackets).
+    let host_port = authority;
+    let host = if let Some(bracketed) = host_port.strip_prefix('[') {
+        let Some(end) = bracketed.find(']') else {
+            return Err(CompatConfigError::MissingHost);
+        };
+        let zone = &bracketed[..end];
+        if zone.is_empty() {
+            return Err(CompatConfigError::MissingHost);
+        }
+        let rest = &bracketed[end + 1..];
+        if !rest.is_empty() {
+            let Some(port) = rest.strip_prefix(':') else {
+                return Err(CompatConfigError::InvalidPort);
+            };
+            validate_port(port)?;
+        }
+        zone
+    } else if let Some((host, port)) = host_port.rsplit_once(':') {
+        // A bare colon introduces a port only when the tail is all digits;
+        // anything else (e.g. a second IPv6 group without brackets) has no
+        // host to connect to.
+        if port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(CompatConfigError::MissingHost);
+        }
+        validate_port(port)?;
+        host
+    } else {
+        host_port
+    };
+    if host.is_empty() {
+        return Err(CompatConfigError::MissingHost);
+    }
+    Ok(())
+}
+
+/// Validate a numeric port: 1–65535 with no leading-zero or empty games.
+fn validate_port(port: &str) -> Result<(), CompatConfigError> {
+    if port.is_empty() || port.len() > 5 || !port.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(CompatConfigError::InvalidPort);
+    }
+    match port.parse::<u32>() {
+        Ok(number) if (1..=65_535).contains(&number) => Ok(()),
+        _ => Err(CompatConfigError::InvalidPort),
+    }
+}
+
+/// Validate the model identifier: non-blank, bounded, single-line.
+fn validate_model(model: &str) -> Result<(), CompatConfigError> {
+    let trimmed = model.trim();
+    if trimmed.is_empty() {
+        return Err(CompatConfigError::MissingModel);
+    }
+    if trimmed.len() > MAX_MODEL_LEN {
+        return Err(CompatConfigError::ModelTooLong);
+    }
+    if trimmed
+        .bytes()
+        .any(|byte| byte.is_ascii_control() || byte == b' ')
+    {
+        return Err(CompatConfigError::InvalidModel);
+    }
+    Ok(())
+}
+
+/// Validate the organization identifier: visible ASCII, no whitespace.
+fn validate_organization(organization: &str) -> Result<(), CompatConfigError> {
+    let trimmed = organization.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > MAX_ORGANIZATION_LEN
+        || !trimmed.bytes().all(|byte| (0x21..=0x7E).contains(&byte))
+    {
+        return Err(CompatConfigError::InvalidOrganization);
+    }
+    Ok(())
+}
+
+/// Header names the transport already owns: user configuration must not
+/// shadow authentication, framing, or the organization header.
+fn is_reserved_header(name: &str) -> bool {
+    name.eq_ignore_ascii_case("authorization")
+        || name.eq_ignore_ascii_case("content-type")
+        || name.eq_ignore_ascii_case("content-length")
+        || name.eq_ignore_ascii_case("openai-organization")
+}
+
+/// A header name is an HTTP token (`RFC 9110 §5.1`) within bounds.
+fn is_header_token(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_HEADER_NAME_LEN
+        && name.bytes().all(|byte| {
+            matches!(byte,
+            b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z'
+            | b'!' | b'#' | b'$' | b'%' | b'&' | b'\'' | b'*' | b'+'
+            | b'-' | b'.' | b'^' | b'_' | b'`' | b'|' | b'~')
+        })
+}
+
+/// Validate user-configured extra headers.
+///
+/// Failures are category-only: header values may carry alternate secrets, so
+/// neither names nor values are ever echoed.
+fn validate_headers(headers: &[(String, String)]) -> Result<(), CompatConfigError> {
+    if headers.len() > MAX_EXTRA_HEADERS {
+        return Err(CompatConfigError::TooManyHeaders);
+    }
+    for (name, value) in headers {
+        if !is_header_token(name.trim()) || is_reserved_header(name.trim()) {
+            return Err(CompatConfigError::InvalidHeaderName);
+        }
+        let trimmed = value.trim();
+        if trimmed.is_empty()
+            || trimmed.len() > MAX_HEADER_VALUE_LEN
+            || trimmed.bytes().any(|byte| byte.is_ascii_control())
+        {
+            return Err(CompatConfigError::InvalidHeaderValue);
+        }
+    }
+    Ok(())
+}
+
 /// Stateless over the shared cancellable transport client so connections
 /// are pooled across requests; the per-request credential and request payload
 /// are passed into each [`ProviderExecutor::execute`] call and dropped on
@@ -143,6 +518,15 @@ pub(crate) struct OpenAiExecutor {
     endpoint: String,
     name: &'static str,
     extra_headers: Vec<(&'static str, &'static str)>,
+    /// Runtime-configured extra headers (user-configured endpoint headers).
+    owned_headers: Vec<(String, String)>,
+    /// Optional organization identifier, sent as `OpenAI-Organization`.
+    organization: Option<String>,
+    /// Endpoint tool-calling support override. `None` derives the verdict
+    /// from the curated [`model_info_for`] projection; `Some` (the
+    /// user-configured endpoint) is honored verbatim so an endpoint without
+    /// function-calling support never receives an incompatible `tools` member.
+    tools_supported: Option<bool>,
 }
 
 impl OpenAiExecutor {
@@ -166,6 +550,9 @@ impl OpenAiExecutor {
             endpoint,
             name,
             extra_headers: Vec::new(),
+            owned_headers: Vec::new(),
+            organization: None,
+            tools_supported: None,
         }
     }
 
@@ -181,6 +568,28 @@ impl OpenAiExecutor {
             endpoint,
             name,
             extra_headers: headers.to_vec(),
+            owned_headers: Vec::new(),
+            organization: None,
+            tools_supported: None,
+        }
+    }
+
+    /// Create an executor for the user-configured OpenAI-compatible endpoint.
+    ///
+    /// The caller must [`CompatConfig::validate`] first; the stored endpoint
+    /// is re-validated on every [`Self::run`] and fails closed, so an
+    /// unvalidated config can never send to a surprising target. The API key
+    /// is not part of the config — it arrives per call as `credential` from
+    /// the keyring.
+    pub(crate) fn compatible_with_config(name: &'static str, config: &CompatConfig) -> Self {
+        Self {
+            client: HttpClient::new(),
+            endpoint: config.normalized_endpoint(),
+            name,
+            extra_headers: Vec::new(),
+            owned_headers: config.headers.clone(),
+            organization: config.organization.clone(),
+            tools_supported: Some(config.supports_tools),
         }
     }
 
@@ -194,8 +603,26 @@ impl OpenAiExecutor {
         credential: &str,
         token: &CancellationToken,
     ) -> Result<AiResponse, OpenAiError> {
-        let body = chat_completion_request(request);
+        // Fail closed on a misconfigured endpoint before any network
+        // activity: the error is category-only (never the URL or credential).
+        if validate_base_url(&self.endpoint).is_err() {
+            log::warn!("{name} request failed: invalid endpoint", name = self.name);
+            return Err(OpenAiError::InvalidRequest);
+        }
+        // Capability-gated tool calling: an endpoint without function-calling
+        // support never receives the `tools` member (graceful degrade). The
+        // user-configured endpoint honors its own toggle; curated providers
+        // derive the verdict from the local capability projection.
+        let tools_supported = self
+            .tools_supported
+            .unwrap_or_else(|| model_info_for(self.name, &request.model).supports_tools);
+        let body = chat_completion_request(request, tools_supported);
         let wire = serde_json::to_vec(&body).map_err(|_| OpenAiError::UnexpectedResponse)?;
+        // The organization rides its own header value, validated upstream.
+        let mut owned_headers = self.owned_headers.clone();
+        if let Some(organization) = self.organization.as_deref() {
+            owned_headers.push(("OpenAI-Organization".to_string(), organization.to_string()));
+        }
         let outcome = self
             .client
             .post(
@@ -204,6 +631,7 @@ impl OpenAiExecutor {
                     url: self.endpoint.clone(),
                     credential: Credential::Bearer(credential),
                     extra_headers: &self.extra_headers,
+                    extra_headers_owned: &owned_headers,
                     body: &wire,
                     timeout: request.request_timeout,
                 },
@@ -274,6 +702,13 @@ struct ChatCompletionRequest {
     messages: Vec<OpenAiMessage>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     tools: Vec<OpenAiWireTool>,
+    /// Sampling temperature from [`ModelConfig`], sent only when the endpoint
+    /// supports the field and the value is in range (`0.0..=2.0`).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    temperature: Option<f32>,
+    /// Output-token cap from [`ModelConfig`], sent only when positive.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    max_tokens: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -350,26 +785,64 @@ struct OpenAiImageUrl {
 
 /// Translate a provider-independent request into an OpenAI request body.
 ///
+/// `tools_supported` is the capability verdict for this endpoint: when
+/// `false`, the `tools` member is omitted entirely (graceful degrade).
+///
 /// The selected model is passed through unchanged вЂ” it is never silently
 /// substituted (FR-004). System, user, and assistant messages map to the
 /// corresponding OpenAI `role`.
-fn chat_completion_request(request: &AiRequest) -> ChatCompletionRequest {
+fn chat_completion_request(request: &AiRequest, tools_supported: bool) -> ChatCompletionRequest {
+    let (temperature, max_tokens) = sampling_params(request.model_config.as_ref());
     ChatCompletionRequest {
         model: request.model.clone(),
         messages: request.messages.iter().map(openai_message).collect(),
-        tools: request
-            .tools
-            .iter()
-            .map(|tool| OpenAiWireTool {
-                r#type: "function",
-                function: OpenAiWireFunction {
-                    name: tool.name.clone(),
-                    description: tool.description.clone(),
-                    parameters: tool.parameters.clone(),
-                },
-            })
-            .collect(),
+        tools: wire_tools(request, tools_supported),
+        temperature,
+        max_tokens,
     }
+}
+
+/// Project the wire `tools` array: empty unless the endpoint supports
+/// function calling, with malformed definitions skipped.
+///
+/// When `tools_supported` is `false` the `tools` member degrades to absent
+/// (graceful degrade), so an endpoint without function-calling support never
+/// receives an incompatible payload. Tools with an empty name or a
+/// non-object JSON Schema are skipped individually — the wire `parameters`
+/// must be a JSON Schema object.
+fn wire_tools(request: &AiRequest, tools_supported: bool) -> Vec<OpenAiWireTool> {
+    if !tools_supported {
+        return Vec::new();
+    }
+    request
+        .tools
+        .iter()
+        .filter(|tool| !tool.name.is_empty() && tool.parameters.is_object())
+        .map(|tool| OpenAiWireTool {
+            r#type: "function",
+            function: OpenAiWireFunction {
+                name: tool.name.clone(),
+                description: tool.description.clone(),
+                parameters: tool.parameters.clone(),
+            },
+        })
+        .collect()
+}
+
+/// Project [`ModelConfig`] sampling overrides onto the wire fields.
+///
+/// Out-of-contract values degrade to `None` (the field is omitted) rather
+/// than being sent: a non-finite or out-of-range temperature and a zero
+/// `max_tokens` cap are never serialized.
+fn sampling_params(config: Option<&ModelConfig>) -> (Option<f32>, Option<u32>) {
+    let Some(config) = config else {
+        return (None, None);
+    };
+    let temperature = config
+        .temperature
+        .filter(|value| value.is_finite() && (0.0..=2.0).contains(value));
+    let max_tokens = config.max_tokens.filter(|value| *value > 0);
+    (temperature, max_tokens)
 }
 
 /// Map one provider-independent message to an OpenAI chat message.
@@ -649,6 +1122,7 @@ mod tests {
                 },
             ],
             tools: Vec::new(),
+            model_config: None,
             request_timeout: None,
         }
     }
@@ -698,7 +1172,7 @@ mod tests {
 
     #[test]
     fn request_translates_roles_and_model() {
-        let body = chat_completion_request(&sample_request());
+        let body = chat_completion_request(&sample_request(), true);
         // The selected model is passed through unchanged, never substituted.
         assert_eq!(body.model, "gpt-5.6-terra");
         let roles: Vec<&str> = body.messages.iter().map(|m| m.role.as_str()).collect();
@@ -734,9 +1208,10 @@ mod tests {
                 tool_result: None,
             }],
             tools: Vec::new(),
+            model_config: None,
             request_timeout: None,
         };
-        let body = chat_completion_request(&request);
+        let body = chat_completion_request(&request, true);
         assert_eq!(body.messages[0].role, "user");
         assert_eq!(
             body.messages[0].content,
@@ -842,6 +1317,9 @@ mod tests {
             endpoint: "http://127.0.0.1:1".to_string(), // unreachable -> network failure
             name: PROVIDER_NAME,
             extra_headers: Vec::new(),
+            owned_headers: Vec::new(),
+            organization: None,
+            tools_supported: None,
         };
         // The boundary surfaces the classified category (here: network), never an
         // OpenAI-specific or secret-bearing type.
@@ -868,7 +1346,8 @@ mod tests {
             tool_calls: Vec::new(),
             tool_result: None,
         });
-        let json = serde_json::to_string(&chat_completion_request(&request)).expect("serialize");
+        let json =
+            serde_json::to_string(&chat_completion_request(&request, true)).expect("serialize");
 
         // Text part plus an image_url part carrying a base64 data URI, per
         // the Chat Completions multimodal content contract.
@@ -893,7 +1372,7 @@ mod tests {
             tool_calls: Vec::new(),
             tool_result: None,
         });
-        let body = chat_completion_request(&request);
+        let body = chat_completion_request(&request, true);
         let user = body
             .messages
             .iter()
@@ -1165,9 +1644,11 @@ mod tests {
                     "required": ["location"]
                 }),
             }],
+            model_config: None,
             request_timeout: None,
         };
-        let json = serde_json::to_string(&chat_completion_request(&request)).expect("serialize");
+        let json =
+            serde_json::to_string(&chat_completion_request(&request, true)).expect("serialize");
         let value: serde_json::Value = serde_json::from_str(&json).expect("parse");
         // Tools key must be present with correct wire shape.
         let tools = value
@@ -1198,9 +1679,11 @@ mod tests {
                 tool_result: None,
             }],
             tools: Vec::new(),
+            model_config: None,
             request_timeout: None,
         };
-        let json = serde_json::to_string(&chat_completion_request(&request)).expect("serialize");
+        let json =
+            serde_json::to_string(&chat_completion_request(&request, true)).expect("serialize");
         let value: serde_json::Value = serde_json::from_str(&json).expect("parse");
         assert!(
             value.get("tools").is_none(),
@@ -1344,9 +1827,10 @@ mod tests {
                 },
             ],
             tools: Vec::new(),
+            model_config: None,
             request_timeout: None,
         };
-        let body = chat_completion_request(&request);
+        let body = chat_completion_request(&request, true);
         let value: serde_json::Value =
             serde_json::to_value(&body).expect("request body serializes");
 
@@ -2028,5 +2512,444 @@ mod tests {
         server.join().expect("server thread joins");
         assert!(matches!(result, Err(ExecutorError::ProviderUnavailable)));
         assert_eq!(count.load(Ordering::SeqCst), 3);
+    }
+
+    fn valid_compat_config() -> CompatConfig {
+        CompatConfig {
+            base_url: "https://proxy.example.com/v1/chat/completions".to_string(),
+            model: "custom-model".to_string(),
+            organization: None,
+            headers: Vec::new(),
+            supports_tools: true,
+        }
+    }
+
+    #[test]
+    fn compat_config_valid_accepts_http_and_https() {
+        for url in [
+            "https://proxy.example.com/v1/chat/completions",
+            "http://127.0.0.1:8080/v1/chat/completions",
+            "http://localhost:11434/v1/chat/completions",
+            "https://proxy.example.com:443/chat/completions?key=q",
+            "http://[::1]:8080/v1/chat/completions",
+        ] {
+            let mut config = valid_compat_config();
+            config.base_url = url.to_string();
+            assert!(config.validate().is_ok(), "base URL {url:?} must validate");
+        }
+    }
+
+    #[test]
+    fn compat_config_rejects_bad_urls_without_echoing_them() {
+        // (candidate URL, expected category). The URL itself — which may
+        // embed credentials — is never echoed in the error text.
+        for (url, expected) in [
+            ("", CompatConfigError::MissingBaseUrl),
+            ("   ", CompatConfigError::MissingBaseUrl),
+            (
+                "ftp://proxy.example.com/v1",
+                CompatConfigError::UnsupportedScheme,
+            ),
+            ("proxy.example.com/v1", CompatConfigError::UnsupportedScheme),
+            ("https://", CompatConfigError::MissingHost),
+            ("https:///v1/chat", CompatConfigError::MissingHost),
+            (
+                "https://user:pass@proxy.example.com/v1",
+                CompatConfigError::CredentialsInUrl,
+            ),
+            (
+                "https://user@proxy.example.com/v1",
+                CompatConfigError::CredentialsInUrl,
+            ),
+            (
+                "https://proxy.example.com:0/v1",
+                CompatConfigError::InvalidPort,
+            ),
+            (
+                "https://proxy.example.com:99999/v1",
+                CompatConfigError::InvalidPort,
+            ),
+            (
+                "https://proxy.example.com:abc/v1",
+                CompatConfigError::MissingHost,
+            ),
+            (
+                "https://proxy.example .com/v1",
+                CompatConfigError::InvalidCharacters,
+            ),
+            (
+                "https://proxy.example.com/v1\tchat",
+                CompatConfigError::InvalidCharacters,
+            ),
+        ] {
+            let mut config = valid_compat_config();
+            config.base_url = url.to_string();
+            let err = config.validate().expect_err("bad URL must fail");
+            assert_eq!(err, expected, "URL {url:?} must classify as {expected:?}");
+            let message = err.to_string();
+            assert!(
+                !message.contains("pass") && !message.contains("user"),
+                "error text must not echo the URL: {message:?}"
+            );
+        }
+        // An overlong URL fails by category, not by content.
+        let mut config = valid_compat_config();
+        config.base_url = format!("https://example.com/{}", "a".repeat(2_048));
+        assert_eq!(config.validate(), Err(CompatConfigError::BaseUrlTooLong));
+    }
+
+    #[test]
+    fn compat_config_rejects_bad_models_organizations_and_headers() {
+        let mut config = valid_compat_config();
+        config.model = String::new();
+        assert_eq!(config.validate(), Err(CompatConfigError::MissingModel));
+        config.model = "a".repeat(257);
+        assert_eq!(config.validate(), Err(CompatConfigError::ModelTooLong));
+        // A present-but-malformed identifier is a distinct category, not
+        // "missing": internal spaces and control characters are invalid.
+        for model in ["model name", "model\tname"] {
+            config.model = model.to_string();
+            assert_eq!(
+                config.validate(),
+                Err(CompatConfigError::InvalidModel),
+                "model {model:?} must classify as InvalidModel"
+            );
+        }
+
+        let mut config = valid_compat_config();
+        config.organization = Some("org with spaces".to_string());
+        assert_eq!(
+            config.validate(),
+            Err(CompatConfigError::InvalidOrganization)
+        );
+        config.organization = Some("org-valid_123".to_string());
+        assert!(config.validate().is_ok());
+
+        // Reserved transport headers cannot be shadowed.
+        for name in ["Authorization", "content-type", "OpenAI-Organization"] {
+            let mut config = valid_compat_config();
+            config.headers = vec![(name.to_string(), "value".to_string())];
+            assert_eq!(
+                config.validate(),
+                Err(CompatConfigError::InvalidHeaderName),
+                "reserved header {name:?} must be rejected"
+            );
+        }
+        // CR/LF injection in a value is rejected by category only.
+        let mut config = valid_compat_config();
+        config.headers = vec![("X-Custom".to_string(), "a\r\nb".to_string())];
+        assert_eq!(
+            config.validate(),
+            Err(CompatConfigError::InvalidHeaderValue)
+        );
+        // A custom header value that looks like a secret still validates —
+        // and no error path ever echoes it (there is no error here at all).
+        let mut config = valid_compat_config();
+        config.headers = vec![("X-Custom".to_string(), "sk-live-sentinel-999".to_string())];
+        assert!(config.validate().is_ok());
+
+        let mut config = valid_compat_config();
+        config.headers = (0..17)
+            .map(|index| (format!("X-H{index}"), "v".to_string()))
+            .collect();
+        assert_eq!(config.validate(), Err(CompatConfigError::TooManyHeaders));
+    }
+
+    #[test]
+    fn compat_field_presence_reports_booleans_only() {
+        let empty = CompatConfig::default();
+        let presence = empty.field_presence();
+        assert!(!presence.has_base_url);
+        assert!(!presence.base_url_valid);
+        assert!(!presence.has_model);
+        assert!(!presence.has_organization);
+        assert_eq!(presence.header_count, 0);
+
+        let full = CompatConfig {
+            base_url: "https://proxy.example.com/v1/chat/completions".to_string(),
+            model: "m".to_string(),
+            organization: Some("org-1".to_string()),
+            headers: vec![("X-A".to_string(), "b".to_string())],
+            supports_tools: true,
+        };
+        let presence = full.field_presence();
+        assert!(presence.has_base_url);
+        assert!(presence.base_url_valid);
+        assert!(presence.has_model);
+        assert!(presence.has_organization);
+        assert_eq!(presence.header_count, 1);
+    }
+
+    #[test]
+    fn tool_calling_degrades_when_endpoint_lacks_support() {
+        let request = AiRequest {
+            provider: COMPAT_NAME.to_string(),
+            model: "custom-model".to_string(),
+            messages: vec![AiMessage {
+                role: AiRole::User,
+                content: "Use the tool".to_string(),
+                attachments: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_result: None,
+            }],
+            tools: vec![crate::application::execution::ToolDefinition {
+                name: "get_weather".to_string(),
+                description: "Get the weather".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+            }],
+            model_config: None,
+            request_timeout: None,
+        };
+        // Supported: tools ride the wire.
+        let json =
+            serde_json::to_string(&chat_completion_request(&request, true)).expect("serialize");
+        assert!(json.contains("\"tools\""));
+        // Unsupported: the member degrades to absent — byte-compatible with
+        // a text-only request.
+        let json =
+            serde_json::to_string(&chat_completion_request(&request, false)).expect("serialize");
+        assert!(
+            !json.contains("\"tools\""),
+            "unsupported endpoint must not receive tools: {json}"
+        );
+    }
+
+    #[test]
+    fn malformed_tool_definitions_are_skipped_individually() {
+        let request = AiRequest {
+            provider: PROVIDER_NAME.to_string(),
+            model: "gpt-5.6-terra".to_string(),
+            messages: vec![AiMessage {
+                role: AiRole::User,
+                content: "hi".to_string(),
+                attachments: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_result: None,
+            }],
+            tools: vec![
+                crate::application::execution::ToolDefinition {
+                    name: "good".to_string(),
+                    description: "fine".to_string(),
+                    parameters: serde_json::json!({"type": "object"}),
+                },
+                crate::application::execution::ToolDefinition {
+                    name: String::new(),
+                    description: "nameless".to_string(),
+                    parameters: serde_json::json!({"type": "object"}),
+                },
+                crate::application::execution::ToolDefinition {
+                    name: "bad-schema".to_string(),
+                    description: "array schema".to_string(),
+                    parameters: serde_json::json!([{"type": "string"}]),
+                },
+            ],
+            model_config: None,
+            request_timeout: None,
+        };
+        let value: serde_json::Value =
+            serde_json::to_value(chat_completion_request(&request, true)).expect("serialize");
+        let tools = value["tools"].as_array().expect("tools array");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["function"]["name"], "good");
+    }
+
+    #[test]
+    fn sampling_params_serialize_only_when_in_contract() {
+        let mut request = sample_request();
+        // Absent config: both members omitted (historical wire shape).
+        let json =
+            serde_json::to_string(&chat_completion_request(&request, true)).expect("serialize");
+        assert!(!json.contains("temperature"));
+        assert!(!json.contains("max_tokens"));
+
+        // In-contract values ride the wire.
+        request.model_config = Some(
+            ModelConfig::new("gpt-5.6-terra")
+                .with_temperature(Some(0.7))
+                .with_max_tokens(Some(512)),
+        );
+        let value: serde_json::Value =
+            serde_json::to_value(chat_completion_request(&request, true)).expect("serialize");
+        // `temperature` is an `f32` on the wire: compare within one unit in
+        // the last place rather than against the `f64` literal.
+        let temperature = value["temperature"].as_f64().expect("temperature number");
+        assert!(
+            (temperature - 0.7).abs() < 1e-6,
+            "temperature must round-trip, got {temperature}"
+        );
+        assert_eq!(value["max_tokens"], 512);
+
+        // Out-of-contract values degrade to absent, never sent.
+        for (temperature, max_tokens) in [
+            (Some(f32::NAN), Some(1)),
+            (Some(-0.5), Some(1)),
+            (Some(2.5), Some(1)),
+            (Some(f32::INFINITY), Some(1)),
+            (Some(0.7), Some(0)),
+        ] {
+            request.model_config = Some(
+                ModelConfig::new("gpt-5.6-terra")
+                    .with_temperature(temperature)
+                    .with_max_tokens(max_tokens),
+            );
+            let json =
+                serde_json::to_string(&chat_completion_request(&request, true)).expect("serialize");
+            assert!(
+                !json.contains("temperature")
+                    || temperature.is_some_and(|t| (0.0..=2.0).contains(&t)),
+                "out-of-range temperature must be omitted: {json}"
+            );
+            if max_tokens == Some(0) {
+                assert!(
+                    !json.contains("max_tokens"),
+                    "zero max_tokens must be omitted: {json}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn compat_executor_sends_organization_and_custom_headers() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test server");
+        let addr = listener.local_addr().expect("local address");
+        let server = std::thread::spawn(move || -> Vec<u8> {
+            let (mut stream, _) = listener.accept().expect("accept connection");
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 1024];
+            let mut header_end = None;
+            let mut content_length = 0usize;
+            while header_end.is_none() {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        raw.extend_from_slice(&buf[..n]);
+                        if let Some(pos) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+                            header_end = Some(pos + 4);
+                            let head = String::from_utf8_lossy(&raw[..pos + 4]).to_lowercase();
+                            for line in head.lines() {
+                                if let Some(value) = line.strip_prefix("content-length:") {
+                                    content_length = value.trim().parse().unwrap_or(0);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(end) = header_end {
+                while raw.len() < end + content_length {
+                    match stream.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => raw.extend_from_slice(&buf[..n]),
+                    }
+                }
+            }
+            let body = r#"{"model":"custom-model","choices":[{"message":{"content":"pong"}}]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write response");
+            stream.flush().expect("flush response");
+            raw
+        });
+
+        let config = CompatConfig {
+            base_url: format!("http://{addr}"),
+            model: "custom-model".to_string(),
+            organization: Some("org-test".to_string()),
+            headers: vec![("X-Custom".to_string(), "custom-value".to_string())],
+            supports_tools: true,
+        };
+        assert!(config.validate().is_ok());
+        let executor = OpenAiExecutor::compatible_with_config(COMPAT_NAME, &config);
+        let ai = executor
+            .execute(
+                &sample_request(),
+                "sk-secret-example",
+                &CancellationToken::new(),
+            )
+            .expect("round trip succeeds");
+        let raw = server.join().expect("server thread joins");
+        assert_eq!(ai.content, "pong");
+
+        let head_end = raw
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .unwrap_or(raw.len());
+        let head = String::from_utf8_lossy(&raw[..head_end]);
+        let has_header = |name: &str, value: &str| {
+            head.lines().any(|line| {
+                line.split_once(':')
+                    .is_some_and(|(field_name, field_value)| {
+                        field_name.eq_ignore_ascii_case(name) && field_value.trim() == value
+                    })
+            })
+        };
+        assert!(
+            has_header("OpenAI-Organization", "org-test"),
+            "organization header missing"
+        );
+        assert!(
+            has_header("X-Custom", "custom-value"),
+            "custom header missing"
+        );
+        assert!(
+            has_header("Authorization", "Bearer sk-secret-example"),
+            "bearer credential must ride Authorization"
+        );
+    }
+
+    #[test]
+    fn compat_executor_with_invalid_endpoint_fails_closed_without_network() {
+        // An unvalidated config can never send: the run fails closed as
+        // `InvalidRequest` before any network activity.
+        let config = CompatConfig {
+            base_url: "ftp://proxy.example.com/v1".to_string(),
+            ..valid_compat_config()
+        };
+        let executor = OpenAiExecutor::compatible_with_config(COMPAT_NAME, &config);
+        let result = executor.execute(
+            &sample_request(),
+            "sk-secret-example",
+            &CancellationToken::new(),
+        );
+        assert!(matches!(result, Err(ExecutorError::InvalidRequest)));
+    }
+
+    #[test]
+    fn compat_validation_errors_carry_no_secrets() {
+        // Sentinel secret material that must never appear in any message,
+        // mirroring the boundary secret-hygiene proof above.
+        const SECRET_SENTINELS: [&str; 4] = [
+            "sk-live-sentinel-compat",
+            "s3cr3t-value",
+            "passw0rd",
+            "api_key",
+        ];
+        let config = CompatConfig {
+            base_url: "https://user:sk-live-sentinel-compat@proxy.example.com/v1".to_string(),
+            model: "m".to_string(),
+            organization: None,
+            headers: vec![(
+                "X-K".to_string(),
+                "s3cr3t-value passw0rd api_key".to_string(),
+            )],
+            supports_tools: true,
+        };
+        let err = config.validate().expect_err("credentialed URL must fail");
+        assert_eq!(err, CompatConfigError::CredentialsInUrl);
+        let message = err.to_string();
+        for sentinel in SECRET_SENTINELS {
+            assert!(
+                !message.to_lowercase().contains(sentinel),
+                "validation message must not echo secrets: {message:?}"
+            );
+        }
     }
 }

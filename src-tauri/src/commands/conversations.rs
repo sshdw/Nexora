@@ -222,6 +222,7 @@ mod tests {
                 tool_result: None,
             }],
             tools: Vec::new(),
+            model_config: None,
             request_timeout: None,
         };
 
@@ -271,6 +272,7 @@ mod tests {
                 tool_result: None,
             }],
             tools: Vec::new(),
+            model_config: None,
             request_timeout: None,
         };
 

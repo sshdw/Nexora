@@ -157,6 +157,7 @@ impl GeminiExecutor {
                         value: credential,
                     },
                     extra_headers: &[],
+                    extra_headers_owned: &[],
                     body: &wire,
                     timeout: request.request_timeout,
                 },
@@ -867,6 +868,7 @@ mod tests {
                 },
             ],
             tools: Vec::new(),
+            model_config: None,
             request_timeout: None,
         }
     }
@@ -945,6 +947,7 @@ mod tests {
                 },
             ],
             tools: Vec::new(),
+            model_config: None,
             request_timeout: None,
         };
         let body = generate_content_request(&request);
@@ -979,6 +982,7 @@ mod tests {
                 tool_result: None,
             }],
             tools: Vec::new(),
+            model_config: None,
             request_timeout: None,
         };
         let body = generate_content_request(&request);
@@ -1477,6 +1481,7 @@ mod tests {
                     "required": ["location"]
                 }),
             }],
+            model_config: None,
             request_timeout: None,
         };
         let json = serde_json::to_string(&generate_content_request(&request)).expect("serialize");
@@ -1511,6 +1516,7 @@ mod tests {
                 tool_result: None,
             }],
             tools: Vec::new(),
+            model_config: None,
             request_timeout: None,
         };
         let json = serde_json::to_string(&generate_content_request(&request)).expect("serialize");
@@ -1818,6 +1824,7 @@ mod tests {
                 },
             ],
             tools: Vec::new(),
+            model_config: None,
             request_timeout: None,
         };
         let body = generate_content_request(&request);
@@ -2074,6 +2081,7 @@ mod tests {
                 tool_result: None,
             }],
             tools,
+            model_config: None,
             request_timeout: None,
         }
     }

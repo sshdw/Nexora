@@ -19,6 +19,7 @@
 
 pub mod agent;
 pub mod attachments;
+pub mod compat;
 pub mod context_stats;
 pub mod conversations;
 pub mod data_management;

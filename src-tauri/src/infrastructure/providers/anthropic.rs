@@ -146,6 +146,7 @@ impl AnthropicExecutor {
                         value: credential,
                     },
                     extra_headers: &[("anthropic-version", ANTHROPIC_VERSION)],
+                    extra_headers_owned: &[],
                     body: &wire,
                     timeout: request.request_timeout,
                 },
@@ -631,6 +632,7 @@ mod tests {
                 },
             ],
             tools: Vec::new(),
+            model_config: None,
             request_timeout: None,
         }
     }
@@ -718,6 +720,7 @@ mod tests {
                 tool_result: None,
             }],
             tools: Vec::new(),
+            model_config: None,
             request_timeout: None,
         };
         let body = anthropic_request(&request);
@@ -749,6 +752,7 @@ mod tests {
                 },
             ],
             tools: Vec::new(),
+            model_config: None,
             request_timeout: None,
         };
         let body = anthropic_request(&request);
@@ -1109,6 +1113,7 @@ mod tests {
                     "required": ["location"]
                 }),
             }],
+            model_config: None,
             request_timeout: None,
         };
         let json = serde_json::to_string(&anthropic_request(&request)).expect("serialize");
@@ -1140,6 +1145,7 @@ mod tests {
                 tool_result: None,
             }],
             tools: Vec::new(),
+            model_config: None,
             request_timeout: None,
         };
         let json = serde_json::to_string(&anthropic_request(&request)).expect("serialize");
@@ -1338,6 +1344,7 @@ mod tests {
                 },
             ],
             tools: Vec::new(),
+            model_config: None,
             request_timeout: None,
         };
         let body = anthropic_request(&request);

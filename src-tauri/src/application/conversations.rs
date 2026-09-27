@@ -260,6 +260,7 @@ impl<'a> ConversationService<'a> {
             // the existing network/timeout error instead of hanging the send.
             // This reuses the agent runner's default (120s); the agent path
             // itself is unchanged.
+            model_config: None,
             request_timeout: Some(DEFAULT_REQUEST_TIMEOUT),
         };
 

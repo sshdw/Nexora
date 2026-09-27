@@ -88,6 +88,11 @@ fn provider_schemas() -> Vec<(&'static str, &'static str, &'static [&'static str
             openai::OPENCODE_ZEN_DISPLAY_NAME,
             openai::OPENCODE_ZEN_MODELS,
         ),
+        // The user-configured OpenAI-compatible endpoint carries no hardcoded
+        // shortlist: the model identifier comes from the endpoint
+        // configuration, so the list is empty by design (the UI accepts the
+        // configured model identifier for it).
+        (openai::COMPAT_NAME, openai::COMPAT_DISPLAY_NAME, &[]),
     ]
 }
 
@@ -96,7 +101,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn supported_providers_lists_seven() {
+    fn supported_providers_lists_eight() {
         let providers = supported_providers();
         let names: Vec<&str> = providers.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(
@@ -109,6 +114,7 @@ mod tests {
                 "openrouter",
                 "nvidia",
                 "opencode_zen",
+                "openai_compat",
             ]
         );
         for provider in &providers {
@@ -119,10 +125,14 @@ mod tests {
             // (xkiro 8, openrouter 8, nvidia 5, opencode_zen 5): an ID stays
             // listed iff a live POST to the provider's `chat/completions`
             // endpoint returns chat 2xx for it, and 429-only IDs stay listed.
+            // The user-configured endpoint (`openai_compat`) carries no
+            // hardcoded shortlist: its model identifier comes from the
+            // endpoint configuration, so the list is empty by design.
             let expected = match provider.name.as_str() {
                 "gemini" => 7,
                 "xkiro" | "openrouter" => 8,
                 "nvidia" | "opencode_zen" => 5,
+                "openai_compat" => 0,
                 _ => 3,
             };
             assert_eq!(
@@ -132,6 +142,9 @@ mod tests {
                 provider.name,
                 provider.models.len()
             );
+            if provider.name == "openai_compat" {
+                continue;
+            }
             assert!(
                 !provider.models[0].is_empty(),
                 "provider '{}' default model must be non-empty",

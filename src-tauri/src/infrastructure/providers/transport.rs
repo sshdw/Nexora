@@ -109,6 +109,10 @@ pub(crate) struct PostRequest<'a> {
     pub credential: Credential<'a>,
     /// Static extra headers applied after auth (`OpenRouter` `HTTP-Referer`/`X-Title`).
     pub extra_headers: &'a [(&'static str, &'static str)],
+    /// Runtime-configured extra headers applied after [`Self::extra_headers`]
+    /// (the user-configured OpenAI-compatible endpoint headers). Borrowed for
+    /// the call only; validated by the owning executor before sending.
+    pub extra_headers_owned: &'a [(String, String)],
     /// Pre-serialized JSON body; cloned per attempt (attempts ≤ 3).
     pub body: &'a [u8],
     /// Per-attempt wall-clock bound (the runner's default); `None` preserves
@@ -225,11 +229,21 @@ impl HttpClient {
         let url = request.url.clone();
         let credential = OwnedCredential::from(request.credential);
         let extra: Vec<(&'static str, &'static str)> = request.extra_headers.to_vec();
+        let extra_owned: Vec<(String, String)> = request.extra_headers_owned.to_vec();
         let body: Vec<u8> = request.body.to_vec();
         let timeout = request.timeout;
         let (tx, rx) = mpsc::channel();
         let handle = tauri::async_runtime::spawn(async move {
-            let outcome = attempt_once(&client, &url, credential, &extra, body, timeout).await;
+            let outcome = attempt_once(
+                &client,
+                &url,
+                credential,
+                &extra,
+                &extra_owned,
+                body,
+                timeout,
+            )
+            .await;
             let _ = tx.send(outcome);
         });
         loop {
@@ -300,6 +314,7 @@ async fn attempt_once(
     url: &str,
     credential: OwnedCredential,
     extra_headers: &[(&'static str, &'static str)],
+    extra_headers_owned: &[(String, String)],
     body: Vec<u8>,
     timeout: Option<Duration>,
 ) -> AttemptResult {
@@ -310,6 +325,9 @@ async fn attempt_once(
     };
     for (name, value) in extra_headers {
         builder = builder.header(*name, *value);
+    }
+    for (name, value) in extra_headers_owned {
+        builder = builder.header(name.as_str(), value.as_str());
     }
     // Pre-serialized JSON wire bytes; `.json()` would serialize identically,
     // but the bytes are built once per request and cloned per attempt.
@@ -517,6 +535,7 @@ mod tests {
             url,
             credential: Credential::Bearer("sk-secret-example"),
             extra_headers: &[],
+            extra_headers_owned: &[],
             body,
             timeout: None,
         }

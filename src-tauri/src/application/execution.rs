@@ -44,13 +44,15 @@ use crate::infrastructure::providers::gemini::{
     GeminiExecutor, PROVIDER_NAME as GEMINI_PROVIDER_NAME,
 };
 use crate::infrastructure::providers::openai::{
-    OpenAiExecutor, NVIDIA_ENDPOINT, NVIDIA_NAME, OPENCODE_ZEN_ENDPOINT, OPENCODE_ZEN_NAME,
-    OPENROUTER_ENDPOINT, OPENROUTER_NAME, PROVIDER_NAME, XKIRO_ENDPOINT, XKIRO_NAME,
+    OpenAiExecutor, COMPAT_NAME, NVIDIA_ENDPOINT, NVIDIA_NAME, OPENCODE_ZEN_ENDPOINT,
+    OPENCODE_ZEN_NAME, OPENROUTER_ENDPOINT, OPENROUTER_NAME, PROVIDER_NAME, XKIRO_ENDPOINT,
+    XKIRO_NAME,
 };
 use serde::{Deserialize, Serialize};
 
 use super::providers::{ProviderError, ProviderService};
 use crate::application::agent::control::CancellationToken;
+use crate::application::compat::CompatError;
 
 /// Application-layer result shared by request execution operations, unifying
 /// orchestration, persistence, and credential failures.
@@ -100,7 +102,10 @@ pub(crate) struct AiToolResult {
 /// identifies the provider and model to use (FR-004) and the conversation
 /// content to send (FR-003). Provider-specific formatting is the
 /// responsibility of a [`ProviderExecutor`] implementation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Eq` is intentionally not derived: [`ModelConfig`] carries an `f32`
+/// temperature, so only `PartialEq` holds.
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct AiRequest {
     /// Internal name of the provider to use (DATABASE.md §7.5).
     pub provider: String,
@@ -110,6 +115,11 @@ pub(crate) struct AiRequest {
     pub messages: Vec<AiMessage>,
     /// Tools available to the model for this request. Empty means text-only.
     pub tools: Vec<ToolDefinition>,
+    /// Per-request model selection overrides (temperature / output-token cap).
+    /// `None` keeps the historical wire shape: no `temperature` or
+    /// `max_tokens` member is sent. Executors serialize the overrides only
+    /// where the endpoint supports them.
+    pub model_config: Option<ModelConfig>,
     /// Optional wall-clock bound on the single blocking HTTP round trip
     /// (Task 3.2). `None` keeps the historical unbounded behavior; the
     /// blocking client cannot be interrupted mid-flight, so executors honour
@@ -839,6 +849,7 @@ impl ExecutorRegistry {
 pub(crate) struct RequestExecutionService<'a> {
     provider: ProviderService<'a>,
     executors: ExecutorRegistry,
+    db: &'a Database,
 }
 
 impl<'a> RequestExecutionService<'a> {
@@ -848,6 +859,7 @@ impl<'a> RequestExecutionService<'a> {
         Self {
             provider: ProviderService::new(db),
             executors: ExecutorRegistry::new(),
+            db,
         }
     }
 
@@ -930,9 +942,29 @@ impl<'a> RequestExecutionService<'a> {
         let credential = self.resolve_credential(&request.provider)?;
 
         // 4. Resolve the concrete executor for this provider through the
-        //    registry. A provider whose metadata exists but has no registered
-        //    executor cannot fulfil the request; it fails explicitly with a
-        //    classified error rather than falling back to another provider.
+        //    registry — except for the user-configured OpenAI-compatible
+        //    endpoint, whose base URL, organization, headers, and tool
+        //    support live in settings rather than in a static entry. The
+        //    config is validated before any request is built; the credential
+        //    resolved above still comes only from the keyring.
+        if request.provider == COMPAT_NAME {
+            let config = crate::application::compat::CompatEndpointService::new(self.db)
+                .read_config()
+                .map_err(RequestError::from)?;
+            config
+                .validate()
+                .map_err(|err| RequestError::InvalidCompatEndpoint {
+                    reason: err.to_string(),
+                })?;
+            let executor = OpenAiExecutor::compatible_with_config(COMPAT_NAME, &config);
+            let idle_token = CancellationToken::new();
+            return executor
+                .execute(request, &credential, &idle_token)
+                .map_err(|err| RequestError::Execution {
+                    name: request.provider.clone(),
+                    message: err.to_string(),
+                });
+        }
         let executor = self.executors.resolve(&request.provider).ok_or_else(|| {
             RequestError::ExecutorUnavailable {
                 name: request.provider.clone(),
@@ -982,6 +1014,13 @@ pub(crate) enum RequestError {
         /// The provider internal name.
         name: String,
     },
+    /// The user-configured OpenAI-compatible endpoint is missing or invalid;
+    /// `reason` is the secret-free validation category (never a URL,
+    /// header value, or credential).
+    InvalidCompatEndpoint {
+        /// The secret-free validation failure category.
+        reason: String,
+    },
     /// The provider failed to fulfil the request; `message` carries the
     /// classified error text (never a credential or payload).
     Execution {
@@ -1014,6 +1053,12 @@ impl std::fmt::Display for RequestError {
             Self::ExecutorUnavailable { name } => {
                 write!(f, "the AI provider '{name}' has no registered executor")
             }
+            Self::InvalidCompatEndpoint { reason } => {
+                write!(
+                    f,
+                    "the OpenAI-compatible endpoint is not configured correctly: {reason}"
+                )
+            }
             Self::Execution { name, message } => {
                 write!(f, "the AI provider '{name}' failed: {message}")
             }
@@ -1030,6 +1075,7 @@ impl std::error::Error for RequestError {
             | Self::ProviderUnavailable { .. }
             | Self::MissingCredentials { .. }
             | Self::ExecutorUnavailable { .. }
+            | Self::InvalidCompatEndpoint { .. }
             | Self::Execution { .. } => None,
             Self::Credential(err) => Some(err),
             Self::Database(err) => Some(err),
@@ -1048,6 +1094,17 @@ impl From<ProviderError> for RequestError {
         match err {
             ProviderError::Database(err) => Self::Database(err),
             ProviderError::Credential(err) => Self::Credential(err),
+        }
+    }
+}
+
+impl From<CompatError> for RequestError {
+    fn from(err: CompatError) -> Self {
+        match err {
+            CompatError::Database(err) => Self::Database(err),
+            // Stored settings are user endpoint metadata, never secrets; the
+            // reason is already a secret-free category.
+            CompatError::InvalidStoredData { reason } => Self::InvalidCompatEndpoint { reason },
         }
     }
 }
@@ -1519,6 +1576,7 @@ mod tests {
             model: "m".to_string(),
             messages: Vec::new(),
             tools: Vec::new(),
+            model_config: None,
             request_timeout: None,
         };
         let stub = StubExecutor {
@@ -1537,5 +1595,76 @@ mod tests {
             .expect("stream default succeeds");
         assert_eq!(out.content, "hello");
         assert_eq!(seen.borrow().as_slice(), ["hello"]);
+    }
+
+    fn tool_test_info(name: &str, supports_tools: bool) -> ModelInfo {
+        ModelInfo {
+            name: name.to_string(),
+            context_limit: 128_000,
+            supports_tools,
+            supports_vision: true,
+            supports_json: true,
+            supports_streaming: false,
+        }
+    }
+
+    #[test]
+    fn tool_capable_models_keeps_only_tool_call_models() {
+        let models = vec![
+            tool_test_info("tool-model", true),
+            tool_test_info("text-only-model", false),
+        ];
+        let kept = tool_capable_models(&models);
+        assert_eq!(
+            kept.iter()
+                .map(|info| info.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["tool-model"]
+        );
+    }
+
+    #[test]
+    fn recommended_models_gates_on_tool_capability() {
+        // Listed provider models are tool-capable: requiring tools keeps the
+        // whole shortlist (local analog of the recommended-models
+        // projection: text + tool-calling only).
+        let all = recommended_models(PROVIDER_NAME, false);
+        let gated = recommended_models(PROVIDER_NAME, true);
+        assert!(!gated.is_empty());
+        assert_eq!(all, gated);
+        // A non-tool (unlisted) model never survives the tools-required
+        // projection: unlisted IDs are conservative (`supports_tools: false`)
+        // so tool-gating drops them.
+        assert!(!model_info_for(PROVIDER_NAME, "not-a-listed-model").supports_tools);
+        assert!(
+            !tool_capable_models(&[model_info_for(PROVIDER_NAME, "not-a-listed-model")])
+                .iter()
+                .any(|info| info.name == "not-a-listed-model")
+        );
+        // The user-configured endpoint has no hardcoded shortlist: both
+        // projections are empty (its model comes from endpoint configuration,
+        // and its tool support from the endpoint toggle).
+        assert!(models_for_provider(COMPAT_NAME).is_empty());
+        assert!(recommended_models(COMPAT_NAME, false).is_empty());
+        assert!(recommended_models(COMPAT_NAME, true).is_empty());
+    }
+
+    #[test]
+    fn invalid_compat_endpoint_error_is_secret_free() {
+        const SECRET_SENTINELS: [&str; 4] = ["sk-", "secret", "credential", "api_key"];
+        let err = RequestError::InvalidCompatEndpoint {
+            reason: "the base URL must use the http or https scheme".to_string(),
+        };
+        let message = err.to_string();
+        assert!(
+            message.contains("OpenAI-compatible"),
+            "compat misconfiguration must name the endpoint: {message:?}"
+        );
+        for sentinel in SECRET_SENTINELS {
+            assert!(
+                !message.to_lowercase().contains(sentinel),
+                "compat error must stay secret-free, found {sentinel:?}"
+            );
+        }
     }
 }
