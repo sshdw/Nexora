@@ -9,6 +9,7 @@ use crate::application::agent::control::{AgentRunEvent, CancellationToken, RunCo
 use crate::application::agent::governance::{audit, AuditEvent, AuditLog, GateOutcome};
 use crate::application::agent::permissions::{self, PermissionOutcome, PermissionStore, RunPreset};
 use crate::application::agent::persistence::{ActiveRunRecord, StepProvenance};
+use crate::application::agent::roles::AgentRole;
 use crate::application::agent::tools::ToolRegistry;
 use crate::application::execution::{AiMessage, AiRole, ToolCall};
 
@@ -37,6 +38,11 @@ pub(crate) struct DispatchCtx<'a> {
     /// its gate decision here, secret-free. `None` keeps the exact pre-B.2
     /// pipeline.
     pub audit: Option<&'a AuditLog>,
+    /// Optional role-scoped tool subset (WS-B.3): when `Some`, a known tool
+    /// outside the role's subset becomes a controlled denial observation
+    /// before the store, the ladder, and execution (mirroring the T5 document
+    /// shell ban). `None` keeps the exact pre-B.3 pipeline.
+    pub role: Option<AgentRole>,
 }
 
 /// Emit a governance event on the optional channel, best-effort.
@@ -143,6 +149,33 @@ fn dispatch_one(
             );
         }
         return Ok(());
+    }
+    // WS-B.3 structural role gate: a role-scoped run never exposes tools
+    // outside the role's subset, so such a call is denied deterministically
+    // here — before the sticky-group path, the permission store, and the
+    // approval ladder. Unknown tools skip this gate and keep their existing
+    // controlled-observation path below. Both interpolated values are fixed
+    // vocabulary (a known tool name, a canonical role name), so the denial
+    // stays secret-free by construction.
+    if let Some(role) = ctx.role {
+        if permissions::is_known_tool(&call.name) && !role.allows_tool(&call.name) {
+            let observation = format!(
+                "Error: tool '{}' is not available to agent role '{}'",
+                call.name,
+                role.as_str()
+            );
+            messages.push(tool_message(call, &observation));
+            if let Some(rec) = record.as_mut() {
+                rec.tool_call_with_provenance(
+                    call,
+                    &observation,
+                    "denied",
+                    None,
+                    StepProvenance::system(),
+                );
+            }
+            return Ok(());
+        }
     }
     let request_path = permissions::extract_path(&call.name, &call.arguments);
     let call_group_key =

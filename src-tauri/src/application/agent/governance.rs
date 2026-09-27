@@ -160,9 +160,10 @@ impl GateOutcome {
 // Audit trail
 // ---------------------------------------------------------------------------
 
-/// Fixed-vocabulary audit event. Variants carry integer counters only —
-/// never tool names, arguments, message content, credentials, or SQL — so a
-/// hostile payload echoed through the run cannot leak into the trail.
+/// Fixed-vocabulary audit event. Variants carry integer counters and
+/// fixed-vocabulary stage names only — never tool names, arguments, message
+/// content, credentials, or SQL — so a hostile payload echoed through the run
+/// cannot leak into the trail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AuditEvent {
     /// Parked on a policy-flagged tool call (`Running → AwaitingApproval`).
@@ -197,6 +198,14 @@ pub(crate) enum AuditEvent {
         /// Limit in effect when the guard fired, micro-USD.
         limit_micro: u64,
     },
+    /// Pipeline stage entered (WS-B.3): the ordered stage list advanced on a
+    /// legal lifecycle edge. Carries the fixed stage vocabulary (`plan` /
+    /// `act` / `review`) only — composition with the trail, never a change
+    /// to budget/gate semantics.
+    StageEntered {
+        /// Fixed stage vocabulary (`PipelineStage::as_str`).
+        stage: &'static str,
+    },
 }
 
 impl AuditEvent {
@@ -212,6 +221,7 @@ impl AuditEvent {
             Self::BudgetCancelled => "budget_cancelled",
             Self::BudgetExhausted { .. } => "budget_exhausted",
             Self::SpendTripped { .. } => "spend_tripped",
+            Self::StageEntered { .. } => "stage_entered",
         }
     }
 
@@ -250,11 +260,14 @@ pub(crate) struct AuditEntry {
     pub spent_micro: Option<u64>,
     /// Spend limit in micro-USD, if the event carries one.
     pub limit_micro: Option<u64>,
+    /// Fixed stage vocabulary (`plan` / `act` / `review`), if the event
+    /// records a pipeline stage entry.
+    pub stage: Option<&'static str>,
 }
 
 impl AuditEntry {
     fn new(seq: u64, from: RunState, to: RunState, event: AuditEvent) -> Self {
-        let (decision, allowance, spent_micro, limit_micro) = match event {
+        let (decision, allowance, spent_micro, limit_micro, stage) = match event {
             AuditEvent::ApprovalResolved { approved } => (
                 Some(if approved {
                     GateOutcome::Approved.as_str()
@@ -264,18 +277,20 @@ impl AuditEntry {
                 None,
                 None,
                 None,
+                None,
             ),
             AuditEvent::BudgetParked { allowance } | AuditEvent::BudgetExhausted { allowance } => {
-                (None, Some(allowance), None, None)
+                (None, Some(allowance), None, None, None)
             }
             AuditEvent::SpendTripped {
                 spent_micro,
                 limit_micro,
-            } => (None, None, Some(spent_micro), Some(limit_micro)),
+            } => (None, None, Some(spent_micro), Some(limit_micro), None),
+            AuditEvent::StageEntered { stage } => (None, None, None, None, Some(stage)),
             AuditEvent::ApprovalParked
             | AuditEvent::ApprovalCancelled
             | AuditEvent::BudgetResumed
-            | AuditEvent::BudgetCancelled => (None, None, None, None),
+            | AuditEvent::BudgetCancelled => (None, None, None, None, None),
         };
         Self {
             seq,
@@ -286,6 +301,7 @@ impl AuditEntry {
             allowance,
             spent_micro,
             limit_micro,
+            stage,
         }
     }
 }

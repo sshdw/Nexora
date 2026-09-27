@@ -79,6 +79,7 @@ use crate::application::agent::permissions::RunPreset;
 use crate::application::agent::persistence::{
     mode_to_column, ActiveRunRecord, RunRecorder, DEFAULT_RECORDED_MODE,
 };
+use crate::application::agent::roles::AgentRole;
 use crate::application::agent::tools::ToolRegistry;
 use crate::application::execution::{
     AiMessage, AiRequest, AiRole, ExecutorError, ModelConfig, ProviderExecutor,
@@ -141,6 +142,11 @@ pub(crate) struct AgentRunner<'a> {
     /// the persistence row. When `None` nothing is recorded and the loop
     /// keeps the exact pre-B.2 behaviour.
     audit_log: Option<Arc<AuditLog>>,
+    /// Optional role-scoped tool subset (WS-B.3). When `None` every known
+    /// tool dispatches as before and the loop keeps the exact pre-B.3
+    /// behaviour; when attached, tools outside the role's subset become a
+    /// controlled denial observation. Applied via [`Self::with_role`].
+    role: Option<AgentRole>,
     /// Prior conversation turns carried into the next run (agent memory
     /// slice). Empty by default; applied via [`Self::with_history`].
     prior_messages: Vec<AiMessage>,
@@ -205,6 +211,7 @@ impl<'a> AgentRunner<'a> {
             recorder: None,
             spend_limit_micro_usd: None,
             audit_log: None,
+            role: None,
             prior_messages: Vec::new(),
             action_summary: None,
             context_limit_tokens: None,
@@ -320,6 +327,16 @@ impl<'a> AgentRunner<'a> {
     #[must_use]
     pub(crate) fn with_audit_log(mut self, log: Arc<AuditLog>) -> Self {
         self.audit_log = Some(log);
+        self
+    }
+
+    /// Attach the run role (WS-B.3): known tools outside the role's subset
+    /// become a controlled denial observation; in-subset tools dispatch
+    /// exactly as before. When no role is attached the loop keeps the exact
+    /// pre-B.3 behaviour.
+    #[must_use]
+    pub(crate) fn with_role(mut self, role: AgentRole) -> Self {
+        self.role = Some(role);
         self
     }
 
@@ -780,6 +797,7 @@ impl<'a> AgentRunner<'a> {
                 preset: self.preset,
                 sender: self.event_sender.as_ref(),
                 audit,
+                role: self.role,
             };
             dispatch::dispatch_tool_calls(&ctx, &response.tool_calls, &mut messages, &mut record)?;
         }

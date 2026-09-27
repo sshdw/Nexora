@@ -31,6 +31,12 @@
 //!   the #65 ladder unchanged, and the append-only in-memory
 //!   [`governance::AuditLog`] accessory to the persistence row (no new table,
 //!   secret-free by construction).
+//! - WS-B.3 — Roles & Pipeline ([`roles`], [`pipeline`]): six hardcoded
+//!   [`roles::AgentRole`]s pinning tool subsets, task-key defaults, and
+//!   approval-posture references (naming the #65 `RiskClass` outcome, never
+//!   remapping it), plus the ordered [`pipeline::Pipeline`] stage list with
+//!   transition-gated advances, parent-capped budget slices, and stage
+//!   entries on the [`governance::AuditLog`].
 //! - Task T4 — Context Compaction ([`compaction`]): pure threshold-triggered
 //!   and overflow-driven folding of older in-run turns into a summary, with
 //!   a verbatim retained tail (`compaction::ContextGovernor`).
@@ -49,9 +55,11 @@ pub mod history;
 pub mod lifecycle;
 pub mod permissions;
 pub mod persistence;
+pub mod pipeline;
 pub mod pricing;
 pub mod prompts;
 pub mod registry;
+pub mod roles;
 pub mod runner;
 pub mod service;
 #[cfg(test)]
