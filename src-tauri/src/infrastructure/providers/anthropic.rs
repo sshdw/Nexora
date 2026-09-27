@@ -88,7 +88,7 @@ const DEFAULT_MAX_TOKENS: u32 = 1024;
 /// (`claude-3-5-sonnet-20240620`, the previous sole entry, was retired
 /// October 28, 2025).
 pub(crate) const SUPPORTED_MODELS: &[&str] = &[
-    // Default: best cost/quality balance, 1M context.
+    // Default: best cost/quality balance, 200k enforced context (conservative default).
     "claude-sonnet-5",
     // Fast/cheap tier.
     "claude-haiku-4-5-20251001",
