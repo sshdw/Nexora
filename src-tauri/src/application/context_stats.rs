@@ -524,4 +524,40 @@ mod tests {
             DEFAULT_CONTEXT_LIMIT
         );
     }
+
+    #[test]
+    fn mismatched_provider_model_resolves_via_model_map_first() {
+        // The model arm owns the value even when the provider disagrees:
+        // cross-wired combos still resolve to the model's own window.
+        assert_eq!(
+            context_limit_for(Some("openai"), Some("claude-sonnet-5")),
+            ANTHROPIC_CONTEXT_LIMIT,
+            "claude id under the openai provider"
+        );
+        assert_eq!(
+            context_limit_for(Some("anthropic"), Some("gpt-5.6-terra")),
+            OPENAI_CONTEXT_LIMIT,
+            "gpt id under the anthropic provider"
+        );
+        assert_eq!(
+            context_limit_for(Some("openai"), Some("gemini-3.6-flash")),
+            GEMINI_CONTEXT_LIMIT,
+            "gemini id under the openai provider"
+        );
+        assert_eq!(
+            context_limit_for(Some("unknown-provider"), Some("gemini-3.6-flash")),
+            GEMINI_CONTEXT_LIMIT,
+            "known model id wins over an unknown provider"
+        );
+        // Unknown on both axes falls back to the default (no gemini
+        // substring, no provider fallback).
+        assert_eq!(
+            context_limit_for(Some("unknown-provider"), Some("unknown-model")),
+            DEFAULT_CONTEXT_LIMIT
+        );
+        assert_eq!(
+            context_limit_for(None, Some("unknown-model")),
+            DEFAULT_CONTEXT_LIMIT
+        );
+    }
 }
