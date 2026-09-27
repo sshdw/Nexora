@@ -1564,6 +1564,177 @@ mod tests {
     }
 
     #[test]
+    fn deny_rule_blocks_edit_file_without_dispatch() {
+        // H-2: `edit_file` used to bypass the store via `is_known_tool`.
+        let db = in_memory_database();
+        let ws = temp_workspace();
+        fs::write(ws.join("note.txt"), "hello brave world").expect("seed");
+        let deny_id = crate::application::agent::permissions::insert_rule(
+            &db,
+            "coding",
+            "edit_file",
+            None,
+            RuleEffect::Deny,
+            10,
+        )
+        .expect("insert deny");
+        let store = PermissionStore::load(&db);
+        let fake = FakeExecutor::new(vec![
+            Ok(AiResponse {
+                content: String::new(),
+                model: "m".to_string(),
+                tool_calls: vec![approval_call(
+                    "e1",
+                    "edit_file",
+                    serde_json::json!({
+                        "path": "note.txt",
+                        "old_text": "brave",
+                        "new_text": "cold",
+                    }),
+                )],
+                usage: None,
+            }),
+            Ok(text_response("recovered")),
+        ]);
+        let runner = AgentRunner::new(&fake, &ws)
+            .with_approval_gate(ApprovalGate::new(AutonomyMode::FullAutonomous))
+            .with_permission_store(store)
+            .with_run_recorder(RunRecorder::new(&db));
+        let answer = runner.run("openai", "m", "cred", "q").expect("completes");
+        assert_eq!(answer, "recovered");
+        assert_eq!(
+            fs::read_to_string(ws.join("note.txt")).expect("seeded file"),
+            "hello brave world",
+            "denied edit must not touch the file"
+        );
+        let runs = AgentRunRepository::new(&db);
+        let run = &runs.list_runs_by_started_at_desc().expect("list")[0];
+        let steps = runs.list_steps(run.id).expect("steps");
+        let approval = steps
+            .iter()
+            .find(|s| s.kind == "approval")
+            .expect("approval");
+        assert_eq!(approval.status.as_deref(), Some("denied"));
+        assert_eq!(approval.rule_id, Some(deny_id));
+        assert_eq!(approval.decided_by.as_deref(), Some("rule"));
+        assert!(
+            !steps.iter().any(|s| s.kind == "tool_call"),
+            "denied edit is never dispatched"
+        );
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn deny_rule_blocks_search_files_without_dispatch() {
+        // H-2: `search_files` used to bypass the store via `is_known_tool`.
+        // FullAutonomous still enforces Deny (deny floor pinned for the tool).
+        let db = in_memory_database();
+        let ws = temp_workspace();
+        fs::write(ws.join("hay.txt"), "needle in haystack\n").expect("seed");
+        let deny_id = crate::application::agent::permissions::insert_rule(
+            &db,
+            "coding",
+            "search_files",
+            None,
+            RuleEffect::Deny,
+            10,
+        )
+        .expect("insert deny");
+        let store = PermissionStore::load(&db);
+        let fake = FakeExecutor::new(vec![
+            Ok(AiResponse {
+                content: String::new(),
+                model: "m".to_string(),
+                tool_calls: vec![approval_call(
+                    "s1",
+                    "search_files",
+                    serde_json::json!({"pattern": "needle"}),
+                )],
+                usage: None,
+            }),
+            Ok(text_response("recovered")),
+        ]);
+        let runner = AgentRunner::new(&fake, &ws)
+            .with_approval_gate(ApprovalGate::new(AutonomyMode::FullAutonomous))
+            .with_permission_store(store)
+            .with_run_recorder(RunRecorder::new(&db));
+        let answer = runner.run("openai", "m", "cred", "q").expect("completes");
+        assert_eq!(answer, "recovered");
+        let runs = AgentRunRepository::new(&db);
+        let run = &runs.list_runs_by_started_at_desc().expect("list")[0];
+        let steps = runs.list_steps(run.id).expect("steps");
+        let approval = steps
+            .iter()
+            .find(|s| s.kind == "approval")
+            .expect("approval");
+        assert_eq!(approval.status.as_deref(), Some("denied"));
+        assert_eq!(approval.rule_id, Some(deny_id));
+        assert_eq!(approval.decided_by.as_deref(), Some("rule"));
+        assert!(
+            !steps.iter().any(|s| s.kind == "tool_call"),
+            "denied search is never dispatched"
+        );
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn ask_rule_on_search_files_auto_runs_under_full_autonomous() {
+        // FullAutonomous treats Ask as Allow (mode override pinned for the
+        // newly covered tool): no park, rule provenance on the tool step.
+        let db = in_memory_database();
+        let ws = temp_workspace();
+        fs::write(ws.join("hay.txt"), "needle in haystack\n").expect("seed");
+        let ask_id = crate::application::agent::permissions::insert_rule(
+            &db,
+            "coding",
+            "search_files",
+            None,
+            RuleEffect::Ask,
+            10,
+        )
+        .expect("insert ask");
+        let store = PermissionStore::load(&db);
+        let (tx, rx) = channel();
+        let fake = FakeExecutor::new(vec![
+            Ok(AiResponse {
+                content: String::new(),
+                model: "m".to_string(),
+                tool_calls: vec![approval_call(
+                    "s1",
+                    "search_files",
+                    serde_json::json!({"pattern": "needle"}),
+                )],
+                usage: None,
+            }),
+            Ok(text_response("done")),
+        ]);
+        let runner = AgentRunner::new(&fake, &ws)
+            .with_approval_gate(ApprovalGate::new(AutonomyMode::FullAutonomous))
+            .with_permission_store(store)
+            .with_run_recorder(RunRecorder::new(&db))
+            .with_event_sender(tx);
+        let answer = runner.run("openai", "m", "cred", "q").expect("completes");
+        assert_eq!(answer, "done");
+        let mut saw_approval = false;
+        while let Ok(ev) = rx.try_recv() {
+            if matches!(ev, AgentRunEvent::ApprovalRequested { .. }) {
+                saw_approval = true;
+            }
+        }
+        assert!(!saw_approval, "Ask + FullAutonomous must not park");
+        let runs = AgentRunRepository::new(&db);
+        let run = &runs.list_runs_by_started_at_desc().expect("list")[0];
+        let steps = runs.list_steps(run.id).expect("steps");
+        let tool = steps
+            .iter()
+            .find(|s| s.kind == "tool_call")
+            .expect("tool step");
+        assert_eq!(tool.rule_id, Some(ask_id));
+        assert_eq!(tool.decided_by.as_deref(), Some("rule"));
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
     fn group_scope_second_call_auto_resolves_with_shared_group_key() {
         let db = in_memory_database();
         let ws = temp_workspace();
