@@ -247,6 +247,8 @@ pub(crate) enum CompatConfigError {
     BaseUrlTooLong,
     /// No model identifier is configured.
     MissingModel,
+    /// The model identifier contains control characters or ASCII whitespace.
+    InvalidModel,
     /// The model identifier exceeds [`MAX_MODEL_LEN`].
     ModelTooLong,
     /// The organization identifier is malformed.
@@ -279,6 +281,9 @@ impl std::fmt::Display for CompatConfigError {
                 write!(f, "the base URL exceeds {MAX_BASE_URL_LEN} characters")
             }
             Self::MissingModel => write!(f, "no model is configured"),
+            Self::InvalidModel => {
+                write!(f, "the model contains control characters or whitespace")
+            }
             Self::ModelTooLong => write!(f, "the model exceeds {MAX_MODEL_LEN} characters"),
             Self::InvalidOrganization => write!(f, "the organization identifier is invalid"),
             Self::TooManyHeaders => {
@@ -443,7 +448,7 @@ fn validate_model(model: &str) -> Result<(), CompatConfigError> {
         .bytes()
         .any(|byte| byte.is_ascii_control() || byte == b' ')
     {
-        return Err(CompatConfigError::MissingModel);
+        return Err(CompatConfigError::InvalidModel);
     }
     Ok(())
 }
@@ -2600,6 +2605,16 @@ mod tests {
         assert_eq!(config.validate(), Err(CompatConfigError::MissingModel));
         config.model = "a".repeat(257);
         assert_eq!(config.validate(), Err(CompatConfigError::ModelTooLong));
+        // A present-but-malformed identifier is a distinct category, not
+        // "missing": internal spaces and control characters are invalid.
+        for model in ["model name", "model\tname"] {
+            config.model = model.to_string();
+            assert_eq!(
+                config.validate(),
+                Err(CompatConfigError::InvalidModel),
+                "model {model:?} must classify as InvalidModel"
+            );
+        }
 
         let mut config = valid_compat_config();
         config.organization = Some("org with spaces".to_string());
