@@ -124,6 +124,27 @@ impl Pipeline {
         &self.entered
     }
 
+    /// Rewind the entered prefix to `target_len` (WS-C.1 snapshot rollback).
+    ///
+    /// Truncates the entered tail so [`Self::next`] re-offers the snapshot
+    /// stage. The audit trail stays append-only: rollback appends a
+    /// `rolled_back` entry and never truncates.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PipelineError::IllegalRewind`] when `target_len` reaches
+    /// past the entered prefix (counters only, secret-free).
+    pub(crate) fn rewind(&mut self, target_len: usize) -> Result<(), PipelineError> {
+        if target_len > self.entered.len() {
+            return Err(PipelineError::IllegalRewind {
+                requested: target_len,
+                entered: self.entered.len(),
+            });
+        }
+        self.entered.truncate(target_len);
+        Ok(())
+    }
+
     /// Enter the next ordered stage on lifecycle edge `from → to`.
     ///
     /// # Errors
@@ -251,6 +272,14 @@ pub(crate) enum PipelineError {
     },
     /// Every stage is already entered.
     AlreadyComplete,
+    /// Rewind target beyond the entered prefix (WS-C.1 snapshot rollback):
+    /// carries only counters, never content.
+    IllegalRewind {
+        /// Requested entered length.
+        requested: usize,
+        /// Entered stages so far.
+        entered: usize,
+    },
     /// The lifecycle edge at the advance point is illegal: the wrapped
     /// secret-free [`LifecycleError`].
     Lifecycle(LifecycleError),
@@ -264,6 +293,10 @@ impl std::fmt::Display for PipelineError {
                 "pipeline stage out of order: expected '{expected}', found '{found}'"
             ),
             Self::AlreadyComplete => write!(f, "pipeline already complete"),
+            Self::IllegalRewind { requested, entered } => write!(
+                f,
+                "pipeline rewind out of range (requested {requested} with {entered} entered)"
+            ),
             Self::Lifecycle(err) => write!(f, "{err}"),
         }
     }
@@ -272,7 +305,7 @@ impl std::fmt::Display for PipelineError {
 impl std::error::Error for PipelineError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::OutOfOrder { .. } | Self::AlreadyComplete => None,
+            Self::OutOfOrder { .. } | Self::AlreadyComplete | Self::IllegalRewind { .. } => None,
             Self::Lifecycle(err) => Some(err),
         }
     }
