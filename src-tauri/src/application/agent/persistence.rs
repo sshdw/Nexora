@@ -75,6 +75,18 @@ pub(crate) fn mode_to_column(mode: AutonomyMode) -> &'static str {
 pub(crate) fn terminal_outcome(
     result: &Result<String, AgentError>,
 ) -> (&'static str, Option<String>, Option<String>) {
+    // WS-B.1 lifecycle consult: every terminal maps to a legal
+    // `Running -> terminal` transition. Observe-only; outcome unchanged.
+    let terminal = match result {
+        Ok(_) => super::lifecycle::RunState::Completed,
+        Err(AgentError::Cancelled) => super::lifecycle::RunState::Cancelled,
+        Err(AgentError::BudgetExhausted(_)) => super::lifecycle::RunState::BudgetExhausted,
+        Err(AgentError::SpendLimitExceeded { .. }) => {
+            super::lifecycle::RunState::SpendLimitExceeded
+        }
+        Err(_) => super::lifecycle::RunState::Failed,
+    };
+    super::lifecycle::observe_transition(super::lifecycle::RunState::Running, terminal);
     match result {
         Ok(content) => ("completed", Some(content.clone()), None),
         // Cancellation, budget and spend exhaustion are terminal states of

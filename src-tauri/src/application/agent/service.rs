@@ -41,6 +41,7 @@ use serde::Serialize;
 use super::action_memory::{self, ActionSummary, AgentStepView};
 use super::approval::{ApprovalGate, AutonomyMode};
 use super::control::{AgentRunEvent, RunControl};
+use super::lifecycle::{observe_transition, RunState};
 use super::permissions::RunPreset;
 use super::persistence::{mode_to_column, terminal_outcome, RunRecorder};
 use super::runner::AgentRunner;
@@ -485,6 +486,7 @@ fn start_run_claimed(
         return Err(AgentRunError::RunNotPersisted);
     };
 
+    observe_transition(RunState::Queued, RunState::Running);
     registry.register(
         run_id,
         ActiveAgentRun {

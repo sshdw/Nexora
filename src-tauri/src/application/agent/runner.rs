@@ -87,6 +87,7 @@ pub(crate) use super::budget::{DEFAULT_MAX_ITERATIONS, DEFAULT_REQUEST_TIMEOUT};
 use super::compaction::{self, CompactionReason, ContextAction, ContextGovernor};
 use super::dispatch;
 pub(crate) use super::errors::AgentError;
+use super::lifecycle::{observe_transition, RunState};
 use super::prompts;
 
 // ---------------------------------------------------------------------------
@@ -528,6 +529,7 @@ impl<'a> AgentRunner<'a> {
             match governor.decide(&messages, context_limit) {
                 ContextAction::Proceed => {}
                 ContextAction::Exhausted => {
+                    observe_transition(RunState::Running, RunState::Failed);
                     return Err(AgentError::ContextExhausted);
                 }
                 ContextAction::Compact(reason) => {
@@ -539,6 +541,7 @@ impl<'a> AgentRunner<'a> {
                         context_limit,
                     };
                     let reason_text = reason.as_str().to_string();
+                    observe_transition(RunState::Running, RunState::Compacting);
                     dispatch::emit(
                         self.event_sender.as_ref(),
                         AgentRunEvent::CompactionStarted {
@@ -551,6 +554,7 @@ impl<'a> AgentRunner<'a> {
                             summarized,
                             retained,
                         } => {
+                            observe_transition(RunState::Compacting, RunState::Running);
                             dispatch::emit(
                                 self.event_sender.as_ref(),
                                 AgentRunEvent::CompactionFinished {
@@ -561,6 +565,7 @@ impl<'a> AgentRunner<'a> {
                             );
                         }
                         CompactionOutcome::NothingToFold | CompactionOutcome::Failed => {
+                            observe_transition(RunState::Compacting, RunState::Running);
                             dispatch::emit(
                                 self.event_sender.as_ref(),
                                 AgentRunEvent::CompactionFailed {
@@ -569,6 +574,7 @@ impl<'a> AgentRunner<'a> {
                             );
                         }
                         CompactionOutcome::Cancelled => {
+                            observe_transition(RunState::Compacting, RunState::Cancelled);
                             dispatch::emit(self.event_sender.as_ref(), AgentRunEvent::Cancelled);
                             return Err(AgentError::Cancelled);
                         }
@@ -595,6 +601,7 @@ impl<'a> AgentRunner<'a> {
             let response = match self.executor.execute(&request, credential, token) {
                 Ok(response) => response,
                 Err(ExecutorError::Cancelled) => {
+                    observe_transition(RunState::Running, RunState::Cancelled);
                     dispatch::emit(self.event_sender.as_ref(), AgentRunEvent::Cancelled);
                     return Err(AgentError::Cancelled);
                 }
@@ -605,6 +612,7 @@ impl<'a> AgentRunner<'a> {
                     // in place, then re-send the same turn once, now
                     // compacted. Past the per-run cap the guard above refuses
                     // and the error below terminates the run.
+                    observe_transition(RunState::Running, RunState::Compacting);
                     dispatch::emit(
                         self.event_sender.as_ref(),
                         AgentRunEvent::CompactionStarted {
@@ -629,6 +637,7 @@ impl<'a> AgentRunner<'a> {
                             summarized,
                             retained,
                         } => {
+                            observe_transition(RunState::Compacting, RunState::Running);
                             dispatch::emit(
                                 self.event_sender.as_ref(),
                                 AgentRunEvent::CompactionFinished {
@@ -641,6 +650,7 @@ impl<'a> AgentRunner<'a> {
                         CompactionOutcome::NothingToFold | CompactionOutcome::Failed => {
                             // A failed summarizer never fails the run: continue
                             // uncompacted and let the cap bound the retries.
+                            observe_transition(RunState::Compacting, RunState::Running);
                             dispatch::emit(
                                 self.event_sender.as_ref(),
                                 AgentRunEvent::CompactionFailed {
@@ -649,6 +659,7 @@ impl<'a> AgentRunner<'a> {
                             );
                         }
                         CompactionOutcome::Cancelled => {
+                            observe_transition(RunState::Compacting, RunState::Cancelled);
                             dispatch::emit(self.event_sender.as_ref(), AgentRunEvent::Cancelled);
                             return Err(AgentError::Cancelled);
                         }
@@ -659,9 +670,13 @@ impl<'a> AgentRunner<'a> {
                     // Past the per-run recovery cap (the guard above refused):
                     // terminal exhaustion, distinct from the retryable
                     // overflow that triggers a compaction and a resend.
+                    observe_transition(RunState::Running, RunState::Failed);
                     return Err(AgentError::ContextExhausted);
                 }
-                Err(other) => return Err(other.into()),
+                Err(other) => {
+                    observe_transition(RunState::Running, RunState::Failed);
+                    return Err(other.into());
+                }
             };
             steps_taken += 1;
             // Task T4: feed the turn's usage to the compaction governor so the
@@ -692,8 +707,10 @@ impl<'a> AgentRunner<'a> {
                 // content must be present; anything else is a controlled
                 // failure rather than a silently empty success.
                 if response.content.trim().is_empty() {
+                    observe_transition(RunState::Running, RunState::Failed);
                     return Err(AgentError::EmptyResponse);
                 }
+                observe_transition(RunState::Running, RunState::Completed);
                 dispatch::emit(
                     self.event_sender.as_ref(),
                     AgentRunEvent::Completed { steps: steps_taken },

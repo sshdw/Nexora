@@ -9,6 +9,7 @@ use crate::application::execution::TokenUsage;
 
 use super::dispatch::emit;
 use super::errors::AgentError;
+use super::lifecycle::{observe_transition, RunState};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -47,6 +48,7 @@ pub(crate) fn honor_allowance(
 ) -> Result<(), AgentError> {
     let Some(c) = control else {
         if taken >= base {
+            observe_transition(RunState::Running, RunState::BudgetExhausted);
             return Err(AgentError::BudgetExhausted(base));
         }
         return Ok(());
@@ -55,6 +57,7 @@ pub(crate) fn honor_allowance(
     if taken < allowance {
         return Ok(());
     }
+    observe_transition(RunState::Running, RunState::AwaitingBudget);
     emit(
         sender,
         AgentRunEvent::BudgetExhausted {
@@ -62,8 +65,10 @@ pub(crate) fn honor_allowance(
         },
     );
     if c.wait_for_allowance(base, taken) {
+        observe_transition(RunState::AwaitingBudget, RunState::Running);
         Ok(())
     } else {
+        observe_transition(RunState::AwaitingBudget, RunState::Cancelled);
         emit(sender, AgentRunEvent::Cancelled);
         Err(AgentError::Cancelled)
     }
@@ -87,6 +92,7 @@ pub(crate) fn check_spend_guard(
             *spent_micro_usd = spent_micro_usd.saturating_add(cost);
             if let Some(limit) = spend_limit_micro_usd {
                 if *spent_micro_usd > limit {
+                    observe_transition(RunState::Running, RunState::SpendLimitExceeded);
                     emit(
                         sender,
                         AgentRunEvent::SpendLimitExceeded {

@@ -39,6 +39,7 @@ pub mod dispatch;
 mod e2e;
 pub mod errors;
 pub mod history;
+pub mod lifecycle;
 pub mod permissions;
 pub mod persistence;
 pub mod pricing;
