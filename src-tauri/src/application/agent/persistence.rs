@@ -837,4 +837,49 @@ mod tests {
         assert_eq!(steps.len(), 1, "steps land under the adopted run id");
         assert_eq!(steps[0].seq, 1);
     }
+
+    /// `terminal_outcome` collision pin: `ContextExhausted` (terminal
+    /// recovery exhaustion) vs `Provider(ContextLengthExceeded)` (retryable
+    /// overflow) vs `BudgetExhausted` (step-budget governance) produce
+    /// distinct `(status, error-text)` pairs, so the UI can tell the three
+    /// apart without a schema change.
+    #[test]
+    fn terminal_outcome_keeps_exhaustion_variants_distinct() {
+        use crate::application::execution::ExecutorError;
+
+        let (exhausted_status, exhausted_content, exhausted_error) =
+            terminal_outcome(&Err(AgentError::ContextExhausted));
+        let (overflow_status, overflow_content, overflow_error) = terminal_outcome(&Err(
+            AgentError::Provider(ExecutorError::ContextLengthExceeded),
+        ));
+        let (budget_status, budget_content, budget_error) =
+            terminal_outcome(&Err(AgentError::BudgetExhausted(10)));
+
+        assert_eq!(exhausted_status, "error");
+        assert_eq!(overflow_status, "error");
+        assert_eq!(budget_status, "budget_exhausted");
+        assert_eq!(exhausted_content, None);
+        assert_eq!(overflow_content, None);
+        assert_eq!(budget_content, None);
+        assert_eq!(budget_error, None);
+
+        let exhausted_text = exhausted_error.expect("exhausted carries error text");
+        let overflow_text = overflow_error.expect("overflow carries error text");
+        assert_ne!(
+            exhausted_text, overflow_text,
+            "exhausted recovery and retryable overflow must differ"
+        );
+        assert!(
+            exhausted_text.contains("exhausted"),
+            "exhausted Display names the exhaustion, got {exhausted_text:?}"
+        );
+        assert!(
+            overflow_text.contains("context window"),
+            "overflow Display names the window, got {overflow_text:?}"
+        );
+        assert_ne!(
+            (exhausted_status, exhausted_text),
+            (overflow_status, overflow_text)
+        );
+    }
 }

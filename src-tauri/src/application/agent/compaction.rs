@@ -1024,6 +1024,51 @@ mod tests {
     }
 
     #[test]
+    fn governor_decide_pins_threshold_boundary_and_reserved_window() {
+        // Reserved-headroom math is pinned: the usable window is the raw
+        // limit minus the 20k output reservation, saturating at zero.
+        assert_eq!(COMPACTION_RESERVED_TOKENS, 20_000);
+        assert_eq!(
+            usable_context_tokens(COMPACTION_RESERVED_TOKENS + 100_000),
+            100_000
+        );
+        assert_eq!(usable_context_tokens(COMPACTION_RESERVED_TOKENS), 0);
+        assert_eq!(usable_context_tokens(0), 0);
+        assert_eq!(
+            usable_context_tokens(COMPACTION_RESERVED_TOKENS - 1),
+            0,
+            "a limit below the reservation saturates instead of wrapping"
+        );
+
+        // At exactly the 0.8 ratio the governor stays on Proceed; one token
+        // above it compacts with the measured threshold reason.
+        let limit = COMPACTION_RESERVED_TOKENS + 100_000;
+        let (call, result) = assistant_with_tool("1", "read_file", "out");
+        let messages = vec![system(), user("request"), call, result];
+        let mut governor = ContextGovernor::new();
+        governor.observe(Some(usage(80_000)));
+        assert_eq!(
+            governor.decide(&messages, limit),
+            ContextAction::Proceed,
+            "exactly 0.8 stays Proceed (strict `>` trigger)"
+        );
+        governor.observe(Some(usage(80_001)));
+        assert_eq!(
+            governor.decide(&messages, limit),
+            ContextAction::Compact(CompactionReason::Threshold { ratio_milli: 800 }),
+            "just above 0.8 compacts with the measured ratio"
+        );
+        // Dormant at zero: no usable window never compacts, however large
+        // the reported usage is.
+        governor.observe(Some(usage(u64::MAX)));
+        assert_eq!(
+            governor.decide(&messages, 0),
+            ContextAction::Proceed,
+            "unknown model window keeps the trigger dormant"
+        );
+    }
+
+    #[test]
     fn summary_serialization_clips_tool_output_only() {
         let long = "w".repeat(SUMMARY_TOOL_OUTPUT_MAX_CHARS + 500);
         let (_, result) = assistant_with_tool("7", "read_file", &long);
