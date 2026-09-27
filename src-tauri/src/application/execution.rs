@@ -238,6 +238,238 @@ pub(crate) struct TokenUsage {
     pub output_tokens: u64,
 }
 
+/// Static, locally-curated description of one model (provider-runtime core).
+///
+/// This is a plain domain struct: it carries the documented context window
+/// plus capability flags and performs no network I/O. The hardcoded model
+/// lists stay in `infrastructure::providers::{openai,anthropic,gemini}` and
+/// are aggregated by `infrastructure::providers::supported_providers`; this
+/// struct only projects them (plus the existing
+/// `application::context_stats::context_limit_for`) into one value. There is
+/// no live catalog fetch.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ModelInfo {
+    /// Model identifier as listed for its provider.
+    pub name: String,
+    /// Documented context window for this model.
+    pub context_limit: u64,
+    /// Whether the model accepts function-calling tools.
+    pub supports_tools: bool,
+    /// Whether the model accepts image input.
+    pub supports_vision: bool,
+    /// Whether the model accepts a structured-output (`json`) mode.
+    pub supports_json: bool,
+    /// Whether the model can stream chunks. Always `false` while the runtime
+    /// is sync-only; a future streaming task flips this per provider without
+    /// changing the sync path.
+    pub supports_streaming: bool,
+}
+
+impl ModelInfo {
+    /// Project this model's static flags into [`ModelCapabilities`].
+    ///
+    /// Pure projection: no network, no catalog, local-first intact.
+    #[must_use]
+    pub(crate) fn capabilities(&self) -> ModelCapabilities {
+        ModelCapabilities {
+            tool_call: self.supports_tools,
+            vision: self.supports_vision,
+            json: self.supports_json,
+            streaming: self.supports_streaming,
+        }
+    }
+}
+
+/// Pure capability projection of a [`ModelInfo`].
+///
+/// Computed on the local side from curated flags only — never fetched over
+/// the network.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ModelCapabilities {
+    /// The model can be invoked with tools (`tool_call` capability).
+    pub tool_call: bool,
+    /// The model accepts image input.
+    pub vision: bool,
+    /// The model accepts a structured-output mode.
+    pub json: bool,
+    /// The model can stream chunks.
+    pub streaming: bool,
+}
+
+/// Pure capability projection of an [`AiResponse`].
+///
+/// Computed on the response side from the already-received value — no
+/// network, local-first intact. `tool_call` is true iff the response carried
+/// at least one structured tool call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ResponseCapabilities {
+    /// The response carried at least one tool call.
+    pub tool_call: bool,
+}
+
+/// Per-request model selection (provider-runtime core).
+///
+/// Carries the requested model plus optional overrides. Missing values fall
+/// back through [`Self::with_canonical_limits`], which resolves the
+/// documented window via the existing
+/// `application::context_stats::context_limit_for` — the hardcoded constants
+/// stay in the providers, this struct only defaults from them. There is no
+/// live catalog fetch and no cross-provider fallback.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ModelConfig {
+    /// Requested model identifier.
+    pub model_name: String,
+    /// Explicit context-window override, if any.
+    pub context_limit: Option<u64>,
+    /// Explicit sampling-temperature override, if any.
+    pub temperature: Option<f32>,
+    /// Explicit output-token cap override, if any.
+    pub max_tokens: Option<u32>,
+}
+
+impl ModelConfig {
+    /// Create a config with no overrides.
+    #[must_use]
+    pub(crate) fn new(model_name: impl Into<String>) -> Self {
+        Self {
+            model_name: model_name.into(),
+            context_limit: None,
+            temperature: None,
+            max_tokens: None,
+        }
+    }
+
+    /// Set an explicit context-window override.
+    #[must_use]
+    pub(crate) fn with_context_limit(mut self, limit: Option<u64>) -> Self {
+        self.context_limit = limit;
+        self
+    }
+
+    /// Set an explicit sampling-temperature override.
+    #[must_use]
+    pub(crate) fn with_temperature(mut self, temperature: Option<f32>) -> Self {
+        self.temperature = temperature;
+        self
+    }
+
+    /// Set an explicit output-token cap override.
+    #[must_use]
+    pub(crate) fn with_max_tokens(mut self, max_tokens: Option<u32>) -> Self {
+        self.max_tokens = max_tokens;
+        self
+    }
+
+    /// Fill a missing [`Self::context_limit`] from the canonical local
+    /// source: the existing `context_limit_for(provider, model)`.
+    ///
+    /// An explicit limit is never overwritten. Temperature and `max_tokens`
+    /// have no canonical local source, so they are left untouched.
+    #[must_use]
+    pub(crate) fn with_canonical_limits(self, provider: &str) -> Self {
+        if self.context_limit.is_some() {
+            return self;
+        }
+        let limit = crate::application::context_stats::context_limit_for(
+            Some(provider),
+            Some(self.model_name.as_str()),
+        );
+        Self {
+            context_limit: Some(limit),
+            ..self
+        }
+    }
+
+    /// Effective context window: the explicit override when set, otherwise
+    /// the canonical local value for (`provider`, [`Self::model_name`]).
+    #[must_use]
+    pub(crate) fn effective_context_limit(&self, provider: &str) -> u64 {
+        self.context_limit.unwrap_or_else(|| {
+            crate::application::context_stats::context_limit_for(
+                Some(provider),
+                Some(self.model_name.as_str()),
+            )
+        })
+    }
+}
+
+/// Resolve the static [`ModelInfo`] for (`provider`, `model`).
+///
+/// The context window comes from the existing `context_limit_for`; the
+/// capability flags come from membership in the hardcoded
+/// `supported_providers()` aggregation (the single source of truth for which
+/// models may be configured). Listed models are tool/vision/json capable and
+/// non-streaming (sync-only runtime); unlisted IDs get conservative `false`
+/// flags so tool-gating drops them when tools are required. No network, no
+/// fallback to another provider.
+#[must_use]
+pub(crate) fn model_info_for(provider: &str, model: &str) -> ModelInfo {
+    let context_limit =
+        crate::application::context_stats::context_limit_for(Some(provider), Some(model));
+    let listed = crate::infrastructure::providers::supported_providers()
+        .iter()
+        .any(|entry| entry.name == provider && entry.models.iter().any(|id| id == model));
+    ModelInfo {
+        name: model.to_string(),
+        context_limit,
+        supports_tools: listed,
+        supports_vision: listed,
+        supports_json: listed,
+        supports_streaming: false,
+    }
+}
+
+/// List the static [`ModelInfo`] values for `provider` in display order.
+///
+/// Returns an empty vector for an unknown provider — never a fallback to
+/// another provider's models.
+#[must_use]
+pub(crate) fn models_for_provider(provider: &str) -> Vec<ModelInfo> {
+    crate::infrastructure::providers::supported_providers()
+        .iter()
+        .find(|entry| entry.name == provider)
+        .map(|entry| {
+            entry
+                .models
+                .iter()
+                .map(|model| model_info_for(provider, model))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Keep only tool-capable models.
+///
+/// Pure local filter over [`ModelInfo::supports_tools`]; used when a request
+/// carries tools so a non-`tool_call` model is never offered for it.
+#[must_use]
+pub(crate) fn tool_capable_models(models: &[ModelInfo]) -> Vec<ModelInfo> {
+    models
+        .iter()
+        .filter(|info| info.supports_tools)
+        .cloned()
+        .collect()
+}
+
+/// List model names for `provider` in display order.
+///
+/// When `require_tools` is true, non-`tool_call` models are filtered out
+/// (local analog of a recommended-models projection: text + tool-calling
+/// only). When false, every listed model is returned. Unknown providers yield
+/// an empty vector — no cross-provider fallback, no network.
+#[must_use]
+pub(crate) fn recommended_models(provider: &str, require_tools: bool) -> Vec<String> {
+    let infos = models_for_provider(provider);
+    let kept: Vec<ModelInfo> = if require_tools {
+        tool_capable_models(&infos)
+    } else {
+        infos
+    };
+    kept.into_iter().map(|info| info.name).collect()
+}
+
 /// A provider-independent AI response (ARCHITECTURE.md §7).
 ///
 /// Carries the assistant's text plus the model that produced it so the caller
@@ -253,6 +485,19 @@ pub(crate) struct AiResponse {
     pub tool_calls: Vec<ToolCall>,
     /// Token usage for this turn, if the provider reported it.
     pub usage: Option<TokenUsage>,
+}
+
+impl AiResponse {
+    /// Project response-side capabilities from the received value.
+    ///
+    /// Pure projection: `tool_call` is true iff at least one structured tool
+    /// call was returned. No network, local-first intact.
+    #[must_use]
+    pub(crate) fn capabilities(&self) -> ResponseCapabilities {
+        ResponseCapabilities {
+            tool_call: !self.tool_calls.is_empty(),
+        }
+    }
 }
 
 /// Error raised by a [`ProviderExecutor`] while executing a request.
@@ -465,6 +710,31 @@ pub(crate) trait ProviderExecutor {
         credential: &str,
         token: &CancellationToken,
     ) -> std::result::Result<AiResponse, ExecutorError>;
+
+    /// Forward-compatible streaming shape: run the current sync [`Self::execute`]
+    /// path, then deliver the full text once through `on_text`.
+    ///
+    /// This default keeps every existing caller and the current event channel
+    /// untouched while giving a future streaming task a stable override point:
+    /// per-provider executors will override this with real chunk delivery
+    /// without changing the sync path. It performs no network itself beyond
+    /// what [`Self::execute`] does, and `on_text` runs synchronously on the
+    /// caller's thread.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::execute`].
+    fn execute_stream(
+        &self,
+        request: &AiRequest,
+        credential: &str,
+        token: &CancellationToken,
+        on_text: &dyn Fn(&str),
+    ) -> std::result::Result<AiResponse, ExecutorError> {
+        let response = self.execute(request, credential, token)?;
+        on_text(response.content.as_str());
+        Ok(response)
+    }
 }
 
 /// Resolves a concrete [`ProviderExecutor`] from a provider's internal name.
@@ -1057,5 +1327,215 @@ mod tests {
         let second = backoff_delay(1);
         assert!(second >= std::time::Duration::from_secs(3));
         assert!(second <= std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    fn model_config_canonical_defaulting_fills_missing_limit() {
+        use crate::application::context_stats::context_limit_for;
+        let provider = "openai";
+        let model = "gpt-5.6-terra";
+        let config = ModelConfig::new(model).with_canonical_limits(provider);
+        assert_eq!(
+            config.context_limit,
+            Some(context_limit_for(Some(provider), Some(model)))
+        );
+        assert_eq!(config.model_name, model);
+        // No canonical source for temperature / max_tokens: untouched.
+        assert_eq!(config.temperature, None);
+        assert_eq!(config.max_tokens, None);
+    }
+
+    #[test]
+    fn model_config_explicit_limit_is_preserved() {
+        let config = ModelConfig::new("gpt-5.6-terra")
+            .with_context_limit(Some(11_000))
+            .with_canonical_limits("openai");
+        assert_eq!(config.context_limit, Some(11_000));
+    }
+
+    #[test]
+    fn model_config_effective_limit_matches_canonical() {
+        use crate::application::context_stats::context_limit_for;
+        let config = ModelConfig::new("claude-sonnet-5");
+        assert_eq!(
+            config.effective_context_limit("anthropic"),
+            context_limit_for(Some("anthropic"), Some("claude-sonnet-5"))
+        );
+        let explicit = ModelConfig::new("claude-sonnet-5").with_context_limit(Some(7_000));
+        assert_eq!(explicit.effective_context_limit("anthropic"), 7_000);
+    }
+
+    #[test]
+    fn model_config_builders_set_overrides() {
+        let config = ModelConfig::new("m")
+            .with_temperature(Some(0.5))
+            .with_max_tokens(Some(512));
+        assert_eq!(config.temperature, Some(0.5));
+        assert_eq!(config.max_tokens, Some(512));
+        assert_eq!(config.context_limit, None);
+    }
+
+    #[test]
+    fn model_info_for_listed_model_is_tool_capable_without_streaming() {
+        // Query the hardcoded aggregation instead of duplicating IDs: the
+        // first listed model of the first non-empty provider must resolve to
+        // a fully-capable (except streaming) entry.
+        let providers = crate::infrastructure::providers::supported_providers();
+        let entry = providers
+            .iter()
+            .find(|entry| !entry.models.is_empty())
+            .expect("at least one provider lists models");
+        let info = model_info_for(entry.name.as_str(), entry.models[0].as_str());
+        assert_eq!(info.name, entry.models[0]);
+        assert!(info.context_limit > 0);
+        assert!(info.supports_tools);
+        assert!(info.supports_vision);
+        assert!(info.supports_json);
+        // Sync-only runtime: streaming stays false until a streaming task lands.
+        assert!(!info.supports_streaming);
+    }
+
+    #[test]
+    fn model_info_for_unknown_model_is_conservative() {
+        let info = model_info_for("openai", "no-such-model-xyz");
+        assert_eq!(info.name, "no-such-model-xyz");
+        assert!(info.context_limit > 0);
+        assert!(!info.supports_tools);
+        assert!(!info.supports_vision);
+        assert!(!info.supports_json);
+        assert!(!info.supports_streaming);
+    }
+
+    #[test]
+    fn model_capabilities_project_toolcall_flag() {
+        let info = ModelInfo {
+            name: "m".to_string(),
+            context_limit: 8_000,
+            supports_tools: true,
+            supports_vision: false,
+            supports_json: true,
+            supports_streaming: false,
+        };
+        let caps = info.capabilities();
+        assert!(caps.tool_call);
+        assert!(!caps.vision);
+        assert!(caps.json);
+        assert!(!caps.streaming);
+    }
+
+    #[test]
+    fn response_capabilities_reflect_tool_calls() {
+        let plain = AiResponse {
+            content: "hi".to_string(),
+            model: "m".to_string(),
+            tool_calls: Vec::new(),
+            usage: None,
+        };
+        assert!(!plain.capabilities().tool_call);
+        let with_tools = AiResponse {
+            content: String::new(),
+            model: "m".to_string(),
+            tool_calls: vec![ToolCall {
+                id: "call_0".to_string(),
+                name: "search".to_string(),
+                arguments: "{}".to_string(),
+                thought_signature: None,
+            }],
+            usage: None,
+        };
+        assert!(with_tools.capabilities().tool_call);
+    }
+
+    #[test]
+    fn tool_capable_models_filters_synthetic_mix() {
+        let capable = ModelInfo {
+            name: "capable".to_string(),
+            context_limit: 8_000,
+            supports_tools: true,
+            supports_vision: true,
+            supports_json: true,
+            supports_streaming: false,
+        };
+        let legacy = ModelInfo {
+            name: "legacy".to_string(),
+            context_limit: 8_000,
+            supports_tools: false,
+            supports_vision: false,
+            supports_json: false,
+            supports_streaming: false,
+        };
+        let filtered = tool_capable_models(&[capable.clone(), legacy]);
+        assert_eq!(filtered, vec![capable]);
+        assert!(tool_capable_models(&[]).is_empty());
+    }
+
+    #[test]
+    fn recommended_models_gates_tools_without_cross_provider_fallback() {
+        // Unknown provider: empty in both modes, never another provider's list.
+        assert!(recommended_models("ghost", false).is_empty());
+        assert!(recommended_models("ghost", true).is_empty());
+        // Known provider: plain mode lists every hardcoded ID in order...
+        let all = recommended_models("openai", false);
+        assert!(!all.is_empty());
+        assert_eq!(
+            all,
+            models_for_provider("openai")
+                .iter()
+                .map(|info| info.name.clone())
+                .collect::<Vec<_>>()
+        );
+        // ...while tools-required mode keeps only `tool_call` models (today
+        // every listed ID is tool-capable, so the subset equals the full
+        // list; the synthetic test above proves non-tool IDs are dropped).
+        let gated = recommended_models("openai", true);
+        assert_eq!(gated, all);
+        for name in &gated {
+            assert!(model_info_for("openai", name).supports_tools);
+        }
+    }
+
+    #[test]
+    fn models_for_provider_unknown_is_empty_no_fallback() {
+        assert!(models_for_provider("ghost").is_empty());
+    }
+
+    #[test]
+    fn executor_stream_default_delegates_to_execute() {
+        struct StubExecutor {
+            response: AiResponse,
+        }
+        impl ProviderExecutor for StubExecutor {
+            fn execute(
+                &self,
+                _request: &AiRequest,
+                _credential: &str,
+                _token: &CancellationToken,
+            ) -> std::result::Result<AiResponse, ExecutorError> {
+                Ok(self.response.clone())
+            }
+        }
+        let request = AiRequest {
+            provider: "openai".to_string(),
+            model: "m".to_string(),
+            messages: Vec::new(),
+            tools: Vec::new(),
+            request_timeout: None,
+        };
+        let stub = StubExecutor {
+            response: AiResponse {
+                content: "hello".to_string(),
+                model: "m".to_string(),
+                tool_calls: Vec::new(),
+                usage: None,
+            },
+        };
+        let seen = std::cell::RefCell::new(Vec::new());
+        let out = stub
+            .execute_stream(&request, "cred", &CancellationToken::new(), &|chunk| {
+                seen.borrow_mut().push(chunk.to_string());
+            })
+            .expect("stream default succeeds");
+        assert_eq!(out.content, "hello");
+        assert_eq!(seen.borrow().as_slice(), ["hello"]);
     }
 }
