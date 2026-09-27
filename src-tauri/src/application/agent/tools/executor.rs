@@ -485,6 +485,21 @@ impl ToolRegistry {
         std::fs::write(&resolved, &updated)
             .map_err(|e| ToolError::Io(format!("failed to write file '{path}': {e}")))?;
 
+        // Backstop for a link swapped in between the pre-write check and the
+        // write (TOCTOU): the edited file must canonicalize inside the
+        // workspace, otherwise report traversal instead of success.
+        if let Ok(canon_file) = resolved.canonicalize() {
+            if !is_within_workspace(&canon_ws, &canon_file) {
+                return Err(ToolError::PathTraversal(path.to_string()));
+            }
+        } else if let Some(parent) = resolved.parent() {
+            if let Ok(canon_parent) = parent.canonicalize() {
+                if !is_within_workspace(&canon_ws, &canon_parent) {
+                    return Err(ToolError::PathTraversal(path.to_string()));
+                }
+            }
+        }
+
         Ok(truncate_output(unified_diff(path, &content, &updated)))
     }
 
@@ -1350,10 +1365,10 @@ fn reject_final_symlink_escape(
             let target = std::fs::read_link(resolved).map_err(|e| {
                 ToolError::Io(format!("failed to read link for '{requested}': {e}"))
             })?;
-            let parent = resolved.parent().unwrap_or(resolved);
+            let parent = resolved.parent().unwrap_or(canon_ws);
             let parent_canon = parent
                 .canonicalize()
-                .unwrap_or_else(|_| normalize_lexically(parent));
+                .unwrap_or_else(|_| parent.to_path_buf());
             let target_path = PathBuf::from(&target);
             let relocated = if target_path.is_absolute() {
                 target_path
@@ -1380,10 +1395,11 @@ fn ensure_parent_dirs(
     parent: &Path,
     requested: &str,
 ) -> Result<(), ToolError> {
-    let lex = normalize_lexically(parent);
+    // `parent` derives from `resolve_path` output, which is already
+    // lexically normalized, so its components can be used directly.
     let ws_norm = normalize_lexically(&absolutize(workspace_root));
     let ws_count = ws_norm.components().count();
-    let comps: Vec<std::path::Component<'_>> = lex.components().collect();
+    let comps: Vec<std::path::Component<'_>> = parent.components().collect();
     if comps.len() < ws_count {
         return Err(ToolError::PathTraversal(requested.to_string()));
     }
