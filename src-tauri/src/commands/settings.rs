@@ -485,6 +485,13 @@ mod tests {
                     .to_string(),
                 true,
             ),
+            // Compat endpoint entries (empty hardcoded list by design) with
+            // a custom model validate on both paths and resolve for chat.
+            (
+                serde_json::json!([{"provider": "openai_compat", "model": "custom-model"}])
+                    .to_string(),
+                true,
+            ),
             ("[]".to_string(), false),
             (
                 r#"[{"provider": "openai", "model": "gpt 5"}]"#.to_string(),

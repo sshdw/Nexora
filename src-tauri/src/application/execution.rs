@@ -787,6 +787,22 @@ pub(crate) struct ExecutorRegistry {
 /// one HTTP client per provider, so repeated probes share a single instance
 /// instead of rebuilding it per call. The registry holds no credentials and
 /// performs no requests; sharing it changes no execution behavior.
+///
+/// Lifetime implications: the instance lives for the process lifetime and
+/// holds one pooled [`reqwest::Client`] per executor (see
+/// [`HttpClient::new`](crate::infrastructure::providers::transport::HttpClient::new);
+/// reqwest evicts idle pooled connections on its defaults, so memory stays
+/// bounded to a handful of idle pools. Timeouts are unaffected by sharing:
+/// every send applies its per-request bound at call time (see the
+/// `builder.timeout(bound)` step in `transport`, threaded from
+/// `AiRequest::request_timeout` by each executor), so a shared client enforces
+/// exactly the same bounds as a fresh one.
+///
+/// No `reset_for_testing` helper exists by design: the registry is immutable
+/// after construction and is only ever shared-borrowed through
+/// [`ExecutorRegistry::resolve`], so shared lookups cannot leak state between
+/// tests; tests needing isolation keep constructing their own registry via
+/// [`ExecutorRegistry::new`].
 static SHARED_REGISTRY: std::sync::LazyLock<ExecutorRegistry> =
     std::sync::LazyLock::new(ExecutorRegistry::new);
 

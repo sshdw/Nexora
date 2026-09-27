@@ -125,7 +125,9 @@ export function isProviderAvailable(name: string): Promise<boolean> {
 export type ProviderHealthStatus = "healthy" | "degraded" | "unreachable" | "unknown";
 
 /** Local health snapshot for one provider. Metadata only — presence booleans
- * plus a `last_checked` Unix-seconds timestamp; never a credential value. */
+ * plus a `last_checked` Unix-seconds timestamp; never a credential value.
+ * `last_checked` is `0` only when the backend clock was unavailable: render
+ * it as "unknown", never as the epoch. */
 export interface ProviderHealth {
   provider: string;
   status: ProviderHealthStatus;

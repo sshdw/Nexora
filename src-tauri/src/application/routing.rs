@@ -7,8 +7,11 @@
 //! ([`TaskKind`]: chat vs agent), each under its own settings key.
 //!
 //! Resolution ([`resolve_route`]) walks the profile in order and returns the
-//! first entry whose model passes the existing `recommended_models` gating
-//! for the task (`require_tools` aware). There is deliberately NO
+//! first entry usable for the task: a model passing the existing
+//! `recommended_models` gating (`require_tools` aware), or — for text-first
+//! tasks only — a valid custom model ID on a supported provider (unknown
+//! capability passes through when tools are not needed, and fails closed
+//! when they are). There is deliberately NO
 //! cross-provider fallback beyond the explicit profile order: a profile that
 //! lists two providers is explicit user intent, not implicit fallback, so an
 //! entry for an unknown provider (or a model that fails gating) is skipped
@@ -83,9 +86,16 @@ impl RoutingProfile {
     /// UI never invents providers or models).
     ///
     /// Chat defaults to the first provider's first model; agent defaults to
-    /// that provider's first tool-capable model (falling back to the first
-    /// model when the provider lists no tool-capable one, so the default
-    /// still resolves text-first rather than vanishing).
+    /// that provider's first tool-capable model.
+    ///
+    /// Limitation: when the default provider lists no tool-capable model,
+    /// the agent default falls back to the first listed model, which
+    /// [`resolve_route`] then skips under `require_tools` (resolving to
+    /// [`None`]) rather than substituting another provider. The fallback arm
+    /// is defensive: `default_provider_lists_a_tool_capable_model` pins that
+    /// the registry head always lists one, so the arm is dead code in
+    /// practice. If that test ever fails, the defaults need an explicit
+    /// redesign — do not silently pick another provider here.
     #[must_use]
     pub(crate) fn default_for(task: TaskKind) -> Self {
         // The match keeps the per-task selection point explicit so
@@ -220,21 +230,36 @@ pub(crate) fn is_valid_custom_model_id(value: &str) -> bool {
     })
 }
 
-/// Resolve the first profile entry whose model passes the existing
-/// `recommended_models` gating for its provider.
+/// Resolve the first profile entry usable for the task.
 ///
-/// When `require_tools` is set (agent tasks), only tool-capable models pass;
-/// otherwise every listed model passes. Entries naming an unknown provider or
-/// a model outside that provider's gated list are skipped in order. An empty
-/// profile — or one where every entry is skipped — resolves to [`None`];
-/// resolution never substitutes another provider's models for a skipped entry
-/// (no implicit cross-provider fallback).
+/// An entry passes when its model is in the existing `recommended_models`
+/// gating for its provider (`require_tools` aware). Additionally, a valid
+/// custom model ID (#67) on a build-supported provider passes through when
+/// tools are NOT required (chat): its capability is unknown but tools are not
+/// needed, and pass-through is the only resolution path for providers with
+/// no hardcoded list (notably the user-configured `openai_compat` endpoint,
+/// whose list is empty by design). When tools ARE required (agent), custom
+/// IDs are skipped — unknown capability fails closed and never auto-runs
+/// tools. Entries naming an unknown provider never pass in either mode.
+///
+/// Skipped entries continue down the profile in order. An empty profile — or
+/// one where every entry is skipped — resolves to [`None`]; resolution never
+/// substitutes another provider's models for a skipped entry (no implicit
+/// cross-provider fallback).
 #[must_use]
 pub(crate) fn resolve_route(entries: &[RouteEntry], require_tools: bool) -> Option<&RouteEntry> {
     entries.iter().find(|entry| {
-        crate::application::execution::recommended_models(&entry.provider, require_tools)
+        if crate::application::execution::recommended_models(&entry.provider, require_tools)
             .iter()
             .any(|gated| gated == &entry.model)
+        {
+            return true;
+        }
+        !require_tools
+            && is_valid_custom_model_id(&entry.model)
+            && crate::infrastructure::providers::supported_providers()
+                .iter()
+                .any(|known| known.name == entry.provider)
     })
 }
 
@@ -387,6 +412,8 @@ mod tests {
         // An unlisted model identifier never passes `recommended_models`
         // gating, so with tools required it is skipped for the next
         // profile entry; the skip is order-driven, not a provider fallback.
+        // (A valid custom ID is likewise skipped for agent tasks: unknown
+        // capability fails closed rather than auto-running tools.)
         let listed = first_listed("openai");
         let entries = vec![
             entry("openai", "not-a-listed-model"),
@@ -396,12 +423,35 @@ mod tests {
     }
 
     #[test]
-    fn resolution_without_tools_still_gates_on_listed_models() {
-        // Even text-first resolution only admits listed models: an unlisted
-        // head is skipped rather than passed through.
+    fn custom_model_resolves_for_chat_and_skips_for_agent() {
+        // Valid custom IDs (#67) pass through for text-first tasks on a
+        // supported provider — the only resolution path for providers with
+        // no hardcoded list, such as the user-configured endpoint.
+        let chat_only = vec![entry("openai_compat", "my-custom.model:v1")];
+        assert_eq!(resolve_route(&chat_only, false), Some(&chat_only[0]));
+        // Unknown capability fails closed: the same entry never resolves
+        // for agent tasks.
+        assert_eq!(resolve_route(&chat_only, true), None);
+
+        // With a listed fallback behind it, agent resolution skips the
+        // custom head and lands on the explicit next entry.
+        let listed = first_listed("openai");
+        let mixed = vec![
+            entry("openai", "my-custom.model:v1"),
+            entry("openai", &listed),
+        ];
+        assert_eq!(resolve_route(&mixed, false), Some(&mixed[0]));
+        assert_eq!(resolve_route(&mixed, true), Some(&mixed[1]));
+    }
+
+    #[test]
+    fn chat_still_skips_charset_invalid_models() {
+        // Pass-through admits only *valid* custom IDs: an identifier outside
+        // both the provider list and the custom charset is skipped even for
+        // chat, rather than passed through.
         let listed = first_listed("anthropic");
         let entries = vec![
-            entry("anthropic", "not-a-listed-model"),
+            entry("anthropic", "not a listed model"),
             entry("anthropic", &listed),
         ];
         assert_eq!(resolve_route(&entries, false), Some(&entries[1]));
@@ -431,15 +481,23 @@ mod tests {
         // profile order was consulted.
         assert_eq!(resolve_route(&entries, true), Some(&entries[1]));
 
-        // And when every entry fails gating, resolution is None even though
+        // When every entry fails gating, resolution is None even though
         // other providers list plenty of valid models: no implicit fallback.
+        // (Charset-invalid models fail even the chat custom pass-through.)
         let hopeless = vec![
-            entry("openai", "not-a-listed-model"),
-            entry("gemini", "also-not-listed"),
+            entry("openai", "not a listed model"),
+            entry("gemini", "also not listed"),
         ];
         assert_eq!(resolve_route(&hopeless, false), None);
         assert_eq!(resolve_route(&hopeless, true), None);
         assert!(resolve_route(&[], true).is_none());
+
+        // Unknown providers never resolve — not even for a valid custom ID
+        // in chat: handing execution a provider with no executor would only
+        // fail later, so the order-driven skip applies in both modes.
+        let ghost = vec![entry("ghost-provider", "my-custom.model:v1")];
+        assert_eq!(resolve_route(&ghost, false), None);
+        assert_eq!(resolve_route(&ghost, true), None);
     }
 
     #[test]
@@ -458,6 +516,21 @@ mod tests {
             assert!(resolve_route(&profile.entries, false).is_some());
             assert!(resolve_route(&profile.entries, true).is_some());
         }
+    }
+
+    #[test]
+    fn default_provider_lists_a_tool_capable_model() {
+        // Pins the `default_for` fallback arm as dead code in practice: the
+        // registry head always lists a tool-capable model, so the agent
+        // default never degrades to a model that resolves to None. If this
+        // fails, the defaults need an explicit redesign (see docs).
+        let registry = crate::infrastructure::providers::supported_providers();
+        let first = registry.first().expect("build must register a provider");
+        assert!(
+            !crate::application::execution::recommended_models(&first.name, true).is_empty(),
+            "default provider {:?} must list a tool-capable model",
+            first.name
+        );
     }
 
     #[test]
