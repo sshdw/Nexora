@@ -4,11 +4,11 @@ use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 use crate::application::agent::control::{AgentRunEvent, RunControl};
-use crate::application::agent::pricing;
 use crate::application::execution::TokenUsage;
 
 use super::dispatch::emit;
 use super::errors::AgentError;
+use super::governance::{audit, AuditEvent, AuditLog, RunBudget};
 use super::lifecycle::{observe_transition, RunState};
 
 // ---------------------------------------------------------------------------
@@ -40,15 +40,28 @@ pub(crate) const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::new(120, 0);
 /// aborts it (`resume` alone grants no steps). Without a control, the
 /// Task 3.1 deterministic behaviour is preserved: exhaustion returns
 /// `AgentError::BudgetExhausted` immediately.
+///
+/// The caps come from the [`RunBudget`] resolved out of the lifecycle
+/// [`super::lifecycle::BudgetHandles`] contract; every state change is
+/// appended to the optional run-scoped [`AuditLog`] (secret-free, in-memory,
+/// best-effort — a missing log changes nothing).
 pub(crate) fn honor_allowance(
     control: Option<&RunControl>,
-    base: usize,
+    budget: &RunBudget,
     taken: usize,
     sender: Option<&Sender<AgentRunEvent>>,
+    audit_log: Option<&AuditLog>,
 ) -> Result<(), AgentError> {
+    let base = budget.max_steps();
     let Some(c) = control else {
-        if taken >= base {
+        if budget.steps_exhausted(taken) {
             observe_transition(RunState::Running, RunState::BudgetExhausted);
+            audit(
+                audit_log,
+                RunState::Running,
+                RunState::BudgetExhausted,
+                AuditEvent::BudgetExhausted { allowance: base },
+            );
             return Err(AgentError::BudgetExhausted(base));
         }
         return Ok(());
@@ -58,6 +71,12 @@ pub(crate) fn honor_allowance(
         return Ok(());
     }
     observe_transition(RunState::Running, RunState::AwaitingBudget);
+    audit(
+        audit_log,
+        RunState::Running,
+        RunState::AwaitingBudget,
+        AuditEvent::BudgetParked { allowance },
+    );
     emit(
         sender,
         AgentRunEvent::BudgetExhausted {
@@ -66,9 +85,21 @@ pub(crate) fn honor_allowance(
     );
     if c.wait_for_allowance(base, taken) {
         observe_transition(RunState::AwaitingBudget, RunState::Running);
+        audit(
+            audit_log,
+            RunState::AwaitingBudget,
+            RunState::Running,
+            AuditEvent::BudgetResumed,
+        );
         Ok(())
     } else {
         observe_transition(RunState::AwaitingBudget, RunState::Cancelled);
+        audit(
+            audit_log,
+            RunState::AwaitingBudget,
+            RunState::Cancelled,
+            AuditEvent::BudgetCancelled,
+        );
         emit(sender, AgentRunEvent::Cancelled);
         Err(AgentError::Cancelled)
     }
@@ -77,22 +108,34 @@ pub(crate) fn honor_allowance(
 /// Accumulate one turn's billed cost and trip the spend guard (Task 4.3).
 ///
 /// Usage absent is counted as $0 (count-as-known). Known-free model IDs
-/// bill $0 regardless of usage.
+/// bill $0 regardless of usage. The cap and the cost source come from the
+/// [`RunBudget`] (opaque cost hook when attached, policy rate otherwise);
+/// the trip is appended to the optional run-scoped [`AuditLog`] best-effort.
 pub(crate) fn check_spend_guard(
+    budget: &RunBudget,
     model: &str,
     usage: Option<TokenUsage>,
-    spend_limit_micro_usd: Option<u64>,
     record_present: bool,
     spent_micro_usd: &mut u64,
     sender: Option<&Sender<AgentRunEvent>>,
+    audit_log: Option<&AuditLog>,
 ) -> Result<(), AgentError> {
     if let Some(usage) = usage {
-        if spend_limit_micro_usd.is_some() || record_present {
-            let cost = pricing::cost_for_model_usage(model, usage);
+        if budget.spend_limit_micro_usd().is_some() || record_present {
+            let cost = budget.cost_for(model, usage);
             *spent_micro_usd = spent_micro_usd.saturating_add(cost);
-            if let Some(limit) = spend_limit_micro_usd {
+            if let Some(limit) = budget.spend_limit_micro_usd() {
                 if *spent_micro_usd > limit {
                     observe_transition(RunState::Running, RunState::SpendLimitExceeded);
+                    audit(
+                        audit_log,
+                        RunState::Running,
+                        RunState::SpendLimitExceeded,
+                        AuditEvent::SpendTripped {
+                            spent_micro: *spent_micro_usd,
+                            limit_micro: limit,
+                        },
+                    );
                     emit(
                         sender,
                         AgentRunEvent::SpendLimitExceeded {
