@@ -120,6 +120,25 @@ export function isProviderAvailable(name: string): Promise<boolean> {
   return invoke<boolean>("is_provider_available", { name });
 }
 
+/** Local health verdict for one provider (`provider_health`, WS-A.5).
+ * Local-only: no network probe — `healthy` means locally ready to serve. */
+export type ProviderHealthStatus = "healthy" | "degraded" | "unreachable" | "unknown";
+
+/** Local health snapshot for one provider. Metadata only — presence booleans
+ * plus a `last_checked` Unix-seconds timestamp; never a credential value. */
+export interface ProviderHealth {
+  provider: string;
+  status: ProviderHealthStatus;
+  has_configuration: boolean;
+  has_credential: boolean;
+  last_checked: number; // seconds since unix epoch
+}
+
+/** Probe the local health of one provider via `provider_health`. */
+export function providerHealth(name: string): Promise<ProviderHealth> {
+  return invoke<ProviderHealth>("provider_health", { name });
+}
+
 // ---- OpenAI-compatible endpoint (custom base URL) ----------------------
 // The endpoint metadata (base URL, model, organization, headers) is plain
 // settings; the API key stays in the OS keyring under `openai_compat` and

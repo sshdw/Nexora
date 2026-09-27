@@ -22,6 +22,10 @@
 
 use tauri::State;
 
+use crate::application::routing::{
+    RouteEntry, AGENT_PROFILE_KEY, CHAT_PROFILE_KEY, MAX_MODEL_LEN, MAX_PROFILE_ENTRIES,
+    MAX_PROVIDER_LEN,
+};
 use crate::application::settings::SettingsService;
 use crate::application::workspace::{
     parse_recent, WORKSPACE_RECENT_KEY, WORKSPACE_RECENT_MAX, WORKSPACE_ROOT_KEY,
@@ -54,7 +58,7 @@ const VALID_AUTONOMY: &[&str] = &["supervised", "semi_autonomous", "full_autonom
 /// implementation (FR-012: invalid values are rejected before persistence).
 ///
 /// Rules:
-/// - Only the six explicitly supported keys may be written.
+/// - Only the eight explicitly supported keys may be written.
 /// - A `None` value (clearing back to the default state) is always valid.
 /// - [`THEME_KEY`] accepts only the implemented themes (`dark`, `light`).
 /// - [`SELECTED_PROVIDER_KEY`] accepts only names returned by the build's
@@ -65,6 +69,12 @@ const VALID_AUTONOMY: &[&str] = &["supervised", "semi_autonomous", "full_autonom
 ///   or a custom model ID (1..=200 chars of `A-Za-z0-9._/:-+`, no `..`).
 /// - [`AUTONOMY_KEY`] accepts only the three autonomy modes
 ///   (`supervised`, `semi_autonomous`, `full_autonomous`).
+/// - [`CHAT_PROFILE_KEY`] / [`AGENT_PROFILE_KEY`] accept a JSON array of
+///   1..=16 `{provider, model}` entries where each provider is a supported
+///   provider name and each model is listed for that provider or a valid
+///   custom model ID (same charset rule as [`SELECTED_MODEL_KEY`]).
+///   Resolution-time `recommended_models` gating still applies at use; the
+///   stored profile only records explicit user order.
 /// - [`WORKSPACE_ROOT_KEY`] accepts a non-empty path up to 1024 chars with no
 ///   null byte. Full filesystem guard (existence, `C:\Windows`, drive roots,
 ///   canonicalization) lives in the workspace commands
@@ -75,7 +85,7 @@ const VALID_AUTONOMY: &[&str] = &["supervised", "semi_autonomous", "full_autonom
 ///   strings, each up to 1024 chars.
 ///
 /// No credential, payload, or path value can appear here beyond the workspace
-/// root strings: only the six keys above reach persistence, and none of them
+/// root strings: only the eight keys above reach persistence, and none of them
 /// ever carries a secret.
 fn validate_setting(key: &str, value: Option<&str>) -> Result<(), CommandError> {
     // Clearing a setting restores its default state; never an invalid value.
@@ -146,11 +156,45 @@ fn validate_setting(key: &str, value: Option<&str>) -> Result<(), CommandError> 
                 Err(rejected(key, value))
             }
         }
+        CHAT_PROFILE_KEY | AGENT_PROFILE_KEY => {
+            if is_valid_routing_profile(value) {
+                Ok(())
+            } else {
+                Err(rejected(key, value))
+            }
+        }
         _ => Err(CommandError::new(
             ErrorKind::InvalidInput,
             format!("setting key '{key}' is not supported"),
         )),
     }
+}
+
+/// Routing profiles accepted for [`CHAT_PROFILE_KEY`] / [`AGENT_PROFILE_KEY`]:
+/// a JSON array of 1..=[`MAX_PROFILE_ENTRIES`] `{provider, model}` entries
+/// where each provider is a build-supported name and each model is either
+/// listed for that provider or a valid custom model ID (same charset rule as
+/// [`SELECTED_MODEL_KEY`]).
+fn is_valid_routing_profile(value: &str) -> bool {
+    let entries: Vec<RouteEntry> = match serde_json::from_str(value) {
+        Ok(entries) => entries,
+        Err(_) => return false,
+    };
+    if entries.is_empty() || entries.len() > MAX_PROFILE_ENTRIES {
+        return false;
+    }
+    let registry = supported_providers();
+    entries.iter().all(|entry| {
+        !entry.provider.is_empty()
+            && entry.provider.len() <= MAX_PROVIDER_LEN
+            && !entry.model.is_empty()
+            && entry.model.len() <= MAX_MODEL_LEN
+            && registry.iter().any(|known| {
+                known.name == entry.provider
+                    && (known.models.iter().any(|listed| listed == &entry.model)
+                        || is_valid_custom_model_id(&entry.model))
+            })
+    })
 }
 
 /// Custom model IDs accepted for [`SELECTED_MODEL_KEY`] alongside the listed
@@ -262,6 +306,8 @@ mod tests {
             SELECTED_PROVIDER_KEY,
             SELECTED_MODEL_KEY,
             AUTONOMY_KEY,
+            CHAT_PROFILE_KEY,
+            AGENT_PROFILE_KEY,
             WORKSPACE_ROOT_KEY,
             WORKSPACE_RECENT_KEY,
         ] {
@@ -350,7 +396,7 @@ mod tests {
     #[test]
     fn unknown_keys_are_rejected() {
         // A provider name is not a valid value under an arbitrary key: only
-        // the six explicitly supported setting keys are writable.
+        // the eight explicitly supported setting keys are writable.
         assert_rejected("appearance.mode", "dark");
         assert_rejected("export.format", "markdown");
         assert_rejected("", "dark");
@@ -398,5 +444,58 @@ mod tests {
         assert_rejected(WORKSPACE_RECENT_KEY, r#"["a","b","c","d","e","f"]"#);
         assert_rejected(WORKSPACE_RECENT_KEY, r#"[""]"#);
         assert_rejected(WORKSPACE_RECENT_KEY, r#"{"a":1}"#);
+    }
+
+    #[test]
+    fn routing_profiles_are_accepted_for_both_tasks() {
+        // Every registered provider accepts its own first listed model, and
+        // multi-provider order (explicit user intent) is preserved verbatim.
+        let registry = supported_providers();
+        let first = &registry[0];
+        let single =
+            serde_json::json!([{"provider": first.name, "model": first.models[0]}]).to_string();
+        assert_accepted(CHAT_PROFILE_KEY, &single);
+        assert_accepted(AGENT_PROFILE_KEY, &single);
+        if registry.len() > 1 && !registry[1].models.is_empty() {
+            let second = &registry[1];
+            let ordered = serde_json::json!([
+                {"provider": first.name, "model": first.models[0]},
+                {"provider": second.name, "model": second.models[0]},
+            ])
+            .to_string();
+            assert_accepted(CHAT_PROFILE_KEY, &ordered);
+            assert_accepted(AGENT_PROFILE_KEY, &ordered);
+        }
+        // A valid custom model ID is accepted alongside listed IDs.
+        let custom = serde_json::json!([{"provider": first.name, "model": "my-custom.model:v1"}])
+            .to_string();
+        assert_accepted(CHAT_PROFILE_KEY, &custom);
+    }
+
+    #[test]
+    fn routing_profiles_reject_malformed_or_out_of_domain_values() {
+        let overlong_model = "a".repeat(201);
+        let oversized = serde_json::to_string(
+            &(0..=MAX_PROFILE_ENTRIES)
+                .map(|_| serde_json::json!({"provider": "openai", "model": "x"}))
+                .collect::<Vec<_>>(),
+        )
+        .expect("encode oversized profile");
+        let bad = [
+            "not json".to_string(),
+            "[]".to_string(),
+            "{}".to_string(),
+            r#"[{"provider": "openai"}]"#.to_string(),
+            r#"[{"provider": "ghost-provider", "model": "x"}]"#.to_string(),
+            r#"[{"provider": "", "model": "x"}]"#.to_string(),
+            r#"[{"provider": "openai", "model": ""}]"#.to_string(),
+            r#"[{"provider": "openai", "model": "gpt 5"}]"#.to_string(),
+            format!(r#"[{{"provider": "openai", "model": "{overlong_model}"}}]"#),
+            oversized,
+        ];
+        for value in &bad {
+            assert_rejected(CHAT_PROFILE_KEY, value);
+            assert_rejected(AGENT_PROFILE_KEY, value);
+        }
     }
 }

@@ -14,6 +14,7 @@
 
 use tauri::State;
 
+use crate::application::providers::ProviderHealth;
 use crate::application::providers::ProviderService;
 use crate::infrastructure::database::Database;
 use crate::infrastructure::providers::SupportedProvider;
@@ -54,6 +55,22 @@ pub(crate) fn is_provider_available(
 ) -> Result<bool, CommandError> {
     ProviderService::new(db.inner())
         .is_available(&name)
+        .map_err(Into::into)
+}
+
+/// Probe the local health of one provider (WS-A.5).
+///
+/// Thin translation over [`ProviderService::health`]: local-only probe (no
+/// network) returning the readiness verdict, presence booleans, and a
+/// `last_checked` Unix-seconds timestamp. Carries metadata only — never a
+/// credential value.
+#[tauri::command]
+pub(crate) fn provider_health(
+    name: String,
+    db: State<'_, Database>,
+) -> Result<ProviderHealth, CommandError> {
+    ProviderService::new(db.inner())
+        .health(&name)
         .map_err(Into::into)
 }
 

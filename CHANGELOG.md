@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Providers — local health probe (WS-A.5)**: new `provider_health` Tauri
+  command reporting a per-provider verdict (`healthy` / `degraded` /
+  `unreachable` / `unknown`) with credential/config presence booleans and a
+  `last_checked` Unix-seconds timestamp. The probe is local-only (no network):
+  it composes the existing credential-presence and configuration lookups with
+  a registry lookup, and carries no secret value.
+- **Providers — model routing profiles (WS-A.5)**: ordered provider→model
+  preference lists with per-task defaults (chat vs agent) persisted through
+  the existing settings store (`routing.profile.chat`,
+  `routing.profile.agent`; no new tables). Resolution returns the first entry
+  passing `recommended_models` gating (`require_tools` aware) with no
+  cross-provider fallback beyond the explicit profile order.
+
 ## [1.5.0] - 2026-09-26
 
 ### Added
