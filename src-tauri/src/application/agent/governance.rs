@@ -206,6 +206,18 @@ pub(crate) enum AuditEvent {
         /// Fixed stage vocabulary (`PipelineStage::as_str`).
         stage: &'static str,
     },
+    /// Run snapshot captured (WS-C.1): an in-memory position marker for a
+    /// run (stage index, state, budget counters, audit length). Payload-free
+    /// fixed vocabulary — the snapshot data itself never enters the trail.
+    SnapshotCaptured,
+    /// Named checkpoint saved (WS-C.1): a snapshot with explicit user
+    /// intent. The checkpoint name never enters the trail (it may carry
+    /// hostile content), so this event is payload-free fixed vocabulary.
+    CheckpointSaved,
+    /// Rollback to a prior snapshot (WS-C.1): the stage rewind plus the
+    /// monotonic budget restore. An event, never a state — no new
+    /// [`super::lifecycle::RunState`] variant.
+    RolledBack,
 }
 
 impl AuditEvent {
@@ -222,6 +234,9 @@ impl AuditEvent {
             Self::BudgetExhausted { .. } => "budget_exhausted",
             Self::SpendTripped { .. } => "spend_tripped",
             Self::StageEntered { .. } => "stage_entered",
+            Self::SnapshotCaptured => "snapshot_captured",
+            Self::CheckpointSaved => "checkpoint_saved",
+            Self::RolledBack => "rolled_back",
         }
     }
 
@@ -290,7 +305,10 @@ impl AuditEntry {
             AuditEvent::ApprovalParked
             | AuditEvent::ApprovalCancelled
             | AuditEvent::BudgetResumed
-            | AuditEvent::BudgetCancelled => (None, None, None, None, None),
+            | AuditEvent::BudgetCancelled
+            | AuditEvent::SnapshotCaptured
+            | AuditEvent::CheckpointSaved
+            | AuditEvent::RolledBack => (None, None, None, None, None),
         };
         Self {
             seq,

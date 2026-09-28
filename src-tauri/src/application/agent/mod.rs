@@ -40,6 +40,9 @@
 //! - Task T4 — Context Compaction ([`compaction`]): pure threshold-triggered
 //!   and overflow-driven folding of older in-run turns into a summary, with
 //!   a verbatim retained tail (`compaction::ContextGovernor`).
+//! - WS-C.1 — Snapshots & Checkpoints ([`snapshots`]): in-memory run-scoped
+//!   position markers with monotonic-budget rollback and named checkpoints,
+//!   audited on the trail with fixed vocabulary (no new table).
 
 pub mod action_memory;
 pub mod approval;
@@ -62,6 +65,7 @@ pub mod registry;
 pub mod roles;
 pub mod runner;
 pub mod service;
+pub mod snapshots;
 #[cfg(test)]
 mod stress;
 pub mod tools;
