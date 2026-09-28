@@ -273,6 +273,10 @@ impl From<ExportError> for CommandError {
                 ErrorKind::Io,
                 "the exported conversation could not be written to disk",
             ),
+            ExportError::InvalidPath { reason } => Self::new(
+                ErrorKind::InvalidInput,
+                format!("the export path is invalid: {reason}"),
+            ),
         }
     }
 }

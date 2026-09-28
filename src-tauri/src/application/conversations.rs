@@ -624,8 +624,10 @@ fn ai_message_from(message: &Message) -> Result<AiMessage> {
 
 /// Hard cap for reading one attachment into memory (FR-008). Chosen below the
 /// smallest provider inline limit (Gemini's 20 MB total inline payload) so an
-/// oversized file is rejected before a request is built.
-const MAX_ATTACHMENT_BYTES: i64 = 20 * 1024 * 1024;
+/// oversized file is rejected before a request is built. Reused by the
+/// attachment import gate (WS-C.2) so oversized files fail fast at attach
+/// time, not only at send time.
+pub(crate) const MAX_ATTACHMENT_BYTES: i64 = 20 * 1024 * 1024;
 
 /// The media families the registered providers can consume (FR-008).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

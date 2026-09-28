@@ -46,12 +46,19 @@ use std::collections::HashSet;
 
 use serde::Deserialize;
 
+use crate::application::agent::injection::contains_secret;
 use crate::application::export::{EXPORT_FORMAT, EXPORT_VERSION};
 use crate::infrastructure::database::{Database, DatabaseError};
 use crate::infrastructure::repository::conversations::ConversationRepository;
 use crate::infrastructure::repository::messages::MessageRepository;
 use crate::infrastructure::repository::providers::ProviderRepository;
 use crate::infrastructure::repository::Repository;
+
+/// Hard cap on an import document (bytes). Pinned from the bounded-read
+/// family: the 64 KiB [`MAX_ERROR_BODY_BYTES`](crate::infrastructure::providers::transport::MAX_ERROR_BODY_BYTES)
+/// sniff precedent for hostile input, scaled to a document budget — the full
+/// bounded input is secrets-scanned, so the scan cost stays bounded too.
+pub(crate) const MAX_IMPORT_JSON_BYTES: usize = 16 * 1024 * 1024;
 
 /// Application-layer result shared by import operations, unifying
 /// validation and persistence failures.
@@ -283,9 +290,22 @@ impl<'a> ImportService<'a> {
     /// [`ImportError::UnsupportedFormat`] or
     /// [`ImportError::UnsupportedVersion`] for a non-Phase 8.1 document,
     /// [`ImportError::InvalidData`] when the document violates the schema
-    /// constraints, or [`ImportError::Database`] when a read or the
+    /// constraints, is oversized, or carries key-like material, or
+    /// [`ImportError::Database`] when a read or the
     /// transactional insert fails.
     pub(crate) fn import(&self, json: &str) -> Result<i64> {
+        // WS-C.2 import gates, before any parse or write: the byte cap bounds
+        // memory against a hostile document, and the secrets scan denies
+        // key-like material with a secret-free error (the predicate returns
+        // only `bool`, so a detected secret can never echo).
+        ensure_valid(
+            json.len() <= MAX_IMPORT_JSON_BYTES,
+            "import document exceeds the 16 MiB size limit",
+        )?;
+        ensure_valid(
+            !contains_secret(json),
+            "import document contains key-like material",
+        )?;
         let document = parse_document(json)?;
         let valid_providers = self.resolve_provider_ids(&document)?;
         let conversation_id = self.conversations.transaction(|tx| {
@@ -815,5 +835,72 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))
             .expect("count messages");
         assert_eq!(message_count, 0);
+    }
+
+    #[test]
+    fn oversize_document_is_denied_before_any_write() {
+        let db = test_db();
+        let service = ImportService::new(&db);
+        // A valid-shaped document padded past the pinned byte cap.
+        let id = 1;
+        let padding = "x".repeat(MAX_IMPORT_JSON_BYTES);
+        let json = doc(
+            conversation(id),
+            vec![message(id, 1, "user", &padding, None, None, 1)],
+        );
+        assert!(
+            json.len() > MAX_IMPORT_JSON_BYTES,
+            "padded document must exceed the cap"
+        );
+        let err = service.import(&json).expect_err("oversize must be denied");
+        assert!(
+            matches!(err, ImportError::InvalidData(ref reason) if reason.contains("16 MiB")),
+            "oversize denial must name the pinned cap, got {err:?}"
+        );
+        assert_eq!(conversation_count(&db), 0);
+    }
+
+    #[test]
+    fn secret_bearing_document_is_denied_without_echo() {
+        let db = test_db();
+        let service = ImportService::new(&db);
+        let id = 1;
+        let json = doc(
+            conversation(id),
+            vec![message(
+                id,
+                1,
+                "user",
+                "my token is sk-live-sentinel-42 keep it safe",
+                None,
+                None,
+                1,
+            )],
+        );
+        let err = service.import(&json).expect_err("secret must be denied");
+        assert!(
+            matches!(err, ImportError::InvalidData(ref reason) if reason.contains("key-like")),
+            "secret denial must use fixed vocabulary, got {err:?}"
+        );
+        // Secret-free by construction: the fixed reason never echoes input.
+        let rendered = format!("{err}");
+        for sentinel in [
+            "sk-live-sentinel-42",
+            "sk-",
+            "secret",
+            "credential",
+            "api_key",
+        ] {
+            assert!(
+                !rendered.to_lowercase().contains(sentinel),
+                "denial must not echo hostile material {sentinel:?}: {rendered:?}"
+            );
+        }
+        assert_eq!(conversation_count(&db), 0);
+    }
+
+    #[test]
+    fn import_size_cap_matches_the_pinned_precedent() {
+        assert_eq!(MAX_IMPORT_JSON_BYTES, 16 * 1024 * 1024);
     }
 }

@@ -31,6 +31,7 @@
 
 use std::path::{Path, PathBuf};
 
+use super::conversations::MAX_ATTACHMENT_BYTES;
 use super::workspace::{
     is_drive_root, is_system_file_path, is_unc_path, strip_verbatim, WORKSPACE_ROOT_MAX_LEN,
 };
@@ -107,6 +108,20 @@ impl<'a> AttachmentService<'a> {
         }
 
         let canonical = resolve_attachment_file_path(file_path)?;
+        // WS-C.2 size gate on the real filesystem size: the declared value
+        // above is caller-supplied, so the on-disk size is re-checked before
+        // the reference is persisted.
+        let actual_size = std::fs::metadata(&canonical)
+            .map(|meta| meta.len())
+            .ok()
+            .and_then(|len| i64::try_from(len).ok())
+            .unwrap_or(i64::MAX);
+        if actual_size > MAX_ATTACHMENT_BYTES {
+            return Err(AttachmentError::InvalidInput {
+                field: "file_size_bytes",
+                reason: "exceeds the 20 MiB limit",
+            });
+        }
         let canonical_text = canonical.to_string_lossy().into_owned();
 
         let id = self.attachments.create(
@@ -274,6 +289,14 @@ fn validate_attachment_input(
         return Err(AttachmentError::InvalidInput {
             field: "file_size_bytes",
             reason: "must not be negative",
+        });
+    }
+    // WS-C.2 size gate (reuses the 20 MiB `MAX_ATTACHMENT_BYTES` precedent):
+    // a reference must never promise more than the send path can carry.
+    if matches!(file_size_bytes, Some(size) if size > MAX_ATTACHMENT_BYTES) {
+        return Err(AttachmentError::InvalidInput {
+            field: "file_size_bytes",
+            reason: "exceeds the 20 MiB limit",
         });
     }
     if matches!(mime_type, Some(value) if value.chars().count() > 127) {
@@ -1013,6 +1036,75 @@ mod tests {
             attachment.file_path.contains("nexora-attach-test-"),
             "stored canonical path keeps the temp file name"
         );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn attach_rejects_declared_size_above_the_limit() {
+        let db = test_db();
+        let service = AttachmentService::new(&db);
+        let conversation_id = create_conversation(&db);
+        let path = temp_file(b"tiny");
+
+        let err = service
+            .attach(
+                conversation_id,
+                "big.bin",
+                path.to_string_lossy().as_ref(),
+                Some(MAX_ATTACHMENT_BYTES + 1),
+                None,
+            )
+            .expect_err("declared oversize must be denied");
+        assert!(matches!(
+            err,
+            AttachmentError::InvalidInput {
+                field: "file_size_bytes",
+                ..
+            }
+        ));
+        assert!(service.list(conversation_id).expect("list").is_empty());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn attach_rejects_actual_size_above_the_limit() {
+        // Sparse file: the logical size trips the gate without 20 MiB of I/O.
+        let db = test_db();
+        let service = AttachmentService::new(&db);
+        let conversation_id = create_conversation(&db);
+        let id = FILE_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let path = std::env::temp_dir().join(format!(
+            "nexora-attach-sparse-{}-{id}.bin",
+            std::process::id()
+        ));
+        let file = std::fs::File::create(&path).expect("create sparse file");
+        file.set_len(u64::try_from(MAX_ATTACHMENT_BYTES + 1).expect("limit fits"))
+            .expect("sparse size");
+
+        let err = service
+            .attach(
+                conversation_id,
+                "sparse.bin",
+                path.to_string_lossy().as_ref(),
+                None,
+                None,
+            )
+            .expect_err("actual oversize must be denied");
+        assert!(matches!(
+            err,
+            AttachmentError::InvalidInput {
+                field: "file_size_bytes",
+                reason: "exceeds the 20 MiB limit",
+            }
+        ));
+        // The denial is fixed vocabulary: no path or size echoes.
+        let rendered = format!("{err}");
+        assert_eq!(
+            rendered,
+            "invalid file_size_bytes: exceeds the 20 MiB limit"
+        );
+        assert!(service.list(conversation_id).expect("list").is_empty());
+        drop(file);
         let _ = std::fs::remove_file(&path);
     }
 }
