@@ -274,6 +274,8 @@ impl SnapshotStore {
             return Err(SnapshotError::IllegalTarget {
                 target_stage: snapshot.stage_index,
                 current_stage: current.stage_index,
+                target_audit: snapshot.audit_len,
+                current_audit: log.len(),
             });
         }
         log.record(from, to, AuditEvent::RolledBack)
@@ -352,12 +354,17 @@ pub(crate) enum SnapshotError {
     /// Checkpoint name is empty: explicit intent needs a name.
     EmptyCheckpointName,
     /// Rollback target reaches past the current position (forward restore or
-    /// an audit marker from another trail): carries only stage counters.
+    /// an audit marker from another trail): carries only stage and audit
+    /// counters.
     IllegalTarget {
         /// Snapshot stage index.
         target_stage: usize,
         /// Current stage index.
         current_stage: usize,
+        /// Snapshot audit length marker.
+        target_audit: usize,
+        /// Current audit trail length.
+        current_audit: usize,
     },
     /// The witness lifecycle edge is illegal: the wrapped secret-free
     /// [`LifecycleError`].
@@ -376,10 +383,24 @@ impl std::fmt::Display for SnapshotError {
             Self::IllegalTarget {
                 target_stage,
                 current_stage,
-            } => write!(
-                f,
-                "illegal snapshot rollback target (target stage {target_stage} past current stage {current_stage})"
-            ),
+                target_audit,
+                current_audit,
+            } => {
+                // Either trigger is reported with its own facts: a stage
+                // reach-past names the stages, an audit-marker reach-past
+                // (e.g. a marker from another trail) names the audit lengths.
+                if target_stage > current_stage {
+                    write!(
+                        f,
+                        "illegal snapshot rollback target (target stage {target_stage} past current stage {current_stage})"
+                    )
+                } else {
+                    write!(
+                        f,
+                        "illegal snapshot rollback target (target audit {target_audit} past current audit {current_audit})"
+                    )
+                }
+            }
             Self::Lifecycle(err) => write!(f, "{err}"),
         }
     }
@@ -501,7 +522,7 @@ mod tests {
         // The rewound stage re-enters in order without re-execution history.
         pipeline
             .advance(&log, RunState::AwaitingApproval, RunState::Running)
-            .expect("re-enter review");
+            .expect("re-enter act");
         assert_eq!(pipeline.entered().len(), 2);
     }
 
@@ -741,13 +762,70 @@ mod tests {
             err,
             SnapshotError::IllegalTarget {
                 target_stage: 1,
-                current_stage: 0
+                current_stage: 0,
+                target_audit: 1,
+                current_audit: 1,
             }
         );
         assert_eq!(
             format!("{err}"),
             "illegal snapshot rollback target (target stage 1 past current stage 0)"
         );
+    }
+
+    #[test]
+    fn audit_marker_beyond_trail_rejected_with_audit_facts() {
+        let log = AuditLog::new();
+        let mut store = SnapshotStore::new(9);
+        let index = store
+            .capture(
+                &log,
+                RunState::Queued,
+                RunState::Running,
+                RunPosition {
+                    stage_index: 1,
+                    role: PipelineStage::Act.role(),
+                    state: RunState::Running,
+                    steps_taken: 1,
+                    spent_micro_usd: 10,
+                },
+            )
+            .expect("capture");
+        let marker = store.snapshots()[index].audit_len;
+        assert!(marker > 0);
+
+        // Same stage position, but a shorter trail (e.g. another run's log):
+        // only the audit marker reaches past, and the message names it.
+        let short = AuditLog::new();
+        let err = store
+            .rollback(
+                &short,
+                RunState::Queued,
+                RunState::Running,
+                index,
+                ResumePoint {
+                    stage_index: 1,
+                    steps_taken: 1,
+                    spent_micro_usd: 10,
+                },
+            )
+            .expect_err("audit reach-past must fail");
+        assert_eq!(
+            err,
+            SnapshotError::IllegalTarget {
+                target_stage: 1,
+                current_stage: 1,
+                target_audit: marker,
+                current_audit: 0,
+            }
+        );
+        assert_eq!(
+            format!("{err}"),
+            format!(
+                "illegal snapshot rollback target (target audit {marker} past current audit 0)"
+            )
+        );
+        assert!(short.is_empty());
     }
 
     #[test]
