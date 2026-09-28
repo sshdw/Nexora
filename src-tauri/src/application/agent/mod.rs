@@ -43,6 +43,9 @@
 //! - WS-C.1 — Snapshots & Checkpoints ([`snapshots`]): in-memory run-scoped
 //!   position markers with monotonic-budget rollback and named checkpoints,
 //!   audited on the trail with fixed vocabulary (no new table).
+//! - WS-C.2 — Injection Hardening ([`injection`]): fenced untrusted-output
+//!   envelopes plus the pinned marker scan backing the Reviewer checklist,
+//!   with hits parked through the existing approval gate.
 
 pub mod action_memory;
 pub mod approval;
@@ -55,6 +58,7 @@ mod e2e;
 pub mod errors;
 pub mod governance;
 pub mod history;
+pub mod injection;
 pub mod lifecycle;
 pub mod permissions;
 pub mod persistence;

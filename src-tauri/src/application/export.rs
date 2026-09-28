@@ -39,15 +39,19 @@
 //! All failure modes are classified by [`ExportError`]: a missing conversation
 //! is [`ExportError::NotFound`], persistence failures are
 //! [`ExportError::Database`], serialization failures are
-//! [`ExportError::Serialization`], and file-write failures are
+//! [`ExportError::Serialization`], rejected destinations are
+//! [`ExportError::InvalidPath`], and file-write failures are
 //! [`ExportError::Io`]. No error variant carries a credential or other secret
 //! value (ARCHITECTURE.md §9, §11).
 
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
+use super::workspace::{
+    is_drive_root, is_system_file_path, is_unc_path, strip_verbatim, WORKSPACE_ROOT_MAX_LEN,
+};
 use crate::infrastructure::database::{Database, DatabaseError};
 use crate::infrastructure::repository::conversations::{Conversation, ConversationRepository};
 use crate::infrastructure::repository::messages::{Message, MessageRepository};
@@ -62,6 +66,11 @@ pub(crate) const EXPORT_FORMAT: &str = "nexora-conversation";
 
 /// Version of the export document layout written by this build.
 pub(crate) const EXPORT_VERSION: i64 = 1;
+
+/// File extensions accepted for export artifacts (WS-C.2 import/export
+/// allowlist): conversation documents are JSON only. Compared
+/// case-insensitively against [`Path::extension`].
+pub(crate) const ALLOWED_EXPORT_EXTENSIONS: &[&str] = &["json"];
 
 /// A `conversations` row in exported form.
 ///
@@ -196,17 +205,40 @@ impl<'a> ExportService<'a> {
     ///
     /// The document is fully materialized in memory before any file access, so
     /// a failed write is reported cleanly as [`ExportError::Io`]; the database
-    /// is only read.
+    /// is only read. The destination is validated through
+    /// [`validate_export_path`] (WS-C.2: the #64 prefix-walk + post-create
+    /// backstop pattern, with the chosen directory as its own root) before
+    /// the write.
     ///
     /// # Errors
     ///
     /// Returns [`ExportError::NotFound`] when no conversation with
     /// `conversation_id` exists, [`ExportError::Database`] when a read fails,
     /// [`ExportError::Serialization`] when the document cannot be serialized,
-    /// or [`ExportError::Io`] when the file cannot be written.
+    /// [`ExportError::InvalidPath`] when the destination is rejected, or
+    /// [`ExportError::Io`] when the file cannot be written.
     pub(crate) fn export_to_file(&self, conversation_id: i64, path: &Path) -> Result<()> {
         let json = self.serialize(conversation_id)?;
-        std::fs::write(path, json.as_bytes()).map_err(ExportError::Io)?;
+        let target = validate_export_path(path)?;
+        std::fs::write(&target, json.as_bytes()).map_err(ExportError::Io)?;
+        // Post-create backstop (#64 pattern): a link swapped in between the
+        // pre-write checks and the write must not redirect the artifact. The
+        // written file must canonicalize under its own parent; otherwise it
+        // is removed best-effort and the write fails instead of succeeding
+        // outside the chosen directory.
+        if let Some(parent) = target.parent() {
+            if let (Ok(canon_file), Ok(canon_parent)) =
+                (target.canonicalize(), parent.canonicalize())
+            {
+                if !canon_file.starts_with(&canon_parent) {
+                    let _ = std::fs::remove_file(&target);
+                    return Err(ExportError::Io(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "export path escaped its parent directory",
+                    )));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -240,6 +272,12 @@ pub(crate) enum ExportError {
     Database(DatabaseError),
     /// The export document could not be serialized to JSON.
     Serialization(serde_json::Error),
+    /// The export destination was rejected before any write (WS-C.2).
+    /// `reason` is a fixed category, never the offending path.
+    InvalidPath {
+        /// Secret-free failure category.
+        reason: &'static str,
+    },
     /// The exported file could not be written.
     Io(io::Error),
 }
@@ -250,6 +288,7 @@ impl std::fmt::Display for ExportError {
             Self::NotFound { id } => write!(f, "conversation {id} does not exist"),
             Self::Database(err) => write!(f, "{err}"),
             Self::Serialization(err) => write!(f, "export serialization failed: {err}"),
+            Self::InvalidPath { reason } => write!(f, "export path invalid: {reason}"),
             Self::Io(err) => write!(f, "export file write failed: {err}"),
         }
     }
@@ -258,7 +297,7 @@ impl std::fmt::Display for ExportError {
 impl std::error::Error for ExportError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::NotFound { .. } => None,
+            Self::NotFound { .. } | Self::InvalidPath { .. } => None,
             Self::Database(err) => Some(err),
             Self::Serialization(err) => Some(err),
             Self::Io(err) => Some(err),
@@ -270,6 +309,137 @@ impl From<DatabaseError> for ExportError {
     fn from(err: DatabaseError) -> Self {
         Self::Database(err)
     }
+}
+
+/// Validate an export destination before any write (WS-C.2).
+///
+/// Composes with the #64 guards (reuse, not duplication): the extension
+/// allowlist ([`ALLOWED_EXPORT_EXTENSIONS`]) fires first, then the lexical
+/// UNC / system-directory / drive-root guards shared with the workspace
+/// module, then the #64 prefix-walk over every existing ancestor
+/// ([`check_export_prefixes`]) with the chosen directory as its own
+/// containment root, and finally the final-component symlink rejection. The
+/// post-create backstop lives in [`ExportService::export_to_file`].
+/// A missing parent is *not* rejected here: it falls through to the write,
+/// which fails as [`ExportError::Io`] exactly as before.
+///
+/// Every failure is [`ExportError::InvalidPath`] with a static reason that
+/// never contains the path or file content.
+fn validate_export_path(path: &Path) -> Result<PathBuf> {
+    let text = path.to_string_lossy();
+    if text.trim().is_empty() {
+        return Err(ExportError::InvalidPath {
+            reason: "path must not be empty",
+        });
+    }
+    if text.contains('\0') {
+        return Err(ExportError::InvalidPath {
+            reason: "path contains a null byte",
+        });
+    }
+    if text.len() > WORKSPACE_ROOT_MAX_LEN {
+        return Err(ExportError::InvalidPath {
+            reason: "path exceeds the length limit",
+        });
+    }
+    let allowed = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            ALLOWED_EXPORT_EXTENSIONS
+                .iter()
+                .any(|allowed| extension.eq_ignore_ascii_case(allowed))
+        });
+    if !allowed {
+        return Err(ExportError::InvalidPath {
+            reason: "only .json export files are allowed",
+        });
+    }
+    if is_unc_path(path) {
+        return Err(ExportError::InvalidPath {
+            reason: "UNC network paths are not allowed",
+        });
+    }
+    // Like attachments (and unlike the workspace root, which must never sit
+    // under the user profile), a single artifact may live anywhere the user
+    // picks — including Temp/Downloads — so the file guard (which excludes
+    // the `C:\Users` tree) applies, not the workspace-root guard.
+    if is_system_file_path(path) {
+        return Err(ExportError::InvalidPath {
+            reason: "a system directory is not allowed",
+        });
+    }
+    if is_drive_root(path) {
+        return Err(ExportError::InvalidPath {
+            reason: "a drive root is not allowed",
+        });
+    }
+    check_export_prefixes(path)?;
+    // The final component itself may be a symlink pointing anywhere
+    // (single-level escape): reject it before the write that would follow
+    // the link. `exists` follows links and misses dangling ones, so the
+    // metadata itself is inspected.
+    if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Err(ExportError::InvalidPath {
+            reason: "path is a symbolic link",
+        });
+    }
+    Ok(path.to_path_buf())
+}
+
+/// Prefix-walk over every existing ancestor of `target`, outermost-first
+/// (#64 pattern: existing prefixes via `symlink_metadata`, so dangling links
+/// count).
+///
+/// Each ancestor must canonicalize inside the previous one (chain
+/// containment with the chosen directory as its own root) and must not
+/// resolve to a UNC / system location — catching the depth>=2 escape where
+/// an intermediate component is a link to the outside while deeper parents
+/// do not exist yet. Relative paths with no on-disk ancestor skip the walk
+/// (nothing to resolve through); the write itself still decides.
+fn check_export_prefixes(target: &Path) -> Result<()> {
+    let mut ancestors: Vec<PathBuf> = Vec::new();
+    let mut cursor = target.parent();
+    while let Some(dir) = cursor {
+        if dir.as_os_str().is_empty() {
+            break;
+        }
+        if std::fs::symlink_metadata(dir).is_ok() {
+            ancestors.push(dir.to_path_buf());
+        }
+        cursor = dir.parent();
+    }
+    ancestors.reverse();
+    let mut prev: Option<PathBuf> = None;
+    for ancestor in &ancestors {
+        let canon =
+            strip_verbatim(
+                ancestor
+                    .canonicalize()
+                    .map_err(|_| ExportError::InvalidPath {
+                        reason: "a path component is not resolvable",
+                    })?,
+            );
+        if is_unc_path(&canon) {
+            return Err(ExportError::InvalidPath {
+                reason: "UNC network paths are not allowed",
+            });
+        }
+        if is_system_file_path(&canon) {
+            return Err(ExportError::InvalidPath {
+                reason: "a system directory is not allowed",
+            });
+        }
+        if let Some(prev_canon) = &prev {
+            if !canon.starts_with(prev_canon) {
+                return Err(ExportError::InvalidPath {
+                    reason: "a path component escapes its parent directory",
+                });
+            }
+        }
+        prev = Some(canon);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -540,5 +710,109 @@ mod tests {
 
         assert!(matches!(err, ExportError::Io(_)));
         assert!(!path.exists());
+    }
+
+    fn invalid_export_reason(path: &Path) -> &'static str {
+        match validate_export_path(path) {
+            Err(ExportError::InvalidPath { reason }) => reason,
+            other => panic!("expected InvalidPath, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn export_path_allowlist_rejects_non_json_extensions() {
+        assert_eq!(ALLOWED_EXPORT_EXTENSIONS, &["json"]);
+        let dir = std::env::temp_dir();
+        assert_eq!(
+            invalid_export_reason(&dir.join("out.exe")),
+            "only .json export files are allowed"
+        );
+        assert_eq!(
+            invalid_export_reason(&dir.join("out")),
+            "only .json export files are allowed"
+        );
+        assert_eq!(
+            invalid_export_reason(&dir.join("out.txt")),
+            "only .json export files are allowed"
+        );
+        // The allowlist itself is case-insensitive: `.JSON` validates.
+        assert!(
+            validate_export_path(&dir.join("out.JSON")).is_ok(),
+            ".JSON must pass the allowlist in a scratch directory"
+        );
+        // A hostile payload in the path never echoes in the fixed reason.
+        let hostile = dir.join("sk-live-sentinel-1.exe");
+        let rendered = format!(
+            "{}",
+            ExportError::InvalidPath {
+                reason: invalid_export_reason(&hostile)
+            }
+        );
+        assert!(!rendered.contains("sk-live-sentinel-1"));
+    }
+
+    #[test]
+    fn export_path_rejects_unc_and_empty_and_null_byte() {
+        assert_eq!(
+            invalid_export_reason(Path::new("//server/share/out.json")),
+            "UNC network paths are not allowed"
+        );
+        assert_eq!(
+            invalid_export_reason(Path::new("")),
+            "path must not be empty"
+        );
+        assert_eq!(
+            invalid_export_reason(Path::new("out\0.json")),
+            "path contains a null byte"
+        );
+    }
+
+    #[test]
+    fn export_end_to_end_rejects_non_json_artifact() {
+        let db = test_db();
+        let (conversation_id, ..) = seeded_conversation(&db);
+        let service = ExportService::new(&db);
+        let path =
+            std::env::temp_dir().join(format!("nexora_export_reject_{}.exe", std::process::id()));
+        let err = service
+            .export_to_file(conversation_id, &path)
+            .expect_err("non-json artifact must be denied");
+        assert!(matches!(err, ExportError::InvalidPath { .. }));
+        assert!(!path.exists(), "denied export writes nothing");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_blocks_nested_symlink_escape_at_depth_two() {
+        use std::os::unix::fs::symlink;
+        // H-1 pattern reused for the artifact path: `base/link` points
+        // outside while `newsub` does not exist yet — the walk must catch
+        // the escape at the `link` level, not the missing leaf.
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("nexora-export-base-{stamp}"));
+        let outside = std::env::temp_dir().join(format!("nexora-export-outside-{stamp}"));
+        std::fs::create_dir_all(&base).expect("create base");
+        std::fs::create_dir_all(&outside).expect("create outside");
+        symlink(&outside, base.join("link")).expect("symlink base/link -> outside");
+
+        let target = base.join("link").join("newsub").join("out.json");
+        let err = invalid_export_reason(&target);
+        assert_eq!(err, "a path component escapes its parent directory");
+
+        // The end-to-end export denies the same way and writes nothing
+        // outside the chosen directory.
+        let db = test_db();
+        let (conversation_id, ..) = seeded_conversation(&db);
+        let service = ExportService::new(&db);
+        let err = service
+            .export_to_file(conversation_id, &target)
+            .expect_err("depth-2 escape must be denied");
+        assert!(matches!(err, ExportError::InvalidPath { .. }));
+        assert!(!outside.join("newsub").join("out.json").exists());
+        let _ = std::fs::remove_dir_all(&base);
+        let _ = std::fs::remove_dir_all(&outside);
     }
 }

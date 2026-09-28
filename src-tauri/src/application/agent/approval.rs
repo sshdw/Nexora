@@ -239,6 +239,18 @@ impl ApprovalGate {
             return Ok(ApprovalDecision::Approved);
         }
 
+        self.park_until_resolved(call)
+    }
+
+    /// Park unconditionally until `respond(request_id, decision)` or
+    /// cancellation (WS-C.2 injection hold).
+    ///
+    /// The same pending/response/cancellation machinery as
+    /// [`Self::request_approval`], minus the ladder fast-path: the caller
+    /// has already decided a park is required (a tripped injection scan),
+    /// so an auto-approve mode must not swallow it. Returns `Err(())` when
+    /// cancellation aborted the wait.
+    pub(crate) fn park_until_resolved(&self, call: &ToolCall) -> Result<ApprovalDecision, ()> {
         // Create pending entry, reusing an early-prepared one for the same
         // call id so an early decision (respond before park) is not clobbered.
         {
@@ -684,5 +696,29 @@ mod tests {
             !gate.respond("stale-1", ApprovalDecision::Denied),
             "a late respond for the stale id must not resolve anything"
         );
+    }
+
+    #[test]
+    fn park_until_resolved_parks_even_when_ladder_auto_approves() {
+        // WS-C.2 injection hold: `park_until_resolved` reuses the
+        // pending/response machinery but skips the ladder fast-path, so a
+        // FullAutonomous gate (which `request_approval` would auto-approve)
+        // still parks until `respond`.
+        let gate = ApprovalGate::new(AutonomyMode::FullAutonomous);
+        let call = tool_call("forced-1", "read_file");
+        // The ladder itself auto-approves this call ...
+        assert_eq!(
+            gate.request_approval(&call).expect("ladder auto"),
+            ApprovalDecision::Approved
+        );
+        // ... but the forced park blocks for a real decision.
+        let gate2 = gate.clone();
+        let handle = thread::spawn(move || gate2.park_until_resolved(&call).expect("resolved"));
+        wait_until_parked(&gate, "forced-1");
+        assert!(!handle.is_finished(), "forced park must not auto-resolve");
+        assert!(gate.respond("forced-1", ApprovalDecision::Denied));
+        let decision = handle.join().expect("join");
+        assert_eq!(decision, ApprovalDecision::Denied);
+        assert!(!gate.has_any_pending());
     }
 }

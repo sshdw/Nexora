@@ -3,6 +3,7 @@
 use crate::application::agent::action_memory::{self, ActionSummary};
 use crate::application::agent::control::CancellationToken;
 use crate::application::agent::history;
+use crate::application::agent::injection;
 use crate::application::execution::{AiMessage, AiRole};
 
 /// Fixed system prompt for Windows hosts (the primary target).
@@ -43,6 +44,12 @@ pub(crate) fn denied_tool_message(call: &crate::application::execution::ToolCall
 }
 
 /// Wrap a tool observation as a native `Tool` message.
+///
+/// WS-C.2: the observation is untrusted tool output, so it always enters the
+/// context inside the fenced [`injection`] envelope (tool label + fixed
+/// vocabulary, body byte-identical). There is intentionally no raw path —
+/// trusted fixed-vocabulary denials bypass this constructor via
+/// [`trusted_denial_message`] or [`denied_tool_message`].
 pub(crate) fn tool_message(
     call: &crate::application::execution::ToolCall,
     observation: &str,
@@ -55,7 +62,30 @@ pub(crate) fn tool_message(
         tool_result: Some(crate::application::execution::AiToolResult {
             call_id: call.id.clone(),
             name: call.name.clone(),
-            content: observation.to_string(),
+            content: injection::envelope_tool_output(&call.name, observation),
+        }),
+    }
+}
+
+/// Wrap a trusted system denial as a native `Tool` message, unenveloped.
+///
+/// Only for fixed-vocabulary denials the host generates itself (the document
+/// shell ban, the role-subset gate): unlike [`tool_message`] the text is not
+/// tool output, so it must not wear the untrusted fence. Callers pass frozen
+/// constants or fixed-vocabulary formats only — never tool output.
+pub(crate) fn trusted_denial_message(
+    call: &crate::application::execution::ToolCall,
+    denial: &str,
+) -> AiMessage {
+    AiMessage {
+        role: AiRole::Tool,
+        content: String::new(),
+        attachments: Vec::new(),
+        tool_calls: Vec::new(),
+        tool_result: Some(crate::application::execution::AiToolResult {
+            call_id: call.id.clone(),
+            name: call.name.clone(),
+            content: denial.to_string(),
         }),
     }
 }
@@ -99,10 +129,12 @@ pub(crate) fn build_initial_messages(
     // Layer-2 action memory: the prior action trace follows the Layer-1
     // note, separated by a blank line. An empty summary appends zero
     // bytes, so runs without prior actions keep the exact prompt.
+    // WS-C.2: the trace replays prior tool observations (untrusted text),
+    // so the block enters inside the untrusted fence, never raw.
     if let Some(summary) = action_summary {
         if let Some(note) = action_memory::system_note(summary) {
             system_content.push_str("\n\n");
-            system_content.push_str(&note);
+            system_content.push_str(&injection::envelope_prior_actions(&note));
         }
     }
     let mut messages = Vec::with_capacity(windowed.messages.len() + 2);
