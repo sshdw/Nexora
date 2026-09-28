@@ -46,6 +46,10 @@
 //! - WS-C.2 — Injection Hardening ([`injection`]): fenced untrusted-output
 //!   envelopes plus the pinned marker scan backing the Reviewer checklist,
 //!   with hits parked through the existing approval gate.
+//! - WS-C.3 — Self-Audit ([`self_audit`]): a read-only pass over the run's
+//!   own trail (audit log + snapshots + recorded verdicts) that fails closed
+//!   with fixed-vocabulary codes; opt-in, so runs without it behave
+//!   byte-identically.
 
 pub mod action_memory;
 pub mod approval;
@@ -68,6 +72,7 @@ pub mod prompts;
 pub mod registry;
 pub mod roles;
 pub mod runner;
+pub mod self_audit;
 pub mod service;
 pub mod snapshots;
 #[cfg(test)]

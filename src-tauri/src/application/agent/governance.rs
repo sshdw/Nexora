@@ -218,6 +218,14 @@ pub(crate) enum AuditEvent {
     /// monotonic budget restore. An event, never a state — no new
     /// [`super::lifecycle::RunState`] variant.
     RolledBack,
+    /// Self-audit pass (WS-C.3): the run's own trail satisfied every
+    /// invariant. Payload-free fixed vocabulary, recorded on the caller's
+    /// genuine completion edge.
+    SelfAuditPassed,
+    /// Self-audit failure (WS-C.3): one entry per violation, recorded on
+    /// the caller's genuine `Failed` edge. Payload-free fixed vocabulary —
+    /// the violation codes live in the report, never in the trail.
+    SelfAuditFailed,
 }
 
 impl AuditEvent {
@@ -237,6 +245,8 @@ impl AuditEvent {
             Self::SnapshotCaptured => "snapshot_captured",
             Self::CheckpointSaved => "checkpoint_saved",
             Self::RolledBack => "rolled_back",
+            Self::SelfAuditPassed => "self_audit_passed",
+            Self::SelfAuditFailed => "self_audit_failed",
         }
     }
 
@@ -308,7 +318,9 @@ impl AuditEntry {
             | AuditEvent::BudgetCancelled
             | AuditEvent::SnapshotCaptured
             | AuditEvent::CheckpointSaved
-            | AuditEvent::RolledBack => (None, None, None, None, None),
+            | AuditEvent::RolledBack
+            | AuditEvent::SelfAuditPassed
+            | AuditEvent::SelfAuditFailed => (None, None, None, None, None),
         };
         Self {
             seq,
