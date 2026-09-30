@@ -8,7 +8,8 @@
 //! |---|---|
 //! | `state`, `started_at`, `finished_at` | [`AgentRun`] persisted row (`agent_runs.status`, Unix seconds) |
 //! | `stage`, `role`, `stages_entered`, `stages_total` | [`Pipeline`] entered prefix + bound roles (WS-B.3) |
-//! | `steps_taken`, `spent_micro_usd`, `limit_micro_usd` | [`AgentRun`] counters (`total_steps`, micro-USD columns) |
+//! | `steps_taken` | consumed model turns (count of `kind = 'model_turn'` step rows) |
+//! | `spent_micro_usd`, `limit_micro_usd` | [`AgentRun`] micro-USD columns |
 //! | `max_steps` | [`RunBudget`] step cap (WS-B.2), when attached |
 //! | `gate_decisions` | [`AuditLog`] recorded decisions, else `agent_steps` approval rows |
 //! | `audit_len` | [`AuditLog::len`] (WS-B.2) |
@@ -133,7 +134,11 @@ pub(crate) struct RunInspection {
     pub stages_entered: usize,
     /// Ordered pipeline stages (`Pipeline::stages().len()`; `0` unattached).
     pub stages_total: usize,
-    /// Consumed model turns (`agent_runs.total_steps`).
+    /// Consumed model turns: the count of `kind = 'model_turn'` rows in
+    /// `steps` (`seq` order). Paired with `max_steps`, which caps model
+    /// turns only, so the two form a true budget ratio. (`agent_runs`
+    /// `total_steps` counts every recorded row — model turns, tool calls,
+    /// approvals — and would overstate consumption here.)
     pub steps_taken: i64,
     /// Billed spend, micro-USD (`None` when not persisted).
     pub spent_micro_usd: Option<u64>,
@@ -199,12 +204,16 @@ fn gate_decisions_from_trail(entries: &[AuditEntry]) -> Vec<&'static str> {
 
 /// Gate verdicts from persisted approval steps in `seq` order: the recorder
 /// writes `succeeded` for an approved call, `denied` for a denied one, and
-/// `cancelled` when cancellation ended the wait. Unknown statuses are skipped
-/// (never echoed).
+/// `cancelled` when cancellation ended the wait. Rule denials (M1-core
+/// `decided_by = 'rule'`) never park at the approval gate — the permission
+/// store resolves them before any park — so they must not surface as gate
+/// verdicts; only parked (user/system) resolutions do. Unknown statuses are
+/// skipped (never echoed).
 fn gate_decisions_from_steps(steps: &[AgentStep]) -> Vec<&'static str> {
     steps
         .iter()
         .filter(|step| step.kind == "approval")
+        .filter(|step| step.decided_by.as_deref() != Some("rule"))
         .filter_map(|step| match step.status.as_deref() {
             Some("succeeded") => Some(super::governance::GateOutcome::Approved.as_str()),
             Some("denied") => Some(super::governance::GateOutcome::Denied.as_str()),
@@ -275,6 +284,18 @@ pub(crate) fn inspect_run(
             .collect()
     });
 
+    // Consumed model turns only: the runner increments its counter once per
+    // provider response and `max_steps` caps exactly that, so counting
+    // `kind = 'model_turn'` rows keeps the budget ratio meaningful.
+    // `run.total_steps` counts every recorded row and would overstate it.
+    let steps_taken = i64::try_from(
+        steps
+            .iter()
+            .filter(|step| step.kind == "model_turn")
+            .count(),
+    )
+    .expect("step count fits in i64");
+
     RunInspection {
         run_id: run.id,
         state: persisted_state(&run.status),
@@ -282,7 +303,7 @@ pub(crate) fn inspect_run(
         role,
         stages_entered,
         stages_total,
-        steps_taken: run.total_steps,
+        steps_taken,
         spent_micro_usd: run.spent_micro_usd,
         limit_micro_usd: run.limit_micro_usd,
         max_steps: budget.map(|allowance| allowance.max_steps()),
@@ -385,6 +406,31 @@ mod tests {
         }
     }
 
+    fn model_turn_step(seq: i64) -> AgentStep {
+        AgentStep {
+            id: seq,
+            run_id: 7,
+            seq,
+            kind: "model_turn".to_string(),
+            tool_name: None,
+            arguments: None,
+            observation: Some("thinking".to_string()),
+            status: None,
+            started_at: 1_700_000_000,
+            duration_ms: None,
+            rule_id: None,
+            group_key: None,
+            decided_by: None,
+        }
+    }
+
+    fn approval_step_decided_by(seq: i64, status: &str, decided_by: Option<&str>) -> AgentStep {
+        AgentStep {
+            decided_by: decided_by.map(str::to_string),
+            ..approval_step(seq, status)
+        }
+    }
+
     /// Build every accessory at once: the two-entry pipeline, a denied
     /// approval park plus a budget park/resume on the shared trail, two
     /// snapshots (one checkpointed), and the passing self-audit report.
@@ -478,7 +524,11 @@ mod tests {
     #[test]
     fn full_run_aggregates_every_section() {
         let run = persisted_run("running");
-        let steps = [approval_step(1, "succeeded")];
+        let steps = [
+            model_turn_step(1),
+            model_turn_step(2),
+            approval_step(3, "succeeded"),
+        ];
         let fixture = full_run();
         let view = inspect_run(
             &run,
@@ -496,7 +546,10 @@ mod tests {
         assert_eq!(view.role, Some("executor"));
         assert_eq!(view.stages_entered, 2);
         assert_eq!(view.stages_total, 3);
-        assert_eq!(view.steps_taken, 4);
+        // `steps_taken` counts consumed model turns only (two `model_turn`
+        // rows above), paired against the `max_steps` model-turn cap — the
+        // trailing approval row and `total_steps` do not inflate it.
+        assert_eq!(view.steps_taken, 2);
         assert_eq!(view.spent_micro_usd, Some(500));
         assert_eq!(view.limit_micro_usd, Some(1_000_000));
         assert_eq!(view.max_steps, Some(10));
@@ -561,6 +614,9 @@ mod tests {
         assert_eq!(view.role, None);
         assert_eq!(view.stages_entered, 0);
         assert_eq!(view.stages_total, 0);
+        // No `model_turn` rows here: consumed turns read 0 even though two
+        // approval rows were recorded.
+        assert_eq!(view.steps_taken, 0);
         assert_eq!(view.max_steps, None);
         // No trail attached: gate decisions fall back to the persisted
         // approval-step outcomes (fixed vocabulary).
@@ -579,6 +635,43 @@ mod tests {
         assert!(
             view.gate_decisions.is_empty(),
             "unknown step status yields no decision, got {:?}",
+            view.gate_decisions
+        );
+    }
+
+    #[test]
+    fn rule_denials_never_surface_as_gate_verdicts() {
+        let run = persisted_run("running");
+        // A parked user denial is a genuine gate verdict and surfaces.
+        let user_denied = approval_step_decided_by(1, "denied", Some("user"));
+        // A permission-rule denial never parks at the gate (the store
+        // resolves it before any park), so it must not surface.
+        let rule_denied = approval_step_decided_by(2, "denied", Some("rule"));
+        // Pre-v7 rows carry no provenance and keep the historical shape.
+        let legacy_denied = approval_step(3, "denied");
+
+        let view = inspect_run(
+            &run,
+            &[user_denied, rule_denied, legacy_denied],
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(
+            view.gate_decisions,
+            vec!["denied", "denied"],
+            "only the parked user and legacy denials are gate verdicts, got {:?}",
+            view.gate_decisions
+        );
+
+        // Rule denial alone yields no verdict at all.
+        let rule_only = approval_step_decided_by(1, "denied", Some("rule"));
+        let view = inspect_run(&run, &[rule_only], None, None, None, None, None);
+        assert!(
+            view.gate_decisions.is_empty(),
+            "rule denial must not surface as a gate verdict, got {:?}",
             view.gate_decisions
         );
     }
@@ -632,7 +725,9 @@ mod tests {
             .expect("run exists");
         assert_eq!(view.run_id, run_id);
         assert_eq!(view.state, "completed");
-        assert_eq!(view.steps_taken, 2);
+        // One `model_turn` row plus one approval row: consumed model turns
+        // read 1, not the `total_steps` row count of 2.
+        assert_eq!(view.steps_taken, 1);
         assert_eq!(view.spent_micro_usd, Some(750));
         assert_eq!(view.limit_micro_usd, Some(2_000_000));
         assert_eq!(view.gate_decisions, vec!["approved"]);
@@ -654,10 +749,13 @@ mod tests {
             "unknown run id yields None"
         );
 
-        // The command maps `None` to this exact error (mirrors the
+        // The command maps `None` to its secret-free not-found error via
+        // `commands::agent::inspect_run_not_found` (mirrors the
         // `cancel_agent_run` not-found shape): id only, kind `NotFound`.
-        let message = format!("no agent run with id {}", 9999);
-        assert_eq!(message, "no agent run with id 9999");
+        // That constructor is pinned against the real producer by
+        // `inspect_run_not_found_is_classified_and_secret_free`; the
+        // secret-free sweep below guards the shape on this side too.
+        let message = "no agent run with id 9999";
         for sentinel in SECRET_SENTINELS {
             assert!(
                 !message.to_lowercase().contains(sentinel),
