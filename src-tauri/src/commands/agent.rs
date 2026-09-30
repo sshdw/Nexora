@@ -35,6 +35,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::application::agent::approval::AutonomyMode;
+use crate::application::agent::inspect::RunInspection;
 use crate::application::agent::permissions::{self, PermissionRule, RuleEffect};
 use crate::application::agent::service::{
     self, AgentRunError, AgentRunHost, AgentRunRegistry, AgentRunRequest, ResolveOutcome, RunFrame,
@@ -451,6 +452,34 @@ pub(crate) fn list_agent_steps(
     db: State<'_, Database>,
 ) -> Result<Vec<AgentStep>, CommandError> {
     service::list_steps_for_run(db.inner(), run_id).map_err(Into::into)
+}
+
+/// Read-only run inspector (WS-D.1): aggregate one run's persisted row and
+/// steps into the secret-free [`RunInspection`] view.
+///
+/// Opt-in in-memory accessories (audit trail, pipeline, budget, snapshots,
+/// self-audit report) are not retained centrally, so their sections read
+/// `null`/empty on this path — never an error. Unknown `run_id` yields a
+/// secret-free not-found error carrying only the id.
+///
+/// # Errors
+///
+/// Returns a classified [`CommandError`] for unknown runs (`NotFound`) or
+/// persistence failures (`Database`, via the shared mapping).
+#[tauri::command]
+pub(crate) fn inspect_run(
+    run_id: i64,
+    db: State<'_, Database>,
+) -> Result<RunInspection, CommandError> {
+    match crate::application::agent::inspect::inspect_persisted_run(db.inner(), run_id)
+        .map_err(CommandError::from)?
+    {
+        Some(view) => Ok(view),
+        None => Err(CommandError::new(
+            ErrorKind::NotFound,
+            format!("no agent run with id {run_id}"),
+        )),
+    }
 }
 
 /// Add one persistent permission rule (M1-core).

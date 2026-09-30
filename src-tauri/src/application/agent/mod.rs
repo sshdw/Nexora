@@ -50,6 +50,10 @@
 //!   own trail (audit log + snapshots + recorded verdicts) that fails closed
 //!   with fixed-vocabulary codes; opt-in, so runs without it behave
 //!   byte-identically.
+//! - WS-D.1 — Run Inspector ([`inspect`]): one read-only aggregate view over
+//!   the WS-B/WS-C accessories (state, stage + role, budget counters, gate
+//!   decisions, snapshot/checkpoint markers, self-audit verdict); `&`-borrows
+//!   only, secret-free by construction, zero new state.
 
 pub mod action_memory;
 pub mod approval;
@@ -63,6 +67,7 @@ pub mod errors;
 pub mod governance;
 pub mod history;
 pub mod injection;
+pub mod inspect;
 pub mod lifecycle;
 pub mod permissions;
 pub mod persistence;
