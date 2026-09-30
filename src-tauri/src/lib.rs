@@ -95,6 +95,7 @@ pub fn run() {
             commands::agent::resume_agent_run,
             commands::agent::list_agent_runs,
             commands::agent::list_agent_steps,
+            commands::agent::inspect_run,
             commands::agent::add_permission_rule,
             commands::agent::remove_permission_rule,
             commands::agent::list_permission_rules,

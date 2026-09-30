@@ -538,6 +538,73 @@ export function listAgentSteps(runId: number): Promise<AgentStep[]> {
   return invoke<AgentStep[]>("list_agent_steps", { runId });
 }
 
+// ---- Run inspector (WS-D.1, read-only) ----------------------------------
+// One aggregate view over a run's WS-B/WS-C accessories. Payloads stay
+// snake_case (serde `rename_all = "snake_case"`); the command arg is
+// camelCase (`runId`), like every other agent command. Secret-free by
+// construction: fixed-vocabulary strings, counters, ids, and Unix-seconds
+// timestamps only — plus caller-chosen checkpoint labels, never message
+// content, tool arguments, credentials, or SQL. Opt-in gaps read `null`
+// (empty lists for snapshots/checkpoints/self-audit-free runs).
+
+/** One captured position marker (WS-C.1): stage index, fixed-vocabulary role
+ * and state, counters, and the Unix-seconds capture time. No content. */
+export interface SnapshotView {
+  stage_index: number;
+  role: string;
+  state: string;
+  steps_taken: number;
+  spent_micro_usd: number;
+  audit_len: number;
+  captured_at: number;
+}
+
+/** One named checkpoint (WS-C.1): caller-chosen label plus snapshot index. */
+export interface CheckpointView {
+  name: string;
+  snapshot_index: number;
+}
+
+/** One self-audit finding (WS-C.3): fixed-vocabulary code plus subject marker. */
+export interface ViolationView {
+  code: string;
+  subject: number | null;
+}
+
+/** Latest self-audit verdict (WS-C.3): pass flag plus violation codes only. */
+export interface SelfAuditView {
+  passed: boolean;
+  violations: ViolationView[];
+}
+
+/** Read-only aggregate view of one run (WS-D.1 `inspect_run`). */
+export interface RunInspection {
+  run_id: number;
+  state: string;
+  stage: string | null;
+  role: string | null;
+  stages_entered: number;
+  stages_total: number;
+  steps_taken: number;
+  spent_micro_usd: number | null;
+  limit_micro_usd: number | null;
+  max_steps: number | null;
+  gate_decisions: string[];
+  audit_len: number | null;
+  snapshots: SnapshotView[];
+  checkpoints: CheckpointView[];
+  self_audit: SelfAuditView | null;
+  started_at: number;
+  finished_at: number | null;
+}
+
+/** Inspect one run via `inspect_run`: state, stage + role, budget counters,
+ * gate decisions, snapshot/checkpoint markers, and the latest self-audit
+ * verdict. Unknown runs fail with a secret-free not-found error. */
+export function inspectRun(runId: number): Promise<RunInspection> {
+  return invoke<RunInspection>("inspect_run", { runId });
+}
+
 // ---- Agent permission rules (M1-core) ----------------------------------
 
 /** One `permission_rules` row (M1-core). */

@@ -35,6 +35,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::application::agent::approval::AutonomyMode;
+use crate::application::agent::inspect::RunInspection;
 use crate::application::agent::permissions::{self, PermissionRule, RuleEffect};
 use crate::application::agent::service::{
     self, AgentRunError, AgentRunHost, AgentRunRegistry, AgentRunRequest, ResolveOutcome, RunFrame,
@@ -453,6 +454,42 @@ pub(crate) fn list_agent_steps(
     service::list_steps_for_run(db.inner(), run_id).map_err(Into::into)
 }
 
+/// Read-only run inspector (WS-D.1): aggregate one run's persisted row and
+/// steps into the secret-free [`RunInspection`] view.
+///
+/// Opt-in in-memory accessories (audit trail, pipeline, budget, snapshots,
+/// self-audit report) are not retained centrally, so their sections read
+/// `null`/empty on this path — never an error. Unknown `run_id` yields a
+/// secret-free not-found error carrying only the id.
+///
+/// # Errors
+///
+/// Returns a classified [`CommandError`] for unknown runs (`NotFound`) or
+/// persistence failures (`Database`, via the shared mapping).
+/// Secret-free not-found error for unknown run ids (the `None` arm of
+/// [`inspect_run`]): id only, kind `NotFound` — mirrors the
+/// `cancel_agent_run` not-found shape. Extracted so the mapping is pinned
+/// by a test against this exact constructor.
+fn inspect_run_not_found(run_id: i64) -> CommandError {
+    CommandError::new(
+        ErrorKind::NotFound,
+        format!("no agent run with id {run_id}"),
+    )
+}
+
+#[tauri::command]
+pub(crate) fn inspect_run(
+    run_id: i64,
+    db: State<'_, Database>,
+) -> Result<RunInspection, CommandError> {
+    match crate::application::agent::inspect::inspect_persisted_run(db.inner(), run_id)
+        .map_err(CommandError::from)?
+    {
+        Some(view) => Ok(view),
+        None => Err(inspect_run_not_found(run_id)),
+    }
+}
+
 /// Add one persistent permission rule (M1-core).
 ///
 /// `preset` is `coding`/`document`/`*`; `tool_pattern` is a tool name or `*`
@@ -656,6 +693,18 @@ mod tests {
         );
         assert_eq!(bad_extend.kind, ErrorKind::InvalidInput);
         assert!(safe_message(&bad_extend));
+    }
+
+    #[test]
+    fn inspect_run_not_found_is_classified_and_secret_free() {
+        // The real producer for the unknown-run path of `inspect_run`
+        // (mirrors the `cancel_agent_run` not-found shape): id only, kind
+        // `NotFound`. Driving the constructor the command itself calls —
+        // the command body needs `State<'_, _>` and cannot be invoked here.
+        let err = inspect_run_not_found(9999);
+        assert_eq!(err.kind, ErrorKind::NotFound);
+        assert_eq!(err.message, "no agent run with id 9999");
+        assert!(safe_message(&err));
     }
 
     #[test]
@@ -885,7 +934,7 @@ mod tests {
     /// no missing key.
     #[test]
     fn agent_command_arg_keys_match_rust_params() {
-        const AGENT_COMMANDS: [(&str, &[&str]); 12] = [
+        const AGENT_COMMANDS: [(&str, &[&str]); 13] = [
             (
                 "start_agent_run",
                 &["conversationId", "content", "provider", "model"],
@@ -898,6 +947,7 @@ mod tests {
             ("extend_agent_run", &["runId", "extraSteps"]),
             ("list_agent_runs", &["conversationId"]),
             ("list_agent_steps", &["runId"]),
+            ("inspect_run", &["runId"]),
             ("agent_set_mode", &["runId", "mode"]),
             ("pause_agent_run", &["runId"]),
             ("resume_agent_run", &["runId"]),

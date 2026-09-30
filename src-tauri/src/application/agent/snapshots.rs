@@ -236,6 +236,23 @@ impl SnapshotStore {
             .ok_or(SnapshotError::UnknownCheckpoint)
     }
 
+    /// Borrowed checkpoint index for read-only views (WS-D.1): `(name,
+    /// snapshot_index)` pairs ordered by snapshot index.
+    ///
+    /// Takes `&self` only, so inspectors cannot mutate the store through it.
+    /// Names are caller-chosen labels (explicit user intent); they never enter
+    /// the audit trail or errors, only this borrowed view.
+    #[must_use]
+    pub(crate) fn checkpoints(&self) -> Vec<(&str, usize)> {
+        let mut indexed: Vec<(&str, usize)> = self
+            .checkpoints
+            .iter()
+            .map(|(name, &index)| (name.as_str(), index))
+            .collect();
+        indexed.sort_by_key(|&(_, index)| index);
+        indexed
+    }
+
     /// Roll back to snapshot `index`.
     ///
     /// The witness edge `from → to` is the genuine lifecycle edge at the
