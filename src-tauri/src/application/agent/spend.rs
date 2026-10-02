@@ -203,15 +203,6 @@ mod tests {
     use crate::infrastructure::database::in_memory_database;
     use crate::infrastructure::repository::agent_runs::AgentRunRepository;
 
-    const SECRET_SENTINELS: [&str; 6] = [
-        "sk-live",
-        "sk-admin-secret",
-        "credential",
-        "api_key",
-        "select",
-        "../../etc/passwd",
-    ];
-
     fn persisted_run(
         id: i64,
         total_steps: i64,
@@ -387,7 +378,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_run_is_none_for_secret_free_not_found() {
+    fn unknown_run_is_none() {
         let db = in_memory_database();
         assert!(
             spend_dashboard_for_run(&db, 9999)
@@ -395,17 +386,11 @@ mod tests {
                 .is_none(),
             "unknown run id yields None"
         );
-
-        // The command maps `None` to its secret-free not-found error carrying
-        // only the id (mirrors the `inspect_run` not-found shape): kind
-        // `NotFound`, no content. The sweep below guards the shape here too.
-        let message = "no agent run with id 9999";
-        for sentinel in SECRET_SENTINELS {
-            assert!(
-                !message.to_lowercase().contains(sentinel),
-                "not-found error must stay secret-free, found {sentinel:?}"
-            );
-        }
+        // NOTE: the secret-free shape of the unknown-run error is pinned
+        // against the real constructor by
+        // `spend_dashboard_not_found_is_classified_and_secret_free` in
+        // commands/agent.rs; sweeping a local literal here would prove
+        // nothing, so this test asserts only the `None` mapping.
     }
 
     #[test]

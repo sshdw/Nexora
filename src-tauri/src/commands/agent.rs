@@ -982,7 +982,7 @@ mod tests {
     /// no missing key.
     #[test]
     fn agent_command_arg_keys_match_rust_params() {
-        const AGENT_COMMANDS: [(&str, &[&str]); 13] = [
+        const AGENT_COMMANDS: [(&str, &[&str]); 14] = [
             (
                 "start_agent_run",
                 &["conversationId", "content", "provider", "model"],
@@ -996,6 +996,7 @@ mod tests {
             ("list_agent_runs", &["conversationId"]),
             ("list_agent_steps", &["runId"]),
             ("inspect_run", &["runId"]),
+            ("spend_dashboard", &["runId"]),
             ("agent_set_mode", &["runId", "mode"]),
             ("pause_agent_run", &["runId"]),
             ("resume_agent_run", &["runId"]),
