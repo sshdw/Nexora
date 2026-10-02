@@ -25,6 +25,11 @@
 //!   `search_files` scope and walk, and `read_file` (fixed, content-free
 //!   errors). All failures here are secret-free: fixed category text that
 //!   never echoes file content, credentials, SQL, or payloads.
+//! - `profiles/` is Nexora-owned config, not user content: profile loads
+//!   ([`load_profile_file`]) and saves ([`save_profile_file`]) bypass
+//!   `.nexoraignore` entirely, so an ignore pattern matching `profiles/` or
+//!   `*.json` never blocks config resolution. The ignore rules govern agent
+//!   tool reads of user content only.
 //! - Profile documents reuse the routing profile shape
 //!   ([`crate::application::routing::RoutingProfile::from_json`], the
 //!   parse-then-validate single source); nothing is duplicated and no profile
@@ -797,6 +802,122 @@ pub(crate) fn load_profile_file(
     validate_profile_document(&text).map_err(|_| ProjectDirError::InvalidProfile)
 }
 
+/// Whether a `profiles/<file_name>` entry exists (file, directory, or link).
+///
+/// Fail-closed: any unusable root, bad name, or filesystem failure reports
+/// absent. This only separates "no workspace file" (silent global fallback)
+/// from "a workspace file that fails to load" (fallback with the fixed-vocab
+/// notice) in the routing precedence — it never reads content and never
+/// consults `.nexoraignore` (see the `profiles/`-vs-ignore contract on
+/// [`load_profile_file`]).
+#[must_use]
+pub(crate) fn profile_file_present(workspace_root: &Path, file_name: &str) -> bool {
+    if file_name.is_empty()
+        || file_name == ".json"
+        || file_name.contains(['/', '\\', '\0'])
+        || file_name.contains("..")
+    {
+        return false;
+    }
+    let is_json = Path::new(file_name)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("json"));
+    if !is_json {
+        return false;
+    }
+    let Ok(canon_ws) = canonical_workspace_dir(workspace_root) else {
+        return false;
+    };
+    let path = canon_ws
+        .join(NEXORA_DIR_NAME)
+        .join(PROFILES_DIR_NAME)
+        .join(file_name);
+    if !is_within_workspace(&canon_ws, &path) {
+        return false;
+    }
+    std::fs::symlink_metadata(&path).is_ok()
+}
+
+/// Persist one `profiles/<file_name>` document through the canonical guard
+/// pattern (lexical prefix check, `symlink_metadata` prefix walk,
+/// canonicalize-after-create, post-write backstop).
+///
+/// The document is validated with [`validate_profile_document`] (the
+/// [`RoutingProfile::from_json`] single source) *before* anything is written,
+/// so a refusal leaves any existing file untouched. The validated profile is
+/// canonicalized on write ([`RoutingProfile::to_json`]), so unknown keys
+/// ignored on read never persist byte-wise. `.nexora/` itself must
+/// already exist ([`init_nexora_dir`]); the `profiles/` level is created
+/// guarded when missing. `.nexoraignore` is never consulted: `profiles/` is
+/// Nexora-owned config, always writable regardless of ignore rules (ignore
+/// governs agent tool reads of user content, not config saves).
+///
+/// # Errors
+///
+/// Returns [`ProjectDirError::InvalidProfile`] for a bad name or a document
+/// failing routing validation, [`ProjectDirError::NotInitialized`] when
+/// `.nexora/` is absent, [`ProjectDirError::OutsideWorkspace`] on a symlink
+/// escape, or [`ProjectDirError::Io`] when the filesystem fails.
+pub(crate) fn save_profile_file(
+    workspace_root: &Path,
+    file_name: &str,
+    document: &str,
+) -> Result<(), ProjectDirError> {
+    if file_name.is_empty()
+        || file_name == ".json"
+        || file_name.contains(['/', '\\', '\0'])
+        || file_name.contains("..")
+    {
+        return Err(ProjectDirError::InvalidProfile);
+    }
+    let is_json = Path::new(file_name)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("json"));
+    if !is_json {
+        return Err(ProjectDirError::InvalidProfile);
+    }
+    if document.len() as u64 > MAX_PROFILE_BYTES {
+        return Err(ProjectDirError::InvalidProfile);
+    }
+    // Validate before any filesystem mutation: a refusal writes nothing.
+    // The validated profile is canonicalized on write, so unknown keys
+    // ignored on read never persist byte-wise in profiles/.
+    let profile =
+        validate_profile_document(document).map_err(|_| ProjectDirError::InvalidProfile)?;
+    let canon_ws = canonical_workspace_dir(workspace_root)?;
+    let dir = canon_ws.join(NEXORA_DIR_NAME);
+    reject_link_escape(&canon_ws, &dir)?;
+    if !dir.is_dir() {
+        return Err(ProjectDirError::NotInitialized);
+    }
+    let profiles = dir.join(PROFILES_DIR_NAME);
+    create_dir_guarded(&canon_ws, &profiles)?;
+    let path = profiles.join(file_name);
+    if !is_within_workspace(&canon_ws, &path) {
+        return Err(ProjectDirError::OutsideWorkspace);
+    }
+    // The final component itself may be a link pointing outside (single-level
+    // escape): re-check just before the write that would follow the link.
+    if let Ok(meta) = std::fs::symlink_metadata(&path) {
+        if meta.file_type().is_symlink() && !link_target_within(&canon_ws, &path) {
+            return Err(ProjectDirError::OutsideWorkspace);
+        }
+        if meta.file_type().is_dir() {
+            return Err(ProjectDirError::Io);
+        }
+    }
+    let canonical = profile
+        .to_json()
+        .map_err(|_| ProjectDirError::InvalidProfile)?;
+    std::fs::write(&path, canonical).map_err(|_| ProjectDirError::Io)?;
+    // Post-write backstop (TOCTOU): the written file must canonicalize inside
+    // the workspace.
+    if !canonical_inside(&canon_ws, &path) {
+        return Err(ProjectDirError::OutsideWorkspace);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1178,6 +1299,133 @@ mod tests {
                 "name {name:?} must be rejected"
             );
         }
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn save_profile_round_trips_through_load() {
+        let ws = temp_root();
+        init_nexora_dir(&ws).expect("init succeeds");
+        let (provider, model) = listed_entry();
+        let document = profile_json(&provider, &model);
+        save_profile_file(&ws, "chat.json", &document).expect("save succeeds");
+        let loaded = load_profile_file(&ws, "chat.json").expect("saved profile loads");
+        assert_eq!(loaded.entries.len(), 1);
+        assert_eq!(loaded.entries[0].provider, provider);
+        assert_eq!(loaded.entries[0].model, model);
+        // Overwriting with another valid document replaces the file.
+        let registry = crate::infrastructure::providers::supported_providers();
+        if registry.len() > 1 && !registry[1].models.is_empty() {
+            let other = &registry[1];
+            let replacement = profile_json(&other.name, &other.models[0]);
+            save_profile_file(&ws, "chat.json", &replacement).expect("overwrite succeeds");
+            let reloaded = load_profile_file(&ws, "chat.json").expect("replacement loads");
+            assert_eq!(reloaded.entries[0].provider, other.name);
+            assert_eq!(reloaded.entries[0].model, other.models[0]);
+        }
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn invalid_save_refuses_before_writing() {
+        // Validate-before-write: a refusal leaves any existing file untouched,
+        // and creates nothing when no file exists yet.
+        let ws = temp_root();
+        init_nexora_dir(&ws).expect("init succeeds");
+        let (provider, model) = listed_entry();
+        let valid = profile_json(&provider, &model);
+        save_profile_file(&ws, "chat.json", &valid).expect("seed valid profile");
+        let before = std::fs::read(ws.join(".nexora/profiles/chat.json")).expect("read seeded");
+        for bad in [
+            "not json at all",
+            "[]",
+            r#"[{"provider":"ghost-provider","model":"x"}]"#,
+            "[",
+        ] {
+            assert_eq!(
+                save_profile_file(&ws, "chat.json", bad).expect_err("invalid save refuses"),
+                ProjectDirError::InvalidProfile,
+                "document {bad:?} must be refused"
+            );
+        }
+        assert_eq!(
+            std::fs::read(ws.join(".nexora/profiles/chat.json")).expect("seeded file kept"),
+            before,
+            "a refused save must not touch the existing file"
+        );
+        // No file is created for a refused first save either.
+        assert_eq!(
+            save_profile_file(&ws, "agent.json", "[]").expect_err("invalid first save refuses"),
+            ProjectDirError::InvalidProfile
+        );
+        assert!(!ws.join(".nexora/profiles/agent.json").exists());
+        // Traversal save names never reach the filesystem: nothing escapes
+        // to the workspace root and no `sub/` directory is created.
+        for name in ["../nexora.json", "sub/chat.json", "chat.txt", "", ".json"] {
+            assert_eq!(
+                save_profile_file(&ws, name, &valid).expect_err("bad save name refuses"),
+                ProjectDirError::InvalidProfile,
+                "name {name:?} must be rejected"
+            );
+        }
+        assert!(!ws.join("nexora.json").exists());
+        assert!(!ws.join("sub").exists());
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn save_requires_init_and_stays_in_workspace() {
+        let (provider, model) = listed_entry();
+        let document = profile_json(&provider, &model);
+        // No `.nexora/` yet: save refuses instead of creating the home itself
+        // (init stays the only creator of `.nexora/`).
+        let ws = temp_root();
+        assert_eq!(
+            save_profile_file(&ws, "chat.json", &document).expect_err("uninit refuses"),
+            ProjectDirError::NotInitialized
+        );
+        assert!(!ws.join(".nexora").exists());
+        // A missing workspace root refuses as outside the workspace.
+        let missing = ws.join("gone-51ab");
+        assert_eq!(
+            save_profile_file(&missing, "chat.json", &document).expect_err("missing root refuses"),
+            ProjectDirError::OutsideWorkspace
+        );
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn oversized_save_refuses_secret_free() {
+        const SENTINEL: &str = "sk-test-sentinel-41cd";
+        let ws = temp_root();
+        init_nexora_dir(&ws).expect("init succeeds");
+        let big = format!("x{SENTINEL}{}", "y".repeat(70 * 1024));
+        let err = save_profile_file(&ws, "chat.json", &big).expect_err("oversized refuses");
+        assert_eq!(err, ProjectDirError::InvalidProfile);
+        assert!(!format!("{err}").contains(SENTINEL));
+        assert!(!ws.join(".nexora/profiles/chat.json").exists());
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn profiles_ignore_no_ignore_rules() {
+        // `profiles/` is Nexora-owned config: ignore patterns matching it (or
+        // `*.json`) never block config loads or saves. Ignore governs agent
+        // tool reads of user content, not config resolution.
+        let ws = temp_root();
+        init_nexora_dir(&ws).expect("init succeeds");
+        std::fs::write(
+            ws.join(".nexora/.nexoraignore"),
+            "profiles/\n*.json\nchat.json\n",
+        )
+        .expect("seed hostile ignore rules");
+        let (provider, model) = listed_entry();
+        let document = profile_json(&provider, &model);
+        save_profile_file(&ws, "chat.json", &document).expect("save bypasses ignore");
+        let loaded = load_profile_file(&ws, "chat.json").expect("load bypasses ignore");
+        assert_eq!(loaded.entries.len(), 1);
+        assert!(profile_file_present(&ws, "chat.json"));
+        assert!(!profile_file_present(&ws, "missing.json"));
         let _ = std::fs::remove_dir_all(&ws);
     }
 

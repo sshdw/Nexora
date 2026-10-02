@@ -782,3 +782,12 @@ export function listWorkspaceRecent(): Promise<string[]> {
 export function nexoraInit(): Promise<string> {
   return invoke<string>("nexora_init");
 }
+
+/** Persist one workspace-scoped routing profile (`save_workspace_profile`).
+ * `task` selects `.nexora/profiles/chat.json` vs `agent.json`; `document`
+ * is the JSON array of `{provider, model}` entries. The backend validates
+ * before writing and refuses invalid documents secret-free. Returns the
+ * written file path. */
+export function saveWorkspaceProfile(task: "chat" | "agent", document: string): Promise<string> {
+  return invoke<string>("save_workspace_profile", { task, document });
+}
