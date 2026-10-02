@@ -15,6 +15,7 @@ use std::path::PathBuf;
 
 use tauri::{AppHandle, Manager, State};
 
+use crate::application::routing::{profile_file_name, RoutingProfile, TaskKind};
 use crate::application::settings::SettingsService;
 use crate::application::workspace::{
     parse_recent, push_recent, resolve_workspace_root, validate_workspace_root,
@@ -104,4 +105,42 @@ pub(crate) fn nexora_init(app: AppHandle, db: State<'_, Database>) -> Result<Str
     let dir =
         crate::application::project_dir::init_nexora_dir(&root).map_err(CommandError::from)?;
     Ok(dir.to_string_lossy().to_string())
+}
+
+/// Persist one workspace-scoped routing profile document (`task` is `"chat"`
+/// or `"agent"`) as `.nexora/profiles/<task>.json` under the effective
+/// workspace root.
+///
+/// The document is validated with the routing single source
+/// ([`RoutingProfile::from_json`]) before anything is written: invalid
+/// documents are refused with a secret-free error and leave any existing file
+/// untouched. The task label mirrors the checkpoint-label rule (run-snapshot
+/// accessories): it is caller-chosen input, so an unknown label fails with
+/// fixed vocabulary that never echoes it. `.nexoraignore` is never consulted
+/// (`profiles/` is Nexora-owned config, not user content). Returns the written
+/// file path.
+#[tauri::command]
+pub(crate) fn save_workspace_profile(
+    task: String,
+    document: String,
+    app: AppHandle,
+    db: State<'_, Database>,
+) -> Result<String, CommandError> {
+    let kind = TaskKind::parse(task.as_str()).ok_or_else(|| {
+        CommandError::new(ErrorKind::InvalidInput, "unknown workspace profile task")
+    })?;
+    RoutingProfile::from_json(document.as_str()).map_err(|_| {
+        CommandError::new(ErrorKind::InvalidData, "the workspace profile is invalid")
+    })?;
+    let fallback = default_root(&app)?;
+    let root = resolve_workspace_root(db.inner(), &fallback);
+    let file_name = profile_file_name(kind);
+    crate::application::project_dir::save_profile_file(&root, file_name, document.as_str())
+        .map_err(CommandError::from)?;
+    Ok(root
+        .join(crate::application::project_dir::NEXORA_DIR_NAME)
+        .join(crate::application::project_dir::PROFILES_DIR_NAME)
+        .join(file_name)
+        .to_string_lossy()
+        .to_string())
 }

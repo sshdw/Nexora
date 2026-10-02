@@ -63,6 +63,80 @@ pub(crate) fn profile_key(task: TaskKind) -> &'static str {
     }
 }
 
+impl TaskKind {
+    /// Parse the caller-supplied task label (`"chat"` | `"agent"`).
+    ///
+    /// Anything else yields [`None`]; callers report the fixed-vocabulary
+    /// unknown-task error without echoing the rejected label (checkpoint-label
+    /// rule, see [`ResolvedProfile`]).
+    #[must_use]
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value {
+            "chat" => Some(Self::Chat),
+            "agent" => Some(Self::Agent),
+            _ => None,
+        }
+    }
+}
+
+/// Workspace file holding the profile for `task` under `.nexora/profiles/`.
+#[must_use]
+pub(crate) fn profile_file_name(task: TaskKind) -> &'static str {
+    match task {
+        TaskKind::Chat => "chat.json",
+        TaskKind::Agent => "agent.json",
+    }
+}
+
+/// Where a resolved routing profile came from (precedence order).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProfileSource {
+    /// A valid workspace `.nexora/profiles/<task>.json` file.
+    Workspace,
+    /// The app-global settings key ([`profile_key`]).
+    Global,
+    /// The built-in registry default ([`RoutingProfile::default_for`]).
+    Default,
+}
+
+/// Fixed-vocabulary notice recorded when a present workspace profile file
+/// fails to load and resolution falls back to the global settings key (or the
+/// registry default when the global key is absent).
+///
+/// The notice echoes nothing: no document content, no file name, no task
+/// label. This mirrors the checkpoint-label rule from the run snapshots
+/// (`application/agent/snapshots.rs`): the task label is caller-chosen input
+/// (like a checkpoint name), so it may appear in read-only views but never in
+/// errors or recorded notes — only fixed vocabulary travels there. The run
+/// itself never fails for a bad workspace file; the fallback applies and the
+/// note is carried alongside.
+pub(crate) const INVALID_WORKSPACE_PROFILE_NOTICE: &str =
+    "the workspace profile is invalid; using the stored settings profile";
+
+/// A routing profile resolved through the workspace → global → default
+/// precedence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedProfile {
+    /// Where the profile came from.
+    pub source: ProfileSource,
+    /// The winning profile.
+    pub profile: RoutingProfile,
+    /// Set to [`INVALID_WORKSPACE_PROFILE_NOTICE`] when a present workspace
+    /// file failed to load and the fallback applied; [`None`] otherwise.
+    pub notice: Option<&'static str>,
+}
+
+impl ResolvedProfile {
+    /// First profile entry usable for the task, via [`resolve_route`].
+    ///
+    /// This wires precedence resolution into the existing routing call path:
+    /// callers resolve once, then route through the same gating primitive.
+    #[must_use]
+    pub(crate) fn route(&self, require_tools: bool) -> Option<&RouteEntry> {
+        resolve_route(&self.profile.entries, require_tools)
+    }
+}
+
 /// One ordered routing candidate: a preferred provider and model pair.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct RouteEntry {
@@ -281,12 +355,92 @@ impl<'a> RoutingService<'a> {
     /// Load the profile for `task`; an absent setting resolves to the
     /// built-in [`RoutingProfile::default_for`].
     ///
+    /// Unchanged global-only behavior: workspace files are consulted only
+    /// through [`Self::resolve`].
+    ///
     /// # Errors
     ///
     /// Returns [`RoutingError::Database`] on a failed read, or
     /// [`RoutingError::InvalidProfile`] when a stored value is corrupt (a
     /// corrupt stored value is reported, never silently replaced).
     pub(crate) fn load(&self, task: TaskKind) -> Result<RoutingProfile, RoutingError> {
+        match self.settings.read(profile_key(task))? {
+            None => Ok(RoutingProfile::default_for(task)),
+            Some(raw) => RoutingProfile::from_json(&raw),
+        }
+    }
+
+    /// Resolve the profile for `task` through the workspace → global →
+    /// default precedence.
+    ///
+    /// `workspace_root` is the canonical workspace root when the caller runs
+    /// inside one ([`None`] skips the workspace tier): a present
+    /// `.nexora/profiles/<task>.json` file that validates wins
+    /// ([`ProfileSource::Workspace`]); a present file that fails to load falls
+    /// back to the global settings key with the fixed-vocabulary
+    /// [`INVALID_WORKSPACE_PROFILE_NOTICE`] recorded (never failing the run,
+    /// never echoing content); an absent file reads the global key unchanged
+    /// ([`ProfileSource::Global`]); an absent global key resolves to the
+    /// registry default ([`ProfileSource::Default`]).
+    ///
+    /// A corrupt *global* value keeps [`Self::load`] semantics: it is
+    /// reported as [`RoutingError::InvalidProfile`], never silently replaced.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RoutingError::Database`] on a failed settings read, or
+    /// [`RoutingError::InvalidProfile`] when a stored global value is corrupt.
+    pub(crate) fn resolve(
+        &self,
+        workspace_root: Option<&std::path::Path>,
+        task: TaskKind,
+    ) -> Result<ResolvedProfile, RoutingError> {
+        if let Some(root) = workspace_root {
+            let file_name = profile_file_name(task);
+            if crate::application::project_dir::profile_file_present(root, file_name) {
+                match crate::application::project_dir::load_profile_file(root, file_name) {
+                    Ok(profile) => {
+                        return Ok(ResolvedProfile {
+                            source: ProfileSource::Workspace,
+                            profile,
+                            notice: None,
+                        });
+                    }
+                    Err(_) => {
+                        // A present file that fails to load (invalid content,
+                        // oversized document, unreadable file, escaping link):
+                        // fall back with the fixed-vocab note, never fail the
+                        // run and never echo content.
+                        return Ok(ResolvedProfile {
+                            source: self.global_source(task)?,
+                            profile: self.global_or_default(task)?,
+                            notice: Some(INVALID_WORKSPACE_PROFILE_NOTICE),
+                        });
+                    }
+                }
+            }
+            // Absent file (or unusable root): the global tier decides, with no
+            // notice — there is nothing to report.
+        }
+        Ok(ResolvedProfile {
+            source: self.global_source(task)?,
+            profile: self.global_or_default(task)?,
+            notice: None,
+        })
+    }
+
+    /// Global tier of [`Self::resolve`]: [`ProfileSource::Global`] when the
+    /// settings key is present, [`ProfileSource::Default`] when absent.
+    fn global_source(&self, task: TaskKind) -> Result<ProfileSource, RoutingError> {
+        match self.settings.read(profile_key(task))? {
+            Some(_) => Ok(ProfileSource::Global),
+            None => Ok(ProfileSource::Default),
+        }
+    }
+
+    /// Global tier of [`Self::resolve`]: the stored profile, or the registry
+    /// default when the key is absent.
+    fn global_or_default(&self, task: TaskKind) -> Result<RoutingProfile, RoutingError> {
         match self.settings.read(profile_key(task))? {
             None => Ok(RoutingProfile::default_for(task)),
             Some(raw) => RoutingProfile::from_json(&raw),
@@ -652,5 +806,274 @@ mod tests {
             .expect("encode oversized")
         )
         .is_err());
+    }
+
+    // ------------------------------------------------------------------
+    // Workspace → global → default precedence (`RoutingService::resolve`)
+    // ------------------------------------------------------------------
+
+    /// Scratch workspace root unique to this test binary run.
+    fn resolve_temp_root() -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let id = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "nexora-routing-resolve-test-{}-{id}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp root");
+        crate::application::workspace::strip_verbatim(
+            dir.canonicalize().expect("canonicalize temp root"),
+        )
+    }
+
+    fn seed_global(db: &crate::infrastructure::database::Database, task: TaskKind, raw: &str) {
+        crate::application::settings::SettingsService::new(db)
+            .write(profile_key(task), Some(raw))
+            .expect("seed global profile");
+    }
+
+    fn seed_workspace(ws: &std::path::Path, task: TaskKind, document: &str) {
+        crate::application::project_dir::init_nexora_dir(ws).expect("init succeeds");
+        std::fs::write(
+            ws.join(".nexora")
+                .join("profiles")
+                .join(profile_file_name(task)),
+            document,
+        )
+        .expect("seed workspace profile");
+    }
+
+    fn workspace_doc(provider: &str, model: &str) -> String {
+        format!(r#"[{{"provider":{provider:?},"model":{model:?}}}]"#)
+    }
+
+    #[test]
+    fn task_labels_parse_to_exactly_two_kinds() {
+        assert_eq!(TaskKind::parse("chat"), Some(TaskKind::Chat));
+        assert_eq!(TaskKind::parse("agent"), Some(TaskKind::Agent));
+        for hostile in [
+            "",
+            "Chat",
+            "CHAT",
+            " chat",
+            "chat ",
+            "ghost",
+            "../chat",
+            "sk-live-hostile",
+            "chat.json",
+        ] {
+            assert_eq!(
+                TaskKind::parse(hostile),
+                None,
+                "label {hostile:?} must not parse"
+            );
+        }
+        assert_eq!(profile_file_name(TaskKind::Chat), "chat.json");
+        assert_eq!(profile_file_name(TaskKind::Agent), "agent.json");
+    }
+
+    #[test]
+    fn resolve_prefers_valid_workspace_file_over_global() {
+        let db = crate::infrastructure::database::in_memory_database();
+        let service = RoutingService::new(&db);
+        // Global prefers openai; the workspace file prefers gemini.
+        let openai_model = first_listed("openai");
+        let gemini_model = first_listed("gemini");
+        seed_global(&db, TaskKind::Chat, &workspace_doc("openai", &openai_model));
+        let ws = resolve_temp_root();
+        seed_workspace(&ws, TaskKind::Chat, &workspace_doc("gemini", &gemini_model));
+        let resolved = service
+            .resolve(Some(ws.as_path()), TaskKind::Chat)
+            .expect("resolve succeeds");
+        assert_eq!(resolved.source, ProfileSource::Workspace);
+        assert_eq!(resolved.notice, None);
+        assert_eq!(
+            resolved.profile.entries,
+            vec![entry("gemini", &gemini_model)]
+        );
+        // The routed entry follows the workspace order through the existing
+        // gating primitive.
+        assert_eq!(
+            resolved.route(false).map(|found| found.model.as_str()),
+            Some(gemini_model.as_str())
+        );
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn resolve_invalid_workspace_falls_back_to_global_with_notice() {
+        const SENTINEL: &str = "sk-test-sentinel-88ee";
+        let db = crate::infrastructure::database::in_memory_database();
+        let service = RoutingService::new(&db);
+        let listed = first_listed("openai");
+        seed_global(&db, TaskKind::Agent, &workspace_doc("openai", &listed));
+        let ws = resolve_temp_root();
+        seed_workspace(
+            &ws,
+            TaskKind::Agent,
+            &format!(r#"[{{"provider":"ghost-provider","model":{SENTINEL:?}}}]"#),
+        );
+        let resolved = service
+            .resolve(Some(ws.as_path()), TaskKind::Agent)
+            .expect("invalid workspace never fails the run");
+        assert_eq!(resolved.source, ProfileSource::Global);
+        assert_eq!(resolved.notice, Some(INVALID_WORKSPACE_PROFILE_NOTICE));
+        assert_eq!(resolved.profile.entries, vec![entry("openai", &listed)]);
+        // The fixed-vocab notice echoes no content, file name, or task label.
+        let rendered = format!("{:?}", resolved.notice);
+        for hostile in [
+            "sk-test-sentinel-88ee",
+            "ghost-provider",
+            "agent",
+            "chat.json",
+        ] {
+            assert!(
+                !rendered.to_lowercase().contains(hostile),
+                "fallback notice must stay fixed-vocabulary, found {hostile:?}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn resolve_absent_workspace_file_reads_global_silently() {
+        let db = crate::infrastructure::database::in_memory_database();
+        let service = RoutingService::new(&db);
+        let listed = first_listed("openai");
+        seed_global(&db, TaskKind::Chat, &workspace_doc("openai", &listed));
+        // Initialized workspace, but no profile file for the task.
+        let ws = resolve_temp_root();
+        crate::application::project_dir::init_nexora_dir(&ws).expect("init succeeds");
+        let resolved = service
+            .resolve(Some(ws.as_path()), TaskKind::Chat)
+            .expect("resolve succeeds");
+        assert_eq!(resolved.source, ProfileSource::Global);
+        assert_eq!(resolved.notice, None);
+        assert_eq!(resolved.profile.entries, vec![entry("openai", &listed)]);
+        // An uninitialized workspace behaves the same (zero behavior change:
+        // the global tier decides, silently).
+        let bare = resolve_temp_root();
+        let resolved = service
+            .resolve(Some(bare.as_path()), TaskKind::Chat)
+            .expect("resolve succeeds");
+        assert_eq!(resolved.source, ProfileSource::Global);
+        assert_eq!(resolved.notice, None);
+        let _ = std::fs::remove_dir_all(&ws);
+        let _ = std::fs::remove_dir_all(&bare);
+    }
+
+    #[test]
+    fn resolve_without_workspace_or_global_reads_defaults() {
+        let db = crate::infrastructure::database::in_memory_database();
+        let service = RoutingService::new(&db);
+        for task in [TaskKind::Chat, TaskKind::Agent] {
+            // No workspace root at all: registry defaults, no notice.
+            let resolved = service.resolve(None, task).expect("resolve succeeds");
+            assert_eq!(resolved.source, ProfileSource::Default);
+            assert_eq!(resolved.notice, None);
+            assert_eq!(resolved.profile, RoutingProfile::default_for(task));
+        }
+        // An initialized-but-empty workspace agrees (absent file → global
+        // tier → absent key → defaults).
+        let ws = resolve_temp_root();
+        crate::application::project_dir::init_nexora_dir(&ws).expect("init succeeds");
+        let resolved = service
+            .resolve(Some(ws.as_path()), TaskKind::Chat)
+            .expect("resolve succeeds");
+        assert_eq!(resolved.source, ProfileSource::Default);
+        assert_eq!(resolved.notice, None);
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn resolve_invalid_workspace_without_global_reads_defaults_with_notice() {
+        let db = crate::infrastructure::database::in_memory_database();
+        let service = RoutingService::new(&db);
+        let ws = resolve_temp_root();
+        seed_workspace(&ws, TaskKind::Chat, "not json at all sk-test-sentinel-12ab");
+        let resolved = service
+            .resolve(Some(ws.as_path()), TaskKind::Chat)
+            .expect("invalid workspace never fails the run");
+        assert_eq!(resolved.source, ProfileSource::Default);
+        assert_eq!(resolved.notice, Some(INVALID_WORKSPACE_PROFILE_NOTICE));
+        assert_eq!(
+            resolved.profile,
+            RoutingProfile::default_for(TaskKind::Chat)
+        );
+        assert!(!format!("{:?}", resolved.notice).contains("sk-test-sentinel-12ab"));
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn resolve_corrupt_global_still_errors_like_load() {
+        // Zero behavior change on the global tier: a corrupt stored value is
+        // reported, never silently replaced — with or without a workspace.
+        let db = crate::infrastructure::database::in_memory_database();
+        let service = RoutingService::new(&db);
+        crate::application::settings::SettingsService::new(&db)
+            .write(profile_key(TaskKind::Chat), Some("[]"))
+            .expect("seed corrupt global");
+        assert!(service.load(TaskKind::Chat).is_err());
+        assert!(service.resolve(None, TaskKind::Chat).is_err());
+        let ws = resolve_temp_root();
+        crate::application::project_dir::init_nexora_dir(&ws).expect("init succeeds");
+        assert!(service.resolve(Some(ws.as_path()), TaskKind::Chat).is_err());
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn save_then_resolve_integration() {
+        // The save path feeds the resolution path: a saved workspace document
+        // wins on the next resolve.
+        let db = crate::infrastructure::database::in_memory_database();
+        let service = RoutingService::new(&db);
+        let listed = first_listed("anthropic");
+        seed_global(
+            &db,
+            TaskKind::Chat,
+            &workspace_doc("openai", &first_listed("openai")),
+        );
+        let ws = resolve_temp_root();
+        crate::application::project_dir::init_nexora_dir(&ws).expect("init succeeds");
+        crate::application::project_dir::save_profile_file(
+            &ws,
+            profile_file_name(TaskKind::Chat),
+            &workspace_doc("anthropic", &listed),
+        )
+        .expect("save succeeds");
+        let resolved = service
+            .resolve(Some(ws.as_path()), TaskKind::Chat)
+            .expect("resolve succeeds");
+        assert_eq!(resolved.source, ProfileSource::Workspace);
+        assert_eq!(resolved.notice, None);
+        assert_eq!(resolved.profile.entries, vec![entry("anthropic", &listed)]);
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn per_task_files_resolve_independently() {
+        let db = crate::infrastructure::database::in_memory_database();
+        let service = RoutingService::new(&db);
+        let ws = resolve_temp_root();
+        seed_workspace(
+            &ws,
+            TaskKind::Chat,
+            &workspace_doc("openai", &first_listed("openai")),
+        );
+        // Agent has no workspace file: global tier decides for agent only.
+        let resolved_chat = service
+            .resolve(Some(ws.as_path()), TaskKind::Chat)
+            .expect("chat resolves");
+        assert_eq!(resolved_chat.source, ProfileSource::Workspace);
+        let resolved_agent = service
+            .resolve(Some(ws.as_path()), TaskKind::Agent)
+            .expect("agent resolves");
+        assert_eq!(resolved_agent.source, ProfileSource::Default);
+        assert_eq!(
+            resolved_agent.profile,
+            RoutingProfile::default_for(TaskKind::Agent)
+        );
+        let _ = std::fs::remove_dir_all(&ws);
     }
 }
