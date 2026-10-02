@@ -240,7 +240,7 @@ fn exchange_groups(messages: &[AiMessage], start: usize) -> Vec<Range<usize>> {
 
 /// Estimated tokens of one message for budgeting: visible text, structured
 /// tool calls (names plus arguments), and the tool result.
-fn message_tokens(message: &AiMessage) -> u64 {
+pub(crate) fn message_tokens(message: &AiMessage) -> u64 {
     let mut total = estimate_tokens(&message.composed_content());
     for call in &message.tool_calls {
         total = total.saturating_add(estimate_tokens(&call.name));
