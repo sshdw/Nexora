@@ -17,6 +17,7 @@ use crate::application::data_management::DataManagementError;
 use crate::application::execution::RequestError;
 use crate::application::export::ExportError;
 use crate::application::import::ImportError;
+use crate::application::project_dir::ProjectDirError;
 use crate::application::prompts::PromptLibraryError;
 use crate::application::providers::ProviderError;
 use crate::application::search::SearchError;
@@ -313,6 +314,35 @@ impl From<DataManagementError> for CommandError {
                 "explicit confirmation is required before destructive data-management operations",
             ),
             DataManagementError::Database(inner) => Self::from(inner),
+        }
+    }
+}
+
+impl From<ProjectDirError> for CommandError {
+    fn from(err: ProjectDirError) -> Self {
+        match err {
+            ProjectDirError::OutsideWorkspace => {
+                Self::new(ErrorKind::InvalidInput, "the path is outside the workspace")
+            }
+            ProjectDirError::NotInitialized => Self::new(
+                ErrorKind::InvalidInput,
+                "the workspace project directory is not initialized",
+            ),
+            ProjectDirError::UnsupportedVersion { version } => Self::new(
+                ErrorKind::UnsupportedVersion,
+                format!("the workspace project directory uses an unsupported version ({version})"),
+            ),
+            ProjectDirError::InvalidManifest => Self::new(
+                ErrorKind::InvalidData,
+                "the workspace project manifest is invalid",
+            ),
+            ProjectDirError::InvalidProfile => {
+                Self::new(ErrorKind::InvalidData, "the workspace profile is invalid")
+            }
+            ProjectDirError::Io => Self::new(
+                ErrorKind::Io,
+                "a workspace project directory operation failed",
+            ),
         }
     }
 }

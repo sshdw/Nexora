@@ -28,6 +28,7 @@ pub mod data_management;
 pub mod execution;
 pub mod export;
 pub mod import;
+pub mod project_dir;
 pub mod prompts;
 pub mod providers;
 pub mod routing;

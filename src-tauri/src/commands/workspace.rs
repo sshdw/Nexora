@@ -88,3 +88,20 @@ pub(crate) fn list_workspace_recent(db: State<'_, Database>) -> Result<Vec<Strin
         .map_err(CommandError::from)?;
     Ok(parse_recent(raw.as_deref()))
 }
+
+/// Initialize the workspace `.nexora/` project directory (idempotent).
+///
+/// Resolves the effective workspace root (the stored `agent.workspace_root`
+/// or the default `agent_workspace` directory) and creates `.nexora/` there
+/// with its manifest, ignore file, and `profiles/` scaffold — only on this
+/// explicit call, never implicitly. Existing files are never overwritten, and
+/// every write is guarded to stay inside the workspace. Returns the `.nexora/`
+/// directory path.
+#[tauri::command]
+pub(crate) fn nexora_init(app: AppHandle, db: State<'_, Database>) -> Result<String, CommandError> {
+    let fallback = default_root(&app)?;
+    let root = resolve_workspace_root(db.inner(), &fallback);
+    let dir =
+        crate::application::project_dir::init_nexora_dir(&root).map_err(CommandError::from)?;
+    Ok(dir.to_string_lossy().to_string())
+}
