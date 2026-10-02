@@ -597,11 +597,19 @@ impl<'a> AgentRunner<'a> {
             if window > 0 {
                 let estimated = assembly::messages_size_tokens(&messages);
                 let mut hook = ProactiveHook::new();
-                if hook.poll(estimated, window).unwrap_or(false) {
-                    governor.observe(Some(TokenUsage {
+                // Loud terminal arm: a fresh hook cannot have fired, so an
+                // `Err` here is a model bug — surface it through the existing
+                // `ContextExhausted` terminal instead of silently proceeding.
+                match hook.poll(estimated, window) {
+                    Ok(true) => governor.observe(Some(TokenUsage {
                         input_tokens: estimated,
                         output_tokens: 0,
-                    }));
+                    })),
+                    Ok(false) => {}
+                    Err(err) => {
+                        observe_transition(RunState::Running, RunState::Failed);
+                        return Err(err);
+                    }
                 }
             }
         }

@@ -605,6 +605,48 @@ export function inspectRun(runId: number): Promise<RunInspection> {
   return invoke<RunInspection>("inspect_run", { runId });
 }
 
+// ---- Spend dashboard (read-only) --------------------------------------
+// Per-run spend (steps, micro-USD, budget caps, % used) plus aggregate
+// totals across every persisted run, from the existing `agent_runs`
+// counters only. Payloads stay snake_case (serde
+// `rename_all = "snake_case"`); the command arg is camelCase (`runId`),
+// like every other agent command. Secret-free by construction: integer ids,
+// counters, and float ratios only — never model names, content, credentials,
+// or SQL. Missing spend data reads `null` (never an error); unknown runs
+// fail with a secret-free not-found error.
+
+/** Per-run spend view: persisted counters plus the derivable budget ratios. */
+export interface SpendRunView {
+  run_id: number;
+  steps_taken: number;
+  spent_micro_usd: number | null;
+  limit_micro_usd: number | null;
+  /** Step cap: in-memory only, never persisted — always `null` here. */
+  max_steps: number | null;
+  steps_pct: number | null;
+  spend_pct: number | null;
+}
+
+/** Aggregate spend totals across every persisted run (saturating sums). */
+export interface SpendTotals {
+  runs: number;
+  total_steps: number;
+  total_spent_micro_usd: number;
+  runs_with_spend: number;
+  runs_with_limit: number;
+}
+
+/** One dashboard response: the requested run plus the cross-run totals. */
+export interface SpendDashboard {
+  run: SpendRunView;
+  totals: SpendTotals;
+}
+
+/** Load the spend dashboard for one run via `spend_dashboard`. */
+export function spendDashboard(runId: number): Promise<SpendDashboard> {
+  return invoke<SpendDashboard>("spend_dashboard", { runId });
+}
+
 // ---- Agent permission rules (M1-core) ----------------------------------
 
 /** One `permission_rules` row (M1-core). */
