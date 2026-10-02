@@ -293,13 +293,6 @@ impl ToolRegistry {
         if !resolved.exists() {
             return Err(ToolError::Io(format!("file not found: '{path}'")));
         }
-        // TOCTOU guard: re-verify the canonical target before following it.
-        verify_existing_within(
-            workspace_root,
-            &canonical_root(workspace_root),
-            &resolved,
-            path,
-        )?;
         // Workspace ignore contract (`application/project_dir`): `.nexora/`
         // itself and every `.nexoraignore` match stay unreadable through the
         // agent tools. The error is a fixed category with no content echo.
@@ -313,6 +306,16 @@ impl ToolRegistry {
                 "path is a directory, not a file: '{path}'"
             )));
         }
+        // TOCTOU guard, deliberately last: the canonical target is re-verified
+        // immediately before the read it gates, so a swap between the ignore
+        // verdict above (which re-canonicalizes internally) and the read
+        // cannot redirect it.
+        verify_existing_within(
+            workspace_root,
+            &canonical_root(workspace_root),
+            &resolved,
+            path,
+        )?;
 
         let content = std::fs::read_to_string(&resolved)
             .map_err(|e| ToolError::Io(format!("failed to read file '{path}': {e}")))?;
@@ -348,6 +351,22 @@ impl ToolRegistry {
         })?;
 
         let resolved = resolve_path(workspace_root, path)?;
+        // Workspace ignore contract (same fixed error as reads): mutating
+        // tools must not create or modify excluded paths. The for-write
+        // verdict handles not-yet-existing targets lexically, so creates
+        // under `.nexora/` or matching `.nexoraignore` deny before any read
+        // or write happens. No `profiles/` allowlist: every write under
+        // `.nexora/` denies, without exception.
+        let ignore = crate::application::project_dir::load_ignore_rules(workspace_root);
+        if crate::application::project_dir::is_excluded_for_write(
+            workspace_root,
+            &resolved,
+            &ignore,
+        ) {
+            return Err(ToolError::Io(
+                "path is excluded by workspace ignore rules".to_string(),
+            ));
+        }
         let canon_ws = canonical_root(workspace_root);
 
         // Read old content before writing (same path validation as read_file). For
@@ -455,6 +474,18 @@ impl ToolRegistry {
         let resolved = resolve_path(workspace_root, path)?;
         if !resolved.exists() {
             return Err(ToolError::Io(format!("file not found: '{path}'")));
+        }
+        // Workspace ignore contract (same fixed error as reads): excluded
+        // paths deny before any content is touched.
+        let ignore = crate::application::project_dir::load_ignore_rules(workspace_root);
+        if crate::application::project_dir::is_excluded_for_write(
+            workspace_root,
+            &resolved,
+            &ignore,
+        ) {
+            return Err(ToolError::Io(
+                "path is excluded by workspace ignore rules".to_string(),
+            ));
         }
         // Re-verify through symlink_metadata (TOCTOU guard): the link may have
         // been swapped between `resolve_path` and use.
@@ -2418,6 +2449,68 @@ mod tests {
         assert_eq!(
             ToolRegistry::execute(&read, &ws).expect("read back"),
             "nested ok"
+        );
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn write_and_edit_deny_excluded_paths() {
+        const FIXED: &str = "Error: path is excluded by workspace ignore rules";
+        let ws = temp_workspace();
+        fs::create_dir_all(ws.join(".nexora")).expect("seed .nexora");
+        fs::write(ws.join(".nexora/nexora.json"), "{\"version\":1}").expect("seed manifest");
+        fs::write(ws.join(".nexora/.nexoraignore"), "*.log\nsecret.txt\n").expect("seed rules");
+        fs::write(ws.join("secret.txt"), "original-secret").expect("seed secret");
+        fs::write(ws.join("visible.txt"), "original-visible").expect("seed visible");
+
+        // Excluded targets deny with the fixed content-free error: the
+        // manifest, an ignored file, and a not-yet-existing ignored file.
+        for target in [".nexora/nexora.json", "secret.txt", "fresh.log"] {
+            let write = call(
+                "write_file",
+                serde_json::json!({"path": target, "content": "pwned"}),
+            );
+            let err = ToolRegistry::execute(&write, &ws).expect_err("write denied");
+            assert_eq!(err.to_string(), FIXED, "write target {target:?}");
+        }
+        for target in [".nexora/nexora.json", "secret.txt"] {
+            let edit = call(
+                "edit_file",
+                serde_json::json!({"path": target, "old_text": "a", "new_text": "b"}),
+            );
+            let err = ToolRegistry::execute(&edit, &ws).expect_err("edit denied");
+            assert_eq!(err.to_string(), FIXED, "edit target {target:?}");
+        }
+        // Denied writes change nothing on disk.
+        assert_eq!(
+            fs::read_to_string(ws.join("secret.txt")).expect("secret kept"),
+            "original-secret"
+        );
+        assert!(
+            !ws.join("fresh.log").exists(),
+            "ignored create wrote nothing"
+        );
+
+        // Non-excluded writes, edits, and creates still succeed (no behavior
+        // change outside the deny).
+        let write = call(
+            "write_file",
+            serde_json::json!({"path": "visible.txt", "content": "changed-visible"}),
+        );
+        ToolRegistry::execute(&write, &ws).expect("visible write succeeds");
+        let create = call(
+            "write_file",
+            serde_json::json!({"path": "fresh.txt", "content": "new"}),
+        );
+        ToolRegistry::execute(&create, &ws).expect("non-ignored create succeeds");
+        let edit = call(
+            "edit_file",
+            serde_json::json!({"path": "visible.txt", "old_text": "changed", "new_text": "edited"}),
+        );
+        ToolRegistry::execute(&edit, &ws).expect("visible edit succeeds");
+        assert_eq!(
+            fs::read_to_string(ws.join("visible.txt")).expect("visible read"),
+            "edited-visible"
         );
         let _ = fs::remove_dir_all(&ws);
     }

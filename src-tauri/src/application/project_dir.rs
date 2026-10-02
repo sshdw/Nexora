@@ -639,6 +639,10 @@ pub(crate) fn load_ignore_rules(workspace_root: &Path) -> IgnoreRules {
 /// Whether `target` is excluded from agent tool reads: inside `.nexora/`
 /// (always) or matched by the workspace ignore rules.
 ///
+/// Listings filter excluded entries silently while direct reads and scopes
+/// deny loudly with a fixed content-free error (naming an ignored file in a
+/// listing error would leak its existence).
+///
 /// Unresolvable or escaping targets fail closed to excluded; the workspace
 /// root itself is never excluded.
 #[must_use]
@@ -652,7 +656,10 @@ pub(crate) fn is_excluded(workspace_root: &Path, target: &Path, rules: &IgnoreRu
     if rel == NEXORA_DIR_NAME || rel.starts_with(&format!("{NEXORA_DIR_NAME}/")) {
         return true;
     }
-    let is_dir = std::fs::symlink_metadata(target).is_ok_and(|meta| meta.file_type().is_dir());
+    // Follow links for the dir-only probe so a symlink-to-dir still matches
+    // directory patterns; missing or broken targets probe as non-directories
+    // (fail-closed: only the pattern verdict is affected, never access).
+    let is_dir = std::fs::metadata(target).is_ok_and(|meta| meta.is_dir());
     rules_verdict(rules, &rel, is_dir)
 }
 
@@ -660,6 +667,56 @@ pub(crate) fn is_excluded(workspace_root: &Path, target: &Path, rules: &IgnoreRu
 #[must_use]
 pub(crate) fn path_is_ignored(workspace_root: &Path, target: &Path) -> bool {
     is_excluded(workspace_root, target, &load_ignore_rules(workspace_root))
+}
+
+/// Exclusion verdict for mutating tool calls over a possibly-missing target.
+///
+/// [`is_excluded`] canonicalizes, so a not-yet-created path always fails
+/// closed to excluded — which would deny every create. Existing targets
+/// (files, directories, and dangling links) go through [`is_excluded`]
+/// unchanged; missing targets get a lexical verdict instead (`.nexora/`
+/// denies, otherwise the ignore rules decide over the workspace-relative
+/// path). Layouts unrelated to the workspace still fail closed, and the deny
+/// error stays the fixed content-free category.
+#[must_use]
+pub(crate) fn is_excluded_for_write(
+    workspace_root: &Path,
+    target: &Path,
+    rules: &IgnoreRules,
+) -> bool {
+    if target.exists() || std::fs::symlink_metadata(target).is_ok() {
+        return is_excluded(workspace_root, target, rules);
+    }
+    let Some(rel) = lexical_rel_posix(workspace_root, target) else {
+        return true;
+    };
+    if rel.is_empty() {
+        return false;
+    }
+    if rel == NEXORA_DIR_NAME || rel.starts_with(&format!("{NEXORA_DIR_NAME}/")) {
+        return true;
+    }
+    rules_verdict(rules, &rel, false)
+}
+
+/// Workspace-relative `/`-joined path without touching the filesystem.
+///
+/// [`relative_posix`] needs both sides to exist; creates do not, so this
+/// lexical form backs [`is_excluded_for_write`]. Verbatim prefixes are
+/// stripped so canonical and joined paths compare equally.
+fn lexical_rel_posix(workspace_root: &Path, target: &Path) -> Option<String> {
+    let ws = strip_verbatim(workspace_root.to_path_buf());
+    let target = strip_verbatim(target.to_path_buf());
+    let rel = target.strip_prefix(&ws).ok()?;
+    if rel.as_os_str().is_empty() {
+        return Some(String::new());
+    }
+    Some(
+        rel.components()
+            .map(|comp| comp.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("/"),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -978,6 +1035,68 @@ mod tests {
             serde_json::json!({"pattern": "needle", "directory": "secret.txt"}),
         );
         assert!(crate::application::agent::tools::ToolRegistry::execute(&scoped, &ws).is_err());
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn ignored_dir_list_denied_loudly() {
+        // A directly listed ignored directory denies with the same fixed
+        // error as direct reads (executor.rs deny branch): the caller named
+        // it, so there is nothing to leak by denying loudly.
+        let ws = temp_workspace();
+        std::fs::create_dir_all(ws.join(".nexora")).expect("seed .nexora");
+        std::fs::write(ws.join(".nexora/.nexoraignore"), "secret-dir/\n").expect("seed rules");
+        std::fs::create_dir_all(ws.join("secret-dir")).expect("seed dir");
+        std::fs::write(ws.join("secret-dir/note.txt"), "x").expect("seed file");
+        let list = call("list_directory", serde_json::json!({"path": "secret-dir"}));
+        let err = crate::application::agent::tools::ToolRegistry::execute(&list, &ws)
+            .expect_err("ignored dir denied");
+        assert_eq!(
+            err.to_string(),
+            "Error: path is excluded by workspace ignore rules"
+        );
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn negation_reincludes_below_excluded_dir() {
+        // Unlike git there is no parent-exclusion stickiness: a later
+        // negation re-includes below an excluded directory.
+        let rules = parse_ignore_rules("build/\n!build/keep\n");
+        assert!(rules_verdict(&rules, "build", true));
+        assert!(rules_verdict(&rules, "build/out.o", false));
+        assert!(!rules_verdict(&rules, "build/keep", false));
+    }
+
+    #[test]
+    fn exclusion_fails_closed_for_missing_and_outside() {
+        let ws = temp_root();
+        let rules = IgnoreRules::default();
+        assert!(is_excluded(&ws, &ws.join("no-such-file-38f1"), &rules));
+        let outside = temp_root();
+        assert!(is_excluded(&ws, &outside, &rules));
+        assert!(is_excluded(&ws, &outside.join("no-such-file-9c4e"), &rules));
+        let _ = std::fs::remove_dir_all(&ws);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn symlink_to_dir_matches_dir_only_pattern() {
+        // The dir-only probe follows links: a symlink-to-dir matches
+        // directory patterns (through its canonical target), while a
+        // symlink-to-file still does not.
+        use std::os::unix::fs::symlink;
+        let ws = temp_root();
+        let real = ws.join("real-dir");
+        std::fs::create_dir_all(&real).expect("seed dir");
+        symlink(&real, ws.join("linked-dir")).expect("link dir");
+        std::fs::write(ws.join("real-file.txt"), "x").expect("seed file");
+        symlink(ws.join("real-file.txt"), ws.join("linked-file")).expect("link file");
+        let dir_rules = parse_ignore_rules("real-dir/\n");
+        assert!(is_excluded(&ws, &ws.join("linked-dir"), &dir_rules));
+        let file_rules = parse_ignore_rules("real-file.txt/\n");
+        assert!(!is_excluded(&ws, &ws.join("linked-file"), &file_rules));
         let _ = std::fs::remove_dir_all(&ws);
     }
 
