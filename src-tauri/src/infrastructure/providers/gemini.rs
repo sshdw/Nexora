@@ -107,6 +107,35 @@ pub(crate) const SUPPORTED_MODELS: &[&str] = &[
     "gemini-3.5-flash-lite",
 ];
 
+/// Estimated cost rates per 1M tokens, micro-USD (`(model, input, output)`).
+///
+/// Hardcoded estimates in abstract micro-USD units (1 USD = `1_000_000`
+/// micro-USD), matching `RunBudget`.
+/// These are planning estimates — not live provider pricing, never fetched
+/// over the network — and only cover the native [`SUPPORTED_MODELS`] IDs.
+/// Unknown IDs yield `None` from [`rate_for_model`]: callers fall back to
+/// the policy default, never a guessed rate.
+pub(crate) const MODEL_RATES: &[(&str, u64, u64)] = &[
+    ("gemini-3.6-flash", 1_250_000, 5_000_000),
+    ("gemini-3.1-flash-lite", 300_000, 1_200_000),
+    ("gemini-3.1-pro-preview", 2_500_000, 10_000_000),
+    ("gemini-flash-lite-latest", 300_000, 1_200_000),
+    ("gemini-pro-latest", 2_500_000, 10_000_000),
+    ("gemini-3.5-flash", 1_250_000, 5_000_000),
+    ("gemini-3.5-flash-lite", 300_000, 1_200_000),
+];
+
+/// Look up the estimated rate for a native Gemini model ID.
+///
+/// Returns `None` for unknown IDs — never a guessed rate.
+#[must_use]
+pub(crate) fn rate_for_model(model: &str) -> Option<(u64, u64)> {
+    MODEL_RATES
+        .iter()
+        .find(|(name, _, _)| *name == model)
+        .map(|(_, input, output)| (*input, *output))
+}
+
 /// Concrete [`ProviderExecutor`] for Google Gemini.
 ///
 /// Stateless over the shared cancellable transport client so connections

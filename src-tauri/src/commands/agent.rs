@@ -40,6 +40,7 @@ use crate::application::agent::permissions::{self, PermissionRule, RuleEffect};
 use crate::application::agent::service::{
     self, AgentRunError, AgentRunHost, AgentRunRegistry, AgentRunRequest, ResolveOutcome, RunFrame,
 };
+use crate::application::agent::spend::SpendDashboard;
 use crate::application::conversations::ConversationService;
 use crate::application::execution::{ExecutorRegistry, RequestError, RequestExecutionService};
 use crate::infrastructure::database::Database;
@@ -490,6 +491,41 @@ pub(crate) fn inspect_run(
     }
 }
 
+/// Read-only spend dashboard: per-run spend (steps, micro-USD, budget caps,
+/// % used) plus aggregate totals across every persisted run, from the
+/// existing `agent_runs` counters only (no new tables, no new collection).
+///
+/// Missing spend data reads `null` — never an error. Unknown `run_id` yields
+/// a secret-free not-found error carrying only the id.
+///
+/// # Errors
+///
+/// Returns a classified [`CommandError`] for unknown runs (`NotFound`) or
+/// persistence failures (`Database`, via the shared mapping).
+/// Secret-free not-found error for unknown run ids (the `None` arm of
+/// [`spend_dashboard`]): id only, kind `NotFound` — mirrors the
+/// `inspect_run` not-found shape. Extracted so the mapping is pinned
+/// by a test against this exact constructor.
+fn spend_dashboard_not_found(run_id: i64) -> CommandError {
+    CommandError::new(
+        ErrorKind::NotFound,
+        format!("no agent run with id {run_id}"),
+    )
+}
+
+#[tauri::command]
+pub(crate) fn spend_dashboard(
+    run_id: i64,
+    db: State<'_, Database>,
+) -> Result<SpendDashboard, CommandError> {
+    match crate::application::agent::spend::spend_dashboard_for_run(db.inner(), run_id)
+        .map_err(CommandError::from)?
+    {
+        Some(view) => Ok(view),
+        None => Err(spend_dashboard_not_found(run_id)),
+    }
+}
+
 /// Add one persistent permission rule (M1-core).
 ///
 /// `preset` is `coding`/`document`/`*`; `tool_pattern` is a tool name or `*`
@@ -702,6 +738,18 @@ mod tests {
         // `NotFound`. Driving the constructor the command itself calls —
         // the command body needs `State<'_, _>` and cannot be invoked here.
         let err = inspect_run_not_found(9999);
+        assert_eq!(err.kind, ErrorKind::NotFound);
+        assert_eq!(err.message, "no agent run with id 9999");
+        assert!(safe_message(&err));
+    }
+
+    #[test]
+    fn spend_dashboard_not_found_is_classified_and_secret_free() {
+        // The real producer for the unknown-run path of `spend_dashboard`
+        // (mirrors the `inspect_run` not-found shape): id only, kind
+        // `NotFound`. Driving the constructor the command itself calls —
+        // the command body needs `State<'_, _>` and cannot be invoked here.
+        let err = spend_dashboard_not_found(9999);
         assert_eq!(err.kind, ErrorKind::NotFound);
         assert_eq!(err.message, "no agent run with id 9999");
         assert!(safe_message(&err));
@@ -934,7 +982,7 @@ mod tests {
     /// no missing key.
     #[test]
     fn agent_command_arg_keys_match_rust_params() {
-        const AGENT_COMMANDS: [(&str, &[&str]); 13] = [
+        const AGENT_COMMANDS: [(&str, &[&str]); 14] = [
             (
                 "start_agent_run",
                 &["conversationId", "content", "provider", "model"],
@@ -948,6 +996,7 @@ mod tests {
             ("list_agent_runs", &["conversationId"]),
             ("list_agent_steps", &["runId"]),
             ("inspect_run", &["runId"]),
+            ("spend_dashboard", &["runId"]),
             ("agent_set_mode", &["runId", "mode"]),
             ("pause_agent_run", &["runId"]),
             ("resume_agent_run", &["runId"]),

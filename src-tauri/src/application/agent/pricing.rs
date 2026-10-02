@@ -1,8 +1,16 @@
-//! Spend-guard pricing policy (Task 4.3).
+//! Spend-guard pricing policy (Task 4.3, cost dashboard: per-model estimates).
 //!
-//! A single documented conservative default rate is applied to **every**
-//! model. This is a deliberate policy placeholder — not provider rate data —
-//! and is adjustable when the Phase 5 settings surface lands.
+//! Billing resolves in three tiers for every turn:
+//!
+//! 1. Known-free model IDs bill $0 regardless of usage ([`is_free_model`]).
+//! 2. Listed native model IDs bill at their hardcoded per-model estimate from
+//!    the provider rate tables (`infrastructure::providers::MODEL_RATES`,
+//!    aggregated by `rate_for_model` / `rate_for_model_id`).
+//! 3. Everything else bills at the single conservative policy default below.
+//!
+//! All three tiers are deliberate placeholders — not live provider rate data,
+//! never fetched over the network — and are adjustable when the Phase 5
+//! settings surface lands.
 //!
 //! Units are integer micro-USD (`u64`): 1 USD = `1_000_000` micro-USD.  Cost
 //! math uses `u128` intermediates and saturates, so no float is ever involved
@@ -12,6 +20,7 @@
 //! See `docs/AGENT-4.3-DESIGN.md` and `docs/DATABASE.md` section 7.8.
 
 use crate::application::execution::TokenUsage;
+use crate::infrastructure::providers::{rate_for_model, rate_for_model_id};
 
 /// Policy default: input price per 1M tokens, micro-USD.
 ///
@@ -29,9 +38,42 @@ pub(crate) const POLICY_DEFAULT_OUTPUT_MICRO_PER_1M: u64 = 25_000_000;
 /// clamped to `u64::MAX` via saturating semantics.
 #[must_use]
 pub(crate) fn cost_micro(input_tokens: u64, output_tokens: u64) -> u64 {
-    let in_cost = ceil_cost(input_tokens, POLICY_DEFAULT_INPUT_MICRO_PER_1M);
-    let out_cost = ceil_cost(output_tokens, POLICY_DEFAULT_OUTPUT_MICRO_PER_1M);
+    cost_micro_with_rate(
+        input_tokens,
+        output_tokens,
+        POLICY_DEFAULT_INPUT_MICRO_PER_1M,
+        POLICY_DEFAULT_OUTPUT_MICRO_PER_1M,
+    )
+}
+
+/// Compute the billed cost at an explicit per-1M-token rate pair, in
+/// micro-USD, with the same ceiling-rounding and saturation semantics as
+/// [`cost_micro`].
+#[must_use]
+pub(crate) fn cost_micro_with_rate(
+    input_tokens: u64,
+    output_tokens: u64,
+    input_micro_per_1m: u64,
+    output_micro_per_1m: u64,
+) -> u64 {
+    let in_cost = ceil_cost(input_tokens, input_micro_per_1m);
+    let out_cost = ceil_cost(output_tokens, output_micro_per_1m);
     in_cost.saturating_add(out_cost)
+}
+
+/// Look up the estimated rate for (`provider`, `model`): input/output
+/// micro-USD per 1M tokens, or `None` for unknown providers and models —
+/// never a guessed rate.
+#[must_use]
+pub(crate) fn rate_for_provider_model(provider: &str, model: &str) -> Option<(u64, u64)> {
+    rate_for_model(provider, model)
+}
+
+/// Look up the estimated rate by model ID alone, or `None` when the ID is in
+/// no native rate table — never a guessed rate.
+#[must_use]
+pub(crate) fn rate_for_id(model: &str) -> Option<(u64, u64)> {
+    rate_for_model_id(model)
 }
 
 /// Convenience wrapper for [`TokenUsage`].
@@ -58,13 +100,17 @@ pub(crate) fn is_free_model(model: &str) -> bool {
 /// Compute the billed cost for `input_tokens` / `output_tokens` for `model`,
 /// in micro-USD.
 ///
-/// Known-free IDs bill $0 regardless of usage; everything else bills at the
-/// policy rate via [`cost_micro`]. Zero tokens always cost zero, and
-/// saturation semantics are preserved.
+/// Known-free IDs bill $0 regardless of usage; listed native IDs bill at
+/// their hardcoded estimate via [`cost_micro_with_rate`]; everything else
+/// bills at the policy rate via [`cost_micro`]. Zero tokens always cost zero,
+/// and saturation semantics are preserved.
 #[must_use]
 pub(crate) fn cost_micro_for_model(model: &str, input_tokens: u64, output_tokens: u64) -> u64 {
     if is_free_model(model) {
         return 0;
+    }
+    if let Some((input_rate, output_rate)) = rate_for_model_id(model) {
+        return cost_micro_with_rate(input_tokens, output_tokens, input_rate, output_rate);
     }
     cost_micro(input_tokens, output_tokens)
 }
@@ -261,5 +307,58 @@ mod tests {
             ),
             0,
         );
+    }
+
+    #[test]
+    fn rate_lookup_known_value_unknown_none() {
+        // Known native IDs resolve to their hardcoded estimates.
+        assert_eq!(rate_for_id("gpt-5.6-luna"), Some((500_000, 2_000_000)));
+        assert_eq!(
+            rate_for_provider_model("gemini", "gemini-3.6-flash"),
+            Some((1_250_000, 5_000_000))
+        );
+        // Unknown IDs and providers yield None — never a guessed rate.
+        assert_eq!(rate_for_id("test-model"), None);
+        assert_eq!(rate_for_id("big-pickle"), None);
+        assert_eq!(rate_for_id(""), None);
+        assert_eq!(rate_for_provider_model("nope", "gpt-5.6-terra"), None);
+        assert_eq!(rate_for_provider_model("openai", "mystery-model-9"), None);
+    }
+
+    #[test]
+    fn listed_models_bill_table_rate_unknown_bills_policy() {
+        let usage = TokenUsage {
+            input_tokens: 1_000_000,
+            output_tokens: 1_000_000,
+        };
+        // Listed native IDs bill their table estimate, not a guessed rate.
+        assert_eq!(
+            cost_for_model_usage("gpt-5.6-luna", usage),
+            500_000 + 2_000_000
+        );
+        assert_eq!(
+            cost_for_model_usage("claude-haiku-4-5-20251001", usage),
+            1_000_000 + 5_000_000
+        );
+        assert_eq!(
+            cost_micro_for_model("gemini-3.1-flash-lite", 1_000_000, 1_000_000),
+            300_000 + 1_200_000
+        );
+        // Unlisted IDs keep the conservative policy default.
+        assert_eq!(
+            cost_for_model_usage("test-model", usage),
+            POLICY_DEFAULT_INPUT_MICRO_PER_1M + POLICY_DEFAULT_OUTPUT_MICRO_PER_1M
+        );
+        assert_eq!(
+            cost_for_model_usage("big-pickle", usage),
+            POLICY_DEFAULT_INPUT_MICRO_PER_1M + POLICY_DEFAULT_OUTPUT_MICRO_PER_1M
+        );
+        // Zero tokens cost zero on every tier.
+        let zero = TokenUsage {
+            input_tokens: 0,
+            output_tokens: 0,
+        };
+        assert_eq!(cost_for_model_usage("gpt-5.6-terra", zero), 0);
+        assert_eq!(cost_for_model_usage("test-model", zero), 0);
     }
 }

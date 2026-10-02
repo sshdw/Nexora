@@ -111,7 +111,10 @@ impl RunBudget {
     }
 
     /// Bill one turn in abstract micro-USD: the hook when attached, otherwise
-    /// the existing policy-rate accounting (known-free models bill $0).
+    /// the live rate-table estimate for the model ID
+    /// (`pricing::cost_for_model_usage`: known-free IDs bill $0, listed
+    /// native IDs bill their hardcoded estimate, everything else falls back
+    /// to the conservative policy default).
     #[must_use]
     pub(crate) fn cost_for(self, model: &str, usage: TokenUsage) -> u64 {
         if let Some(hook) = self.cost_hook {
@@ -479,6 +482,41 @@ mod tests {
         );
         assert!(plain.cost_for("openai", usage) > 0);
         assert_eq!(plain.cost_for("model-free", usage), 0);
+    }
+
+    #[test]
+    fn cost_hook_default_uses_rate_table_override_wins() {
+        use crate::application::agent::pricing;
+        use crate::application::execution::TokenUsage;
+
+        let usage = TokenUsage {
+            input_tokens: 1_000_000,
+            output_tokens: 1_000_000,
+        };
+        // Default (no hook): the live rate-table estimate for the model ID —
+        // listed IDs bill their table rate, unlisted IDs the policy default.
+        // (`gpt-5.6-terra` is rated exactly at the policy default, so it
+        // bills identically either way.)
+        let plain = RunBudget::new(10, Some(1_000_000));
+        assert!(!plain.has_cost_hook());
+        assert_eq!(
+            plain.cost_for("gpt-5.6-luna", usage),
+            pricing::cost_micro_with_rate(1_000_000, 1_000_000, 500_000, 2_000_000)
+        );
+        assert_eq!(
+            plain.cost_for("gpt-5.6-terra", usage),
+            pricing::cost_micro(1_000_000, 1_000_000)
+        );
+        assert_eq!(
+            plain.cost_for("test-model", usage),
+            pricing::cost_micro(1_000_000, 1_000_000)
+        );
+        // Override: the custom hook wins for every model ID, including
+        // listed ones.
+        let hooked = RunBudget::new(10, Some(1_000_000)).with_cost_hook(|_| 42);
+        assert!(hooked.has_cost_hook());
+        assert_eq!(hooked.cost_for("gpt-5.6-luna", usage), 42);
+        assert_eq!(hooked.cost_for("test-model", usage), 42);
     }
 
     // -----------------------------------------------------------------------

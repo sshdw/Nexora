@@ -57,6 +57,9 @@
 //!   the WS-B/WS-C accessories (state, stage + role, budget counters, gate
 //!   decisions, snapshot/checkpoint markers, self-audit verdict); `&`-borrows
 //!   only, secret-free by construction, zero new state.
+//! - Spend Dashboard ([`spend`]): one read-only spend view over the persisted
+//!   budget counters (per-run steps/micro-USD/caps/ratios plus cross-run
+//!   totals); `&`-borrows only, secret-free by construction, zero new state.
 
 pub mod action_memory;
 pub mod approval;
@@ -84,6 +87,7 @@ pub mod runner;
 pub mod self_audit;
 pub mod service;
 pub mod snapshots;
+pub mod spend;
 #[cfg(test)]
 mod stress;
 pub mod tools;

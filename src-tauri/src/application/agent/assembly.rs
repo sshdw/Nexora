@@ -47,6 +47,16 @@
 //! fixed vocabulary only (`as_str` names, counters, the
 //! [`AgentError::ContextExhausted`] Display). No credentials, SQL, or key
 //! material ever enter this module.
+//!
+//! # Staging note (wiring)
+//!
+//! The [`ToolOutput`] / [`AssemblyInput::tool_outputs`] and
+//! [`AssemblyInput::history_summary`] sections currently have no production
+//! caller: only the budgeted history loop in [`super::prompts`] feeds the
+//! opening window today. The next wiring task extends that loop (or its
+//! successor) to supply carried tool observations and the compacted history
+//! summary through these sections rather than duplicating the share/trim
+//! logic elsewhere.
 
 use super::compaction;
 use super::errors::AgentError;

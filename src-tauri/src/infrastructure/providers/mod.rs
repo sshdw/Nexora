@@ -49,6 +49,44 @@ pub(crate) fn supported_providers() -> Vec<SupportedProvider> {
         .collect()
 }
 
+/// Look up the estimated cost rate for (`provider`, `model`): input/output
+/// micro-USD per 1M tokens from the provider's hardcoded `MODEL_RATES`
+/// table (abstract units matching `RunBudget`; estimates, never live pricing).
+///
+/// The OpenAI-compatible providers (`xkiro`, `openrouter`, `nvidia`,
+/// `opencode_zen`, `openai_compat`) ride the shared OpenAI-compatible path,
+/// so they resolve through the native `OpenAI` table. Unknown providers and
+/// unknown model IDs yield `None` — never a guessed rate; callers fall back
+/// to the policy default in `application::agent::pricing`.
+#[must_use]
+pub(crate) fn rate_for_model(provider: &str, model: &str) -> Option<(u64, u64)> {
+    match provider {
+        openai::PROVIDER_NAME
+        | openai::XKIRO_NAME
+        | openai::OPENROUTER_NAME
+        | openai::NVIDIA_NAME
+        | openai::OPENCODE_ZEN_NAME
+        | openai::COMPAT_NAME => openai::rate_for_model(model),
+        anthropic::PROVIDER_NAME => anthropic::rate_for_model(model),
+        gemini::PROVIDER_NAME => gemini::rate_for_model(model),
+        _ => None,
+    }
+}
+
+/// Look up the estimated cost rate by model ID alone, searching every native
+/// rate table in registration order.
+///
+/// The native model IDs are provider-unique, so one ID resolves to at most
+/// one entry. Unknown IDs yield `None` — never a guessed rate. This is the
+/// provider-agnostic path for billing call sites that carry only the model
+/// string (e.g. `RunBudget::cost_for`).
+#[must_use]
+pub(crate) fn rate_for_model_id(model: &str) -> Option<(u64, u64)> {
+    openai::rate_for_model(model)
+        .or_else(|| anthropic::rate_for_model(model))
+        .or_else(|| gemini::rate_for_model(model))
+}
+
 /// Collect `(name, display_name, supported_models)` for each registered
 /// provider. Kept as a small tuple helper so the list stays a single table.
 fn provider_schemas() -> Vec<(&'static str, &'static str, &'static [&'static str])> {
@@ -151,5 +189,48 @@ mod tests {
                 provider.name
             );
         }
+    }
+
+    #[test]
+    fn rate_lookup_known_value_unknown_none() {
+        // Known native IDs resolve to their hardcoded estimates.
+        assert_eq!(
+            rate_for_model("openai", "gpt-5.6-terra"),
+            Some((5_000_000, 25_000_000))
+        );
+        assert_eq!(
+            rate_for_model("anthropic", "claude-haiku-4-5-20251001"),
+            Some((1_000_000, 5_000_000))
+        );
+        assert_eq!(
+            rate_for_model("gemini", "gemini-3.6-flash"),
+            Some((1_250_000, 5_000_000))
+        );
+        // The OpenAI-compatible providers ride the shared path: native
+        // OpenAI IDs resolve through them too.
+        assert_eq!(
+            rate_for_model("openrouter", "gpt-5.6-luna"),
+            Some((500_000, 2_000_000))
+        );
+        // Unknown models and providers yield None — never a guessed rate.
+        assert_eq!(rate_for_model("openai", "mystery-model-9"), None);
+        assert_eq!(rate_for_model("openai", "big-pickle"), None);
+        assert_eq!(rate_for_model("openai", ""), None);
+        assert_eq!(rate_for_model("nope", "gpt-5.6-terra"), None);
+        assert_eq!(rate_for_model("", ""), None);
+
+        // The provider-agnostic path agrees for native IDs and stays None
+        // for everything else.
+        assert_eq!(
+            rate_for_model_id("claude-opus-4-8"),
+            Some((15_000_000, 75_000_000))
+        );
+        assert_eq!(
+            rate_for_model_id("gemini-3.1-flash-lite"),
+            Some((300_000, 1_200_000))
+        );
+        assert_eq!(rate_for_model_id("test-model"), None);
+        assert_eq!(rate_for_model_id("big-pickle"), None);
+        assert_eq!(rate_for_model_id(""), None);
     }
 }

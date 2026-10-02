@@ -96,6 +96,31 @@ pub(crate) const SUPPORTED_MODELS: &[&str] = &[
     "claude-opus-4-8",
 ];
 
+/// Estimated cost rates per 1M tokens, micro-USD (`(model, input, output)`).
+///
+/// Hardcoded estimates in abstract micro-USD units (1 USD = `1_000_000`
+/// micro-USD), matching `RunBudget`.
+/// These are planning estimates — not live provider pricing, never fetched
+/// over the network — and only cover the native [`SUPPORTED_MODELS`] IDs.
+/// Unknown IDs yield `None` from [`rate_for_model`]: callers fall back to
+/// the policy default, never a guessed rate.
+pub(crate) const MODEL_RATES: &[(&str, u64, u64)] = &[
+    ("claude-sonnet-5", 3_000_000, 15_000_000),
+    ("claude-haiku-4-5-20251001", 1_000_000, 5_000_000),
+    ("claude-opus-4-8", 15_000_000, 75_000_000),
+];
+
+/// Look up the estimated rate for a native Anthropic model ID.
+///
+/// Returns `None` for unknown IDs — never a guessed rate.
+#[must_use]
+pub(crate) fn rate_for_model(model: &str) -> Option<(u64, u64)> {
+    MODEL_RATES
+        .iter()
+        .find(|(name, _, _)| *name == model)
+        .map(|(_, input, output)| (*input, *output))
+}
+
 /// Concrete [`ProviderExecutor`] for Anthropic.
 ///
 /// Stateless over the shared cancellable transport client so connections

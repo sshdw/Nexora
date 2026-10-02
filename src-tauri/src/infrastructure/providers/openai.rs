@@ -72,6 +72,35 @@ pub(crate) const SUPPORTED_MODELS: &[&str] = &[
     // Best-quality flagship tier.
     "gpt-5.6-sol",
 ];
+
+/// Estimated cost rates per 1M tokens, micro-USD (`(model, input, output)`).
+///
+/// Hardcoded estimates in abstract micro-USD units (1 USD = `1_000_000`
+/// micro-USD), matching `RunBudget`.
+/// These are planning estimates — not live provider pricing, never fetched
+/// over the network — and only cover the native [`SUPPORTED_MODELS`] IDs.
+/// Unknown IDs (including every OpenAI-compatible shortlist below) yield
+/// `None` from [`rate_for_model`]: callers fall back to the policy default,
+/// never a guessed rate.
+///
+/// The default tier (`gpt-5.6-terra`) is rated exactly at the conservative
+/// policy default, so it bills identically rated or unrated.
+pub(crate) const MODEL_RATES: &[(&str, u64, u64)] = &[
+    ("gpt-5.6-terra", 5_000_000, 25_000_000),
+    ("gpt-5.6-luna", 500_000, 2_000_000),
+    ("gpt-5.6-sol", 5_000_000, 20_000_000),
+];
+
+/// Look up the estimated rate for a native OpenAI model ID.
+///
+/// Returns `None` for unknown IDs — never a guessed rate.
+#[must_use]
+pub(crate) fn rate_for_model(model: &str) -> Option<(u64, u64)> {
+    MODEL_RATES
+        .iter()
+        .find(|(name, _, _)| *name == model)
+        .map(|(_, input, output)| (*input, *output))
+}
 /// OpenAI-compatible provider identities sharing [`OpenAiExecutor`].
 ///
 /// Curated hardcoded model shortlists (DATABASE.md §7.5); `MODELS[0]` is the
