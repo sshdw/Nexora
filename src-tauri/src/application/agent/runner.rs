@@ -72,6 +72,7 @@ use std::time::{Duration, Instant};
 
 use crate::application::agent::action_memory::ActionSummary;
 use crate::application::agent::approval::ApprovalGate;
+use crate::application::agent::assembly::{self, ProactiveHook};
 use crate::application::agent::control::{AgentRunEvent, CancellationToken, RunControl};
 use crate::application::agent::governance::{AuditLog, RunBudget};
 use crate::application::agent::permissions::PermissionStore;
@@ -82,7 +83,7 @@ use crate::application::agent::persistence::{
 use crate::application::agent::roles::AgentRole;
 use crate::application::agent::tools::ToolRegistry;
 use crate::application::execution::{
-    AiMessage, AiRequest, AiRole, ExecutorError, ModelConfig, ProviderExecutor,
+    AiMessage, AiRequest, AiRole, ExecutorError, ModelConfig, ProviderExecutor, TokenUsage,
 };
 
 use super::budget;
@@ -91,6 +92,7 @@ use super::compaction::{self, CompactionReason, ContextAction, ContextGovernor};
 use super::dispatch;
 pub(crate) use super::errors::AgentError;
 use super::lifecycle::{observe_transition, BudgetHandles, RunState};
+use super::pipeline::PipelineStage;
 use super::prompts;
 
 // ---------------------------------------------------------------------------
@@ -153,6 +155,10 @@ pub(crate) struct AgentRunner<'a> {
     /// Prior runs' compressed action trace (Layer-2 action memory). `None`
     /// by default; applied via [`Self::with_action_summary`].
     action_summary: Option<ActionSummary>,
+    /// Current pipeline stage for stage-aware context assembly. `None` (the
+    /// default) omits the stage section, so the opening assembly stays
+    /// byte-identical; applied via [`Self::with_assembly_stage`].
+    assembly_stage: Option<PipelineStage>,
     /// Model context window in tokens (Task T4). `None` (the default)
     /// disables the proactive trigger — usage has no window to compare
     /// against — while reactive overflow recovery stays live. Applied via
@@ -214,6 +220,7 @@ impl<'a> AgentRunner<'a> {
             role: None,
             prior_messages: Vec::new(),
             action_summary: None,
+            assembly_stage: None,
             context_limit_tokens: None,
             model_config: None,
         }
@@ -355,6 +362,16 @@ impl<'a> AgentRunner<'a> {
     #[must_use]
     pub(crate) fn with_action_summary(mut self, summary: ActionSummary) -> Self {
         self.action_summary = Some(summary);
+        self
+    }
+
+    /// Pin the current pipeline stage for stage-aware context assembly. The
+    /// stage section names the stage, its bound role, and the lifecycle
+    /// state in fixed vocabulary; `None` (the default) omits it and keeps
+    /// the opening assembly byte-identical.
+    #[must_use]
+    pub(crate) fn with_assembly_stage(mut self, stage: PipelineStage) -> Self {
+        self.assembly_stage = Some(stage);
         self
     }
 
@@ -556,12 +573,38 @@ impl<'a> AgentRunner<'a> {
         let mut governor = ContextGovernor::new();
         let context_limit = self.context_limit_tokens.unwrap_or(0);
         // History opens with the fixed agent system prompt, the retained
-        // conversation tail and the user request (assembled in `prompts`).
-        let mut messages = prompts::build_initial_messages(
+        // conversation tail and the user request, budgeted to the model
+        // window (smart context assembly in `prompts`).
+        let budget = prompts::AssemblyBudget {
+            provider,
+            model,
+            context_limit: self.context_limit_tokens,
+            state: RunState::Running,
+            stage: self.assembly_stage,
+        };
+        let mut messages = prompts::build_initial_messages_budgeted(
             &self.prior_messages,
             self.action_summary.as_ref(),
             user_request,
+            &budget,
         );
+        // Size-seed the existing threshold path: when the assembled opening
+        // window itself crosses 0.8, the next step boundary compacts through
+        // the unchanged governor/decide + compaction-event path (the usage is
+        // seeded exactly once via the hook; a run without an explicit window
+        // stays dormant and the first real turn overwrites the seed).
+        if let Some(window) = self.context_limit_tokens {
+            if window > 0 {
+                let estimated = assembly::messages_size_tokens(&messages);
+                let mut hook = ProactiveHook::new();
+                if hook.poll(estimated, window).unwrap_or(false) {
+                    governor.observe(Some(TokenUsage {
+                        input_tokens: estimated,
+                        output_tokens: 0,
+                    }));
+                }
+            }
+        }
 
         loop {
             // ---- Step boundary: governance gates before the next LLM turn ----
@@ -1166,6 +1209,70 @@ mod tests {
                 } if reason == "threshold" && *summarized > 0 && *retained > 0
             )),
             "proactive compaction finishes with folded and retained counts, got {events:?}"
+        );
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn assembly_stage_reaches_the_initial_system_prompt() {
+        // The pinned stage section names the stage, its bound role, and the
+        // lifecycle state in fixed vocabulary on the first request.
+        let ws = temp_workspace();
+        let fake = FakeExecutor::new(vec![Ok(text_response("done"))]);
+        let runner = AgentRunner::new(&fake, &ws).with_assembly_stage(PipelineStage::Review);
+
+        runner.run("openai", "m", "cred", "hi").expect("finish");
+
+        let first = &fake.requests.borrow()[0];
+        assert_eq!(first.messages[0].role, AiRole::System);
+        assert!(
+            first.messages[0]
+                .content
+                .starts_with(crate::application::agent::prompts::AGENT_SYSTEM_PROMPT),
+            "identity stays first"
+        );
+        assert!(first.messages[0].content.contains("review"));
+        assert!(first.messages[0].content.contains("reviewer"));
+        assert!(first.messages[0].content.contains("running"));
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn oversized_opening_history_is_budgeted_to_the_window() {
+        // Six 2k-char exchanges against a 1k-token usable window: the opening
+        // request the runner sends must already fit it, oldest-first, with the
+        // system prompt and the current request pinned.
+        let ws = temp_workspace();
+        let mut history = Vec::new();
+        for i in 0..6 {
+            history.push(user_message(&format!("OLD-{i}-{}", "q".repeat(2_000))));
+            history.push(assistant_message(&format!("A-{i}-{}", "a".repeat(2_000))));
+        }
+        let fake = FakeExecutor::new(vec![Ok(text_response("done"))]);
+        let runner = AgentRunner::new(&fake, &ws)
+            .with_history(history)
+            .with_context_limit(21_000);
+
+        let answer = runner
+            .run("openai", "m", "cred", "current question")
+            .expect("budgeted run completes");
+        assert_eq!(answer, "done");
+
+        let first = &fake.requests.borrow()[0];
+        let total = assembly::messages_size_tokens(&first.messages[1..]).saturating_add(
+            crate::application::agent::compaction::estimate_tokens(&first.messages[0].content),
+        );
+        assert!(
+            total <= 1_000,
+            "the sent opening fits the usable window, got {total}"
+        );
+        assert!(
+            !first.messages.iter().any(|m| m.content.contains("OLD-0")),
+            "the oldest history drops first"
+        );
+        assert_eq!(
+            first.messages.last().expect("current turn").content,
+            "current question"
         );
         let _ = fs::remove_dir_all(&ws);
     }

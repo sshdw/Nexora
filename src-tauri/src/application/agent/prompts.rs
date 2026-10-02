@@ -1,9 +1,13 @@
 //! Agent system prompts and message constructors (split from `runner`).
 
 use crate::application::agent::action_memory::{self, ActionSummary};
+use crate::application::agent::assembly;
+use crate::application::agent::compaction;
 use crate::application::agent::control::CancellationToken;
 use crate::application::agent::history;
 use crate::application::agent::injection;
+use crate::application::agent::lifecycle::RunState;
+use crate::application::agent::pipeline::PipelineStage;
 use crate::application::execution::{AiMessage, AiRole};
 
 /// Fixed system prompt for Windows hosts (the primary target).
@@ -104,27 +108,52 @@ pub(crate) fn classify_outcome(
     }
 }
 
-/// Assemble the opening message sequence for a run: the fixed agent system
-/// prompt, the retained conversation tail (agent memory slice), the prior
-/// action trace and the user request.
-pub(crate) fn build_initial_messages(
-    prior_messages: &[AiMessage],
+/// Window selection for [`build_initial_messages_budgeted`]: who the run is
+/// for, under which model window, and at which pipeline stage.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AssemblyBudget<'a> {
+    /// Internal provider name (window resolution).
+    pub provider: &'a str,
+    /// Model identifier (window resolution + tool gating).
+    pub model: &'a str,
+    /// Model window override (`None` resolves via `context_limit_for`,
+    /// `Some(0)` disables budgeting — the legacy byte-identical path).
+    pub context_limit: Option<u64>,
+    /// Lifecycle state framing the stage section (fixed vocabulary only).
+    pub state: RunState,
+    /// Current pipeline stage (`None` omits the stage section).
+    pub stage: Option<PipelineStage>,
+}
+
+impl AssemblyBudget<'_> {
+    /// Unbounded budget with no stage: reproduces the legacy assembly
+    /// byte-for-byte.
+    #[must_use]
+    pub(crate) fn unbounded() -> AssemblyBudget<'static> {
+        AssemblyBudget {
+            provider: "",
+            model: "",
+            context_limit: Some(0),
+            state: RunState::Running,
+            stage: None,
+        }
+    }
+}
+
+/// Compose the system content for `dropped` omitted history messages plus the
+/// optional action trace through the single assembly path ([`assembly`]).
+///
+/// With no omission, no trace, no stage, and an unbounded window this returns
+/// the fixed system prompt verbatim — the legacy byte-identical shape.
+fn system_content_for(
+    dropped: usize,
     action_summary: Option<&ActionSummary>,
-    user_request: &str,
-) -> Vec<AiMessage> {
-    // History opens with the fixed agent system prompt, the retained
-    // conversation tail (agent memory slice), and the user request;
-    // after every tool turn the assistant's own calls and each tool's
-    // result are appended natively (see module docs).
-    let windowed = history::window(prior_messages, history::DEFAULT_HISTORY_WINDOW);
-    let mut system_content = if windowed.dropped == 0 {
-        AGENT_SYSTEM_PROMPT.to_string()
+    budget: &AssemblyBudget<'_>,
+) -> String {
+    let mut task_role = if dropped == 0 {
+        String::new()
     } else {
-        format!(
-            "{}\n\n{}",
-            AGENT_SYSTEM_PROMPT,
-            history::omitted_note(windowed.dropped)
-        )
+        history::omitted_note(dropped)
     };
     // Layer-2 action memory: the prior action trace follows the Layer-1
     // note, separated by a blank line. An empty summary appends zero
@@ -133,11 +162,121 @@ pub(crate) fn build_initial_messages(
     // so the block enters inside the untrusted fence, never raw.
     if let Some(summary) = action_summary {
         if let Some(note) = action_memory::system_note(summary) {
-            system_content.push_str("\n\n");
-            system_content.push_str(&injection::envelope_prior_actions(&note));
+            if !task_role.is_empty() {
+                task_role.push_str("\n\n");
+            }
+            task_role.push_str(&injection::envelope_prior_actions(&note));
         }
     }
-    let mut messages = Vec::with_capacity(windowed.messages.len() + 2);
+    let input = assembly::AssemblyInput {
+        provider: budget.provider,
+        model: budget.model,
+        context_limit: budget.context_limit,
+        state: budget.state,
+        stage: budget.stage,
+        system_identity: AGENT_SYSTEM_PROMPT,
+        task_role: &task_role,
+        tool_outputs: &[],
+        history_summary: None,
+    };
+    let assembled = assembly::assemble(&input);
+    let mut content = assembled
+        .section(assembly::SectionKind::SystemIdentity)
+        .unwrap_or("")
+        .to_string();
+    for kind in [
+        assembly::SectionKind::TaskRole,
+        assembly::SectionKind::StageContext,
+    ] {
+        if let Some(text) = assembled.section(kind) {
+            if !text.is_empty() {
+                content.push_str("\n\n");
+                content.push_str(text);
+            }
+        }
+    }
+    content
+}
+
+/// Assemble the opening message sequence for a run: the fixed agent system
+/// prompt, the retained conversation tail (agent memory slice), the prior
+/// action trace and the user request.
+pub(crate) fn build_initial_messages(
+    prior_messages: &[AiMessage],
+    action_summary: Option<&ActionSummary>,
+    user_request: &str,
+) -> Vec<AiMessage> {
+    build_initial_messages_budgeted(
+        prior_messages,
+        action_summary,
+        user_request,
+        &AssemblyBudget::unbounded(),
+    )
+}
+
+/// Assemble the opening message sequence under a model window.
+///
+/// The history opens with the fixed agent system prompt, the retained
+/// conversation tail (agent memory slice), and the user request; after every
+/// tool turn the assistant's own calls and each tool's result are appended
+/// natively (see module docs). Under a bounded window the carried history
+/// shrinks oldest-first (re-aligned to a user turn, with the omission note
+/// recount) while the system prompt and the current request are pinned — the
+/// request tail-truncates only when it alone overflows the window. With an
+/// unbounded budget and no attached stage the output is byte-identical to
+/// [`build_initial_messages`].
+pub(crate) fn build_initial_messages_budgeted(
+    prior_messages: &[AiMessage],
+    action_summary: Option<&ActionSummary>,
+    user_request: &str,
+    budget: &AssemblyBudget<'_>,
+) -> Vec<AiMessage> {
+    let windowed = history::window(prior_messages, history::DEFAULT_HISTORY_WINDOW);
+    let resolved =
+        assembly::resolve_context_limit(budget.provider, budget.model, budget.context_limit);
+    let usable = compaction::usable_context_tokens(resolved);
+    let mut extra_dropped = 0_usize;
+    let mut request_text = user_request.to_string();
+    loop {
+        // Oldest-first drops within the carried history. The start is
+        // re-aligned to a user turn only while dropping (mirroring
+        // `history::window`); a fitting history keeps its head verbatim —
+        // in-run assistant/tool exchanges open mid-turn by construction.
+        let mut start = extra_dropped.min(windowed.messages.len());
+        if start > 0 {
+            while start < windowed.messages.len() && windowed.messages[start].role != AiRole::User {
+                start += 1;
+            }
+        }
+        let dropped_total = windowed.dropped.saturating_add(start);
+        let system_content = system_content_for(dropped_total, action_summary, budget);
+        let retained = &windowed.messages[start..];
+        let total = compaction::estimate_tokens(&system_content)
+            .saturating_add(assembly::messages_size_tokens(retained))
+            .saturating_add(compaction::estimate_tokens(&request_text));
+        if resolved == 0 || usable == 0 || total <= usable {
+            return render_opening(system_content, retained, &request_text);
+        }
+        if start < windowed.messages.len() {
+            extra_dropped = start.saturating_add(1);
+            continue;
+        }
+        // The carried history is empty and the pinned pair still overflows:
+        // truncate the current request tail (never removed) until it fits.
+        let system_tokens = compaction::estimate_tokens(&system_content);
+        request_text =
+            assembly::truncate_tail_to_budget(&request_text, usable.saturating_sub(system_tokens));
+        return render_opening(system_content, retained, &request_text);
+    }
+}
+
+/// Render the opening `[System, ..history.., User]` sequence.
+fn render_opening(
+    system_content: String,
+    retained: &[AiMessage],
+    request_text: &str,
+) -> Vec<AiMessage> {
+    let mut messages = Vec::with_capacity(retained.len() + 2);
     messages.push(AiMessage {
         role: AiRole::System,
         content: system_content,
@@ -145,10 +284,10 @@ pub(crate) fn build_initial_messages(
         tool_calls: Vec::new(),
         tool_result: None,
     });
-    messages.extend(windowed.messages);
+    messages.extend(retained.iter().cloned());
     messages.push(AiMessage {
         role: AiRole::User,
-        content: user_request.to_string(),
+        content: request_text.to_string(),
         attachments: Vec::new(),
         tool_calls: Vec::new(),
         tool_result: None,
@@ -449,5 +588,136 @@ mod tests {
             absent.contains("len=0"),
             "absent signature has zero length: {absent}"
         );
+    }
+
+    /// The unbounded budgeted build reproduces the legacy assembly
+    /// byte-for-byte, including window truncation and the action trace.
+    #[test]
+    fn budgeted_unbounded_matches_legacy_byte_for_byte() {
+        use crate::application::agent::history as agent_history;
+
+        let mut history = Vec::new();
+        for i in 0..agent_history::DEFAULT_HISTORY_WINDOW + 5 {
+            history.push(user_message(&format!("question {i}")));
+            history.push(assistant_message(&format!("answer {i}")));
+        }
+        let summary = action_memory::summarize(&[(
+            12,
+            vec![action_memory::AgentStepView {
+                tool_name: "read_file".to_string(),
+                arguments: r#"{"path": "a.txt"}"#.to_string(),
+                observation: "content".to_string(),
+                status: "succeeded".to_string(),
+            }],
+        )]);
+
+        let legacy = build_initial_messages(&history, Some(&summary), "new question");
+        let budgeted = build_initial_messages_budgeted(
+            &history,
+            Some(&summary),
+            "new question",
+            &AssemblyBudget::unbounded(),
+        );
+        assert_eq!(
+            budgeted, legacy,
+            "unbounded budgeted build stays legacy-identical"
+        );
+
+        // Empty-input shape matches too.
+        assert_eq!(
+            build_initial_messages_budgeted(&[], None, "hi", &AssemblyBudget::unbounded()),
+            build_initial_messages(&[], None, "hi")
+        );
+    }
+
+    /// A tiny explicit window drops the oldest carried history first while
+    /// the system prompt and the current request stay pinned — and the whole
+    /// opening fits the window.
+    #[test]
+    fn budgeted_tiny_limit_drops_oldest_history_first_and_fits() {
+        let mut history = Vec::new();
+        for i in 0..6 {
+            history.push(user_message(&format!("OLD-{i}-{}", "q".repeat(4_000))));
+            history.push(assistant_message(&format!("A-{i}-{}", "a".repeat(4_000))));
+        }
+        // 28_000 tokens of window, 20_000 reserved: 8_000 usable. Twelve
+        // ~1.2k-token turns overflow it, so the oldest pair must drop while
+        // the newest survives.
+        let budget = AssemblyBudget {
+            provider: "openai",
+            model: "gpt-5.6-terra",
+            context_limit: Some(28_000),
+            state: RunState::Running,
+            stage: None,
+        };
+        let messages = build_initial_messages_budgeted(&history, None, "current question", &budget);
+
+        assert_eq!(messages[0].role, AiRole::System);
+        assert!(
+            messages[0].content.starts_with(AGENT_SYSTEM_PROMPT),
+            "system identity stays pinned first"
+        );
+        assert_eq!(
+            messages.last().expect("current turn").content,
+            "current question",
+            "the current request is never dropped"
+        );
+        assert!(
+            !messages.iter().any(|m| m.content.contains("OLD-0")),
+            "the oldest history drops first"
+        );
+        assert!(
+            messages.iter().any(|m| m.content.contains("OLD-5")),
+            "the newest history survives"
+        );
+        assert!(
+            messages
+                .iter()
+                .position(|m| m.content.contains("OLD-5"))
+                .expect("newest present")
+                > 1,
+            "the retained window stays user-aligned behind the system prompt"
+        );
+        let total = crate::application::agent::compaction::estimate_tokens(&messages[0].content)
+            .saturating_add(assembly::messages_size_tokens(&messages[1..]));
+        assert!(
+            total <= 8_000,
+            "the budgeted opening fits the usable window, got {total}"
+        );
+    }
+
+    /// An attached stage appends fixed-vocabulary stage context after the
+    /// legacy system content — and nothing else changes.
+    #[test]
+    fn budgeted_stage_appends_fixed_vocabulary_after_legacy_content() {
+        let history = vec![user_message("earlier question")];
+        let legacy = build_initial_messages(&history, None, "current question");
+        let budget = AssemblyBudget {
+            provider: "openai",
+            model: "gpt-5.6-terra",
+            context_limit: Some(0),
+            state: RunState::Running,
+            stage: Some(crate::application::agent::pipeline::PipelineStage::Act),
+        };
+        let messages = build_initial_messages_budgeted(&history, None, "current question", &budget);
+
+        assert_eq!(messages.len(), legacy.len());
+        assert_eq!(
+            &messages[1..],
+            &legacy[1..],
+            "history and request untouched"
+        );
+        let expected = format!(
+            "{}\n\n{}",
+            legacy[0].content,
+            crate::application::agent::assembly::stage_context_text(
+                crate::application::agent::pipeline::PipelineStage::Act,
+                RunState::Running,
+            )
+        );
+        assert_eq!(messages[0].content, expected);
+        assert!(messages[0].content.contains("act"));
+        assert!(messages[0].content.contains("executor"));
+        assert!(messages[0].content.contains("running"));
     }
 }
