@@ -769,3 +769,16 @@ export function setWorkspaceRoot(path: string): Promise<string> {
 export function listWorkspaceRecent(): Promise<string[]> {
   return invoke<string[]>("list_workspace_recent");
 }
+
+// ---- Workspace project directory (`.nexora/`) --------------------------
+// Per-workspace Nexora home: a `nexora.json` manifest (forward-only
+// version), workspace-relative ignore rules, and a `profiles/` scaffold.
+// Created on explicit init only — never implicitly — and workspace-scoped
+// files take precedence over app-global settings where both exist.
+
+/** Initialize the workspace `.nexora/` project directory (`nexora_init`).
+ * Idempotent: existing files are never overwritten. Returns the `.nexora/`
+ * directory path. */
+export function nexoraInit(): Promise<string> {
+  return invoke<string>("nexora_init");
+}

@@ -293,18 +293,29 @@ impl ToolRegistry {
         if !resolved.exists() {
             return Err(ToolError::Io(format!("file not found: '{path}'")));
         }
-        // TOCTOU guard: re-verify the canonical target before following it.
+        // Workspace ignore contract (`application/project_dir`): `.nexora/`
+        // itself and every `.nexoraignore` match stay unreadable through the
+        // agent tools. The error is a fixed category with no content echo.
+        if crate::application::project_dir::path_is_ignored(workspace_root, &resolved) {
+            return Err(ToolError::Io(
+                "path is excluded by workspace ignore rules".to_string(),
+            ));
+        }
+        if resolved.is_dir() {
+            return Err(ToolError::Io(format!(
+                "path is a directory, not a file: '{path}'"
+            )));
+        }
+        // TOCTOU guard, deliberately last: the canonical target is re-verified
+        // immediately before the read it gates, so a swap between the ignore
+        // verdict above (which re-canonicalizes internally) and the read
+        // cannot redirect it.
         verify_existing_within(
             workspace_root,
             &canonical_root(workspace_root),
             &resolved,
             path,
         )?;
-        if resolved.is_dir() {
-            return Err(ToolError::Io(format!(
-                "path is a directory, not a file: '{path}'"
-            )));
-        }
 
         let content = std::fs::read_to_string(&resolved)
             .map_err(|e| ToolError::Io(format!("failed to read file '{path}': {e}")))?;
@@ -340,6 +351,22 @@ impl ToolRegistry {
         })?;
 
         let resolved = resolve_path(workspace_root, path)?;
+        // Workspace ignore contract (same fixed error as reads): mutating
+        // tools must not create or modify excluded paths. The for-write
+        // verdict handles not-yet-existing targets lexically, so creates
+        // under `.nexora/` or matching `.nexoraignore` deny before any read
+        // or write happens. No `profiles/` allowlist: every write under
+        // `.nexora/` denies, without exception.
+        let ignore = crate::application::project_dir::load_ignore_rules(workspace_root);
+        if crate::application::project_dir::is_excluded_for_write(
+            workspace_root,
+            &resolved,
+            &ignore,
+        ) {
+            return Err(ToolError::Io(
+                "path is excluded by workspace ignore rules".to_string(),
+            ));
+        }
         let canon_ws = canonical_root(workspace_root);
 
         // Read old content before writing (same path validation as read_file). For
@@ -447,6 +474,18 @@ impl ToolRegistry {
         let resolved = resolve_path(workspace_root, path)?;
         if !resolved.exists() {
             return Err(ToolError::Io(format!("file not found: '{path}'")));
+        }
+        // Workspace ignore contract (same fixed error as reads): excluded
+        // paths deny before any content is touched.
+        let ignore = crate::application::project_dir::load_ignore_rules(workspace_root);
+        if crate::application::project_dir::is_excluded_for_write(
+            workspace_root,
+            &resolved,
+            &ignore,
+        ) {
+            return Err(ToolError::Io(
+                "path is excluded by workspace ignore rules".to_string(),
+            ));
         }
         // Re-verify through symlink_metadata (TOCTOU guard): the link may have
         // been swapped between `resolve_path` and use.
@@ -556,6 +595,14 @@ impl ToolRegistry {
             &scope,
             scope_arg.unwrap_or(""),
         )?;
+        // Workspace ignore contract: an ignored scope is denied, and ignored
+        // paths are skipped during the walk so matches never leak.
+        let ignore = crate::application::project_dir::load_ignore_rules(workspace_root);
+        if crate::application::project_dir::is_excluded(workspace_root, &scope, &ignore) {
+            return Err(ToolError::Io(
+                "path is excluded by workspace ignore rules".to_string(),
+            ));
+        }
         let max_matches = match args.get("max_matches") {
             None => SEARCH_DEFAULT_MAX_MATCHES,
             Some(value) => {
@@ -575,6 +622,7 @@ impl ToolRegistry {
         walk_search(
             &scope,
             workspace_root,
+            &ignore,
             &regex,
             max_matches,
             &mut hits,
@@ -633,16 +681,32 @@ impl ToolRegistry {
             &target,
             path_opt.unwrap_or(""),
         )?;
+        // Workspace ignore contract: an ignored scope is denied with the
+        // same fixed, content-free error as `read_file`; ignored entries are
+        // filtered silently below so listings never leak their names.
+        let ignore = crate::application::project_dir::load_ignore_rules(workspace_root);
+        if crate::application::project_dir::is_excluded(workspace_root, &target, &ignore) {
+            return Err(ToolError::Io(
+                "path is excluded by workspace ignore rules".to_string(),
+            ));
+        }
 
         let mut entries = Vec::new();
         if recursive {
-            walk_recursive(&target, workspace_root, &mut entries)?;
+            walk_recursive(&target, workspace_root, &ignore, &mut entries)?;
         } else {
             let read = std::fs::read_dir(&target)
                 .map_err(|e| ToolError::Io(format!("failed to read directory: {e}")))?;
             for entry in read {
                 let entry =
                     entry.map_err(|e| ToolError::Io(format!("failed to read entry: {e}")))?;
+                if crate::application::project_dir::is_excluded(
+                    workspace_root,
+                    &entry.path(),
+                    &ignore,
+                ) {
+                    continue;
+                }
                 let ft = entry
                     .file_type()
                     .map_err(|e| ToolError::Io(format!("failed to get file type: {e}")))?;
@@ -1055,6 +1119,7 @@ impl LiteRegex {
 fn walk_search(
     dir: &Path,
     workspace_root: &Path,
+    ignore: &crate::application::project_dir::IgnoreRules,
     regex: &LiteRegex,
     max_matches: usize,
     hits: &mut Vec<String>,
@@ -1084,6 +1149,11 @@ fn walk_search(
         if !is_within_workspace(workspace_root, &path) {
             continue;
         }
+        // Workspace ignore contract: ignored paths (including `.nexora/`)
+        // never contribute matches.
+        if crate::application::project_dir::is_excluded(workspace_root, &path, ignore) {
+            continue;
+        }
         // TOCTOU guard: the entry may have been swapped for a link after the
         // listing above; never follow a path whose canonical target escaped.
         if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
@@ -1095,7 +1165,15 @@ fn walk_search(
             }
         }
         if path.is_dir() {
-            walk_search(&path, workspace_root, regex, max_matches, hits, capped)?;
+            walk_search(
+                &path,
+                workspace_root,
+                ignore,
+                regex,
+                max_matches,
+                hits,
+                capped,
+            )?;
         } else if path.is_file() {
             search_one_file(&path, workspace_root, regex, max_matches, hits, capped)?;
         }
@@ -1452,7 +1530,7 @@ fn ensure_parent_dirs(
     Ok(())
 }
 
-fn is_within_workspace(workspace_root: &Path, target: &Path) -> bool {
+pub(crate) fn is_within_workspace(workspace_root: &Path, target: &Path) -> bool {
     // Handle Windows verbatim prefix (\\?\) and case-insensitivity
     let ws_str = path_to_comparable_string(&normalize_lexically(&absolutize(workspace_root)));
     let tgt_str = path_to_comparable_string(&normalize_lexically(&absolutize(target)));
@@ -1562,6 +1640,7 @@ fn normalize_lexically(path: &Path) -> PathBuf {
 fn walk_recursive(
     dir: &Path,
     workspace_root: &Path,
+    ignore: &crate::application::project_dir::IgnoreRules,
     out: &mut Vec<String>,
 ) -> Result<(), ToolError> {
     let entries = std::fs::read_dir(dir)
@@ -1571,6 +1650,11 @@ fn walk_recursive(
         let path = entry.path();
         // Ensure each visited path stays within workspace (defense against symlink escapes)
         if !is_within_workspace(workspace_root, &path) {
+            continue;
+        }
+        // Workspace ignore contract: ignored paths (including `.nexora/`)
+        // are neither listed nor descended into.
+        if crate::application::project_dir::is_excluded(workspace_root, &path, ignore) {
             continue;
         }
         let ft = entry
@@ -1595,7 +1679,7 @@ fn walk_recursive(
                     continue;
                 }
             }
-            walk_recursive(&path, workspace_root, out)?;
+            walk_recursive(&path, workspace_root, ignore, out)?;
         }
     }
     Ok(())
@@ -2365,6 +2449,68 @@ mod tests {
         assert_eq!(
             ToolRegistry::execute(&read, &ws).expect("read back"),
             "nested ok"
+        );
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn write_and_edit_deny_excluded_paths() {
+        const FIXED: &str = "Error: path is excluded by workspace ignore rules";
+        let ws = temp_workspace();
+        fs::create_dir_all(ws.join(".nexora")).expect("seed .nexora");
+        fs::write(ws.join(".nexora/nexora.json"), "{\"version\":1}").expect("seed manifest");
+        fs::write(ws.join(".nexora/.nexoraignore"), "*.log\nsecret.txt\n").expect("seed rules");
+        fs::write(ws.join("secret.txt"), "original-secret").expect("seed secret");
+        fs::write(ws.join("visible.txt"), "original-visible").expect("seed visible");
+
+        // Excluded targets deny with the fixed content-free error: the
+        // manifest, an ignored file, and a not-yet-existing ignored file.
+        for target in [".nexora/nexora.json", "secret.txt", "fresh.log"] {
+            let write = call(
+                "write_file",
+                serde_json::json!({"path": target, "content": "pwned"}),
+            );
+            let err = ToolRegistry::execute(&write, &ws).expect_err("write denied");
+            assert_eq!(err.to_string(), FIXED, "write target {target:?}");
+        }
+        for target in [".nexora/nexora.json", "secret.txt"] {
+            let edit = call(
+                "edit_file",
+                serde_json::json!({"path": target, "old_text": "a", "new_text": "b"}),
+            );
+            let err = ToolRegistry::execute(&edit, &ws).expect_err("edit denied");
+            assert_eq!(err.to_string(), FIXED, "edit target {target:?}");
+        }
+        // Denied writes change nothing on disk.
+        assert_eq!(
+            fs::read_to_string(ws.join("secret.txt")).expect("secret kept"),
+            "original-secret"
+        );
+        assert!(
+            !ws.join("fresh.log").exists(),
+            "ignored create wrote nothing"
+        );
+
+        // Non-excluded writes, edits, and creates still succeed (no behavior
+        // change outside the deny).
+        let write = call(
+            "write_file",
+            serde_json::json!({"path": "visible.txt", "content": "changed-visible"}),
+        );
+        ToolRegistry::execute(&write, &ws).expect("visible write succeeds");
+        let create = call(
+            "write_file",
+            serde_json::json!({"path": "fresh.txt", "content": "new"}),
+        );
+        ToolRegistry::execute(&create, &ws).expect("non-ignored create succeeds");
+        let edit = call(
+            "edit_file",
+            serde_json::json!({"path": "visible.txt", "old_text": "changed", "new_text": "edited"}),
+        );
+        ToolRegistry::execute(&edit, &ws).expect("visible edit succeeds");
+        assert_eq!(
+            fs::read_to_string(ws.join("visible.txt")).expect("visible read"),
+            "edited-visible"
         );
         let _ = fs::remove_dir_all(&ws);
     }

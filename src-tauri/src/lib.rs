@@ -83,6 +83,7 @@ pub fn run() {
             commands::workspace::get_workspace_root,
             commands::workspace::set_workspace_root,
             commands::workspace::list_workspace_recent,
+            commands::workspace::nexora_init,
             commands::data_management::delete_conversation_permanently,
             commands::data_management::delete_prompt_permanently,
             commands::data_management::clear_application_data,

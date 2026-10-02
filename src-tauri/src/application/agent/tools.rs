@@ -11,7 +11,7 @@ mod definitions;
 mod executor;
 mod output;
 
-pub(crate) use executor::ToolError;
+pub(crate) use executor::{is_within_workspace, ToolError};
 
 // ---------------------------------------------------------------------------
 // Registry
