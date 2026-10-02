@@ -99,17 +99,20 @@ pub(crate) enum ProfileSource {
     Default,
 }
 
-/// Fixed-vocabulary notice recorded when a present workspace profile file
-/// fails to load and resolution falls back to the global settings key (or the
-/// registry default when the global key is absent).
+/// Fixed-vocabulary notice returned alongside the profile when a present
+/// workspace profile file fails to load and resolution falls back to the
+/// global settings key (or the registry default when the global key is
+/// absent); surfaced by a future caller (run-path wiring is a tracked
+/// follow-up).
 ///
 /// The notice echoes nothing: no document content, no file name, no task
 /// label. This mirrors the checkpoint-label rule from the run snapshots
 /// (`application/agent/snapshots.rs`): the task label is caller-chosen input
 /// (like a checkpoint name), so it may appear in read-only views but never in
-/// errors or recorded notes — only fixed vocabulary travels there. The run
+/// errors or returned notes — only fixed vocabulary travels there. The run
 /// itself never fails for a bad workspace file; the fallback applies and the
-/// note is carried alongside.
+/// note is returned alongside the profile (no production run-path caller
+/// surfaces it yet — wiring that caller is a tracked follow-up).
 pub(crate) const INVALID_WORKSPACE_PROFILE_NOTICE: &str =
     "the workspace profile is invalid; using the stored settings profile";
 
@@ -378,8 +381,10 @@ impl<'a> RoutingService<'a> {
     /// `.nexora/profiles/<task>.json` file that validates wins
     /// ([`ProfileSource::Workspace`]); a present file that fails to load falls
     /// back to the global settings key with the fixed-vocabulary
-    /// [`INVALID_WORKSPACE_PROFILE_NOTICE`] recorded (never failing the run,
-    /// never echoing content); an absent file reads the global key unchanged
+    /// [`INVALID_WORKSPACE_PROFILE_NOTICE`] returned alongside the profile
+    /// (never failing the run, never echoing content; surfaced by a future
+    /// caller — run-path wiring is a tracked follow-up); an absent file reads
+    /// the global key unchanged
     /// ([`ProfileSource::Global`]); an absent global key resolves to the
     /// registry default ([`ProfileSource::Default`]).
     ///
@@ -398,52 +403,44 @@ impl<'a> RoutingService<'a> {
         if let Some(root) = workspace_root {
             let file_name = profile_file_name(task);
             if crate::application::project_dir::profile_file_present(root, file_name) {
-                match crate::application::project_dir::load_profile_file(root, file_name) {
-                    Ok(profile) => {
-                        return Ok(ResolvedProfile {
-                            source: ProfileSource::Workspace,
-                            profile,
-                            notice: None,
-                        });
-                    }
-                    Err(_) => {
-                        // A present file that fails to load (invalid content,
-                        // oversized document, unreadable file, escaping link):
-                        // fall back with the fixed-vocab note, never fail the
-                        // run and never echo content.
-                        return Ok(ResolvedProfile {
-                            source: self.global_source(task)?,
-                            profile: self.global_or_default(task)?,
-                            notice: Some(INVALID_WORKSPACE_PROFILE_NOTICE),
-                        });
-                    }
+                if let Ok(profile) =
+                    crate::application::project_dir::load_profile_file(root, file_name)
+                {
+                    return Ok(ResolvedProfile {
+                        source: ProfileSource::Workspace,
+                        profile,
+                        notice: None,
+                    });
                 }
+                // A present file that fails to load (invalid content,
+                // oversized document, unreadable file, escaping link):
+                // fall back with the fixed-vocab note, never fail the
+                // run and never echo content.
+                let (source, profile) = self.global_tier(task)?;
+                return Ok(ResolvedProfile {
+                    source,
+                    profile,
+                    notice: Some(INVALID_WORKSPACE_PROFILE_NOTICE),
+                });
             }
             // Absent file (or unusable root): the global tier decides, with no
             // notice — there is nothing to report.
         }
+        let (source, profile) = self.global_tier(task)?;
         Ok(ResolvedProfile {
-            source: self.global_source(task)?,
-            profile: self.global_or_default(task)?,
+            source,
+            profile,
             notice: None,
         })
     }
 
-    /// Global tier of [`Self::resolve`]: [`ProfileSource::Global`] when the
-    /// settings key is present, [`ProfileSource::Default`] when absent.
-    fn global_source(&self, task: TaskKind) -> Result<ProfileSource, RoutingError> {
+    /// Global tier of [`Self::resolve`], read once: ([`ProfileSource::Global`],
+    /// stored profile) when the settings key is present,
+    /// ([`ProfileSource::Default`], registry default) when absent.
+    fn global_tier(&self, task: TaskKind) -> Result<(ProfileSource, RoutingProfile), RoutingError> {
         match self.settings.read(profile_key(task))? {
-            Some(_) => Ok(ProfileSource::Global),
-            None => Ok(ProfileSource::Default),
-        }
-    }
-
-    /// Global tier of [`Self::resolve`]: the stored profile, or the registry
-    /// default when the key is absent.
-    fn global_or_default(&self, task: TaskKind) -> Result<RoutingProfile, RoutingError> {
-        match self.settings.read(profile_key(task))? {
-            None => Ok(RoutingProfile::default_for(task)),
-            Some(raw) => RoutingProfile::from_json(&raw),
+            None => Ok((ProfileSource::Default, RoutingProfile::default_for(task))),
+            Some(raw) => Ok((ProfileSource::Global, RoutingProfile::from_json(&raw)?)),
         }
     }
 

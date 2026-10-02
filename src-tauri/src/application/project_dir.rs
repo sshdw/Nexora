@@ -844,7 +844,9 @@ pub(crate) fn profile_file_present(workspace_root: &Path, file_name: &str) -> bo
 ///
 /// The document is validated with [`validate_profile_document`] (the
 /// [`RoutingProfile::from_json`] single source) *before* anything is written,
-/// so a refusal leaves any existing file untouched. `.nexora/` itself must
+/// so a refusal leaves any existing file untouched. The validated profile is
+/// canonicalized on write ([`RoutingProfile::to_json`]), so unknown keys
+/// ignored on read never persist byte-wise. `.nexora/` itself must
 /// already exist ([`init_nexora_dir`]); the `profiles/` level is created
 /// guarded when missing. `.nexoraignore` is never consulted: `profiles/` is
 /// Nexora-owned config, always writable regardless of ignore rules (ignore
@@ -878,7 +880,10 @@ pub(crate) fn save_profile_file(
         return Err(ProjectDirError::InvalidProfile);
     }
     // Validate before any filesystem mutation: a refusal writes nothing.
-    validate_profile_document(document).map_err(|_| ProjectDirError::InvalidProfile)?;
+    // The validated profile is canonicalized on write, so unknown keys
+    // ignored on read never persist byte-wise in profiles/.
+    let profile =
+        validate_profile_document(document).map_err(|_| ProjectDirError::InvalidProfile)?;
     let canon_ws = canonical_workspace_dir(workspace_root)?;
     let dir = canon_ws.join(NEXORA_DIR_NAME);
     reject_link_escape(&canon_ws, &dir)?;
@@ -901,7 +906,10 @@ pub(crate) fn save_profile_file(
             return Err(ProjectDirError::Io);
         }
     }
-    std::fs::write(&path, document).map_err(|_| ProjectDirError::Io)?;
+    let canonical = profile
+        .to_json()
+        .map_err(|_| ProjectDirError::InvalidProfile)?;
+    std::fs::write(&path, canonical).map_err(|_| ProjectDirError::Io)?;
     // Post-write backstop (TOCTOU): the written file must canonicalize inside
     // the workspace.
     if !canonical_inside(&canon_ws, &path) {
