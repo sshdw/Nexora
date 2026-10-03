@@ -22,6 +22,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   passing `recommended_models` gating (`require_tools` aware) with no
   cross-provider fallback beyond the explicit profile order.
 
+### Changed
+
+- **Docs — context windows + capability fallback policy (WS-D.5)**: new
+  `docs/CONTEXT-WINDOWS.md` documenting the enforced conservative windows
+  (13 mapped IDs; lite/unverified Gemini clamped to 128k until live-verified),
+  proactive compaction (0.8 threshold + 20k reserve, distinct
+  `ContextExhausted` terminal signal), section budgets (10/15/15/35/25),
+  capability gating with no cross-provider fallback, compat fallback rules
+  (empty model list by design, `supports_tools` toggle, custom IDs
+  pass-through for chat / fail-closed for agent), and the pricing-estimates
+  disclaimer. Docs-only; no behavior change.
+
 ## [1.5.0] - 2026-09-26
 
 ### Added
