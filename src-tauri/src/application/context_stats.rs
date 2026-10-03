@@ -26,7 +26,15 @@ pub(crate) const ANTHROPIC_CONTEXT_LIMIT: u64 = 200_000;
 pub(crate) const GEMINI_CONTEXT_LIMIT: u64 = 1_048_576;
 /// Conservative baseline for unverified gemini-lite windows until
 /// live-verified; architecture effective = min(requested, capability).
-pub(crate) const GEMINI_LITE_CONTEXT_LIMIT: u64 = 128_000;
+///
+/// Live-verified 2026-10-03 via the zero-token `GET
+/// /v1beta/models/{modelId}` metadata endpoint (header auth, key from the
+/// OS keyring through `CredentialStore`, never logged): all four lite IDs
+/// below report `inputTokenLimit = 1048576`, so the clamp is raised to the
+/// verified 1M window. Kept as a separate arm (rather than folding into
+/// [`GEMINI_CONTEXT_LIMIT`]) so a future re-verification that splits the
+/// data touches one place.
+pub(crate) const GEMINI_LITE_CONTEXT_LIMIT: u64 = 1_048_576;
 /// Fallback when the provider/model is unknown or has no committed window.
 pub(crate) const DEFAULT_CONTEXT_LIMIT: u64 = 128_000;
 
@@ -84,8 +92,9 @@ fn model_context_limit(model: &str) -> Option<u64> {
         "gemini-3.6-flash" | "gemini-3.1-pro-preview" | "gemini-pro-latest" => {
             Some(GEMINI_CONTEXT_LIMIT)
         }
-        // Conservative baseline for unverified gemini windows (lite +
-        // unverified flash) until live-verified.
+        // Live-verified 2026-10-03 (metadata endpoint, zero-token):
+        // every ID here reports `inputTokenLimit = 1048576`, so the arm
+        // resolves to the verified [`GEMINI_LITE_CONTEXT_LIMIT`].
         "gemini-3.1-flash-lite"
         | "gemini-flash-lite-latest"
         | "gemini-3.5-flash"
@@ -542,6 +551,30 @@ mod tests {
             context_limit_for(Some("unknown"), Some("something-else")),
             DEFAULT_CONTEXT_LIMIT
         );
+    }
+
+    #[test]
+    fn gemini_lite_clamp_matches_live_verified_window() {
+        // Live-verified 2026-10-03 via the zero-token `GET
+        // /v1beta/models/{modelId}` metadata endpoint (header auth, key from
+        // the OS keyring, never logged): every Gemini `SUPPORTED_MODELS` ID
+        // reported `inputTokenLimit = 1048576` / `outputTokenLimit = 65536`.
+        // Pin the encoded values (no network in tests — the live JSON is
+        // observed evidence, the consts are the commitment).
+        assert_eq!(GEMINI_LITE_CONTEXT_LIMIT, 1_048_576);
+        assert_eq!(GEMINI_LITE_CONTEXT_LIMIT, GEMINI_CONTEXT_LIMIT);
+        for model in [
+            "gemini-3.1-flash-lite",
+            "gemini-flash-lite-latest",
+            "gemini-3.5-flash",
+            "gemini-3.5-flash-lite",
+        ] {
+            assert_eq!(
+                context_limit_for(Some("gemini"), Some(model)),
+                1_048_576,
+                "live-verified lite model {model}"
+            );
+        }
     }
 
     #[test]
