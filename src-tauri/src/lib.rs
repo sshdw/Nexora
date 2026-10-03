@@ -31,6 +31,9 @@ fn sweep_orphaned_agent_runs(db: &infrastructure::database::Database) {
 ///
 /// Panics when the Tauri runtime fails to start (e.g. the bundled assets or
 /// window context cannot be built); startup failure is unrecoverable.
+// The handler list grows with every command, so the function body exceeds
+// the line-count lint by construction; the body is declarative registration.
+#[allow(clippy::too_many_lines)]
 pub fn run() {
     // Initialize logging first so database and migration events are captured
     // (ARCHITECTURE.md §11).
@@ -76,6 +79,11 @@ pub fn run() {
             commands::import_export::export_conversation,
             commands::import_export::export_conversation_to_file,
             commands::import_export::import_conversation,
+            commands::import_export::import_vscode_settings,
+            commands::import_export::import_mcp_servers,
+            commands::import_export::export_setup,
+            commands::import_export::export_setup_to_file,
+            commands::import_export::import_setup,
             commands::settings::get_setting,
             commands::settings::set_setting,
             commands::settings::delete_setting,

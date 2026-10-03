@@ -44,10 +44,13 @@
 //! [`ExportError::Io`]. No error variant carries a credential or other secret
 //! value (ARCHITECTURE.md §9, §11).
 
+use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
+
+use super::settings::SettingsService;
 
 use super::workspace::{
     is_drive_root, is_system_file_path, is_unc_path, strip_verbatim, WORKSPACE_ROOT_MAX_LEN,
@@ -66,6 +69,14 @@ pub(crate) const EXPORT_FORMAT: &str = "nexora-conversation";
 
 /// Version of the export document layout written by this build.
 pub(crate) const EXPORT_VERSION: i64 = 1;
+
+/// Value of the `format` field written to every setup export document (WS-E.2),
+/// marking it as a portable Nexora setup document (recognizable by the setup
+/// import in [`crate::application::import`]).
+pub(crate) const SETUP_FORMAT: &str = "nexora-setup";
+
+/// Version of the setup document layout written by this build.
+pub(crate) const SETUP_VERSION: i64 = 1;
 
 /// File extensions accepted for export artifacts (WS-C.2 import/export
 /// allowlist): conversation documents are JSON only. Compared
@@ -220,26 +231,7 @@ impl<'a> ExportService<'a> {
     pub(crate) fn export_to_file(&self, conversation_id: i64, path: &Path) -> Result<()> {
         let json = self.serialize(conversation_id)?;
         let target = validate_export_path(path)?;
-        std::fs::write(&target, json.as_bytes()).map_err(ExportError::Io)?;
-        // Post-create backstop (#64 pattern): a link swapped in between the
-        // pre-write checks and the write must not redirect the artifact. The
-        // written file must canonicalize under its own parent; otherwise it
-        // is removed best-effort and the write fails instead of succeeding
-        // outside the chosen directory.
-        if let Some(parent) = target.parent() {
-            if let (Ok(canon_file), Ok(canon_parent)) =
-                (target.canonicalize(), parent.canonicalize())
-            {
-                if !canon_file.starts_with(&canon_parent) {
-                    let _ = std::fs::remove_file(&target);
-                    return Err(ExportError::Io(io::Error::new(
-                        io::ErrorKind::PermissionDenied,
-                        "export path escaped its parent directory",
-                    )));
-                }
-            }
-        }
-        Ok(())
+        write_export_file(&target, json.as_bytes())
     }
 
     /// Read `conversation_id` and assemble its export record in persisted
@@ -253,6 +245,106 @@ impl<'a> ExportService<'a> {
                 })?;
         let messages = self.messages.list_by_conversation(conversation_id)?;
         Ok(ConversationExport::from_records(&conversation, &messages))
+    }
+}
+
+/// Write validated export `bytes` to `target` with the post-create backstop
+/// (#64 pattern): a link swapped in between the pre-write checks and the
+/// write must not redirect the artifact. The written file must canonicalize
+/// under its own parent; otherwise it is removed best-effort and the write
+/// fails instead of succeeding outside the chosen directory.
+///
+/// Shared by the conversation file export and the setup file export (WS-E.2):
+/// both validate their destination through [`validate_export_path`] first.
+fn write_export_file(target: &PathBuf, bytes: &[u8]) -> Result<()> {
+    std::fs::write(target, bytes).map_err(ExportError::Io)?;
+    if let Some(parent) = target.parent() {
+        if let (Ok(canon_file), Ok(canon_parent)) = (target.canonicalize(), parent.canonicalize()) {
+            if !canon_file.starts_with(&canon_parent) {
+                let _ = std::fs::remove_file(target);
+                return Err(ExportError::Io(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "export path escaped its parent directory",
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A portable Nexora setup document (WS-E.2): the current settings plus the
+/// routing profiles and feature flags, which ride along as ordinary settings
+/// keys (`routing.profile.chat`, `routing.profile.agent`, `flags.*`) through
+/// the existing generic settings store (FR-012) — no new tables, no workspace
+/// files (workspace `.nexora/` state is machine-local and intentionally not
+/// portable).
+///
+/// The document re-imports cleanly through the setup import
+/// ([`crate::application::import`]): every key the export writes is on the
+/// import allowlist, so an export → import round-trip restores the same
+/// settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct SetupExport {
+    /// Fixed marker identifying the document kind ([`SETUP_FORMAT`]).
+    pub format: String,
+    /// Layout version of this document ([`SETUP_VERSION`]).
+    pub version: i64,
+    /// Every `app_settings` row (`key` → value, [`None`] for `NULL`),
+    /// ordered by `key`.
+    pub settings: BTreeMap<String, Option<String>>,
+}
+
+/// Application-layer service that exports the current Nexora setup to a
+/// portable JSON document (WS-E.2).
+///
+/// Read-only like the conversation export: only the settings repository's
+/// `SELECT`-based list is used, so persisted state is never modified.
+pub(crate) struct SetupExportService<'a> {
+    settings: SettingsService<'a>,
+}
+
+impl<'a> SetupExportService<'a> {
+    /// Create a setup export service over the shared application [`Database`].
+    pub(crate) fn new(db: &'a Database) -> Self {
+        Self {
+            settings: SettingsService::new(db),
+        }
+    }
+
+    /// Build the portable setup document as a pretty-printed JSON string
+    /// without touching the filesystem.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExportError::Database`] when the settings cannot be read, or
+    /// [`ExportError::Serialization`] when the document cannot be serialized.
+    pub(crate) fn serialize_setup(&self) -> Result<String> {
+        let export = SetupExport {
+            format: SETUP_FORMAT.to_string(),
+            version: SETUP_VERSION,
+            settings: self.settings.list()?.into_iter().collect(),
+        };
+        serde_json::to_string_pretty(&export).map_err(ExportError::Serialization)
+    }
+
+    /// Export the current setup to the JSON file at `path` (WS-E.2).
+    ///
+    /// The document is fully materialized in memory before any file access.
+    /// The destination is validated through [`validate_export_path`] (the
+    /// same WS-C.2 extension allowlist and #64 prefix-walk + backstop as
+    /// conversation exports: setup artifacts are JSON only) before the
+    /// shared [`write_export_file`] write.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExportError::Database`] when the settings cannot be read,
+    /// [`ExportError::Serialization`] when the document cannot be serialized,
+    /// [`ExportError::InvalidPath`] when the destination is rejected, or
+    /// [`ExportError::Io`] when the file cannot be written.
+    pub(crate) fn export_setup_to_file(&self, path: &Path) -> Result<()> {
+        let json = self.serialize_setup()?;
+        let target = validate_export_path(path)?;
+        write_export_file(&target, json.as_bytes())
     }
 }
 
@@ -814,5 +906,73 @@ mod tests {
         assert!(!outside.join("newsub").join("out.json").exists());
         let _ = std::fs::remove_dir_all(&base);
         let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn serialize_setup_covers_settings_routing_and_flags() {
+        use crate::application::settings::SettingsService;
+        use crate::infrastructure::database::in_memory_database;
+        let db = in_memory_database();
+        let settings = SettingsService::new(&db);
+        settings
+            .write("appearance.theme", Some("dark"))
+            .expect("seed theme");
+        settings
+            .write(
+                "routing.profile.chat",
+                Some(r#"[{"provider":"openai","model":"gpt-4o-mini"}]"#),
+            )
+            .expect("seed routing profile");
+        settings
+            .write("flags.assembly", Some("false"))
+            .expect("seed flag");
+        let service = SetupExportService::new(&db);
+
+        let json = service.serialize_setup().expect("setup export succeeds");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+
+        assert_eq!(value["format"], SETUP_FORMAT);
+        assert_eq!(value["version"], SETUP_VERSION);
+        assert_eq!(value["settings"]["appearance.theme"], "dark");
+        assert_eq!(
+            value["settings"]["routing.profile.chat"],
+            r#"[{"provider":"openai","model":"gpt-4o-mini"}]"#
+        );
+        assert_eq!(value["settings"]["flags.assembly"], "false");
+    }
+
+    #[test]
+    fn setup_export_to_file_writes_the_document() {
+        use crate::application::settings::SettingsService;
+        use crate::infrastructure::database::in_memory_database;
+        let db = in_memory_database();
+        SettingsService::new(&db)
+            .write("appearance.theme", Some("light"))
+            .expect("seed theme");
+        let service = SetupExportService::new(&db);
+
+        let path =
+            std::env::temp_dir().join(format!("nexora_setup_test_{}.json", std::process::id()));
+        service
+            .export_setup_to_file(&path)
+            .expect("setup export to file succeeds");
+
+        let written = std::fs::read_to_string(&path).expect("read setup file");
+        assert_eq!(written, service.serialize_setup().expect("serialize setup"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn setup_export_end_to_end_rejects_non_json_artifact() {
+        use crate::infrastructure::database::in_memory_database;
+        let db = in_memory_database();
+        let service = SetupExportService::new(&db);
+        let path =
+            std::env::temp_dir().join(format!("nexora_setup_reject_{}.exe", std::process::id()));
+        let err = service
+            .export_setup_to_file(&path)
+            .expect_err("non-json setup artifact must be denied");
+        assert!(matches!(err, ExportError::InvalidPath { .. }));
+        assert!(!path.exists(), "denied setup export writes nothing");
     }
 }
