@@ -32,6 +32,8 @@ import { useConversation } from "../lib/useConversation";
 import Tooltip from "./Tooltip";
 import AgentRunSteps from "./AgentRunSteps";
 import ContextPanel from "./ContextPanel";
+import M3LoadingIndicator from "./M3LoadingIndicator";
+import M3SegmentedGroup from "./M3SegmentedGroup";
 import { ArrowUpIcon, CloseIcon, PaperclipIcon } from "./icons";
 import NexoraMark from "./NexoraMark";
 
@@ -261,26 +263,16 @@ export default function ConversationView({
   return (
     <div className="nex-main-conversation">
       <div className="nex-context-tabs">
-        <div className="nex-seg" role="tablist" aria-label="Conversation view">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={viewMode === "chat"}
-            className={viewMode === "chat" ? "is-active" : undefined}
-            onClick={() => setViewMode("chat")}
-          >
-            Chat
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={viewMode === "context"}
-            className={viewMode === "context" ? "is-active" : undefined}
-            onClick={() => setViewMode("context")}
-          >
-            Context
-          </button>
-        </div>
+        <M3SegmentedGroup
+          label="Conversation view"
+          semantics="tabs"
+          value={viewMode}
+          onChange={setViewMode}
+          options={[
+            { value: "chat", label: "Chat" },
+            { value: "context", label: "Context" },
+          ]}
+        />
       </div>
       {viewMode === "context" ? (
         <ContextPanel conversationId={conversationId} />
@@ -288,9 +280,7 @@ export default function ConversationView({
         <>
       <div className="nex-thread" ref={threadRef} aria-label="Messages">
         {loading ? (
-          <p className="nex-thread-status nex-fade-in" role="status">
-            Loading messages…
-          </p>
+          <M3LoadingIndicator label="Loading messages" />
         ) : threadItems.length === 0 ? (
           <div className="nex-conversation-placeholder nex-empty-enter">
             <span className="nex-conversation-empty-mark-wrap" aria-hidden="true">
@@ -391,20 +381,21 @@ export default function ConversationView({
           {agentMode && (
             <div className="nex-agent-autonomy" role="group" aria-label="Autonomy mode">
               <span className="nex-agent-autonomy-label">Autonomy</span>
-              <div className="nex-seg" role="tablist" aria-label="Autonomy mode">
-                {(["supervised", "semi_autonomous", "full_autonomous"] as const).map((mode) => (
-                  <button
-                    key={mode}
-                    type="button"
-                    role="tab"
-                    aria-selected={autonomyMode === mode}
-                    className={autonomyMode === mode ? "is-active" : undefined}
-                    onClick={() => void handleAutonomyChange(mode)}
-                  >
-                    {mode === "supervised" ? "Supervised" : mode === "semi_autonomous" ? "Semi-auto" : "Full-auto"}
-                  </button>
-                ))}
-              </div>
+              <M3SegmentedGroup
+                label="Autonomy mode"
+                semantics="radio"
+                value={autonomyMode}
+                onChange={(mode) => void handleAutonomyChange(mode)}
+                options={[
+                  { value: "supervised", label: "Supervised" },
+                  {
+                    value: "semi_autonomous",
+                    label: "Semi-auto",
+                    ariaLabel: "Semi-autonomous",
+                  },
+                  { value: "full_autonomous", label: "Full-auto" },
+                ]}
+              />
             </div>
           )}
           <div className="nex-composer-shell">

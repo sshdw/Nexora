@@ -1,3 +1,4 @@
+import M3RailItem from "./M3RailItem";
 import type { WorkspaceStore } from "../lib/useWorkspace";
 
 export interface WorkspaceFolderButtonProps {
@@ -5,21 +6,21 @@ export interface WorkspaceFolderButtonProps {
 }
 
 /** Sidebar folder-picker button (1.3.0): opens the native directory dialog
- * (`dialog.open`) and persists the chosen root backend-side. */
+ * (`dialog.open`) and persists the chosen root backend-side. Rendered on the
+ * shared M3RailItem row primitive. */
 export default function WorkspaceFolderButton({ store }: WorkspaceFolderButtonProps) {
   return (
-    <button
-      type="button"
-      className="nex-nav-entry"
-      aria-label="Choose workspace folder"
-      title="Choose workspace folder"
+    <M3RailItem
+      label="Workspace folder"
+      icon={
+        <span aria-hidden="true">
+          📁
+        </span>
+      }
       disabled={store.saving}
       onClick={() => void store.pickFolder()}
     >
-      <span className="nex-nav-entry-icon" aria-hidden="true">
-        📁
-      </span>
-      <span>Workspace folder</span>
-    </button>
+      Workspace folder
+    </M3RailItem>
   );
 }

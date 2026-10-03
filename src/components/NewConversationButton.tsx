@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 
+import M3Button from "./M3Button";
 import { PlusIcon } from "./icons";
 
 export interface NewConversationButtonProps {
@@ -14,9 +15,11 @@ export default function NewConversationButton({
   children = "New Conversation",
 }: NewConversationButtonProps) {
   return (
-    <button
-      type="button"
-      className="nex-btn nex-btn-expressive nex-new-conversation"
+    <M3Button
+      variant="primary"
+      expressive
+      block
+      className="nex-new-conversation"
       onClick={onClick}
       disabled={disabled}
       aria-label="New conversation"
@@ -24,8 +27,6 @@ export default function NewConversationButton({
     >
       <PlusIcon className="nex-new-conversation-icon" />
       <span>{children}</span>
-    </button>
+    </M3Button>
   );
 }
-
-

@@ -1,3 +1,4 @@
+import M3Button from "./M3Button";
 import NexoraMark from "./NexoraMark";
 
 export interface EmptyStateProps {
@@ -25,13 +26,9 @@ export default function EmptyState({
       <p className="nex-empty-text">{description}</p>
       {actionLabel && onAction && (
         <div className="nex-empty-actions">
-          <button
-            type="button"
-            className="nex-btn nex-btn-primary nex-btn-expressive"
-            onClick={onAction}
-          >
+          <M3Button variant="primary" expressive onClick={onAction}>
             {actionLabel}
-          </button>
+          </M3Button>
         </div>
       )}
     </section>

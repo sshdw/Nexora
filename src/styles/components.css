@@ -1017,3 +1017,282 @@
     transform: rotate(360deg);
   }
 }
+
+/* ============================================================
+   M3E COMPONENT LIBRARY (task/m3-components)
+   React primitives in src/components/M3*.tsx, styled purely by
+   --nex-sys-* / --motion-* tokens: zero raw hex, durations, radii
+   or z-index values below (verified by grep). Per-row reduced-motion
+   behavior resolves through the global motion.css gate (loops freeze
+   on a static frame; information always survives in text).
+
+   Labeling discipline (material-3-expressive skill):
+   OFFICIAL          = value traceable to Google Material docs/source
+   RECOMMENDATION    = chosen because Material does not prescribe it
+   NEXORA ADAPTATION = intentional Nexora-specific decision
+   ============================================================ */
+
+/* ---- Block button: full-width layout for creation actions ---- */
+.nex-m3-btn-block {
+  width: 100%;
+}
+
+/* ---- Segmented connected variant: flush inner edges, asymmetric
+   inner corners (OFFICIAL connected-group geometry, contract §Shape
+   [doc-cards]). Selected segment keeps the standard container tone +
+   emphasized label; the indicator settles on the default-speed
+   spring curve (reduced motion: instant tone swap). ---- */
+.nex-seg-connected {
+  gap: var(--nex-sys-shape-none);
+}
+.nex-seg-connected button {
+  border-radius: var(--nex-sys-shape-none);
+}
+.nex-seg-connected button:first-child {
+  border-radius: var(--nex-sys-shape-full) var(--nex-sys-shape-none)
+    var(--nex-sys-shape-none) var(--nex-sys-shape-full);
+}
+.nex-seg-connected button:last-child {
+  border-radius: var(--nex-sys-shape-none) var(--nex-sys-shape-full)
+    var(--nex-sys-shape-full) var(--nex-sys-shape-none);
+}
+.nex-seg-connected button:only-child {
+  border-radius: var(--nex-sys-shape-full);
+}
+
+/* ---- Toolbars: docked persistent row + floating selection popover
+   (OFFICIALLY-supported desktop pattern, [toolbars]/[bars-docked]).
+   Docked is placement-only (same visuals as the row it replaces);
+   floating is an anchored popover: elevated container, level-1 float,
+   popover z-step, scale+fade enter from the anchor on
+   medium2 · emphasized-decelerate (via .nex-pop-enter; reduced
+   motion: fade-only/instant). ---- */
+.nex-m3-toolbar-docked {
+  display: flex;
+  align-items: center;
+  gap: var(--nex-sys-space-xs);
+}
+.nex-m3-toolbar-floating {
+  position: absolute;
+  z-index: var(--nex-sys-z-popover);
+  display: flex;
+  align-items: center;
+  gap: var(--nex-sys-space-xs);
+  padding: var(--nex-sys-space-xs);
+  border-radius: var(--nex-sys-shape-large);
+  background: var(--nex-sys-color-surface-container-high);
+  border: 1px solid var(--nex-sys-color-outline-variant);
+  box-shadow: var(--nex-sys-elevation-level1);
+}
+
+/* ---- Contained loading indicator (<5s waits; OFFICIAL split).
+   Quiet tone pill + bouncy expressive dot rhythm on the OFFICIAL
+   expressive-default-spatial conversion pair (transform only).
+   The visible text label is the reduced-motion carrier: static
+   dots + text under prefers-reduced-motion. ---- */
+.nex-m3-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--nex-sys-space-xs);
+  padding: var(--nex-sys-space-xxs) var(--nex-sys-space-sm);
+  border-radius: var(--nex-sys-shape-full);
+  background: var(--nex-sys-color-surface-container-high);
+}
+.nex-m3-loading-sm {
+  padding: var(--nex-sys-space-xxs) var(--nex-sys-space-xs);
+}
+.nex-m3-loading-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--nex-sys-space-xxs);
+}
+.nex-m3-loading-dot {
+  width: var(--nex-sys-space-xs);
+  height: var(--nex-sys-space-xs);
+  border-radius: var(--nex-sys-shape-full);
+  background: var(--nex-sys-color-primary);
+  animation: nex-m3-loading-bounce var(--nex-sys-motion-duration-medium3)
+    var(--nex-sys-motion-spring-expressive-default-spatial-curve)
+    infinite alternate;
+}
+.nex-m3-loading-dot:nth-child(2) {
+  animation-delay: var(--nex-sys-motion-loop-typing-dot-delay);
+}
+.nex-m3-loading-dot:nth-child(3) {
+  animation-delay: calc(var(--nex-sys-motion-loop-typing-dot-delay) * 2);
+}
+@keyframes nex-m3-loading-bounce {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(calc(var(--nex-sys-motion-stagger-travel) * -1));
+  }
+}
+.nex-m3-loading-label {
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-on-surface-variant);
+}
+.nex-m3-loading-sm .nex-m3-loading-label {
+  font-size: var(--nex-sys-type-size-label-medium);
+}
+
+/* ---- Progress indicators (>5s processes; OFFICIAL grammar).
+   Flat style (wavy is an open decision, default flat per contract);
+   neutral track near reading surfaces. Determinate always pairs the
+   fill with % text — the reduced-motion carrier (no loop, static
+   fill + text). ---- */
+.nex-m3-progress-linear-wrap,
+.nex-m3-progress-circular-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--nex-sys-space-xs);
+}
+.nex-m3-progress-linear-wrap {
+  width: 100%;
+}
+.nex-m3-progress-linear {
+  position: relative;
+  width: 100%;
+  height: var(--nex-sys-space-xxs);
+  border-radius: var(--nex-sys-shape-full);
+  background: var(--nex-sys-color-surface-container-highest);
+  overflow: hidden;
+}
+.nex-m3-progress-linear-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 0;
+  border-radius: inherit;
+  background: var(--nex-sys-color-primary);
+  transition: width var(--nex-sys-motion-duration-fast)
+    var(--nex-sys-motion-easing-standard);
+}
+.nex-m3-progress-linear.is-indeterminate .nex-m3-progress-linear-fill {
+  width: 40%;
+  animation: nex-m3-progress-slide var(--nex-sys-motion-loop-skeleton)
+    var(--nex-sys-motion-easing-standard) infinite;
+}
+@keyframes nex-m3-progress-slide {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(280%);
+  }
+}
+/* OFFICIAL stop indicator (4dp dot) at the fill head, required when
+   track contrast drops below 3:1. */
+.nex-m3-progress-stop {
+  position: absolute;
+  top: 50%;
+  width: var(--nex-sys-space-xxs);
+  height: var(--nex-sys-space-xxs);
+  border-radius: var(--nex-sys-shape-full);
+  background: var(--nex-sys-color-primary);
+  transform: translate(-50%, -50%);
+}
+.nex-m3-progress-circular {
+  width: var(--nex-sys-space-2xl);
+  height: var(--nex-sys-space-2xl);
+  flex-shrink: 0;
+}
+.nex-m3-progress-circular-sm,
+.nex-m3-progress-sm .nex-m3-progress-circular {
+  width: var(--nex-sys-space-xl);
+  height: var(--nex-sys-space-xl);
+}
+.nex-m3-progress-circular-svg {
+  width: 100%;
+  height: 100%;
+}
+.nex-m3-progress-circular.is-indeterminate .nex-m3-progress-circular-svg {
+  animation: nex-m3-progress-rotate var(--nex-sys-motion-loop-skeleton)
+    linear infinite;
+}
+@keyframes nex-m3-progress-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.nex-m3-progress-circular-track {
+  fill: none;
+  stroke: var(--nex-sys-color-surface-container-highest);
+  /* Intentional OFFICIAL 4dp ring geometry (unitless SVG user units, not a
+   * design token): matches the M3 expressive progress thickness. */
+  stroke-width: 4;
+}
+.nex-m3-progress-circular-fill {
+  fill: none;
+  stroke: var(--nex-sys-color-primary);
+  /* Intentional OFFICIAL 4dp ring geometry — see track rule above. */
+  stroke-width: 4;
+  stroke-linecap: round;
+}
+.nex-m3-progress-value {
+  font-size: var(--nex-sys-type-size-label-small);
+  color: var(--nex-sys-color-on-surface-variant);
+}
+
+/* ---- Navigation-rail item (the sidebar pattern; OFFICIAL rail
+   grammar, contract §Shell): pill + tone step + emphasized label when
+   active, filled-active/outlined-inactive icon swap owned by the
+   component. Settles on the default-speed spring curve (reduced
+   motion: instant tone swap). One primary per region is preserved:
+   rail items are navigation, never competing CTAs. ---- */
+.nex-m3-rail-item {
+  display: flex;
+  align-items: center;
+  gap: var(--nex-sys-space-sm);
+  width: 100%;
+  /* 40px control band via tokens (2xl + xs), matching the .nex-btn band. */
+  min-height: calc(var(--nex-sys-space-2xl) + var(--nex-sys-space-xs));
+  padding: var(--nex-sys-space-xs) var(--nex-sys-space-md);
+  border: none;
+  border-radius: var(--nex-sys-shape-full);
+  background: transparent;
+  color: var(--nex-sys-color-on-surface-variant);
+  font-size: var(--nex-sys-type-size-body-medium);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--nex-sys-motion-duration-fast)
+    var(--nex-sys-motion-easing-standard),
+    color var(--nex-sys-motion-duration-fast)
+    var(--nex-sys-motion-easing-standard);
+}
+.nex-m3-rail-item:hover:not(:disabled) {
+  background: var(--nex-sys-state-hover);
+  color: var(--nex-sys-color-on-surface);
+}
+.nex-m3-rail-item:active:not(:disabled) {
+  background: var(--nex-sys-state-pressed);
+}
+.nex-m3-rail-item:disabled {
+  opacity: var(--nex-sys-state-disabled-opacity);
+  cursor: default;
+}
+.nex-m3-rail-item.is-active {
+  background: var(--nex-sys-color-primary-container);
+  color: var(--nex-sys-color-primary);
+  font-weight: var(--nex-sys-type-weight-emphasized);
+}
+.nex-m3-rail-item:focus-visible {
+  outline-offset: var(--nex-sys-focus-ring-offset-inset);
+}
+.nex-m3-rail-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--nex-sys-space-lg);
+  height: var(--nex-sys-space-lg);
+  flex-shrink: 0;
+  color: inherit;
+}
+.nex-m3-rail-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

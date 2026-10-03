@@ -3,6 +3,8 @@ import { useState } from "react";
 import { formatRelativeTime } from "../lib/format";
 import type { Conversation } from "../lib/tauri";
 import ConfirmDialog from "./ConfirmDialog";
+import M3IconButton from "./M3IconButton";
+import M3Toolbar from "./M3Toolbar";
 import {
   ArchiveIcon,
   ExportIcon,
@@ -117,62 +119,57 @@ export default function ConversationItem({
         </button>
         {/* Compact icon actions replace the timestamp while hovered /
             focused / selected — they no longer consume row width, so the
-            title can never collide with them (0.3.0 defect fix). */}
-        <div className="nex-conversation-actions">
-          <button
-            type="button"
-            className="nex-icon-btn nex-icon-btn-sm"
+            title can never collide with them (0.3.0 defect fix). Grouped
+            in a docked toolbar (same placement, token-driven look). */}
+        <M3Toolbar
+          label={`Actions for ${conversation.title}`}
+          className="nex-conversation-actions"
+        >
+          <M3IconButton
+            size="sm"
+            label="Export conversation"
             onClick={() => onExport(conversation.id)}
             disabled={busy}
-            aria-label="Export conversation"
-            title="Export"
           >
             <ExportIcon />
-          </button>
-          <button
-            type="button"
-            className="nex-icon-btn nex-icon-btn-sm"
+          </M3IconButton>
+          <M3IconButton
+            size="sm"
+            label="Rename conversation"
             onClick={beginRename}
             disabled={busy}
-            aria-label="Rename conversation"
-            title="Rename"
           >
             <PencilIcon />
-          </button>
+          </M3IconButton>
           {archived ? (
-            <button
-              type="button"
-              className="nex-icon-btn nex-icon-btn-sm"
+            <M3IconButton
+              size="sm"
+              label="Restore conversation"
               onClick={() => onRestore(conversation.id)}
               disabled={busy}
-              aria-label="Restore conversation"
-              title="Restore"
             >
               <UnarchiveIcon />
-            </button>
+            </M3IconButton>
           ) : (
-            <button
-              type="button"
-              className="nex-icon-btn nex-icon-btn-sm"
+            <M3IconButton
+              size="sm"
+              label="Archive conversation"
               onClick={() => onArchive(conversation.id)}
               disabled={busy}
-              aria-label="Archive conversation"
-              title="Archive"
             >
               <ArchiveIcon />
-            </button>
+            </M3IconButton>
           )}
-          <button
-            type="button"
-            className="nex-icon-btn nex-icon-btn-sm nex-icon-btn-danger"
+          <M3IconButton
+            size="sm"
+            danger
+            label="Delete conversation"
             onClick={() => setConfirmingDelete(true)}
             disabled={busy}
-            aria-label="Delete conversation"
-            title="Delete"
           >
             <TrashIcon />
-          </button>
-        </div>
+          </M3IconButton>
+        </M3Toolbar>
       </div>
       {confirmingDelete && (
         <ConfirmDialog

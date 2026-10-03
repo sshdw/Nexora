@@ -1,6 +1,7 @@
 import type { CommandError, Conversation } from "../lib/tauri";
 import type { WorkspaceStore } from "../lib/useWorkspace";
 import ConversationList from "./ConversationList";
+import M3RailItem from "./M3RailItem";
 import NewConversationButton from "./NewConversationButton";
 import NexoraMark from "./NexoraMark";
 import PromptLibraryEntry from "./PromptLibraryEntry";
@@ -102,16 +103,11 @@ export default function Sidebar({
           {workspace.error.message}
         </p>
       )}
-      <button
-        type="button"
-        className="nex-nav-entry"
-        aria-label="Import conversation"
-        title="Import conversation"
+      <M3RailItem
+        label="Import conversation"
+        icon={<ImportIcon />}
         onClick={onImport}
-      >
-        <ImportIcon className="nex-nav-entry-icon" />
-        <span>Import conversation</span>
-      </button>
+      />
     </aside>
   );
 }
