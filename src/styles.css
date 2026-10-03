@@ -108,7 +108,7 @@
   font-size: var(--nex-sys-type-size-label-medium);
   font-weight: var(--nex-sys-type-weight-medium);
   color: var(--nex-sys-color-on-surface-variant);
-  padding: 2px 10px;
+  padding: var(--nex-sys-space-xxxs) 10px;
   border: 1px solid var(--nex-sys-color-outline);
   border-radius: var(--nex-sys-shape-full);
 }

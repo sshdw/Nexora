@@ -36,7 +36,7 @@
 }
 
 .nex-settings-subtitle {
-  margin-top: 2px;
+  margin-top: var(--nex-sys-space-xxxs);
   font-size: var(--nex-sys-type-size-body-small);
   color: var(--nex-sys-color-on-surface-tertiary);
 }
