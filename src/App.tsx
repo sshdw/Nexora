@@ -49,6 +49,7 @@ import {
   matchesCombo,
 } from "./lib/shortcuts";
 import { useAppearance } from "./lib/useAppearance";
+import { LocaleProvider, useLocale, useStrings } from "./lib/useLocale";
 import { useConversations } from "./lib/useConversations";
 import { useConversationTabs } from "./lib/useConversationTabs";
 import { useImportExport } from "./lib/useImportExport";
@@ -92,23 +93,24 @@ function ConversationPane({
   splitOpen,
   onToggleSplit,
 }: ConversationPaneProps) {
+  const { t } = useStrings();
   const isArchived = conversation.status === "archived";
   return (
     <section
       className={"nex-pane" + (secondary ? " nex-pane--secondary" : "")}
-      aria-label={secondary ? `Split: ${conversation.title}` : conversation.title}
+      aria-label={secondary ? t("app.splitPaneAria", { title: conversation.title }) : conversation.title}
     >
       <header className="nex-pane-header">
         <h2 className="nex-main-title">
           <span className="nex-main-title-text">{conversation.title}</span>
           {isArchived && (
             <span className="nex-main-title-badge">
-              Archived
+              {t("app.archivedBadge")}
             </span>
           )}
         </h2>
         <M3Toolbar
-          label={`Actions for ${conversation.title}`}
+          label={t("app.paneActions", { title: conversation.title })}
           className="nex-main-header-actions"
         >
           <WorkspaceChip root={workspaceRoot} loading={workspaceLoading} />
@@ -120,14 +122,14 @@ function ConversationPane({
             disabled={secondary ? false : !splitAvailable && !splitOpen}
             title={
               secondary
-                ? "Close the split pane (Alt+S)"
-                : "Show a second conversation beside this one (Alt+S)"
+                ? t("app.splitCloseTitle")
+                : t("app.splitOpenTitle")
             }
           >
-            {secondary ? "Close split" : "Split"}
+            {secondary ? t("app.splitClose") : t("app.split")}
           </M3Button>
           <M3IconButton
-            label="Export conversation"
+            label={t("app.exportConversation")}
             onClick={() => onExport(conversation.id)}
           >
             <ExportIcon />
@@ -154,7 +156,7 @@ function ConversationPane({
   );
 }
 
-function App() {
+function AppShell() {
   const {
     conversations,
     loading,
@@ -175,6 +177,10 @@ function App() {
   // Appearance preference is loaded once here so the persisted theme applies
   // at startup, not only while Settings is open (FR-012 persistence).
   const appearance = useAppearance();
+  // Interface language (EN default, persisted per device in localStorage):
+  // every chrome string renders through the catalog for this locale.
+  const { locale, setLocale } = useLocale();
+  const { t } = useStrings();
   // Multi-conversation tabs + split: extension of the former single
   // `selectedId` — open tab ids, the primary pane id, and the optional
   // secondary split-pane id (see useConversationTabs.ts).
@@ -429,6 +435,12 @@ function App() {
   const toggleZen = useCallback(() => {
     setZen((prev) => !prev);
   }, []);
+
+  // Language switch (Settings appearance segmented control + palette
+  // command): a straight EN<->RU toggle, persisted per device.
+  const toggleLanguage = useCallback(() => {
+    setLocale(locale === "en" ? "ru" : "en");
+  }, [locale, setLocale]);
 
   // Overlay-exit contract shared by tab mutations and palette commands:
   // switching surface closes Settings/Library/VCS/Activity/Terminal (same
@@ -699,42 +711,47 @@ function App() {
   ]);
 
   // The palette registry: every entry wraps the existing UI handler, so
-  // invoking from the palette === clicking its UI equivalent.
+  // invoking from the palette === clicking its UI equivalent. Rebuilt on
+  // language switch so titles/sections render in the active locale.
   const paletteCommands = useMemo(
     () =>
-      buildCommands({
-        goConversations: closeOverlays,
-        openSettings,
-        openLibrary,
-        openVcs,
-        openActivity,
-        openTerminal,
-        newConversation: () => void handleNewConversation(),
-        openImport: () => setImportOpen(true),
-        exportActive: exportActiveConversation,
-        focusComposer,
-        tabNext: () => {
-          closeOverlays();
-          tabs.next();
+      buildCommands(
+        {
+          goConversations: closeOverlays,
+          openSettings,
+          openLibrary,
+          openVcs,
+          openActivity,
+          openTerminal,
+          newConversation: () => void handleNewConversation(),
+          openImport: () => setImportOpen(true),
+          exportActive: exportActiveConversation,
+          focusComposer,
+          tabNext: () => {
+            closeOverlays();
+            tabs.next();
+          },
+          tabPrev: () => {
+            closeOverlays();
+            tabs.prev();
+          },
+          tabCloseActive: () => {
+            closeOverlays();
+            if (tabs.activeId !== null) tabs.close(tabs.activeId);
+          },
+          toggleSplit: handleToggleSplit,
+          toggleZen,
+          showShortcuts: () => setShortcutsOpen(true),
+          toggleLanguage,
+          replayOnboarding,
+          jumpToTab: (index: number) => {
+            closeOverlays();
+            tabs.jumpTo(index);
+          },
+          tabCount: () => tabs.openIds.length,
         },
-        tabPrev: () => {
-          closeOverlays();
-          tabs.prev();
-        },
-        tabCloseActive: () => {
-          closeOverlays();
-          if (tabs.activeId !== null) tabs.close(tabs.activeId);
-        },
-        toggleSplit: handleToggleSplit,
-        toggleZen,
-        showShortcuts: () => setShortcutsOpen(true),
-        replayOnboarding,
-        jumpToTab: (index: number) => {
-          closeOverlays();
-          tabs.jumpTo(index);
-        },
-        tabCount: () => tabs.openIds.length,
-      }),
+        locale,
+      ),
     [
       closeOverlays,
       openSettings,
@@ -748,7 +765,9 @@ function App() {
       tabs,
       handleToggleSplit,
       toggleZen,
+      toggleLanguage,
       replayOnboarding,
+      locale,
     ],
   );
 
@@ -783,7 +802,7 @@ function App() {
     const found = conversations.find((c) => c.id === id);
     return {
       id,
-      title: found?.title ?? "Conversation",
+      title: found?.title ?? t("common.conversation"),
       archived: found?.status === "archived",
     };
   };
@@ -817,9 +836,9 @@ function App() {
           <span className="nex-placeholder-mark-wrap" aria-hidden="true">
             <NexoraMark className="nex-placeholder-mark" width={30} height={30} />
           </span>
-          <p className="nex-placeholder-title">No conversation selected</p>
+          <p className="nex-placeholder-title">{t("app.noConversationTitle")}</p>
           <p className="nex-placeholder-text">
-            Choose a conversation from the sidebar, or create one with New Conversation.
+            {t("app.noConversationText")}
           </p>
         </div>
       )
@@ -880,7 +899,7 @@ function App() {
   return (
     <div className={"nex-app" + (zen ? " nex-zen" : "")}>
       <a className="nex-skip-link" href="#nex-main-content">
-        Skip to main content
+        {t("app.skipLink")}
       </a>
       <Sidebar
         conversations={conversations}
@@ -966,6 +985,8 @@ function App() {
               <SettingsView
                 store={providers}
                 appearance={appearance}
+                locale={locale}
+                onLocaleChange={setLocale}
                 workspaceRoot={workspace.root}
                 workspaceLoading={workspace.loading}
                 spendLimit={spendLimit}
@@ -988,8 +1009,8 @@ function App() {
           zen effect above). */}
       <div className="nex-sr-only" aria-live="polite">
         {zen
-          ? "Zen reading mode on. Press Escape to exit."
-          : "Zen reading mode off."}
+          ? t("app.zenOn")
+          : t("app.zenOff")}
       </div>
       {zen && (
         <div className="nex-zen-exit">
@@ -997,9 +1018,9 @@ function App() {
             variant="quiet"
             size="sm"
             onClick={toggleZen}
-            title="Exit chromeless reading mode (Esc)"
+            title={t("app.zenExitTitle")}
           >
-            Exit zen · Esc
+            {t("app.zenExit")}
           </M3Button>
         </div>
       )}
@@ -1052,4 +1073,12 @@ function App() {
   );
 }
 
-export default App;
+/** Root: the locale provider wraps the shell so every chrome string (and
+ * the module-level locale for non-React call sites) follows one store. */
+export default function App() {
+  return (
+    <LocaleProvider>
+      <AppShell />
+    </LocaleProvider>
+  );
+}

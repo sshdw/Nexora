@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import type { WorkspaceStore } from "../lib/useWorkspace";
+import { useStrings } from "../lib/useLocale";
 import M3RailItem from "./M3RailItem";
 
 export interface WorkspaceRecentListProps {
@@ -10,14 +11,16 @@ export interface WorkspaceRecentListProps {
 /** Recent workspace folders dropdown (1.3.0): at most 5 entries,
  * most-recent first. Selecting an entry persists it backend-side. */
 export default function WorkspaceRecentList({ store }: WorkspaceRecentListProps) {
+  const { t } = useStrings();
   const [open, setOpen] = useState(false);
 
   if (store.recent.length === 0) return null;
 
+  const label = t("nav.recentFolders", { n: store.recent.length });
   return (
     <div className="nex-workspace-recent">
       <M3RailItem
-        label={`Recent folders (${store.recent.length})`}
+        label={label}
         icon={
           <span aria-hidden="true">
             🕘
@@ -26,10 +29,10 @@ export default function WorkspaceRecentList({ store }: WorkspaceRecentListProps)
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
       >
-        Recent folders ({store.recent.length})
+        {label}
       </M3RailItem>
       {open && (
-        <ul className="nex-workspace-recent-list" aria-label="Recent workspace folders">
+        <ul className="nex-workspace-recent-list" aria-label={t("nav.recentFoldersAria")}>
           {store.recent.map((path) => (
             <li key={path}>
               <button

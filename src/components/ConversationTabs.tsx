@@ -21,6 +21,7 @@ import { useEffect, useRef } from "react";
 
 import M3Button from "./M3Button";
 import M3IconButton from "./M3IconButton";
+import { useStrings } from "../lib/useLocale";
 import { CloseIcon } from "./icons";
 
 export interface TabEntry {
@@ -56,6 +57,7 @@ export default function ConversationTabs({
   splitOpen,
   onToggleSplit,
 }: ConversationTabsProps) {
+  const { t } = useStrings();
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
   // Keep the active tab visible inside the overflowing strip (instant,
@@ -113,11 +115,11 @@ export default function ConversationTabs({
   };
 
   return (
-    <div className="nex-tabstrip" role="region" aria-label="Conversation tabs">
+    <div className="nex-tabstrip" role="region" aria-label={t("tabs.region")}>
       <div
         className="nex-tabstrip-list"
         role="tablist"
-        aria-label="Open conversations"
+        aria-label={t("tabs.list")}
       >
         {tabs.map((tab, index) => {
           const selected = tab.id === activeId;
@@ -145,8 +147,8 @@ export default function ConversationTabs({
                 aria-selected={selected}
                 aria-label={
                   tab.title +
-                  (inSplit ? " (open in split pane)" : "") +
-                  (tab.archived ? " (archived)" : "")
+                  (inSplit ? t("tabs.inSplitSuffix") : "") +
+                  (tab.archived ? t("tabs.archivedSuffix") : "")
                 }
                 title={tab.title}
                 tabIndex={selected ? undefined : -1}
@@ -163,7 +165,7 @@ export default function ConversationTabs({
               </button>
               <M3IconButton
                 size="sm"
-                label={`Close ${tab.title}`}
+                label={t("tabs.closeTab", { title: tab.title })}
                 className="nex-tab-close"
                 onClick={() => onClose(tab.id)}
               >
@@ -180,27 +182,27 @@ export default function ConversationTabs({
           onClick={onToggleSplit}
           aria-pressed={splitOpen}
           disabled={!splitOpen && tabs.length < 2}
-          title="Show a second conversation beside this one (Alt+S)"
+          title={t("tabs.splitTitle")}
         >
-          {splitOpen ? "Close split" : "Split"}
+          {splitOpen ? t("app.splitClose") : t("app.split")}
         </M3Button>
         <M3Button
           variant="quiet"
           size="sm"
           onClick={onToggleZen}
           aria-pressed={zen}
-          title="Chromeless reading mode (Alt+Z, Esc exits)"
+          title={t("tabs.zenTitle")}
         >
-          Zen
+          {t("tabs.zen")}
         </M3Button>
         <M3Button
           variant="quiet"
           size="sm"
           onClick={onNewConversation}
           disabled={creating}
-          title="New conversation"
+          title={t("tabs.newTitle")}
         >
-          New
+          {t("tabs.new")}
         </M3Button>
       </div>
     </div>

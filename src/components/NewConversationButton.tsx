@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 
 import M3Button from "./M3Button";
 import { PlusIcon } from "./icons";
+import { useStrings } from "../lib/useLocale";
 
 export interface NewConversationButtonProps {
   onClick: () => void;
@@ -12,8 +13,10 @@ export interface NewConversationButtonProps {
 export default function NewConversationButton({
   onClick,
   disabled = false,
-  children = "New Conversation",
+  children,
 }: NewConversationButtonProps) {
+  const { t } = useStrings();
+  const label = children ?? t("nav.newConversation");
   return (
     <M3Button
       variant="primary"
@@ -22,11 +25,11 @@ export default function NewConversationButton({
       className="nex-new-conversation"
       onClick={onClick}
       disabled={disabled}
-      aria-label="New conversation"
-      title="New conversation"
+      aria-label={t("nav.newConversationAria")}
+      title={t("nav.newConversationAria")}
     >
       <PlusIcon className="nex-new-conversation-icon" />
-      <span>{children}</span>
+      <span>{label}</span>
     </M3Button>
   );
 }

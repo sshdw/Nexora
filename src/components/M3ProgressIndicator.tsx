@@ -9,6 +9,8 @@
 //! fallback (static fill + text via the motion.css gate, no loop) keeps full
 //! information. role="progressbar" with value semantics when determinate.
 
+import { useStrings } from "../lib/useLocale";
+
 export interface M3ProgressIndicatorProps {
   kind?: "linear" | "circular";
   /** 0–100 determinate value; null/undefined = indeterminate. */
@@ -37,10 +39,13 @@ export default function M3ProgressIndicator({
   lowContrastTrack = false,
   size = "md",
 }: M3ProgressIndicatorProps) {
+  const { t } = useStrings();
   const determinate = value !== null && value !== undefined;
   const clamped = determinate ? clampValue(value) : 0;
   const rounded = Math.round(clamped);
   const sizeClass = size === "sm" ? " nex-m3-progress-sm" : "";
+  const indeterminateText = t("progress.loading");
+  const percentText = t("progress.percent", { n: rounded });
 
   if (kind === "circular") {
     // Geometry is value math, not design tokens: pathLength normalizes the
@@ -58,7 +63,7 @@ export default function M3ProgressIndicator({
           aria-valuemin={determinate ? 0 : undefined}
           aria-valuemax={determinate ? 100 : undefined}
           aria-valuenow={determinate ? rounded : undefined}
-          aria-valuetext={determinate ? `${rounded} percent` : "Loading"}
+          aria-valuetext={determinate ? percentText : indeterminateText}
         >
           <svg
             className="nex-m3-progress-circular-svg"
@@ -90,7 +95,7 @@ export default function M3ProgressIndicator({
         {/* Indeterminate carries no % text, so expose a text equivalent:
           * screen-reader announcement via the progressbar (aria-valuetext)
           * plus a text node for the reduced-motion static fallback. */}
-        {!determinate && <span className="nex-sr-only">Loading</span>}
+        {!determinate && <span className="nex-sr-only">{indeterminateText}</span>}
       </div>
     );
   }
@@ -106,7 +111,7 @@ export default function M3ProgressIndicator({
         aria-valuemin={determinate ? 0 : undefined}
         aria-valuemax={determinate ? 100 : undefined}
         aria-valuenow={determinate ? rounded : undefined}
-        aria-valuetext={determinate ? `${rounded} percent` : "Loading"}
+        aria-valuetext={determinate ? percentText : indeterminateText}
       >
         <span
           className="nex-m3-progress-linear-fill"
@@ -126,7 +131,7 @@ export default function M3ProgressIndicator({
       )}
       {/* Indeterminate carries no % text — same text equivalent as the
         * circular branch above for the reduced-motion static fallback. */}
-      {!determinate && <span className="nex-sr-only">Loading</span>}
+      {!determinate && <span className="nex-sr-only">{indeterminateText}</span>}
     </div>
   );
 }

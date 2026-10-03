@@ -48,6 +48,12 @@
 //! validation UX the shell does not have yet; command ids are stable, but
 //! the existing settings store holds device preferences, not usage stats,
 //! and a new persistence shape is scope creep for this task.
+//!
+//! Localization: titles + section labels render through the string catalog
+//! (`buildCommands(deps, locale)` — App rebuilds on language switch).
+//! Keywords stay English matching aids (matching, not display).
+
+import { tr, type Locale } from "./strings";
 
 /** A settings section the palette can deep-link (SettingsView group ids). */
 export type PaletteSettingsSection =
@@ -99,180 +105,195 @@ export interface PaletteDeps {
   toggleSplit: () => void;
   toggleZen: () => void;
   showShortcuts: () => void;
+  /** Flip the interface language EN <-> RU (Settings appearance owns it). */
+  toggleLanguage: () => void;
   /** Reopen the first-run onboarding flow (Help re-entry point). */
   replayOnboarding: () => void;
   jumpToTab: (index: number) => void;
   tabCount: () => number;
 }
 
-export function buildCommands(deps: PaletteDeps): PaletteCommand[] {
+export function buildCommands(deps: PaletteDeps, locale: Locale = "en"): PaletteCommand[] {
   const tabCount = deps.tabCount();
+  const go = tr(locale, "palette.sectionGo");
+  const chat = tr(locale, "palette.sectionChat");
+  const tabs = tr(locale, "palette.sectionTabs");
+  const help = tr(locale, "palette.sectionHelp");
+  const vcs = tr(locale, "palette.sectionVcs");
+  const terminal = tr(locale, "palette.sectionTerminal");
   const commands: PaletteCommand[] = [
     {
       id: "go.conversations",
-      title: "Go to Conversations",
-      section: "Go",
+      title: tr(locale, "palette.cmd.go_conversations"),
+      section: go,
       keywords: ["back", "home", "chat list", "conversations", "close panel"],
       run: deps.goConversations,
     },
     {
       id: "go.library",
-      title: "Go to Prompt Library",
-      section: "Go",
+      title: tr(locale, "palette.cmd.go_library"),
+      section: go,
       keywords: ["prompts", "prompt library", "templates", "saved prompts"],
       run: deps.openLibrary,
     },
     {
       id: "go.vcs",
-      title: "Go to Version Control",
-      section: "Go",
+      title: tr(locale, "palette.cmd.go_vcs"),
+      section: go,
       keywords: ["git", "vcs", "version control", "source control", "commits", "status"],
       run: () => deps.openVcs(),
     },
     {
       id: "go.terminal",
-      title: "Go to Terminal",
-      section: "Go",
+      title: tr(locale, "palette.cmd.go_terminal"),
+      section: go,
       keywords: ["terminal", "console", "shell", "command line", "cli", "run command", "prompt"],
       run: () => deps.openTerminal(),
     },
     {
       id: "go.activity",
-      title: "Go to Activity feed",
-      section: "Go",
+      title: tr(locale, "palette.cmd.go_activity"),
+      section: go,
       keywords: ["activity", "feed", "runs", "history", "recent", "agent runs", "timeline"],
       run: () => deps.openActivity("activity"),
     },
     {
       id: "go.health",
-      title: "Go to Project health",
-      section: "Go",
+      title: tr(locale, "palette.cmd.go_health"),
+      section: go,
       keywords: ["health", "status", "providers", "budget", "spend", "cost", "context", "git", "flags"],
       run: () => deps.openActivity("health"),
     },
     {
       id: "go.settings",
-      title: "Go to Settings",
-      section: "Go",
+      title: tr(locale, "palette.cmd.go_settings"),
+      section: go,
       keywords: ["settings", "setings", "preferences", "options", "setup", "config"],
       run: () => deps.openSettings(),
     },
     {
       id: "settings.appearance",
-      title: "Settings: Appearance",
-      section: "Go",
+      title: tr(locale, "palette.cmd.settings_appearance"),
+      section: go,
       keywords: ["theme", "dark", "light", "appearance", "look"],
       run: () => deps.openSettings("appearance"),
     },
     {
       id: "settings.provider",
-      title: "Settings: Provider & model",
-      section: "Go",
+      title: tr(locale, "palette.cmd.settings_provider"),
+      section: go,
       keywords: ["provider", "model", "ai model", "llm", "openai", "anthropic", "gemini"],
       run: () => deps.openSettings("provider"),
     },
     {
       id: "settings.agent",
-      title: "Settings: Agent & budgets",
-      section: "Go",
+      title: tr(locale, "palette.cmd.settings_agent"),
+      section: go,
       keywords: ["agent", "autonomy", "budget", "spend", "cost limit", "supervised"],
       run: () => deps.openSettings("agent"),
     },
     {
       id: "settings.workspace",
-      title: "Settings: Workspace folder",
-      section: "Go",
+      title: tr(locale, "palette.cmd.settings_workspace"),
+      section: go,
       keywords: ["workspace", "folder", "directory", "root", "project path"],
       run: () => deps.openSettings("workspace"),
     },
     {
       id: "settings.credentials",
-      title: "Settings: Provider credentials",
-      section: "Go",
+      title: tr(locale, "palette.cmd.settings_credentials"),
+      section: go,
       keywords: ["api key", "credentials", "connect", "key", "token", "auth"],
       run: () => deps.openSettings("credentials"),
     },
     {
       id: "settings.data",
-      title: "Settings: Data management",
-      section: "Go",
+      title: tr(locale, "palette.cmd.settings_data"),
+      section: go,
       keywords: ["data", "clear", "delete all", "reset", "storage", "database"],
       run: () => deps.openSettings("data"),
     },
     {
       id: "settings.advanced",
-      title: "Settings: Advanced",
-      section: "Go",
+      title: tr(locale, "palette.cmd.settings_advanced"),
+      section: go,
       keywords: ["advanced", "power", "flags", "routing", "mcp", "preset", "internals"],
       run: () => deps.openSettings("advanced"),
     },
     {
+      id: "settings.language",
+      title: tr(locale, "palette.cmd.settings_language"),
+      section: go,
+      keywords: ["language", "язык", "locale", "russian", "english", "русский", "английский", "переключить язык"],
+      run: deps.toggleLanguage,
+    },
+    {
       id: "chat.new",
-      title: "New conversation",
-      section: "Chat",
+      title: tr(locale, "palette.cmd.chat_new"),
+      section: chat,
       keywords: ["new", "create", "start", "conversation", "chat", "compose"],
       run: deps.newConversation,
     },
     {
       id: "chat.focus-composer",
-      title: "Focus message input",
-      section: "Chat",
+      title: tr(locale, "palette.cmd.chat_focus-composer"),
+      section: chat,
       keywords: ["type", "message", "input", "composer", "write", "send", "focus"],
       run: deps.focusComposer,
     },
     {
       id: "chat.export-active",
-      title: "Export active conversation",
-      section: "Chat",
+      title: tr(locale, "palette.cmd.chat_export-active"),
+      section: chat,
       keywords: ["export", "download", "save", "share", "backup"],
       run: deps.exportActive,
     },
     {
       id: "chat.import",
-      title: "Import conversation",
-      section: "Chat",
+      title: tr(locale, "palette.cmd.chat_import"),
+      section: chat,
       keywords: ["import", "upload", "restore", "open file"],
       run: deps.openImport,
     },
     {
       id: "tabs.next",
-      title: "Next tab",
-      section: "Tabs",
+      title: tr(locale, "palette.cmd.tabs_next"),
+      section: tabs,
       keywords: ["next", "tab", "forward", "switch", "cycle"],
       run: deps.tabNext,
     },
     {
       id: "tabs.prev",
-      title: "Previous tab",
-      section: "Tabs",
+      title: tr(locale, "palette.cmd.tabs_prev"),
+      section: tabs,
       keywords: ["previous", "prev", "back", "tab", "switch"],
       run: deps.tabPrev,
     },
     {
       id: "tabs.close-active",
-      title: "Close active tab",
-      section: "Tabs",
+      title: tr(locale, "palette.cmd.tabs_close-active"),
+      section: tabs,
       keywords: ["close", "tab", "dismiss", "shut"],
       run: deps.tabCloseActive,
     },
     {
       id: "tabs.split",
-      title: "Toggle split pane",
-      section: "Tabs",
+      title: tr(locale, "palette.cmd.tabs_split"),
+      section: tabs,
       keywords: ["split", "side by side", "pane", "two", "compare", "divide"],
       run: deps.toggleSplit,
     },
     {
       id: "tabs.zen",
-      title: "Toggle zen mode",
-      section: "Tabs",
+      title: tr(locale, "palette.cmd.tabs_zen"),
+      section: tabs,
       keywords: ["zen", "focus", "chromeless", "reading", "distraction", "fullscreen"],
       run: deps.toggleZen,
     },
     {
       id: "help.show-shortcuts",
-      title: "Show keyboard shortcuts",
-      section: "Help",
+      title: tr(locale, "palette.cmd.help_show-shortcuts"),
+      section: help,
       keywords: [
         "shortcuts",
         "hotkeys",
@@ -287,8 +308,8 @@ export function buildCommands(deps: PaletteDeps): PaletteCommand[] {
     },
     {
       id: "help.replay-onboarding",
-      title: "Replay onboarding walkthrough",
-      section: "Help",
+      title: tr(locale, "palette.cmd.help_replay-onboarding"),
+      section: help,
       keywords: [
         "onboarding",
         "walkthrough",
@@ -303,15 +324,15 @@ export function buildCommands(deps: PaletteDeps): PaletteCommand[] {
     },
     {
       id: "vcs.refresh",
-      title: "Version Control: refresh status",
-      section: "Version Control",
+      title: tr(locale, "palette.cmd.vcs_refresh"),
+      section: vcs,
       keywords: ["refresh", "reload", "git status", "sync", "update", "vcs"],
       run: () => deps.openVcs("refresh"),
     },
     {
       id: "vcs.commit-focus",
-      title: "Version Control: write commit message",
-      section: "Version Control",
+      title: tr(locale, "palette.cmd.vcs_commit-focus"),
+      section: vcs,
       keywords: [
         "commit",
         "commmit",
@@ -326,15 +347,15 @@ export function buildCommands(deps: PaletteDeps): PaletteCommand[] {
     },
     {
       id: "terminal.focus-input",
-      title: "Terminal: focus command input",
-      section: "Terminal",
+      title: tr(locale, "palette.cmd.terminal_focus-input"),
+      section: terminal,
       keywords: ["terminal", "focus", "input", "type", "command line", "shell prompt"],
       run: () => deps.openTerminal("focus-input"),
     },
     {
       id: "terminal.clear",
-      title: "Terminal: clear scrollback",
-      section: "Terminal",
+      title: tr(locale, "palette.cmd.terminal_clear"),
+      section: terminal,
       keywords: ["terminal", "clear", "clean", "wipe", "scrollback", "reset output"],
       run: () => deps.openTerminal("clear"),
     },
@@ -345,8 +366,11 @@ export function buildCommands(deps: PaletteDeps): PaletteCommand[] {
     const position = index + 1;
     commands.push({
       id: `tabs.jump-${position}`,
-      title: `Go to tab ${position === 9 ? "9 (last)" : position}`,
-      section: "Tabs",
+      title:
+        position === 9
+          ? tr(locale, "palette.cmd.tabJumpLast")
+          : tr(locale, "palette.cmd.tabJump", { n: position }),
+      section: tabs,
       keywords: [`tab ${position}`, `go ${position}`, "jump", "switch tab"],
       run: () => deps.jumpToTab(index),
     });

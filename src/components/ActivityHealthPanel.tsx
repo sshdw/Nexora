@@ -48,6 +48,8 @@ import {
   type SupportedProvider,
 } from "../lib/tauri";
 import { SPEND_LIMIT_KEY } from "../lib/useSpendLimit";
+import { getLocale, tr, type Locale } from "../lib/strings";
+import { useStrings } from "../lib/useLocale";
 import M3Button from "./M3Button";
 import M3LoadingIndicator from "./M3LoadingIndicator";
 import M3SegmentedGroup from "./M3SegmentedGroup";
@@ -86,43 +88,43 @@ function toMessage(error: unknown): string {
 /** Fixed-vocabulary run-status label; unknown values fall back to a
  * capitalized echo of the backend token (defensive — the backend only
  * sends its `agent_runs.status` vocabulary). */
-function runStatusLabel(status: string): string {
+function runStatusLabel(status: string, locale: Locale = getLocale()): string {
   switch (status) {
     case "running":
-      return "Running";
+      return tr(locale, "activity.runRunning");
     case "completed":
-      return "Completed";
+      return tr(locale, "activity.runCompleted");
     case "cancelled":
-      return "Cancelled";
+      return tr(locale, "activity.runCancelled");
     case "budget_exhausted":
-      return "Budget exhausted";
+      return tr(locale, "activity.runBudget");
     case "spend_limit_exceeded":
-      return "Spend limit hit";
+      return tr(locale, "activity.runSpendHit");
     case "error":
-      return "Failed";
+      return tr(locale, "activity.runFailed");
     default:
       return status.charAt(0).toUpperCase() + status.slice(1);
   }
 }
 
 /** Fixed-vocabulary provider-health label. */
-function healthLabel(status: ProviderHealth["status"]): string {
+function healthLabel(status: ProviderHealth["status"], locale: Locale = getLocale()): string {
   switch (status) {
     case "healthy":
-      return "Healthy";
+      return tr(locale, "activity.healthHealthy");
     case "degraded":
-      return "Degraded";
+      return tr(locale, "activity.healthDegraded");
     case "unreachable":
-      return "Unreachable";
+      return tr(locale, "activity.healthUnreachable");
     case "unknown":
     default:
-      return "Unknown";
+      return tr(locale, "activity.healthUnknown");
   }
 }
 
 /** Compact dollars from micro-USD (`null` = not recorded → "n/a"). */
-function formatMicroUsd(micros: number | null): string {
-  if (micros === null) return "n/a";
+function formatMicroUsd(micros: number | null, locale: Locale = getLocale()): string {
+  if (micros === null) return tr(locale, "common.na");
   const dollars = micros / 1_000_000;
   return `$${dollars >= 1 ? dollars.toFixed(2) : dollars.toFixed(4)}`;
 }
@@ -152,6 +154,7 @@ export default function ActivityHealthPanel({
   tabRequest = null,
   activeConversationId = null,
 }: ActivityHealthPanelProps) {
+  const { locale, t, tp: tpn } = useStrings();
   const [tab, setTab] = useState<ActivityHealthTab>(initialTab);
   const [kind, setKind] = useState<ActivityKind>("all");
   // Palette deep links retarget the tab while open (mirrors the VCS
@@ -291,8 +294,8 @@ export default function ActivityHealthPanel({
           : undefined;
       const parts = [
         `#${run.run_id} · ${run.model}`,
-        `${run.total_steps} steps`,
-        formatMicroUsd(run.spent_micro_usd),
+        tpn("steps", run.total_steps),
+        formatMicroUsd(run.spent_micro_usd, locale),
       ];
       return {
         key: `run-${run.run_id}`,
@@ -301,7 +304,7 @@ export default function ActivityHealthPanel({
         runId: run.run_id,
         conversationId: run.conversation_id,
         title:
-          convTitle !== undefined ? `Run in “${convTitle}”` : `Run #${run.run_id}`,
+          convTitle !== undefined ? t("activity.runIn", { title: convTitle }) : t("activity.runHash", { id: run.run_id }),
         detail: parts.join(" · "),
         status: run.status,
         time: run.started_at,
@@ -327,8 +330,8 @@ export default function ActivityHealthPanel({
         at: conv.created_at,
         kind: "conversation",
         conversationId: conv.id,
-        title: `Conversation “${conv.title}” created`,
-        detail: conv.status === "archived" ? "Archived" : "Active",
+        title: t("activity.convCreated", { title: conv.title }),
+        detail: conv.status === "archived" ? t("common.archived") : t("common.active"),
         time: conv.created_at,
       });
     }
@@ -337,7 +340,7 @@ export default function ActivityHealthPanel({
     if (kind === "conversations")
       return merged.filter((row) => row.kind === "conversation");
     return merged;
-  }, [feed, spendFeed, conversations, titles, kind]);
+  }, [feed, spendFeed, conversations, titles, kind, locale, t, tpn]);
 
   const flagEntries = useMemo(() => {
     if (!flags) return [];
@@ -345,12 +348,12 @@ export default function ActivityHealthPanel({
   }, [flags]);
 
   return (
-    <div className="nex-activity" role="group" aria-label="Activity and health">
+    <div className="nex-activity" role="group" aria-label={t("activity.group")}>
       <header className="nex-activity-header">
         <div className="nex-activity-heading">
-          <h2 className="nex-activity-title">Activity &amp; Health</h2>
+          <h2 className="nex-activity-title">{t("activity.title")}</h2>
           <p className="nex-activity-subtitle">
-            Recent runs, spend, and project state — refresh manually.
+            {t("activity.subtitle")}
           </p>
         </div>
         <div className="nex-activity-header-actions">
@@ -358,22 +361,22 @@ export default function ActivityHealthPanel({
             variant="quiet"
             size="sm"
             onClick={() => setRefreshToken((token) => token + 1)}
-            title="Reload activity and health from the backend"
+            title={t("activity.refreshTitle")}
           >
-            Refresh
+            {t("vcs.refresh")}
           </M3Button>
           <M3Button variant="quiet" size="sm" onClick={onClose}>
-            Close
+            {t("common.close")}
           </M3Button>
         </div>
       </header>
       <div className="nex-activity-tabs">
         <M3SegmentedGroup<ActivityHealthTab>
-          label="Activity and health views"
+          label={t("activity.tabsLabel")}
           semantics="tabs"
           options={[
-            { value: "activity", label: "Activity" },
-            { value: "health", label: "Health" },
+            { value: "activity", label: t("activity.tabActivity") },
+            { value: "health", label: t("activity.tabHealth") },
           ]}
           value={tab}
           onChange={setTab}
@@ -381,31 +384,31 @@ export default function ActivityHealthPanel({
       </div>
       <div className="nex-activity-body">
         {tab === "activity" ? (
-          <section aria-label="Activity feed">
+          <section aria-label={t("activity.feedAria")}>
             <div className="nex-activity-filter">
               <M3SegmentedGroup<ActivityKind>
-                label="Filter feed by kind"
+                label={t("activity.filterLabel")}
                 options={[
-                  { value: "all", label: "All" },
-                  { value: "runs", label: "Runs" },
-                  { value: "spend", label: "Spend" },
-                  { value: "conversations", label: "Chats" },
+                  { value: "all", label: t("activity.filterAll") },
+                  { value: "runs", label: t("activity.filterRuns") },
+                  { value: "spend", label: t("activity.filterSpend") },
+                  { value: "conversations", label: t("activity.filterChats") },
                 ]}
                 value={kind}
                 onChange={setKind}
               />
             </div>
             {activityLoading ? (
-              <M3LoadingIndicator label="Loading activity" />
+              <M3LoadingIndicator label={t("activity.loadingActivity")} />
             ) : activityError !== null ? (
               <p className="nex-activity-error" role="alert">
                 {activityError}
               </p>
             ) : rows.length === 0 ? (
               <div className="nex-activity-empty">
-                <p className="nex-activity-empty-title">No activity yet</p>
+                <p className="nex-activity-empty-title">{t("activity.emptyTitle")}</p>
                 <p className="nex-activity-empty-text">
-                  Conversations and agent runs will appear here as they happen.
+                  {t("activity.emptyText")}
                 </p>
               </div>
             ) : (
@@ -418,7 +421,7 @@ export default function ActivityHealthPanel({
                         <span
                           className={`nex-activity-pill nex-activity-pill--${row.status}`}
                         >
-                          {runStatusLabel(row.status)}
+                          {runStatusLabel(row.status, locale)}
                         </span>
                       )}
                     </div>
@@ -434,17 +437,17 @@ export default function ActivityHealthPanel({
             )}
           </section>
         ) : healthLoading ? (
-          <M3LoadingIndicator label="Loading project health" />
+          <M3LoadingIndicator label={t("activity.loadingHealth")} />
         ) : (
           <>
-            <section className="nex-activity-section" aria-label="Providers">
-              <h3 className="nex-activity-section-title">Providers</h3>
+            <section className="nex-activity-section" aria-label={t("activity.providersSection")}>
+              <h3 className="nex-activity-section-title">{t("activity.providersSection")}</h3>
               {healthError !== null ? (
                 <p className="nex-activity-error" role="alert">
                   {healthError}
                 </p>
               ) : supported.length === 0 ? (
-                <p className="nex-activity-muted">No providers listed.</p>
+                <p className="nex-activity-muted">{t("activity.noProviders")}</p>
               ) : (
                 <ul className="nex-activity-list">
                   {supported.map((def) => {
@@ -456,16 +459,16 @@ export default function ActivityHealthPanel({
                             {def.display_name}
                           </span>
                           <span className="nex-activity-pill">
-                            {probe ? healthLabel(probe.status) : "Unknown"}
+                            {probe ? healthLabel(probe.status, locale) : t("activity.healthUnknown")}
                           </span>
                         </div>
                         <div className="nex-activity-row-meta">
                           <span>
                             {probe
-                              ? `${probe.has_configuration ? "configured" : "not configured"} · ${probe.has_credential ? "key stored" : "no key"}`
-                              : "No health probe"}
+                              ? `${probe.has_configuration ? t("activity.configured") : t("activity.notConfigured")} · ${probe.has_credential ? t("activity.keyStored") : t("activity.noKey")}`
+                              : t("activity.noProbe")}
                           </span>
-                          <span>{def.models.length} models</span>
+                          <span>{tpn("models", def.models.length)}</span>
                         </div>
                       </li>
                     );
@@ -473,61 +476,62 @@ export default function ActivityHealthPanel({
                 </ul>
               )}
             </section>
-            <section className="nex-activity-section" aria-label="Budget and spend">
-              <h3 className="nex-activity-section-title">Budget &amp; spend</h3>
+            <section className="nex-activity-section" aria-label={t("activity.budgetSection")}>
+              <h3 className="nex-activity-section-title">{t("activity.budgetSection")}</h3>
               {feed === null ? (
-                <p className="nex-activity-muted">Spend totals unavailable.</p>
+                <p className="nex-activity-muted">{t("activity.spendUnavailable")}</p>
               ) : (
                 <ul className="nex-activity-list">
                   <li className="nex-activity-row">
                     <div className="nex-activity-row-main">
-                      <span className="nex-activity-row-title">All runs</span>
+                      <span className="nex-activity-row-title">{t("activity.allRuns")}</span>
                     </div>
                     <div className="nex-activity-row-meta">
                       <span>
-                        {feed.totals.runs} runs · {feed.totals.total_steps} steps ·{" "}
-                        {formatMicroUsd(feed.totals.total_spent_micro_usd)} total
+                        {tpn("runs", feed.totals.runs)} · {tpn("steps", feed.totals.total_steps)} ·{" "}
+                        {t("activity.totalsTotal", { total: formatMicroUsd(feed.totals.total_spent_micro_usd, locale) })}
                       </span>
                       <span>
-                        Limit:{" "}
-                        {spendLimit === null
-                          ? "none"
-                          : formatMicroUsd(spendLimit)}{" "}
-                        per run
+                        {t("activity.limitValue", {
+                          limit:
+                            spendLimit === null
+                              ? t("activity.limitNone")
+                              : formatMicroUsd(spendLimit, locale),
+                        })}
                       </span>
                     </div>
                   </li>
                 </ul>
               )}
             </section>
-            <section className="nex-activity-section" aria-label="Context pressure">
-              <h3 className="nex-activity-section-title">Context</h3>
+            <section className="nex-activity-section" aria-label={t("activity.contextSection")}>
+              <h3 className="nex-activity-section-title">{t("activity.contextSection")}</h3>
               {activeConversationId === null ? (
                 <p className="nex-activity-muted">
-                  Open a conversation to see its context pressure.
+                  {t("activity.openConv")}
                 </p>
               ) : contextError !== null ? (
                 <p className="nex-activity-error" role="alert">
                   {contextError}
                 </p>
               ) : context === null ? (
-                <p className="nex-activity-muted">Context stats unavailable.</p>
+                <p className="nex-activity-muted">{t("activity.ctxUnavailable")}</p>
               ) : (
                 <div className="nex-activity-row">
                   <div className="nex-activity-row-main">
                     <span className="nex-activity-row-title">{context.title}</span>
                     <span className="nex-activity-pill">
                       {context.has_token_data
-                        ? `${context.usage_percent}% used`
-                        : "usage n/a"}
+                        ? t("activity.ctxUsed", { n: context.usage_percent })
+                        : t("activity.ctxNa")}
                     </span>
                   </div>
                   <div className="nex-activity-row-meta">
                     <span>
-                      {context.message_count} messages ·{" "}
-                      {context.tool_call_count} tool calls
+                      {t("ctx.labelMessages")}: {context.message_count} ·{" "}
+                      {t("ctx.legendTools")}: {context.tool_call_count}
                     </span>
-                    <span>{formatMicroUsd(context.total_cost_micro_usd)}</span>
+                    <span>{formatMicroUsd(context.total_cost_micro_usd, locale)}</span>
                   </div>
                   {context.has_token_data && (
                     <div
@@ -536,7 +540,7 @@ export default function ActivityHealthPanel({
                       aria-valuenow={context.usage_percent}
                       aria-valuemin={0}
                       aria-valuemax={100}
-                      aria-label="Context window used"
+                      aria-label={t("activity.ctxAria")}
                     >
                       <div
                         className="nex-activity-meter-fill"
@@ -547,47 +551,47 @@ export default function ActivityHealthPanel({
                 </div>
               )}
             </section>
-            <section className="nex-activity-section" aria-label="Git status">
-              <h3 className="nex-activity-section-title">Git</h3>
+            <section className="nex-activity-section" aria-label={t("activity.gitSection")}>
+              <h3 className="nex-activity-section-title">{t("activity.gitSection")}</h3>
               {gitError !== null ? (
                 <p className="nex-activity-muted">{gitError}</p>
               ) : git === null ? (
-                <p className="nex-activity-muted">Git status unavailable.</p>
+                <p className="nex-activity-muted">{t("activity.gitUnavailable")}</p>
               ) : (
                 <div className="nex-activity-row">
                   <div className="nex-activity-row-main">
                     <span className="nex-activity-row-title">
-                      {git.branch ?? "Detached HEAD"}
+                      {git.branch ?? t("vcs.detachedHead")}
                     </span>
                     <span className="nex-activity-pill">
-                      {git.files.length === 0 ? "Clean" : "Dirty"}
+                      {git.files.length === 0 ? t("activity.clean") : t("activity.dirty")}
                     </span>
                   </div>
                   <div className="nex-activity-row-meta">
                     <span>
                       {git.files.length === 0
-                        ? "No changed files"
-                        : `${git.files.length} changed file${git.files.length === 1 ? "" : "s"}${
-                            git.files_overflow > 0 ? ` (+${git.files_overflow} more)` : ""
+                        ? t("activity.noChanged")
+                        : `${tpn("files", git.files.length)}${
+                            git.files_overflow > 0 ? ` ${t("activity.filesMore", { n: git.files_overflow })}` : ""
                           }`}
                     </span>
                     <span>
                       {git.commits.length === 0
-                        ? "No commits"
-                        : `${git.commits.length} recent commit${git.commits.length === 1 ? "" : "s"}`}
+                        ? t("activity.noCommits")
+                        : tpn("commits", git.commits.length)}
                     </span>
                   </div>
                 </div>
               )}
             </section>
-            <section className="nex-activity-section" aria-label="Feature flags">
-              <h3 className="nex-activity-section-title">Flags</h3>
+            <section className="nex-activity-section" aria-label={t("activity.flagsSection")}>
+              <h3 className="nex-activity-section-title">{t("activity.flagsSection")}</h3>
               {flagsError !== null ? (
                 <p className="nex-activity-error" role="alert">
                   {flagsError}
                 </p>
               ) : flagEntries.length === 0 ? (
-                <p className="nex-activity-muted">No flags reported.</p>
+                <p className="nex-activity-muted">{t("activity.noFlags")}</p>
               ) : (
                 <ul className="nex-activity-list">
                   {flagEntries.map(([name, flag]) => (
@@ -595,12 +599,12 @@ export default function ActivityHealthPanel({
                       <div className="nex-activity-row-main">
                         <span className="nex-activity-row-title">{name}</span>
                         <span className="nex-activity-pill">
-                          {flag.enabled ? "On" : "Off"}
+                          {flag.enabled ? t("common.on") : t("common.off")}
                         </span>
                       </div>
                       <div className="nex-activity-row-meta">
-                        <span>source: {flag.source}</span>
-                        <span>{flag.enforced ? "enforced" : "not enforced"}</span>
+                        <span>{t("activity.sourcePrefix", { source: flag.source })}</span>
+                        <span>{flag.enforced ? t("activity.enforced") : t("activity.notEnforced")}</span>
                       </div>
                     </li>
                   ))}

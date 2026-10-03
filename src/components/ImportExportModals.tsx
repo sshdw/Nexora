@@ -9,6 +9,7 @@
 
 import M3Button from "./M3Button";
 import ModalShell from "./Modal";
+import { useStrings } from "../lib/useLocale";
 import type { ImportExportStore } from "../lib/useImportExport";
 
 export interface ExportModalProps {
@@ -25,13 +26,14 @@ export function ExportModal({
   onClose,
 }: ExportModalProps) {
   const { busy, error, exportSucceeded, exportTo } = store;
+  const { t } = useStrings();
 
   const runExport = () => {
     void exportTo(conversationId, conversationTitle);
   };
 
   return (
-    <ModalShell title="Export conversation" busy={busy} onClose={onClose}>
+    <ModalShell title={t("io.exportTitle")} busy={busy} onClose={onClose}>
       <div className="nex-io-body">
         {error && (
           <p className="nex-dialog-error nex-fade-in" role="alert">
@@ -40,25 +42,23 @@ export function ExportModal({
         )}
         {exportSucceeded && !error && (
           <p className="nex-io-status is-ok nex-fade-in" role="status">
-            Export complete. The conversation was written to the file you chose.
-            Stored data was not modified.
+            {t("io.exportOk")}
           </p>
         )}
         <p className="nex-io-hint">
-          Saves “{conversationTitle}” as a local Nexora conversation JSON file.
-          Messages are exported in their stored order.
+          {t("io.exportHint", { title: conversationTitle })}
         </p>
       </div>
       <div className="nex-dialog-actions">
         <M3Button variant="quiet" onClick={onClose} disabled={busy}>
-          {exportSucceeded ? "Done" : "Cancel"}
+          {exportSucceeded ? t("common.done") : t("common.cancel")}
         </M3Button>
         <M3Button
           variant="primary"
           loading={busy}
           onClick={runExport}
         >
-          {busy ? "Exporting…" : exportSucceeded ? "Export again" : "Choose location"}
+          {busy ? t("io.exporting") : exportSucceeded ? t("io.exportAgain") : t("io.chooseLocation")}
         </M3Button>
       </div>
     </ModalShell>
@@ -75,6 +75,7 @@ export interface ImportModalProps {
 
 export function ImportModal({ store, onImported, onClose }: ImportModalProps) {
   const { busy, error, importedId, importFrom } = store;
+  const { t } = useStrings();
 
   const runImport = () => {
     void importFrom().then((newId) => {
@@ -83,7 +84,7 @@ export function ImportModal({ store, onImported, onClose }: ImportModalProps) {
   };
 
   return (
-    <ModalShell title="Import conversation" busy={busy} onClose={onClose}>
+    <ModalShell title={t("io.importTitle")} busy={busy} onClose={onClose}>
       <div className="nex-io-body">
         {error && (
           <p className="nex-dialog-error nex-fade-in" role="alert">
@@ -92,25 +93,23 @@ export function ImportModal({ store, onImported, onClose }: ImportModalProps) {
         )}
         {importedId !== null && !error && (
           <p className="nex-io-status is-ok nex-fade-in" role="status">
-            Import complete. The conversation was added to your list.
+            {t("io.importOk")}
           </p>
         )}
         <p className="nex-io-hint">
-          Choose a Nexora conversation export file (.json). The file is validated
-          before anything is written; an unsupported file is rejected without
-          leaving partial data behind.
+          {t("io.importHint")}
         </p>
       </div>
       <div className="nex-dialog-actions">
         <M3Button variant="quiet" onClick={onClose} disabled={busy}>
-          {importedId !== null ? "Done" : "Cancel"}
+          {importedId !== null ? t("common.done") : t("common.cancel")}
         </M3Button>
         <M3Button
           variant="primary"
           loading={busy}
           onClick={runImport}
         >
-          {busy ? "Importing…" : "Choose file"}
+          {busy ? t("io.importing") : t("io.chooseFile")}
         </M3Button>
       </div>
     </ModalShell>

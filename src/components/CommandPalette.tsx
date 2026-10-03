@@ -25,6 +25,7 @@ import {
   type PaletteCommand,
 } from "../lib/commands";
 import ModalShell from "./Modal";
+import { useStrings } from "../lib/useLocale";
 
 export interface CommandPaletteProps {
   commands: PaletteCommand[];
@@ -36,6 +37,7 @@ export interface CommandPaletteProps {
 }
 
 export default function CommandPalette({ commands, onClose, onRun }: CommandPaletteProps) {
+  const { t } = useStrings();
   const [query, setQuery] = useState("");
   const [highlight, setHighlight] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -133,7 +135,7 @@ export default function CommandPalette({ commands, onClose, onRun }: CommandPale
   });
 
   return (
-    <ModalShell title="Command palette" onClose={onClose} align="top">
+    <ModalShell title={t("palette.title")} onClose={onClose} align="top">
       <div className="nex-palette nex-pop-enter">
         <input
           ref={inputRef}
@@ -142,9 +144,9 @@ export default function CommandPalette({ commands, onClose, onRun }: CommandPale
           aria-expanded={results.length > 0}
           aria-controls={results.length > 0 ? "nex-palette-listbox" : undefined}
           aria-activedescendant={activeId}
-          aria-label="Type a command"
+          aria-label={t("palette.inputAria")}
           className="nex-input nex-palette-input"
-          placeholder="Type a command…"
+          placeholder={t("palette.inputPh")}
           value={query}
           autoComplete="off"
           spellCheck={false}
@@ -156,14 +158,14 @@ export default function CommandPalette({ commands, onClose, onRun }: CommandPale
         />
         {results.length === 0 ? (
           <p className="nex-palette-empty" role="status">
-            No matching commands.
+            {t("palette.empty")}
           </p>
         ) : (
           <ul
             ref={listRef}
             id="nex-palette-listbox"
             role="listbox"
-            aria-label="Matching commands"
+            aria-label={t("palette.listAria")}
             className="nex-palette-list"
           >
             {groups.map((group) => (
@@ -204,13 +206,13 @@ export default function CommandPalette({ commands, onClose, onRun }: CommandPale
         <p className="nex-palette-hints" aria-hidden="true">
           <span>
             <kbd>↑</kbd>
-            <kbd>↓</kbd> navigate
+            <kbd>↓</kbd> {t("palette.hintNavigate")}
           </span>
           <span>
-            <kbd>↵</kbd> run
+            <kbd>↵</kbd> {t("palette.hintRun")}
           </span>
           <span>
-            <kbd>esc</kbd> close
+            <kbd>esc</kbd> {t("palette.hintClose")}
           </span>
         </p>
       </div>

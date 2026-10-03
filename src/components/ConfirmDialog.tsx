@@ -10,6 +10,7 @@
 
 import M3Button from "./M3Button";
 import ModalShell from "./Modal";
+import { useStrings } from "../lib/useLocale";
 
 export interface ConfirmDialogProps {
   title: string;
@@ -26,12 +27,13 @@ export default function ConfirmDialog({
   title,
   body,
   confirmLabel,
-  cancelLabel = "Cancel",
+  cancelLabel,
   danger = false,
   busy = false,
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
+  const { t } = useStrings();
   return (
     <ModalShell title={title} busy={busy} onClose={onCancel}>
       <div className="nex-io-body">
@@ -39,7 +41,7 @@ export default function ConfirmDialog({
       </div>
       <div className="nex-dialog-actions">
         <M3Button variant="quiet" onClick={onCancel} disabled={busy}>
-          {cancelLabel}
+          {cancelLabel ?? t("common.cancel")}
         </M3Button>
         <M3Button
           variant={danger ? "destructive" : "primary"}

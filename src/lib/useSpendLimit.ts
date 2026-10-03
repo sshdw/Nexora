@@ -13,6 +13,7 @@ import {
   setSetting,
   type CommandError,
 } from "./tauri";
+import { getLocale, tr } from "./strings";
 
 /** Setting key backing the per-run spend guard (micro-USD). */
 export const SPEND_LIMIT_KEY = "agent.spend_limit_micro_usd";
@@ -39,7 +40,7 @@ function toCommandError(error: unknown): CommandError {
   }
   if (typeof error === "string") return { kind: "unknown", message: error };
   if (error instanceof Error) return { kind: "unknown", message: error.message };
-  return { kind: "unknown", message: "Unable to reach the spend limit setting." };
+  return { kind: "unknown", message: tr(getLocale(), "common.spendUnreachable") };
 }
 
 function parseStored(value: string | null): number | null {
@@ -72,7 +73,7 @@ export function useSpendLimit(): SpendLimitStore {
 
   const setLimit = useCallback(async (value: number | null): Promise<boolean> => {
     if (value !== null && (!Number.isInteger(value) || value < 0)) {
-      setError({ kind: "invalidInput", message: "The spend limit must be a non-negative integer." });
+      setError({ kind: "invalidInput", message: tr(getLocale(), "common.spendInvalid") });
       return false;
     }
     setSaving(true);

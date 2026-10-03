@@ -18,6 +18,8 @@ import {
 } from "../lib/tauri";
 import { DiffView } from "./AgentRunSteps";
 import M3LoadingIndicator from "./M3LoadingIndicator";
+import { getLocale, tr, type Locale } from "../lib/strings";
+import { useStrings } from "../lib/useLocale";
 
 export interface ChangedFile {
   path: string;
@@ -41,8 +43,8 @@ function formatCount(value: number): string {
   return value.toLocaleString("en-US").replace(/,/g, " ");
 }
 
-function formatTokens(value: number, known: boolean): string {
-  if (!known) return "n/a";
+function formatTokens(value: number, known: boolean, locale: Locale = getLocale()): string {
+  if (!known) return tr(locale, "common.na");
   return formatCount(value);
 }
 
@@ -63,6 +65,7 @@ function formatDateTime(ts: number): string {
 }
 
 export default function ContextPanel({ conversationId }: { conversationId: number }) {
+  const { t } = useStrings();
   const [stats, setStats] = useState<ConversationContextStats | null>(null);
   const [files, setFiles] = useState<ChangedFile[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
@@ -93,7 +96,7 @@ export default function ContextPanel({ conversationId }: { conversationId: numbe
           for (const step of steps) {
             if (step.kind !== "tool_call" || step.tool_name !== "write_file") continue;
             if (!step.observation) continue;
-            const path = parseWritePath(step.arguments) ?? `run ${run.id} · step ${step.seq}`;
+            const path = parseWritePath(step.arguments) ?? tr(getLocale(), "ctx.runStepFallback", { run: run.id, seq: step.seq });
             const prev = byPath.get(path);
             if (!prev || step.seq >= prev.seq) {
               byPath.set(path, {
@@ -121,13 +124,13 @@ export default function ContextPanel({ conversationId }: { conversationId: numbe
   }, [conversationId]);
 
   if (loading) {
-    return <M3LoadingIndicator label="Loading context" />;
+    return <M3LoadingIndicator label={t("ctx.loading")} />;
   }
 
   if (error || !stats) {
     return (
       <div className="nex-composer-error nex-fade-in" role="alert">
-        {error ?? "Context stats are unavailable."}
+        {error ?? t("ctx.unavailable")}
       </div>
     );
   }
@@ -140,51 +143,51 @@ export default function ContextPanel({ conversationId }: { conversationId: numbe
   const pct = (v: number): number => (total === 0 ? 0 : (v / total) * 100);
 
   const rows: Array<{ label: string; value: string; title?: string }> = [
-    { label: "Session", value: stats.title },
-    { label: "Messages", value: formatCount(stats.message_count) },
+    { label: t("ctx.labelSession"), value: stats.title },
+    { label: t("ctx.labelMessages"), value: formatCount(stats.message_count) },
     {
-      label: "Provider",
-      value: stats.provider_display ?? stats.provider ?? "n/a",
+      label: t("ctx.labelProvider"),
+      value: stats.provider_display ?? stats.provider ?? t("common.na"),
     },
-    { label: "Model", value: stats.model ?? "n/a" },
-    { label: "Context limit", value: formatCount(stats.context_limit) },
-    { label: "Total tokens", value: formatTokens(stats.total_tokens, stats.has_token_data) },
+    { label: t("ctx.labelModel"), value: stats.model ?? t("common.na") },
+    { label: t("ctx.labelContextLimit"), value: formatCount(stats.context_limit) },
+    { label: t("ctx.labelTotalTokens"), value: formatTokens(stats.total_tokens, stats.has_token_data) },
     {
-      label: "Usage",
+      label: t("ctx.labelUsage"),
       value: `${stats.usage_percent.toFixed(0)}%`,
     },
     {
-      label: "Input tokens",
+      label: t("ctx.labelInputTokens"),
       value: formatTokens(stats.input_tokens, stats.has_token_data),
-      title: stats.has_token_data ? undefined : "No persisted token usage",
+      title: stats.has_token_data ? undefined : t("ctx.noTokenData"),
     },
     {
-      label: "Output tokens",
+      label: t("ctx.labelOutputTokens"),
       value: formatTokens(stats.output_tokens, stats.has_token_data),
-      title: stats.has_token_data ? undefined : "No persisted token usage",
+      title: stats.has_token_data ? undefined : t("ctx.noTokenData"),
     },
     {
-      label: "Reasoning tokens",
+      label: t("ctx.labelReasoningTokens"),
       value: formatTokens(stats.reasoning_tokens, stats.has_token_data),
-      title: stats.has_token_data ? undefined : "No persisted token usage",
+      title: stats.has_token_data ? undefined : t("ctx.noTokenData"),
     },
     {
-      label: "Cache tokens (read/write)",
+      label: t("ctx.labelCacheTokens"),
       value:
         stats.has_token_data
           ? `${formatCount(stats.cache_read_tokens)} / ${formatCount(stats.cache_write_tokens)}`
-          : "n/a",
-      title: stats.has_token_data ? undefined : "No persisted token usage",
+          : t("common.na"),
+      title: stats.has_token_data ? undefined : t("ctx.noTokenData"),
     },
-    { label: "User messages", value: formatCount(stats.user_message_count) },
-    { label: "Assistant messages", value: formatCount(stats.assistant_message_count) },
-    { label: "Total cost", value: formatCost(stats.total_cost_micro_usd) },
-    { label: "Session created", value: formatDateTime(stats.created_at) },
-    { label: "Last activity", value: formatDateTime(stats.updated_at) },
+    { label: t("ctx.labelUserMessages"), value: formatCount(stats.user_message_count) },
+    { label: t("ctx.labelAssistantMessages"), value: formatCount(stats.assistant_message_count) },
+    { label: t("ctx.labelTotalCost"), value: formatCost(stats.total_cost_micro_usd) },
+    { label: t("ctx.labelSessionCreated"), value: formatDateTime(stats.created_at) },
+    { label: t("ctx.labelLastActivity"), value: formatDateTime(stats.updated_at) },
   ];
 
   return (
-    <div className="nex-context nex-view-enter" role="group" aria-label="Conversation context">
+    <div className="nex-context nex-view-enter" role="group" aria-label={t("ctx.group")}>
       <dl className="nex-context-grid">
         {rows.map((row) => (
           <div key={row.label} className="nex-context-cell">
@@ -196,12 +199,17 @@ export default function ContextPanel({ conversationId }: { conversationId: numbe
         ))}
       </dl>
 
-      <section className="nex-context-breakdown" aria-label="Context breakdown">
-        <h3 className="nex-context-section-title">Context breakdown</h3>
+      <section className="nex-context-breakdown" aria-label={t("ctx.breakdown")}>
+        <h3 className="nex-context-section-title">{t("ctx.breakdown")}</h3>
         <div
           className="nex-context-bar"
           role="img"
-          aria-label={`User ${pct(user).toFixed(1)}%, assistant ${pct(assistant).toFixed(1)}%, tool calls ${pct(tools).toFixed(1)}%, other ${pct(other).toFixed(1)}%`}
+          aria-label={t("ctx.breakdownAria", {
+            u: pct(user).toFixed(1),
+            a: pct(assistant).toFixed(1),
+            t: pct(tools).toFixed(1),
+            o: pct(other).toFixed(1),
+          })}
         >
           <span
             className="nex-context-seg nex-context-seg-user"
@@ -223,35 +231,35 @@ export default function ContextPanel({ conversationId }: { conversationId: numbe
         <ul className="nex-context-legend">
           <li>
             <span className="nex-context-dot nex-context-seg-user" aria-hidden="true" />
-            User {pct(user).toFixed(1)}%
+            {t("ctx.legendUser")} {pct(user).toFixed(1)}%
           </li>
           <li>
             <span className="nex-context-dot nex-context-seg-assistant" aria-hidden="true" />
-            Assistant {pct(assistant).toFixed(1)}%
+            {t("ctx.legendAssistant")} {pct(assistant).toFixed(1)}%
           </li>
           <li>
             <span className="nex-context-dot nex-context-seg-tools" aria-hidden="true" />
-            Tool calls {pct(tools).toFixed(1)}%
+            {t("ctx.legendTools")} {pct(tools).toFixed(1)}%
           </li>
           <li>
             <span className="nex-context-dot nex-context-seg-other" aria-hidden="true" />
-            Other {pct(other).toFixed(1)}%
+            {t("ctx.legendOther")} {pct(other).toFixed(1)}%
           </li>
         </ul>
       </section>
 
-      <section className="nex-context-files" aria-label="Changed files">
+      <section className="nex-context-files" aria-label={t("vcs.changedTitle", { n: files.length })}>
         <h3 className="nex-context-section-title">
-          Changed files: {files.length}
+          {t("vcs.changedTitle", { n: files.length })}
         </h3>
         {files.length === 0 ? (
-          <p className="nex-agent-empty">No file changes recorded.</p>
+          <p className="nex-agent-empty">{t("ctx.noFiles")}</p>
         ) : (
           <ul className="nex-context-file-list">
             {files.map((file) => (
               <li key={`${file.runId}-${file.seq}-${file.path}`} className="nex-context-file">
                 <header className="nex-context-file-header">
-                  <span className="nex-tag nex-tag-mono" title="Changed file path">
+                  <span className="nex-tag nex-tag-mono" title={t("ctx.changedPath")}>
                     {file.path}
                   </span>
                 </header>

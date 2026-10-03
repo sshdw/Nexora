@@ -7,6 +7,8 @@ import type {
   SearchResults,
 } from "../lib/tauri";
 import { search } from "../lib/tauri";
+import { getLocale, tr } from "../lib/strings";
+import { useStrings } from "../lib/useLocale";
 import M3LoadingIndicator from "./M3LoadingIndicator";
 import { SearchIcon } from "./icons";
 
@@ -27,6 +29,7 @@ export default function SearchBox({
   onSelectResult,
   onSelectPrompt,
 }: SearchBoxProps) {
+  const { t } = useStrings();
   const [value, setValue] = useState("");
   const [results, setResults] = useState<SearchResults | null>(null);
   const [loading, setLoading] = useState(false);
@@ -67,7 +70,7 @@ export default function SearchBox({
 
   const titleFor = (conversationId: number): string => {
     const match = conversations.find((c) => c.id === conversationId);
-    return match ? match.title : "Conversation";
+    return match ? match.title : tr(getLocale(), "common.conversation");
   };
 
   const showResults = value.trim() !== "";
@@ -80,14 +83,14 @@ export default function SearchBox({
   return (
     <div className="nex-search">
       <label htmlFor="nex-search-input" className="nex-sr-only">
-        Search conversations and prompts
+        {t("search.label")}
       </label>
       <SearchIcon className="nex-search-icon" />
       <input
         id="nex-search-input"
         type="search"
         className="nex-search-input"
-        placeholder="Search"
+        placeholder={t("search.placeholder")}
         value={value}
         onChange={(event) => setValue(event.target.value)}
         autoComplete="off"
@@ -100,10 +103,10 @@ export default function SearchBox({
         <div
           className="nex-search-results nex-pop-enter"
           role="group"
-          aria-label="Search results"
+          aria-label={t("search.resultsAria")}
         >
           {loading && (
-            <M3LoadingIndicator size="sm" label="Searching" />
+            <M3LoadingIndicator size="sm" label={t("search.searching")} />
           )}
           {error && (
             <p className="nex-search-status nex-fade-in" role="alert">
@@ -115,12 +118,12 @@ export default function SearchBox({
               {!hasResults && (
                 <div className="nex-search-empty nex-fade-in">
                   <SearchIcon className="nex-search-empty-icon" />
-                  <span>No results for “{value.trim()}”.</span>
+                  <span>{t("search.noResults", { q: value.trim() })}</span>
                 </div>
               )}
               {results.conversations.length > 0 && (
                 <>
-                  <p className="nex-search-group">Conversations</p>
+                  <p className="nex-search-group">{t("search.groupConversations")}</p>
                   {results.conversations.map((conversation) => (
                     <button
                       key={`conversation-${conversation.id}`}
@@ -132,7 +135,7 @@ export default function SearchBox({
                         {conversation.title}
                       </span>
                       <span className="nex-search-result-meta">
-                        {conversation.status === "archived" ? "Archived" : "Conversation"}
+                        {conversation.status === "archived" ? t("search.metaArchived") : t("search.metaConversation")}
                       </span>
                     </button>
                   ))}
@@ -140,7 +143,7 @@ export default function SearchBox({
               )}
               {results.message_matches.length > 0 && (
                 <>
-                  <p className="nex-search-group">Messages</p>
+                  <p className="nex-search-group">{t("search.groupMessages")}</p>
                   {results.message_matches.map((message) => (
                     <button
                       key={`message-${message.id}`}
@@ -160,7 +163,7 @@ export default function SearchBox({
               )}
               {results.prompts.length > 0 && (
                 <>
-                  <p className="nex-search-group">Prompts</p>
+                  <p className="nex-search-group">{t("search.groupPrompts")}</p>
                   {results.prompts.map((prompt: Prompt) => (
                     <button
                       key={`prompt-${prompt.id}`}
@@ -174,7 +177,7 @@ export default function SearchBox({
                       <span className="nex-search-result-snippet">
                         {prompt.content}
                       </span>
-                      <span className="nex-search-result-meta">Prompt</span>
+                      <span className="nex-search-result-meta">{t("search.metaPrompt")}</span>
                     </button>
                   ))}
                 </>
@@ -198,5 +201,5 @@ function toCommandError(error: unknown): CommandError {
   }
   if (typeof error === "string") return { kind: "unknown", message: error };
   if (error instanceof Error) return { kind: "unknown", message: error.message };
-  return { kind: "unknown", message: "Unable to run the search." };
+  return { kind: "unknown", message: tr(getLocale(), "common.searchUnreachable") };
 }

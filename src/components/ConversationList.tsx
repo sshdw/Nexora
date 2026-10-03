@@ -1,4 +1,5 @@
 import type { CommandError, Conversation } from "../lib/tauri";
+import { useStrings } from "../lib/useLocale";
 import ConversationItem from "./ConversationItem";
 import M3Button from "./M3Button";
 
@@ -31,10 +32,11 @@ export default function ConversationList({
   onRestore,
   onDelete,
 }: ConversationListProps) {
+  const { t } = useStrings();
   if (loading) {
     return (
-      <nav className="nex-conversation-nav" aria-label="Conversations">
-        <div className="nex-skeleton-list" role="status" aria-label="Loading conversations">
+      <nav className="nex-conversation-nav" aria-label={t("list.navAria")}>
+        <div className="nex-skeleton-list" role="status" aria-label={t("list.loadingAria")}>
           {Array.from({ length: 5 }).map((_, index) => (
             <div key={index} className="nex-skeleton-row" />
           ))}
@@ -45,11 +47,11 @@ export default function ConversationList({
 
   if (error) {
     return (
-      <nav className="nex-conversation-nav" aria-label="Conversations">
+      <nav className="nex-conversation-nav" aria-label={t("list.navAria")}>
         <div className="nex-conversation-error nex-fade-in" role="alert">
           <span className="nex-conversation-error-text">{error.message}</span>
           <M3Button variant="quiet" size="sm" onClick={onRetry}>
-            Try again
+            {t("common.retry")}
           </M3Button>
         </div>
       </nav>
@@ -58,8 +60,8 @@ export default function ConversationList({
 
   if (conversations.length === 0) {
     return (
-      <nav className="nex-conversation-nav" aria-label="Conversations">
-        <p className="nex-conversation-empty-hint">No conversations yet.</p>
+      <nav className="nex-conversation-nav" aria-label={t("list.navAria")}>
+        <p className="nex-conversation-empty-hint">{t("list.emptyHint")}</p>
       </nav>
     );
   }
@@ -70,10 +72,10 @@ export default function ConversationList({
   const archived = conversations.filter((c) => c.status === "archived");
 
   return (
-    <nav className="nex-conversation-nav" aria-label="Conversations">
+    <nav className="nex-conversation-nav" aria-label={t("list.navAria")}>
       <ul className="nex-conversation-list">
         {active.length > 0 && (
-          <li className="nex-conversation-group-label">Active</li>
+          <li className="nex-conversation-group-label">{t("list.groupActive")}</li>
         )}
         {active.map((conversation) => (
           <ConversationItem
@@ -93,7 +95,7 @@ export default function ConversationList({
 
         {archived.length > 0 && (
           <>
-            <li className="nex-conversation-group-label">Archived</li>
+            <li className="nex-conversation-group-label">{t("list.groupArchived")}</li>
             {archived.map((conversation) => (
               <ConversationItem
                 key={conversation.id}

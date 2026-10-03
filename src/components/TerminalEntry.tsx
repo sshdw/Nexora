@@ -1,5 +1,6 @@
 import M3RailItem from "./M3RailItem";
 import { TerminalIcon } from "./icons";
+import { useStrings } from "../lib/useLocale";
 
 export interface TerminalEntryProps {
   /** Whether the Terminal screen is currently open. */
@@ -13,14 +14,15 @@ export interface TerminalEntryProps {
 // `aria-current` (not `aria-pressed`): this is a navigation destination,
 // matching the Settings / Prompt Library / VCS / Activity semantics.
 export default function TerminalEntry({ active = false, onClick }: TerminalEntryProps) {
+  const { t } = useStrings();
   return (
     <M3RailItem
-      label="Terminal"
+      label={t("nav.terminal")}
       icon={<TerminalIcon />}
       active={active}
       onClick={onClick}
     >
-      Terminal
+      {t("nav.terminal")}
     </M3RailItem>
   );
 }

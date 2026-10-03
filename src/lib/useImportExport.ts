@@ -19,6 +19,7 @@ import {
   exportConversationToFile,
   importConversation,
 } from "./tauri";
+import { getLocale, tr } from "./strings";
 
 export interface ImportExportStore {
   /** Whether an export or import operation is in flight. */
@@ -52,9 +53,9 @@ export function useImportExport(): ImportExportStore {
       try {
         // Native OS save dialog; local file only, no upload path exists.
         path = await save({
-          title: "Export conversation",
+          title: tr(getLocale(), "io.dlgExportTitle"),
           defaultPath: suggestedFileName(title),
-          filters: [{ name: "Nexora conversation", extensions: ["json"] }],
+          filters: [{ name: tr(getLocale(), "io.dlgExportFilter"), extensions: ["json"] }],
         });
       } catch (e) {
         setError(toCommandError(e));
@@ -85,8 +86,8 @@ export function useImportExport(): ImportExportStore {
     try {
       selection = await open({
         multiple: false,
-        title: "Import conversation",
-        filters: [{ name: "Nexora conversation export", extensions: ["json"] }],
+        title: tr(getLocale(), "io.dlgImportTitle"),
+        filters: [{ name: tr(getLocale(), "io.dlgImportFilter"), extensions: ["json"] }],
       });
     } catch (e) {
       setError(toCommandError(e));
@@ -140,5 +141,5 @@ function toCommandError(error: unknown): CommandError {
   }
   if (typeof error === "string") return { kind: "unknown", message: error };
   if (error instanceof Error) return { kind: "unknown", message: error.message };
-  return { kind: "unknown", message: "Unable to reach the local database." };
+  return { kind: "unknown", message: tr(getLocale(), "common.dbUnreachable") };
 }
