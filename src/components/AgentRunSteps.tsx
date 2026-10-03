@@ -322,7 +322,7 @@ export default function AgentRunSteps({
               Approve
             </M3Button>
             <M3Button
-              variant="quiet"
+              variant="destructive"
               size="sm"
               onClick={() => onResolveApproval(pending.call_id, false)}
             >

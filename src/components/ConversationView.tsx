@@ -270,7 +270,7 @@ export default function ConversationView({
     let order = 0;
     for (const item of threadItems) {
       if (item.kind === "message" && freshMessageIds?.has(item.message.id)) {
-        freshOrder.set(item.message.id, order);
+        freshOrder.set(item.message.id, Math.min(order, 6));
         order += 1;
       }
     }
