@@ -1,0 +1,166 @@
+/* ============================================================
+   SIMPLIFIED FIRST-RUN ONBOARDING (3-step overlay)
+   Provider connect → workspace pick → done. Rests on ModalShell +
+   .nex-pop-enter (components.css) for chrome and enter motion; this
+   sheet owns only the step indicator, panes, and action row.
+   Tokens only (--nex-sys-* / --motion-*) — zero raw values.
+   Reduced motion: the global motion.css gate resolves every animation
+   to its final frame.
+   ============================================================ */
+
+.nex-onboarding {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nex-sys-space-sm);
+}
+
+/* Step indicator: quiet dots; the current step is a primary pill
+   (pill = selection emphasis, contract §Shape). */
+.nex-onboarding-steps {
+  list-style: none;
+  display: flex;
+  gap: var(--nex-sys-space-xxs);
+  margin: 0;
+  padding: 0;
+}
+
+.nex-onboarding-step {
+  display: flex;
+  align-items: center;
+}
+
+.nex-onboarding-dot {
+  display: block;
+  width: var(--nex-sys-space-xs);
+  height: var(--nex-sys-space-xs);
+  border-radius: var(--nex-sys-shape-full);
+  background: var(--nex-sys-color-outline-variant);
+}
+
+.nex-onboarding-step.is-done .nex-onboarding-dot {
+  background: var(--nex-sys-color-on-surface-variant);
+}
+
+.nex-onboarding-step.is-current .nex-onboarding-dot {
+  width: var(--nex-sys-space-lg);
+  background: var(--nex-sys-color-primary);
+}
+
+.nex-onboarding-counter {
+  margin: 0;
+  font-size: var(--nex-sys-type-size-label-small);
+  color: var(--nex-sys-color-on-surface-variant);
+}
+
+.nex-onboarding-pane {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nex-sys-space-sm);
+}
+
+.nex-onboarding-heading {
+  margin: 0;
+  font-size: var(--nex-sys-type-size-title-medium);
+  font-weight: var(--nex-sys-type-weight-semibold);
+  color: var(--nex-sys-color-on-surface);
+}
+
+.nex-onboarding-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nex-sys-space-xs);
+}
+
+.nex-onboarding-inline {
+  display: flex;
+  align-items: center;
+  gap: var(--nex-sys-space-sm);
+}
+
+.nex-onboarding-status {
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-on-surface-variant);
+}
+
+.nex-onboarding-current {
+  margin: 0;
+  font-size: var(--nex-sys-type-size-body-medium);
+  color: var(--nex-sys-color-on-surface);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nex-onboarding-recent {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--nex-sys-space-xxxs);
+}
+
+.nex-onboarding-recent-item {
+  font-family: var(--nex-sys-type-family);
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-on-surface-variant);
+  background: transparent;
+  border: 0;
+  border-radius: var(--nex-sys-shape-small);
+  padding: var(--nex-sys-space-xxs) var(--nex-sys-space-xs);
+  cursor: pointer;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.nex-onboarding-recent-item:hover:not(:disabled) {
+  background: var(--nex-sys-state-hover);
+}
+
+.nex-onboarding-recent-item:disabled {
+  cursor: default;
+  color: var(--nex-sys-color-on-surface);
+}
+
+.nex-onboarding-tips {
+  margin: 0;
+  padding-left: var(--nex-sys-space-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--nex-sys-space-xs);
+  font-size: var(--nex-sys-type-size-body-medium);
+  color: var(--nex-sys-color-on-surface);
+}
+
+/* Key chips mirror the shortcuts dialog grammar (shortcuts.css). */
+.nex-onboarding-tips kbd {
+  font-family: var(--nex-sys-type-family);
+  font-size: var(--nex-sys-type-size-label-small);
+  background: var(--nex-sys-color-surface-container);
+  border: 1px solid var(--nex-sys-color-outline-variant);
+  border-radius: var(--nex-sys-shape-extra-small);
+  padding: 0 var(--nex-sys-space-xxxs);
+}
+
+.nex-onboarding-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--nex-sys-space-xs);
+  padding-top: var(--nex-sys-space-xs);
+  border-top: 1px solid var(--nex-sys-color-outline-variant);
+}
+
+.nex-onboarding-spacer {
+  flex: 1 1 auto;
+}
+
+/* Settings nav footer: the replay entry sits below the 7 section rows,
+   separated by the same hairline that groups chrome elsewhere. */
+.nex-settings-replay {
+  margin-top: var(--nex-sys-space-xs);
+  padding-top: var(--nex-sys-space-xs);
+  border-top: 1px solid var(--nex-sys-color-outline-variant);
+}

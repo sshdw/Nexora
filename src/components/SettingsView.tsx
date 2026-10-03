@@ -255,6 +255,8 @@ export interface SettingsViewProps {
   onOpenImport?: () => void;
   /** Export the active conversation (wired by App; hidden when absent). */
   onExportActive?: () => void;
+  /** Reopen the first-run onboarding flow (wired by App; hidden when absent). */
+  onReplayOnboarding?: () => void;
 }
 
 export default function SettingsView({
@@ -268,6 +270,7 @@ export default function SettingsView({
   initialSection = "appearance",
   onOpenImport,
   onExportActive,
+  onReplayOnboarding,
 }: SettingsViewProps) {
   const [section, setSection] = useState<SettingsSectionId>(initialSection);
   // Palette deep links retarget an already-mounted panel: follow
@@ -1123,6 +1126,16 @@ export default function SettingsView({
               {SECTION_TITLES[id]}
             </M3RailItem>
           ))}
+          {onReplayOnboarding && (
+            <div className="nex-settings-replay">
+              <M3RailItem
+                label="Replay onboarding walkthrough"
+                onClick={onReplayOnboarding}
+              >
+                Replay onboarding
+              </M3RailItem>
+            </div>
+          )}
         </nav>
 
         <div className="nex-settings-body">
