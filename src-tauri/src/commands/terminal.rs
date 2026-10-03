@@ -82,6 +82,21 @@ pub(crate) async fn terminal_run(
 ) -> Result<TerminalRunResponse, CommandError> {
     let fallback = default_root(&app)?;
     let root = resolve_workspace_root(db.inner(), &fallback);
+    // Cheap pre-claim validation: a bare-IPC unconfirmed/empty call must
+    // be refused before it can briefly hold the single session. The
+    // authoritative checks stay inside `execute_terminal`.
+    if !confirmed {
+        return Err(CommandError::new(
+            ErrorKind::ConfirmationRequired,
+            "explicit confirmation is required before a terminal command can run",
+        ));
+    }
+    if command.trim().is_empty() {
+        return Err(CommandError::new(
+            ErrorKind::InvalidInput,
+            "the terminal command must not be empty",
+        ));
+    }
     let (run_id, token) = registry.begin().ok_or_else(|| {
         CommandError::new(
             ErrorKind::InvalidInput,
@@ -224,6 +239,10 @@ mod tests {
             assert!(
                 !SOURCE.contains(needle),
                 "commands/terminal.rs must not spawn processes itself, found {needle:?}"
+            );
+            assert!(
+                !SERVICE.contains(needle),
+                "application/terminal.rs must not spawn processes itself, found {needle:?}"
             );
         }
         assert!(

@@ -110,6 +110,9 @@ export default function TerminalPanel({ onClose, request = null }: TerminalPanel
   const scrollRef = useRef<HTMLDivElement>(null);
   const stoppingRef = useRef(false);
   stoppingRef.current = stopping;
+  // Synchronous in-flight run guard (see handleRun): flips in the same
+  // tick as the Run press, unlike `running` state.
+  const runningRef = useRef(false);
 
   useEffect(() => {
     let live = true;
@@ -163,7 +166,10 @@ export default function TerminalPanel({ onClose, request = null }: TerminalPanel
   const handleRun = useCallback(
     async (raw: string) => {
       const command = raw.trim();
-      if (command === "" || running) return;
+      // Synchronous in-flight guard: `running` state lands after re-render,
+      // so two rapid Enters could both pass the state guard and stack a
+      // cosmetic AlreadyRunning error block. The ref flips in the same tick.
+      if (command === "" || runningRef.current) return;
       // `cd` never reaches the backend: each run spawns a fresh shell, so a
       // remote `cd` could not persist — it only retargets the in-memory cwd
       // the next run is scoped to.
@@ -203,6 +209,7 @@ export default function TerminalPanel({ onClose, request = null }: TerminalPanel
       setHistoryIndex(null);
       setInput("");
       setError(null);
+      runningRef.current = true;
       setRunning(true);
       try {
         const result = await terminalRun(command, cwdRel === "" ? null : cwdRel);
@@ -238,12 +245,13 @@ export default function TerminalPanel({ onClose, request = null }: TerminalPanel
           );
         }
       } finally {
+        runningRef.current = false;
         setRunning(false);
         setStopping(false);
         inputRef.current?.focus();
       }
     },
-    [cwdLabel, cwdRel, running],
+    [cwdLabel, cwdRel],
   );
 
   const handleStop = useCallback(async () => {

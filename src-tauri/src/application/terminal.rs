@@ -100,10 +100,33 @@ impl std::error::Error for TerminalError {}
 // Execution (thin skin over the tool path)
 // ---------------------------------------------------------------------------
 
-/// Marker the tool path appends for non-zero exits
-/// (`executor::execute_command_with_limits`): its presence means failure.
-/// Searched as a substring of the combined output.
-const EXIT_MARKER: &str = "command exited with status";
+/// Bracketed marker the tool path appends after non-empty output for
+/// non-zero exits (`executor::execute_command_with_limits`): its presence
+/// means failure. The leading `[` anchors on the executor's exact render
+/// so a passing command that merely echoes the words cannot forge a
+/// failure badge.
+const EXIT_MARKER_BRACKETED: &str = "[command exited with status ";
+
+/// Prefix of the tool path's empty-output render for non-zero exits with
+/// no captured output (`command exited with status {status}` as the whole
+/// trailing line): matched as a trailing line only, so a mid-output echo
+/// of the words cannot forge it either. Keeps the trailing space — a bare
+/// `echo` of the phrase with no status after it stays success.
+const EXIT_MARKER: &str = "command exited with status ";
+
+/// True when `output` carries the tool path's non-zero-exit render (either
+/// the bracketed form after non-empty output or the bare form as the whole
+/// trailing line for empty output).
+fn exited_nonzero(output: &str) -> bool {
+    if output.contains(EXIT_MARKER_BRACKETED) {
+        return true;
+    }
+    output
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .is_some_and(|line| line.trim_start().starts_with(EXIT_MARKER))
+}
 
 /// Truncation markers the tool path's `truncate_output` renders
 /// (`tools::output`): either means the output was capped with a notice.
@@ -145,7 +168,7 @@ pub(crate) fn execute_terminal(
             truncated: TRUNCATE_MARKERS
                 .iter()
                 .any(|marker| output.contains(marker)),
-            success: !output.contains(EXIT_MARKER),
+            success: !exited_nonzero(&output),
             output,
         }),
         Err(err) => Err(map_tool_error(&err)),
@@ -316,6 +339,23 @@ mod tests {
         let executed = execute_terminal(&ws, "exit 1", None, true, &token).expect("exit 1 runs");
         assert!(!executed.success);
         assert!(executed.output.contains(EXIT_MARKER));
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn echoing_the_exit_words_with_zero_exit_stays_success() {
+        let ws = temp_workspace();
+        let token = CancellationToken::new();
+        // Regression: success was a bare substring test, so a passing
+        // command echoing the marker words forged a failure badge.
+        let executed = execute_terminal(&ws, "echo command exited with status", None, true, &token)
+            .expect("echo runs");
+        assert!(
+            executed.success,
+            "zero-exit echo must not forge failure: {:?}",
+            executed.output
+        );
+        assert!(executed.output.contains("command exited with status"));
         let _ = std::fs::remove_dir_all(&ws);
     }
 
