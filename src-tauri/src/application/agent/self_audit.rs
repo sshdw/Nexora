@@ -408,6 +408,9 @@ pub(crate) fn audit_run(
 /// pass typically records on `(Running, Completed)`, failure on
 /// `(Running, Failed)`.
 ///
+/// This is the `self_audit` feature-flag gate in its enabled form; see
+/// [`record_report_gated`] for the flag-off behavior.
+///
 /// # Errors
 ///
 /// Returns the secret-free [`LifecycleError`] when the witness edge is
@@ -418,6 +421,28 @@ pub(crate) fn record_report(
     to: RunState,
     report: &SelfAuditReport,
 ) -> Result<(), LifecycleError> {
+    record_report_gated(log, from, to, report, true).map(|_| ())
+}
+
+/// Append the self-audit outcome only when `enabled` (the `self_audit`
+/// feature flag): disabled reproduces the pre-2.0 behavior (the pass stays
+/// purely read-only — nothing is appended) and reports `Ok(false)`, while
+/// enabled behaves exactly like [`record_report`] and reports `Ok(true)`.
+///
+/// # Errors
+///
+/// Returns the secret-free [`LifecycleError`] when enabled and the witness
+/// edge is illegal; appends nothing.
+pub(crate) fn record_report_gated(
+    log: &AuditLog,
+    from: RunState,
+    to: RunState,
+    report: &SelfAuditReport,
+    enabled: bool,
+) -> Result<bool, LifecycleError> {
+    if !enabled {
+        return Ok(false);
+    }
     if report.passed() {
         log.record(from, to, AuditEvent::SelfAuditPassed)?;
     } else {
@@ -425,7 +450,7 @@ pub(crate) fn record_report(
             log.record(from, to, AuditEvent::SelfAuditFailed)?;
         }
     }
-    Ok(())
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -851,5 +876,41 @@ mod tests {
             subject: None,
         };
         assert_eq!(format!("{bare}"), "self-audit violation: unresolved_park");
+    }
+
+    #[test]
+    fn gated_record_off_appends_nothing_and_on_matches_record() {
+        // Flag OFF reproduces the pre-2.0 behavior: the pass stays purely
+        // read-only. Flag ON behaves exactly like `record_report`.
+        let (log, mut store) = clean_inputs();
+        park_approve(&log);
+        capture(&mut store, &log, 1, 100);
+        let report = audit_run(
+            &log,
+            &store,
+            &approved_gate(),
+            &[],
+            &[],
+            Some(RunState::Completed),
+        );
+        assert!(report.passed());
+        let before = log.len();
+        assert!(
+            !record_report_gated(&log, RunState::Running, RunState::Completed, &report, false)
+                .expect("disabled record succeeds"),
+            "disabled record reports nothing appended"
+        );
+        assert_eq!(log.len(), before, "disabled record appends nothing");
+        assert!(
+            record_report_gated(&log, RunState::Running, RunState::Completed, &report, true)
+                .expect("enabled record succeeds"),
+            "enabled record reports the append"
+        );
+        assert_eq!(log.len(), before + 1);
+        let entries = log.entries();
+        assert_eq!(
+            entries.last().expect("outcome entry").event,
+            "self_audit_passed"
+        );
     }
 }

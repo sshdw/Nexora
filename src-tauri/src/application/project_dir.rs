@@ -71,6 +71,9 @@ const MAX_IGNORE_PATTERNS: usize = 500;
 /// Largest profile document accepted before it is rejected as invalid.
 const MAX_PROFILE_BYTES: u64 = 64 * 1024;
 
+/// Largest flags document accepted before it is rejected as invalid.
+const MAX_FLAGS_BYTES: u64 = 64 * 1024;
+
 /// Default ignore stub written on init when no ignore file exists yet.
 /// Comment-only, so it changes no tool behavior by itself.
 const DEFAULT_IGNORE_STUB: &str = "# Workspace ignore rules for agent tool reads \
@@ -105,6 +108,8 @@ pub(crate) enum ProjectDirError {
     InvalidManifest,
     /// A profile document is missing, oversized, or fails validation.
     InvalidProfile,
+    /// The workspace flags file is missing, oversized, or fails validation.
+    InvalidFlags,
     /// A filesystem operation failed.
     Io,
 }
@@ -121,6 +126,7 @@ impl std::fmt::Display for ProjectDirError {
             }
             Self::InvalidManifest => write!(f, "the project manifest is invalid"),
             Self::InvalidProfile => write!(f, "the workspace profile is invalid"),
+            Self::InvalidFlags => write!(f, "the workspace flags file is invalid"),
             Self::Io => write!(f, "a project directory operation failed"),
         }
     }
@@ -838,6 +844,9 @@ pub(crate) fn profile_file_present(workspace_root: &Path, file_name: &str) -> bo
     std::fs::symlink_metadata(&path).is_ok()
 }
 
+/// Workspace flags file name inside [`.nexora/`](NEXORA_DIR_NAME).
+pub(crate) const FLAGS_FILE_NAME: &str = "flags.json";
+
 /// Persist one `profiles/<file_name>` document through the canonical guard
 /// pattern (lexical prefix check, `symlink_metadata` prefix walk,
 /// canonicalize-after-create, post-write backstop).
@@ -916,6 +925,74 @@ pub(crate) fn save_profile_file(
         return Err(ProjectDirError::OutsideWorkspace);
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Workspace-scoped feature flags (`.nexora/flags.json`, read-only)
+// ---------------------------------------------------------------------------
+
+/// Whether the workspace flags file (`.nexora/flags.json`) exists (file,
+/// directory, or link).
+///
+/// Fail-closed: any unusable root or filesystem failure reports absent. This
+/// only separates "no workspace flags" (silent global fallback) from "a
+/// workspace flags file that fails to load" (fallback with the fixed-vocab
+/// notice) in the flags precedence — it never reads content and never
+/// consults `.nexoraignore` (Nexora-owned config, like `profiles/`).
+#[must_use]
+pub(crate) fn flags_file_present(workspace_root: &Path) -> bool {
+    let Ok(canon_ws) = canonical_workspace_dir(workspace_root) else {
+        return false;
+    };
+    let path = canon_ws.join(NEXORA_DIR_NAME).join(FLAGS_FILE_NAME);
+    if !is_within_workspace(&canon_ws, &path) {
+        return false;
+    }
+    std::fs::symlink_metadata(&path).is_ok()
+}
+
+/// Load and return the raw workspace flags document (`.nexora/flags.json`).
+///
+/// Guarded like the profile loads (canonical root, link-escape rejection,
+/// size cap, UTF-8); validation stays with the single source
+/// ([`crate::application::flags::FlagSet::from_json`]) — nothing is parsed
+/// here. There is intentionally no save path: flags are edited where they
+/// live (the file itself, or the `flags.*` settings keys).
+///
+/// # Errors
+///
+/// Returns [`ProjectDirError::InvalidFlags`] for an oversized file or a
+/// document failing text decoding, [`ProjectDirError::NotInitialized`] when
+/// `.nexora/` is absent, [`ProjectDirError::OutsideWorkspace`] on a symlink
+/// escape, or [`ProjectDirError::Io`] when the file is missing or unreadable.
+pub(crate) fn load_flags_text(workspace_root: &Path) -> Result<String, ProjectDirError> {
+    let canon_ws = canonical_workspace_dir(workspace_root)?;
+    let dir = canon_ws.join(NEXORA_DIR_NAME);
+    reject_link_escape(&canon_ws, &dir)?;
+    if !dir.is_dir() {
+        return Err(ProjectDirError::NotInitialized);
+    }
+    let path = dir.join(FLAGS_FILE_NAME);
+    if !is_within_workspace(&canon_ws, &path) {
+        return Err(ProjectDirError::OutsideWorkspace);
+    }
+    match std::fs::symlink_metadata(&path) {
+        Ok(meta) => {
+            if meta.file_type().is_symlink() && !link_target_within(&canon_ws, &path) {
+                return Err(ProjectDirError::OutsideWorkspace);
+            }
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Err(ProjectDirError::Io);
+        }
+        Err(_) => return Err(ProjectDirError::Io),
+    }
+    let meta = std::fs::metadata(&path).map_err(|_| ProjectDirError::Io)?;
+    if meta.len() > MAX_FLAGS_BYTES {
+        return Err(ProjectDirError::InvalidFlags);
+    }
+    let bytes = std::fs::read(&path).map_err(|_| ProjectDirError::Io)?;
+    String::from_utf8(bytes).map_err(|_| ProjectDirError::InvalidFlags)
 }
 
 #[cfg(test)]

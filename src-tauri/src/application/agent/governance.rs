@@ -229,6 +229,14 @@ pub(crate) enum AuditEvent {
     /// the caller's genuine `Failed` edge. Payload-free fixed vocabulary —
     /// the violation codes live in the report, never in the trail.
     SelfAuditFailed,
+    /// Routing-profile fallback (#81): the run-path canonical load
+    /// ([`RoutingService::resolve`](crate::application::routing::RoutingService::resolve))
+    /// met a present-but-invalid workspace profile file and fell back to the
+    /// stored settings tier. Payload-free fixed vocabulary — the file content
+    /// never enters the trail — recorded on the genuine `Queued → Running`
+    /// edge at run setup by the agent run path
+    /// (`service::spawn_run` via `service::note_routing_fallback`).
+    RoutingFallback,
 }
 
 impl AuditEvent {
@@ -250,6 +258,7 @@ impl AuditEvent {
             Self::RolledBack => "rolled_back",
             Self::SelfAuditPassed => "self_audit_passed",
             Self::SelfAuditFailed => "self_audit_failed",
+            Self::RoutingFallback => "routing_fallback",
         }
     }
 
@@ -323,7 +332,8 @@ impl AuditEntry {
             | AuditEvent::CheckpointSaved
             | AuditEvent::RolledBack
             | AuditEvent::SelfAuditPassed
-            | AuditEvent::SelfAuditFailed => (None, None, None, None, None),
+            | AuditEvent::SelfAuditFailed
+            | AuditEvent::RoutingFallback => (None, None, None, None, None),
         };
         Self {
             seq,
@@ -997,5 +1007,29 @@ mod tests {
         assert_eq!(entries[0].seq, 0);
         assert_eq!(entries[1].seq, 1);
         let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn routing_fallback_records_payload_free_on_the_setup_edge() {
+        // The run-path routing notice (#81) rides the genuine Queued →
+        // Running setup edge with fixed vocabulary only.
+        assert_eq!(AuditEvent::RoutingFallback.name(), "routing_fallback");
+        let log = AuditLog::new();
+        log.record(
+            RunState::Queued,
+            RunState::Running,
+            AuditEvent::RoutingFallback,
+        )
+        .expect("setup edge is legal");
+        let entries = log.entries();
+        assert_eq!(entries.len(), 1);
+        let entry = &entries[0];
+        assert_eq!((entry.from, entry.to), ("queued", "running"));
+        assert_eq!(entry.event, "routing_fallback");
+        assert_eq!(entry.decision, None);
+        assert_eq!(entry.allowance, None);
+        assert_eq!(entry.spent_micro, None);
+        assert_eq!(entry.limit_micro, None);
+        assert_eq!(entry.stage, None);
     }
 }
