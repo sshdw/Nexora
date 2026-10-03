@@ -7,7 +7,6 @@
    No entrance animation: the panel renders instantly (reduced-motion
    safe by construction).
    ============================================================ */
-
 /* ---- Full surface ---- */
 .nex-vcs {
   display: flex;
@@ -164,4 +163,117 @@
   flex-shrink: 0;
   font-size: var(--nex-sys-type-size-body-small);
   color: var(--nex-sys-color-on-surface-variant);
+}
+
+/* ---- View tabs: Working tree / Timeline. One destination, two views —
+   no new rail entry (documented in VersionControlPanel.tsx). Segmented
+   quiet buttons; selection is pill tone + aria-selected, never color
+   alone. No entrance animation (reduced-motion safe by construction). ---- */
+.nex-vcs-tabs {
+  display: flex;
+  align-items: center;
+  gap: var(--nex-sys-space-xxs);
+  padding: var(--nex-sys-space-xs) var(--nex-sys-space-md);
+  background: var(--nex-sys-color-surface-container);
+  border-bottom: 1px solid var(--nex-sys-color-outline-variant);
+}
+.nex-vcs-tab {
+  padding: var(--nex-sys-space-xxs) var(--nex-sys-space-sm);
+  border: 1px solid transparent;
+  border-radius: var(--nex-sys-shape-full);
+  background: transparent;
+  color: var(--nex-sys-color-on-surface-variant);
+  font: inherit;
+  font-size: var(--nex-sys-type-size-body-small);
+  font-weight: var(--nex-sys-type-weight-medium);
+  cursor: pointer;
+}
+.nex-vcs-tab:hover {
+  background: var(--nex-sys-color-surface-container-high);
+}
+.nex-vcs-tab.is-selected {
+  background: var(--nex-sys-color-primary-container);
+  color: var(--nex-sys-color-on-primary-container);
+}
+
+/* ---- Timeline: commit nodes with stats + risk badges. The rail dot marks
+   each node; the card is a full-width button (native keyboard parity),
+   selected = pill tone, never color alone (hash tag + text labels carry
+   the meaning). ---- */
+.nex-vcs-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nex-sys-space-xs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.nex-vcs-timeline-node {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--nex-sys-space-sm);
+  min-width: 0;
+}
+.nex-vcs-timeline-dot {
+  flex-shrink: 0;
+  width: var(--nex-sys-space-sm);
+  height: var(--nex-sys-space-sm);
+  margin-top: var(--nex-sys-space-sm);
+  border-radius: var(--nex-sys-shape-full);
+  background: var(--nex-sys-color-primary);
+}
+.nex-vcs-timeline-card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--nex-sys-space-xxs);
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: var(--nex-sys-space-xs) var(--nex-sys-space-sm);
+  border: 1px solid var(--nex-sys-color-outline-variant);
+  border-radius: var(--nex-sys-shape-extra-small);
+  background: var(--nex-sys-color-surface-container);
+  color: var(--nex-sys-color-on-surface);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.nex-vcs-timeline-card:hover {
+  background: var(--nex-sys-color-surface-container-high);
+}
+.nex-vcs-timeline-card.is-selected {
+  background: var(--nex-sys-color-primary-container);
+}
+.nex-vcs-timeline-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--nex-sys-space-sm);
+  min-width: 0;
+}
+.nex-vcs-commit-stats {
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-on-surface-variant);
+}
+
+/* ---- Risk badges: text labels in tag containment (meaning never rides on
+   color alone). ---- */
+.nex-vcs-risk-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--nex-sys-space-xxs);
+}
+.nex-vcs-risk {
+  border: 1px solid var(--nex-sys-color-outline-variant);
+  background: var(--nex-sys-color-surface-container-high);
+}
+
+/* ---- Copy-only commit explanation: plain reading text, wrapped. ---- */
+.nex-vcs-explanation {
+  margin: 0;
+  padding: var(--nex-sys-space-xs) var(--nex-sys-space-sm);
+  border-radius: var(--nex-sys-shape-extra-small);
+  background: var(--nex-sys-color-surface-container);
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-on-surface);
+  white-space: pre-wrap;
 }
