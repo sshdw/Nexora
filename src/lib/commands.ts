@@ -19,6 +19,9 @@
 //!   terminal ................ TerminalPanel.tsx (workspace command runs;
 //!                             go.terminal opens, focus-input/clear raise the
 //!                             panel's request)
+//!   tasks ................... TaskPanel.tsx (user task lists + the autonomous
+//!                             plan → act → verify → report loop; go.tasks
+//!                             opens)
 //!   chat commands .......... ConversationView.tsx:463-469 composer Enter,
 //!                             497-511 Send button; App.tsx:233-245 create
 //!   settings sections ...... SettingsView GROUP MAP comment (7 groups)
@@ -93,6 +96,8 @@ export interface PaletteDeps {
   openVcs: (request?: PaletteVcsRequest) => void;
   /** Open the workspace Terminal overlay (optional panel request). */
   openTerminal: (request?: PaletteTerminalRequest) => void;
+  /** Open the Tasks overlay (task manager + autonomous mode). */
+  openTasks: () => void;
   /** Open the Activity & Health overlay on the requested tab. */
   openActivity: (tab: "activity" | "health") => void;
   newConversation: () => void;
@@ -149,6 +154,13 @@ export function buildCommands(deps: PaletteDeps, locale: Locale = "en"): Palette
       section: go,
       keywords: ["terminal", "console", "shell", "command line", "cli", "run command", "prompt"],
       run: () => deps.openTerminal(),
+    },
+    {
+      id: "go.tasks",
+      title: tr(locale, "palette.cmd.go_tasks"),
+      section: go,
+      keywords: ["tasks", "todo", "autonomous", "plan", "checklist", "agent tasks", "run tasks"],
+      run: () => deps.openTasks(),
     },
     {
       id: "go.activity",

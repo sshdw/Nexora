@@ -797,6 +797,114 @@ export function resumeAgentRun(runId: number): Promise<void> {
   return invoke<void>("resume_agent_run", { runId });
 }
 
+// ---- Task manager + autonomous mode ------------------------------------
+// User-defined task lists with agent-executable steps, plus the bounded
+// plan → act → verify → report loop driving the existing agent run path.
+// Payloads stay snake_case (serde structs); command args are camelCase
+// (`taskId`, `conversationId`, `maxSteps`), like every other command.
+
+/** One `agent_tasks` row as persisted (v8 migration). */
+export interface AgentTask {
+  id: number;
+  title: string;
+  description: string | null;
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
+  conversation_id: number | null;
+  provider: string | null;
+  model: string | null;
+  max_steps: number;
+  current_step: number;
+  total_steps: number;
+  report: string | null;
+  run_id: number | null;
+  created_at: number; // seconds since unix epoch
+  updated_at: number; // seconds since unix epoch
+}
+
+/** One `agent_task_steps` row as persisted (v8 migration). */
+export interface AgentTaskStep {
+  id: number;
+  task_id: number;
+  seq: number;
+  title: string;
+  status: "pending" | "running" | "completed" | "failed" | "skipped" | "cancelled";
+  result: string | null;
+  run_id: number | null;
+  started_at: number; // seconds since unix epoch
+  finished_at: number | null;
+}
+
+/** One `agent-task-event` frame: secret-free lifecycle (ids + fixed
+ * vocabulary only — results and reports reload through the list commands). */
+export type AgentTaskEventPayload =
+  | { type: "started"; task_id: number }
+  | { type: "step_started"; task_id: number; seq: number }
+  | { type: "step_finished"; task_id: number; seq: number; status: string }
+  | { type: "finished"; task_id: number; status: string };
+
+/** Create a task with its ordered steps. A backing `Task: <title>`
+ * conversation is created when `conversationId` is `null`. Returns the
+ * schema-assigned task id. */
+export function createTask(
+  title: string,
+  description: string | null,
+  conversationId: number | null,
+  provider: string | null,
+  model: string | null,
+  steps: string[],
+  maxSteps?: number,
+): Promise<number> {
+  return invoke<number>("create_task", {
+    title,
+    description: description ?? null,
+    conversationId: conversationId ?? null,
+    provider: provider ?? null,
+    model: model ?? null,
+    steps,
+    maxSteps: maxSteps ?? null,
+  });
+}
+
+/** List all tasks, most recently active first. */
+export function listTasks(): Promise<AgentTask[]> {
+  return invoke<AgentTask[]>("list_tasks");
+}
+
+/** List one task's steps, `seq` ascending. */
+export function listTaskSteps(taskId: number): Promise<AgentTaskStep[]> {
+  return invoke<AgentTaskStep[]>("list_task_steps", { taskId });
+}
+
+/** Rename/edit a non-running task. */
+export function updateTask(
+  taskId: number,
+  title: string,
+  description: string | null,
+): Promise<void> {
+  return invoke<void>("update_task", {
+    taskId,
+    title,
+    description: description ?? null,
+  });
+}
+
+/** Delete a non-running task (its steps cascade). */
+export function deleteTask(taskId: number): Promise<void> {
+  return invoke<void>("delete_task", { taskId });
+}
+
+/** Start the autonomous loop for a task. Returns immediately; progress
+ * streams via `agent-task-event`. */
+export function startTaskRun(taskId: number): Promise<void> {
+  return invoke<void>("start_task_run", { taskId });
+}
+
+/** Stop the active loop for a task (and abort its in-flight agent run).
+ * Returns whether a loop was active. */
+export function stopTaskRun(taskId: number): Promise<boolean> {
+  return invoke<boolean>("stop_task_run", { taskId });
+}
+
 // ---- Context panel (read-only stats + diff render) ----------------------
 
 /** Read-only per-conversation context stats (`conversation_context_stats`).

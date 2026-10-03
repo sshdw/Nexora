@@ -8,6 +8,7 @@ import NexoraMark from "./NexoraMark";
 import PromptLibraryEntry from "./PromptLibraryEntry";
 import SearchBox from "./SearchBox";
 import SettingsEntry from "./SettingsEntry";
+import TaskEntry from "./TaskEntry";
 import TerminalEntry from "./TerminalEntry";
 import VersionControlEntry from "./VersionControlEntry";
 import WorkspaceFolderButton from "./WorkspaceFolderButton";
@@ -39,6 +40,9 @@ export interface SidebarProps {
   /** Whether the Terminal screen is currently shown. */
   terminalActive: boolean;
   onOpenTerminal: () => void;
+  /** Whether the Tasks screen is currently shown. */
+  tasksActive: boolean;
+  onOpenTasks: () => void;
   /** Open a prompt found by search in the Prompt Library editor. */
   onSelectPrompt: (promptId: number) => void;
   /** Open the import-conversation flow (FR-011). */
@@ -71,6 +75,8 @@ export default function Sidebar({
   onOpenActivity,
   terminalActive,
   onOpenTerminal,
+  tasksActive,
+  onOpenTasks,
   onSelectPrompt,
   onImport,
   onRename,
@@ -123,6 +129,7 @@ export default function Sidebar({
         <VersionControlEntry active={vcsActive} onClick={onOpenVersionControl} />
         <ActivityHealthEntry active={activityActive} onClick={onOpenActivity} />
         <TerminalEntry active={terminalActive} onClick={onOpenTerminal} />
+        <TaskEntry active={tasksActive} onClick={onOpenTasks} />
         <WorkspaceFolderButton store={workspace} />
         <WorkspaceRecentList store={workspace} />
         {workspace.error && (

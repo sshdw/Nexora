@@ -18,6 +18,7 @@ import PromptLibraryView from "./components/PromptLibraryView";
 import SettingsView from "./components/SettingsView";
 import ShortcutsDialog from "./components/ShortcutsDialog";
 import Sidebar from "./components/Sidebar";
+import TaskPanel from "./components/TaskPanel";
 import TerminalPanel from "./components/TerminalPanel";
 import VersionControlPanel from "./components/VersionControlPanel";
 import WorkspaceChip from "./components/WorkspaceChip";
@@ -43,6 +44,7 @@ import {
   COMBO_TAB_NEXT_PAGEDOWN,
   COMBO_TAB_NEXT_TAB,
   COMBO_TAB_PREV_PAGEDUP,
+  COMBO_TASKS_OPEN,
   COMBO_TERMINAL_OPEN,
   COMBO_ZEN_TOGGLE,
   matchesAnyCombo,
@@ -258,7 +260,11 @@ function AppShell() {
     token: number;
     action: PaletteTerminalRequest;
   } | null>(null);
-  const mainRef = useRef<HTMLDivElement>(null);
+  // Tasks screen: a workspace-scoped navigation destination like
+  // Settings/Library/VCS/Activity/Terminal — a sidebar rail entry opening
+  // an overlay over the still-mounted panes (palette + Ctrl+Shift+T open it
+  // too; no panel request token — the panel reloads from the backend).
+  const [tasksOpen, setTasksOpen] = useState(false);  const mainRef = useRef<HTMLDivElement>(null);
 
   const draftFor = useCallback(
     (id: number) => drafts[id] ?? "",
@@ -309,6 +315,7 @@ function AppShell() {
     setVcsOpen(false);
     setActivityOpen(false);
     setTerminalOpen(false);
+    setTasksOpen(false);
   };
 
   // Leading-edge guard for conversation creation: synchronous rapid clicks on
@@ -326,6 +333,7 @@ function AppShell() {
         setVcsOpen(false);
         setActivityOpen(false);
         setTerminalOpen(false);
+        setTasksOpen(false);
       }    } finally {
       creatingInFlight.current = false;
     }
@@ -339,6 +347,7 @@ function AppShell() {
     setVcsOpen(false);
     setActivityOpen(false);
     setTerminalOpen(false);
+    setTasksOpen(false);
   };
 
   const openSettings = useCallback((section?: PaletteSettingsSection) => {
@@ -348,6 +357,7 @@ function AppShell() {
     setVcsOpen(false);
     setActivityOpen(false);
     setTerminalOpen(false);
+    setTasksOpen(false);
   }, []);
   const openLibrary = useCallback(() => {
     // A fresh entry to the library opens the list, not a previously staged edit.
@@ -357,6 +367,7 @@ function AppShell() {
     setVcsOpen(false);
     setActivityOpen(false);
     setTerminalOpen(false);
+    setTasksOpen(false);
   }, []);
   const closeLibrary = () => {
     setLibraryOpen(false);
@@ -369,6 +380,7 @@ function AppShell() {
     setSettingsOpen(false);
     setActivityOpen(false);
     setTerminalOpen(false);
+    setTasksOpen(false);
   }, []);
   const closeVcs = () => {
     setVcsOpen(false);
@@ -380,6 +392,7 @@ function AppShell() {
     setSettingsOpen(false);
     setVcsOpen(false);
     setActivityOpen(false);
+    setTasksOpen(false);
   }, []);
   const closeTerminal = () => {
     setTerminalOpen(false);
@@ -394,9 +407,21 @@ function AppShell() {
     setSettingsOpen(false);
     setVcsOpen(false);
     setTerminalOpen(false);
+    setTasksOpen(false);
   }, []);
   const closeActivity = () => {
     setActivityOpen(false);
+  };
+  const openTasks = useCallback(() => {
+    setTasksOpen(true);
+    setLibraryOpen(false);
+    setSettingsOpen(false);
+    setVcsOpen(false);
+    setActivityOpen(false);
+    setTerminalOpen(false);
+  }, []);
+  const closeTasks = () => {
+    setTasksOpen(false);
   };
 
   // Open a prompt found by search: show the Prompt Library and open the selected
@@ -408,6 +433,7 @@ function AppShell() {
     setVcsOpen(false);
     setActivityOpen(false);
     setTerminalOpen(false);
+    setTasksOpen(false);
   };
 
   // FR-007 "Use": stage the prompt's content into the active pane's composer,
@@ -443,7 +469,7 @@ function AppShell() {
   }, [locale, setLocale]);
 
   // Overlay-exit contract shared by tab mutations and palette commands:
-  // switching surface closes Settings/Library/VCS/Activity/Terminal (same
+  // switching surface closes Settings/Library/VCS/Activity/Terminal/Tasks (same
   // as clicking a tab or sidebar row — overlays never sit above a switched
   // tab).
   const closeOverlays = useCallback(() => {
@@ -452,6 +478,7 @@ function AppShell() {
     setVcsOpen(false);
     setActivityOpen(false);
     setTerminalOpen(false);
+    setTasksOpen(false);
   }, []);
 
   // Focus the active pane's composer (palette "Focus message input"):
@@ -462,6 +489,7 @@ function AppShell() {
     setVcsOpen(false);
     setActivityOpen(false);
     setTerminalOpen(false);
+    setTasksOpen(false);
     window.setTimeout(() => {
       document
         .querySelector<HTMLTextAreaElement>(".nex-composer-input")
@@ -655,6 +683,20 @@ function AppShell() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [openTerminal]);
 
+  // Tasks shortcut (shortcut:go.tasks — Ctrl+Shift+T): same guarded pattern
+  // (opens from anywhere including typing targets — the combo inserts no
+  // text — while an open dialog still owns the keyboard).
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!matchesCombo(event, COMBO_TASKS_OPEN)) return;
+      if (document.querySelector('[role="dialog"]') !== null) return;
+      event.preventDefault();
+      openTasks();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [openTasks]);
+
   // Onboarding re-entry (palette "Replay onboarding walkthrough" + Settings
   // nav entry): overlays close first so the flow never stacks above another
   // dialog (same overlay-exit contract as closeOverlays).
@@ -686,6 +728,7 @@ function AppShell() {
       vcsOpen ||
       activityOpen ||
       terminalOpen ||
+      tasksOpen ||
       paletteOpen ||
       shortcutsOpen
     ) {
@@ -706,6 +749,7 @@ function AppShell() {
     vcsOpen,
     activityOpen,
     terminalOpen,
+    tasksOpen,
     paletteOpen,
     shortcutsOpen,
   ]);
@@ -723,6 +767,7 @@ function AppShell() {
           openVcs,
           openActivity,
           openTerminal,
+          openTasks,
           newConversation: () => void handleNewConversation(),
           openImport: () => setImportOpen(true),
           exportActive: exportActiveConversation,
@@ -759,6 +804,7 @@ function AppShell() {
       openVcs,
       openActivity,
       openTerminal,
+      openTasks,
       handleNewConversation,
       exportActiveConversation,
       focusComposer,
@@ -809,7 +855,7 @@ function AppShell() {
   // A prompt can only be staged when a conversation is open.
   const hasActiveConversation = activeConversation != null;
   const showOverlays =
-    libraryOpen || settingsOpen || vcsOpen || activityOpen || terminalOpen;
+    libraryOpen || settingsOpen || vcsOpen || activityOpen || terminalOpen || tasksOpen;
   // The split grid stays mounted in zen (the secondary pane hides via
   // .nex-zen CSS, same technique as the zen chrome rules) so both
   // ConversationView instances survive entering/exiting zen. Split
@@ -921,6 +967,8 @@ function AppShell() {
         onOpenActivity={() => openActivity("activity")}
         terminalActive={terminalOpen}
         onOpenTerminal={() => openTerminal()}
+        tasksActive={tasksOpen}
+        onOpenTasks={openTasks}
         onSelectPrompt={handleSelectPrompt}
         onImport={() => setImportOpen(true)}
         onRename={rename}
@@ -942,6 +990,7 @@ function AppShell() {
               setVcsOpen(false);
               setActivityOpen(false);
               setTerminalOpen(false);
+              setTasksOpen(false);
             }}
             onClose={tabs.close}
             onNewConversation={() => void handleNewConversation()}
@@ -981,6 +1030,12 @@ function AppShell() {
               />
             ) : terminalOpen ? (
               <TerminalPanel onClose={closeTerminal} request={terminalRequest} />
+            ) : tasksOpen ? (
+              <TaskPanel
+                onClose={closeTasks}
+                defaultProvider={providers.selectedProvider}
+                defaultModel={providers.selectedModel}
+              />
             ) : (
               <SettingsView
                 store={providers}
