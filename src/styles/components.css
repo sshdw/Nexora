@@ -407,6 +407,21 @@
   outline: none;
 }
 
+/* ---- Text-field focus visibility (accessibility.md §2) ----
+   The global :focus-visible ring (theme.css) loses to the
+   outline:none resets above on specificity, leaving only a
+   sub-3:1 border shift (measured 2.98 dark / 1.65 light). These
+   :focus-visible rules restore the token ring on top of the
+   border-moment (blended ring 4.32:1 vs the field fill in dark;
+   high-contrast solid 2px). Tokens only, no new values. */
+.nex-input:focus-visible,
+.nex-select:focus-visible,
+.nex-textarea:focus-visible,
+.nex-search-input:focus-visible {
+  outline: var(--nex-sys-focus-ring-width) solid var(--nex-sys-focus-ring-color);
+  outline-offset: var(--nex-sys-focus-ring-offset);
+}
+
 /* ============================================================
    SEGMENTED CONTROL (persistent 2–5 choice selection)
    Full-pill container (OFFICIAL segmented shape mapping) with

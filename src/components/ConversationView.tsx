@@ -298,7 +298,7 @@ export default function ConversationView({
         <ContextPanel conversationId={conversationId} />
       ) : (
         <>
-      <div className="nex-thread" ref={threadRef} aria-label="Messages">
+      <div className="nex-thread" ref={threadRef} role="log" aria-label="Messages">
         {loading ? (
           <M3LoadingIndicator label="Loading messages" />
         ) : threadItems.length === 0 ? (

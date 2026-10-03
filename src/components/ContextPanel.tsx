@@ -184,7 +184,7 @@ export default function ContextPanel({ conversationId }: { conversationId: numbe
   ];
 
   return (
-    <div className="nex-context nex-view-enter" aria-label="Conversation context">
+    <div className="nex-context nex-view-enter" role="group" aria-label="Conversation context">
       <dl className="nex-context-grid">
         {rows.map((row) => (
           <div key={row.label} className="nex-context-cell">

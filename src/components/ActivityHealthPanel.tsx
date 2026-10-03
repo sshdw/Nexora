@@ -345,7 +345,7 @@ export default function ActivityHealthPanel({
   }, [flags]);
 
   return (
-    <div className="nex-activity" aria-label="Activity and health">
+    <div className="nex-activity" role="group" aria-label="Activity and health">
       <header className="nex-activity-header">
         <div className="nex-activity-heading">
           <h2 className="nex-activity-title">Activity &amp; Health</h2>

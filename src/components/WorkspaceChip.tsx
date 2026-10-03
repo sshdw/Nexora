@@ -10,6 +10,7 @@ export default function WorkspaceChip({ root, loading }: WorkspaceChipProps) {
   return (
     <span
       className="nex-workspace-chip"
+      role="group"
       title={label}
       aria-label={`Current workspace folder: ${label}`}
     >
