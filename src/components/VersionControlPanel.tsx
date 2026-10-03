@@ -249,7 +249,7 @@ export default function VersionControlPanel({ onClose, request = null }: Version
   const stagedCount = info?.files.filter((file) => file.status === "staged").length ?? 0;
 
   return (
-    <div className="nex-vcs" aria-label="Version control">
+    <div className="nex-vcs" role="group" aria-label="Version control">
       <header className="nex-vcs-header">
         <div className="nex-vcs-heading">
           <h2 className="nex-vcs-title">Version Control</h2>

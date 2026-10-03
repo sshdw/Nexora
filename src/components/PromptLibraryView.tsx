@@ -155,15 +155,15 @@ export default function PromptLibraryView({
         {store.loading ? (
           // Skeleton rows: the shared loading primitive from components.css
           // (same treatment as the sidebar's loading list), announced politely.
-          <ul
+          <div
             className="nex-prompt-list nex-skeleton-list"
             role="status"
             aria-label="Loading prompts"
           >
             {Array.from({ length: 4 }).map((_, index) => (
-              <li key={index} className="nex-skeleton-row" />
+              <div key={index} className="nex-skeleton-row" />
             ))}
-          </ul>
+          </div>
         ) : store.error && editor === null ? (
           <div className="nex-prompt-error nex-fade-in" role="alert">
             <span className="nex-prompt-error-text">{store.error.message}</span>
@@ -222,7 +222,7 @@ export default function PromptLibraryView({
                     size="sm"
                     onClick={() => handleUse(prompt)}
                     disabled={!hasActiveConversation || saving}
-                    aria-label={`Insert ${prompt.title} into the active conversation`}
+                    aria-label={`Use ${prompt.title} in the active conversation`}
                     title={
                       hasActiveConversation
                         ? "Insert into the active conversation"

@@ -97,7 +97,7 @@ function ConversationPane({
         <h2 className="nex-main-title">
           <span className="nex-main-title-text">{conversation.title}</span>
           {isArchived && (
-            <span className="nex-main-title-badge" aria-label="Archived">
+            <span className="nex-main-title-badge">
               Archived
             </span>
           )}

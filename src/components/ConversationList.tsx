@@ -34,11 +34,11 @@ export default function ConversationList({
   if (loading) {
     return (
       <nav className="nex-conversation-nav" aria-label="Conversations">
-        <ul className="nex-skeleton-list" role="status" aria-label="Loading">
+        <div className="nex-skeleton-list" role="status" aria-label="Loading conversations">
           {Array.from({ length: 5 }).map((_, index) => (
-            <li key={index} className="nex-skeleton-row" />
+            <div key={index} className="nex-skeleton-row" />
           ))}
-        </ul>
+        </div>
       </nav>
     );
   }

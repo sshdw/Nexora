@@ -179,6 +179,16 @@
   outline: none;
 }
 
+/* Rename/composer focus visibility (accessibility.md §2): same
+   token-ring restoration as components.css — the outline:none
+   resets below would otherwise leave only the sub-3:1 border
+   shift as the focus sign. */
+.nex-conversation-rename-input:focus-visible,
+.nex-composer-input:focus-visible {
+  outline: var(--nex-sys-focus-ring-width) solid var(--nex-sys-focus-ring-color);
+  outline-offset: var(--nex-sys-focus-ring-offset);
+}
+
 /* Quiet, sentence-case section labels act as the group dividers
    (label-medium treatment; sentence case — skill typography.md §3). */
 .nex-conversation-group-label {

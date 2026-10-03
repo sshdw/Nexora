@@ -92,7 +92,7 @@ function TerminalView({ step }: { step: AgentStepView }) {
   const stderr = sepIdx >= 0 ? observation.slice(sepIdx + sep.length) : null;
   const hasStderr = stderr !== null && stderr.length > 0;
   return (
-    <div className="nex-agent-terminal" aria-label="Terminal output">
+    <div className="nex-agent-terminal" role="group" aria-label="Terminal output">
       {command && (
         <div className="nex-agent-terminal-header">
           <span className="nex-agent-terminal-prompt" aria-hidden="true">
@@ -124,7 +124,7 @@ export function DiffView({ observation }: { observation: string | null }) {
   // Remove trailing empty line from final split if observation ends with newline
   // Keep it as is for rendering; filter will handle.
   return (
-    <div className="nex-agent-diff" aria-label="File diff">
+    <div className="nex-agent-diff" role="group" aria-label="File diff">
       <div className="nex-agent-diff-body nex-tag-mono">
         {lines.map((line, idx) => {
           // Classify line for styling
@@ -168,10 +168,13 @@ export function DiffView({ observation }: { observation: string | null }) {
             content = "";
           }
           return (
-            <div key={idx} className={cls} aria-label={ariaLabel}>
+            <div key={idx} className={cls}>
               <span className="nex-agent-diff-gutter" aria-hidden="true">
                 {gutter}
               </span>
+              {ariaLabel !== undefined && (
+                <span className="nex-sr-only">{ariaLabel}: </span>
+              )}
               <span className="nex-agent-diff-content">{content}</span>
             </div>
           );
@@ -219,7 +222,7 @@ function StepSection({ step, defaultOpen }: { step: AgentStepView; defaultOpen: 
           ) : (
             <>
               {step.arguments && (
-                <pre className="nex-agent-step-args nex-tag-mono" aria-label="Tool arguments">
+                <pre className="nex-agent-step-args nex-tag-mono" role="group" aria-label="Tool arguments">
                   {step.arguments}
                 </pre>
               )}

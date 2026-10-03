@@ -129,11 +129,9 @@ export default function M3SegmentedGroup<T extends string>({
             aria-label={option.ariaLabel}
             className={selected ? "is-active" : undefined}
             tabIndex={
-              !isTabs && !selected
-                ? value === null && index === firstEnabledIndex
-                  ? undefined
-                  : -1
-                : undefined
+              selected || (value === null && index === firstEnabledIndex)
+                ? undefined
+                : -1
             }
             disabled={optionDisabled}
             onClick={() => onChange(option.value)}

@@ -139,8 +139,8 @@ export default function CommandPalette({ commands, onClose, onRun }: CommandPale
           ref={inputRef}
           type="text"
           role="combobox"
-          aria-expanded="true"
-          aria-controls="nex-palette-listbox"
+          aria-expanded={results.length > 0}
+          aria-controls={results.length > 0 ? "nex-palette-listbox" : undefined}
           aria-activedescendant={activeId}
           aria-label="Type a command"
           className="nex-input nex-palette-input"
