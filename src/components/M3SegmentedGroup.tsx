@@ -76,6 +76,8 @@ export default function M3SegmentedGroup<T extends string>({
     }
   };
 
+  // shortcut:segmented.move / shortcut:segmented.edges — scoped keys stay
+  // inline (the focused group IS the scope; see lib/shortcuts.ts).
   const handleKeyDown = (
     event: React.KeyboardEvent<HTMLButtonElement>,
     index: number,

@@ -14,6 +14,7 @@ import "./styles/importExport.css";
 import "./styles/tabs.css";
 import "./styles/versionControl.css";
 import "./styles/palette.css";
+import "./styles/shortcuts.css";
 
 // DEV-ONLY visual-QA hook: with ?mock in the URL (dev builds only), install
 // the in-memory IPC stand-in from src/lib/mockBackend.ts before mounting so

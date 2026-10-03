@@ -337,6 +337,7 @@ function PromptEditor({
             aria-describedby={error ? "nex-prompt-editor-error" : undefined}
             onChange={(event) => onTitleChange(event.target.value)}
             onKeyDown={(event) => {
+              // shortcut:prompt.save.
               if (event.key === "Enter") {
                 event.preventDefault();
                 onSave();

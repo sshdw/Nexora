@@ -84,6 +84,8 @@ export default function ConversationTabs({
     if (tab && tab.id !== activeId) onActivate(tab.id);
   };
 
+  // shortcut:tabstrip.move / shortcut:tabstrip.edges — scoped keys stay
+  // inline (the focused tab IS the scope; see lib/shortcuts.ts).
   const handleTabKeyDown = (
     event: React.KeyboardEvent<HTMLButtonElement>,
     index: number,

@@ -77,6 +77,7 @@ export default function ConversationItem({
           onChange={(event) => setDraftTitle(event.target.value)}
           onBlur={() => void commitRename()}
           onKeyDown={(event) => {
+            // shortcut:rename.commit / shortcut:rename.cancel.
             if (event.key === "Enter") {
               event.preventDefault();
               void commitRename();

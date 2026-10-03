@@ -68,6 +68,8 @@ export default function M3Toolbar({
     };
   }, [floating, autoFocus]);
 
+  // shortcut:toolbar.dismiss / shortcut:toolbar.move / shortcut:toolbar.edges
+  // — scoped keys stay inline (the focused bar IS the scope).
   const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     const bar = barRef.current;
     if (!bar) return;

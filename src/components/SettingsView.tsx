@@ -413,6 +413,7 @@ export default function SettingsView({
   // matching group so matched keys are visible without navigating.
   const visibleSections: SettingsSectionId[] = matches ?? [section];
 
+  // shortcut:settings.search-jump / shortcut:settings.search-clear.
   const handleSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (event.key === "Enter" && matches && matches.length > 0) {
       setSection(matches[0]);
@@ -674,6 +675,7 @@ export default function SettingsView({
                 onChange={(event) => setCustomDraft(event.target.value)}
                 onBlur={commitCustom}
                 onKeyDown={(event) => {
+                  // shortcut:settings.custom-model-commit.
                   if (event.key === "Enter") commitCustom();
                 }}
               />
@@ -735,6 +737,7 @@ export default function SettingsView({
               onChange={(event) => setSpendDraft(event.target.value)}
               onBlur={commitSpendLimit}
               onKeyDown={(event) => {
+                // shortcut:settings.spend-commit.
                 if (event.key === "Enter") commitSpendLimit();
               }}
             />
@@ -924,6 +927,7 @@ export default function SettingsView({
                   aria-describedby={clearError ? "clear-confirm-error" : undefined}
                   onChange={(event) => setClearPhrase(event.target.value)}
                   onKeyDown={(event) => {
+                    // shortcut:settings.clear-confirm.
                     if (event.key === "Enter") void handleClearData();
                   }}
                 />
