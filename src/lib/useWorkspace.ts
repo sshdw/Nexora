@@ -15,6 +15,7 @@ import {
   listWorkspaceRecent,
   setWorkspaceRoot,
 } from "./tauri";
+import { getLocale, tr } from "./strings";
 
 export interface WorkspaceStore {
   root: string | null;
@@ -41,7 +42,7 @@ function toCommandError(error: unknown): CommandError {
   }
   if (typeof error === "string") return { kind: "unknown", message: error };
   if (error instanceof Error) return { kind: "unknown", message: error.message };
-  return { kind: "unknown", message: "Unable to reach the workspace folder." };
+  return { kind: "unknown", message: tr(getLocale(), "common.workspaceUnreachable") };
 }
 
 export function useWorkspace(): WorkspaceStore {

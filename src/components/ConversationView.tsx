@@ -32,6 +32,7 @@ import { useAttachments } from "../lib/useAttachments";
 import { useConversation } from "../lib/useConversation";
 import AgentRunSteps from "./AgentRunSteps";
 import ContextPanel from "./ContextPanel";
+import { useStrings } from "../lib/useLocale";
 import M3Button from "./M3Button";
 import M3IconButton from "./M3IconButton";
 import M3LoadingIndicator from "./M3LoadingIndicator";
@@ -65,6 +66,7 @@ export default function ConversationView({
   draft,
   setDraft,
 }: ConversationViewProps) {
+  const { locale, t } = useStrings();
   const { messages, loading, error, sending, send } = useConversation(conversationId);
   const {
     attachments,
@@ -284,13 +286,13 @@ export default function ConversationView({
     <div className="nex-main-conversation">
       <div className="nex-context-tabs">
         <M3SegmentedGroup
-          label="Conversation view"
+          label={t("conv.viewLabel")}
           semantics="tabs"
           value={viewMode}
           onChange={setViewMode}
           options={[
-            { value: "chat", label: "Chat" },
-            { value: "context", label: "Context" },
+            { value: "chat", label: t("conv.chatTab") },
+            { value: "context", label: t("conv.contextTab") },
           ]}
         />
       </div>
@@ -298,17 +300,17 @@ export default function ConversationView({
         <ContextPanel conversationId={conversationId} />
       ) : (
         <>
-      <div className="nex-thread" ref={threadRef} role="log" aria-label="Messages">
+      <div className="nex-thread" ref={threadRef} role="log" aria-label={t("conv.messagesAria")}>
         {loading ? (
-          <M3LoadingIndicator label="Loading messages" />
+          <M3LoadingIndicator label={t("conv.loadingMessages")} />
         ) : threadItems.length === 0 ? (
           <div className="nex-conversation-placeholder nex-empty-enter">
             <span className="nex-conversation-empty-mark-wrap" aria-hidden="true">
               <NexoraMark className="nex-conversation-empty-mark" width={26} height={26} />
             </span>
-            <h2 className="nex-conversation-empty-title">No messages yet</h2>
+            <h2 className="nex-conversation-empty-title">{t("conv.emptyTitle")}</h2>
             <p className="nex-conversation-empty-text">
-              Write your first message below to start the conversation.
+              {t("conv.emptyText")}
             </p>
           </div>
         ) : (
@@ -349,12 +351,12 @@ export default function ConversationView({
               >
                 <div className="nex-message-meta">
                   <span className="nex-message-author">
-                    {item.message.role === "user" ? "You" : "Assistant"}
+                    {item.message.role === "user" ? t("conv.authorYou") : t("conv.authorAssistant")}
                   </span>
                   {item.message.role === "assistant" && item.message.model_name && (
                     <span
                       className="nex-message-origin"
-                      title="Provider and model used for this message"
+                      title={t("conv.originTitle")}
                     >
                       {item.message.model_name}
                     </span>
@@ -363,7 +365,7 @@ export default function ConversationView({
                     className="nex-message-time"
                     dateTime={new Date(item.message.created_at * 1000).toISOString()}
                   >
-                    {formatRelativeTime(item.message.created_at)}
+                    {formatRelativeTime(item.message.created_at, locale)}
                   </time>
                 </div>
                 <div className="nex-message-body">{item.message.content}</div>
@@ -373,12 +375,12 @@ export default function ConversationView({
         )}
         {sending && !agentMode && (
           <div className="nex-thread-waiting">
-            <M3LoadingIndicator label="Assistant is responding" size="sm" />
+            <M3LoadingIndicator label={t("conv.responding")} size="sm" />
           </div>
         )}
         {agentBusy && (
           <div className="nex-thread-waiting">
-            <M3LoadingIndicator label="Agent is working" size="sm" />
+            <M3LoadingIndicator label={t("conv.agentWorking")} size="sm" />
           </div>
         )}
       </div>
@@ -404,28 +406,28 @@ export default function ConversationView({
       <div className="nex-composer">
         <div className="nex-composer-inner">
           {agentMode && (
-            <div className="nex-agent-autonomy" role="group" aria-label="Autonomy mode">
-              <span className="nex-agent-autonomy-label">Autonomy</span>
+            <div className="nex-agent-autonomy" role="group" aria-label={t("conv.autonomyAria")}>
+              <span className="nex-agent-autonomy-label">{t("conv.autonomyLabel")}</span>
               <M3SegmentedGroup
-                label="Autonomy mode"
+                label={t("conv.autonomyAria")}
                 semantics="radio"
                 value={autonomyMode}
                 onChange={(mode) => void handleAutonomyChange(mode)}
                 options={[
-                  { value: "supervised", label: "Supervised" },
+                  { value: "supervised", label: t("conv.autonomySupervised") },
                   {
                     value: "semi_autonomous",
-                    label: "Semi-auto",
-                    ariaLabel: "Semi-autonomous",
+                    label: t("conv.autonomySemi"),
+                    ariaLabel: t("conv.autonomySemiAria"),
                   },
-                  { value: "full_autonomous", label: "Full-auto" },
+                  { value: "full_autonomous", label: t("conv.autonomyFull") },
                 ]}
               />
             </div>
           )}
           <div className="nex-composer-shell">
             {attachments.length > 0 && (
-              <ul className="nex-composer-attachments" aria-label="Attached files">
+              <ul className="nex-composer-attachments" aria-label={t("conv.attachedFiles")}>
                 {attachments.map((attachment) => (
                   <li key={attachment.id} className="nex-chip">
                     <PaperclipIcon className="nex-chip-icon" />
@@ -440,7 +442,7 @@ export default function ConversationView({
                       )}
                     </span>
                     <M3IconButton
-                      label={`Remove ${attachment.file_name}`}
+                      label={t("conv.removeFile", { name: attachment.file_name })}
                       size="sm"
                       className="nex-chip-remove"
                       disabled={attachmentsBusy || sending}
@@ -455,8 +457,8 @@ export default function ConversationView({
             <textarea
               className="nex-composer-input"
               rows={1}
-              placeholder="Message"
-              aria-label="Message"
+              placeholder={t("conv.messagePlaceholder")}
+              aria-label={t("conv.messageAria")}
               value={draft}
               disabled={sending || agentBusy}
               onChange={(event) => setDraft(event.target.value)}
@@ -470,27 +472,27 @@ export default function ConversationView({
             />
             <div className="nex-composer-bar">
               <M3IconButton
-                label="Add file"
+                label={t("conv.addFile")}
                 className="nex-composer-attach"
                 disabled={sending || attachmentsBusy || agentBusy}
                 onClick={() => void pickAndAttach()}
               >
                 <PaperclipIcon />
               </M3IconButton>
-              <label className="nex-composer-agent-toggle" title="Stream steps via the agent (opt-in)">
+              <label className="nex-composer-agent-toggle" title={t("conv.agentToggleTitle")}>
                 <input
                   type="checkbox"
                   checked={agentMode}
                   onChange={(e) => setAgentMode(e.target.checked)}
-                  aria-label="Agent mode"
+                  aria-label={t("conv.agentModeAria")}
                 />
-                <span>Agent</span>
+                <span>{t("conv.agentToggle")}</span>
               </label>
               <span className="nex-composer-bar-spacer" />
               {selectedModel && (
                 <span
                   className="nex-tag nex-tag-mono nex-composer-model-tag"
-                  title="Model used for new messages"
+                  title={t("conv.modelTagTitle")}
                 >
                   {selectedModel}
                 </span>
@@ -503,9 +505,9 @@ export default function ConversationView({
                 onClick={() => void handleSubmit()}
                 disabled={!canSend}
               >
-                {sending || agentBusy ? (agentMode ? "Running…" : "Sending…") : (
+                {sending || agentBusy ? (agentMode ? t("conv.running") : t("conv.sending")) : (
                   <>
-                    Send
+                    {t("conv.send")}
                     <ArrowUpIcon aria-hidden="true" />
                   </>
                 )}
@@ -515,16 +517,16 @@ export default function ConversationView({
           {ready ? (
             <p className="nex-composer-hint">
               <span className="nex-composer-shortcut">
-                Enter to send · Shift+Enter for a new line
+                {t("conv.hintSend")}
               </span>
             </p>
           ) : (
             <p className="nex-composer-hint">
               <span className="nex-composer-shortcut">
-                Choose a provider and model in Settings to send messages.{" "}
+                {t("conv.hintSetup")}{" "}
               </span>
               <M3Button variant="quiet" size="sm" onClick={onOpenSettings}>
-                Open Settings
+                {t("conv.openSettings")}
               </M3Button>
             </p>
           )}

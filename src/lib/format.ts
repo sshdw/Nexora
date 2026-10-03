@@ -2,6 +2,8 @@
 // Timestamps from the backend are Unix seconds (SQLite `unixepoch()`),
 // per DATABASE.md §7.1, so they are scaled to milliseconds for `Date`.
 
+import { getLocale, tr, type Locale } from "./strings";
+
 const SECOND_MS = 1_000;
 const MINUTE_MS = 60 * SECOND_MS;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -19,14 +21,17 @@ function formatLocale(date: Date, options: Intl.DateTimeFormatOptions): string {
   return new Intl.DateTimeFormat(navigator.language, options).format(date);
 }
 
-/** Format a conversation's `updated_at` (seconds) as a calm, compact label. */
-export function formatRelativeTime(seconds: number): string {
+/** Format a conversation's `updated_at` (seconds) as a calm, compact label.
+ * Fixed words ("Just now", "Yesterday") follow the UI locale; numeric
+ * date parts keep using `navigator.language` (date/number locale formatting
+ * beyond string level is out of scope — documented in strings.ts). */
+export function formatRelativeTime(seconds: number, locale: Locale = getLocale()): string {
   const ms = seconds * SECOND_MS;
   const now = Date.now();
   const diffMs = now - ms;
 
   // Freshly created or within the last 30s.
-  if (diffMs < 30_000) return "Just now";
+  if (diffMs < 30_000) return tr(locale, "time.justNow");
   if (diffMs < HOUR_MS) return `${Math.floor(diffMs / MINUTE_MS)}m`;
   if (diffMs < DAY_MS) return `${Math.floor(diffMs / HOUR_MS)}h`;
 
@@ -35,7 +40,7 @@ export function formatRelativeTime(seconds: number): string {
   const yesterday = new Date(now - DAY_MS);
 
   if (sameDay(date, today)) return formatLocale(date, { hour: "numeric", minute: "2-digit" });
-  if (sameDay(date, yesterday)) return "Yesterday";
+  if (sameDay(date, yesterday)) return tr(locale, "time.yesterday");
   if (date.getFullYear() === today.getFullYear()) {
     return formatLocale(date, { month: "short", day: "numeric" });
   }

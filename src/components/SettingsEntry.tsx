@@ -1,5 +1,6 @@
 import M3RailItem from "./M3RailItem";
 import { SettingsIcon } from "./icons";
+import { useStrings } from "../lib/useLocale";
 
 export interface SettingsEntryProps {
   onClick?: () => void;
@@ -10,7 +11,8 @@ export interface SettingsEntryProps {
 // on the shared M3RailItem row primitive (M3E rail canon: pill + tone step
 // when active, filled-active/outlined-inactive icon contract).
 export default function SettingsEntry({ onClick }: SettingsEntryProps) {
+  const { t } = useStrings();
   return (
-    <M3RailItem label="Settings" icon={<SettingsIcon />} onClick={onClick} />
+    <M3RailItem label={t("nav.settings")} icon={<SettingsIcon />} onClick={onClick} />
   );
 }

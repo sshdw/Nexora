@@ -13,6 +13,7 @@ import VersionControlEntry from "./VersionControlEntry";
 import WorkspaceFolderButton from "./WorkspaceFolderButton";
 import WorkspaceRecentList from "./WorkspaceRecentList";
 import { ImportIcon } from "./icons";
+import { useStrings } from "../lib/useLocale";
 
 export interface SidebarProps {
   conversations: Conversation[];
@@ -78,6 +79,7 @@ export default function Sidebar({
   onDelete,
   workspace,
 }: SidebarProps) {
+  const { t } = useStrings();
   return (
     <aside className="nex-sidebar" aria-label="Nexora">
       <div className="nex-sidebar-head">
@@ -88,7 +90,7 @@ export default function Sidebar({
           </span>
         </div>
         <NewConversationButton onClick={onNewConversation} disabled={creating}>
-          New Conversation
+          {t("nav.newConversation")}
         </NewConversationButton>
         <SearchBox
           conversations={conversations}
@@ -129,7 +131,7 @@ export default function Sidebar({
           </p>
         )}
         <M3RailItem
-          label="Import conversation"
+          label={t("nav.importConversation")}
           icon={<ImportIcon />}
           onClick={onImport}
         />

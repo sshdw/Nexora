@@ -1,5 +1,6 @@
 import M3RailItem from "./M3RailItem";
 import { BookIcon } from "./icons";
+import { useStrings } from "../lib/useLocale";
 
 export interface PromptLibraryEntryProps {
   /** Whether the Prompt Library screen is currently open. */
@@ -13,14 +14,15 @@ export interface PromptLibraryEntryProps {
 // `aria-current` (not `aria-pressed`): this is a navigation destination,
 // matching the Settings navigation semantics (0.2.5 QA pass).
 export default function PromptLibraryEntry({ active = false, onClick }: PromptLibraryEntryProps) {
+  const { t } = useStrings();
   return (
     <M3RailItem
-      label="Prompt Library"
+      label={t("nav.library")}
       icon={<BookIcon />}
       active={active}
       onClick={onClick}
     >
-      Prompt Library
+      {t("nav.library")}
     </M3RailItem>
   );
 }

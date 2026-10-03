@@ -17,6 +17,7 @@ import {
   listPrompts,
   updatePrompt,
 } from "./tauri";
+import { getLocale, tr } from "./strings";
 
 export interface PromptsStore {
   /** Saved prompts sorted by `updated_at` descending. */
@@ -123,5 +124,5 @@ function toCommandError(error: unknown): CommandError {
   }
   if (typeof error === "string") return { kind: "unknown", message: error };
   if (error instanceof Error) return { kind: "unknown", message: error.message };
-  return { kind: "unknown", message: "Unable to reach the local database." };
+  return { kind: "unknown", message: tr(getLocale(), "common.dbUnreachable") };
 }

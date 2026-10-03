@@ -17,8 +17,16 @@ import {
   renameConversation,
   restoreConversation,
 } from "./tauri";
+import { getLocale, tr } from "./strings";
 
-const DEFAULT_NEW_CONVERSATION_TITLE = "New Conversation";
+/** Default title for a created conversation, in the current UI locale (data,
+ * not chrome — persisted as the row title, so a RU user gets a RU default).
+ * Data-language mixing is accepted: the title is stored verbatim and keeps
+ * its creation language after a later language switch (stored titles are
+ * user data and are never retranslated). */
+function defaultNewConversationTitle(): string {
+  return tr(getLocale(), "app.newConversationDefault");
+}
 
 export interface ConversationsStore {
   conversations: Conversation[];
@@ -64,7 +72,7 @@ export function useConversations(): ConversationsStore {
     setCreating(true);
     setError(null);
     try {
-      const id = await createConversation(DEFAULT_NEW_CONVERSATION_TITLE);
+      const id = await createConversation(defaultNewConversationTitle());
       await reload();
       return id;
     } catch (e) {
@@ -127,7 +135,10 @@ function toCommandError(error: unknown): CommandError {
   if (error instanceof Error) return { kind: "unknown", message: error.message };
   return {
     kind: "unknown",
-    message: "Unable to reach the local database.",
+    // Accepted: the fallback message is built in the locale active when the
+    // error fired (transient — cleared on the next retry/reload, so it never
+    // pins the UI to a stale language).
+    message: tr(getLocale(), "common.dbUnreachable"),
   };
 }
 

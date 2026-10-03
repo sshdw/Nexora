@@ -6,6 +6,7 @@ import ConfirmDialog from "./ConfirmDialog";
 import M3IconButton from "./M3IconButton";
 import M3RailItem from "./M3RailItem";
 import M3Toolbar from "./M3Toolbar";
+import { useStrings } from "../lib/useLocale";
 import {
   ArchiveIcon,
   ExportIcon,
@@ -44,6 +45,7 @@ export default function ConversationItem({
   // 0.3.0: deletion confirms in the Nexora dialog system (was
   // window.confirm) — same explicit-confirm behavior, in-app chrome.
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const { locale, t } = useStrings();
 
   const beginRename = () => {
     setDraftTitle(conversation.title);
@@ -72,7 +74,7 @@ export default function ConversationItem({
         <input
           className="nex-conversation-rename-input"
           value={draftTitle}
-          aria-label="Rename conversation"
+          aria-label={t("list.renameAria")}
           autoFocus
           onChange={(event) => setDraftTitle(event.target.value)}
           onBlur={() => void commitRename()}
@@ -117,7 +119,7 @@ export default function ConversationItem({
             className="nex-conversation-time"
             dateTime={new Date(conversation.updated_at * 1000).toISOString()}
           >
-            {formatRelativeTime(conversation.updated_at)}
+            {formatRelativeTime(conversation.updated_at, locale)}
           </time>
         </M3RailItem>
         {/* Compact icon actions replace the timestamp while hovered /
@@ -125,12 +127,12 @@ export default function ConversationItem({
             title can never collide with them (0.3.0 defect fix). Grouped
             in a docked toolbar (same placement, token-driven look). */}
         <M3Toolbar
-          label={`Actions for ${conversation.title}`}
+          label={t("list.itemActions", { title: conversation.title })}
           className="nex-conversation-actions"
         >
           <M3IconButton
             size="sm"
-            label="Export conversation"
+            label={t("list.actionExport")}
             onClick={() => onExport(conversation.id)}
             disabled={busy}
           >
@@ -138,7 +140,7 @@ export default function ConversationItem({
           </M3IconButton>
           <M3IconButton
             size="sm"
-            label="Rename conversation"
+            label={t("list.actionRename")}
             onClick={beginRename}
             disabled={busy}
           >
@@ -147,7 +149,7 @@ export default function ConversationItem({
           {archived ? (
             <M3IconButton
               size="sm"
-              label="Restore conversation"
+              label={t("list.actionRestore")}
               onClick={() => onRestore(conversation.id)}
               disabled={busy}
             >
@@ -156,7 +158,7 @@ export default function ConversationItem({
           ) : (
             <M3IconButton
               size="sm"
-              label="Archive conversation"
+              label={t("list.actionArchive")}
               onClick={() => onArchive(conversation.id)}
               disabled={busy}
             >
@@ -166,7 +168,7 @@ export default function ConversationItem({
           <M3IconButton
             size="sm"
             danger
-            label="Delete conversation"
+            label={t("list.actionDelete")}
             onClick={() => setConfirmingDelete(true)}
             disabled={busy}
           >
@@ -176,9 +178,9 @@ export default function ConversationItem({
       </div>
       {confirmingDelete && (
         <ConfirmDialog
-          title="Delete conversation?"
-          body={`“${conversation.title}” and all of its messages will be permanently deleted. This cannot be undone.`}
-          confirmLabel="Delete"
+          title={t("list.deleteTitle")}
+          body={t("list.deleteBody", { title: conversation.title })}
+          confirmLabel={t("list.deleteConfirm")}
           danger
           onConfirm={() => {
             setConfirmingDelete(false);

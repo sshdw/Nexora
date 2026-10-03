@@ -24,6 +24,7 @@ import { useEffect, useState } from "react";
 
 import { isCustomModelId, type ProvidersStore } from "../lib/useProviders";
 import type { WorkspaceStore } from "../lib/useWorkspace";
+import { useStrings } from "../lib/useLocale";
 import M3Button from "./M3Button";
 import ModalShell from "./Modal";
 
@@ -39,9 +40,9 @@ export interface OnboardingFlowProps {
 }
 
 const STEP_TITLES = [
-  "Connect a provider",
-  "Pick a workspace folder",
-  "You're set",
+  "onboarding.stepConnect",
+  "onboarding.stepWorkspace",
+  "onboarding.stepDone",
 ] as const;
 
 export default function OnboardingFlow({
@@ -63,6 +64,7 @@ export default function OnboardingFlow({
   // selection / first available provider so the dropdown fills in once
   // the provider list loads after mount (replay-after-load).
   const [manualPick, setManualPick] = useState(false);
+  const { t } = useStrings();
   useEffect(() => {
     if (manualPick) return;
     const next =
@@ -111,15 +113,17 @@ export default function OnboardingFlow({
 
   return (
     <ModalShell
-      title="Welcome to Nexora"
+      title={t("onboarding.title")}
       busy={connecting || workspace.saving}
       onClose={onClose}
     >
       <div className="nex-onboarding nex-pop-enter">
-        <ol className="nex-onboarding-steps" aria-label="Onboarding progress">
-          {STEP_TITLES.map((title, index) => (
+        <ol className="nex-onboarding-steps" aria-label={t("onboarding.progress")}>
+          {STEP_TITLES.map((key, index) => {
+            const title = t(key);
+            return (
             <li
-              key={title}
+              key={key}
               className={
                 "nex-onboarding-step" +
                 (index === step ? " is-current" : "") +
@@ -129,20 +133,34 @@ export default function OnboardingFlow({
             >
               <span className="nex-onboarding-dot" aria-hidden="true" />
               <span className="nex-sr-only">
-                {`Step ${index + 1} of ${STEP_TITLES.length}: ${title}${
-                  index === step ? " (current)" : index < step ? " (done)" : ""
-                }`}
+                {t("onboarding.stepAria", {
+                  i: index + 1,
+                  n: STEP_TITLES.length,
+                  title,
+                  suffix:
+                    index === step
+                      ? t("onboarding.suffixCurrent")
+                      : index < step
+                        ? t("onboarding.suffixDone")
+                        : "",
+                })}
               </span>
             </li>
-          ))}
+            );
+          })}
         </ol>
         <p className="nex-onboarding-counter" aria-hidden="true">
-          Step {step + 1} of {STEP_TITLES.length}
+          {t("onboarding.stepOf", { i: step + 1, n: STEP_TITLES.length })}
         </p>
 
         <div
           role="region"
-          aria-label={`Step ${step + 1} of ${STEP_TITLES.length}: ${STEP_TITLES[step]}`}
+          aria-label={t("onboarding.stepAria", {
+            i: step + 1,
+            n: STEP_TITLES.length,
+            title: t(STEP_TITLES[step]),
+            suffix: "",
+          })}
         >
           {step === 0 && (
             <section
@@ -153,16 +171,14 @@ export default function OnboardingFlow({
                 id="nex-onboarding-provider-heading"
                 className="nex-onboarding-heading"
               >
-                Connect a provider
+                {t("onboarding.stepConnect")}
               </h4>
               <p className="nex-settings-hint">
-                Add one API key to start chatting. Keys stay in your
-                system&rsquo;s secure keyring, never in the database. You
-                can skip this — Nexora stays usable without any key.
+                {t("onboarding.connectHint")}
               </p>
               {providers.providers.length === 0 ? (
                 <p className="nex-settings-hint" role="status">
-                  No providers are available in this build yet.
+                  {t("onboarding.noProviders")}
                 </p>
               ) : (
                 <form
@@ -176,7 +192,7 @@ export default function OnboardingFlow({
                     className="nex-settings-label"
                     htmlFor="nex-onboarding-provider"
                   >
-                    Provider
+                    {t("onboarding.providerLabel")}
                   </label>
                   <select
                     id="nex-onboarding-provider"
@@ -192,7 +208,7 @@ export default function OnboardingFlow({
                     {providers.providers.map(({ supported, available }) => (
                       <option key={supported.name} value={supported.name}>
                         {supported.display_name}
-                        {available ? " · Connected" : ""}
+                        {available ? t("onboarding.connectedSuffix") : ""}
                       </option>
                     ))}
                   </select>
@@ -200,15 +216,19 @@ export default function OnboardingFlow({
                     className="nex-settings-label"
                     htmlFor="nex-onboarding-key"
                   >
-                    API key
+                    {t("onboarding.apiKeyLabel")}
                   </label>
                   <input
                     id="nex-onboarding-key"
                     className="nex-input"
                     type="password"
                     autoComplete="new-password"
-                    placeholder="Paste your API key"
-                    aria-label={`${activeProvider?.supported.display_name ?? "Provider"} API key`}
+                    placeholder={t("onboarding.apiKeyPh")}
+                    aria-label={t("onboarding.apiKeyAria", {
+                      name:
+                        activeProvider?.supported.display_name ??
+                        t("settings.searchProvider"),
+                    })}
                     value={apiKey}
                     disabled={connecting}
                     onChange={(event) => setApiKey(event.target.value)}
@@ -221,14 +241,18 @@ export default function OnboardingFlow({
                       loading={connecting}
                       disabled={!apiKey.trim() || connecting}
                     >
-                      {activeProvider?.credentialed ? "Update key" : "Connect"}
+                      {activeProvider?.credentialed ? t("onboarding.updateKey") : t("onboarding.connect")}
                     </M3Button>
                     {(connectDone || activeProvider?.available) && (
                       <span
                         className="nex-onboarding-status"
                         role="status"
                       >
-                        Connected{connectedName ? ` · ${connectedName}` : ""}.
+                        {t("onboarding.connectedStatus", {
+                          rest: connectedName
+                            ? t("onboarding.connectedRest", { name: connectedName })
+                            : "",
+                        })}
                       </span>
                     )}
                   </div>
@@ -254,16 +278,15 @@ export default function OnboardingFlow({
                 id="nex-onboarding-workspace-heading"
                 className="nex-onboarding-heading"
               >
-                Pick a workspace folder
+                {t("onboarding.stepWorkspace")}
               </h4>
               <p className="nex-settings-hint">
-                The folder the agent&rsquo;s tools are scoped to. You can
-                change it any time from the sidebar.
+                {t("onboarding.workspaceHint")}
               </p>
               <p className="nex-onboarding-current" role="status">
                 {workspace.loading
-                  ? "Loading…"
-                  : (workspace.root ?? "No folder chosen yet.")}
+                  ? t("common.loading")
+                  : (workspace.root ?? t("onboarding.wsNone"))}
               </p>
               <div className="nex-onboarding-inline">
                 <M3Button
@@ -273,7 +296,7 @@ export default function OnboardingFlow({
                   disabled={workspace.saving}
                   onClick={() => void workspace.pickFolder()}
                 >
-                  Choose folder…
+                  {t("onboarding.chooseFolder")}
                 </M3Button>
               </div>
               {workspace.error && (
@@ -287,7 +310,7 @@ export default function OnboardingFlow({
                     className="nex-settings-label"
                     id="nex-onboarding-recent-label"
                   >
-                    Recent folders
+                    {t("onboarding.recentLabel")}
                   </span>
                   <ul
                     className="nex-onboarding-recent"
@@ -323,28 +346,26 @@ export default function OnboardingFlow({
                 id="nex-onboarding-done-heading"
                 className="nex-onboarding-heading"
               >
-                You&rsquo;re set
+                {t("onboarding.stepDone")}
               </h4>
               <p className="nex-settings-hint">
                 {connectedName ?? workspace.root
                   ? [
                       connectedName
-                        ? `Provider: ${connectedName}`
-                        : "No provider connected yet",
+                        ? t("onboarding.summaryProvider", { name: connectedName })
+                        : t("onboarding.summaryNoProvider"),
                       workspace.root
-                        ? `Workspace: ${workspace.root}`
-                        : "No workspace folder yet",
+                        ? t("onboarding.summaryWorkspace", { root: workspace.root })
+                        : t("onboarding.summaryNoWorkspace"),
                     ].join(" · ")
-                  : "Skipped setup — you can do it any time from Settings."}
+                  : t("onboarding.summaryNone")}
               </p>
               <ul className="nex-onboarding-tips">
                 <li>
-                  Press <kbd>Ctrl</kbd> + <kbd>K</kbd> to open the command
-                  palette — every action lives there.
+                  {t("onboarding.tipPaletteA")}<kbd>Ctrl</kbd> + <kbd>K</kbd>{t("onboarding.tipPaletteB")}
                 </li>
                 <li>
-                  Press <kbd>Ctrl</kbd> + <kbd>/</kbd> (or <kbd>F1</kbd>) to
-                  see all keyboard shortcuts.
+                  {t("onboarding.tipKeysA")}<kbd>Ctrl</kbd>{t("onboarding.tipKeysB")}<kbd>/</kbd>{t("onboarding.tipKeysC")}<kbd>F1</kbd>{t("onboarding.tipKeysD")}
                 </li>
               </ul>
             </section>
@@ -354,30 +375,30 @@ export default function OnboardingFlow({
         <div className="nex-onboarding-actions">
           {step > 0 ? (
             <M3Button variant="quiet" size="sm" onClick={back}>
-              Back
+              {t("onboarding.back")}
             </M3Button>
           ) : (
             <M3Button variant="quiet" size="sm" onClick={onClose}>
-              Not now
+              {t("onboarding.notNow")}
             </M3Button>
           )}
           <span className="nex-onboarding-spacer" aria-hidden="true" />
           {step < STEP_TITLES.length - 1 ? (
             <>
               <M3Button variant="quiet" size="sm" onClick={next}>
-                Skip this step
+                {t("onboarding.skipStep")}
               </M3Button>
               <M3Button variant="primary" size="sm" onClick={next}>
-                Continue
+                {t("onboarding.continue")}
               </M3Button>
             </>
           ) : (
             <>
               <M3Button variant="quiet" size="sm" onClick={onOpenSettings}>
-                Open Settings
+                {t("onboarding.openSettings")}
               </M3Button>
               <M3Button variant="primary" size="sm" onClick={onClose}>
-                Get started
+                {t("onboarding.getStarted")}
               </M3Button>
             </>
           )}

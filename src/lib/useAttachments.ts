@@ -26,6 +26,7 @@ import {
   listAttachments,
   removeAttachment,
 } from "./tauri";
+import { getLocale, tr } from "./strings";
 
 export interface AttachmentsStore {
   /** The conversation's draft attachments (backend order). */
@@ -82,7 +83,7 @@ export function useAttachments(conversationId: number | null): AttachmentsStore 
     let selection: string | string[] | null = null;
     try {
       // Native OS file picker; local files only, no upload path exists.
-      selection = await open({ multiple: true, title: "Attach files" });
+      selection = await open({ multiple: true, title: tr(getLocale(), "conv.attachDialogTitle") });
     } catch (e) {
       setError(toCommandError(e));
       return;
@@ -161,5 +162,8 @@ function toCommandError(error: unknown): CommandError {
   }
   if (typeof error === "string") return { kind: "unknown", message: error };
   if (error instanceof Error) return { kind: "unknown", message: error.message };
-  return { kind: "unknown", message: "Unable to reach the local backend." };
+  // Accepted: the fallback message is built in the locale active when the
+  // error fired (transient — cleared on the next retry, so it never pins
+  // the UI to a stale language).
+  return { kind: "unknown", message: tr(getLocale(), "common.backendUnreachable") };
 }

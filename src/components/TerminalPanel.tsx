@@ -43,6 +43,8 @@ import {
   type ErrorExplanation,
 } from "../lib/tauri";
 import M3Button from "./M3Button";
+import { getLocale, tr } from "../lib/strings";
+import { useStrings } from "../lib/useLocale";
 
 /** One scrollback entry: the command plus its outcome. `pending` marks the
  * in-flight run (Stop targets it); `stopped` marks a stop-killed run;
@@ -61,16 +63,16 @@ interface TerminalBlock {
 
 /** `cd` target that stays inside the workspace: absolute paths, home
  * shortcuts, and dotdot escapes are refused with fixed vocabulary. */
-function resolveCd(current: string, target: string): string {
+function resolveCd(current: string, target: string, locale = getLocale()): string {
   const raw = target.trim();
   if (raw === "" || raw === "~" || raw.startsWith("/") || /^[a-zA-Z]:/.test(raw)) {
-    throw new Error("cd takes a workspace-relative path only");
+    throw new Error(tr(locale, "term.cdRelative"));
   }
   const parts = [...current.split("/").filter(Boolean)];
   for (const segment of raw.split("/")) {
     if (segment === "" || segment === ".") continue;
     if (segment === "..") {
-      if (parts.length === 0) throw new Error("cd cannot leave the workspace root");
+      if (parts.length === 0) throw new Error(tr(locale, "term.cdRoot"));
       parts.pop();
       continue;
     }
@@ -118,6 +120,7 @@ export interface TerminalPanelProps {
 let nextBlockId = 1;
 
 export default function TerminalPanel({ onClose, request = null }: TerminalPanelProps) {
+  const { t } = useStrings();
   const [blocks, setBlocks] = useState<TerminalBlock[]>([]);
   const [input, setInput] = useState<string>("");
   const [history, setHistory] = useState<string[]>([]);
@@ -189,7 +192,7 @@ export default function TerminalPanel({ onClose, request = null }: TerminalPanel
       ? workspaceRoot
       : `${workspaceRoot}/${cwdRel.replace(/\//g, "/")}`
     : cwdRel === ""
-      ? "(workspace)"
+      ? t("term.wsFallback")
       : cwdRel;
 
   const handleRun = useCallback(
@@ -329,7 +332,7 @@ export default function TerminalPanel({ onClose, request = null }: TerminalPanel
             explanation: prev[blockId]?.explanation ?? null,
             suggestedFix: prev[blockId]?.suggestedFix ?? null,
             truncatedInput: prev[blockId]?.truncatedInput ?? false,
-            error: "Select a provider and model first (Settings), then explain.",
+            error: tr(getLocale(), "term.needProviderExplain"),
             copied: null,
           },
         }));
@@ -378,7 +381,7 @@ export default function TerminalPanel({ onClose, request = null }: TerminalPanel
     } catch {
       setExplains((prev) =>
         prev[blockId]
-          ? { ...prev, [blockId]: { ...prev[blockId], copied: null, error: "Copy failed — select the text manually." } }
+          ? { ...prev, [blockId]: { ...prev[blockId], copied: null, error: tr(getLocale(), "common.copyFailed") } }
           : prev,
       );
     }
@@ -423,22 +426,20 @@ export default function TerminalPanel({ onClose, request = null }: TerminalPanel
   }, []);
 
   return (
-    <div className="nex-term" role="group" aria-label="Terminal">
+    <div className="nex-term" role="group" aria-label={t("term.group")}>
       <header className="nex-vcs-header">
         <div className="nex-vcs-heading">
-          <h2 className="nex-vcs-title">Terminal</h2>
+          <h2 className="nex-vcs-title">{t("term.title")}</h2>
           <p className="nex-vcs-subtitle">
-            Workspace commands only — your Run press is the approval. Hard timeout, output
-            capped with a notice, no streaming, one run at a time. Interactive programs
-            (vim, ssh) are unsupported: stdin is closed.
+            {t("term.subtitle")}
           </p>
         </div>
         <div className="nex-vcs-header-actions">
           <M3Button variant="quiet" onClick={handleClear} disabled={running || blocks.length === 0}>
-            Clear
+            {t("term.clear")}
           </M3Button>
           <M3Button variant="quiet" onClick={onClose}>
-            Back to conversations
+            {t("common.backToConversations")}
           </M3Button>
         </div>
       </header>
@@ -453,20 +454,20 @@ export default function TerminalPanel({ onClose, request = null }: TerminalPanel
           ref={scrollRef}
           className="nex-term-scroll"
           role="log"
-          aria-label="Terminal scrollback"
+          aria-label={t("term.scrollback")}
           aria-live="off"
           tabIndex={0}
         >
           {blocks.length === 0 ? (
             <p className="nex-agent-empty">
-              No commands yet — type a workspace command below and press Enter.
+              {t("term.empty")}
             </p>
           ) : (
             blocks.map((block) => {
               const explain = explains[block.id];
               const explainLoading = explain?.loading === true;
               return (
-              <div key={block.id} className="nex-agent-terminal" role="group" aria-label="Terminal output">
+              <div key={block.id} className="nex-agent-terminal" role="group" aria-label={t("term.blockAria")}>
                 <div className="nex-agent-terminal-header">
                   <span className="nex-agent-terminal-prompt" aria-hidden="true">
                     $
@@ -488,26 +489,26 @@ export default function TerminalPanel({ onClose, request = null }: TerminalPanel
                     }
                   >
                     {block.pending
-                      ? "running"
+                      ? t("term.exitRunning")
                       : block.stopped
-                        ? "stopped"
+                        ? t("term.exitStopped")
                         : block.success
-                          ? "exit 0"
-                          : "non-zero exit"}
+                          ? t("term.exitOk")
+                          : t("term.exitFail")}
                   </span>
                   {block.truncated && !block.pending && (
                     <span className="nex-tag nex-tag-mono nex-term-exit nex-term-exit-truncated">
-                      truncated
+                      {t("term.truncatedTag")}
                     </span>
                   )}
                 </div>
                 <div className="nex-agent-terminal-body">
                   {block.pending ? (
-                    <p className="nex-agent-empty">Running…</p>
+                    <p className="nex-agent-empty">{t("term.pendingText")}</p>
                   ) : block.error ? (
                     <pre className="nex-agent-terminal-stderr">{block.error}</pre>
                   ) : block.output === "" ? (
-                    <p className="nex-agent-empty">(no output)</p>
+                    <p className="nex-agent-empty">{t("term.noOutput")}</p>
                   ) : (
                     <pre className="nex-agent-terminal-stdout">{block.output}</pre>
                   )}
@@ -520,13 +521,13 @@ export default function TerminalPanel({ onClose, request = null }: TerminalPanel
                         size="sm"
                         disabled={explainLoading}
                         onClick={() => void handleExplain(block.id, block.output, block.truncated)}
-                        title="Explain this failure with the configured provider"
+                        title={t("term.explainTitle")}
                       >
                         {explainLoading
-                          ? "Explaining…"
+                          ? t("vcs.explaining")
                           : explain?.explanation
-                            ? "Explain again"
-                            : "Explain"}
+                            ? t("vcs.explainAgain")
+                            : t("vcs.explain")}
                       </M3Button>
                       {explain?.explanation && (
                         <M3Button
@@ -534,7 +535,7 @@ export default function TerminalPanel({ onClose, request = null }: TerminalPanel
                           size="sm"
                           onClick={() => void handleCopyExplain(block.id, "diagnosis", explain.explanation ?? "")}
                         >
-                          {explain.copied === "diagnosis" ? "Copied" : "Copy diagnosis"}
+                          {explain.copied === "diagnosis" ? t("vcs.copied") : t("term.copyDiagnosis")}
                         </M3Button>
                       )}
                       {explain?.suggestedFix && (
@@ -543,18 +544,16 @@ export default function TerminalPanel({ onClose, request = null }: TerminalPanel
                           size="sm"
                           onClick={() => void handleCopyExplain(block.id, "fix", explain.suggestedFix ?? "")}
                         >
-                          {explain.copied === "fix" ? "Copied" : "Copy fix"}
+                          {explain.copied === "fix" ? t("vcs.copied") : t("term.copyFix")}
                         </M3Button>
                       )}
                     </div>
                     <p className="nex-vcs-notice" role="note">
-                      Explain sends the failed output (up to 64 KiB) to the configured
-                      provider — suggestions are copy-only and never run automatically.
+                      {t("term.explainNotice")}
                     </p>
                     {explain?.truncatedInput === true && (
                       <p className="nex-vcs-notice" role="note">
-                        The failed output sent to the provider was truncated to 64 KiB —
-                        the diagnosis covers only what is shown.
+                        {t("term.explainTruncated")}
                       </p>
                     )}
                     {explain?.error && (
@@ -568,7 +567,7 @@ export default function TerminalPanel({ onClose, request = null }: TerminalPanel
                     {explain?.suggestedFix && (
                       <>
                         <p className="nex-vcs-notice" role="note">
-                          Suggested fix (copy it or run it yourself — it never auto-runs):
+                          {t("term.fixHint")}
                         </p>
                         <pre className="nex-agent-terminal-stdout">{explain.suggestedFix}</pre>
                       </>
@@ -593,8 +592,8 @@ export default function TerminalPanel({ onClose, request = null }: TerminalPanel
             className="nex-term-input"
             type="text"
             autoFocus
-            placeholder="workspace command (cd changes directory)"
-            aria-label="Terminal command input"
+            placeholder={t("term.inputPh")}
+            aria-label={t("term.inputAria")}
             value={input}
             disabled={running}
             onChange={handleInputChange}
@@ -606,9 +605,9 @@ export default function TerminalPanel({ onClose, request = null }: TerminalPanel
               size="sm"
               disabled={stopping}
               onClick={() => void handleStop()}
-              title="Stop the running command"
+              title={t("term.stopTitle")}
             >
-              {stopping ? "Stopping…" : "Stop"}
+              {stopping ? t("term.stopping") : t("term.stop")}
             </M3Button>
           ) : (
             <M3Button
@@ -616,16 +615,15 @@ export default function TerminalPanel({ onClose, request = null }: TerminalPanel
               size="sm"
               disabled={input.trim() === ""}
               onClick={() => void handleRun(input)}
-              title="Run the command in the workspace"
+              title={t("term.runTitle")}
             >
-              Run
+              {t("term.run")}
             </M3Button>
           )}
         </div>
         {interactiveWarn && !running && (
           <p className="nex-vcs-notice" role="note">
-            That looks like an interactive program — stdin is closed, so it will run until
-            the timeout. Prefer a non-interactive flag (e.g. `--version`, `--help`).
+            {t("term.interactiveWarn")}
           </p>
         )}
       </div>

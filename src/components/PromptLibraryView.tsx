@@ -19,6 +19,7 @@ import NexoraMark from "./NexoraMark";
 import { PencilIcon, SearchIcon, TrashIcon } from "./icons";
 import type { Prompt } from "../lib/tauri";
 import { formatRelativeTime } from "../lib/format";
+import { useStrings } from "../lib/useLocale";
 import { usePrompts } from "../lib/usePrompts";
 
 /** Backend `prompts` schema limits, mirrored in the editor (DATABASE.md §7.3). */
@@ -62,6 +63,7 @@ export default function PromptLibraryView({
   // 0.3.0: deletion confirms in the Nexora dialog system (was
   // window.confirm) — same explicit-confirm behavior, in-app chrome.
   const [pendingDelete, setPendingDelete] = useState<Prompt | null>(null);
+  const { locale, t } = useStrings();
 
   useEffect(() => {
     if (initialEditId == null) return;
@@ -114,27 +116,27 @@ export default function PromptLibraryView({
     <div className="nex-prompt-library nex-view-enter">
       <header className="nex-prompt-library-header">
         <div className="nex-prompt-library-heading">
-          <h2 className="nex-prompt-library-title">Prompt Library</h2>
+          <h2 className="nex-prompt-library-title">{t("prompts.title")}</h2>
           <p className="nex-prompt-library-subtitle">
-            Reusable message templates for any conversation.
+            {t("prompts.subtitle")}
           </p>
         </div>
         <M3Button variant="quiet" onClick={onClose}>
-          Back to conversations
+          {t("common.backToConversations")}
         </M3Button>
       </header>
 
-      <M3Toolbar label="Prompt library actions" className="nex-prompt-toolbar">
+      <M3Toolbar label={t("prompts.toolbar")} className="nex-prompt-toolbar">
         <div className="nex-search nex-prompt-search">
           <label htmlFor="nex-prompt-search-input" className="nex-sr-only">
-            Search prompts
+            {t("prompts.searchLabel")}
           </label>
           <SearchIcon className="nex-search-icon" />
           <input
             id="nex-prompt-search-input"
             type="search"
             className="nex-search-input"
-            placeholder="Search prompts"
+            placeholder={t("prompts.searchPh")}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             autoComplete="off"
@@ -147,7 +149,7 @@ export default function PromptLibraryView({
           onClick={openCreate}
           disabled={saving}
         >
-          New Prompt
+          {t("prompts.newPrompt")}
         </M3Button>
       </M3Toolbar>
 
@@ -158,7 +160,7 @@ export default function PromptLibraryView({
           <div
             className="nex-prompt-list nex-skeleton-list"
             role="status"
-            aria-label="Loading prompts"
+            aria-label={t("prompts.loading")}
           >
             {Array.from({ length: 4 }).map((_, index) => (
               <div key={index} className="nex-skeleton-row" />
@@ -172,7 +174,7 @@ export default function PromptLibraryView({
               size="sm"
               onClick={() => void store.reload()}
             >
-              Try again
+              {t("common.retry")}
             </M3Button>
           </div>
         ) : store.prompts.length === 0 && filtered.length === 0 ? (
@@ -180,10 +182,9 @@ export default function PromptLibraryView({
             <span className="nex-empty-mark-wrap" aria-hidden="true">
               <NexoraMark className="nex-empty-mark" width={26} height={26} />
             </span>
-            <h3 className="nex-prompt-empty-title">No prompts yet</h3>
+            <h3 className="nex-prompt-empty-title">{t("prompts.emptyTitle")}</h3>
             <p className="nex-prompt-empty-text">
-              Create reusable message templates and insert them into any
-              conversation with “Use”.
+              {t("prompts.emptyText")}
             </p>
             <div className="nex-empty-actions">
               <M3Button
@@ -192,13 +193,13 @@ export default function PromptLibraryView({
                 onClick={openCreate}
                 disabled={saving}
               >
-                New Prompt
+                {t("prompts.newPrompt")}
               </M3Button>
             </div>
           </div>
         ) : filtered.length === 0 ? (
           <p className="nex-prompt-status nex-fade-in">
-            No prompts match “{query.trim()}”.
+            {t("prompts.noMatch", { q: query.trim() })}
           </p>
         ) : (
           <ul className="nex-prompt-grid nex-stagger">
@@ -212,7 +213,7 @@ export default function PromptLibraryView({
                     className="nex-prompt-time"
                     dateTime={new Date(prompt.updated_at * 1000).toISOString()}
                   >
-                    {formatRelativeTime(prompt.updated_at)}
+                    {formatRelativeTime(prompt.updated_at, locale)}
                   </time>
                 </div>
                 <span className="nex-prompt-preview">{prompt.content}</span>
@@ -222,23 +223,23 @@ export default function PromptLibraryView({
                     size="sm"
                     onClick={() => handleUse(prompt)}
                     disabled={!hasActiveConversation || saving}
-                    aria-label={`Use ${prompt.title} in the active conversation`}
+                    aria-label={t("prompts.useAria", { title: prompt.title })}
                     title={
                       hasActiveConversation
-                        ? "Insert into the active conversation"
-                        : "Open a conversation first"
+                        ? t("prompts.useTitleOk")
+                        : t("prompts.useTitleNeed")
                     }
                   >
-                    Use
+                    {t("prompts.use")}
                   </M3Button>
                   <span className="nex-prompt-card-foot-spacer" />
                   <M3Toolbar
-                    label={`Tools for ${prompt.title}`}
+                    label={t("prompts.toolsAria", { title: prompt.title })}
                     className="nex-prompt-card-tools"
                   >
                     <M3IconButton
                       size="sm"
-                      label={`Edit ${prompt.title}`}
+                      label={t("prompts.editAria", { title: prompt.title })}
                       onClick={() => openEdit(prompt)}
                       disabled={saving}
                     >
@@ -247,7 +248,7 @@ export default function PromptLibraryView({
                     <M3IconButton
                       size="sm"
                       danger
-                      label={`Delete ${prompt.title}`}
+                      label={t("prompts.deleteAria", { title: prompt.title })}
                       onClick={() => handleDelete(prompt)}
                       disabled={saving}
                     >
@@ -263,9 +264,9 @@ export default function PromptLibraryView({
 
       {pendingDelete && (
         <ConfirmDialog
-          title="Delete prompt?"
-          body={`“${pendingDelete.title}” will be permanently deleted. This cannot be undone.`}
-          confirmLabel="Delete"
+          title={t("prompts.deleteTitle")}
+          body={t("prompts.deleteBody", { title: pendingDelete.title })}
+          confirmLabel={t("prompts.deleteConfirm")}
           danger
           onConfirm={confirmDelete}
           onCancel={() => setPendingDelete(null)}
@@ -310,9 +311,10 @@ function PromptEditor({
   onSave,
   onCancel,
 }: PromptEditorProps) {
+  const { t } = useStrings();
   return (
     <ModalShell
-      title={editor.editing ? "Edit prompt" : "New prompt"}
+      title={editor.editing ? t("prompts.editorEdit") : t("prompts.editorNew")}
       onClose={onCancel}
     >
       <div className="nex-io-body">
@@ -324,14 +326,14 @@ function PromptEditor({
 
         <div className="nex-prompt-field">
           <label className="nex-prompt-label" htmlFor="nex-prompt-title-input">
-            Title
+            {t("prompts.titleLabel")}
           </label>
           <input
             id="nex-prompt-title-input"
             className="nex-input"
             value={editor.title}
             maxLength={TITLE_MAX}
-            placeholder="Prompt name"
+            placeholder={t("prompts.titlePh")}
             autoFocus
             disabled={saving}
             aria-describedby={error ? "nex-prompt-editor-error" : undefined}
@@ -351,7 +353,7 @@ function PromptEditor({
 
         <div className="nex-prompt-field">
           <label className="nex-prompt-label" htmlFor="nex-prompt-content-input">
-            Content
+            {t("prompts.contentLabel")}
           </label>
           <textarea
             id="nex-prompt-content-input"
@@ -371,7 +373,7 @@ function PromptEditor({
 
       <div className="nex-dialog-actions">
         <M3Button variant="quiet" onClick={onCancel} disabled={saving}>
-          Cancel
+          {t("common.cancel")}
         </M3Button>
         <M3Button
           variant="primary"
@@ -382,7 +384,7 @@ function PromptEditor({
           }
           onClick={onSave}
         >
-          {editor.editing ? "Save changes" : "Create prompt"}
+          {editor.editing ? t("prompts.saveChanges") : t("prompts.createPrompt")}
         </M3Button>
       </div>
     </ModalShell>

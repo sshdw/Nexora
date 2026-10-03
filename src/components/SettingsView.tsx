@@ -3,6 +3,8 @@ import { useEffect, useMemo, useState } from "react";
 import { scoreCommand } from "../lib/commands";
 import type { AutonomyMode, SupportedProvider } from "../lib/tauri";
 import { clearApplicationData, getSetting, setSetting } from "../lib/tauri";
+import { getLocale, settingsSearchTitle, tp, tr, type Locale, type StringKey } from "../lib/strings";
+import { useStrings } from "../lib/useLocale";
 import type { AppearanceStore } from "../lib/useAppearance";
 import { isCustomModelId, type ProvidersStore } from "../lib/useProviders";
 import type { SpendLimitStore } from "../lib/useSpendLimit";
@@ -55,14 +57,14 @@ const SECTION_ORDER: readonly SettingsSectionId[] = [
   "advanced",
 ];
 
-const SECTION_TITLES: Record<SettingsSectionId, string> = {
-  appearance: "Appearance",
-  provider: "Provider & model",
-  agent: "Agent & budgets",
-  workspace: "Workspace folder",
-  credentials: "Credentials",
-  data: "Data management",
-  advanced: "Advanced",
+const SECTION_TITLES: Record<SettingsSectionId, StringKey> = {
+  appearance: "settings.sectionAppearance",
+  provider: "settings.sectionProvider",
+  agent: "settings.sectionAgent",
+  workspace: "settings.sectionWorkspace",
+  credentials: "settings.sectionCredentials",
+  data: "settings.sectionData",
+  advanced: "settings.sectionAdvanced",
 };
 
 /** The agent-autonomy default persisted for new runs (Task 5.2, DP-AUTONOMY).
@@ -74,10 +76,10 @@ const AUTONOMY_MODES: readonly AutonomyMode[] = [
   "semi_autonomous",
   "full_autonomous",
 ];
-const AUTONOMY_LABELS: Record<AutonomyMode, string> = {
-  supervised: "Supervised",
-  semi_autonomous: "Semi-autonomous",
-  full_autonomous: "Fully autonomous",
+const AUTONOMY_LABELS: Record<AutonomyMode, StringKey> = {
+  supervised: "settings.autonomySupervised",
+  semi_autonomous: "settings.autonomySemi",
+  full_autonomous: "settings.autonomyFull",
 };
 
 function isAutonomyMode(value: string | null): value is AutonomyMode {
@@ -94,27 +96,27 @@ function isAutonomyMode(value: string | null): value is AutonomyMode {
  * `self_audit` resolve but gate nothing yet. */
 const FLAG_DEFS: readonly {
   name: string;
-  description: string;
+  descriptionKey: StringKey;
   enforced: boolean;
 }[] = [
   {
     name: "snapshots",
-    description: "Run snapshot capture, checkpoints, and rollback.",
+    descriptionKey: "settings.flagSnapshots",
     enforced: false,
   },
   {
     name: "self_audit",
-    description: "Self-audit outcome recording on the audit trail.",
+    descriptionKey: "settings.flagSelfAudit",
     enforced: false,
   },
   {
     name: "injection",
-    description: "Untrusted-output envelopes and the marker-scan approval hold.",
+    descriptionKey: "settings.flagInjection",
     enforced: true,
   },
   {
     name: "assembly",
-    description: "Budgeted smart context assembly of the run opening.",
+    descriptionKey: "settings.flagAssembly",
     enforced: true,
   },
 ];
@@ -147,16 +149,16 @@ function parseRecentList(raw: string | null): string[] {
   }
 }
 
-function summarizeRoutingProfile(raw: string | null): string {
-  if (raw === null) return "Not set — the default provider order applies.";
+function summarizeRoutingProfile(raw: string | null, locale: Locale = getLocale()): string {
+  if (raw === null) return tr(locale, "settings.routingUnset");
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return "The stored value is not valid JSON — the default order applies.";
+    return tr(locale, "settings.routingBadJson");
   }
   if (!Array.isArray(parsed) || parsed.length === 0) {
-    return "Not set — the default provider order applies.";
+    return tr(locale, "settings.routingUnset");
   }
   const names = parsed
     .map((entry) => {
@@ -169,20 +171,24 @@ function summarizeRoutingProfile(raw: string | null): string {
     })
     .filter((name): name is string => name !== null);
   const shown = names.slice(0, 4).join(", ");
-  const extra = names.length > 4 ? ` (+${names.length - 4} more)` : "";
-  return `${parsed.length} ${parsed.length === 1 ? "entry" : "entries"}${shown ? `: ${shown}${extra}` : ""}.`;
+  const extra = names.length > 4 ? tr(locale, "settings.summaryExtra", { n: names.length - 4 }) : "";
+  const details = shown ? `: ${shown}${extra}` : "";
+  return tr(locale, "settings.routingSummary", {
+    count: tp(locale, "entries", parsed.length),
+    details,
+  });
 }
 
-function summarizeMcpServers(raw: string | null): string {
-  if (raw === null) return "Not set — no external tool servers configured.";
+function summarizeMcpServers(raw: string | null, locale: Locale = getLocale()): string {
+  if (raw === null) return tr(locale, "settings.mcpUnset");
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return "The stored value is not valid JSON — it is ignored.";
+    return tr(locale, "settings.mcpBadJson");
   }
-  if (!Array.isArray(parsed)) return "The stored value is not a server list — it is ignored.";
-  if (parsed.length === 0) return "Empty list — no external tool servers configured.";
+  if (!Array.isArray(parsed)) return tr(locale, "settings.mcpNotList");
+  if (parsed.length === 0) return tr(locale, "settings.mcpEmpty");
   const names = parsed
     .map((entry) => {
       if (typeof entry !== "object" || entry === null) return null;
@@ -191,8 +197,12 @@ function summarizeMcpServers(raw: string | null): string {
     })
     .filter((name): name is string => name !== null);
   const shown = names.slice(0, 5).join(", ");
-  const extra = names.length > 5 ? ` (+${names.length - 5} more)` : "";
-  return `${parsed.length} ${parsed.length === 1 ? "server" : "servers"}${shown ? `: ${shown}${extra}` : ""}.`;
+  const extra = names.length > 5 ? tr(locale, "settings.summaryExtra", { n: names.length - 5 }) : "";
+  const details = shown ? `: ${shown}${extra}` : "";
+  return tr(locale, "settings.mcpSummary", {
+    count: tp(locale, "servers", parsed.length),
+    details,
+  });
 }
 
 /** One searchable settings entry: a group title or an individual key label
@@ -242,6 +252,10 @@ export interface SettingsViewProps {
   store: ProvidersStore;
   /** Persisted appearance preference lifted in App so it loads at startup. */
   appearance: AppearanceStore;
+  /** Interface-language preference lifted in App (persisted, EN default). */
+  locale: Locale;
+  /** Persist a language selection. */
+  onLocaleChange: (locale: Locale) => void;
   /** Current agent workspace root (1.3.0, read-only here; change via sidebar). */
   workspaceRoot: string | null;
   workspaceLoading: boolean;
@@ -263,6 +277,8 @@ export default function SettingsView({
   onClose,
   store,
   appearance,
+  locale,
+  onLocaleChange,
   workspaceRoot,
   workspaceLoading,
   spendLimit,
@@ -272,6 +288,7 @@ export default function SettingsView({
   onExportActive,
   onReplayOnboarding,
 }: SettingsViewProps) {
+  const { t } = useStrings();
   const [section, setSection] = useState<SettingsSectionId>(initialSection);
   // Palette deep links retarget an already-mounted panel: follow
   // initialSection instead of pinning the first mount value.
@@ -331,7 +348,7 @@ export default function SettingsView({
         setFlagValues(nextFlags);
       } catch {
         if (!cancelled) {
-          setAdvancedError("Unable to load advanced settings.");
+          setAdvancedError(tr(getLocale(), "settings.advancedLoadFail"));
           setRecentFolders([]);
         }
       }
@@ -371,6 +388,7 @@ export default function SettingsView({
 
   // Search index: static group/key entries plus one entry per registered
   // provider (by name and display name) for the provider + credentials groups.
+  // Titles render in the UI locale (keywords stay English matching aids).
   const searchEntries = useMemo<SettingsSearchEntry[]>(() => {
     const dynamic: SettingsSearchEntry[] = [];
     for (const { supported } of store.providers) {
@@ -381,12 +399,18 @@ export default function SettingsView({
       });
       dynamic.push({
         group: "credentials",
-        title: `${supported.display_name} API key`,
+        title: tr(locale, "settings.apiKeySearchTitle", { name: supported.display_name }),
         keywords: [supported.name, supported.display_name, "api key", "key"],
       });
     }
-    return [...STATIC_SEARCH_ENTRIES, ...dynamic];
-  }, [store.providers]);
+    return [
+      ...STATIC_SEARCH_ENTRIES.map((entry) => ({
+        ...entry,
+        title: settingsSearchTitle(locale, entry.title),
+      })),
+      ...dynamic,
+    ];
+  }, [store.providers, locale]);
 
   // Search matches whole groups (by group title, key label, or keyword) using
   // the palette subsequence scorer. Null = empty query: show all structure.
@@ -495,7 +519,7 @@ export default function SettingsView({
       setAutonomyError(
         typeof e === "object" && e !== null && "message" in e
           ? String((e as { message: unknown }).message)
-          : "Unable to save the autonomy mode.",
+          : tr(getLocale(), "settings.autonomySaveFail"),
       );
     }
   };
@@ -511,7 +535,7 @@ export default function SettingsView({
       setFlagsError(
         typeof e === "object" && e !== null && "message" in e
           ? String((e as { message: unknown }).message)
-          : `Unable to save the ${name} flag.`,
+          : tr(getLocale(), "settings.flagSaveFail", { name }),
       );
     } finally {
       setFlagsSaving(null);
@@ -546,7 +570,7 @@ export default function SettingsView({
   const handleClearData = async () => {
     if (clearing) return;
     if (clearPhrase !== CLEAR_CONFIRMATION_PHRASE) {
-      setClearError(`Type "${CLEAR_CONFIRMATION_PHRASE}" to confirm.`);
+      setClearError(tr(getLocale(), "settings.clearMismatch", { phrase: CLEAR_CONFIRMATION_PHRASE }));
       return;
     }
     setClearing(true);
@@ -563,7 +587,7 @@ export default function SettingsView({
       setClearError(
         typeof e === "object" && e !== null && "message" in e
           ? String((e as { message: unknown }).message)
-          : "Unable to clear application data.",
+          : tr(getLocale(), "settings.clearFail"),
       );
     } finally {
       setClearing(false);
@@ -575,27 +599,43 @@ export default function SettingsView({
       return (
         <section key={id} className="nex-settings-section" aria-labelledby="appearance-heading">
           <h3 id="appearance-heading" className="nex-settings-heading">
-            Appearance
+            {t("settings.sectionAppearance")}
           </h3>
           <p className="nex-settings-hint">
-            Visual theme for this device. Applied immediately and persisted between
-            sessions.
+            {t("settings.appearanceHint")}
           </p>
           <div className="nex-settings-field">
             <span className="nex-settings-label" id="theme-label">
-              Theme
+              {t("settings.themeLabel")}
             </span>
             <M3SegmentedGroup
               labelledBy="theme-label"
               value={appearance.theme}
               onChange={(theme) => void appearance.setTheme(theme)}
               options={[
-                { value: "dark", label: "Dark" },
-                { value: "light", label: "Light" },
+                { value: "dark", label: t("settings.themeDark") },
+                { value: "light", label: t("settings.themeLight") },
               ]}
             />
             <p className="nex-settings-hint">
-              The light theme is provisional — the final palette is still open.
+              {t("settings.themeProvisional")}
+            </p>
+          </div>
+          <div className="nex-settings-field">
+            <span className="nex-settings-label" id="language-label">
+              {t("settings.languageLabel")}
+            </span>
+            <M3SegmentedGroup
+              labelledBy="language-label"
+              value={locale}
+              onChange={onLocaleChange}
+              options={[
+                { value: "en", label: t("settings.langEn") },
+                { value: "ru", label: t("settings.langRu") },
+              ]}
+            />
+            <p className="nex-settings-hint">
+              {t("settings.languageHint")}
             </p>
           </div>
         </section>
@@ -606,20 +646,18 @@ export default function SettingsView({
       return (
         <section key={id} className="nex-settings-section" aria-labelledby="selection-heading">
           <h3 id="selection-heading" className="nex-settings-heading">
-            Provider &amp; model
+            {t("settings.sectionProvider")}
           </h3>
           <p className="nex-settings-hint">
-            Choose which provider and model new requests use. Providers must be
-            connected with a credential before they can serve requests.
+            {t("settings.providerHint")}
           </p>
           <p className="nex-settings-hint">
-            Model options come from the backend&apos;s supported list; the static
-            August 2026 catalog doc may be stale.
+            {t("settings.providerStaleHint")}
           </p>
 
           <div className="nex-settings-field">
             <label className="nex-settings-label" htmlFor="provider-select">
-              Provider
+              {t("settings.providerLabel")}
             </label>
             <select
               id="provider-select"
@@ -628,12 +666,12 @@ export default function SettingsView({
               onChange={(event) => handleProviderChange(event.target.value)}
             >
               <option value="" disabled>
-                Select a provider
+                {t("settings.selectProvider")}
               </option>
               {store.providers.map(({ supported, available }) => (
                 <option key={supported.name} value={supported.name}>
                   {supported.display_name}
-                  {available ? " · Ready" : " · Not connected"}
+                  {available ? t("settings.readySuffix") : t("settings.notConnectedSuffix")}
                 </option>
               ))}
             </select>
@@ -641,7 +679,7 @@ export default function SettingsView({
 
           <div className="nex-settings-field">
             <label className="nex-settings-label" htmlFor="model-select">
-              Model
+              {t("settings.modelLabel")}
             </label>
             <select
               id="model-select"
@@ -651,7 +689,7 @@ export default function SettingsView({
               onChange={(event) => handleModelSelect(event.target.value)}
             >
               {selectedModels.length === 0 && (
-                <option value="">Select a provider first</option>
+                <option value="">{t("settings.selectProviderFirst")}</option>
               )}
               {selectedModels.map((model) => (
                 <option key={model} value={model}>
@@ -659,7 +697,7 @@ export default function SettingsView({
                 </option>
               ))}
               {selectedModels.length > 0 && (
-                <option value="__custom__">Custom…</option>
+                <option value="__custom__">{t("settings.customOpt")}</option>
               )}
             </select>
           </div>
@@ -667,14 +705,14 @@ export default function SettingsView({
           {customActive && selectedModels.length > 0 && (
             <div className="nex-settings-field">
               <label className="nex-settings-label" htmlFor="model-custom">
-                Custom model ID
+                {t("settings.customModelLabel")}
               </label>
               <input
                 id="model-custom"
                 className="nex-input"
                 type="text"
                 value={customValue}
-                placeholder="e.g. vendor/model-variant"
+                placeholder={t("settings.customModelPh")}
                 onChange={(event) => setCustomDraft(event.target.value)}
                 onBlur={commitCustom}
                 onKeyDown={(event) => {
@@ -683,9 +721,7 @@ export default function SettingsView({
                 }}
               />
               <p className="nex-settings-hint">
-                Listed ID or custom: 1–200 chars of A–Z a–z 0–9 . _ / : - +. Use
-                the exact model ID from your provider&apos;s model list or
-                dashboard.
+                {t("settings.customModelHint")}
               </p>
             </div>
           )}
@@ -697,15 +733,14 @@ export default function SettingsView({
       return (
         <section key={id} className="nex-settings-section" aria-labelledby="agent-heading">
           <h3 id="agent-heading" className="nex-settings-heading">
-            Agent &amp; budgets
+            {t("settings.sectionAgent")}
           </h3>
           <p className="nex-settings-hint">
-            The default autonomy for new agent runs, and the per-run spend
-            guard. The conversation header can still switch autonomy per run.
+            {t("settings.agentHint")}
           </p>
           <div className="nex-settings-field">
             <span className="nex-settings-label" id="autonomy-label">
-              Autonomy mode
+              {t("settings.autonomyLabel")}
             </span>
             <M3SegmentedGroup
               labelledBy="autonomy-label"
@@ -713,12 +748,11 @@ export default function SettingsView({
               onChange={(mode) => void handleAutonomyChange(mode)}
               options={AUTONOMY_MODES.map((mode) => ({
                 value: mode,
-                label: AUTONOMY_LABELS[mode],
+                label: t(AUTONOMY_LABELS[mode]),
               }))}
             />
             <p className="nex-settings-hint">
-              Supervised pauses for approval; semi-autonomous asks on risky
-              steps; fully autonomous runs to completion.
+              {t("settings.autonomyHint")}
             </p>
             {autonomyError && (
               <p className="nex-settings-error nex-fade-in" role="alert">
@@ -729,14 +763,14 @@ export default function SettingsView({
 
           <div className="nex-settings-field">
             <label className="nex-settings-label" htmlFor="spend-limit">
-              Run cost limit (micro-USD)
+              {t("settings.spendLabel")}
             </label>
             <input
               id="spend-limit"
               className="nex-input"
               type="text"
               value={spendValue}
-              placeholder="Empty = no limit"
+              placeholder={t("settings.spendPh")}
               onChange={(event) => setSpendDraft(event.target.value)}
               onBlur={commitSpendLimit}
               onKeyDown={(event) => {
@@ -745,7 +779,7 @@ export default function SettingsView({
               }}
             />
             <p className="nex-settings-hint">
-              Empty = no limit. 1 USD = 1000000 micro-USD. Applies to new runs.
+              {t("settings.spendHint")}
             </p>
             {spendLimit.error && (
               <p className="nex-settings-error nex-fade-in" role="alert">
@@ -761,24 +795,23 @@ export default function SettingsView({
       return (
         <section key={id} className="nex-settings-section" aria-labelledby="workspace-heading">
           <h3 id="workspace-heading" className="nex-settings-heading">
-            Workspace folder
+            {t("settings.sectionWorkspace")}
           </h3>
           <p className="nex-settings-hint">
-            The folder the agent&apos;s tools are scoped to. Change it from the
-            sidebar folder picker; the 5 most recent folders are kept there.
+            {t("settings.workspaceHint")}
           </p>
           <div className="nex-settings-field">
-            <span className="nex-settings-label">Current root</span>
+            <span className="nex-settings-label">{t("settings.currentRoot")}</span>
             <p className="nex-settings-value" title={workspaceRoot ?? ""}>
-              {workspaceLoading ? "Loading…" : (workspaceRoot ?? "Unset")}
+              {workspaceLoading ? t("common.loading") : (workspaceRoot ?? t("settings.unset"))}
             </p>
           </div>
           <div className="nex-settings-field">
-            <span className="nex-settings-label">Recent folders</span>
+            <span className="nex-settings-label">{t("settings.recentLabel")}</span>
             {recentFolders === null ? (
-              <p className="nex-settings-hint">Loading…</p>
+              <p className="nex-settings-hint">{t("common.loading")}</p>
             ) : recentFolders.length === 0 ? (
-              <p className="nex-settings-hint">No recent folders yet.</p>
+              <p className="nex-settings-hint">{t("settings.noRecent")}</p>
             ) : (
               recentFolders.map((folder) => (
                 <p key={folder} className="nex-settings-value" title={folder}>
@@ -795,11 +828,10 @@ export default function SettingsView({
       return (
         <section key={id} className="nex-settings-section" aria-labelledby="providers-heading">
           <h3 id="providers-heading" className="nex-settings-heading">
-            Provider credentials
+            {t("settings.searchProviderCreds")}
           </h3>
           <p className="nex-settings-hint">
-            API keys are stored in your operating system&rsquo;s secure keyring, never in the
-            database, and are never shown again after saving.
+            {t("settings.credentialsHint")}
           </p>
 
           <ul className="nex-provider-list">
@@ -822,10 +854,10 @@ export default function SettingsView({
                         aria-hidden="true"
                       />
                       {available
-                        ? "Connected"
+                        ? t("settings.connected")
                         : credentialed
-                          ? "Credential saved"
-                          : "Not connected"}
+                          ? t("settings.credentialSaved")
+                          : t("settings.notConnected")}
                     </span>
                   </span>
                 </div>
@@ -835,8 +867,8 @@ export default function SettingsView({
                     className="nex-input"
                     type="password"
                     autoComplete="new-password"
-                    placeholder={credentialed ? "Update API key" : "API key"}
-                    aria-label={`${supported.display_name} API key`}
+                    placeholder={credentialed ? t("settings.apiKeyUpdatePh") : t("settings.apiKeyPh")}
+                    aria-label={t("settings.apiKeyAria", { name: supported.display_name })}
                     aria-describedby={
                       store.error ? "nex-settings-store-error" : undefined
                     }
@@ -852,7 +884,7 @@ export default function SettingsView({
                     disabled={store.working || !(draftKeys[supported.name]?.trim())}
                     onClick={() => handleConnect(supported)}
                   >
-                    {credentialed ? "Update" : "Connect"}
+                    {credentialed ? t("settings.update") : t("settings.connect")}
                   </M3Button>
                   {credentialed && (
                     <M3Button
@@ -861,7 +893,7 @@ export default function SettingsView({
                       disabled={store.working}
                       onClick={() => handleDisconnect(supported)}
                     >
-                      Disconnect
+                      {t("settings.disconnect")}
                     </M3Button>
                   )}
                 </div>
@@ -876,26 +908,24 @@ export default function SettingsView({
       return (
         <section key={id} className="nex-settings-section" aria-labelledby="data-heading">
           <h3 id="data-heading" className="nex-settings-heading">
-            Data management
+            {t("settings.sectionData")}
           </h3>
           <p className="nex-settings-hint">
-            All application data lives in a single local SQLite database on this device.
-            Nothing is synchronized anywhere. Individual conversations and prompts are
-            managed from the sidebar and Prompt Library.
+            {t("settings.dataHint")}
           </p>
 
           {(onOpenImport || onExportActive) && (
             <div className="nex-settings-field">
-              <span className="nex-settings-label">Conversation transfer</span>
+              <span className="nex-settings-label">{t("settings.transfer")}</span>
               <div className="nex-provider-actions">
                 {onExportActive && (
                   <M3Button variant="primary" size="sm" onClick={onExportActive}>
-                    Export active conversation…
+                    {t("settings.exportActive")}
                   </M3Button>
                 )}
                 {onOpenImport && (
                   <M3Button variant="quiet" size="sm" onClick={onOpenImport}>
-                    Import conversation…
+                    {t("settings.importBtn")}
                   </M3Button>
                 )}
               </div>
@@ -903,21 +933,18 @@ export default function SettingsView({
           )}
 
           <div className="nex-danger-zone">
-            <h4 className="nex-danger-title">Clear all application data</h4>
+            <h4 className="nex-danger-title">{t("settings.dangerTitle")}</h4>
             <p className="nex-danger-text">
-              Permanently deletes every conversation, message, attachment and prompt stored
-              on this device, along with provider metadata and application settings.
-              Provider credentials in the operating system keyring are not affected. This
-              cannot be undone.
+              {t("settings.dangerText")}
             </p>
             {!confirmingClear ? (
               <M3Button variant="destructive" onClick={openClearConfirmation}>
-                Clear all data…
+                {t("settings.clearBtn")}
               </M3Button>
             ) : (
               <div className="nex-danger-confirm">
                 <label className="nex-settings-label" htmlFor="clear-confirm-input">
-                  Type &ldquo;{CLEAR_CONFIRMATION_PHRASE}&rdquo; to confirm
+                  {t("settings.clearConfirmLabel", { phrase: CLEAR_CONFIRMATION_PHRASE })}
                 </label>
                 <input
                   id="clear-confirm-input"
@@ -949,7 +976,7 @@ export default function SettingsView({
                     disabled={clearing}
                     onClick={cancelClearConfirmation}
                   >
-                    Cancel
+                    {t("common.cancel")}
                   </M3Button>
                   <M3Button
                     variant="destructive"
@@ -958,7 +985,7 @@ export default function SettingsView({
                     disabled={clearPhrase !== CLEAR_CONFIRMATION_PHRASE}
                     onClick={() => void handleClearData()}
                   >
-                    {clearing ? "Clearing…" : "Clear all data"}
+                    {clearing ? t("settings.clearing") : t("settings.clearAll")}
                   </M3Button>
                 </div>
               </div>
@@ -975,12 +1002,10 @@ export default function SettingsView({
     return (
       <section key={id} className="nex-settings-section" aria-labelledby="advanced-heading">
         <h3 id="advanced-heading" className="nex-settings-heading">
-          Advanced
+          {t("settings.sectionAdvanced")}
         </h3>
         <p className="nex-settings-hint">
-          Power keys for the 2.0 rollout and routing internals. Defaults apply
-          when a key is unset; clearing a key restores its default. Nothing
-          here is required for everyday use.
+          {t("settings.advancedHint")}
         </p>
         {advancedError && (
           <p className="nex-settings-error nex-fade-in" role="alert">
@@ -990,11 +1015,10 @@ export default function SettingsView({
 
         <div className="nex-settings-field">
           <span className="nex-settings-label" id="flags-label">
-            Feature flags
+            {t("settings.flagsLabel")}
           </span>
           <p className="nex-settings-hint">
-            App-global 2.0 rollout gates. A workspace flags file wins when
-            present; these keys decide otherwise.
+            {t("settings.flagsHint")}
           </p>
           {FLAG_DEFS.map((flag) => (
             <label key={flag.name} className="nex-flag-row" htmlFor={`flag-${flag.name}`}>
@@ -1008,9 +1032,9 @@ export default function SettingsView({
               />
               <span>
                 <span className="nex-provider-name">{flag.name}</span>{" "}
-                <span className="nex-tag">{flag.enforced ? "Enforced in runs" : "Resolved only"}</span>
+                <span className="nex-tag">{flag.enforced ? t("settings.enforced") : t("settings.resolvedOnly")}</span>
                 <span id={`flag-${flag.name}-hint`} className="nex-settings-hint">
-                  {" "}{flag.description}
+                  {" "}{t(flag.descriptionKey)}
                 </span>
               </span>
             </label>
@@ -1023,57 +1047,54 @@ export default function SettingsView({
         </div>
 
         <details className="nex-settings-details">
-          <summary>Routing profiles</summary>
+          <summary>{t("settings.routingTitle")}</summary>
           <p className="nex-settings-hint">
-            Explicit provider/model order for chat and agent tasks. Managed via
-            setup import; shown here read-only.
+            {t("settings.routingHint")}
           </p>
           <div className="nex-settings-field">
-            <span className="nex-settings-label">Chat profile (routing.profile.chat)</span>
+            <span className="nex-settings-label">{t("settings.chatProfile")}</span>
             <p className="nex-settings-value">
               {advancedValues === null
-                ? "Loading…"
-                : summarizeRoutingProfile(advancedValues[ROUTING_CHAT_KEY] ?? null)}
+                ? t("common.loading")
+                : summarizeRoutingProfile(advancedValues[ROUTING_CHAT_KEY] ?? null, locale)}
             </p>
           </div>
           <div className="nex-settings-field">
-            <span className="nex-settings-label">Agent profile (routing.profile.agent)</span>
+            <span className="nex-settings-label">{t("settings.agentProfile")}</span>
             <p className="nex-settings-value">
               {advancedValues === null
-                ? "Loading…"
-                : summarizeRoutingProfile(advancedValues[ROUTING_AGENT_KEY] ?? null)}
-            </p>
-          </div>
-        </details>
-
-        <details className="nex-settings-details">
-          <summary>MCP servers</summary>
-          <p className="nex-settings-hint">
-            External tool servers for agent runs. Managed via setup import;
-            shown here read-only.
-          </p>
-          <div className="nex-settings-field">
-            <span className="nex-settings-label">Servers (mcp.servers)</span>
-            <p className="nex-settings-value">
-              {advancedValues === null
-                ? "Loading…"
-                : summarizeMcpServers(advancedValues[MCP_SERVERS_KEY] ?? null)}
+                ? t("common.loading")
+                : summarizeRoutingProfile(advancedValues[ROUTING_AGENT_KEY] ?? null, locale)}
             </p>
           </div>
         </details>
 
         <details className="nex-settings-details">
-          <summary>Agent preset</summary>
+          <summary>{t("settings.mcpTitle")}</summary>
           <p className="nex-settings-hint">
-            Stored agent preset override. Unset means the built-in default
-            applies.
+            {t("settings.mcpHint")}
           </p>
           <div className="nex-settings-field">
-            <span className="nex-settings-label">Preset (agent.preset)</span>
+            <span className="nex-settings-label">{t("settings.mcpServers")}</span>
             <p className="nex-settings-value">
               {advancedValues === null
-                ? "Loading…"
-                : (advancedValues[PRESET_KEY] ?? "Not set — the built-in default applies.")}
+                ? t("common.loading")
+                : summarizeMcpServers(advancedValues[MCP_SERVERS_KEY] ?? null, locale)}
+            </p>
+          </div>
+        </details>
+
+        <details className="nex-settings-details">
+          <summary>{t("settings.presetTitle")}</summary>
+          <p className="nex-settings-hint">
+            {t("settings.presetHint")}
+          </p>
+          <div className="nex-settings-field">
+            <span className="nex-settings-label">{t("settings.presetLabel")}</span>
+            <p className="nex-settings-value">
+              {advancedValues === null
+                ? t("common.loading")
+                : (advancedValues[PRESET_KEY] ?? t("settings.presetUnset"))}
             </p>
           </div>
         </details>
@@ -1085,54 +1106,57 @@ export default function SettingsView({
     <div className="nex-settings nex-view-enter">
       <header className="nex-settings-header">
         <div className="nex-settings-heading-block">
-          <h2 className="nex-settings-title">Settings</h2>
+          <h2 className="nex-settings-title">{t("settings.title")}</h2>
           <p className="nex-settings-subtitle">
-            Preferences for this device. Everything stays local.
+            {t("settings.subtitle")}
           </p>
         </div>
         <M3Button variant="quiet" onClick={onClose}>
-          Back to conversations
+          {t("common.backToConversations")}
         </M3Button>
       </header>
 
       <div className="nex-settings-layout">
-        <nav className="nex-settings-nav" aria-label="Settings sections">
+        <nav className="nex-settings-nav" aria-label={t("settings.sectionsAria")}>
           <div className="nex-settings-search" role="search">
             <input
               className="nex-input"
               type="search"
               value={query}
-              placeholder="Search settings"
-              aria-label="Search settings"
+              placeholder={t("settings.searchPh")}
+              aria-label={t("settings.searchAria")}
               onChange={(event) => setQuery(event.target.value)}
               onKeyDown={handleSearchKeyDown}
             />
             {matches !== null && (
               <p className="nex-settings-result-count" role="status">
                 {matches.length === 0
-                  ? "No settings match."
-                  : `${matches.length} ${matches.length === 1 ? "group" : "groups"} match — Enter jumps to the best.`}
+                  ? t("settings.noMatch")
+                  : t("settings.matchCount", {
+                      n: matches.length,
+                      groups: tp(locale, "groups", matches.length),
+                    })}
               </p>
             )}
           </div>
           {SECTION_ORDER.map((id) => (
             <M3RailItem
               key={id}
-              label={SECTION_TITLES[id]}
+              label={t(SECTION_TITLES[id])}
               active={section === id}
               aria-current={section === id ? "page" : undefined}
               onClick={() => handleNavSelect(id)}
             >
-              {SECTION_TITLES[id]}
+              {t(SECTION_TITLES[id])}
             </M3RailItem>
           ))}
           {onReplayOnboarding && (
             <div className="nex-settings-replay">
               <M3RailItem
-                label="Replay onboarding walkthrough"
+                label={t("settings.replayLabel")}
                 onClick={onReplayOnboarding}
               >
-                Replay onboarding
+                {t("settings.replayText")}
               </M3RailItem>
             </div>
           )}
@@ -1148,12 +1172,10 @@ export default function SettingsView({
             {visibleSections.length === 0 ? (
               <section className="nex-settings-section" aria-labelledby="search-empty-heading">
                 <h3 id="search-empty-heading" className="nex-settings-heading">
-                  No matching settings
+                  {t("settings.searchEmptyTitle")}
                 </h3>
                 <p className="nex-settings-hint">
-                  Nothing matches &ldquo;{query.trim()}&rdquo;. Try a group name
-                  (appearance, provider, agent, workspace, credentials, data,
-                  advanced) or a key word (theme, model, budget, flag, routing).
+                  {t("settings.searchEmptyHint", { q: query.trim() })}
                 </p>
               </section>
             ) : (

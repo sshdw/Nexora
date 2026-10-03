@@ -1,5 +1,6 @@
 import M3RailItem from "./M3RailItem";
 import { BranchIcon } from "./icons";
+import { useStrings } from "../lib/useLocale";
 
 export interface VersionControlEntryProps {
   /** Whether the Version Control screen is currently open. */
@@ -13,14 +14,15 @@ export interface VersionControlEntryProps {
 // `aria-current` (not `aria-pressed`): this is a navigation destination,
 // matching the Settings / Prompt Library navigation semantics.
 export default function VersionControlEntry({ active = false, onClick }: VersionControlEntryProps) {
+  const { t } = useStrings();
   return (
     <M3RailItem
-      label="Version control"
+      label={t("nav.vcs")}
       icon={<BranchIcon />}
       active={active}
       onClick={onClick}
     >
-      Version Control
+      {t("nav.vcs")}
     </M3RailItem>
   );
 }
