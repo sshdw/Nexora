@@ -928,6 +928,9 @@ mod tests {
 
     #[test]
     fn lite_budgets_scale_proportionally_with_the_same_limit_function() {
+        // Live verification (GET /v1beta/models metadata, 2026-10-03): all 7
+        // Gemini IDs report inputTokenLimit=1048576, so both windows are
+        // verified 1M and budgets are correctly equal.
         let full = section_budgets(Some("gemini"), Some("gemini-3.6-flash"));
         let lite = section_budgets(Some("gemini"), Some("gemini-3.1-flash-lite"));
         assert_eq!(
@@ -938,7 +941,10 @@ mod tests {
             lite.usable,
             context_stats::GEMINI_LITE_CONTEXT_LIMIT - compaction::COMPACTION_RESERVED_TOKENS
         );
-        assert!(lite.usable < full.usable, "lite clamps the window");
+        assert_eq!(
+            lite.usable, full.usable,
+            "live verification 2026-10-03 (GET /v1beta/models, inputTokenLimit=1048576 on all 7 Gemini IDs): both windows are verified 1M, so budgets are equal"
+        );
 
         for (name, lite_budget, full_budget) in [
             (
@@ -955,9 +961,9 @@ mod tests {
                 full.history_summary,
             ),
         ] {
-            assert!(
-                lite_budget < full_budget,
-                "{name}: lite {lite_budget} must sit below full {full_budget}"
+            assert_eq!(
+                lite_budget, full_budget,
+                "{name}: lite {lite_budget} must equal full {full_budget} (live verification 2026-10-03: both windows verified 1M)"
             );
         }
         // Shares are pinned fractions of the usable window: cross-multiplied

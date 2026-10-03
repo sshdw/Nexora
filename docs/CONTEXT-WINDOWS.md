@@ -19,7 +19,7 @@ this order: per-model map first, then provider fallback, then a
 | OpenAI: `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.6-sol` | 128,000 tokens |
 | Anthropic: `claude-sonnet-5`, `claude-haiku-4-5-20251001`, `claude-opus-4-8` | 200,000 tokens |
 | Gemini (verified): `gemini-3.6-flash`, `gemini-3.1-pro-preview`, `gemini-pro-latest` | 1,048,576 tokens |
-| Gemini lite / unverified: `gemini-3.1-flash-lite`, `gemini-flash-lite-latest`, `gemini-3.5-flash`, `gemini-3.5-flash-lite` | 128,000 tokens (conservative baseline) |
+| Gemini lite (live-verified 2026-10-03): `gemini-3.1-flash-lite`, `gemini-flash-lite-latest`, `gemini-3.5-flash`, `gemini-3.5-flash-lite` | 1,048,576 tokens (verified, was 128,000 conservative baseline) |
 | Any other provider (`openai`, `anthropic`, `gemini` fallback) | Provider window above |
 | Unknown provider / unknown model | 128,000 tokens (default) |
 
@@ -28,11 +28,17 @@ proactive trigger, so unverified windows are clamped down, never up.
 
 ### Lite clamp rationale
 
-The lite/unverified Gemini IDs resolve to `GEMINI_LITE_CONTEXT_LIMIT`
+The lite/unverified Gemini IDs used to resolve to `GEMINI_LITE_CONTEXT_LIMIT`
 (128,000) instead of the full 1M window until live-verified against a
-real API. Raise a lite ID to its verified window only after live
-verification with real credentials — never from marketing claims or the
-research-only catalog. The section budgets derive from the same
+real API. Live-verified 2026-10-03 via the zero-token metadata endpoint
+(`GET https://generativelanguage.googleapis.com/v1beta/models/{modelId}`
+with the `x-goog-api-key` header, key read from the OS keyring through
+`CredentialStore` and never logged): all four lite IDs report
+`inputTokenLimit = 1048576` (`outputTokenLimit = 65536`), so
+`GEMINI_LITE_CONTEXT_LIMIT` is now `1_048_576`. The arm is kept separate
+from `GEMINI_CONTEXT_LIMIT` so a future re-verification that splits the
+data touches one place. Any model that errors or is unreachable stays
+clamped — report it as UNVERIFIED, keep 128k. The section budgets derive from the same
 resolution function, so a lite-clamped model automatically gets
 proportionally smaller budgets.
 
