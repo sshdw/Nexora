@@ -60,8 +60,12 @@
 //! - Spend Dashboard ([`spend`]): one read-only spend view over the persisted
 //!   budget counters (per-run steps/micro-USD/caps/ratios plus cross-run
 //!   totals); `&`-borrows only, secret-free by construction, zero new state.
+//! - Activity Feed ([`activity`]): one read-only aggregate over the persisted
+//!   run history (capped recent-run metadata rows plus cross-run spend
+//!   totals); `&`-borrows only, secret-free by construction, zero new state.
 
 pub mod action_memory;
+pub mod activity;
 pub mod approval;
 pub mod assembly;
 pub mod budget;

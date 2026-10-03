@@ -828,6 +828,52 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
       const steps = agentSteps.get(runId) ?? [];
       return [...steps].sort((a, b) => a.seq - b.seq);
     }
+    case "activity_feed": {
+      // Read-only aggregate mirror of the backend `activity_feed` command:
+      // capped secret-free run rows (newest first) plus cross-run totals.
+      // Rows deliberately omit `final_content`/`error` (secret-free rule).
+      const rawLimit = args.limit;
+      const parsed =
+        typeof rawLimit === "number" && Number.isFinite(rawLimit)
+          ? Math.floor(rawLimit)
+          : 50;
+      const count = Math.min(100, Math.max(1, parsed));
+      const ordered = [...agentRuns].sort((a, b) => b.started_at - a.started_at);
+      const runs = ordered.slice(0, count).map((r) => ({
+        run_id: r.id,
+        conversation_id: r.conversation_id,
+        model: r.model,
+        mode: r.mode,
+        status: r.status,
+        started_at: r.started_at,
+        finished_at: r.finished_at,
+        total_steps: r.total_steps,
+        spent_micro_usd: r.spent_micro_usd,
+        limit_micro_usd: r.limit_micro_usd,
+      }));
+      let totalSteps = 0;
+      let totalSpent = 0;
+      let withSpend = 0;
+      let withLimit = 0;
+      for (const r of agentRuns) {
+        totalSteps += r.total_steps;
+        if (r.spent_micro_usd !== null) {
+          totalSpent += r.spent_micro_usd;
+          withSpend++;
+        }
+        if (r.limit_micro_usd !== null) withLimit++;
+      }
+      return {
+        runs,
+        totals: {
+          runs: agentRuns.length,
+          total_steps: totalSteps,
+          total_spent_micro_usd: totalSpent,
+          runs_with_spend: withSpend,
+          runs_with_limit: withLimit,
+        },
+      };
+    }
     case "plugin:event|listen": {
       const event = String(args.event);
       const handler = args.handler as unknown as (ev: unknown) => void;

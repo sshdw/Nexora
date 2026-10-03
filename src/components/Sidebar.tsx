@@ -1,5 +1,6 @@
 import type { CommandError, Conversation } from "../lib/tauri";
 import type { WorkspaceStore } from "../lib/useWorkspace";
+import ActivityHealthEntry from "./ActivityHealthEntry";
 import ConversationList from "./ConversationList";
 import M3RailItem from "./M3RailItem";
 import NewConversationButton from "./NewConversationButton";
@@ -30,6 +31,9 @@ export interface SidebarProps {
   /** Whether the Version Control screen is currently shown. */
   vcsActive: boolean;
   onOpenVersionControl: () => void;
+  /** Whether the Activity & Health screen is currently shown. */
+  activityActive: boolean;
+  onOpenActivity: () => void;
   /** Open a prompt found by search in the Prompt Library editor. */
   onSelectPrompt: (promptId: number) => void;
   /** Open the import-conversation flow (FR-011). */
@@ -58,6 +62,8 @@ export default function Sidebar({
   onOpenPromptLibrary,
   vcsActive,
   onOpenVersionControl,
+  activityActive,
+  onOpenActivity,
   onSelectPrompt,
   onImport,
   onRename,
@@ -107,6 +113,7 @@ export default function Sidebar({
         <SettingsEntry onClick={onOpenSettings} />
         <PromptLibraryEntry active={libraryActive} onClick={onOpenPromptLibrary} />
         <VersionControlEntry active={vcsActive} onClick={onOpenVersionControl} />
+        <ActivityHealthEntry active={activityActive} onClick={onOpenActivity} />
         <WorkspaceFolderButton store={workspace} />
         <WorkspaceRecentList store={workspace} />
         {workspace.error && (

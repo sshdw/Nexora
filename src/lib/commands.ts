@@ -12,6 +12,9 @@
 //!                             ConversationTabs.tsx:174-203 strip actions
 //!   VCS actions ............ VersionControlPanel.tsx:235-237 Refresh,
 //!                             346-387 commit composer, 389-410 push
+//!   activity & health ....... ActivityHealthPanel.tsx (read-only feed +
+//!                             project snapshot; go.activity/go.health deep
+//!                             links raise the panel's tab request)
 //!   chat commands .......... ConversationView.tsx:463-469 composer Enter,
 //!                             497-511 Send button; App.tsx:233-245 create
 //!   settings sections ...... SettingsView GROUP MAP comment (7 groups)
@@ -74,6 +77,8 @@ export interface PaletteDeps {
   openSettings: (section?: PaletteSettingsSection) => void;
   openLibrary: () => void;
   openVcs: (request?: PaletteVcsRequest) => void;
+  /** Open the Activity & Health overlay on the requested tab. */
+  openActivity: (tab: "activity" | "health") => void;
   newConversation: () => void;
   openImport: () => void;
   exportActive: () => void;
@@ -111,6 +116,20 @@ export function buildCommands(deps: PaletteDeps): PaletteCommand[] {
       section: "Go",
       keywords: ["git", "vcs", "version control", "source control", "commits", "status"],
       run: () => deps.openVcs(),
+    },
+    {
+      id: "go.activity",
+      title: "Go to Activity feed",
+      section: "Go",
+      keywords: ["activity", "feed", "runs", "history", "recent", "agent runs", "timeline"],
+      run: () => deps.openActivity("activity"),
+    },
+    {
+      id: "go.health",
+      title: "Go to Project health",
+      section: "Go",
+      keywords: ["health", "status", "providers", "budget", "spend", "cost", "context", "git", "flags"],
+      run: () => deps.openActivity("health"),
     },
     {
       id: "go.settings",

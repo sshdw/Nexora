@@ -38,6 +38,9 @@
 //!     (universal "help" key; preventDefault suppresses browser help).
 //!     Chords (e.g. Ctrl+K Ctrl+S) are intentionally unsupported: every
 //!     shortcut is a single key press with modifiers.
+//!   - Ctrl+Shift+A / Ctrl+Shift+H (activity/health): the Ctrl map owns only
+//!     Tab/PageUp/PageDown (+ palette K/P, help //?) and Ctrl+Shift+Tab is
+//!     owned by tabs.prev — A/H with Ctrl+Shift are unbound, collision-free.
 //!
 //! Out of scope (deferred, documented): user-customizable bindings. The
 //! registry shape (stable ids + combo definitions) is designed so a future
@@ -129,6 +132,12 @@ export const COMBO_TAB_JUMP_GUARD: ShortcutCombo = { key: "", ctrl: false, alt: 
 export const COMBO_HELP_SLASH: ShortcutCombo = { key: "/", ctrl: true, alt: false, meta: false, shift: "any" };
 export const COMBO_HELP_QUESTION: ShortcutCombo = { key: "?", ctrl: true, alt: false, meta: false, shift: "any" };
 export const COMBO_HELP_F1: ShortcutCombo = { key: "F1", ctrl: false, alt: false, meta: false, shift: "any" };
+/** Ctrl+Shift+A / Ctrl+Shift+H (activity/health): the Ctrl map owns only
+ * Tab/PageUp/PageDown (+ palette K/P, help //?), and Ctrl+Shift+Tab is
+ * owned by tabs.prev — A/H with Ctrl+Shift are unbound, collision-free.
+ * `ci` matches the "A"/"H" key value Shift produces. */
+export const COMBO_ACTIVITY_OPEN: ShortcutCombo = { key: "a", ctrl: true, alt: false, meta: false, shift: true, ci: true };
+export const COMBO_HEALTH_OPEN: ShortcutCombo = { key: "h", ctrl: true, alt: false, meta: false, shift: true, ci: true };
 
 // --- The inventory (100% of the Phase-1 grep — see module header). ----------
 
@@ -151,6 +160,25 @@ export const SHORTCUTS: readonly ShortcutEntry[] = [
     description: "Open this keyboard-shortcuts reference",
     source: "App.tsx (shortcuts-dialog effect, added with the registry)",
     combos: [COMBO_HELP_SLASH, COMBO_HELP_QUESTION, COMBO_HELP_F1],
+  },
+  // Go (navigation destinations).
+  {
+    id: "go.activity",
+    keys: ["Ctrl+Shift+A"],
+    group: "Go",
+    scope: "Global (any focus, no open dialog)",
+    description: "Open the Activity feed",
+    source: "App.tsx (activity-health effect)",
+    combos: [COMBO_ACTIVITY_OPEN],
+  },
+  {
+    id: "go.health",
+    keys: ["Ctrl+Shift+H"],
+    group: "Go",
+    scope: "Global (any focus, no open dialog)",
+    description: "Open the Project health view",
+    source: "App.tsx (activity-health effect)",
+    combos: [COMBO_HEALTH_OPEN],
   },
   // Tabs.
   {

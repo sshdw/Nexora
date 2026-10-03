@@ -3,6 +3,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import CommandPalette from "./components/CommandPalette";
 import ConversationTabs, { type TabEntry } from "./components/ConversationTabs";
 import ConversationView from "./components/ConversationView";
+import ActivityHealthPanel, {
+  type ActivityHealthTab,
+} from "./components/ActivityHealthPanel";
 import EmptyState from "./components/EmptyState";
 import { ExportIcon } from "./components/icons";
 import { ExportModal, ImportModal } from "./components/ImportExportModals";
@@ -25,6 +28,8 @@ import {
   type PaletteVcsRequest,
 } from "./lib/commands";
 import {
+  COMBO_ACTIVITY_OPEN,
+  COMBO_HEALTH_OPEN,
   COMBO_HELP_F1,
   COMBO_HELP_QUESTION,
   COMBO_HELP_SLASH,
@@ -214,6 +219,15 @@ function App() {
     token: number;
     action: PaletteVcsRequest;
   } | null>(null);
+  // Activity & Health screen (read-only feed + project snapshot): ONE overlay
+  // area with two tabs — a single rail entry opens it; palette/shortcuts
+  // deep-link the tab via the request token (same pattern as vcsRequest).
+  const [activityOpen, setActivityOpen] = useState(false);
+  const [activityTab, setActivityTab] = useState<ActivityHealthTab>("activity");
+  const [activityRequest, setActivityRequest] = useState<{
+    token: number;
+    tab: ActivityHealthTab;
+  } | null>(null);
   const mainRef = useRef<HTMLDivElement>(null);
 
   const draftFor = useCallback(
@@ -263,6 +277,7 @@ function App() {
     setLibraryOpen(false);
     setSettingsOpen(false);
     setVcsOpen(false);
+    setActivityOpen(false);
   };
 
   // Leading-edge guard for conversation creation: synchronous rapid clicks on
@@ -278,6 +293,7 @@ function App() {
         tabs.open(id);
         setLibraryOpen(false);
         setVcsOpen(false);
+        setActivityOpen(false);
       }    } finally {
       creatingInFlight.current = false;
     }
@@ -289,6 +305,7 @@ function App() {
     // Opening a conversation (including from a search result) leaves Settings.
     setSettingsOpen(false);
     setVcsOpen(false);
+    setActivityOpen(false);
   };
 
   const openSettings = useCallback((section?: PaletteSettingsSection) => {
@@ -296,6 +313,7 @@ function App() {
     setSettingsOpen(true);
     setLibraryOpen(false);
     setVcsOpen(false);
+    setActivityOpen(false);
   }, []);
   const openLibrary = useCallback(() => {
     // A fresh entry to the library opens the list, not a previously staged edit.
@@ -303,6 +321,7 @@ function App() {
     setLibraryOpen(true);
     setSettingsOpen(false);
     setVcsOpen(false);
+    setActivityOpen(false);
   }, []);
   const closeLibrary = () => {
     setLibraryOpen(false);
@@ -313,9 +332,23 @@ function App() {
     setVcsOpen(true);
     setLibraryOpen(false);
     setSettingsOpen(false);
+    setActivityOpen(false);
   }, []);
   const closeVcs = () => {
     setVcsOpen(false);
+  };
+  const openActivity = useCallback((tab: ActivityHealthTab = "activity") => {
+    // Deep links always retarget the tab (even when already open): the
+    // token identifies the request so re-renders never replay it.
+    setActivityTab(tab);
+    setActivityRequest({ token: Date.now(), tab });
+    setActivityOpen(true);
+    setLibraryOpen(false);
+    setSettingsOpen(false);
+    setVcsOpen(false);
+  }, []);
+  const closeActivity = () => {
+    setActivityOpen(false);
   };
 
   // Open a prompt found by search: show the Prompt Library and open the selected
@@ -325,6 +358,7 @@ function App() {
     setLibraryOpen(true);
     setPromptToEditId(promptId);
     setVcsOpen(false);
+    setActivityOpen(false);
   };
 
   // FR-007 "Use": stage the prompt's content into the active pane's composer,
@@ -354,12 +388,13 @@ function App() {
   }, []);
 
   // Overlay-exit contract shared by tab mutations and palette commands:
-  // switching surface closes Settings/Library/VCS (same as clicking a
+  // switching surface closes Settings/Library/VCS/Activity (same as clicking a
   // tab or sidebar row — overlays never sit above a switched tab).
   const closeOverlays = useCallback(() => {
     setLibraryOpen(false);
     setSettingsOpen(false);
     setVcsOpen(false);
+    setActivityOpen(false);
   }, []);
 
   // Focus the active pane's composer (palette "Focus message input"):
@@ -368,6 +403,7 @@ function App() {
     setLibraryOpen(false);
     setSettingsOpen(false);
     setVcsOpen(false);
+    setActivityOpen(false);
     window.setTimeout(() => {
       document
         .querySelector<HTMLTextAreaElement>(".nex-composer-input")
@@ -526,6 +562,27 @@ function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
+  // Activity & Health shortcuts (go.activity / go.health — Ctrl+Shift+A/H):
+  // same guarded pattern as the shortcuts dialog (open from anywhere,
+  // including typing targets — the combos insert no text — while an open
+  // dialog still owns the keyboard). Deep links retarget the tab even when
+  // the panel is already open.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (
+        !matchesAnyCombo(event, [COMBO_ACTIVITY_OPEN, COMBO_HEALTH_OPEN])
+      ) {
+        return;
+      }
+      if (document.querySelector('[role="dialog"]') !== null) return;
+      event.preventDefault();
+      if (matchesCombo(event, COMBO_HEALTH_OPEN)) openActivity("health");
+      else openActivity("activity");
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [openActivity]);
+
   // The palette registry: every entry wraps the existing UI handler, so
   // invoking from the palette === clicking its UI equivalent.
   const paletteCommands = useMemo(
@@ -535,6 +592,7 @@ function App() {
         openSettings,
         openLibrary,
         openVcs,
+        openActivity,
         newConversation: () => void handleNewConversation(),
         openImport: () => setImportOpen(true),
         exportActive: exportActiveConversation,
@@ -565,6 +623,7 @@ function App() {
       openSettings,
       openLibrary,
       openVcs,
+      openActivity,
       handleNewConversation,
       exportActiveConversation,
       focusComposer,
@@ -611,7 +670,8 @@ function App() {
   };
   // A prompt can only be staged when a conversation is open.
   const hasActiveConversation = activeConversation != null;
-  const showOverlays = libraryOpen || settingsOpen || vcsOpen;
+  const showOverlays =
+    libraryOpen || settingsOpen || vcsOpen || activityOpen;
   // The split grid stays mounted in zen (the secondary pane hides via
   // .nex-zen CSS, same technique as the zen chrome rules) so both
   // ConversationView instances survive entering/exiting zen. Split
@@ -719,6 +779,8 @@ function App() {
         onOpenPromptLibrary={openLibrary}
         vcsActive={vcsOpen}
         onOpenVersionControl={openVcs}
+        activityActive={activityOpen}
+        onOpenActivity={() => openActivity("activity")}
         onSelectPrompt={handleSelectPrompt}
         onImport={() => setImportOpen(true)}
         onRename={rename}
@@ -738,6 +800,7 @@ function App() {
               setLibraryOpen(false);
               setSettingsOpen(false);
               setVcsOpen(false);
+              setActivityOpen(false);
             }}
             onClose={tabs.close}
             onNewConversation={() => void handleNewConversation()}
@@ -768,6 +831,13 @@ function App() {
               />
             ) : vcsOpen ? (
               <VersionControlPanel onClose={closeVcs} request={vcsRequest} />
+            ) : activityOpen ? (
+              <ActivityHealthPanel
+                onClose={closeActivity}
+                initialTab={activityTab}
+                tabRequest={activityRequest}
+                activeConversationId={tabs.activeId}
+              />
             ) : (
               <SettingsView
                 store={providers}

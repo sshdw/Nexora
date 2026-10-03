@@ -34,6 +34,7 @@ use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::application::agent::activity::ActivityFeed;
 use crate::application::agent::approval::AutonomyMode;
 use crate::application::agent::inspect::RunInspection;
 use crate::application::agent::permissions::{self, PermissionRule, RuleEffect};
@@ -526,6 +527,31 @@ pub(crate) fn spend_dashboard(
     }
 }
 
+/// Read-only activity feed: capped recent-run metadata rows (newest first)
+/// plus cross-run spend totals, in one round trip.
+///
+/// This is the single additive batch command for the activity/health view:
+/// it merges two pre-existing repository reads (recency-ordered runs +
+/// spend totals) the frontend could otherwise only reach via an N+1
+/// `list_agent_runs` fan-out plus an anchor-dependent `spend_dashboard`.
+/// `limit` clamps to `1..=100` server-side (`None` = 50); clamping is never
+/// an error. Secret-free by construction: rows carry ids, fixed-vocabulary
+/// labels, counters, and timestamps only — never `final_content`, `error`
+/// text, credentials, or SQL.
+///
+/// # Errors
+///
+/// Returns a classified [`CommandError`] for persistence failures
+/// (`Database`, via the shared mapping).
+#[tauri::command]
+pub(crate) fn activity_feed(
+    limit: Option<u32>,
+    db: State<'_, Database>,
+) -> Result<ActivityFeed, CommandError> {
+    crate::application::agent::activity::activity_feed_for(db.inner(), limit)
+        .map_err(CommandError::from)
+}
+
 /// Add one persistent permission rule (M1-core).
 ///
 /// `preset` is `coding`/`document`/`*`; `tool_pattern` is a tool name or `*`
@@ -982,7 +1008,7 @@ mod tests {
     /// no missing key.
     #[test]
     fn agent_command_arg_keys_match_rust_params() {
-        const AGENT_COMMANDS: [(&str, &[&str]); 14] = [
+        const AGENT_COMMANDS: [(&str, &[&str]); 15] = [
             (
                 "start_agent_run",
                 &["conversationId", "content", "provider", "model"],
@@ -997,6 +1023,7 @@ mod tests {
             ("list_agent_steps", &["runId"]),
             ("inspect_run", &["runId"]),
             ("spend_dashboard", &["runId"]),
+            ("activity_feed", &["limit"]),
             ("agent_set_mode", &["runId", "mode"]),
             ("pause_agent_run", &["runId"]),
             ("resume_agent_run", &["runId"]),
