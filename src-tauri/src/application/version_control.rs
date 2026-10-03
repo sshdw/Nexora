@@ -1,29 +1,39 @@
-//! Read-only git inspection for the opened workspace (application layer).
+//! Git inspection plus guarded write operations for the opened workspace
+//! (application layer).
 //!
-//! This module owns the git read path behind the two thin `git_info` /
-//! `git_file_diff` IPC commands (one feature area, minimal surface): status
-//! (changed/staged/untracked files), recent commits, and per-file unified
-//! diffs. Everything is read-only — no staging, committing, pushing, branch
-//! ops, or writes of any kind — and everything is scoped to the enclosing
-//! repository of the canonical workspace root:
+//! This module owns the git path behind the thin `git_info` / `git_file_diff`
+//! IPC commands (one feature area, minimal surface) plus the write commands
+//! `git_stage` / `git_unstage` / `git_commit` / `git_push` and the
+//! AI-generated commit message (`git_generate_commit_message`):
 //!
-//! - The workspace root is canonicalized first; [`git2::Repository::discover`]
-//!   finds the enclosing repository upward from there. A workspace outside
-//!   any repository refuses with [`VersionControlError::NotARepository`], and
-//!   bare repositories (no workdir) refuse the same way.
-//! - The only caller-supplied path (the diff `path` argument) goes through
-//!   the `project_dir` guard pattern: lexical validation (no absolute paths,
-//!   no parent references, no `.git` components, no null bytes, bounded
-//!   length), a lexical [`is_within_workspace`](crate::application::agent::tools::is_within_workspace)
-//!   prefix check against the canonical repository workdir, and a
-//!   canonicalize-and-recheck backstop for symlinks (including symlinked
-//!   intermediate directories, resolved via the nearest existing ancestor).
-//!   Traversal attempts fail with [`VersionControlError::InvalidPath`].
+//! - Reads: status (changed/staged/untracked files), recent commits, and
+//!   per-file unified diffs. Everything read-only is unchanged from the base.
+//! - Writes: staging, unstaging, committing (author = local git config only),
+//!   and pushing to the preconfigured `origin` remote. There is no pull/fetch,
+//!   branch, merge, rebase, stash, or amend-of-others path here.
+//! - Everything is scoped to the enclosing repository of the canonical
+//!   workspace root, with the same guards as the read path (lexical path
+//!   validation, workspace-prefix check, symlink-ancestor backstop,
+//!   fixed-vocabulary [`VersionControlError`]).
+//! - Every write requires an explicit per-call `confirmed` flag and refuses
+//!   with [`VersionControlError::Unconfirmed`] without it. Gate-reuse note:
+//!   the agent [`ApprovalGate`](crate::application::agent::approval::ApprovalGate)
+//!   governs in-flight agent tool calls (it parks a live run until a user
+//!   resolves it); a direct IPC command has no run, no park, and no autonomy
+//!   mode to consult, so the gate object cannot apply. Direct IPC therefore
+//!   reuses the established destructive-action pattern instead — the explicit
+//!   confirmation gate from data management (`confirmed: true` per call,
+//!   surfacing as [`CommandError`](crate::commands::error::CommandError)
+//!   `ConfirmationRequired`) — rather than inventing a parallel mechanism.
+//! - Push is never forced: the push path builds a plain
+//!   `refs/heads/<branch>:refs/heads/<branch>` refspec with no `+` prefix and
+//!   no `--force` flag exists anywhere in this module (a test asserts the
+//!   source contains no force flag). Only the fixed allowlist remote
+//!   (`origin`) is accepted; arbitrary remotes/URLs are refused with
+//!   [`VersionControlError::InvalidRemote`].
 //! - Failures are secret-free: [`VersionControlError`] carries no payload, so
 //!   formatting it can never leak diff content (which may contain user
-//!   secrets), credentials, SQL, or file content. The command layer maps it to
-//!   fixed-vocabulary [`CommandError`](crate::commands::error::CommandError)
-//!   text and deliberately logs no git internals.
+//!   secrets), credentials, SQL, or file content.
 //! - Diffs are capped at [`MAX_DIFF_BYTES`] (256 KiB) with a `truncated` flag;
 //!   binary content is detected by a null byte and reported as `binary` with
 //!   an empty diff rather than guessed as text.
@@ -36,7 +46,11 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::application::agent::tools::is_within_workspace;
+use crate::application::execution::{AiMessage, AiRequest, AiRole, RequestError};
 use crate::application::workspace::strip_verbatim;
+use crate::infrastructure::database::Database;
+
+use super::agent::runner::DEFAULT_REQUEST_TIMEOUT;
 
 /// Largest per-file diff returned before it is truncated with a notice.
 pub(crate) const MAX_DIFF_BYTES: usize = 256 * 1024;
@@ -55,7 +69,29 @@ pub(crate) const MAX_STATUS_FILES: usize = 500;
 /// Longest diff `path` argument accepted (matches the workspace-root bound).
 const MAX_PATH_LEN: usize = 1024;
 
-/// Secret-free failures for read-only git inspection.
+/// Longest commit message accepted, in characters (subject plus body).
+pub(crate) const MAX_COMMIT_MESSAGE_LEN: usize = 500;
+
+/// Longest commit subject (first line) accepted, in characters.
+pub(crate) const MAX_COMMIT_SUBJECT_LEN: usize = 100;
+
+/// Most paths accepted in one stage/unstage batch.
+pub(crate) const MAX_STAGE_PATHS: usize = 500;
+
+/// Cap for the staged-diff summary fed to the commit-message prompt.
+pub(crate) const MAX_COMMIT_PROMPT_BYTES: usize = 64 * 1024;
+
+/// The only remote [`git_push`] may target. The command takes the remote name
+/// and validates it against this fixed allowlist: arbitrary remotes and URLs
+/// can never reach the push path.
+pub(crate) const ALLOWED_PUSH_REMOTE: &str = "origin";
+
+/// Fixed-vocabulary commit types accepted by [`is_conventional_message`].
+const COMMIT_TYPES: [&str; 11] = [
+    "feat", "fix", "docs", "style", "refactor", "perf", "test", "build", "ci", "chore", "revert",
+];
+
+/// Secret-free failures for git inspection and guarded writes.
 ///
 /// Every variant renders as fixed category text: formatting a
 /// [`VersionControlError`] can never leak diff content, a credential, SQL, or
@@ -67,7 +103,13 @@ pub(crate) enum VersionControlError {
     /// A caller-supplied file path escaped the repository workdir or was
     /// otherwise unusable.
     InvalidPath,
-    /// A git operation failed (status, log, or diff read).
+    /// A write was invoked without the explicit per-call confirmation flag.
+    Unconfirmed,
+    /// A commit message was empty, overlong, or had an unusable subject line.
+    InvalidMessage,
+    /// A push named a remote outside the fixed allowlist.
+    InvalidRemote,
+    /// A git operation failed (status, log, diff read, or write).
     GitFailed,
 }
 
@@ -78,6 +120,12 @@ impl std::fmt::Display for VersionControlError {
                 write!(f, "the workspace is not inside a git repository")
             }
             Self::InvalidPath => write!(f, "the file path is invalid"),
+            Self::Unconfirmed => write!(
+                f,
+                "explicit confirmation is required before this git write can run"
+            ),
+            Self::InvalidMessage => write!(f, "the commit message is invalid"),
+            Self::InvalidRemote => write!(f, "the git remote is not allowed"),
             Self::GitFailed => write!(f, "the git operation failed"),
         }
     }
@@ -307,8 +355,7 @@ pub(crate) fn git_info(
     })
 }
 
-/// Validate a caller-supplied diff path into a repository-relative path.
-///
+/// Validate a caller-supplied repository-relative path.
 /// Rejects absolute paths (both separators, including driveSmoke and UNC
 /// forms), parent references, `.git` components, null bytes, empty input,
 /// and overlong input — all with the single fixed-vocabulary
@@ -317,7 +364,7 @@ pub(crate) fn git_info(
 /// # Errors
 ///
 /// Returns [`VersionControlError::InvalidPath`] for any rejected shape.
-fn clean_diff_path(raw: &str) -> Result<PathBuf, VersionControlError> {
+fn clean_repo_path(raw: &str) -> Result<PathBuf, VersionControlError> {
     if raw.contains('\0') {
         return Err(VersionControlError::InvalidPath);
     }
@@ -354,6 +401,39 @@ fn clean_diff_path(raw: &str) -> Result<PathBuf, VersionControlError> {
     Ok(rel)
 }
 
+/// Backstop for symlinks anywhere along a repository-relative path
+/// (including symlinked intermediate directories): resolve the nearest
+/// existing ancestor through the filesystem, re-attach the unresolved tail,
+/// and re-check containment. A request like `link/secret` where `link`
+/// escapes the workdir refuses even though the lexical check passed.
+fn assert_within_repo(canon_repo: &Path, rel: &Path) -> Result<(), VersionControlError> {
+    let joined = canon_repo.join(rel);
+    if !is_within_workspace(canon_repo, &joined) {
+        return Err(VersionControlError::InvalidPath);
+    }
+    let mut ancestor: &Path = &joined;
+    loop {
+        if std::fs::symlink_metadata(ancestor).is_ok() {
+            let canon = ancestor
+                .canonicalize()
+                .map(strip_verbatim)
+                .map_err(|_| VersionControlError::InvalidPath)?;
+            let tail = joined
+                .strip_prefix(ancestor)
+                .map_err(|_| VersionControlError::InvalidPath)?;
+            let resolved = canon.join(tail);
+            if !is_within_workspace(canon_repo, &resolved) {
+                return Err(VersionControlError::InvalidPath);
+            }
+            return Ok(());
+        }
+        match ancestor.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => ancestor = parent,
+            _ => return Ok(()),
+        }
+    }
+}
+
 /// Per-file unified diff for `raw_path` (repository-relative), capped at
 /// [`MAX_DIFF_BYTES`] with `truncated` set, against `HEAD` (staged plus
 /// unstaged, untracked included). A file with no changes yields an empty
@@ -370,39 +450,8 @@ pub(crate) fn git_file_diff(
 ) -> Result<GitFileDiff, VersionControlError> {
     let (_, repo) = open_workspace_repo(workspace_root)?;
     let canon_repo = canonical_workdir(&repo)?;
-    let rel = clean_diff_path(raw_path)?;
-    let joined = canon_repo.join(&rel);
-    if !is_within_workspace(&canon_repo, &joined) {
-        return Err(VersionControlError::InvalidPath);
-    }
-    // Backstop for symlinks anywhere along the path (including symlinked
-    // intermediate directories): resolve the nearest existing ancestor
-    // through the filesystem, re-attach the unresolved tail, and re-check
-    // containment. A request like `link/secret` where `link` escapes the
-    // workdir refuses even though the lexical check above passed.
-    {
-        let mut ancestor: &Path = &joined;
-        loop {
-            if std::fs::symlink_metadata(ancestor).is_ok() {
-                let canon = ancestor
-                    .canonicalize()
-                    .map(strip_verbatim)
-                    .map_err(|_| VersionControlError::InvalidPath)?;
-                let tail = joined
-                    .strip_prefix(ancestor)
-                    .map_err(|_| VersionControlError::InvalidPath)?;
-                let resolved = canon.join(tail);
-                if !is_within_workspace(&canon_repo, &resolved) {
-                    return Err(VersionControlError::InvalidPath);
-                }
-                break;
-            }
-            match ancestor.parent() {
-                Some(parent) if !parent.as_os_str().is_empty() => ancestor = parent,
-                _ => break,
-            }
-        }
-    }
+    let rel = clean_repo_path(raw_path)?;
+    assert_within_repo(&canon_repo, &rel)?;
     let spec = rel.to_string_lossy().replace('\\', "/");
     let head_tree = repo.head().ok().and_then(|head| head.peel_to_tree().ok());
     let mut opts = git2::DiffOptions::new();
@@ -470,6 +519,515 @@ pub(crate) fn git_file_diff(
         diff: text,
         truncated,
         binary: false,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Guarded write operations: stage / unstage / commit / push
+// ---------------------------------------------------------------------------
+
+/// Require the explicit per-call confirmation flag for a write. Direct IPC
+/// commands cannot park on the agent [`ApprovalGate`](crate::application::agent::approval::ApprovalGate)
+/// (no run, no park, no autonomy mode), so writes reuse the destructive-action
+/// confirmation pattern: `confirmed: false` refuses without touching git.
+fn require_confirmed(confirmed: bool) -> Result<(), VersionControlError> {
+    if confirmed {
+        Ok(())
+    } else {
+        Err(VersionControlError::Unconfirmed)
+    }
+}
+
+/// Validate a stage/unstage batch into repository-relative paths: non-empty,
+/// bounded at [`MAX_STAGE_PATHS`], each lexically clean.
+fn clean_stage_paths(raw_paths: &[String]) -> Result<Vec<PathBuf>, VersionControlError> {
+    if raw_paths.is_empty() || raw_paths.len() > MAX_STAGE_PATHS {
+        return Err(VersionControlError::InvalidPath);
+    }
+    raw_paths.iter().map(|raw| clean_repo_path(raw)).collect()
+}
+
+/// Stage `raw_paths` (repository-relative) into the index.
+///
+/// Returns the number of paths staged. Requires `confirmed`; refuses empty
+/// and overlong batches and any path that escapes the repository workdir
+/// (same guards as the read path).
+///
+/// # Errors
+///
+/// Returns [`VersionControlError::Unconfirmed`] without confirmation,
+/// [`VersionControlError::InvalidPath`] for a bad batch or an escaping path;
+/// see [`open_workspace_repo`] for the remaining failures.
+pub(crate) fn git_stage(
+    workspace_root: &Path,
+    raw_paths: &[String],
+    confirmed: bool,
+) -> Result<usize, VersionControlError> {
+    require_confirmed(confirmed)?;
+    let (_, repo) = open_workspace_repo(workspace_root)?;
+    let canon_repo = canonical_workdir(&repo)?;
+    let rels = clean_stage_paths(raw_paths)?;
+    for rel in &rels {
+        assert_within_repo(&canon_repo, rel)?;
+    }
+    let mut index = repo.index().map_err(|_| VersionControlError::GitFailed)?;
+    index
+        .add_all(rels.iter(), git2::IndexAddOption::DEFAULT, None)
+        .map_err(|_| VersionControlError::GitFailed)?;
+    index.write().map_err(|_| VersionControlError::GitFailed)?;
+    Ok(rels.len())
+}
+
+/// Unstage `raw_paths` (repository-relative): reset the index entries to
+/// `HEAD` (or drop them when `HEAD` is unborn).
+///
+/// Returns the number of paths unstaged. Requires `confirmed`; same path
+/// guards as [`git_stage`]. Unstaging a path with no staged change is a
+/// successful no-op.
+///
+/// # Errors
+///
+/// See [`git_stage`].
+pub(crate) fn git_unstage(
+    workspace_root: &Path,
+    raw_paths: &[String],
+    confirmed: bool,
+) -> Result<usize, VersionControlError> {
+    require_confirmed(confirmed)?;
+    let (_, repo) = open_workspace_repo(workspace_root)?;
+    let canon_repo = canonical_workdir(&repo)?;
+    let rels = clean_stage_paths(raw_paths)?;
+    for rel in &rels {
+        assert_within_repo(&canon_repo, rel)?;
+    }
+    if let Some(head) = repo.head().ok().and_then(|head| head.peel_to_commit().ok()) {
+        let object = head.into_object();
+        repo.reset_default(Some(&object), rels.iter())
+            .map_err(|_| VersionControlError::GitFailed)?;
+    } else {
+        // Unborn `HEAD`: unstage by dropping the index entries.
+        let mut index = repo.index().map_err(|_| VersionControlError::GitFailed)?;
+        index
+            .remove_all(rels.iter(), None)
+            .map_err(|_| VersionControlError::GitFailed)?;
+        index.write().map_err(|_| VersionControlError::GitFailed)?;
+    }
+    Ok(rels.len())
+}
+
+/// Validate a caller-supplied commit message: non-empty after trimming,
+/// bounded at [`MAX_COMMIT_MESSAGE_LEN`] characters, with a non-empty subject
+/// (first line) bounded at [`MAX_COMMIT_SUBJECT_LEN`] characters. Returns the
+/// trimmed message.
+///
+/// # Errors
+///
+/// Returns [`VersionControlError::InvalidMessage`] for any rejected shape.
+pub(crate) fn validate_commit_message(raw: &str) -> Result<String, VersionControlError> {
+    if raw.contains('\0') {
+        return Err(VersionControlError::InvalidMessage);
+    }
+    let message = raw.trim().replace("\r\n", "\n");
+    let message = message.trim().to_string();
+    if message.is_empty() {
+        return Err(VersionControlError::InvalidMessage);
+    }
+    if message.chars().count() > MAX_COMMIT_MESSAGE_LEN {
+        return Err(VersionControlError::InvalidMessage);
+    }
+    let subject = message.lines().next().unwrap_or_default();
+    if subject.trim().is_empty() {
+        return Err(VersionControlError::InvalidMessage);
+    }
+    if subject.chars().count() > MAX_COMMIT_SUBJECT_LEN {
+        return Err(VersionControlError::InvalidMessage);
+    }
+    Ok(message)
+}
+
+/// Whether `message` opens with a conventional-commit subject:
+/// `type(scope): subject` or `type: subject` with a fixed-vocabulary type, a
+/// non-empty parenthesized scope when present, and a non-empty subject after
+/// `": "`.
+#[must_use]
+pub(crate) fn is_conventional_message(message: &str) -> bool {
+    let subject = message.lines().next().unwrap_or_default();
+    let Some((head, rest)) = subject.split_once(':') else {
+        return false;
+    };
+    if !rest.starts_with(' ') || rest.trim().is_empty() {
+        return false;
+    }
+    let (commit_type, scope) = match head.split_once('(') {
+        Some((commit_type, scope)) => {
+            if !scope.ends_with(')') || scope.len() < 3 {
+                return false;
+            }
+            let scope = &scope[..scope.len() - 1];
+            if scope.trim().is_empty() || scope.chars().any(char::is_whitespace) {
+                return false;
+            }
+            (commit_type, Some(scope))
+        }
+        None => (head, None),
+    };
+    if !COMMIT_TYPES.contains(&commit_type) {
+        return false;
+    }
+    let _ = scope;
+    !commit_type.is_empty()
+}
+
+/// Commit the staged index with `raw_message`, returning the new commit hash.
+///
+/// The author comes from the local git config only
+/// ([`git2::Repository::signature`]): this path never amends another author.
+/// Requires `confirmed`; empty commits (a tree identical to `HEAD`, or
+/// nothing staged on an unborn `HEAD`) refuse with
+/// [`VersionControlError::GitFailed`].
+///
+/// # Errors
+///
+/// Returns [`VersionControlError::Unconfirmed`] without confirmation,
+/// [`VersionControlError::InvalidMessage`] for a bad message; see
+/// [`open_workspace_repo`] for the remaining failures.
+pub(crate) fn git_commit(
+    workspace_root: &Path,
+    raw_message: &str,
+    confirmed: bool,
+) -> Result<String, VersionControlError> {
+    require_confirmed(confirmed)?;
+    let message = validate_commit_message(raw_message)?;
+    let (_, repo) = open_workspace_repo(workspace_root)?;
+    let mut index = repo.index().map_err(|_| VersionControlError::GitFailed)?;
+    let tree_id = index
+        .write_tree()
+        .map_err(|_| VersionControlError::GitFailed)?;
+    let tree = repo
+        .find_tree(tree_id)
+        .map_err(|_| VersionControlError::GitFailed)?;
+    let head: Option<git2::Commit<'_>> =
+        repo.head().ok().and_then(|head| head.peel_to_commit().ok());
+    match &head {
+        Some(commit) if commit.tree_id() == tree_id => {
+            return Err(VersionControlError::GitFailed);
+        }
+        None if tree.is_empty() => return Err(VersionControlError::GitFailed),
+        _ => {}
+    }
+    let parents: Vec<&git2::Commit<'_>> = head.iter().collect();
+    let signature = repo
+        .signature()
+        .map_err(|_| VersionControlError::GitFailed)?;
+    let oid = repo
+        .commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            &message,
+            &tree,
+            &parents,
+        )
+        .map_err(|_| VersionControlError::GitFailed)?;
+    Ok(oid.to_string())
+}
+
+/// Push the current branch to `remote_name`, which must equal
+/// [`ALLOWED_PUSH_REMOTE`] (`origin`): arbitrary remotes and URLs are refused
+/// before any repository is touched.
+///
+/// The push is never forced: the refspec is a plain
+/// `refs/heads/<branch>:refs/heads/<branch>` update with no `+` prefix, and
+/// no force flag exists anywhere in this module. Detached or unborn `HEAD`
+/// refuses (there is no branch to push). Authentication reuses the user's
+/// existing git credential setup; no new credential input exists on this
+/// path.
+///
+/// # Errors
+///
+/// Returns [`VersionControlError::Unconfirmed`] without confirmation,
+/// [`VersionControlError::InvalidRemote`] for a non-allowlisted remote; see
+/// [`open_workspace_repo`] for the remaining failures.
+pub(crate) fn git_push(
+    workspace_root: &Path,
+    remote_name: &str,
+    confirmed: bool,
+) -> Result<(), VersionControlError> {
+    require_confirmed(confirmed)?;
+    if remote_name != ALLOWED_PUSH_REMOTE {
+        return Err(VersionControlError::InvalidRemote);
+    }
+    let (_, repo) = open_workspace_repo(workspace_root)?;
+    let branch = current_branch(&repo).ok_or(VersionControlError::GitFailed)?;
+    let mut remote = repo
+        .find_remote(ALLOWED_PUSH_REMOTE)
+        .map_err(|_| VersionControlError::GitFailed)?;
+    // Plain fast-forward update only: no `+` prefix, no force flag.
+    let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
+    remote
+        .push(&[refspec.as_str()], None)
+        .map_err(|_| VersionControlError::GitFailed)?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// AI-generated conventional-commit message
+// ---------------------------------------------------------------------------
+
+/// Narrow prompt turning a staged-diff summary into a conventional-commit
+/// message. The model must reply with only the message: a
+/// `type(scope): subject` first line plus an optional body.
+pub(crate) fn build_commit_prompt(summary: &str, truncated: bool) -> String {
+    let mut prompt = String::from(
+        "Write a conventional commit message for the staged git changes summarized below.\n\
+         Reply with ONLY the commit message, no code fences, no explanation.\n\
+         The first line must be `type(scope): subject` where type is one of \
+         feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert; \
+         scope is a short lowercase area name; subject is an imperative short summary \
+         under 72 characters. After a blank line, add 1-3 short body lines describing \
+         what changed and why.\n",
+    );
+    if truncated {
+        prompt.push_str(
+            "Note: the change summary was truncated to fit; describe only what is shown.\n",
+        );
+    }
+    prompt.push_str("Staged changes:\n");
+    prompt.push_str(summary);
+    prompt
+}
+
+/// Coerce raw model output into a valid conventional-commit message: strip
+/// code fences, take the first conventional subject line as the subject plus
+/// the following body lines, and fall back to a `chore(workspace):` subject
+/// when no conventional line is present. The result always satisfies
+/// [`validate_commit_message`] and [`is_conventional_message`].
+pub(crate) fn sanitize_ai_message(raw: &str) -> String {
+    let stripped = raw.trim().replace("\r\n", "\n");
+    let all: Vec<&str> = stripped
+        .lines()
+        .map(str::trim_end)
+        .filter(|line| {
+            let line = line.trim();
+            line != "```" && !line.starts_with("```")
+        })
+        .collect();
+    // Keep interior blank lines (subject/body separator) while trimming
+    // leading and trailing empties.
+    let start = all
+        .iter()
+        .position(|line| !line.trim().is_empty())
+        .unwrap_or(all.len());
+    let end = all
+        .iter()
+        .rposition(|line| !line.trim().is_empty())
+        .map_or(0, |index| index + 1);
+    let lines = if start < end { &all[start..end] } else { &[] };
+    let conventional_at = lines.iter().position(|line| is_conventional_message(line));
+    let mut message = if let Some(index) = conventional_at {
+        let mut out = vec![lines[index].trim().to_string()];
+        for line in lines.iter().skip(index + 1) {
+            out.push((*line).to_string());
+        }
+        out.join("\n").trim().to_string()
+    } else {
+        let first = lines
+            .iter()
+            .find(|line| !line.trim().is_empty())
+            .map_or("", |line| *line)
+            .trim();
+        let subject: String = first.chars().take(72).collect();
+        let subject = subject.trim();
+        if subject.is_empty() {
+            "chore(workspace): update files".to_string()
+        } else {
+            format!("chore(workspace): {subject}")
+        }
+    };
+    // Enforce the backend bounds so the sanitized message always validates.
+    if message.chars().count() > MAX_COMMIT_MESSAGE_LEN {
+        let mut end = MAX_COMMIT_MESSAGE_LEN;
+        while !message.is_char_boundary(end) {
+            end -= 1;
+        }
+        message.truncate(end);
+        message = message.trim_end().to_string();
+    }
+    let mut split: Vec<String> = message.split('\n').map(str::to_string).collect();
+    if let Some(subject) = split.first() {
+        if subject.chars().count() > MAX_COMMIT_SUBJECT_LEN {
+            let mut end = MAX_COMMIT_SUBJECT_LEN;
+            while !subject.is_char_boundary(end) {
+                end -= 1;
+            }
+            split[0] = subject[..end].trim_end().to_string();
+            // Truncating the subject could only break conventional shape by
+            // cutting the scope/type; re-check and fall back if needed.
+            let rejoined = split.join("\n");
+            if is_conventional_message(&rejoined) {
+                return rejoined;
+            }
+            let fallback_subject: String = rejoined
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .chars()
+                .take(72)
+                .collect();
+            return format!("chore(workspace): {}", fallback_subject.trim());
+        }
+    }
+    debug_assert!(validate_commit_message(&message).is_ok());
+    debug_assert!(is_conventional_message(&message));
+    message
+}
+
+/// AI-generated commit message plus whether the staged summary was truncated.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct GeneratedCommitMessage {
+    /// Sanitized conventional-commit message (subject plus optional body).
+    pub message: String,
+    /// Whether the staged summary fed to the model was truncated at
+    /// [`MAX_COMMIT_PROMPT_BYTES`].
+    pub truncated_input: bool,
+}
+
+/// Failures for AI commit-message generation: workspace/git problems or the
+/// shared AI execution failure. Both sides stay secret-free.
+#[derive(Debug)]
+pub(crate) enum CommitMessageError {
+    /// The staged summary could not be read (not a repository, git failure).
+    VersionControl(VersionControlError),
+    /// The AI request failed (unknown provider, missing credentials,
+    /// provider failure). Carries no prompt or diff content.
+    Request(RequestError),
+}
+
+impl std::fmt::Display for CommitMessageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::VersionControl(inner) => write!(f, "{inner}"),
+            Self::Request(_) => write!(f, "the commit message could not be generated"),
+        }
+    }
+}
+
+impl std::error::Error for CommitMessageError {}
+
+impl From<VersionControlError> for CommitMessageError {
+    fn from(err: VersionControlError) -> Self {
+        Self::VersionControl(err)
+    }
+}
+
+impl From<RequestError> for CommitMessageError {
+    fn from(err: RequestError) -> Self {
+        Self::Request(err)
+    }
+}
+
+/// Summarize the staged (index vs `HEAD`) diff, capped at
+/// [`MAX_COMMIT_PROMPT_BYTES`] with a truncation flag. An empty summary means
+/// nothing is staged.
+///
+/// # Errors
+///
+/// See [`open_workspace_repo`].
+fn staged_diff_summary(workspace_root: &Path) -> Result<(String, bool), VersionControlError> {
+    let (_, repo) = open_workspace_repo(workspace_root)?;
+    let head_tree = repo.head().ok().and_then(|head| head.peel_to_tree().ok());
+    let index = repo.index().map_err(|_| VersionControlError::GitFailed)?;
+    let mut opts = git2::DiffOptions::new();
+    opts.context_lines(3);
+    let diff = repo
+        .diff_tree_to_index(head_tree.as_ref(), Some(&index), Some(&mut opts))
+        .map_err(|_| VersionControlError::GitFailed)?;
+    let mut text = String::new();
+    // `Deltas` walks `0..count` in order, so the enumerated index is the
+    // delta index `Patch::from_diff` needs.
+    for (delta_index, delta) in diff.deltas().enumerate() {
+        let path = delta
+            .new_file()
+            .path_bytes()
+            .or_else(|| delta.old_file().path_bytes())
+            .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+            .unwrap_or_default();
+        text.push_str("file: ");
+        text.push_str(&path);
+        text.push('\n');
+        if let Some(mut patch) = git2::Patch::from_diff(&diff, delta_index)
+            .map_err(|_| VersionControlError::GitFailed)?
+        {
+            let buf = patch.to_buf().map_err(|_| VersionControlError::GitFailed)?;
+            let bytes: &[u8] = &buf;
+            if bytes.contains(&0) {
+                text.push_str("(binary file, content omitted)\n");
+            } else {
+                text.push_str(&String::from_utf8_lossy(bytes));
+            }
+        }
+        text.push('\n');
+        if text.len() >= MAX_COMMIT_PROMPT_BYTES {
+            break;
+        }
+    }
+    let truncated = text.len() > MAX_COMMIT_PROMPT_BYTES;
+    if truncated {
+        let mut end = MAX_COMMIT_PROMPT_BYTES;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+    }
+    Ok((text, truncated))
+}
+
+/// Generate a conventional-commit message for the staged changes through the
+/// existing AI execution path: the staged diff summary (capped at
+/// [`MAX_COMMIT_PROMPT_BYTES`]) feeds a narrow prompt to a single text-only
+/// [`AiRequest`] executed by the shared
+/// [`RequestExecutionService`](crate::application::execution::RequestExecutionService)
+/// — the same execution boundary `send_message` and the agent-run bridge use.
+/// Credentials resolve from the OS keyring only; no new key input exists on
+/// this path, and nothing is persisted (no conversation message is created).
+/// The model output is coerced through [`sanitize_ai_message`], so the
+/// returned message always validates.
+///
+/// # Errors
+///
+/// Returns [`CommitMessageError::VersionControl`] when the workspace is not a
+/// repository or nothing is staged, [`CommitMessageError::Request`] when AI
+/// execution fails.
+pub(crate) fn generate_commit_message(
+    db: &Database,
+    workspace_root: &Path,
+    provider: &str,
+    model: &str,
+) -> Result<GeneratedCommitMessage, CommitMessageError> {
+    use crate::application::execution::RequestExecutionService;
+    let (summary, truncated) = staged_diff_summary(workspace_root)?;
+    if summary.trim().is_empty() {
+        return Err(VersionControlError::GitFailed.into());
+    }
+    let prompt = build_commit_prompt(&summary, truncated);
+    let request = AiRequest {
+        provider: provider.to_string(),
+        model: model.to_string(),
+        messages: vec![AiMessage {
+            role: AiRole::User,
+            content: prompt,
+            attachments: Vec::new(),
+            tool_calls: Vec::new(),
+            tool_result: None,
+        }],
+        tools: Vec::new(),
+        model_config: None,
+        request_timeout: Some(DEFAULT_REQUEST_TIMEOUT),
+    };
+    let response = RequestExecutionService::new(db).execute(&request)?;
+    Ok(GeneratedCommitMessage {
+        message: sanitize_ai_message(&response.content),
+        truncated_input: truncated,
     })
 }
 
@@ -767,6 +1325,402 @@ mod tests {
         assert!(info.branch.is_none());
         assert_eq!(info.commits.len(), 1);
         assert_eq!(info.commits[0].message, "add note");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -----------------------------------------------------------------------
+    // Guarded writes: stage / unstage / commit / push
+    // -----------------------------------------------------------------------
+
+    /// Local git identity for commits under test (`repo.signature()` reads
+    /// the local config only — the commit path never invents an author).
+    fn local_identity(repo: &git2::Repository) {
+        let mut config = repo.config().expect("test config");
+        config
+            .set_str("user.name", "nexora-test")
+            .expect("set test name");
+        config
+            .set_str("user.email", "nexora-test@example.com")
+            .expect("set test email");
+    }
+
+    #[test]
+    fn writes_require_explicit_confirmation() {
+        let dir = temp_root();
+        let repo = init_repo(&dir);
+        local_identity(&repo);
+        std::fs::write(dir.join("note.txt"), "hello").expect("seed file");
+        assert_eq!(
+            git_stage(&dir, &["note.txt".to_string()], false).expect_err("stage needs confirm"),
+            VersionControlError::Unconfirmed
+        );
+        assert_eq!(
+            git_unstage(&dir, &["note.txt".to_string()], false).expect_err("unstage needs confirm"),
+            VersionControlError::Unconfirmed
+        );
+        assert_eq!(
+            git_commit(&dir, "feat(test): add note", false).expect_err("commit needs confirm"),
+            VersionControlError::Unconfirmed
+        );
+        assert_eq!(
+            git_push(&dir, "origin", false).expect_err("push needs confirm"),
+            VersionControlError::Unconfirmed
+        );
+        assert_eq!(
+            format!("{}", VersionControlError::Unconfirmed),
+            "explicit confirmation is required before this git write can run"
+        );
+        // Nothing was staged behind the refusal.
+        let info = git_info(&dir, None).expect("info reads");
+        assert!(info.files.iter().all(|file| file.status == "untracked"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stage_unstage_round_trip_updates_status() {
+        let dir = temp_root();
+        let repo = init_repo(&dir);
+        commit_file(&repo, "note.txt", b"hello", "add note");
+        std::fs::write(dir.join("note.txt"), "hello changed").expect("modify");
+        std::fs::write(dir.join("new.txt"), "new").expect("seed untracked");
+
+        let staged = git_stage(&dir, &["note.txt".to_string(), "new.txt".to_string()], true)
+            .expect("stage reads");
+        assert_eq!(staged, 2);
+        let info = git_info(&dir, None).expect("info reads");
+        assert!(info.files.iter().all(|file| file.status == "staged"));
+
+        let unstaged = git_unstage(&dir, &["note.txt".to_string()], true).expect("unstage");
+        assert_eq!(unstaged, 1);
+        let info = git_info(&dir, None).expect("info reads after unstage");
+        let statuses: std::collections::HashMap<&str, &str> = info
+            .files
+            .iter()
+            .map(|file| (file.path.as_str(), file.status.as_str()))
+            .collect();
+        assert_eq!(statuses["note.txt"], "modified");
+        assert_eq!(statuses["new.txt"], "staged");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stage_rejects_escaping_and_oversized_batches() {
+        let dir = temp_root();
+        let _repo = init_repo(&dir);
+        for raw in ["../evil.txt", ".git/config", ""] {
+            let err = git_stage(&dir, &[raw.to_string()], true).expect_err("escaping stage denied");
+            assert_eq!(err, VersionControlError::InvalidPath);
+            let err =
+                git_unstage(&dir, &[raw.to_string()], true).expect_err("escaping unstage denied");
+            assert_eq!(err, VersionControlError::InvalidPath);
+        }
+        // Empty and overlong batches refuse without touching git.
+        let err = git_stage(&dir, &[], true).expect_err("empty batch denied");
+        assert_eq!(err, VersionControlError::InvalidPath);
+        let big: Vec<String> = (0..=MAX_STAGE_PATHS)
+            .map(|i| format!("f-{i}.txt"))
+            .collect();
+        let err = git_stage(&dir, &big, true).expect_err("overlong batch denied");
+        assert_eq!(err, VersionControlError::InvalidPath);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stage_through_escaping_symlink_is_denied() {
+        let dir = temp_root();
+        let _repo = init_repo(&dir);
+        let outside = temp_root();
+        std::fs::write(outside.join("secret.txt"), "outside").expect("seed outside file");
+        let link = dir.join("link");
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_dir(&outside, &link).is_ok();
+        #[cfg(not(windows))]
+        let made = std::os::unix::fs::symlink(&outside, &link).is_ok();
+        if !made {
+            let _ = std::fs::remove_dir_all(&dir);
+            let _ = std::fs::remove_dir_all(&outside);
+            return;
+        }
+        let err = git_stage(&dir, &["link/secret.txt".to_string()], true)
+            .expect_err("escaping stage must be denied");
+        assert_eq!(err, VersionControlError::InvalidPath);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn commit_validates_message_and_uses_local_config_author() {
+        let dir = temp_root();
+        let repo = init_repo(&dir);
+        local_identity(&repo);
+        std::fs::write(dir.join("note.txt"), "hello").expect("seed file");
+        git_stage(&dir, &["note.txt".to_string()], true).expect("stage");
+
+        // Shape validation runs before any tree comparison, so these refuse
+        // regardless of staged state.
+        for bad in [
+            "",
+            "   ",
+            "x".repeat(MAX_COMMIT_MESSAGE_LEN + 1).as_str(),
+            format!("feat(test): {}", "s".repeat(MAX_COMMIT_SUBJECT_LEN)).as_str(),
+        ] {
+            let err = git_commit(&dir, bad, true).expect_err("bad message must be denied");
+            assert_eq!(err, VersionControlError::InvalidMessage, "input: {bad:?}");
+        }
+        assert_eq!(
+            format!("{}", VersionControlError::InvalidMessage),
+            "the commit message is invalid"
+        );
+
+        // Well-formed but non-conventional messages still commit:
+        // conventional shape is enforced only on the AI path (sanitize),
+        // never as a commit gate.
+        let loose = git_commit(&dir, "first version", true).expect("loose message commits");
+        assert_eq!(loose.len(), 40);
+
+        std::fs::write(dir.join("note.txt"), "hello again").expect("modify again");
+        git_stage(&dir, &["note.txt".to_string()], true).expect("stage again");
+
+        let hash = git_commit(&dir, "feat(test): add note\n\nFirst test note.", true)
+            .expect("valid commit");
+        assert_eq!(hash.len(), 40);
+        let info = git_info(&dir, None).expect("info reads");
+        assert!(info.files.is_empty());
+        assert_eq!(info.commits.len(), 2);
+        // Full summary is the first line; author is the local git config.
+        assert_eq!(info.commits[0].message, "feat(test): add note");
+        assert_eq!(info.commits[0].author, "nexora-test");
+        assert_eq!(info.commits[0].hash, hash);
+
+        // Committing with nothing staged refuses (no empty commits).
+        let err = git_commit(&dir, "fix(test): nothing staged", true)
+            .expect_err("empty commit must be denied");
+        assert_eq!(err, VersionControlError::GitFailed);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn commit_without_staged_changes_on_unborn_head_is_denied() {
+        let dir = temp_root();
+        let repo = init_repo(&dir);
+        local_identity(&repo);
+        let err = git_commit(&dir, "feat(test): empty tree", true)
+            .expect_err("unborn empty commit must be denied");
+        assert_eq!(err, VersionControlError::GitFailed);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn push_allows_only_origin_and_never_forces() {
+        let dir = temp_root();
+        let repo = init_repo(&dir);
+        local_identity(&repo);
+        // Non-allowlisted remotes refuse before any repository is touched.
+        for remote in ["upstream", "fork", "https://example.com/r.git", ""] {
+            let err = git_push(&dir, remote, true).expect_err("non-origin push denied");
+            assert_eq!(
+                err,
+                VersionControlError::InvalidRemote,
+                "remote: {remote:?}"
+            );
+        }
+        assert_eq!(
+            format!("{}", VersionControlError::InvalidRemote),
+            "the git remote is not allowed"
+        );
+
+        // Local bare repository as `origin`: push works fully offline.
+        let bare_dir = temp_root();
+        git2::Repository::init_bare(&bare_dir).expect("init bare remote");
+        repo.remote("origin", bare_dir.to_str().expect("bare path is unicode"))
+            .expect("add origin remote");
+        commit_file(&repo, "note.txt", b"hello", "add note");
+        // `commit_file` stages through the index directly; commit the same
+        // way the service would to keep the workdir state realistic.
+        git_push(&dir, "origin", true).expect("push to local origin");
+        let bare = git2::Repository::open_bare(&bare_dir).expect("open bare");
+        let local_oid = repo
+            .head()
+            .expect("local head")
+            .peel_to_commit()
+            .expect("local commit")
+            .id();
+        let branch = current_branch(&repo).expect("test branch");
+        let remote_oid = bare
+            .find_reference(&format!("refs/heads/{branch}"))
+            .expect("remote branch exists")
+            .peel_to_commit()
+            .expect("remote commit")
+            .id();
+        assert_eq!(local_oid, remote_oid);
+
+        // A diverged history must NOT be overwritten: without any force flag
+        // the non-fast-forward push fails instead of clobbering the remote.
+        let clone_dir = temp_root();
+        let cloned =
+            git2::Repository::clone(bare_dir.to_str().expect("bare path is unicode"), &clone_dir)
+                .expect("clone bare");
+        local_identity(&cloned);
+        commit_file(&cloned, "other.txt", b"other", "add other");
+        {
+            let branch = current_branch(&cloned).expect("clone branch");
+            let mut remote = cloned.find_remote("origin").expect("clone origin");
+            let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
+            remote
+                .push(&[refspec.as_str()], None)
+                .expect("clone pushes first");
+        }
+        commit_file(&repo, "diverged.txt", b"diverged", "diverge local");
+        let err = git_push(&dir, "origin", true).expect_err("diverged push must fail");
+        assert_eq!(err, VersionControlError::GitFailed);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&bare_dir);
+        let _ = std::fs::remove_dir_all(&clone_dir);
+    }
+
+    #[test]
+    fn push_from_detached_head_is_denied() {
+        let dir = temp_root();
+        let repo = init_repo(&dir);
+        local_identity(&repo);
+        commit_file(&repo, "note.txt", b"hello", "add note");
+        let oid = repo
+            .head()
+            .expect("test head")
+            .peel_to_commit()
+            .expect("test commit")
+            .id();
+        repo.set_head_detached(oid).expect("detach test head");
+        let err = git_push(&dir, "origin", true).expect_err("detached push denied");
+        assert_eq!(err, VersionControlError::GitFailed);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn no_force_push_code_path_exists() {
+        // Static guard: outside comments and this test module, the service
+        // must contain no force-push flag or forced refspec. The module docs
+        // mention `--force` only to document its absence, so comment lines
+        // (trimmed lines starting with `/`) are excluded first.
+        let source = include_str!("version_control.rs");
+        let (code, _) = source
+            .split_once("#[cfg(test)]")
+            .expect("test module marker");
+        let code: String = code
+            .lines()
+            .filter(|line| !line.trim_start().starts_with('/'))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !code.contains("--force"),
+            "a force-push flag must never exist on the git path"
+        );
+        assert!(
+            !code.contains("+refs/"),
+            "a forced refspec prefix must never exist on the git path"
+        );
+    }
+
+    #[test]
+    fn commit_message_shapes_validate() {
+        for good in [
+            "feat(git): add staging",
+            "fix(ui): repair overflow line",
+            "docs(readme): refresh setup",
+            "chore(workspace): update files",
+            "revert: back out bad push",
+            "feat(git): add staging\n\nBody line one.\nBody line two.",
+        ] {
+            assert!(validate_commit_message(good).is_ok(), "input: {good:?}");
+            assert!(is_conventional_message(good), "input: {good:?}");
+        }
+        for bad in [
+            "no colon at all",
+            "feat no colon",
+            "feat:nospace",
+            "unknown(git): bad type",
+            "feat(): empty scope",
+            "feat(has space): bad scope",
+            "feat(scope):",
+            "feat(scope):   ",
+        ] {
+            assert!(!is_conventional_message(bad), "input: {bad:?}");
+        }
+        assert!(!is_conventional_message(""));
+    }
+
+    #[test]
+    fn sanitize_ai_message_always_yields_valid_conventional() {
+        let long_subject = format!("feat(git): {}", "s".repeat(200));
+        let overlong = format!("feat(git): ok\n\n{}", "b".repeat(MAX_COMMIT_MESSAGE_LEN));
+        let cases = [
+            "feat(git): add staging\n\nStages files through the index.",
+            "```\nfix(ui): repair overflow\n\nShows the count.\n```",
+            "Here is your message:\n\nfeat(git): add staging\n\nBody here.",
+            "some prose without any conventional line at all",
+            "",
+            "   ",
+            "```",
+            long_subject.as_str(),
+            overlong.as_str(),
+        ];
+        for raw in cases {
+            let message = sanitize_ai_message(raw);
+            assert!(
+                validate_commit_message(&message).is_ok(),
+                "sanitized must validate, raw: {raw:?} got: {message:?}"
+            );
+            assert!(
+                is_conventional_message(&message),
+                "sanitized must be conventional, raw: {raw:?} got: {message:?}"
+            );
+        }
+        // A conventional subject survives with its body intact.
+        let message = sanitize_ai_message("fix(ui): repair overflow\n\nShows the count.");
+        assert_eq!(message, "fix(ui): repair overflow\n\nShows the count.");
+        // Fences and leading prose are stripped, not echoed.
+        let message = sanitize_ai_message("Sure! ```\nfeat(git): add staging\n```");
+        assert_eq!(message, "feat(git): add staging");
+    }
+
+    #[test]
+    fn new_error_variants_stay_secret_free() {
+        const SENTINEL: &str = "sk-test-sentinel-9c3f1b";
+        for err in [
+            VersionControlError::Unconfirmed,
+            VersionControlError::InvalidMessage,
+            VersionControlError::InvalidRemote,
+        ] {
+            assert!(!format!("{err}").contains(SENTINEL));
+        }
+        let dir = temp_root();
+        let _repo = init_repo(&dir);
+        // A traversal-shaped batch carrying a secret-looking payload still
+        // fails with fixed vocabulary that echoes nothing.
+        let err =
+            git_stage(&dir, &[format!("../{SENTINEL}.txt")], true).expect_err("traversal denied");
+        assert!(!format!("{err}").contains(SENTINEL));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn staged_summary_feeds_the_commit_prompt() {
+        let dir = temp_root();
+        let repo = init_repo(&dir);
+        commit_file(&repo, "note.txt", b"line one\n", "add note");
+        // Nothing staged: the summary is empty and generation input is absent.
+        let (summary, truncated) = staged_diff_summary(&dir).expect("summary reads");
+        assert!(summary.trim().is_empty());
+        assert!(!truncated);
+
+        std::fs::write(dir.join("note.txt"), "line one\nline two\n").expect("modify");
+        git_stage(&dir, &["note.txt".to_string()], true).expect("stage");
+        let (summary, truncated) = staged_diff_summary(&dir).expect("summary reads");
+        assert!(!truncated);
+        assert!(summary.contains("note.txt"), "summary: {summary}");
+        let prompt = build_commit_prompt(&summary, truncated);
+        assert!(prompt.contains("conventional commit message"));
+        assert!(prompt.contains("note.txt"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

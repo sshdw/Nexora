@@ -113,6 +113,11 @@ pub fn run() {
             commands::agent::list_permission_rules,
             commands::version_control::git_info,
             commands::version_control::git_file_diff,
+            commands::version_control::git_stage,
+            commands::version_control::git_unstage,
+            commands::version_control::git_commit,
+            commands::version_control::git_push,
+            commands::version_control::git_generate_commit_message,
         ])
         .setup(|app| {
             // Locate the per-user application data directory and ensure it

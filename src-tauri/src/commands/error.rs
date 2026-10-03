@@ -21,7 +21,7 @@ use crate::application::project_dir::ProjectDirError;
 use crate::application::prompts::PromptLibraryError;
 use crate::application::providers::ProviderError;
 use crate::application::search::SearchError;
-use crate::application::version_control::VersionControlError;
+use crate::application::version_control::{CommitMessageError, VersionControlError};
 use crate::infrastructure::database::DatabaseError;
 use crate::infrastructure::providers::credentials::CredentialError;
 
@@ -266,9 +266,29 @@ impl From<VersionControlError> for CommandError {
             VersionControlError::InvalidPath => {
                 Self::new(ErrorKind::InvalidInput, "the file path is invalid")
             }
+            VersionControlError::Unconfirmed => Self::new(
+                ErrorKind::ConfirmationRequired,
+                "explicit confirmation is required before this git write can run",
+            ),
+            VersionControlError::InvalidMessage => {
+                Self::new(ErrorKind::InvalidInput, "the commit message is invalid")
+            }
+            VersionControlError::InvalidRemote => {
+                Self::new(ErrorKind::InvalidInput, "the git remote is not allowed")
+            }
             // Never log the underlying git detail: diff content may carry
             // user-written secrets, so even server-side logging stays fixed.
             VersionControlError::GitFailed => Self::new(ErrorKind::Io, "the git operation failed"),
+        }
+    }
+}
+
+impl From<CommitMessageError> for CommandError {
+    fn from(err: CommitMessageError) -> Self {
+        match err {
+            // The inner failure is already secret-free fixed vocabulary.
+            CommitMessageError::VersionControl(inner) => Self::from(inner),
+            CommitMessageError::Request(inner) => Self::from(inner),
         }
     }
 }
