@@ -17,9 +17,19 @@ use crate::application::execution::{AiMessage, AiRole, ToolCall};
 use super::errors::AgentError;
 use super::lifecycle::{observe_transition, RunState};
 use super::prompts::{
-    classify_outcome, denied_tool_message, thought_signature_trace, tool_message,
+    classify_outcome, denied_tool_message, thought_signature_trace, tool_message, tool_message_raw,
     trusted_denial_message, DOCUMENT_SHELL_DENIAL,
 };
+
+/// Wrap one tool observation for context: the WS-C.2 envelope when the
+/// `injection` flag is on, the raw pre-2.0 shape when it is off.
+fn observation_message(ctx: &DispatchCtx<'_>, call: &ToolCall, observation: &str) -> AiMessage {
+    if ctx.injection_enabled {
+        tool_message(call, observation)
+    } else {
+        tool_message_raw(call, observation)
+    }
+}
 
 /// Read-only view of runner state for one dispatch batch.
 ///
@@ -44,6 +54,12 @@ pub(crate) struct DispatchCtx<'a> {
     /// before the store, the ladder, and execution (mirroring the T5 document
     /// shell ban). `None` keeps the exact pre-B.3 pipeline.
     pub role: Option<AgentRole>,
+    /// The `injection` feature flag (WS-C.2 gate): enveloped observations
+    /// plus the marker-scan approval hold when `true` (current behavior);
+    /// raw observations with no scan when `false` (pre-2.0 dispatch).
+    /// `true` by default, so runs constructed without flags behave exactly
+    /// as before.
+    pub injection_enabled: bool,
 }
 
 /// Emit a governance event on the optional channel, best-effort.
@@ -191,8 +207,11 @@ fn dispatch_one(
     // No new policy: the #65 ladder and its recorded decisions are reused
     // unchanged (`park_call`); without a gate there is nobody to approve,
     // so the call fails closed with the frozen denial observation.
-    if latest_tool_observation(messages)
-        .is_some_and(|observation| injection::scan_observation(observation).is_some())
+    // Gated by the `injection` flag: off reproduces the pre-2.0 dispatch
+    // (no scan, no hold).
+    if ctx.injection_enabled
+        && latest_tool_observation(messages)
+            .is_some_and(|observation| injection::scan_observation(observation).is_some())
     {
         if ctx.approval_gate.is_some() {
             if !park_call(
@@ -267,7 +286,7 @@ fn handle_sticky_group_decision(
             let dispatch_ms =
                 i64::try_from(dispatch_started.elapsed().as_millis()).unwrap_or(i64::MAX);
             let (observation, tool_status) = classify_outcome(outcome, ctx.token);
-            messages.push(tool_message(call, &observation));
+            messages.push(observation_message(ctx, call, &observation));
             if let Some(rec) = record.as_mut() {
                 rec.tool_call_with_provenance(
                     call,
@@ -325,7 +344,7 @@ fn handle_permission_store_decision(
                             let dispatch_ms = i64::try_from(dispatch_started.elapsed().as_millis())
                                 .unwrap_or(i64::MAX);
                             let (observation, tool_status) = classify_outcome(outcome, ctx.token);
-                            messages.push(tool_message(call, &observation));
+                            messages.push(observation_message(ctx, call, &observation));
                             if let Some(rec) = record.as_mut() {
                                 rec.tool_call_with_provenance(
                                     call,
@@ -349,7 +368,7 @@ fn handle_permission_store_decision(
                             let dispatch_ms = i64::try_from(dispatch_started.elapsed().as_millis())
                                 .unwrap_or(i64::MAX);
                             let (observation, tool_status) = classify_outcome(outcome, ctx.token);
-                            messages.push(tool_message(call, &observation));
+                            messages.push(observation_message(ctx, call, &observation));
                             if let Some(rec) = record.as_mut() {
                                 rec.tool_call_with_provenance(
                                     call,
@@ -550,7 +569,7 @@ fn execute_tool_call(
         Err(tool_error) if ctx.token.is_cancelled() => (tool_error.to_string(), "cancelled"),
         Err(tool_error) => (tool_error.to_string(), "failed"),
     };
-    messages.push(tool_message(call, &observation));
+    messages.push(observation_message(ctx, call, &observation));
     if let Some(rec) = record.as_mut() {
         // M1-core provenance: parked-then-approved tool calls inherit
         // `user`; ladder-auto executions are `system`.

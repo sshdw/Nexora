@@ -102,8 +102,9 @@ pub(crate) enum ProfileSource {
 /// Fixed-vocabulary notice returned alongside the profile when a present
 /// workspace profile file fails to load and resolution falls back to the
 /// global settings key (or the registry default when the global key is
-/// absent); surfaced by a future caller (run-path wiring is a tracked
-/// follow-up).
+/// absent); surfaced on the run's audit trail by the agent run path
+/// (`service::spawn_run` via
+/// [`service::note_routing_fallback`](crate::application::agent::service::note_routing_fallback)).
 ///
 /// The notice echoes nothing: no document content, no file name, no task
 /// label. This mirrors the checkpoint-label rule from the run snapshots
@@ -111,8 +112,9 @@ pub(crate) enum ProfileSource {
 /// (like a checkpoint name), so it may appear in read-only views but never in
 /// errors or returned notes — only fixed vocabulary travels there. The run
 /// itself never fails for a bad workspace file; the fallback applies and the
-/// note is returned alongside the profile (no production run-path caller
-/// surfaces it yet — wiring that caller is a tracked follow-up).
+/// note is returned alongside the profile, surfaced on the run's audit trail
+/// by the agent run path
+/// ([`service::note_routing_fallback`](crate::application::agent::service::note_routing_fallback)).
 pub(crate) const INVALID_WORKSPACE_PROFILE_NOTICE: &str =
     "the workspace profile is invalid; using the stored settings profile";
 
@@ -382,8 +384,9 @@ impl<'a> RoutingService<'a> {
     /// ([`ProfileSource::Workspace`]); a present file that fails to load falls
     /// back to the global settings key with the fixed-vocabulary
     /// [`INVALID_WORKSPACE_PROFILE_NOTICE`] returned alongside the profile
-    /// (never failing the run, never echoing content; surfaced by a future
-    /// caller — run-path wiring is a tracked follow-up); an absent file reads
+    /// (never failing the run, never echoing content; surfaced on the run's
+    /// audit trail by the agent run path — see
+    /// [`service::note_routing_fallback`](crate::application::agent::service::note_routing_fallback)); an absent file reads
     /// the global key unchanged
     /// ([`ProfileSource::Global`]); an absent global key resolves to the
     /// registry default ([`ProfileSource::Default`]).

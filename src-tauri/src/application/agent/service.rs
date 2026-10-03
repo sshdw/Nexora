@@ -32,7 +32,7 @@
 //! [`AgentRunHost`] implementation (event emission + assistant-message
 //! persistence). The Tauri adapter lives in `commands/agent.rs`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 
@@ -41,6 +41,7 @@ use serde::Serialize;
 use super::action_memory::{self, ActionSummary, AgentStepView};
 use super::approval::{ApprovalGate, AutonomyMode};
 use super::control::{AgentRunEvent, RunControl};
+use super::governance::{audit, AuditEvent, AuditLog};
 use super::lifecycle::{observe_transition, RunState};
 use super::permissions::RunPreset;
 use super::persistence::{mode_to_column, terminal_outcome, RunRecorder};
@@ -48,6 +49,7 @@ use super::runner::AgentRunner;
 use crate::application::context_stats::context_limit_for;
 use crate::application::conversations::ConversationService;
 use crate::application::execution::{AiMessage, ExecutorRegistry, ProviderExecutor, RequestError};
+use crate::application::routing::{RoutingService, TaskKind};
 use crate::application::settings::SettingsService;
 use crate::infrastructure::database::Database;
 use crate::infrastructure::repository::agent_runs::{AgentRun, AgentRunRepository, AgentStep};
@@ -326,6 +328,34 @@ pub(crate) fn resolve_spend_limit(db: &Database) -> Option<u64> {
     }
 }
 
+/// Canonical routing-profile load for the run path (closes #81).
+///
+/// Resolves the agent profile through
+/// [`RoutingService::resolve`] (workspace → global → default — never a
+/// direct `load`) and surfaces a present-but-invalid workspace file on the
+/// run's audit trail with the fixed-vocabulary
+/// [`AuditEvent::RoutingFallback`] event on the genuine `Queued → Running`
+/// setup edge. A corrupt global value is reported with fixed vocabulary and
+/// an unreadable settings tier degrades silently: the run never fails for
+/// routing, and the request's explicit provider/model always win.
+pub(crate) fn note_routing_fallback(db: &Database, workspace_root: &Path, log: &AuditLog) {
+    match RoutingService::new(db).resolve(Some(workspace_root), TaskKind::Agent) {
+        Ok(resolved) => {
+            if resolved.notice.is_some() {
+                audit(
+                    Some(log),
+                    RunState::Queued,
+                    RunState::Running,
+                    AuditEvent::RoutingFallback,
+                );
+            }
+        }
+        Err(err) => {
+            log::warn!("agent run setup: routing profile unreadable, continuing: {err}");
+        }
+    }
+}
+
 #[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
 pub(crate) fn start_run(
     db: &Database,
@@ -558,6 +588,24 @@ fn spawn_run(
                     .with_run_id(run_id)
                     .with_events(&tx_for_recorder);
                 let permission_store = super::permissions::PermissionStore::load(&db);
+                // 2.0 flags: resolve the workspace → global → default gates
+                // once per run (best-effort; unreadable tiers degrade to the
+                // current behavior). An invalid workspace flags file is
+                // reported with fixed vocabulary and never fails the run.
+                let resolved_flags = crate::application::flags::FlagService::new(&db)
+                    .resolve_all(Some(&workspace_root));
+                if let Some(notice) = resolved_flags.notice {
+                    log::warn!("agent run setup: {notice}");
+                }
+                // Canonical routing-profile load (#81): the agent profile is
+                // resolved through `RoutingService::resolve` (never a direct
+                // `load`), and a present-but-invalid workspace file is
+                // surfaced on the run's audit trail with the fixed-vocabulary
+                // `routing_fallback` event. The run's explicit
+                // provider/model always win; the profile load only validates
+                // and reports. Nothing here ever fails the run.
+                let audit_log = Arc::new(super::governance::AuditLog::new());
+                note_routing_fallback(&db, &workspace_root, &audit_log);
                 // Task T4 wiring: the run's model window enables the proactive
                 // compaction trigger (`usable_context_tokens` + `decide`);
                 // without it the trigger stays dormant (limit `0`) and only
@@ -574,6 +622,8 @@ fn spawn_run(
                     .with_history(history)
                     .with_action_summary(action_summary)
                     .with_context_limit(context_limit)
+                    .with_run_flags(resolved_flags.run_flags())
+                    .with_audit_log(Arc::clone(&audit_log))
                     .with_event_sender(tx_for_recorder.clone());
                 if let Some(max_iterations) = run_request.max_iterations {
                     runner = runner.with_max_iterations(max_iterations);
@@ -1832,5 +1882,93 @@ mod tests {
             arguments: arguments.to_string(),
             thought_signature: None,
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Canonical routing-profile load (#81): the run path resolves through
+    // `RoutingService::resolve` and surfaces the invalid-workspace notice on
+    // the run's audit trail.
+    // -----------------------------------------------------------------------
+
+    /// Seed an invalid workspace agent profile (present file, bad content).
+    fn seed_invalid_workspace_profile(ws: &std::path::Path) {
+        crate::application::project_dir::init_nexora_dir(ws).expect("init succeeds");
+        std::fs::write(
+            ws.join(".nexora").join("profiles").join("agent.json"),
+            "not json at all sk-test-sentinel-77ae",
+        )
+        .expect("seed invalid profile");
+    }
+
+    #[test]
+    fn routing_fallback_notice_is_surfaced_on_the_run_audit_trail() {
+        let db = crate::infrastructure::database::in_memory_database();
+        let ws = temp_workspace("routing-notice");
+        seed_invalid_workspace_profile(&ws);
+        let log = AuditLog::new();
+        note_routing_fallback(&db, &ws, &log);
+        let entries = log.entries();
+        assert_eq!(entries.len(), 1, "one fallback entry, got {entries:?}");
+        let entry = &entries[0];
+        assert_eq!((entry.from, entry.to), ("queued", "running"));
+        assert_eq!(entry.event, "routing_fallback");
+        // Payload-free: the hostile file content never enters the trail.
+        let dump = format!("{entries:?}");
+        assert!(!dump.contains("sk-test-sentinel-77ae"));
+        assert!(!dump.contains("agent.json"));
+        let _ = std::fs::remove_dir_all(temp_workspace("routing-notice"));
+    }
+
+    #[test]
+    fn routing_without_workspace_file_appends_nothing() {
+        let db = crate::infrastructure::database::in_memory_database();
+        let ws = temp_workspace("routing-clean");
+        crate::application::project_dir::init_nexora_dir(&ws).expect("init succeeds");
+        let log = AuditLog::new();
+        note_routing_fallback(&db, &ws, &log);
+        assert!(log.is_empty(), "absent file resolves silently");
+        let _ = std::fs::remove_dir_all(temp_workspace("routing-clean"));
+    }
+
+    #[test]
+    fn routing_with_corrupt_global_never_fails_the_run() {
+        let db = crate::infrastructure::database::in_memory_database();
+        crate::application::settings::SettingsService::new(&db)
+            .write(crate::application::routing::AGENT_PROFILE_KEY, Some("[]"))
+            .expect("seed corrupt global");
+        let ws = temp_workspace("routing-corrupt");
+        let log = AuditLog::new();
+        // A corrupt global value is reported, never silently replaced — and
+        // the run setup never fails for routing.
+        note_routing_fallback(&db, &ws, &log);
+        assert!(log.is_empty(), "corrupt global appends no fallback entry");
+        let _ = std::fs::remove_dir_all(temp_workspace("routing-corrupt"));
+    }
+
+    /// Static wiring check: the production run path must resolve routing
+    /// through `RoutingService::resolve` (the canonical load — never a direct
+    /// `load`), surface the notice via `note_routing_fallback`, and attach
+    /// the run-scoped audit trail to the runner. The spawn closure needs
+    /// threads and managed state, so this source check pins the delegation
+    /// instead (same pattern as the `start_agent_run` bridge check).
+    #[test]
+    fn run_path_resolves_routing_through_resolve_not_load() {
+        const SOURCE: &str = include_str!("service.rs");
+        assert!(
+            SOURCE.contains("RoutingService::new(db).resolve("),
+            "spawn_run must resolve routing through the canonical resolve()"
+        );
+        assert!(
+            SOURCE.contains("note_routing_fallback(&db, &workspace_root, &audit_log)"),
+            "spawn_run must surface the routing notice on the run audit trail"
+        );
+        assert!(
+            SOURCE.contains(".with_audit_log("),
+            "spawn_run must attach the run-scoped audit trail to the runner"
+        );
+        assert!(
+            SOURCE.contains(".with_run_flags("),
+            "spawn_run must apply the resolved feature flags to the runner"
+        );
     }
 }

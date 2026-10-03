@@ -88,6 +88,7 @@ pub fn run() {
             commands::data_management::delete_conversation_permanently,
             commands::data_management::delete_prompt_permanently,
             commands::data_management::clear_application_data,
+            commands::flags::flags_status,
             commands::agent::start_agent_run,
             commands::agent::cancel_agent_run,
             commands::agent::resolve_agent_approval,

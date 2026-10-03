@@ -51,8 +51,9 @@ pub(crate) fn denied_tool_message(call: &crate::application::execution::ToolCall
 ///
 /// WS-C.2: the observation is untrusted tool output, so it always enters the
 /// context inside the fenced [`injection`] envelope (tool label + fixed
-/// vocabulary, body byte-identical). There is intentionally no raw path —
-/// trusted fixed-vocabulary denials bypass this constructor via
+/// vocabulary, body byte-identical). The only raw path is the flag-gated
+/// [`tool_message_raw`] (the `injection` flag off reproduces the pre-2.0
+/// shape); trusted fixed-vocabulary denials bypass this constructor via
 /// [`trusted_denial_message`] or [`denied_tool_message`].
 pub(crate) fn tool_message(
     call: &crate::application::execution::ToolCall,
@@ -67,6 +68,29 @@ pub(crate) fn tool_message(
             call_id: call.id.clone(),
             name: call.name.clone(),
             content: injection::envelope_tool_output(&call.name, observation),
+        }),
+    }
+}
+
+/// Wrap a tool observation as a native `Tool` message, unenveloped.
+///
+/// Pre-2.0 shape: the raw observation without the untrusted fence. Used only
+/// when the `injection` feature flag is off; with the flag on every tool
+/// observation enters through [`tool_message`]. Trusted fixed-vocabulary
+/// denials keep bypassing both constructors via [`trusted_denial_message`].
+pub(crate) fn tool_message_raw(
+    call: &crate::application::execution::ToolCall,
+    observation: &str,
+) -> AiMessage {
+    AiMessage {
+        role: AiRole::Tool,
+        content: String::new(),
+        attachments: Vec::new(),
+        tool_calls: Vec::new(),
+        tool_result: Some(crate::application::execution::AiToolResult {
+            call_id: call.id.clone(),
+            name: call.name.clone(),
+            content: observation.to_string(),
         }),
     }
 }

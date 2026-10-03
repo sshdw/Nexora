@@ -57,7 +57,8 @@ const VALID_AUTONOMY: &[&str] = &["supervised", "semi_autonomous", "full_autonom
 /// implementation (FR-012: invalid values are rejected before persistence).
 ///
 /// Rules:
-/// - Only the eight explicitly supported keys may be written.
+/// - Only the explicitly supported setting keys may be written: the eight
+///   base keys below plus the four `flags.*` feature-flag keys.
 /// - A `None` value (clearing back to the default state) is always valid.
 /// - [`THEME_KEY`] accepts only the implemented themes (`dark`, `light`).
 /// - [`SELECTED_PROVIDER_KEY`] accepts only names returned by the build's
@@ -74,6 +75,11 @@ const VALID_AUTONOMY: &[&str] = &["supervised", "semi_autonomous", "full_autonom
 ///   custom model ID (same charset rule as [`SELECTED_MODEL_KEY`]).
 ///   Resolution-time `recommended_models` gating still applies at use; the
 ///   stored profile only records explicit user order.
+/// - `flags.*` feature-flag keys accept only `true` / `false`
+///   (case-insensitive, surrounding whitespace trimmed) — the same
+///   [`parse_global_bool`](crate::application::flags::parse_global_bool)
+///   domain the flag service resolves, so the command gate and the service
+///   agree exactly. Clearing a flag key restores its hardcoded default.
 /// - [`WORKSPACE_ROOT_KEY`] accepts a non-empty path up to 1024 chars with no
 ///   null byte. Full filesystem guard (existence, `C:\Windows`, drive roots,
 ///   canonicalization) lives in the workspace commands
@@ -84,8 +90,8 @@ const VALID_AUTONOMY: &[&str] = &["supervised", "semi_autonomous", "full_autonom
 ///   strings, each up to 1024 chars.
 ///
 /// No credential, payload, or path value can appear here beyond the workspace
-/// root strings: only the eight keys above reach persistence, and none of them
-/// ever carries a secret.
+/// root strings: only the supported keys above reach persistence, and none of
+/// them ever carries a secret.
 fn validate_setting(key: &str, value: Option<&str>) -> Result<(), CommandError> {
     // Clearing a setting restores its default state; never an invalid value.
     let Some(value) = value else {
@@ -157,6 +163,13 @@ fn validate_setting(key: &str, value: Option<&str>) -> Result<(), CommandError> 
         }
         CHAT_PROFILE_KEY | AGENT_PROFILE_KEY => {
             if is_valid_routing_profile(value) {
+                Ok(())
+            } else {
+                Err(rejected(key, value))
+            }
+        }
+        _ if crate::application::flags::is_known_flag_setting(key) => {
+            if crate::application::flags::parse_global_bool(value).is_some() {
                 Ok(())
             } else {
                 Err(rejected(key, value))
@@ -521,6 +534,40 @@ mod tests {
                     "command gate verdict for {key} {raw:?}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn flag_keys_accept_booleans_and_reject_other_values() {
+        // Every registered flag key accepts the boolean domain (shared with
+        // the flag service's `parse_global_bool`); unknown flag names and
+        // non-boolean values are rejected like any unsupported key.
+        for name in ["snapshots", "self_audit", "injection", "assembly"] {
+            let key = format!("flags.{name}");
+            for value in ["true", "false", "TRUE", "  False  "] {
+                assert_accepted(&key, value);
+            }
+            for value in ["", "yes", "1", "0", "on", "sk-live-secret"] {
+                assert_rejected(&key, value);
+            }
+            // Clearing restores the hardcoded default and stays allowed.
+            assert!(validate_setting(&key, None).is_ok());
+        }
+        assert_rejected("flags.ghost-flag", "true");
+        assert_rejected("flags.", "true");
+    }
+
+    #[test]
+    fn flag_gate_agrees_with_flag_service_parsing() {
+        // The command gate delegates to `parse_global_bool`, so it must
+        // accept/reject exactly the same values as the service path.
+        for value in ["true", "false", "TRUE", "False", "yes", "1", "", "sk-x"] {
+            let expected = crate::application::flags::parse_global_bool(value).is_some();
+            assert_eq!(
+                validate_setting("flags.assembly", Some(value)).is_ok(),
+                expected,
+                "command gate verdict for flags.assembly {value:?}"
+            );
         }
     }
 }

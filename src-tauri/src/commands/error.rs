@@ -339,6 +339,10 @@ impl From<ProjectDirError> for CommandError {
             ProjectDirError::InvalidProfile => {
                 Self::new(ErrorKind::InvalidData, "the workspace profile is invalid")
             }
+            ProjectDirError::InvalidFlags => Self::new(
+                ErrorKind::InvalidData,
+                "the workspace flags file is invalid",
+            ),
             ProjectDirError::Io => Self::new(
                 ErrorKind::Io,
                 "a workspace project directory operation failed",

@@ -791,3 +791,21 @@ export function nexoraInit(): Promise<string> {
 export function saveWorkspaceProfile(task: "chat" | "agent", document: string): Promise<string> {
   return invoke<string>("save_workspace_profile", { task, document });
 }
+
+// ---- Feature flags (2.0 rollout) --------------------------------------
+// Read-only rollout gates: workspace `.nexora/flags.json` wins over the
+// app-global `flags.*` settings keys, which win over the hardcoded defaults
+// (current behavior). There is no setter command: flags are edited where
+// they live (the workspace file, or the `flags.*` keys via settings).
+
+/** One flag's status in the read-only `flags_status` view. */
+export interface FlagStatus {
+  enabled: boolean;
+  source: "workspace" | "global" | "default";
+}
+
+/** Read-only feature-flag status (`flags_status`): every registered flag
+ * mapped to its effective value plus its fixed-vocabulary source. */
+export function flagsStatus(): Promise<Record<string, FlagStatus>> {
+  return invoke<Record<string, FlagStatus>>("flags_status");
+}

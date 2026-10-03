@@ -125,6 +125,10 @@ pub(crate) struct SnapshotStore {
     run_id: i64,
     snapshots: Vec<RunSnapshot>,
     checkpoints: HashMap<String, usize>,
+    /// The `snapshots` feature-flag gate: disabled stores refuse every record
+    /// path with [`SnapshotError::Disabled`]. Enabled by default, so existing
+    /// callers behave exactly as before.
+    enabled: bool,
 }
 
 impl std::fmt::Debug for SnapshotStore {
@@ -133,6 +137,7 @@ impl std::fmt::Debug for SnapshotStore {
             .field("run_id", &self.run_id)
             .field("snapshots", &self.snapshots)
             .field("checkpoints", &self.checkpoints.len())
+            .field("enabled", &self.enabled)
             .finish()
     }
 }
@@ -145,7 +150,25 @@ impl SnapshotStore {
             run_id,
             snapshots: Vec::new(),
             checkpoints: HashMap::new(),
+            enabled: true,
         }
+    }
+
+    /// Gate the WS-C.1 record paths behind the `snapshots` feature flag.
+    /// Enabled (the default) keeps the current behavior; disabled makes the
+    /// store fully inert — capture, checkpoint, and rollback refuse with the
+    /// fixed-vocabulary [`SnapshotError::Disabled`] and append nothing, which
+    /// reproduces the pre-2.0 behavior (no snapshots).
+    #[must_use]
+    pub(crate) fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    /// Whether the WS-C.1 record paths are gated on.
+    #[must_use]
+    pub(crate) const fn is_enabled(&self) -> bool {
+        self.enabled
     }
 
     /// Owning run id.
@@ -180,8 +203,10 @@ impl SnapshotStore {
     ///
     /// # Errors
     ///
-    /// Returns the secret-free [`SnapshotError::Lifecycle`] when the witness
-    /// edge is illegal; appends nothing and captures nothing.
+    /// Returns [`SnapshotError::Disabled`] when the `snapshots` flag gates
+    /// the store off (appends nothing, captures nothing), or the secret-free
+    /// [`SnapshotError::Lifecycle`] when the witness edge is illegal
+    /// (appends nothing and captures nothing).
     pub(crate) fn capture(
         &mut self,
         log: &AuditLog,
@@ -189,6 +214,9 @@ impl SnapshotStore {
         to: RunState,
         position: RunPosition,
     ) -> Result<usize, SnapshotError> {
+        if !self.enabled {
+            return Err(SnapshotError::Disabled);
+        }
         log.record(from, to, AuditEvent::SnapshotCaptured)
             .map_err(SnapshotError::Lifecycle)?;
         Ok(self.push_snapshot(position, log.len()))
@@ -202,9 +230,11 @@ impl SnapshotStore {
     ///
     /// # Errors
     ///
-    /// Returns [`SnapshotError::EmptyCheckpointName`] for an empty name, or
-    /// the secret-free [`SnapshotError::Lifecycle`] when the witness edge is
-    /// illegal (appends nothing, captures nothing).
+    /// Returns [`SnapshotError::EmptyCheckpointName`] for an empty name,
+    /// [`SnapshotError::Disabled`] when the `snapshots` flag gates the store
+    /// off (appends nothing, captures nothing), or the secret-free
+    /// [`SnapshotError::Lifecycle`] when the witness edge is illegal
+    /// (appends nothing, captures nothing).
     pub(crate) fn checkpoint(
         &mut self,
         log: &AuditLog,
@@ -215,6 +245,9 @@ impl SnapshotStore {
     ) -> Result<usize, SnapshotError> {
         if name.is_empty() {
             return Err(SnapshotError::EmptyCheckpointName);
+        }
+        if !self.enabled {
+            return Err(SnapshotError::Disabled);
         }
         log.record(from, to, AuditEvent::CheckpointSaved)
             .map_err(SnapshotError::Lifecycle)?;
@@ -267,7 +300,9 @@ impl SnapshotStore {
     ///
     /// # Errors
     ///
-    /// Returns [`SnapshotError::UnknownSnapshot`] for an out-of-range index,
+    /// Returns [`SnapshotError::Disabled`] when the `snapshots` flag gates
+    /// the store off (appends nothing),
+    /// [`SnapshotError::UnknownSnapshot`] for an out-of-range index,
     /// [`SnapshotError::IllegalTarget`] for a forward target, or the
     /// secret-free [`SnapshotError::Lifecycle`] when the witness edge is
     /// illegal (appends nothing).
@@ -279,6 +314,9 @@ impl SnapshotStore {
         index: usize,
         current: ResumePoint,
     ) -> Result<Restored, SnapshotError> {
+        if !self.enabled {
+            return Err(SnapshotError::Disabled);
+        }
         let snapshot =
             self.snapshots
                 .get(index)
@@ -386,6 +424,9 @@ pub(crate) enum SnapshotError {
     /// The witness lifecycle edge is illegal: the wrapped secret-free
     /// [`LifecycleError`].
     Lifecycle(LifecycleError),
+    /// The `snapshots` feature flag gates the store off: every record path
+    /// refuses without appending or capturing (pre-2.0: no snapshots).
+    Disabled,
 }
 
 impl std::fmt::Display for SnapshotError {
@@ -419,6 +460,7 @@ impl std::fmt::Display for SnapshotError {
                 }
             }
             Self::Lifecycle(err) => write!(f, "{err}"),
+            Self::Disabled => write!(f, "run snapshots are disabled"),
         }
     }
 }
@@ -429,6 +471,7 @@ impl std::error::Error for SnapshotError {
             Self::UnknownSnapshot { .. }
             | Self::UnknownCheckpoint
             | Self::EmptyCheckpointName
+            | Self::Disabled
             | Self::IllegalTarget { .. } => None,
             Self::Lifecycle(err) => Some(err),
         }
@@ -1043,5 +1086,65 @@ mod tests {
             "pipeline rewind out of range (requested 4 with 0 entered)"
         );
         assert_eq!(pipeline.next(), Some(PipelineStage::Plan));
+    }
+
+    #[test]
+    fn disabled_store_is_inert_and_secret_free() {
+        // Flag OFF reproduces the pre-2.0 behavior: no captures, no
+        // checkpoints, no rollbacks, no audit appends — every record path
+        // refuses with fixed vocabulary.
+        let log = AuditLog::new();
+        let mut store = SnapshotStore::new(7).with_enabled(false);
+        assert!(!store.is_enabled());
+        assert!(SnapshotStore::new(7).is_enabled());
+        let position = RunPosition {
+            stage_index: 0,
+            role: PipelineStage::Plan.role(),
+            state: RunState::Running,
+            steps_taken: 0,
+            spent_micro_usd: 0,
+        };
+        for outcome in [
+            store.capture(&log, RunState::Queued, RunState::Running, position),
+            store.checkpoint(
+                &log,
+                RunState::Queued,
+                RunState::Running,
+                "stable",
+                position,
+            ),
+        ] {
+            assert_eq!(
+                outcome.expect_err("disabled store refuses"),
+                SnapshotError::Disabled
+            );
+        }
+        assert_eq!(
+            store
+                .rollback(
+                    &log,
+                    RunState::Queued,
+                    RunState::Running,
+                    0,
+                    ResumePoint {
+                        stage_index: 0,
+                        steps_taken: 0,
+                        spent_micro_usd: 0
+                    },
+                )
+                .expect_err("disabled rollback refuses"),
+            SnapshotError::Disabled
+        );
+        let disabled = SnapshotError::Disabled;
+        assert_eq!(format!("{disabled}"), "run snapshots are disabled");
+        assert!(log.is_empty(), "disabled paths append nothing");
+        assert!(store.is_empty(), "disabled paths capture nothing");
+        // The empty name still fails first (caller intent, not the gate).
+        assert_eq!(
+            store
+                .checkpoint(&log, RunState::Queued, RunState::Running, "", position)
+                .expect_err("empty name fails"),
+            SnapshotError::EmptyCheckpointName
+        );
     }
 }
