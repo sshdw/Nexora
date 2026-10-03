@@ -22,7 +22,8 @@
 //!   chat commands .......... ConversationView.tsx:463-469 composer Enter,
 //!                             497-511 Send button; App.tsx:233-245 create
 //!   settings sections ...... SettingsView GROUP MAP comment (7 groups)
-//!   help ................... ShortcutsDialog.tsx (show-shortcuts command)
+//!   help ................... ShortcutsDialog.tsx (show-shortcuts command),
+//!                             OnboardingFlow.tsx (replay-onboarding command)
 //!
 //! NL-tolerance WITHOUT an LLM (explicit scope decision): each command
 //! carries hand-written keyword aliases (including common verbs like
@@ -98,6 +99,8 @@ export interface PaletteDeps {
   toggleSplit: () => void;
   toggleZen: () => void;
   showShortcuts: () => void;
+  /** Reopen the first-run onboarding flow (Help re-entry point). */
+  replayOnboarding: () => void;
   jumpToTab: (index: number) => void;
   tabCount: () => number;
 }
@@ -281,6 +284,22 @@ export function buildCommands(deps: PaletteDeps): PaletteCommand[] {
         "f1",
       ],
       run: deps.showShortcuts,
+    },
+    {
+      id: "help.replay-onboarding",
+      title: "Replay onboarding walkthrough",
+      section: "Help",
+      keywords: [
+        "onboarding",
+        "walkthrough",
+        "tour",
+        "getting started",
+        "setup",
+        "first run",
+        "replay",
+        "welcome",
+      ],
+      run: deps.replayOnboarding,
     },
     {
       id: "vcs.refresh",

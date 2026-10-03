@@ -13,6 +13,7 @@ import M3Button from "./components/M3Button";
 import M3IconButton from "./components/M3IconButton";
 import M3Toolbar from "./components/M3Toolbar";
 import NexoraMark from "./components/NexoraMark";
+import OnboardingFlow from "./components/OnboardingFlow";
 import PromptLibraryView from "./components/PromptLibraryView";
 import SettingsView from "./components/SettingsView";
 import ShortcutsDialog from "./components/ShortcutsDialog";
@@ -51,6 +52,7 @@ import { useAppearance } from "./lib/useAppearance";
 import { useConversations } from "./lib/useConversations";
 import { useConversationTabs } from "./lib/useConversationTabs";
 import { useImportExport } from "./lib/useImportExport";
+import { useOnboarding } from "./lib/useOnboarding";
 import { useProviders } from "./lib/useProviders";
 import { useSpendLimit } from "./lib/useSpendLimit";
 import { useWorkspace } from "./lib/useWorkspace";
@@ -211,6 +213,14 @@ function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   // Shortcuts help dialog (Ctrl+/): grouped table over lib/shortcuts.ts.
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  // Simplified first-run onboarding (3-step overlay): auto-shows once on
+  // fresh installs (no usable provider AND no workspace root — see
+  // useOnboarding for the documented signal). Any dismissal marks
+  // completion, so this fires at most once per device; re-entry is via
+  // the palette command + the Settings nav entry below.
+  const onboarding = useOnboarding();
+  const dismissOnboarding = onboarding.dismiss;
+  const replayOnboardingFlow = onboarding.replay;
   // A palette-chosen command runs after the palette unmounts (see the
   // deferred-run effect below), so focus moves land on live targets.
   const [pendingPaletteRun, setPendingPaletteRun] = useState<(() => void) | null>(null);
@@ -633,6 +643,61 @@ function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [openTerminal]);
 
+  // Onboarding re-entry (palette "Replay onboarding walkthrough" + Settings
+  // nav entry): overlays close first so the flow never stacks above another
+  // dialog (same overlay-exit contract as closeOverlays).
+  const replayOnboarding = useCallback(() => {
+    closeOverlays();
+    setPaletteOpen(false);
+    setShortcutsOpen(false);
+    replayOnboardingFlow();
+  }, [closeOverlays, replayOnboardingFlow]);
+
+  // Onboarding "Open Settings" exit: dismiss the flow, then deep-link the
+  // credentials section (the most likely next setup action).
+  const handleOnboardingOpenSettings = useCallback(() => {
+    dismissOnboarding();
+    openSettings("credentials");
+  }, [dismissOnboarding, openSettings]);
+
+  // First-run auto-show: fresh installs (no usable provider AND no
+  // workspace root) see the flow once, only when no overlay or dialog is
+  // open. Any dismissal marks completion (useOnboarding), so this never
+  // re-fires; the app underneath stays usable with zero keys.
+  const anyProviderAvailable = providers.providers.some((p) => p.available);
+  useEffect(() => {
+    if (onboarding.completed || onboarding.open) return;
+    if (providers.loading || workspace.loading) return;
+    if (
+      settingsOpen ||
+      libraryOpen ||
+      vcsOpen ||
+      activityOpen ||
+      terminalOpen ||
+      paletteOpen ||
+      shortcutsOpen
+    ) {
+      return;
+    }
+    if (anyProviderAvailable || workspace.root !== null) return;
+    replayOnboardingFlow();
+  }, [
+    onboarding.completed,
+    onboarding.open,
+    replayOnboardingFlow,
+    providers.loading,
+    anyProviderAvailable,
+    workspace.loading,
+    workspace.root,
+    settingsOpen,
+    libraryOpen,
+    vcsOpen,
+    activityOpen,
+    terminalOpen,
+    paletteOpen,
+    shortcutsOpen,
+  ]);
+
   // The palette registry: every entry wraps the existing UI handler, so
   // invoking from the palette === clicking its UI equivalent.
   const paletteCommands = useMemo(
@@ -663,6 +728,7 @@ function App() {
         toggleSplit: handleToggleSplit,
         toggleZen,
         showShortcuts: () => setShortcutsOpen(true),
+        replayOnboarding,
         jumpToTab: (index: number) => {
           closeOverlays();
           tabs.jumpTo(index);
@@ -682,6 +748,7 @@ function App() {
       tabs,
       handleToggleSplit,
       toggleZen,
+      replayOnboarding,
     ],
   );
 
@@ -907,6 +974,7 @@ function App() {
                 initialSection={settingsSection}
                 onOpenImport={() => setImportOpen(true)}
                 onExportActive={exportActiveConversation}
+                onReplayOnboarding={replayOnboarding}
               />
             )}
           </>
@@ -970,6 +1038,15 @@ function App() {
       )}
       {shortcutsOpen && (
         <ShortcutsDialog onClose={() => setShortcutsOpen(false)} />
+      )}
+      {onboarding.open && (
+        <OnboardingFlow
+          key={onboarding.runId}
+          providers={providers}
+          workspace={workspace}
+          onClose={dismissOnboarding}
+          onOpenSettings={handleOnboardingOpenSettings}
+        />
       )}
     </div>
   );
