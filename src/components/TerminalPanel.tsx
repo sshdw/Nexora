@@ -136,6 +136,11 @@ export default function TerminalPanel({ onClose, request = null }: TerminalPanel
   // Synchronous in-flight run guard (see handleRun): flips in the same
   // tick as the Run press, unlike `running` state.
   const runningRef = useRef(false);
+  // Synchronous per-block explain guard: `explains[blockId].loading`
+  // lands after re-render, so two rapid Explain presses could both pass
+  // the state guard and stack two paid AI requests. The ref flips in
+  // the same tick.
+  const explainingRef = useRef<Set<number>>(new Set());
 
   useEffect(() => {
     let live = true;
@@ -298,6 +303,8 @@ export default function TerminalPanel({ onClose, request = null }: TerminalPanel
   // generation). The suggestion is copy-only — this handler never feeds it
   // back into `terminalRun`, so nothing auto-executes.
   const handleExplain = useCallback(async (blockId: number, output: string, runTruncated: boolean) => {
+    if (explainingRef.current.has(blockId)) return;
+    explainingRef.current.add(blockId);
     setExplains((prev) => ({
       ...prev,
       [blockId]: {
@@ -355,6 +362,8 @@ export default function TerminalPanel({ onClose, request = null }: TerminalPanel
           copied: null,
         },
       }));
+    } finally {
+      explainingRef.current.delete(blockId);
     }
   }, []);
 

@@ -315,8 +315,8 @@ pub(crate) struct ErrorExplanation {
 /// in logs, not across IPC.
 #[derive(Debug)]
 pub(crate) enum ExplainError {
-    /// The failed output and exit context were both empty (or the context
-    /// alone was unusable).
+    /// The failed output was empty (the exit context is only the fixed
+    /// badge line on this path and can never substitute for output).
     InvalidInput,
     /// The AI request failed (unknown provider, missing credentials,
     /// provider failure). Carries no prompt or output content.
@@ -482,8 +482,9 @@ pub(crate) fn sanitize_explanation(raw: &str) -> (String, String) {
 ///
 /// # Errors
 ///
-/// Returns [`ExplainError::InvalidInput`] when the output and exit context
-/// are both empty, [`ExplainError::Request`] when AI execution fails.
+/// Returns [`ExplainError::InvalidInput`] when the output is empty (the
+/// exit context is only the fixed badge line on this path and can never
+/// substitute for output), [`ExplainError::Request`] when AI execution fails.
 pub(crate) fn explain_terminal_error(
     db: &Database,
     output: &str,
@@ -492,7 +493,7 @@ pub(crate) fn explain_terminal_error(
     model: &str,
 ) -> Result<ErrorExplanation, ExplainError> {
     use crate::application::execution::RequestExecutionService;
-    if output.trim().is_empty() && exit_context.trim().is_empty() {
+    if output.trim().is_empty() {
         return Err(ExplainError::InvalidInput);
     }
     let context = truncate_chars(exit_context.trim(), MAX_EXIT_CONTEXT_CHARS);
@@ -746,11 +747,18 @@ mod tests {
 
     #[test]
     fn explain_refuses_empty_input_secret_free() {
-        // Empty output plus empty context refuses with fixed vocabulary.
-        // No database or provider is touched: `explain_terminal_error`
-        // validates before any request is built, so this needs no keyring.
+        // Empty output refuses with fixed vocabulary, even when the fixed
+        // badge-line context is present (context can never substitute for
+        // output on this path). No database or provider is touched:
+        // `explain_terminal_error` validates before any request is built,
+        // so this needs no keyring.
         let db = crate::infrastructure::database::in_memory_database();
-        for (output, context) in [("", ""), ("   ", "  ")] {
+        for (output, context) in [
+            ("", ""),
+            ("   ", "  "),
+            ("", "non-zero exit"),
+            ("   ", "non-zero exit"),
+        ] {
             let err = explain_terminal_error(&db, output, context, "openai", "m")
                 .expect_err("empty input must be refused");
             assert!(
