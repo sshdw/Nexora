@@ -145,7 +145,7 @@ export const SHORTCUTS: readonly ShortcutEntry[] = [
   },
   {
     id: "help.show-shortcuts",
-    keys: ["Ctrl+/", "F1"],
+    keys: ["Ctrl+/", "Ctrl+?", "F1"],
     group: "Launcher",
     scope: "Global (any focus, no open dialog)",
     description: "Open this keyboard-shortcuts reference",
