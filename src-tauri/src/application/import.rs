@@ -561,12 +561,41 @@ pub(crate) const DENY_SECRET_VALUE: &str = "secret-like value denied";
 pub(crate) const DENY_INVALID_RECORD: &str = "invalid record";
 
 /// Translate a VS Code color-theme name to the implemented Nexora appearance
-/// theme: an unambiguous dark/light mention (case-insensitive) maps to
-/// `dark` / `light`; anything else (a theme naming neither, or confusingly
-/// both) yields [`None`] so the caller denies the key instead of guessing.
+/// theme: an unambiguous whole-word dark/light mention (case-insensitive,
+/// non-alphanumeric boundaries) maps to `dark` / `light`; anything else (a
+/// theme naming neither, naming both, or matching only as a substring such
+/// as `flight` / `delightful`) yields [`None`] so the caller denies the key
+/// instead of guessing.
+/// Fail-closed on ambiguous/non-word matches.
+fn contains_word(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return false;
+    }
+    let mut start = 0;
+    while let Some(offset) = haystack[start..].find(needle) {
+        let index = start + offset;
+        let before_ok = haystack[..index]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !c.is_ascii_alphanumeric());
+        let after_ok = haystack[index + needle.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| !c.is_ascii_alphanumeric());
+        if before_ok && after_ok {
+            return true;
+        }
+        start = index + needle.len();
+    }
+    false
+}
+
 fn translate_vscode_theme(value: &str) -> Option<&'static str> {
     let lowered = value.to_lowercase();
-    match (lowered.contains("dark"), lowered.contains("light")) {
+    match (
+        contains_word(&lowered, "dark"),
+        contains_word(&lowered, "light"),
+    ) {
         (true, false) => Some("dark"),
         (false, true) => Some("light"),
         _ => None,
@@ -1047,7 +1076,8 @@ impl<'a> SetupImportService<'a> {
     /// is scanned with the same predicate instead
     /// ([`McpServerEntry::validate`]): secret-like entries are denied per
     /// server with a secret-free reason while valid servers still import. The
-    /// accepted list replaces any previously stored list.
+    /// accepted list replaces any previously stored list when non-empty; an
+    /// empty accepted list stores nothing and preserves the existing list.
     ///
     /// # Errors
     ///
@@ -1784,6 +1814,37 @@ mod setup_import_tests {
                 .expect("read theme")
                 .is_none(),
             "denied values store nothing"
+        );
+    }
+
+    #[test]
+    fn vscode_theme_substring_lookalikes_are_denied() {
+        let db = setup_db();
+        let service = SetupImportService::new(&db);
+        // Substring-only matches (`flight` / `delightful`), ambiguous
+        // mentions (`Dark Light`), and the empty name must all fail closed.
+        for name in ["Dark Light", "", "Night Flight", "Delightful"] {
+            let json = serde_json::json!({ "workbench.colorTheme": name }).to_string();
+            let report = service
+                .import_vscode(&json)
+                .expect("denial lands in the report");
+            assert!(report.imported.is_empty(), "name {name:?} must not import");
+            assert!(report.skipped.is_empty(), "name {name:?} must not skip");
+            assert_eq!(
+                report.denied,
+                vec![DeniedEntry {
+                    source_key: "workbench.colorTheme".to_string(),
+                    reason: DENY_UNSUPPORTED_VALUE,
+                }],
+                "name {name:?} must be denied"
+            );
+        }
+        assert!(
+            SettingsService::new(&db)
+                .read("appearance.theme")
+                .expect("read theme")
+                .is_none(),
+            "denied lookalikes store nothing"
         );
     }
 
