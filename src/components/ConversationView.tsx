@@ -383,7 +383,7 @@ export default function ConversationView({
               <span className="nex-agent-autonomy-label">Autonomy</span>
               <M3SegmentedGroup
                 label="Autonomy mode"
-                semantics="tabs"
+                semantics="radio"
                 value={autonomyMode}
                 onChange={(mode) => void handleAutonomyChange(mode)}
                 options={[

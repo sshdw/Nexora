@@ -43,7 +43,7 @@ export default function M3RailItem({
         (className ? " " + className : "")
       }
       aria-label={label}
-      aria-current={active ? "true" : undefined}
+      aria-current={active ? "page" : undefined}
       title={label}
       {...rest}
     >

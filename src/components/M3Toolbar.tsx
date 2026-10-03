@@ -18,9 +18,14 @@ export interface M3ToolbarProps {
   /** Accessible group name (required). */
   label: string;
   variant?: "docked" | "floating";
-  /** Floating only: caller-supplied anchor position (top/left). */
+  /** Floating only: caller-supplied anchor position (top/left). The
+   * consumer owns anchoring (position via `style`) and outside-click
+   * dismissal — the toolbar owns focus and arrow-key movement only. */
   style?: CSSProperties;
-  /** Floating only: called on Escape (dismiss the selection context). */
+  /** Floating only: called on Escape (dismiss the selection context).
+   * The consumer owns dismissal side effects (e.g. outside-click
+   * handling and unmounting); focus is restored to the pre-popover
+   * element here and again on unmount. */
   onDismiss?: () => void;
   /** Floating only: move focus into the toolbar on mount (default true —
    * popovers take focus; set false to keep focus at the anchor). */
@@ -40,14 +45,27 @@ export default function M3Toolbar({
 }: M3ToolbarProps) {
   const barRef = useRef<HTMLDivElement>(null);
   const floating = variant === "floating";
+  // Element focused before the floating popover mounted — restored on
+  // unmount and on the Escape/onDismiss path below. Anchoring (`style`)
+  // and outside-click dismissal stay with the consumer.
+  const restoreTargetRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
-    if (floating && autoFocus) {
+    if (!floating) return;
+    restoreTargetRef.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    if (autoFocus) {
       const first = barRef.current?.querySelector<HTMLElement>(
         FOCUSABLE_SELECTOR,
       );
       first?.focus();
     }
+    return () => {
+      restoreTargetRef.current?.focus();
+      restoreTargetRef.current = null;
+    };
   }, [floating, autoFocus]);
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
@@ -56,6 +74,7 @@ export default function M3Toolbar({
     if (event.key === "Escape" && floating) {
       event.stopPropagation();
       onDismiss?.();
+      restoreTargetRef.current?.focus();
       return;
     }
     if (

@@ -25,7 +25,6 @@ export default function M3LoadingIndicator({
         "nex-m3-loading" + (size === "sm" ? " nex-m3-loading-sm" : "")
       }
       role="status"
-      aria-label={label}
     >
       <span className="nex-m3-loading-dots" aria-hidden="true">
         <span className="nex-m3-loading-dot" />

@@ -17,7 +17,7 @@ export default function WorkspaceRecentList({ store }: WorkspaceRecentListProps)
   return (
     <div className="nex-workspace-recent">
       <M3RailItem
-        label={`Recent workspace folders (${store.recent.length})`}
+        label={`Recent folders (${store.recent.length})`}
         icon={
           <span aria-hidden="true">
             🕘

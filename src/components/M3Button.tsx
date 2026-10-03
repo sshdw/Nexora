@@ -63,6 +63,11 @@ export default function M3Button({
   ...rest
 }: M3ButtonProps) {
   const busy = disabled || loading;
+  if (import.meta.env.DEV && filled && variant !== "destructive") {
+    console.warn(
+      `[M3Button] "filled" is ignored for variant "${variant}" (only "destructive" supports it).`,
+    );
+  }
   const classes = [
     "nex-btn",
     filled && variant === "destructive"

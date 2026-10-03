@@ -49,17 +49,30 @@ export default function M3SegmentedGroup<T extends string>({
 }: M3SegmentedGroupProps<T>) {
   const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const isTabs = semantics === "tabs";
+  const isOptionDisabled = (index: number) =>
+    disabled || options[index]?.disabled === true;
+  // Roving tabindex anchor: the selected option, or — when nothing is
+  // selected (value === null) — the first enabled option so the group
+  // stays tabbable.
+  const firstEnabledIndex = options.findIndex(
+    (_, index) => !isOptionDisabled(index),
+  );
 
-  const focusOption = (index: number) => {
+  const focusOption = (index: number, direction: 1 | -1 = 1) => {
     const count = options.length;
-    const next = (index + count) % count;
-    const target = itemRefs.current[next];
-    if (target && !target.disabled) {
-      target.focus();
-      const option = options[next];
-      if (option && !option.disabled && option.value !== value) {
-        onChange(option.value);
+    // Advance past disabled options to the next enabled one instead of
+    // stalling on a disabled stop.
+    for (let step = 0; step < count; step += 1) {
+      const next = (((index + count) % count) + count) % count;
+      if (!isOptionDisabled(next)) {
+        itemRefs.current[next]?.focus();
+        const option = options[next];
+        if (option && option.value !== value) {
+          onChange(option.value);
+        }
+        return;
       }
+      index += direction;
     }
   };
 
@@ -71,20 +84,20 @@ export default function M3SegmentedGroup<T extends string>({
       case "ArrowRight":
       case "ArrowDown":
         event.preventDefault();
-        focusOption(index + 1);
+        focusOption(index + 1, 1);
         break;
       case "ArrowLeft":
       case "ArrowUp":
         event.preventDefault();
-        focusOption(index - 1);
+        focusOption(index - 1, -1);
         break;
       case "Home":
         event.preventDefault();
-        focusOption(0);
+        focusOption(0, 1);
         break;
       case "End":
         event.preventDefault();
-        focusOption(options.length - 1);
+        focusOption(options.length - 1, -1);
         break;
     }
   };
@@ -113,7 +126,13 @@ export default function M3SegmentedGroup<T extends string>({
             aria-checked={!isTabs ? selected : undefined}
             aria-label={option.ariaLabel}
             className={selected ? "is-active" : undefined}
-            tabIndex={!isTabs && !selected ? -1 : undefined}
+            tabIndex={
+              !isTabs && !selected
+                ? value === null && index === firstEnabledIndex
+                  ? undefined
+                  : -1
+                : undefined
+            }
             disabled={optionDisabled}
             onClick={() => onChange(option.value)}
             onKeyDown={(event) => handleKeyDown(event, index)}

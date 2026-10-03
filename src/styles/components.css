@@ -1220,11 +1220,14 @@
 .nex-m3-progress-circular-track {
   fill: none;
   stroke: var(--nex-sys-color-surface-container-highest);
+  /* Intentional OFFICIAL 4dp ring geometry (unitless SVG user units, not a
+   * design token): matches the M3 expressive progress thickness. */
   stroke-width: 4;
 }
 .nex-m3-progress-circular-fill {
   fill: none;
   stroke: var(--nex-sys-color-primary);
+  /* Intentional OFFICIAL 4dp ring geometry — see track rule above. */
   stroke-width: 4;
   stroke-linecap: round;
 }
@@ -1275,6 +1278,9 @@
   background: var(--nex-sys-color-primary-container);
   color: var(--nex-sys-color-primary);
   font-weight: var(--nex-sys-type-weight-emphasized);
+}
+.nex-m3-rail-item:focus-visible {
+  outline-offset: var(--nex-sys-focus-ring-offset-inset);
 }
 .nex-m3-rail-icon {
   display: inline-flex;
