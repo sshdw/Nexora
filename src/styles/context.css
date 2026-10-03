@@ -56,7 +56,7 @@
   display: flex;
   height: 8px;
   overflow: hidden;
-  border-radius: var(--nex-sys-shape-corner-full);
+  border-radius: var(--nex-sys-shape-full);
   background: var(--nex-sys-color-surface-container-high);
 }
 
@@ -100,7 +100,7 @@
 .nex-context-dot {
   width: 8px;
   height: 8px;
-  border-radius: var(--nex-sys-shape-corner-full);
+  border-radius: var(--nex-sys-shape-full);
 }
 
 .nex-context-file-list {

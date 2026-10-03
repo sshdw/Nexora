@@ -21,13 +21,15 @@ function isTheme(value: string | null): value is Theme {
   return value !== null && (THEMES as readonly string[]).includes(value);
 }
 
-/** Apply (or clear, for the dark default) the root `data-theme` attribute. */
+/** Apply the root `data-theme` attribute (explicit override hook).
+ *
+ * Both themes are set explicitly — never removed — so the persisted
+ * choice wins over the `prefers-color-scheme` first-paint default in
+ * `src/styles/tokens.css`. `high-contrast` remains available as a
+ * manual `data-theme="high-contrast"` / `.nex-theme-high-contrast`
+ * override (token mechanism only; no toggle UI yet). */
 function applyTheme(theme: Theme): void {
-  if (theme === "light") {
-    document.documentElement.dataset.theme = "light";
-  } else {
-    delete document.documentElement.dataset.theme;
-  }
+  document.documentElement.dataset.theme = theme;
 }
 
 export interface AppearanceStore {

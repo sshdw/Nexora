@@ -99,6 +99,70 @@
      fallbacks under reduced motion below) ---- */
   --motion-loop-skeleton: 1.6s;
   --motion-loop-typing-dot-delay: 120ms;
+
+  /* ---- Canonical --nex-sys-motion-* aliases (0.4.0 full-M3E
+     foundation) ----
+     The --motion-* names above remain as legacy aliases; new code
+     consumes the --nex-sys-motion-* canonical names. Every animated
+     token degrades per the contract motion table (send/create/
+     selection → instant; toggle → instant on/off; dialog/menu →
+     fade-only/instant; streaming → instant append; loading →
+     static + text) via the global prefers-reduced-motion gate at
+     the bottom of this file, which collapses all durations and
+     freezes all loops. Information always survives in the final
+     static frame (accessibility.md §5–§6). */
+  --nex-sys-motion-easing-standard: var(--motion-easing-standard);
+  --nex-sys-motion-easing-standard-decelerate: var(--motion-easing-standard-decelerate);
+  --nex-sys-motion-easing-standard-accelerate: var(--motion-easing-standard-accelerate);
+  --nex-sys-motion-easing-emphasized-decelerate: var(--motion-easing-emphasized-decelerate);
+  --nex-sys-motion-easing-emphasized-accelerate: var(--motion-easing-emphasized-accelerate);
+  --nex-sys-motion-duration-short1: var(--motion-duration-short1);
+  --nex-sys-motion-duration-short2: var(--motion-duration-short2);
+  --nex-sys-motion-duration-short3: var(--motion-duration-short3);
+  --nex-sys-motion-duration-short4: var(--motion-duration-short4);
+  --nex-sys-motion-duration-medium1: var(--motion-duration-medium1);
+  --nex-sys-motion-duration-medium2: var(--motion-duration-medium2);
+  --nex-sys-motion-duration-medium3: var(--motion-duration-medium3);
+  --nex-sys-motion-duration-medium4: var(--motion-duration-medium4);
+  --nex-sys-motion-duration-long1: var(--motion-duration-long1);
+  --nex-sys-motion-duration-long2: var(--motion-duration-long2);
+  --nex-sys-motion-duration-long3: var(--motion-duration-long3);
+  --nex-sys-motion-duration-long4: var(--motion-duration-long4);
+  --nex-sys-motion-duration-extra-long1: var(--motion-duration-extra-long1);
+  --nex-sys-motion-duration-extra-long2: var(--motion-duration-extra-long2);
+  --nex-sys-motion-duration-extra-long3: var(--motion-duration-extra-long3);
+  --nex-sys-motion-duration-extra-long4: var(--motion-duration-extra-long4);
+  --nex-sys-motion-duration-fast: var(--motion-duration-fast);
+  --nex-sys-motion-duration-normal: var(--motion-duration-normal);
+  --nex-sys-motion-spring-expressive-fast-spatial-curve: var(--motion-spring-expressive-fast-spatial-curve);
+  --nex-sys-motion-spring-expressive-fast-spatial-duration: var(--motion-spring-expressive-fast-spatial-duration);
+  --nex-sys-motion-spring-expressive-default-spatial-curve: var(--motion-spring-expressive-default-spatial-curve);
+  --nex-sys-motion-spring-expressive-default-spatial-duration: var(--motion-spring-expressive-default-spatial-duration);
+  --nex-sys-motion-spring-expressive-slow-spatial-curve: var(--motion-spring-expressive-slow-spatial-curve);
+  --nex-sys-motion-spring-expressive-slow-spatial-duration: var(--motion-spring-expressive-slow-spatial-duration);
+  --nex-sys-motion-spring-expressive-fast-effects-curve: var(--motion-spring-expressive-fast-effects-curve);
+  --nex-sys-motion-spring-expressive-fast-effects-duration: var(--motion-spring-expressive-fast-effects-duration);
+  --nex-sys-motion-spring-expressive-default-effects-curve: var(--motion-spring-expressive-default-effects-curve);
+  --nex-sys-motion-spring-expressive-default-effects-duration: var(--motion-spring-expressive-default-effects-duration);
+  --nex-sys-motion-spring-expressive-slow-effects-curve: var(--motion-spring-expressive-slow-effects-curve);
+  --nex-sys-motion-spring-expressive-slow-effects-duration: var(--motion-spring-expressive-slow-effects-duration);
+  --nex-sys-motion-spring-standard-fast-spatial-curve: var(--motion-spring-standard-fast-spatial-curve);
+  --nex-sys-motion-spring-standard-fast-spatial-duration: var(--motion-spring-standard-fast-spatial-duration);
+  --nex-sys-motion-spring-standard-default-spatial-curve: var(--motion-spring-standard-default-spatial-curve);
+  --nex-sys-motion-spring-standard-default-spatial-duration: var(--motion-spring-standard-default-spatial-duration);
+  --nex-sys-motion-spring-standard-slow-spatial-curve: var(--motion-spring-standard-slow-spatial-curve);
+  --nex-sys-motion-spring-standard-slow-spatial-duration: var(--motion-spring-standard-slow-spatial-duration);
+  --nex-sys-motion-spring-standard-fast-effects-curve: var(--motion-spring-standard-fast-effects-curve);
+  --nex-sys-motion-spring-standard-fast-effects-duration: var(--motion-spring-standard-fast-effects-duration);
+  --nex-sys-motion-spring-standard-default-effects-curve: var(--motion-spring-standard-default-effects-curve);
+  --nex-sys-motion-spring-standard-default-effects-duration: var(--motion-spring-standard-default-effects-duration);
+  --nex-sys-motion-spring-standard-slow-effects-curve: var(--motion-spring-standard-slow-effects-curve);
+  --nex-sys-motion-spring-standard-slow-effects-duration: var(--motion-spring-standard-slow-effects-duration);
+  --nex-sys-motion-stagger-step: var(--motion-stagger-step);
+  --nex-sys-motion-stagger-travel: var(--motion-stagger-travel);
+  --nex-sys-motion-view-travel: var(--motion-view-travel);
+  --nex-sys-motion-loop-skeleton: var(--motion-loop-skeleton);
+  --nex-sys-motion-loop-typing-dot-delay: var(--motion-loop-typing-dot-delay);
 }
 
 /* ---- Reduced motion (OFFICIAL requirement, accessibility.md §5)

@@ -644,7 +644,7 @@
 .nex-dialog-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 100;
+  z-index: var(--nex-sys-z-dialog);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -852,7 +852,7 @@
   position: absolute;
   bottom: calc(100% + var(--nex-sys-space-xs));
   left: 50%;
-  z-index: 60;
+  z-index: var(--nex-sys-z-tooltip);
   transform: translateX(-50%) translateY(2px);
   padding: var(--nex-sys-space-xxs) var(--nex-sys-space-xs);
   border-radius: var(--nex-sys-shape-small);
@@ -891,7 +891,7 @@
   position: fixed;
   right: var(--nex-sys-space-lg);
   bottom: var(--nex-sys-space-lg);
-  z-index: 120;
+  z-index: var(--nex-sys-z-snackbar);
   display: flex;
   align-items: center;
   gap: var(--nex-sys-space-sm);
