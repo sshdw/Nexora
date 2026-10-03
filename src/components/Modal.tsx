@@ -40,12 +40,16 @@ export interface ModalShellProps {
   children: ReactNode;
   /** When true the dialog cannot be dismissed (operation in flight). */
   busy?: boolean;
+  /** Top-anchored variant for launchers (command palette): the card docks
+   * near the viewport top instead of centering. */
+  align?: "center" | "top";
 }
 
 export default function ModalShell({
   title,
   onClose,
   busy = false,
+  align = "center",
   children,
 }: ModalShellProps) {
   const cardRef = useRef<HTMLDivElement>(null);
@@ -147,7 +151,9 @@ export default function ModalShell({
     <div
       ref={backdropRef}
       className={
-        "nex-dialog-backdrop" + (closing ? " is-closing" : "")
+        "nex-dialog-backdrop" +
+        (closing ? " is-closing" : "") +
+        (align === "top" ? " is-top" : "")
       }
       role="presentation"
       onClick={busy ? undefined : requestClose}
