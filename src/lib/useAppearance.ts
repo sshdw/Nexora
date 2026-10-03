@@ -3,8 +3,8 @@
 //! Persists the theme under the `appearance.theme` app-settings key through
 //! the existing settings commands, so the choice survives application
 //! restarts. Only the two defined themes (`dark`, `light`) are accepted:
-//! any other stored or requested value is rejected and the default (dark)
-//! applies — invalid values never reach persistence.
+//! any other stored or requested value is rejected and the OS-matched
+//! default applies — invalid values never reach persistence.
 
 import { useCallback, useEffect, useState } from "react";
 
@@ -33,7 +33,7 @@ function applyTheme(theme: Theme): void {
 }
 
 export interface AppearanceStore {
-  /** The active theme; `dark` until a valid persisted value loads. */
+  /** The active theme; OS-matched default until a valid persisted value loads. */
   theme: Theme;
   /** Validate, persist, and apply a theme selection. */
   setTheme: (theme: Theme) => Promise<void>;
@@ -44,15 +44,29 @@ export function useAppearance(): AppearanceStore {
 
   // Load the persisted theme once at startup so the visual preference is
   // restored before (or as) the first paint settles. A missing value, an
-  // invalid value, or a read failure all resolve to the dark default.
+  // invalid value, or a read failure all resolve to the OS-matched
+  // default (light when prefers-color-scheme matches, else dark) for
+  // store/render consistency — state only, no attribute write, so the
+  // :root:not([data-theme]) first-paint default in
+  // `src/styles/tokens.css` is preserved until an explicit choice.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
         const stored = await getSetting(THEME_KEY);
-        if (!cancelled && isTheme(stored)) {
+        if (cancelled) return;
+        if (isTheme(stored)) {
           setThemeState(stored);
           applyTheme(stored);
+        } else if (
+          typeof window !== "undefined" &&
+          typeof window.matchMedia === "function"
+        ) {
+          setThemeState(
+            window.matchMedia("(prefers-color-scheme: light)").matches
+              ? "light"
+              : "dark",
+          );
         }
       } catch {
         // Offline-safe: settings live in local SQLite; a transient read

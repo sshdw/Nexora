@@ -34,10 +34,11 @@
    Components consume --nex-sys-* / --motion-* variables only —
    never raw hex values, durations, or radii.
 
-   Anti-slop guards (design-taste-frontend): surfaces and primary
-   text are warm off-black/off-white (never pure #000/#fff outside
-   the high-contrast theme, where near-black + off-white carry the
-   contrast contract); no purple-blue glow defaults; animation is
+   Anti-slop guards (design-taste-frontend): dark-theme surfaces and
+   primary text are warm off-black/off-white (never pure #000/#fff
+   there; pure #ffffff remains legitimate for dark on-error text and
+   light-theme fills, and the high-contrast theme carries its contrast
+   contract with near-black + off-white); no purple-blue glow defaults; animation is
    limited to transform/opacity (+ border-radius micro-morphs) via
    motion.css; z-index and radius each have exactly one scale.
    ============================================================ */
@@ -46,9 +47,12 @@
    THEME MECHANISM (NEXORA ADAPTATION wiring, OFFICIAL roles)
    - Dark is the default: :root with no override = dark.
    - Explicit override (wins over everything except
-     high-contrast): :root[data-theme="dark"|"light"] or the
-     .nex-theme-dark / .nex-theme-light class hook. Applied by
-     src/lib/useAppearance.ts and persistently stored.
+     high-contrast): :root[data-theme="dark"|"light"] — the
+     [data-theme] attribute is canonical (applied by
+     src/lib/useAppearance.ts and persistently stored). The
+     .nex-theme-dark / .nex-theme-light class hooks alone lose to
+     the prefers-color-scheme first-paint rule on specificity, so
+     they require the attribute alongside them to take effect.
    - First paint before hydration follows the OS:
      prefers-color-scheme: light maps an unmarked :root to light.
    - High contrast is explicit-only:
@@ -441,6 +445,7 @@
   --nex-sys-state-focus: rgba(0, 0, 0, 0.12);
   --nex-sys-state-selected: rgba(0, 0, 0, 0.1);
   --nex-sys-state-pressed: rgba(0, 0, 0, 0.12);
+  --nex-sys-state-dragged: rgba(0, 0, 0, 0.16);
 
   --nex-sys-state-inverse-hover: rgba(247, 245, 242, 0.08);
   --nex-sys-state-inverse-pressed: rgba(247, 245, 242, 0.12);
@@ -510,6 +515,7 @@
     --nex-sys-state-focus: rgba(0, 0, 0, 0.12);
     --nex-sys-state-selected: rgba(0, 0, 0, 0.1);
     --nex-sys-state-pressed: rgba(0, 0, 0, 0.12);
+    --nex-sys-state-dragged: rgba(0, 0, 0, 0.16);
     --nex-sys-state-inverse-hover: rgba(247, 245, 242, 0.08);
     --nex-sys-state-inverse-pressed: rgba(247, 245, 242, 0.12);
     --nex-sys-scrollbar-thumb: rgba(0, 0, 0, 0.2);
