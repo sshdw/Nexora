@@ -4,6 +4,7 @@ import { formatRelativeTime } from "../lib/format";
 import type { Conversation } from "../lib/tauri";
 import ConfirmDialog from "./ConfirmDialog";
 import M3IconButton from "./M3IconButton";
+import M3RailItem from "./M3RailItem";
 import M3Toolbar from "./M3Toolbar";
 import {
   ArchiveIcon,
@@ -91,16 +92,17 @@ export default function ConversationItem({
   return (
     <li className="nex-conversation-item-wrap">
       <div className="nex-conversation-row">
-        <button
-          type="button"
+        {/* Row selection rides the shared M3RailItem primitive (contract
+            §Shell expanded-rail grammar): active = pill + tone step +
+            emphasized label on the default-speed spring, with the
+            title/time composed inside the rail label. Selection is conveyed
+            by aria-current only. */}
+        <M3RailItem
+          label={conversation.title}
+          active={selected}
           className={
-            "nex-conversation-item" +
-            (selected ? " is-selected" : "") +
-            (archived ? " is-archived" : "")
+            "nex-conversation-item" + (archived ? " is-archived" : "")
           }
-          aria-selected={selected}
-          aria-label={conversation.title}
-          title={conversation.title}
           onClick={() => onSelect(conversation.id)}
         >
           <span
@@ -116,7 +118,7 @@ export default function ConversationItem({
           >
             {formatRelativeTime(conversation.updated_at)}
           </time>
-        </button>
+        </M3RailItem>
         {/* Compact icon actions replace the timestamp while hovered /
             focused / selected — they no longer consume row width, so the
             title can never collide with them (0.3.0 defect fix). Grouped

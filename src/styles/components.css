@@ -1239,9 +1239,13 @@
 /* ---- Navigation-rail item (the sidebar pattern; OFFICIAL rail
    grammar, contract §Shell): pill + tone step + emphasized label when
    active, filled-active/outlined-inactive icon swap owned by the
-   component. Settles on the default-speed spring curve (reduced
-   motion: instant tone swap). One primary per region is preserved:
-   rail items are navigation, never competing CTAs. ---- */
+   component. The active pill settles on the default-speed spring — the
+   CSS bezier fallback per motion.md §4 (true rAF springs remain
+   deferred; transitions re-target, so selection changes stay
+   interruptible). Reduced motion: the global motion.css gate collapses
+   this to an instant tone swap (contract motion table row 2). One
+   primary per region is preserved: rail items are navigation, never
+   competing CTAs. ---- */
 .nex-m3-rail-item {
   display: flex;
   align-items: center;
@@ -1258,10 +1262,10 @@
   font-family: inherit;
   text-align: left;
   cursor: pointer;
-  transition: background-color var(--nex-sys-motion-duration-fast)
-    var(--nex-sys-motion-easing-standard),
+  transition: background-color var(--nex-sys-motion-spring-expressive-default-spatial-duration)
+      var(--nex-sys-motion-spring-expressive-default-spatial-curve),
     color var(--nex-sys-motion-duration-fast)
-    var(--nex-sys-motion-easing-standard);
+      var(--nex-sys-motion-easing-standard);
 }
 .nex-m3-rail-item:hover:not(:disabled) {
   background: var(--nex-sys-state-hover);
