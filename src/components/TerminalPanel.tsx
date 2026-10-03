@@ -20,6 +20,13 @@
 //! never blocks. Limits are surfaced in the header subtitle: hard timeout,
 //! output cap with notice, workspace scope.
 //!
+//! Error intelligence: failed runs (non-zero exit badge) offer an Explain
+//! action that sends the capped failed output through the existing AI
+//! execution path (like commit-message generation) and renders the
+//! diagnosis plus a copy-only fix suggestion — never auto-applied. The
+//! disclosure notice (external transmission) and the truncation notice
+//! mirror the version-control panel's wording pattern.
+//!
 //! Keyboard: the input autofocuses on open; Enter runs, Shift+Enter inserts
 //! a newline, ArrowUp/Down walk the in-memory history. No entrance
 //! animation: the panel renders instantly (reduced-motion safe).
@@ -27,10 +34,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
+  getSetting,
   getWorkspaceRoot,
+  terminalExplain,
   terminalKill,
   terminalRun,
   type CommandError,
+  type ErrorExplanation,
 } from "../lib/tauri";
 import M3Button from "./M3Button";
 
@@ -74,6 +84,18 @@ function resolveCd(current: string, target: string): string {
  * block (flags like `vim --version` exit fine). */
 const INTERACTIVE_RE = /^(vi|vim|nvim|nano|emacs|ssh|less|more|top|htop|watch|tmux|screen)\b/;
 
+/** Explain state for one failed block: the AI diagnosis plus the copy-only
+ * fix suggestion. `copied` names the field whose Copy press last succeeded
+ * (`"diagnosis"` / `"fix"`), so the button can confirm without a timer. */
+interface BlockExplain {
+  loading: boolean;
+  explanation: string | null;
+  suggestedFix: string | null;
+  truncatedInput: boolean;
+  error: string | null;
+  copied: string | null;
+}
+
 function toMessage(error: unknown): string {
   if (
     typeof error === "object" &&
@@ -106,6 +128,7 @@ export default function TerminalPanel({ onClose, request = null }: TerminalPanel
   const [stopping, setStopping] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [interactiveWarn, setInteractiveWarn] = useState<boolean>(false);
+  const [explains, setExplains] = useState<Record<number, BlockExplain>>({});
   const inputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stoppingRef = useRef(false);
@@ -143,6 +166,7 @@ export default function TerminalPanel({ onClose, request = null }: TerminalPanel
   const handleClear = useCallback(() => {
     setBlocks([]);
     setError(null);
+    setExplains({});
   }, []);
   clearRef.current = handleClear;
   useEffect(() => {
@@ -269,6 +293,88 @@ export default function TerminalPanel({ onClose, request = null }: TerminalPanel
     }
   }, [running, stopping]);
 
+  // Error intelligence: explain one failed block through the existing AI
+  // execution path (same persisted provider/model settings as commit-message
+  // generation). The suggestion is copy-only — this handler never feeds it
+  // back into `terminalRun`, so nothing auto-executes.
+  const handleExplain = useCallback(async (blockId: number, output: string, runTruncated: boolean) => {
+    setExplains((prev) => ({
+      ...prev,
+      [blockId]: {
+        loading: true,
+        explanation: prev[blockId]?.explanation ?? null,
+        suggestedFix: prev[blockId]?.suggestedFix ?? null,
+        truncatedInput: prev[blockId]?.truncatedInput ?? false,
+        error: null,
+        copied: null,
+      },
+    }));
+    try {
+      const [provider, model] = await Promise.all([
+        getSetting("provider.selected"),
+        getSetting("provider.model"),
+      ]);
+      if (!provider || !model) {
+        setExplains((prev) => ({
+          ...prev,
+          [blockId]: {
+            loading: false,
+            explanation: prev[blockId]?.explanation ?? null,
+            suggestedFix: prev[blockId]?.suggestedFix ?? null,
+            truncatedInput: prev[blockId]?.truncatedInput ?? false,
+            error: "Select a provider and model first (Settings), then explain.",
+            copied: null,
+          },
+        }));
+        return;
+      }
+      const exitContext = runTruncated
+        ? "non-zero exit (run output already truncated by the tool path)"
+        : "non-zero exit";
+      const result: ErrorExplanation = await terminalExplain(output, exitContext, provider, model);
+      setExplains((prev) => ({
+        ...prev,
+        [blockId]: {
+          loading: false,
+          explanation: result.explanation,
+          suggestedFix: result.suggested_fix,
+          truncatedInput: result.truncated_input,
+          error: null,
+          copied: null,
+        },
+      }));
+    } catch (e) {
+      setExplains((prev) => ({
+        ...prev,
+        [blockId]: {
+          loading: false,
+          explanation: prev[blockId]?.explanation ?? null,
+          suggestedFix: prev[blockId]?.suggestedFix ?? null,
+          truncatedInput: prev[blockId]?.truncatedInput ?? false,
+          error: toMessage(e),
+          copied: null,
+        },
+      }));
+    }
+  }, []);
+
+  const handleCopyExplain = useCallback(async (blockId: number, field: "diagnosis" | "fix", text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setExplains((prev) =>
+        prev[blockId]
+          ? { ...prev, [blockId]: { ...prev[blockId], copied: field } }
+          : prev,
+      );
+    } catch {
+      setExplains((prev) =>
+        prev[blockId]
+          ? { ...prev, [blockId]: { ...prev[blockId], copied: null, error: "Copy failed — select the text manually." } }
+          : prev,
+      );
+    }
+  }, []);
+
   const handleInputKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLInputElement>) => {
       if (event.key === "Enter" && !event.shiftKey) {
@@ -347,7 +453,10 @@ export default function TerminalPanel({ onClose, request = null }: TerminalPanel
               No commands yet — type a workspace command below and press Enter.
             </p>
           ) : (
-            blocks.map((block) => (
+            blocks.map((block) => {
+              const explain = explains[block.id];
+              const explainLoading = explain?.loading === true;
+              return (
               <div key={block.id} className="nex-agent-terminal" role="group" aria-label="Terminal output">
                 <div className="nex-agent-terminal-header">
                   <span className="nex-agent-terminal-prompt" aria-hidden="true">
@@ -394,8 +503,72 @@ export default function TerminalPanel({ onClose, request = null }: TerminalPanel
                     <pre className="nex-agent-terminal-stdout">{block.output}</pre>
                   )}
                 </div>
+                {!block.pending && !block.success && !block.stopped && !block.error && (
+                  <div className="nex-agent-terminal-body">
+                    <div className="nex-vcs-header-actions">
+                      <M3Button
+                        variant="quiet"
+                        size="sm"
+                        disabled={explainLoading}
+                        onClick={() => void handleExplain(block.id, block.output, block.truncated)}
+                        title="Explain this failure with the configured provider"
+                      >
+                        {explainLoading
+                          ? "Explaining…"
+                          : explain?.explanation
+                            ? "Explain again"
+                            : "Explain"}
+                      </M3Button>
+                      {explain?.explanation && (
+                        <M3Button
+                          variant="quiet"
+                          size="sm"
+                          onClick={() => void handleCopyExplain(block.id, "diagnosis", explain.explanation ?? "")}
+                        >
+                          {explain.copied === "diagnosis" ? "Copied" : "Copy diagnosis"}
+                        </M3Button>
+                      )}
+                      {explain?.suggestedFix && (
+                        <M3Button
+                          variant="quiet"
+                          size="sm"
+                          onClick={() => void handleCopyExplain(block.id, "fix", explain.suggestedFix ?? "")}
+                        >
+                          {explain.copied === "fix" ? "Copied" : "Copy fix"}
+                        </M3Button>
+                      )}
+                    </div>
+                    <p className="nex-vcs-notice" role="note">
+                      Explain sends the failed output (up to 64 KiB) to the configured
+                      provider — suggestions are copy-only and never run automatically.
+                    </p>
+                    {explain?.truncatedInput === true && (
+                      <p className="nex-vcs-notice" role="note">
+                        The failed output sent to the provider was truncated to 64 KiB —
+                        the diagnosis covers only what is shown.
+                      </p>
+                    )}
+                    {explain?.error && (
+                      <div className="nex-composer-error nex-fade-in" role="alert">
+                        {explain.error}
+                      </div>
+                    )}
+                    {explain?.explanation && (
+                      <pre className="nex-agent-terminal-stdout">{explain.explanation}</pre>
+                    )}
+                    {explain?.suggestedFix && (
+                      <>
+                        <p className="nex-vcs-notice" role="note">
+                          Suggested fix (copy it or run it yourself — it never auto-runs):
+                        </p>
+                        <pre className="nex-agent-terminal-stdout">{explain.suggestedFix}</pre>
+                      </>
+                    )}
+                  </div>
+                )}
               </div>
-            ))
+              );
+            })
           )}
         </div>
 

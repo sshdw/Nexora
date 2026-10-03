@@ -10,12 +10,15 @@
 //! agent `execute_command` tool path. No business logic lives here beyond
 //! that translation.
 //!
-//! Command-shape decision (one feature area, two commands): `terminal_run`
+//! Command-shape decision (one feature area, three commands): `terminal_run`
 //! runs one user-authored command synchronously on the blocking pool (like
 //! `send_message`) and returns the tool path's combined output with its
 //! `truncated`/`success` display flags; `terminal_kill` cancels the active
-//! run's token so the executor kills the child promptly. No streaming: the
-//! reused tool path delivers output on completion only.
+//! run's token so the executor kills the child promptly; `terminal_explain`
+//! sends one failed run's capped output through the existing AI execution
+//! path (like `git_generate_commit_message`) and returns a diagnosis plus a
+//! copy-only fix suggestion. No streaming: the reused tool path delivers
+//! output on completion only.
 //!
 //! Approval-gate note: the agent `ApprovalGate` parks live agent tool calls
 //! and cannot apply to direct IPC commands (no run, no park, no autonomy
@@ -31,9 +34,9 @@
 
 use std::sync::Arc;
 
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
-use crate::application::terminal::{TerminalExecuted, TerminalRegistry};
+use crate::application::terminal::{ErrorExplanation, TerminalExecuted, TerminalRegistry};
 use crate::application::workspace::resolve_workspace_root;
 use crate::infrastructure::database::Database;
 
@@ -137,6 +140,59 @@ pub(crate) fn terminal_kill(registry: State<'_, ManagedTerminal>) -> bool {
     registry.cancel_active()
 }
 
+/// Explain one failed terminal run: diagnose the capped failed `output`
+/// (plus the short `exit_context` display line, e.g. the exit badge text)
+/// through the existing AI execution path (keyring-only credentials,
+/// nothing persisted) and return the diagnosis plus a copy-only fix
+/// suggestion — never auto-applied.
+///
+/// Like `send_message` and `git_generate_commit_message`, the provider round
+/// trip is blocking end to end, so the body runs on the runtime's dedicated
+/// blocking pool. The failed output may contain secrets: it is capped and
+/// truncated, never logged, and never echoed by the classified error.
+///
+/// # Errors
+///
+/// Classified [`CommandError`]s for empty input (`InvalidInput`) or AI
+/// execution failures (`Request`: unknown provider, missing credentials,
+/// provider failure).
+#[tauri::command]
+pub(crate) async fn terminal_explain(
+    output: String,
+    exit_context: Option<String>,
+    provider: String,
+    model: String,
+    app: AppHandle,
+) -> Result<ErrorExplanation, CommandError> {
+    // Owned handle so the managed state can be reached from the blocking
+    // thread (borrowed `State<'_, _>` cannot cross into `'static` work).
+    let handle = app.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let db = handle.state::<Database>();
+        crate::application::terminal::explain_terminal_error(
+            db.inner(),
+            output.as_str(),
+            exit_context.as_deref().unwrap_or_default(),
+            provider.as_str(),
+            model.as_str(),
+        )
+        .map_err(CommandError::from)
+    })
+    .await;
+    match outcome {
+        Ok(result) => result,
+        Err(err) => {
+            // Only reachable if the blocking task panicked: report a safe,
+            // classified failure instead of leaving the promise dangling.
+            log::error!("terminal_explain blocking task failed: {err}");
+            Err(CommandError::new(
+                ErrorKind::Request,
+                "the error explanation could not be generated",
+            ))
+        }
+    }
+}
+
 impl From<crate::application::terminal::TerminalError> for CommandError {
     fn from(err: crate::application::terminal::TerminalError) -> Self {
         use crate::application::terminal::TerminalError as Source;
@@ -158,6 +214,20 @@ impl From<crate::application::terminal::TerminalError> for CommandError {
                 ErrorKind::InvalidInput,
                 "a terminal command is already running — stop it first",
             ),
+        }
+    }
+}
+
+impl From<crate::application::terminal::ExplainError> for CommandError {
+    fn from(err: crate::application::terminal::ExplainError) -> Self {
+        use crate::application::terminal::ExplainError as Source;
+        match err {
+            // Both sides stay secret-free: the failed output is never echoed.
+            Source::InvalidInput => Self::new(
+                ErrorKind::InvalidInput,
+                "the failed output to explain is invalid",
+            ),
+            Source::Request(inner) => Self::from(inner),
         }
     }
 }
@@ -253,5 +323,60 @@ mod tests {
             SERVICE.contains("\"execute_command\""),
             "the terminal service must reuse the execute_command tool"
         );
+    }
+
+    #[test]
+    fn explain_error_mapping_is_classified_and_secret_free() {
+        use crate::application::terminal::ExplainError as Source;
+        let mapped = CommandError::from(Source::InvalidInput);
+        assert_eq!(mapped.kind, ErrorKind::InvalidInput);
+        assert_eq!(mapped.message, "the failed output to explain is invalid");
+        assert!(safe_message(&mapped));
+        let mapped = CommandError::from(Source::Request(
+            crate::application::execution::RequestError::UnknownProvider {
+                name: "openai".to_string(),
+            },
+        ));
+        assert_eq!(mapped.kind, ErrorKind::Request);
+        assert!(safe_message(&mapped));
+    }
+
+    /// Static wiring check: the explain path must reuse the shared AI
+    /// execution boundary (`RequestExecutionService`) with a tool-free
+    /// request — no new provider plumbing — and the suggestion must never
+    /// reach an execute path (no auto-apply of AI fixes).
+    #[test]
+    fn terminal_explain_reuses_the_shared_ai_boundary_without_auto_run() {
+        const SOURCE: &str = include_str!("terminal.rs");
+        const SERVICE: &str = include_str!("../application/terminal.rs");
+        assert!(
+            SERVICE.contains("RequestExecutionService::new("),
+            "the explain service must execute through the shared boundary"
+        );
+        for needle in ["terminal_explain", "explain_terminal_error"] {
+            assert!(
+                SOURCE.contains(needle) || SERVICE.contains(needle),
+                "the explain path must exist, missing {needle:?}"
+            );
+        }
+        // The explain result (explanation / suggested fix) must never be
+        // fed back into a run: no `terminalRun(` / `terminal_run` call may
+        // originate from the explain result on either side. Needles are
+        // built with `concat!` so this test's own source never matches
+        // them verbatim.
+        for needle in [
+            concat!("suggested_fix", "_for_run"),
+            concat!("auto", "_apply"),
+            concat!("apply", "_fix"),
+        ] {
+            assert!(
+                !SOURCE.contains(needle),
+                "no auto-apply path may exist, found {needle:?}"
+            );
+            assert!(
+                !SERVICE.contains(needle),
+                "no auto-apply path may exist, found {needle:?}"
+            );
+        }
     }
 }

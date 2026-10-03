@@ -114,6 +114,7 @@ pub fn run() {
             commands::agent::list_permission_rules,
             commands::terminal::terminal_run,
             commands::terminal::terminal_kill,
+            commands::terminal::terminal_explain,
             commands::version_control::git_info,
             commands::version_control::git_file_diff,
             commands::version_control::git_stage,
