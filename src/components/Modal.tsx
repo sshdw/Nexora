@@ -114,6 +114,8 @@ export default function ModalShell({
     };
   }, []);
 
+  // shortcut:dialog.close / shortcut:dialog.trap — dialog-owned keys stay
+  // inline in the shared shell (every dialog inherits them).
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === "Escape") {
       if (busy) return;

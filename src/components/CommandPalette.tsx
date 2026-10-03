@@ -76,6 +76,9 @@ export default function CommandPalette({ commands, onClose, onRun }: CommandPale
     onRunRef.current(hit.command);
   };
 
+  // shortcut:palette.navigate / shortcut:palette.edges / shortcut:palette.run
+  // — scoped keys stay inline (results focus IS the scope). Esc is owned by
+  // ModalShell (shortcut:dialog.close).
   const handleKeyDown = (event: React.KeyboardEvent) => {
     switch (event.key) {
       case "ArrowDown":

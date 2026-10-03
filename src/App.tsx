@@ -12,6 +12,7 @@ import M3Toolbar from "./components/M3Toolbar";
 import NexoraMark from "./components/NexoraMark";
 import PromptLibraryView from "./components/PromptLibraryView";
 import SettingsView from "./components/SettingsView";
+import ShortcutsDialog from "./components/ShortcutsDialog";
 import Sidebar from "./components/Sidebar";
 import VersionControlPanel from "./components/VersionControlPanel";
 import WorkspaceChip from "./components/WorkspaceChip";
@@ -23,6 +24,21 @@ import {
   type PaletteSettingsSection,
   type PaletteVcsRequest,
 } from "./lib/commands";
+import {
+  COMBO_HELP_F1,
+  COMBO_HELP_QUESTION,
+  COMBO_HELP_SLASH,
+  COMBO_PALETTE_K,
+  COMBO_PALETTE_P,
+  COMBO_SPLIT_TOGGLE,
+  COMBO_TAB_CLOSE,
+  COMBO_TAB_NEXT_PAGEDOWN,
+  COMBO_TAB_NEXT_TAB,
+  COMBO_TAB_PREV_PAGEDUP,
+  COMBO_ZEN_TOGGLE,
+  matchesAnyCombo,
+  matchesCombo,
+} from "./lib/shortcuts";
 import { useAppearance } from "./lib/useAppearance";
 import { useConversations } from "./lib/useConversations";
 import { useConversationTabs } from "./lib/useConversationTabs";
@@ -185,6 +201,8 @@ function App() {
   const [zen, setZen] = useState(false);
   // Command palette (Ctrl+K): launcher over the registry in lib/commands.ts.
   const [paletteOpen, setPaletteOpen] = useState(false);
+  // Shortcuts help dialog (Ctrl+/): grouped table over lib/shortcuts.ts.
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   // A palette-chosen command runs after the palette unmounts (see the
   // deferred-run effect below), so focus moves land on live targets.
   const [pendingPaletteRun, setPendingPaletteRun] = useState<(() => void) | null>(null);
@@ -391,6 +409,7 @@ function App() {
     const dialogOpen = () => document.querySelector('[role="dialog"]') !== null;
 
     const onKeyDown = (event: KeyboardEvent) => {
+      // shortcut:zen.exit — an open dialog owns Escape, so zen yields.
       if (event.key === "Escape" && zen && !dialogOpen()) {
         event.preventDefault();
         setZen(false);
@@ -399,21 +418,27 @@ function App() {
       // Tab mutations surface the conversation: same overlay-exit contract
       // as clicking a tab or sidebar row (Settings/Library/VCS never sit
       // above a switched tab) — see closeOverlays above.
+      // Global combos read their definitions from the SHORTCUTS registry
+      // (lib/shortcuts.ts) — the matcher below is identical to the
+      // previous inline key checks (same modifiers, same shift tolerance).
       if (event.ctrlKey && !event.altKey && !event.metaKey) {
-        if (event.key === "Tab") {
+        // shortcut:tabs.next
+        if (matchesCombo(event, COMBO_TAB_NEXT_TAB)) {
           event.preventDefault();
           closeOverlays();
           if (event.shiftKey) tabs.prev();
           else tabs.next();
           return;
         }
-        if (event.key === "PageDown") {
+        // shortcut:tabs.next
+        if (matchesCombo(event, COMBO_TAB_NEXT_PAGEDOWN)) {
           event.preventDefault();
           closeOverlays();
           tabs.next();
           return;
         }
-        if (event.key === "PageUp") {
+        // shortcut:tabs.prev
+        if (matchesCombo(event, COMBO_TAB_PREV_PAGEDUP)) {
           event.preventDefault();
           closeOverlays();
           tabs.prev();
@@ -425,29 +450,29 @@ function App() {
         // produce no text in inputs, so close/split/zen never steal composer
         // input. Alt+digits stay guarded — they can compose characters on
         // some layouts, so the typing-target check still owns that branch.
-        switch (event.key.toLowerCase()) {
-          case "w":
+        // shortcut:tabs.close-active
+        if (matchesCombo(event, COMBO_TAB_CLOSE)) {
+          event.preventDefault();
+          closeOverlays();
+          if (tabs.activeId !== null) tabs.close(tabs.activeId);
+        } else if (matchesCombo(event, COMBO_SPLIT_TOGGLE)) {
+          // shortcut:layout.split
+          event.preventDefault();
+          handleToggleSplit();
+        } else if (matchesCombo(event, COMBO_ZEN_TOGGLE)) {
+          // shortcut:layout.zen
+          event.preventDefault();
+          if (!dialogOpen()) toggleZen();
+        } else {
+          if (isTypingTarget(event.target)) return;
+          // shortcut:tabs.jump — range match (position math lives here);
+          // the guard shape is documented as COMBO_TAB_JUMP_GUARD.
+          if (event.key >= "1" && event.key <= "9") {
             event.preventDefault();
             closeOverlays();
-            if (tabs.activeId !== null) tabs.close(tabs.activeId);
-            break;
-          case "s":
-            event.preventDefault();
-            handleToggleSplit();
-            break;
-          case "z":
-            event.preventDefault();
-            if (!dialogOpen()) toggleZen();
-            break;
-          default: {
-            if (isTypingTarget(event.target)) return;
-            if (event.key >= "1" && event.key <= "9") {
-              event.preventDefault();
-              closeOverlays();
-              const position =
-                event.key === "9" ? tabs.openIds.length - 1 : Number(event.key) - 1;
-              tabs.jumpTo(position);
-            }
+            const position =
+              event.key === "9" ? tabs.openIds.length - 1 : Number(event.key) - 1;
+            tabs.jumpTo(position);
           }
         }
       }
@@ -456,22 +481,46 @@ function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [zen, tabs, handleToggleSplit, toggleZen, closeOverlays]);
 
-  // Command-palette toggle (Ctrl+K, with Ctrl+P as a collision-free alias:
-  // the existing Ctrl map owns only Tab/PageUp/PageDown — see
-  // useConversationTabs.ts:12-28 — and no other feature binds Ctrl+P).
-  // Unlike Alt+digits (which can compose characters on some layouts),
-  // Ctrl+K/Ctrl+P insert no text in inputs, so the palette opens from
-  // anywhere (VS Code norm) — including typing targets. An open dialog
-  // still owns the keyboard (no stacked dialogs). The palette input
+  // Command-palette toggle (shortcut:palette.toggle — Ctrl+K, with Ctrl+P
+  // as a collision-free alias: the existing Ctrl map owns only
+  // Tab/PageUp/PageDown — see useConversationTabs.ts:12-28 — and no other
+  // feature binds Ctrl+P). Unlike Alt+digits (which can compose characters
+  // on some layouts), Ctrl+K/Ctrl+P insert no text in inputs, so the palette
+  // opens from anywhere (VS Code norm) — including typing targets. An open
+  // dialog still owns the keyboard (no stacked dialogs). The palette input
   // autofocuses on open; ModalShell restores focus to the invoker on close.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!event.ctrlKey || event.altKey || event.metaKey) return;
-      const key = event.key.toLowerCase();
-      if (key !== "k" && key !== "p") return;
+      if (!matchesAnyCombo(event, [COMBO_PALETTE_K, COMBO_PALETTE_P])) return;
       if (document.querySelector('[role="dialog"]') !== null) return;
       event.preventDefault();
       setPaletteOpen((prev) => !prev);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  // Shortcuts help dialog (shortcut:help.show-shortcuts). Ctrl+/ is the
+  // primary (web-app norm for a shortcuts overlay); "?" covers layouts where
+  // Ctrl+Shift+/ produces "?" instead of "/"; F1 is the universal-help alias
+  // (preventDefault suppresses browser help). All three insert no text, so
+  // the dialog opens from anywhere — including typing targets — while an open
+  // dialog still owns the keyboard (no stacked dialogs). ModalShell owns
+  // Esc + focus trap/return for the dialog itself.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (
+        !matchesAnyCombo(event, [
+          COMBO_HELP_SLASH,
+          COMBO_HELP_QUESTION,
+          COMBO_HELP_F1,
+        ])
+      ) {
+        return;
+      }
+      if (document.querySelector('[role="dialog"]') !== null) return;
+      event.preventDefault();
+      setShortcutsOpen(true);
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -504,6 +553,7 @@ function App() {
         },
         toggleSplit: handleToggleSplit,
         toggleZen,
+        showShortcuts: () => setShortcutsOpen(true),
         jumpToTab: (index: number) => {
           closeOverlays();
           tabs.jumpTo(index);
@@ -790,6 +840,9 @@ function App() {
           onClose={() => setPaletteOpen(false)}
           onRun={handlePaletteRun}
         />
+      )}
+      {shortcutsOpen && (
+        <ShortcutsDialog onClose={() => setShortcutsOpen(false)} />
       )}
     </div>
   );

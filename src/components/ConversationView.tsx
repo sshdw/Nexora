@@ -461,6 +461,7 @@ export default function ConversationView({
               disabled={sending || agentBusy}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={(event) => {
+                // shortcut:composer.send (Shift+Enter = shortcut:composer.newline).
                 if (event.key === "Enter" && !event.shiftKey) {
                   event.preventDefault();
                   void handleSubmit();

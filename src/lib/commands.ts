@@ -14,7 +14,8 @@
 //!                             346-387 commit composer, 389-410 push
 //!   chat commands .......... ConversationView.tsx:463-469 composer Enter,
 //!                             497-511 Send button; App.tsx:233-245 create
-//!   settings sections ...... SettingsView.tsx GROUP MAP comment (7 groups)
+//!   settings sections ...... SettingsView GROUP MAP comment (7 groups)
+//!   help ................... ShortcutsDialog.tsx (show-shortcuts command)
 //!
 //! NL-tolerance WITHOUT an LLM (explicit scope decision): each command
 //! carries hand-written keyword aliases (including common verbs like
@@ -82,6 +83,7 @@ export interface PaletteDeps {
   tabCloseActive: () => void;
   toggleSplit: () => void;
   toggleZen: () => void;
+  showShortcuts: () => void;
   jumpToTab: (index: number) => void;
   tabCount: () => number;
 }
@@ -228,6 +230,22 @@ export function buildCommands(deps: PaletteDeps): PaletteCommand[] {
       section: "Tabs",
       keywords: ["zen", "focus", "chromeless", "reading", "distraction", "fullscreen"],
       run: deps.toggleZen,
+    },
+    {
+      id: "help.show-shortcuts",
+      title: "Show keyboard shortcuts",
+      section: "Help",
+      keywords: [
+        "shortcuts",
+        "hotkeys",
+        "keys",
+        "keybindings",
+        "bindings",
+        "help",
+        "cheatsheet",
+        "f1",
+      ],
+      run: deps.showShortcuts,
     },
     {
       id: "vcs.refresh",
