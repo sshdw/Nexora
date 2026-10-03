@@ -7,6 +7,7 @@ import NexoraMark from "./NexoraMark";
 import PromptLibraryEntry from "./PromptLibraryEntry";
 import SearchBox from "./SearchBox";
 import SettingsEntry from "./SettingsEntry";
+import VersionControlEntry from "./VersionControlEntry";
 import WorkspaceFolderButton from "./WorkspaceFolderButton";
 import WorkspaceRecentList from "./WorkspaceRecentList";
 import { ImportIcon } from "./icons";
@@ -26,6 +27,9 @@ export interface SidebarProps {
   /** Whether the Prompt Library screen is currently shown. */
   libraryActive: boolean;
   onOpenPromptLibrary: () => void;
+  /** Whether the Version Control screen is currently shown. */
+  vcsActive: boolean;
+  onOpenVersionControl: () => void;
   /** Open a prompt found by search in the Prompt Library editor. */
   onSelectPrompt: (promptId: number) => void;
   /** Open the import-conversation flow (FR-011). */
@@ -52,6 +56,8 @@ export default function Sidebar({
   onOpenSettings,
   libraryActive,
   onOpenPromptLibrary,
+  vcsActive,
+  onOpenVersionControl,
   onSelectPrompt,
   onImport,
   onRename,
@@ -100,6 +106,7 @@ export default function Sidebar({
       <div className="nex-sidebar-footer">
         <SettingsEntry onClick={onOpenSettings} />
         <PromptLibraryEntry active={libraryActive} onClick={onOpenPromptLibrary} />
+        <VersionControlEntry active={vcsActive} onClick={onOpenVersionControl} />
         <WorkspaceFolderButton store={workspace} />
         <WorkspaceRecentList store={workspace} />
         {workspace.error && (

@@ -12,6 +12,7 @@ import NexoraMark from "./components/NexoraMark";
 import PromptLibraryView from "./components/PromptLibraryView";
 import SettingsView from "./components/SettingsView";
 import Sidebar from "./components/Sidebar";
+import VersionControlPanel from "./components/VersionControlPanel";
 import WorkspaceChip from "./components/WorkspaceChip";
 import type { Conversation } from "./lib/tauri";
 import { useAppearance } from "./lib/useAppearance";
@@ -152,6 +153,11 @@ function App() {
   // draft (FR-007).
   const [drafts, setDrafts] = useState<Record<number, string>>({});
   const [libraryOpen, setLibraryOpen] = useState(false);
+  // Version Control screen (read-only git base): a workspace-scoped
+  // navigation destination like Settings/Library — a sidebar rail entry
+  // (not a header action: the header is per-conversation, VCS is per
+  // workspace) opening an overlay over the still-mounted panes.
+  const [vcsOpen, setVcsOpen] = useState(false);
   // Prompt Library navigation state. When set from a search result (FR-009), the
   // Prompt Library screen opens with that prompt's existing Edit modal.
   const [promptToEditId, setPromptToEditId] = useState<number | null>(null);
@@ -217,6 +223,7 @@ function App() {
     tabs.open(newId);
     setLibraryOpen(false);
     setSettingsOpen(false);
+    setVcsOpen(false);
   };
 
   // Leading-edge guard for conversation creation: synchronous rapid clicks on
@@ -231,8 +238,8 @@ function App() {
       if (id !== null) {
         tabs.open(id);
         setLibraryOpen(false);
-      }
-    } finally {
+        setVcsOpen(false);
+      }    } finally {
       creatingInFlight.current = false;
     }
   };
@@ -242,21 +249,32 @@ function App() {
     setLibraryOpen(false);
     // Opening a conversation (including from a search result) leaves Settings.
     setSettingsOpen(false);
+    setVcsOpen(false);
   };
 
   const openSettings = () => {
     setSettingsOpen(true);
     setLibraryOpen(false);
+    setVcsOpen(false);
   };
   const openLibrary = () => {
     // A fresh entry to the library opens the list, not a previously staged edit.
     setPromptToEditId(null);
     setLibraryOpen(true);
     setSettingsOpen(false);
+    setVcsOpen(false);
   };
   const closeLibrary = () => {
     setLibraryOpen(false);
     setPromptToEditId(null);
+  };
+  const openVcs = () => {
+    setVcsOpen(true);
+    setLibraryOpen(false);
+    setSettingsOpen(false);
+  };
+  const closeVcs = () => {
+    setVcsOpen(false);
   };
 
   // Open a prompt found by search: show the Prompt Library and open the selected
@@ -265,6 +283,7 @@ function App() {
     setSettingsOpen(false);
     setLibraryOpen(true);
     setPromptToEditId(promptId);
+    setVcsOpen(false);
   };
 
   // FR-007 "Use": stage the prompt's content into the active pane's composer,
@@ -329,11 +348,12 @@ function App() {
         return;
       }
       // Tab mutations surface the conversation: same overlay-exit contract
-      // as clicking a tab or sidebar row (Settings/Library never sit above
-      // a switched tab).
+      // as clicking a tab or sidebar row (Settings/Library/VCS never sit
+      // above a switched tab).
       const leaveOverlays = () => {
         setLibraryOpen(false);
         setSettingsOpen(false);
+        setVcsOpen(false);
       };
       if (event.ctrlKey && !event.altKey && !event.metaKey) {
         if (event.key === "Tab") {
@@ -412,7 +432,7 @@ function App() {
   };
   // A prompt can only be staged when a conversation is open.
   const hasActiveConversation = activeConversation != null;
-  const showOverlays = libraryOpen || settingsOpen;
+  const showOverlays = libraryOpen || settingsOpen || vcsOpen;
   // The split grid stays mounted in zen (the secondary pane hides via
   // .nex-zen CSS, same technique as the zen chrome rules) so both
   // ConversationView instances survive entering/exiting zen. Split
@@ -518,6 +538,8 @@ function App() {
         onOpenSettings={openSettings}
         libraryActive={libraryOpen}
         onOpenPromptLibrary={openLibrary}
+        vcsActive={vcsOpen}
+        onOpenVersionControl={openVcs}
         onSelectPrompt={handleSelectPrompt}
         onImport={() => setImportOpen(true)}
         onRename={rename}
@@ -536,6 +558,7 @@ function App() {
               tabs.activate(id);
               setLibraryOpen(false);
               setSettingsOpen(false);
+              setVcsOpen(false);
             }}
             onClose={tabs.close}
             onNewConversation={() => void handleNewConversation()}
@@ -564,6 +587,8 @@ function App() {
                 onUse={handleUsePrompt}
                 initialEditId={promptToEditId}
               />
+            ) : vcsOpen ? (
+              <VersionControlPanel onClose={closeVcs} />
             ) : (
               <SettingsView
                 store={providers}
