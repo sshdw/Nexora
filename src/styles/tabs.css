@@ -2,8 +2,9 @@
    Nexora Conversation Tabs + Split + Zen — M3E shell extension
    Docked tab strip (first row of .nex-main, above the per-pane
    conversation header), side-by-side split panes, and chromeless
-   zen reading mode. Tokens only (--nex-sys-*, --motion-*); no raw
-   values. Motion is transform/opacity only; the global
+   zen reading mode. Tokens only (--nex-sys-*, --motion-*); the only raw
+   values are 1px hairline borders, allowed per codebase precedent for
+   seams/dividers. Motion is transform/opacity only; the global
    prefers-reduced-motion gate in motion.css collapses every
    transition below to an instant state change.
    ============================================================ */
@@ -195,6 +196,15 @@
   overflow: hidden;
 }
 
+/* ---- Overlay backing: Settings/Library render above live panes that stay
+   mounted (hidden via display:none, never unmounted) so ConversationView
+   instances keep scroll position and in-flight agent runs. display:none
+   also drops the hidden panes from layout, tab order, and the a11y tree
+   while the overlay owns the view. ---- */
+.nex-main-hidden {
+  display: none;
+}
+
 /* ---- Zen: chromeless reading mode. The app grid collapses to a
    single column; sidebar, tab strip, and pane headers are removed
    from layout (display:none keeps tab order clean — nothing hidden
@@ -212,6 +222,18 @@
 
 .nex-app.nex-zen .nex-main {
   background: var(--nex-sys-color-surface);
+}
+
+/* ---- Zen-from-split: the split grid stays mounted and collapses to one
+   column; the secondary pane hides via chrome-visibility CSS (same
+   technique as the zen header rules above) so both ConversationView
+   instances survive entering/exiting zen. ---- */
+.nex-app.nex-zen .nex-split {
+  grid-template-columns: 1fr;
+}
+
+.nex-app.nex-zen .nex-pane--secondary {
+  display: none;
 }
 
 .nex-zen-exit {

@@ -60,7 +60,7 @@ function ConversationPane({
   const isArchived = conversation.status === "archived";
   return (
     <section
-      className="nex-pane"
+      className={"nex-pane" + (secondary ? " nex-pane--secondary" : "")}
       aria-label={secondary ? `Split: ${conversation.title}` : conversation.title}
     >
       <header className="nex-pane-header">
@@ -184,11 +184,31 @@ function App() {
   // Drop tabs for conversations that no longer exist (deleted). Archived
   // conversations stay listed (ConversationList.tsx:69-70 groups them), so
   // archiving never closes a tab.
+  //
+  // Retain-vs-drop for drafts: drafts of closed/pruned tabs are dropped,
+  // not retained. Retaining would grow the map without bound across a
+  // session and resurrect stale input if the id is ever reused; dropping
+  // is safe because a closed tab has no visible composer to preserve.
+  // Syncing to openIds (rather than hooking every close call site) covers
+  // tab close, Alt+W, prune, and backend delete uniformly.
+  useEffect(() => {
+    const open = new Set(tabs.openIds);
+    setDrafts((prev) => {
+      const keys = Object.keys(prev);
+      if (keys.every((key) => open.has(Number(key)))) return prev;
+      const next: Record<number, string> = {};
+      for (const [key, value] of Object.entries(prev)) {
+        if (open.has(Number(key))) next[Number(key)] = value;
+      }
+      return next;
+    });
+  }, [tabs.openIds]);
+
   useEffect(() => {
     tabs.prune(new Set(conversations.map((c) => c.id)));
     // `tabs.prune` identity follows tab state; running the validation pass on
     // every tab change is harmless (early return when all ids are valid).
-  }, [conversations]);
+  }, [conversations, tabs]);
 
   // After a successful import the conversation list is reloaded from the
   // backend (single source of truth) and the new conversation is opened.
@@ -337,14 +357,10 @@ function App() {
         }
       }
       if (event.altKey && !event.ctrlKey && !event.metaKey) {
-        if (isTypingTarget(event.target)) return;
-        if (event.key >= "1" && event.key <= "9") {
-          event.preventDefault();
-          leaveOverlays();
-          const position = event.key === "9" ? tabs.openIds.length - 1 : Number(event.key) - 1;
-          tabs.jumpTo(position);
-          return;
-        }
+        // Non-character shortcuts run even from typing targets: Alt+W/S/Z
+        // produce no text in inputs, so close/split/zen never steal composer
+        // input. Alt+digits stay guarded — they can compose characters on
+        // some layouts, so the typing-target check still owns that branch.
         switch (event.key.toLowerCase()) {
           case "w":
             event.preventDefault();
@@ -359,6 +375,16 @@ function App() {
             event.preventDefault();
             if (!dialogOpen()) toggleZen();
             break;
+          default: {
+            if (isTypingTarget(event.target)) return;
+            if (event.key >= "1" && event.key <= "9") {
+              event.preventDefault();
+              leaveOverlays();
+              const position =
+                event.key === "9" ? tabs.openIds.length - 1 : Number(event.key) - 1;
+              tabs.jumpTo(position);
+            }
+          }
         }
       }
     };
@@ -386,10 +412,92 @@ function App() {
   };
   // A prompt can only be staged when a conversation is open.
   const hasActiveConversation = activeConversation != null;
-
   const showOverlays = libraryOpen || settingsOpen;
+  // The split grid stays mounted in zen (the secondary pane hides via
+  // .nex-zen CSS, same technique as the zen chrome rules) so both
+  // ConversationView instances survive entering/exiting zen. Split
+  // open/close itself still remounts panes (tree position changes between
+  // single-pane and grid) — accepted: toggling split is an explicit layout
+  // change, not a transient overlay.
   const splitVisible =
-    !showOverlays && !zen && tabs.splitId !== null && splitConversation !== undefined;
+    !showOverlays && tabs.splitId !== null && splitConversation !== undefined;
+
+  // Live pane content, extracted so Settings/Library overlays render above
+  // still-mounted panes (hidden via CSS, never unmounted) instead of
+  // replacing them — see the overlay branch below.
+  const conversationContent =
+    activeConversation === undefined ? (
+      tabs.openIds.length === 0 ? (
+        // First-run empty state: logo + heading + supporting line only. The
+        // sidebar's New Conversation row is the single creation CTA (one
+        // primary per region) — no duplicate CTA here (contract §Shell).
+        <EmptyState />
+      ) : (
+        // Tabs exist but the active id has no list entry yet (reload in
+        // flight after delete/import) — hold the calm placeholder.
+        <div className="nex-main-placeholder nex-empty-enter">
+          <span className="nex-placeholder-mark-wrap" aria-hidden="true">
+            <NexoraMark className="nex-placeholder-mark" width={30} height={30} />
+          </span>
+          <p className="nex-placeholder-title">No conversation selected</p>
+          <p className="nex-placeholder-text">
+            Choose a conversation from the sidebar, or create one with New Conversation.
+          </p>
+        </div>
+      )
+    ) : splitVisible && splitConversation ? (
+      <div className="nex-split">
+        <ConversationPane
+          conversation={activeConversation}
+          selectedProvider={providers.selectedProvider}
+          selectedModel={providers.selectedModel}
+          draft={draftFor(activeConversation.id)}
+          setDraft={setDraftFor(activeConversation.id)}
+          onOpenSettings={openSettings}
+          onMessageSent={() => void reload()}
+          onExport={setExportTargetId}
+          workspaceRoot={workspace.root}
+          workspaceLoading={workspace.loading}
+          secondary={false}
+          splitAvailable={tabs.openIds.length > 1}
+          splitOpen
+          onToggleSplit={handleToggleSplit}
+        />
+        <ConversationPane
+          conversation={splitConversation}
+          selectedProvider={providers.selectedProvider}
+          selectedModel={providers.selectedModel}
+          draft={draftFor(splitConversation.id)}
+          setDraft={setDraftFor(splitConversation.id)}
+          onOpenSettings={openSettings}
+          onMessageSent={() => void reload()}
+          onExport={setExportTargetId}
+          workspaceRoot={workspace.root}
+          workspaceLoading={workspace.loading}
+          secondary
+          splitAvailable={false}
+          splitOpen
+          onToggleSplit={handleToggleSplit}
+        />
+      </div>
+    ) : (
+      <ConversationPane
+        conversation={activeConversation}
+        selectedProvider={providers.selectedProvider}
+        selectedModel={providers.selectedModel}
+        draft={draftFor(activeConversation.id)}
+        setDraft={setDraftFor(activeConversation.id)}
+        onOpenSettings={openSettings}
+        onMessageSent={() => void reload()}
+        onExport={setExportTargetId}
+        workspaceRoot={workspace.root}
+        workspaceLoading={workspace.loading}
+        secondary={false}
+        splitAvailable={tabs.openIds.length > 1}
+        splitOpen={false}
+        onToggleSplit={handleToggleSplit}
+      />
+    );
 
   return (
     <div className={"nex-app" + (zen ? " nex-zen" : "")}>
@@ -438,95 +546,48 @@ function App() {
             onToggleSplit={handleToggleSplit}
           />
         )}
-        {libraryOpen ? (
-          <PromptLibraryView
-            onClose={closeLibrary}
-            hasActiveConversation={hasActiveConversation}
-            onUse={handleUsePrompt}
-            initialEditId={promptToEditId}
-          />
-        ) : settingsOpen ? (
-          <SettingsView
-            store={providers}
-            appearance={appearance}
-            workspaceRoot={workspace.root}
-            workspaceLoading={workspace.loading}
-            spendLimit={spendLimit}
-            onClose={() => setSettingsOpen(false)}
-            onDataCleared={() => void reload()}
-          />
-        ) : activeConversation === undefined ? (
-          tabs.openIds.length === 0 ? (
-            // First-run empty state: logo + heading + supporting line only. The
-            // sidebar's New Conversation row is the single creation CTA (one
-            // primary per region) — no duplicate CTA here (contract §Shell).
-            <EmptyState />
-          ) : (
-            // Tabs exist but the active id has no list entry yet (reload in
-            // flight after delete/import) — hold the calm placeholder.
-            <div className="nex-main-placeholder nex-empty-enter">
-              <span className="nex-placeholder-mark-wrap" aria-hidden="true">
-                <NexoraMark className="nex-placeholder-mark" width={30} height={30} />
-              </span>
-              <p className="nex-placeholder-title">No conversation selected</p>
-              <p className="nex-placeholder-text">
-                Choose a conversation from the sidebar, or create one with New Conversation.
-              </p>
+        {showOverlays ? (
+          <>
+            {/* Live panes stay mounted under Settings/Library: hidden via
+                CSS (display:none drops them from layout, tab order, and the
+                a11y tree while the overlay owns the view) but never
+                unmounted, so ConversationView instances keep scroll position
+                and in-flight agent-run state. The tab strip is chrome-only
+                (no live state) and stays conditionally rendered. */}
+            <div className="nex-main-hidden" aria-hidden="true">
+              {conversationContent}
             </div>
-          )
-        ) : splitVisible && splitConversation ? (
-          <div className="nex-split">
-            <ConversationPane
-              conversation={activeConversation}
-              selectedProvider={providers.selectedProvider}
-              selectedModel={providers.selectedModel}
-              draft={draftFor(activeConversation.id)}
-              setDraft={setDraftFor(activeConversation.id)}
-              onOpenSettings={openSettings}
-              onMessageSent={() => void reload()}
-              onExport={setExportTargetId}
-              workspaceRoot={workspace.root}
-              workspaceLoading={workspace.loading}
-              secondary={false}
-              splitAvailable={tabs.openIds.length > 1}
-              splitOpen
-              onToggleSplit={handleToggleSplit}
-            />
-            <ConversationPane
-              conversation={splitConversation}
-              selectedProvider={providers.selectedProvider}
-              selectedModel={providers.selectedModel}
-              draft={draftFor(splitConversation.id)}
-              setDraft={setDraftFor(splitConversation.id)}
-              onOpenSettings={openSettings}
-              onMessageSent={() => void reload()}
-              onExport={setExportTargetId}
-              workspaceRoot={workspace.root}
-              workspaceLoading={workspace.loading}
-              secondary
-              splitAvailable={false}
-              splitOpen
-              onToggleSplit={handleToggleSplit}
-            />
-          </div>
+            {libraryOpen ? (
+              <PromptLibraryView
+                onClose={closeLibrary}
+                hasActiveConversation={hasActiveConversation}
+                onUse={handleUsePrompt}
+                initialEditId={promptToEditId}
+              />
+            ) : (
+              <SettingsView
+                store={providers}
+                appearance={appearance}
+                workspaceRoot={workspace.root}
+                workspaceLoading={workspace.loading}
+                spendLimit={spendLimit}
+                onClose={() => setSettingsOpen(false)}
+                onDataCleared={() => void reload()}
+              />
+            )}
+          </>
         ) : (
-          <ConversationPane
-            conversation={activeConversation}
-            selectedProvider={providers.selectedProvider}
-            selectedModel={providers.selectedModel}
-            draft={draftFor(activeConversation.id)}
-            setDraft={setDraftFor(activeConversation.id)}
-            onOpenSettings={openSettings}
-            onMessageSent={() => void reload()}
-            onExport={setExportTargetId}
-            workspaceRoot={workspace.root}
-            workspaceLoading={workspace.loading}
-            secondary={false}
-            splitAvailable={tabs.openIds.length > 1}
-            splitOpen={false}
-            onToggleSplit={handleToggleSplit}
-          />
+          conversationContent
         )}
+      </div>
+      {/* Polite announcement of zen enter/exit: the chrome swap is instant
+          with no visual transition, so screen-reader users get the mode
+          change (plus how to leave) here; focus moves alongside (see the
+          zen effect above). */}
+      <div className="nex-sr-only" aria-live="polite">
+        {zen
+          ? "Zen reading mode on. Press Escape to exit."
+          : "Zen reading mode off."}
       </div>
       {zen && (
         <div className="nex-zen-exit">

@@ -90,9 +90,17 @@ export function useConversationTabs(): ConversationTabsStore {
       if (activeId === id) {
         // Neighbour activation: prefer the tab that slides into the closed
         // tab's position, else the new last tab; empty list clears active.
-        setActiveId(
-          next.length === 0 ? null : (next[Math.min(index, next.length - 1)] as number),
-        );
+        const replacement =
+          next.length === 0
+            ? null
+            : (next[Math.min(index, next.length - 1)] as number);
+        setActiveId(replacement);
+        // Post-condition: active and split must never share a conversation —
+        // closing the primary beside a live split would otherwise land both
+        // panes on the split id, with two panes fighting over one draft.
+        // The replacement cannot be the closed id, so equality here means
+        // the split tab survived: drop the pane, keep the tab open.
+        if (replacement !== null && replacement === splitId) setSplitId(null);
       }
       // A closed conversation cannot stay in the split pane.
       if (splitId === id) setSplitId(null);
@@ -149,7 +157,19 @@ export function useConversationTabs(): ConversationTabsStore {
       const next = openIds.filter((id) => validIds.has(id));
       setOpenIds(next);
       if (activeId !== null && !validIds.has(activeId)) {
-        setActiveId(next.length > 0 ? (next[next.length - 1] as number) : null);
+        const replacement =
+          next.length > 0 ? (next[next.length - 1] as number) : null;
+        setActiveId(replacement);
+        // Post-condition (same as close): the newest survivor can be the
+        // live split tab — drop the pane rather than doubling one
+        // conversation across both panes.
+        if (
+          replacement !== null &&
+          replacement === splitId &&
+          validIds.has(splitId as number)
+        ) {
+          setSplitId(null);
+        }
       }
       if (splitId !== null && !validIds.has(splitId)) setSplitId(null);
     },
