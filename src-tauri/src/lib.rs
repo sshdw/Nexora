@@ -108,6 +108,7 @@ pub fn run() {
             commands::agent::list_agent_steps,
             commands::agent::inspect_run,
             commands::agent::spend_dashboard,
+            commands::agent::activity_feed,
             commands::agent::add_permission_rule,
             commands::agent::remove_permission_rule,
             commands::agent::list_permission_rules,

@@ -1,0 +1,178 @@
+/* ============================================================
+   Activity & Health — read-only feed + project snapshot panel.
+   Header + tab switch + scrolling body of event rows and health
+   sections. Calm list rows (tone steps + spacing group items, no
+   per-row borders); status pills carry selection emphasis only.
+   All values via tokens. No entrance animation: the panel renders
+   instantly (reduced-motion safe by construction).
+   ============================================================ */
+
+/* ---- Full surface ---- */
+.nex-activity {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ---- Header: title band + refresh/close affordances ---- */
+.nex-activity-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--nex-sys-space-sm);
+  min-height: var(--nex-sys-layout-header-height);
+  padding: var(--nex-sys-space-xs) var(--nex-sys-space-md);
+  background: var(--nex-sys-color-surface-container);
+  border-bottom: 1px solid var(--nex-sys-color-outline-variant);
+}
+.nex-activity-heading {
+  min-width: 0;
+}
+.nex-activity-title {
+  font-size: var(--nex-sys-type-size-headline-small);
+  font-weight: var(--nex-sys-type-weight-semibold);
+  letter-spacing: -0.01em;
+  line-height: var(--nex-sys-type-line-height-tight);
+  color: var(--nex-sys-color-on-surface);
+}
+.nex-activity-subtitle {
+  margin-top: var(--nex-sys-space-xxxs);
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-on-surface-tertiary);
+}
+.nex-activity-header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--nex-sys-space-xxs);
+  flex-shrink: 0;
+}
+
+/* ---- Tab switch row ---- */
+.nex-activity-tabs {
+  padding: var(--nex-sys-space-sm) var(--nex-sys-space-md) 0;
+}
+
+/* ---- Scrolling body ---- */
+.nex-activity-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--nex-sys-space-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--nex-sys-space-md);
+}
+
+/* ---- Kind filter row ---- */
+.nex-activity-filter {
+  margin-bottom: var(--nex-sys-space-sm);
+}
+
+/* ---- Health sections ---- */
+.nex-activity-section-title {
+  font-size: var(--nex-sys-type-size-title-small);
+  font-weight: var(--nex-sys-type-weight-semibold);
+  color: var(--nex-sys-color-on-surface);
+  margin-bottom: var(--nex-sys-space-xs);
+}
+
+/* ---- Feed / health rows: quiet containment, tone-grouped ---- */
+.nex-activity-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--nex-sys-space-xxs);
+}
+.nex-activity-row {
+  background: var(--nex-sys-color-surface-container-low);
+  border-radius: var(--nex-sys-shape-medium);
+  padding: var(--nex-sys-space-sm) var(--nex-sys-space-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--nex-sys-space-xxxs);
+}
+.nex-activity-row-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--nex-sys-space-sm);
+}
+.nex-activity-row-title {
+  font-size: var(--nex-sys-type-size-body-medium);
+  font-weight: var(--nex-sys-type-weight-medium);
+  color: var(--nex-sys-color-on-surface);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nex-activity-row-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--nex-sys-space-sm);
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-on-surface-tertiary);
+}
+
+/* ---- Status pills: pill = selection/emphasis only ---- */
+.nex-activity-pill {
+  flex-shrink: 0;
+  font-size: var(--nex-sys-type-size-label-small);
+  font-weight: var(--nex-sys-type-weight-semibold);
+  color: var(--nex-sys-color-on-secondary-container);
+  background: var(--nex-sys-color-secondary-container);
+  border-radius: var(--nex-sys-shape-pill);
+  padding: var(--nex-sys-space-xxxs) var(--nex-sys-space-xs);
+  line-height: var(--nex-sys-type-line-height-tight);
+}
+.nex-activity-pill--completed {
+  color: var(--nex-sys-color-on-primary-container);
+  background: var(--nex-sys-color-primary-container);
+}
+.nex-activity-pill--error {
+  color: var(--nex-sys-color-on-error-container);
+  background: var(--nex-sys-color-error-container);
+}
+
+/* ---- Context meter: quiet contained progress ---- */
+.nex-activity-meter {
+  height: var(--nex-sys-space-xxs);
+  border-radius: var(--nex-sys-shape-pill);
+  background: var(--nex-sys-color-surface-container-high);
+  overflow: hidden;
+}
+.nex-activity-meter-fill {
+  height: 100%;
+  border-radius: var(--nex-sys-shape-pill);
+  background: var(--nex-sys-color-primary);
+}
+
+/* ---- States ---- */
+.nex-activity-error {
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-error);
+}
+.nex-activity-muted {
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-on-surface-tertiary);
+}
+.nex-activity-empty {
+  padding: var(--nex-sys-space-lg) var(--nex-sys-space-md);
+  text-align: center;
+}
+.nex-activity-empty-title {
+  font-size: var(--nex-sys-type-size-title-medium);
+  font-weight: var(--nex-sys-type-weight-semibold);
+  color: var(--nex-sys-color-on-surface);
+}
+.nex-activity-empty-text {
+  margin-top: var(--nex-sys-space-xxs);
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-on-surface-tertiary);
+}

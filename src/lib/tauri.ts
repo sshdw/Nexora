@@ -701,6 +701,42 @@ export function spendDashboard(runId: number): Promise<SpendDashboard> {
   return invoke<SpendDashboard>("spend_dashboard", { runId });
 }
 
+// ---- Activity feed (read-only) ----------------------------------------
+// One batched aggregate over the persisted run history: capped recent-run
+// metadata rows (newest first) plus cross-run spend totals. Rows carry ids,
+// fixed-vocabulary labels, counters, and Unix-seconds timestamps only —
+// never `final_content` / `error` text (backend omits those columns by
+// construction), so feed rows render metadata + labels, never content
+// snippets. Payloads stay snake_case; the command arg is camelCase
+// (`limit`), like every other agent command.
+
+/** One activity-feed row: secret-free metadata of one `agent_runs` row. */
+export interface ActivityRun {
+  run_id: number;
+  conversation_id: number | null;
+  model: string;
+  mode: string;
+  status: string;
+  started_at: number; // seconds since unix epoch
+  finished_at: number | null; // seconds since unix epoch
+  total_steps: number;
+  spent_micro_usd: number | null;
+  limit_micro_usd: number | null;
+}
+
+/** One activity-feed response: capped rows plus cross-run totals. */
+export interface ActivityFeed {
+  runs: ActivityRun[];
+  totals: SpendTotals;
+}
+
+/** Load the activity feed via `activity_feed`. `limit` selects how many
+ * recent runs to include (backend clamps to 1..100, default 50); the totals
+ * always cover every persisted run. */
+export function activityFeed(limit?: number): Promise<ActivityFeed> {
+  return invoke<ActivityFeed>("activity_feed", { limit: limit ?? null });
+}
+
 // ---- Agent permission rules (M1-core) ----------------------------------
 
 /** One `permission_rules` row (M1-core). */

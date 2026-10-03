@@ -13,6 +13,7 @@ import "./styles/prompts.css";
 import "./styles/importExport.css";
 import "./styles/tabs.css";
 import "./styles/versionControl.css";
+import "./styles/activityHealth.css";
 import "./styles/palette.css";
 import "./styles/shortcuts.css";
 
