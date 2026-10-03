@@ -94,6 +94,7 @@ export default function VersionControlPanel({ onClose }: VersionControlPanelProp
   const [commitMessage, setCommitMessage] = useState<string>("");
   const [generating, setGenerating] = useState<boolean>(false);
   const [generatedTruncated, setGeneratedTruncated] = useState<boolean>(false);
+  const [pushArmed, setPushArmed] = useState<boolean>(false);
 
   const loadInfo = useCallback(async (keepSelection: boolean) => {
     setLoading(true);
@@ -135,6 +136,7 @@ export default function VersionControlPanel({ onClose }: VersionControlPanelProp
   // Refresh keeps the selected file (and reloads its diff) so a manual
   // refresh never loses the reader's place.
   const handleRefresh = useCallback(() => {
+    setPushArmed(false);
     void loadInfo(true).then(() => {
       if (selectedPath) void loadDiff(selectedPath);
     });
@@ -200,7 +202,11 @@ export default function VersionControlPanel({ onClose }: VersionControlPanelProp
   }, []);
 
   const handlePush = useCallback(async () => {
-    if (!window.confirm("Push the current branch to origin?")) return;
+    if (!pushArmed) {
+      setPushArmed(true);
+      return;
+    }
+    setPushArmed(false);
     setActing("push");
     setActionError(null);
     try {
@@ -211,7 +217,7 @@ export default function VersionControlPanel({ onClose }: VersionControlPanelProp
     } finally {
       setActing(null);
     }
-  }, [loadInfo]);
+  }, [loadInfo, pushArmed]);
 
   const stagedCount = info?.files.filter((file) => file.status === "staged").length ?? 0;
 
@@ -350,7 +356,8 @@ export default function VersionControlPanel({ onClose }: VersionControlPanelProp
               />
               {generatedTruncated && (
                 <p className="nex-vcs-notice" role="note">
-                  The staged summary was truncated — review the message before committing.
+                  The staged diff sent to the provider was truncated to 64 KiB — review the
+                  message before committing.
                 </p>
               )}
               <div className="nex-vcs-header-actions">
@@ -373,6 +380,10 @@ export default function VersionControlPanel({ onClose }: VersionControlPanelProp
                   {acting === "commit" ? "Committing…" : "Commit"}
                 </M3Button>
               </div>
+              <p className="nex-vcs-notice" role="note">
+                Generate sends the staged diff (up to 64 KiB) to the configured provider —
+                review before committing.
+              </p>
             </section>
 
             <section className="nex-vcs-section" aria-label="Push to origin">
@@ -385,9 +396,14 @@ export default function VersionControlPanel({ onClose }: VersionControlPanelProp
                   onClick={() => void handlePush()}
                   title={info.branch ? "Push the current branch to origin" : "Detached HEAD cannot be pushed"}
                 >
-                  {acting === "push" ? "Pushing…" : "Push to origin"}
+                  {acting === "push" ? "Pushing…" : pushArmed ? "Confirm push to origin" : "Push to origin"}
                 </M3Button>
               </div>
+              {pushArmed && info.branch && acting === null && (
+                <p className="nex-vcs-notice" role="note">
+                  Push sends the current branch to origin — click again to confirm.
+                </p>
+              )}
               {!info.branch && (
                 <p className="nex-agent-empty">Detached HEAD — pushing is unavailable.</p>
               )}

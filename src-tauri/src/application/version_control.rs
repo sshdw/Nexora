@@ -551,13 +551,17 @@ fn clean_stage_paths(raw_paths: &[String]) -> Result<Vec<PathBuf>, VersionContro
 ///
 /// Returns the number of paths staged. Requires `confirmed`; refuses empty
 /// and overlong batches and any path that escapes the repository workdir
-/// (same guards as the read path).
+/// (same guards as the read path). Unmatched pathspecs fail instead of
+/// silently staging nothing (`CHECK_PATHSPEC`), so stale or mistyped
+/// paths surface as an error while the count still reflects the batch.
 ///
 /// # Errors
 ///
 /// Returns [`VersionControlError::Unconfirmed`] without confirmation,
-/// [`VersionControlError::InvalidPath`] for a bad batch or an escaping path;
-/// see [`open_workspace_repo`] for the remaining failures.
+/// [`VersionControlError::InvalidPath`] for a bad batch or an escaping path,
+/// [`VersionControlError::GitFailed`] when staging fails (including an
+/// unmatched pathspec); see [`open_workspace_repo`] for the remaining
+/// failures.
 pub(crate) fn git_stage(
     workspace_root: &Path,
     raw_paths: &[String],
@@ -572,7 +576,7 @@ pub(crate) fn git_stage(
     }
     let mut index = repo.index().map_err(|_| VersionControlError::GitFailed)?;
     index
-        .add_all(rels.iter(), git2::IndexAddOption::DEFAULT, None)
+        .add_all(rels.iter(), git2::IndexAddOption::CHECK_PATHSPEC, None)
         .map_err(|_| VersionControlError::GitFailed)?;
     index.write().map_err(|_| VersionControlError::GitFailed)?;
     Ok(rels.len())
@@ -803,7 +807,10 @@ pub(crate) fn build_commit_prompt(summary: &str, truncated: bool) -> String {
 /// when no conventional line is present. The result always satisfies
 /// [`validate_commit_message`] and [`is_conventional_message`].
 pub(crate) fn sanitize_ai_message(raw: &str) -> String {
-    let stripped = raw.trim().replace("\r\n", "\n");
+    // Strip NULs upfront: `validate_commit_message` rejects them, so the
+    // sanitized output must never carry one through from model output.
+    let without_nul = raw.replace('\0', "");
+    let stripped = without_nul.trim().replace("\r\n", "\n");
     let all: Vec<&str> = stripped
         .lines()
         .map(str::trim_end)
@@ -1025,8 +1032,10 @@ pub(crate) fn generate_commit_message(
         request_timeout: Some(DEFAULT_REQUEST_TIMEOUT),
     };
     let response = RequestExecutionService::new(db).execute(&request)?;
+    let message = sanitize_ai_message(&response.content);
+    validate_commit_message(&message).map_err(CommitMessageError::from)?;
     Ok(GeneratedCommitMessage {
-        message: sanitize_ai_message(&response.content),
+        message,
         truncated_input: truncated,
     })
 }
