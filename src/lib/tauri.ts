@@ -319,6 +319,60 @@ export function importConversation(json: string): Promise<number> {
   return invoke<number>("import_conversation", { json });
 }
 
+// ---- Setup import/export (WS-E.2) --------------------------------------
+// VS Code settings + MCP servers import and the portable Nexora setup
+// document. Reports echo caller-supplied key names only (never values);
+// denials carry fixed-vocabulary reasons.
+
+/** One successfully translated key: source key plus the Nexora key written. */
+export interface ImportedEntry {
+  source_key: string;
+  nexora_key: string;
+}
+
+/** One rejected key: source key plus a fixed-vocabulary reason. */
+export interface DeniedEntry {
+  source_key: string;
+  reason: string;
+}
+
+/** Per-key outcome of a setup import: translated, skipped (no Nexora
+ * counterpart, never guessed), and denied (fixed-vocabulary reason). */
+export interface SetupImportReport {
+  imported: ImportedEntry[];
+  skipped: string[];
+  denied: DeniedEntry[];
+}
+
+/** Import a VS Code `settings.json` document; returns the per-key report.
+ * Only the mappable subset translates (`workbench.colorTheme`); everything
+ * else is reported as skipped. */
+export function importVscodeSettings(json: string): Promise<SetupImportReport> {
+  return invoke<SetupImportReport>("import_vscode_settings", { json });
+}
+
+/** Import an MCP servers document (`{ "mcpServers": { ... } }`); returns the
+ * per-server report. Validated servers replace the stored `mcp.servers` list. */
+export function importMcpServers(json: string): Promise<SetupImportReport> {
+  return invoke<SetupImportReport>("import_mcp_servers", { json });
+}
+
+/** Export the current Nexora setup (settings plus routing profiles and
+ * feature flags) to its portable JSON document. */
+export function exportSetup(): Promise<string> {
+  return invoke<string>("export_setup");
+}
+
+/** Export the current Nexora setup to the JSON document at `path`. */
+export function exportSetupToFile(path: string): Promise<void> {
+  return invoke<void>("export_setup_to_file", { path });
+}
+
+/** Import a portable Nexora setup document; returns the per-key report. */
+export function importSetup(json: string): Promise<SetupImportReport> {
+  return invoke<SetupImportReport>("import_setup", { json });
+}
+
 // ---- AI execution ----------------------------------------------------
 
 /** One persisted `attachments` row (DATABASE.md §7.4). A draft attachment has

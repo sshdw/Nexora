@@ -22,6 +22,7 @@
 
 use tauri::State;
 
+use crate::application::import::{McpServerList, MCP_SERVERS_KEY};
 use crate::application::routing::{
     is_valid_custom_model_id, RoutingProfile, AGENT_PROFILE_KEY, CHAT_PROFILE_KEY,
 };
@@ -58,7 +59,8 @@ const VALID_AUTONOMY: &[&str] = &["supervised", "semi_autonomous", "full_autonom
 ///
 /// Rules:
 /// - Only the explicitly supported setting keys may be written: the eight
-///   base keys below plus the four `flags.*` feature-flag keys.
+///   base keys below, the `mcp.servers` MCP server list, plus the four
+///   `flags.*` feature-flag keys.
 /// - A `None` value (clearing back to the default state) is always valid.
 /// - [`THEME_KEY`] accepts only the implemented themes (`dark`, `light`).
 /// - [`SELECTED_PROVIDER_KEY`] accepts only names returned by the build's
@@ -88,10 +90,17 @@ const VALID_AUTONOMY: &[&str] = &["supervised", "semi_autonomous", "full_autonom
 ///   check only keeps obvious junk out of the generic key/value path.
 /// - [`WORKSPACE_RECENT_KEY`] accepts a JSON array of at most 5 non-empty
 ///   strings, each up to 1024 chars.
+/// - [`MCP_SERVERS_KEY`] accepts a JSON array of MCP server entries
+///   (`{name, command, args, env}`) that passes
+///   [`McpServerList::from_json`] — the single source shared with the setup
+///   import, so both paths agree. Rejection is value-free (unlike
+///   [`rejected`]): MCP environment values may carry secrets, so the
+///   offending value must never be echoed into the error message.
 ///
 /// No credential, payload, or path value can appear here beyond the workspace
-/// root strings: only the supported keys above reach persistence, and none of
-/// them ever carries a secret.
+/// root strings and non-secret MCP environment material: only the supported
+/// keys above reach persistence, and secret-like values are rejected before
+/// persistence (the MCP arm denies them with a value-free error).
 fn validate_setting(key: &str, value: Option<&str>) -> Result<(), CommandError> {
     // Clearing a setting restores its default state; never an invalid value.
     let Some(value) = value else {
@@ -166,6 +175,19 @@ fn validate_setting(key: &str, value: Option<&str>) -> Result<(), CommandError> 
                 Ok(())
             } else {
                 Err(rejected(key, value))
+            }
+        }
+        MCP_SERVERS_KEY => {
+            if McpServerList::from_json(value).is_ok() {
+                Ok(())
+            } else {
+                // Value-free rejection (unlike `rejected`): MCP environment
+                // values may carry secrets, so the offending value must never
+                // be echoed into the error message.
+                Err(CommandError::new(
+                    ErrorKind::InvalidInput,
+                    format!("value for '{key}' is not a valid MCP server list"),
+                ))
             }
         }
         _ if crate::application::flags::is_known_flag_setting(key) => {
@@ -567,6 +589,99 @@ mod tests {
                 validate_setting("flags.assembly", Some(value)).is_ok(),
                 expected,
                 "command gate verdict for flags.assembly {value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_servers_key_accepts_valid_lists_and_rejects_the_rest_secret_free() {
+        const VALID: &str =
+            r#"[{"name":"github","command":"npx","args":["-y"],"env":{"PORT":"8080"}}]"#;
+        assert_accepted(MCP_SERVERS_KEY, VALID);
+        assert_accepted(MCP_SERVERS_KEY, "[]");
+        // Clearing restores the default (absent) state and stays allowed.
+        assert!(validate_setting(MCP_SERVERS_KEY, None).is_ok());
+
+        // Malformed shapes are rejected.
+        for value in [
+            "not json",
+            "{}",
+            r#"[{"name":"github"}]"#,
+            r#"[{"name":"github","command":""}]"#,
+            r#"[{"name":"../evil","command":"x"}]"#,
+        ] {
+            assert_rejected(MCP_SERVERS_KEY, value);
+        }
+
+        // Secret-like environment material is rejected with a value-free
+        // error: the offending value must never be echoed.
+        let secret =
+            r#"[{"name":"leaky","command":"x","env":{"GITHUB_TOKEN":"sk-live-sentinel-42"}}]"#;
+        let err = validate_setting(MCP_SERVERS_KEY, Some(secret))
+            .expect_err("secret MCP env must be rejected");
+        assert_eq!(err.kind, ErrorKind::InvalidInput);
+        assert!(!err.message.contains("sk-live-sentinel-42"));
+        assert!(!err.message.to_lowercase().contains("sk-"));
+        assert!(err.message.contains(MCP_SERVERS_KEY));
+    }
+
+    #[test]
+    fn gate_agrees_with_setup_import_allowlist() {
+        // The setup import (`application/import.rs::is_importable_setting`)
+        // mirrors this gate key for key; both paths must return identical
+        // verdicts for every sampled input. Update both sides together.
+        use crate::application::import::is_importable_setting;
+        let listed_model = supported_providers()
+            .into_iter()
+            .find(|known| known.name == "openai")
+            .expect("openai must be registered")
+            .models
+            .into_iter()
+            .next()
+            .expect("openai must list a model");
+        let routing_single =
+            serde_json::json!([{"provider": "openai", "model": listed_model}]).to_string();
+        let mcp_valid =
+            r#"[{"name":"github","command":"npx","args":["-y"],"env":{"PORT":"8080"}}]"#
+                .to_string();
+        let mcp_secret =
+            r#"[{"name":"leaky","command":"x","env":{"T":"sk-live-sentinel-42"}}]"#.to_string();
+        let cases = [
+            (THEME_KEY, "dark".to_string(), true),
+            (THEME_KEY, "light".to_string(), true),
+            (THEME_KEY, "system".to_string(), false),
+            (SELECTED_PROVIDER_KEY, "openai".to_string(), true),
+            (SELECTED_PROVIDER_KEY, "ghost".to_string(), false),
+            (SELECTED_MODEL_KEY, listed_model.clone(), true),
+            (SELECTED_MODEL_KEY, "my-custom.model:v1".to_string(), true),
+            (SELECTED_MODEL_KEY, "gpt 5".to_string(), false),
+            (AUTONOMY_KEY, "supervised".to_string(), true),
+            (AUTONOMY_KEY, "auto".to_string(), false),
+            (WORKSPACE_ROOT_KEY, r"C:\Users\alice\work".to_string(), true),
+            (WORKSPACE_ROOT_KEY, String::new(), false),
+            (WORKSPACE_RECENT_KEY, r#"["C:\\a"]"#.to_string(), true),
+            (WORKSPACE_RECENT_KEY, "not json".to_string(), false),
+            (CHAT_PROFILE_KEY, routing_single.clone(), true),
+            (AGENT_PROFILE_KEY, routing_single.clone(), true),
+            (CHAT_PROFILE_KEY, "[]".to_string(), false),
+            ("flags.assembly", "true".to_string(), true),
+            ("flags.assembly", "yes".to_string(), false),
+            ("flags.ghost-flag", "true".to_string(), false),
+            (MCP_SERVERS_KEY, mcp_valid, true),
+            (MCP_SERVERS_KEY, mcp_secret, false),
+            (MCP_SERVERS_KEY, "not json".to_string(), false),
+            ("appearance.mode", "dark".to_string(), false),
+        ];
+        for (key, value, expected) in &cases {
+            assert_eq!(
+                validate_setting(key, Some(value)).is_ok(),
+                *expected,
+                "command gate verdict for {key} {value:?}"
+            );
+            assert_eq!(
+                is_importable_setting(key, value),
+                *expected,
+                "setup import verdict for {key} {value:?}"
             );
         }
     }
