@@ -111,6 +111,8 @@ pub fn run() {
             commands::agent::add_permission_rule,
             commands::agent::remove_permission_rule,
             commands::agent::list_permission_rules,
+            commands::version_control::git_info,
+            commands::version_control::git_file_diff,
         ])
         .setup(|app| {
             // Locate the per-user application data directory and ensure it

@@ -5,6 +5,34 @@
 
 import type { ComponentPropsWithoutRef } from "react";
 
+/** Branch glyph for the sidebar Version Control entry: two commit nodes
+ * joined by their branches, on the same 18px stroke grid as the rail set. */
+export function BranchIcon(props: ComponentPropsWithoutRef<"svg">) {
+  return (
+    <svg
+      aria-hidden="true"
+      focusable="false"
+      width="18"
+      height="18"
+      viewBox="0 0 18 18"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      {...props}
+    >
+      <circle cx="5" cy="4.5" r="2" stroke="currentColor" strokeWidth="1.4" />
+      <circle cx="5" cy="13.5" r="2" stroke="currentColor" strokeWidth="1.4" />
+      <circle cx="13" cy="9" r="2" stroke="currentColor" strokeWidth="1.4" />
+      <path
+        d="M5 6.5v5M5 8.5c2.5 0 3.5-.5 6-.5M5 10.5c2.5 0 3.5.5 6 .5"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 export function PlusIcon(props: ComponentPropsWithoutRef<"svg">) {
   return (
     <svg

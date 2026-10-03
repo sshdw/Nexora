@@ -1,0 +1,167 @@
+/* ============================================================
+   Version Control — read-only git base (status/log/diff panel).
+   Header + scrolling body with changed files, diff, and commits.
+   Diff code-block containment styling is reused from the shared
+   .nex-agent-diff primitives (conversation.css); only panel layout,
+   file/commit rows, and notices live here. All values via tokens.
+   No entrance animation: the panel renders instantly (reduced-motion
+   safe by construction).
+   ============================================================ */
+
+/* ---- Full surface ---- */
+.nex-vcs {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ---- Header: title band + refresh/back affordances ---- */
+.nex-vcs-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--nex-sys-space-sm);
+  min-height: var(--nex-sys-layout-header-height);
+  padding: var(--nex-sys-space-xs) var(--nex-sys-space-md);
+  background: var(--nex-sys-color-surface-container);
+  border-bottom: 1px solid var(--nex-sys-color-outline-variant);
+}
+.nex-vcs-heading {
+  min-width: 0;
+}
+.nex-vcs-title {
+  font-size: var(--nex-sys-type-size-headline-small);
+  font-weight: var(--nex-sys-type-weight-semibold);
+  letter-spacing: -0.01em;
+  line-height: var(--nex-sys-type-line-height-tight);
+  color: var(--nex-sys-color-on-surface);
+}
+.nex-vcs-subtitle {
+  margin-top: var(--nex-sys-space-xxxs);
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-on-surface-tertiary);
+}
+.nex-vcs-header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--nex-sys-space-xxs);
+  flex-shrink: 0;
+}
+
+.nex-vcs-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--nex-sys-space-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--nex-sys-space-lg);
+}
+
+.nex-vcs-section-title {
+  margin: 0 0 var(--nex-sys-space-sm);
+  font-size: var(--nex-sys-type-size-body-small);
+  font-weight: var(--nex-sys-type-weight-medium);
+  color: var(--nex-sys-color-on-surface-tertiary);
+}
+
+/* ---- Changed files: full-width row buttons (native keyboard parity),
+   selected = pill tone + emphasized path, never color alone (the status
+   tag carries the text label). ---- */
+.nex-vcs-file-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nex-sys-space-xxs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.nex-vcs-file {
+  display: flex;
+  align-items: center;
+  gap: var(--nex-sys-space-xs);
+  width: 100%;
+  min-width: 0;
+  padding: var(--nex-sys-space-xs) var(--nex-sys-space-sm);
+  border: 1px solid transparent;
+  border-radius: var(--nex-sys-shape-extra-small);
+  background: transparent;
+  color: var(--nex-sys-color-on-surface);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.nex-vcs-file:hover {
+  background: var(--nex-sys-color-surface-container-high);
+}
+.nex-vcs-file.is-selected {
+  background: var(--nex-sys-color-primary-container);
+  border-color: var(--nex-sys-color-outline-variant);
+}
+.nex-vcs-file-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- Diff containment: the shared .nex-agent-diff block sits inside a
+   keyboard-focusable scroll region (visible focus ring, capped height)
+   so keyboard users can scroll long diffs. ---- */
+.nex-vcs-diff-scroll {
+  max-height: 420px;
+  overflow: auto;
+  border-radius: var(--nex-sys-shape-extra-small);
+}
+.nex-vcs-diff-scroll:focus-visible {
+  outline: 2px solid var(--nex-sys-color-primary);
+  outline-offset: 2px;
+}
+
+/* ---- Notices: truncation + binary states (text + layout, never color
+   alone). ---- */
+.nex-vcs-notice {
+  margin: 0 0 var(--nex-sys-space-xs);
+  padding: var(--nex-sys-space-xs) var(--nex-sys-space-sm);
+  border: 1px solid var(--nex-sys-color-outline-variant);
+  border-radius: var(--nex-sys-shape-extra-small);
+  background: var(--nex-sys-color-surface-container-high);
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-on-surface-variant);
+}
+
+/* ---- Commits: hash tag + message + meta rows. ---- */
+.nex-vcs-commit-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nex-sys-space-xs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.nex-vcs-commit {
+  display: flex;
+  align-items: baseline;
+  gap: var(--nex-sys-space-sm);
+  min-width: 0;
+  padding: var(--nex-sys-space-xs) var(--nex-sys-space-sm);
+  border: 1px solid var(--nex-sys-color-outline-variant);
+  border-radius: var(--nex-sys-shape-extra-small);
+  background: var(--nex-sys-color-surface-container);
+}
+.nex-vcs-commit-message {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--nex-sys-color-on-surface);
+}
+.nex-vcs-commit-meta {
+  flex-shrink: 0;
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-on-surface-variant);
+}

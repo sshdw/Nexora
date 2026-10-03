@@ -21,6 +21,7 @@ use crate::application::project_dir::ProjectDirError;
 use crate::application::prompts::PromptLibraryError;
 use crate::application::providers::ProviderError;
 use crate::application::search::SearchError;
+use crate::application::version_control::VersionControlError;
 use crate::infrastructure::database::DatabaseError;
 use crate::infrastructure::providers::credentials::CredentialError;
 
@@ -251,6 +252,23 @@ impl From<SearchError> for CommandError {
     fn from(err: SearchError) -> Self {
         match err {
             SearchError::Database(inner) => Self::from(inner),
+        }
+    }
+}
+
+impl From<VersionControlError> for CommandError {
+    fn from(err: VersionControlError) -> Self {
+        match err {
+            VersionControlError::NotARepository => Self::new(
+                ErrorKind::InvalidInput,
+                "the workspace is not inside a git repository",
+            ),
+            VersionControlError::InvalidPath => {
+                Self::new(ErrorKind::InvalidInput, "the file path is invalid")
+            }
+            // Never log the underlying git detail: diff content may carry
+            // user-written secrets, so even server-side logging stays fixed.
+            VersionControlError::GitFailed => Self::new(ErrorKind::Io, "the git operation failed"),
         }
     }
 }

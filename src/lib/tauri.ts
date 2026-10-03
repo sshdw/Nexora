@@ -874,3 +874,60 @@ export interface FlagsStatus {
 export function flagsStatus(): Promise<FlagsStatus> {
   return invoke<FlagsStatus>("flags_status");
 }
+
+// ---- Version control (read-only git base) ------------------------------
+// Read-only git inspection for the opened workspace: branch + changed files
+// + recent commits in one `git_info` round trip, per-file unified diffs via
+// `git_file_diff` (lazy, server-side capped with a truncation notice).
+// Payloads stay snake_case like every other backend struct; command args are
+// camelCase (`limit`, `path`). No staging/committing/pushing exists here.
+
+/** One changed file: repository-relative path plus a fixed-vocabulary
+ * status (`"modified"`, `"staged"`, `"untracked"`, `"deleted"`, `"renamed"`). */
+export interface GitFileStatus {
+  path: string;
+  status: string;
+}
+
+/** One recent commit: full hash plus summary, author name, and Unix-seconds
+ * time. The message is the commit summary (first line) only. */
+export interface GitCommit {
+  hash: string;
+  message: string;
+  author: string;
+  time: number; // seconds since unix epoch
+}
+
+/** Aggregate read-only git view: current branch (`null` when detached or
+ * unborn), changed files sorted by path, and recent commits newest-first.
+ * `files` is capped server-side (500, sorted order) with any remainder
+ * reported in `files_overflow` (a count only, never content). */
+export interface GitInfo {
+  branch: string | null;
+  files: GitFileStatus[];
+  files_overflow: number;
+  commits: GitCommit[];
+}
+
+/** One per-file unified diff, capped server-side (256 KiB) with a truncation
+ * notice. Binary content reports `binary` with an empty diff. */
+export interface GitFileDiff {
+  path: string;
+  diff: string;
+  truncated: boolean;
+  binary: boolean;
+}
+
+/** Load the aggregate git view for the effective workspace root via
+ * `git_info`. `limit` selects how many recent commits to include (backend
+ * clamps to 1..100); the panel passes a small page such as 20. */
+export function gitInfo(limit?: number): Promise<GitInfo> {
+  return invoke<GitInfo>("git_info", { limit: limit ?? null });
+}
+
+/** Load one file's unified diff via `git_file_diff`. `path` is the
+ * repository-relative path from `GitInfo.files`; traversal attempts fail
+ * with a fixed-vocabulary error. */
+export function gitFileDiff(path: string): Promise<GitFileDiff> {
+  return invoke<GitFileDiff>("git_file_diff", { path });
+}

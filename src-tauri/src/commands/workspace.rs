@@ -27,8 +27,9 @@ use super::error::{CommandError, ErrorKind};
 
 /// Default workspace location: the pre-picker `agent_workspace` directory
 /// under the app-data dir. Used when no valid `agent.workspace_root` setting
-/// exists (the pre-picker behavior).
-fn default_root(app: &AppHandle) -> Result<PathBuf, CommandError> {
+/// exists (the pre-picker behavior). Shared with the version-control
+/// commands, which resolve the same effective workspace root.
+pub(crate) fn default_root(app: &AppHandle) -> Result<PathBuf, CommandError> {
     let base = app.path().app_data_dir().map_err(|err| {
         CommandError::new(
             ErrorKind::Io,
