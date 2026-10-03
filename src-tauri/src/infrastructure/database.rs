@@ -18,7 +18,10 @@
 //! `updated_at` maintenance triggers (v3), the agent run persistence tables
 //! `agent_runs` / `agent_steps` (v4, Task 4.2), the spend-guard columns and
 //! widened status CHECK (v5, Task 4.3), and the per-folder
-//! `conversations.workspace_root` column (v6).
+//! `conversations.workspace_root` column (v6), the persistent permission
+//! rules table `permission_rules` plus the `agent_steps` provenance columns
+//! (v7, M1-core), and the task-manager tables `agent_tasks` /
+//! `agent_task_steps` (v8, task manager + autonomous mode).
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -106,6 +109,9 @@ impl From<rusqlite::Error> for DatabaseError {
 ///   with its documented columns, defaults, CHECKs and UNIQUE, seeded with
 ///   the coding shell-ask row, plus the `agent_steps` provenance columns
 ///   `rule_id` / `group_key` / `decided_by` via a validated rebuild.
+/// - v8: the task-manager tables `agent_tasks` and `agent_task_steps` (task
+///   manager + autonomous mode): user-defined task lists whose steps the
+///   autonomous loop executes through the existing agent run path.
 pub(crate) const MIGRATIONS: &[(i64, &str)] = &[
     // v1 — base tables and functional indexes (DATABASE.md §7, §8).
     (
@@ -418,6 +424,66 @@ CREATE INDEX idx_agent_steps_run_seq
     ON agent_steps (run_id, seq);
 ",
     ),
+    // v8 — task manager + autonomous mode: user-defined task lists
+    // (`agent_tasks`) with agent-executable steps (`agent_task_steps`). New
+    // tables only (no rebuild): `agent_tasks` links the backing conversation
+    // (CASCADE, D50) and the latest step's agent run (SET NULL, history
+    // survives); `agent_task_steps` links its task (CASCADE) and its own step
+    // run (SET NULL). `updated_at` is maintained by the repository's explicit
+    // writes (no trigger: only title/status/report writes touch it).
+    (
+        8,
+        r"CREATE TABLE agent_tasks (
+    id INTEGER PRIMARY KEY CHECK (id > 0),
+    title TEXT NOT NULL CHECK (length(title) > 0 AND length(title) <= 200),
+    description TEXT
+        CHECK (description IS NULL OR length(description) <= 4000),
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'running', 'completed', 'failed', 'cancelled')),
+    conversation_id INTEGER
+        CHECK (conversation_id IS NULL OR conversation_id > 0)
+        REFERENCES conversations (id) ON DELETE CASCADE,
+    provider TEXT
+        CHECK (provider IS NULL OR (length(provider) > 0 AND length(provider) <= 100)),
+    model TEXT
+        CHECK (model IS NULL OR (length(model) > 0 AND length(model) <= 200)),
+    max_steps INTEGER NOT NULL DEFAULT 25 CHECK (max_steps >= 1 AND max_steps <= 25),
+    current_step INTEGER NOT NULL DEFAULT 0 CHECK (current_step >= 0),
+    total_steps INTEGER NOT NULL DEFAULT 0 CHECK (total_steps >= 0),
+    report TEXT,
+    run_id INTEGER
+        CHECK (run_id IS NULL OR run_id > 0)
+        REFERENCES agent_runs (id) ON DELETE SET NULL,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()) CHECK (created_at > 0),
+    updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+        CHECK (updated_at >= created_at)
+);
+
+CREATE TABLE agent_task_steps (
+    id INTEGER PRIMARY KEY CHECK (id > 0),
+    task_id INTEGER NOT NULL
+        CHECK (task_id > 0)
+        REFERENCES agent_tasks (id) ON DELETE CASCADE,
+    seq INTEGER NOT NULL CHECK (seq >= 1),
+    title TEXT NOT NULL CHECK (length(title) > 0 AND length(title) <= 500),
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'running', 'completed', 'failed', 'skipped', 'cancelled')),
+    result TEXT,
+    run_id INTEGER
+        CHECK (run_id IS NULL OR run_id > 0)
+        REFERENCES agent_runs (id) ON DELETE SET NULL,
+    started_at INTEGER NOT NULL DEFAULT (unixepoch()) CHECK (started_at > 0),
+    finished_at INTEGER CHECK (finished_at IS NULL OR finished_at > 0),
+    UNIQUE (task_id, seq)
+);
+
+CREATE INDEX idx_agent_tasks_status_updated
+    ON agent_tasks (status, updated_at);
+
+CREATE INDEX idx_agent_task_steps_task_seq
+    ON agent_task_steps (task_id, seq);
+",
+    ),
 ];
 
 /// Open the `SQLite` database at `path`, apply connection pragmas, and run any
@@ -629,6 +695,8 @@ mod tests {
         for table in [
             "agent_runs",
             "agent_steps",
+            "agent_task_steps",
+            "agent_tasks",
             "app_settings",
             "attachments",
             "conversations",
@@ -652,6 +720,8 @@ mod tests {
             "idx_agent_runs_conversation",
             "idx_agent_runs_started",
             "idx_agent_steps_run_seq",
+            "idx_agent_task_steps_task_seq",
+            "idx_agent_tasks_status_updated",
             "idx_attachments_conversation",
             "idx_attachments_message",
             "idx_conversations_status_updated",
@@ -682,14 +752,14 @@ mod tests {
             );
         }
 
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7, 8]);
     }
 
     #[test]
     fn migration_state_is_recorded_correctly() {
         let conn = in_memory_migrated();
 
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7, 8]);
 
         let applied_at: i64 = conn
             .query_row(
@@ -703,17 +773,17 @@ mod tests {
         let version_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .expect("count schema_version rows");
-        assert_eq!(version_count, 7, "one row per applied migration");
+        assert_eq!(version_count, 8, "one row per applied migration");
     }
 
     #[test]
     fn re_running_migrations_is_a_no_op() {
         let mut conn = in_memory_migrated();
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7, 8]);
 
         migrate(&mut conn).expect("a second migration run must succeed");
 
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7, 8]);
         // The no-op run created or dropped nothing.
         assert!(schema_object_exists(&conn, "conversations", "table"));
         assert!(schema_object_exists(&conn, "conversations_fts", "table"));
@@ -742,7 +812,7 @@ mod tests {
             !schema_object_exists(&conn, "partial_table", "table"),
             "the valid part of the failed migration must roll back"
         );
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7, 8]);
     }
 
     #[test]
@@ -1352,7 +1422,7 @@ mod tests {
         // Migrate to v5 (and any later)
         migrate(&mut conn).expect("migrate to v5");
         // Schema version is 5
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7, 8]);
         // Row preserved, new columns NULL for pre-v5 rows
         let (status, spent, limit): (String, Option<i64>, Option<i64>) = conn
             .query_row(
@@ -1440,7 +1510,7 @@ mod tests {
         )
         .expect("seed message");
         migrate(&mut conn).expect("migrate to v6");
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7, 8]);
         // Seeded row survives with a NULL workspace root.
         let root: Option<String> = conn
             .query_row(
@@ -1515,7 +1585,7 @@ mod tests {
         // Build a v6-only DB (mirrors the v5 test), then migrate to v7.
         let (mut conn, run_id) = v6_database_with_run_and_step();
         migrate(&mut conn).expect("migrate to v7");
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7, 8]);
         // Old rows intact with NULL provenance.
         let (kind, rule_id, group_key, decided_by): (
             String,

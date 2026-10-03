@@ -112,6 +112,13 @@ pub fn run() {
             commands::agent::add_permission_rule,
             commands::agent::remove_permission_rule,
             commands::agent::list_permission_rules,
+            commands::tasks::create_task,
+            commands::tasks::list_tasks,
+            commands::tasks::list_task_steps,
+            commands::tasks::update_task,
+            commands::tasks::delete_task,
+            commands::tasks::start_task_run,
+            commands::tasks::stop_task_run,
             commands::terminal::terminal_run,
             commands::terminal::terminal_kill,
             commands::terminal::terminal_explain,
@@ -147,6 +154,12 @@ pub fn run() {
             // `spawn_blocking` and the spawned run threads.
             app.manage(std::sync::Arc::new(
                 application::agent::service::AgentRunRegistry::default(),
+            ));
+            // Hold the active-task registry as managed state (task manager):
+            // an `Arc` so the task IPC commands can clone an owned handle
+            // into `spawn_blocking` and the spawned loop threads.
+            app.manage(std::sync::Arc::new(
+                application::agent::tasks::TaskRegistry::default(),
             ));
             // Hold the single-session terminal registry as managed state
             // (terminal panel): an `Arc` so the terminal IPC commands can

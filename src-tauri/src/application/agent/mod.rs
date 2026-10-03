@@ -63,6 +63,9 @@
 //! - Activity Feed ([`activity`]): one read-only aggregate over the persisted
 //!   run history (capped recent-run metadata rows plus cross-run spend
 //!   totals); `&`-borrows only, secret-free by construction, zero new state.
+//! - Task Manager + Autonomous Mode ([`tasks`]): user-defined task lists with
+//!   agent-executable steps, and the bounded plan → act → verify → report
+//!   loop driving the existing run path with budgets/approval intact.
 
 pub mod action_memory;
 pub mod activity;
@@ -94,4 +97,5 @@ pub mod snapshots;
 pub mod spend;
 #[cfg(test)]
 mod stress;
+pub mod tasks;
 pub mod tools;

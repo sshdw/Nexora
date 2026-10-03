@@ -94,7 +94,10 @@ impl AgentRunHost for TauriAgentHost {
 }
 
 impl TauriAgentHost {
-    fn new(app: AppHandle, db: Database) -> Self {
+    /// `pub(crate)` so the sibling task commands reuse this exact shell side
+    /// for the autonomous loop's step runs (same event stream, same
+    /// assistant-message persistence path).
+    pub(crate) fn new(app: AppHandle, db: Database) -> Self {
         Self { app, db }
     }
 }
@@ -103,7 +106,9 @@ impl TauriAgentHost {
 /// setting when it names an existing directory, else the default
 /// `agent_workspace` subdirectory of the app-data dir (the pre-picker
 /// behavior). Created on demand. Anchor: `commands/agent.rs::workspace_root`.
-fn workspace_root(app: &AppHandle, db: &Database) -> Result<PathBuf, CommandError> {
+/// `pub(crate)` so the sibling task commands resolve the identical root for
+/// the autonomous loop's step runs.
+pub(crate) fn workspace_root(app: &AppHandle, db: &Database) -> Result<PathBuf, CommandError> {
     let base = app.path().app_data_dir().map_err(|err| {
         CommandError::new(
             ErrorKind::Io,
