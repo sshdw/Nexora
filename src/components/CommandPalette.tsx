@@ -109,17 +109,24 @@ export default function CommandPalette({ commands, onClose, onRun }: CommandPale
 
   const activeId =
     results.length === 0 ? undefined : `nex-palette-option-${highlight}`;
-  // Group consecutive same-section hits so section labels read as headers.
-  const rows: Array<
-    { kind: "header"; section: string } | { kind: "item"; index: number }
-  > = [];
-  let lastSection: string | null = null;
+  // Group consecutive same-section hits so section labels read as group
+  // headers (listbox > group > option — AT users hear the grouping).
+  const groups: Array<{
+    section: string;
+    headerId: string;
+    indices: number[];
+  }> = [];
   results.forEach((hit, index) => {
-    if (hit.command.section !== lastSection) {
-      lastSection = hit.command.section;
-      rows.push({ kind: "header", section: lastSection });
+    const tail = groups[groups.length - 1];
+    if (tail && tail.section === hit.command.section) {
+      tail.indices.push(index);
+    } else {
+      groups.push({
+        section: hit.command.section,
+        headerId: `nex-palette-section-${groups.length}`,
+        indices: [index],
+      });
     }
-    rows.push({ kind: "item", index });
   });
 
   return (
@@ -156,36 +163,39 @@ export default function CommandPalette({ commands, onClose, onRun }: CommandPale
             aria-label="Matching commands"
             className="nex-palette-list"
           >
-            {rows.map((row, rowKey) =>
-              row.kind === "header" ? (
-                <li
-                  key={`header-${row.section}-${rowKey}`}
-                  role="presentation"
-                  className="nex-palette-section"
-                  aria-hidden="true"
-                >
-                  {row.section}
-                </li>
-              ) : (
-                <li
-                  key={results[row.index]?.command.id ?? row.index}
-                  id={`nex-palette-option-${row.index}`}
-                  data-index={row.index}
-                  role="option"
-                  aria-selected={row.index === highlight}
-                  className={
-                    "nex-palette-item" +
-                    (row.index === highlight ? " is-active" : "")
-                  }
-                  onMouseEnter={() => setHighlight(row.index)}
-                  onClick={runHighlighted}
-                >
-                  <span className="nex-palette-item-title">
-                    {results[row.index]?.command.title}
-                  </span>
-                </li>
-              ),
-            )}
+            {groups.map((group) => (
+              <li
+                key={group.headerId}
+                role="group"
+                aria-labelledby={group.headerId}
+              >
+                <span id={group.headerId} className="nex-palette-section">
+                  {group.section}
+                </span>
+                {group.indices.map((index) => (
+                  <div
+                    key={results[index]?.command.id ?? index}
+                    id={`nex-palette-option-${index}`}
+                    data-index={index}
+                    role="option"
+                    aria-selected={index === highlight}
+                    className={
+                      "nex-palette-item" +
+                      (index === highlight ? " is-active" : "")
+                    }
+                    onMouseEnter={() => setHighlight(index)}
+                    onClick={() => {
+                      const hit = results[index];
+                      if (hit) onRunRef.current(hit.command);
+                    }}
+                  >
+                    <span className="nex-palette-item-title">
+                      {results[index]?.command.title}
+                    </span>
+                  </div>
+                ))}
+              </li>
+            ))}
           </ul>
         )}
         <p className="nex-palette-hints" aria-hidden="true">

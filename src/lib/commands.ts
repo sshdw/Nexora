@@ -22,6 +22,17 @@
 //! subsequence scorer (matchCommand below) — typos survive because extra or
 //! missing letters only lower the score, never veto. No network, no deps.
 //!
+//! Ranking characterization (empty MRU; MRU boosts add +8 per recency rank,
+//! so a recently used runner-up can outrank these):
+//!   query .............. expected top hit
+//!   "commmit" .......... vcs.commit-focus (typo alias)
+//!   "api key" .......... settings.credentials
+//!   "dark" ............. settings.appearance
+//!   "clear" ............ settings.data
+//!   "close tab" ........ tabs.close-active
+//!   "prompt library" ... go.library
+//!   "new conv" ......... chat.new
+//!
 //! MRU decision: in-memory only (module-level Map, session lifetime).
 //! Persisting via the settings store was evaluated and rejected — tab ids
 //! (useConversationTabs.ts:30-36) document why id-backed state needs a

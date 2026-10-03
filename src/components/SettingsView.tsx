@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import type { SupportedProvider } from "../lib/tauri";
 import { clearApplicationData } from "../lib/tauri";
@@ -59,6 +59,11 @@ export default function SettingsView({
   initialSection = "appearance",
 }: SettingsViewProps) {
   const [section, setSection] = useState<SettingsSectionId>(initialSection);
+  // Palette deep links retarget an already-mounted panel: follow
+  // initialSection instead of pinning the first mount value.
+  useEffect(() => {
+    setSection(initialSection);
+  }, [initialSection]);
   const [draftKeys, setDraftKeys] = useState<Record<string, string>>({});
   // Clear-all-data confirmation state (typed phrase; no accidental runs).
   const [confirmingClear, setConfirmingClear] = useState(false);

@@ -273,29 +273,29 @@ function App() {
     setVcsOpen(false);
   };
 
-  const openSettings = (section?: PaletteSettingsSection) => {
+  const openSettings = useCallback((section?: PaletteSettingsSection) => {
     setSettingsSection(section ?? "appearance");
     setSettingsOpen(true);
     setLibraryOpen(false);
     setVcsOpen(false);
-  };
-  const openLibrary = () => {
+  }, []);
+  const openLibrary = useCallback(() => {
     // A fresh entry to the library opens the list, not a previously staged edit.
     setPromptToEditId(null);
     setLibraryOpen(true);
     setSettingsOpen(false);
     setVcsOpen(false);
-  };
+  }, []);
   const closeLibrary = () => {
     setLibraryOpen(false);
     setPromptToEditId(null);
   };
-  const openVcs = (request?: PaletteVcsRequest) => {
+  const openVcs = useCallback((request?: PaletteVcsRequest) => {
     setVcsRequest(request ? { token: Date.now(), action: request } : null);
     setVcsOpen(true);
     setLibraryOpen(false);
     setSettingsOpen(false);
-  };
+  }, []);
   const closeVcs = () => {
     setVcsOpen(false);
   };
@@ -459,23 +459,16 @@ function App() {
   // Command-palette toggle (Ctrl+K, with Ctrl+P as a collision-free alias:
   // the existing Ctrl map owns only Tab/PageUp/PageDown — see
   // useConversationTabs.ts:12-28 — and no other feature binds Ctrl+P).
-  // Guarded like the Alt+digit branch above: typing targets (inputs,
-  // textareas, selects, contentEditable, rename fields) keep their keys,
-  // and an open dialog owns the keyboard (no stacked dialogs). The
-  // palette input autofocuses on open; ModalShell restores focus to the
-  // invoker on close.
+  // Unlike Alt+digits (which can compose characters on some layouts),
+  // Ctrl+K/Ctrl+P insert no text in inputs, so the palette opens from
+  // anywhere (VS Code norm) — including typing targets. An open dialog
+  // still owns the keyboard (no stacked dialogs). The palette input
+  // autofocuses on open; ModalShell restores focus to the invoker on close.
   useEffect(() => {
-    const isTypingTarget = (target: EventTarget | null) => {
-      if (!(target instanceof HTMLElement)) return false;
-      if (target.isContentEditable) return true;
-      const tag = target.tagName;
-      return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
-    };
     const onKeyDown = (event: KeyboardEvent) => {
       if (!event.ctrlKey || event.altKey || event.metaKey) return;
       const key = event.key.toLowerCase();
       if (key !== "k" && key !== "p") return;
-      if (isTypingTarget(event.target)) return;
       if (document.querySelector('[role="dialog"]') !== null) return;
       event.preventDefault();
       setPaletteOpen((prev) => !prev);

@@ -160,8 +160,12 @@ export default function VersionControlPanel({ onClose, request = null }: Version
       refreshRef.current();
       return;
     }
-    if (loading || !info) return;
+    // Focus-commit while the panel is still loading retries when the load
+    // settles; a failed load (nothing to focus) still consumes the token
+    // so it never fires unexpectedly on a later successful load.
+    if (loading) return;
     seenRequestRef.current = request.token;
+    if (!info) return;
     commitRef.current?.focus();
   }, [request, loading, info]);
 
