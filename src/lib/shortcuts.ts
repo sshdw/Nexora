@@ -41,6 +41,9 @@
 //!   - Ctrl+Shift+A / Ctrl+Shift+H (activity/health): the Ctrl map owns only
 //!     Tab/PageUp/PageDown (+ palette K/P, help //?) and Ctrl+Shift+Tab is
 //!     owned by tabs.prev — A/H with Ctrl+Shift are unbound, collision-free.
+//!   - Ctrl+` (terminal): the Ctrl map owns only Tab/PageUp/PageDown (+
+//!     palette K/P, help //?, activity/health A/H) — backtick with Ctrl is
+//!     unbound, collision-free (VS Code norm; inserts no text).
 //!
 //! Out of scope (deferred, documented): user-customizable bindings. The
 //! registry shape (stable ids + combo definitions) is designed so a future
@@ -138,6 +141,11 @@ export const COMBO_HELP_F1: ShortcutCombo = { key: "F1", ctrl: false, alt: false
  * `ci` matches the "A"/"H" key value Shift produces. */
 export const COMBO_ACTIVITY_OPEN: ShortcutCombo = { key: "a", ctrl: true, alt: false, meta: false, shift: true, ci: true };
 export const COMBO_HEALTH_OPEN: ShortcutCombo = { key: "h", ctrl: true, alt: false, meta: false, shift: true, ci: true };
+/** Ctrl+` (terminal): the Ctrl map owns only Tab/PageUp/PageDown (+
+ * palette K/P, help //?, activity/health A/H) — backtick with Ctrl is
+ * unbound, collision-free (VS Code terminal norm; inserts no text, so it
+ * opens from anywhere including typing targets). */
+export const COMBO_TERMINAL_OPEN: ShortcutCombo = { key: "`", ctrl: true, alt: false, meta: false, shift: "any" };
 
 // --- The inventory (100% of the Phase-1 grep — see module header). ----------
 
@@ -179,6 +187,15 @@ export const SHORTCUTS: readonly ShortcutEntry[] = [
     description: "Open the Project health view",
     source: "App.tsx (activity-health effect)",
     combos: [COMBO_HEALTH_OPEN],
+  },
+  {
+    id: "go.terminal",
+    keys: ["Ctrl+`"],
+    group: "Go",
+    scope: "Global (any focus, no open dialog)",
+    description: "Open the workspace Terminal",
+    source: "App.tsx (terminal effect)",
+    combos: [COMBO_TERMINAL_OPEN],
   },
   // Tabs.
   {

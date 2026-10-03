@@ -17,6 +17,7 @@ import PromptLibraryView from "./components/PromptLibraryView";
 import SettingsView from "./components/SettingsView";
 import ShortcutsDialog from "./components/ShortcutsDialog";
 import Sidebar from "./components/Sidebar";
+import TerminalPanel from "./components/TerminalPanel";
 import VersionControlPanel from "./components/VersionControlPanel";
 import WorkspaceChip from "./components/WorkspaceChip";
 import type { Conversation } from "./lib/tauri";
@@ -25,6 +26,7 @@ import {
   recordUse,
   type PaletteCommand,
   type PaletteSettingsSection,
+  type PaletteTerminalRequest,
   type PaletteVcsRequest,
 } from "./lib/commands";
 import {
@@ -40,6 +42,7 @@ import {
   COMBO_TAB_NEXT_PAGEDOWN,
   COMBO_TAB_NEXT_TAB,
   COMBO_TAB_PREV_PAGEDUP,
+  COMBO_TERMINAL_OPEN,
   COMBO_ZEN_TOGGLE,
   matchesAnyCombo,
   matchesCombo,
@@ -228,6 +231,17 @@ function App() {
     token: number;
     tab: ActivityHealthTab;
   } | null>(null);
+  // Workspace Terminal screen: a workspace-scoped navigation destination
+  // like Settings/Library/VCS/Activity — a sidebar rail entry (not a
+  // header action: the header is per-conversation, the terminal is per
+  // workspace) opening an overlay over the still-mounted panes. Palette
+  // deep-links (clear / focus-input) ride the same request-token pattern
+  // as vcsRequest.
+  const [terminalOpen, setTerminalOpen] = useState(false);
+  const [terminalRequest, setTerminalRequest] = useState<{
+    token: number;
+    action: PaletteTerminalRequest;
+  } | null>(null);
   const mainRef = useRef<HTMLDivElement>(null);
 
   const draftFor = useCallback(
@@ -278,6 +292,7 @@ function App() {
     setSettingsOpen(false);
     setVcsOpen(false);
     setActivityOpen(false);
+    setTerminalOpen(false);
   };
 
   // Leading-edge guard for conversation creation: synchronous rapid clicks on
@@ -294,6 +309,7 @@ function App() {
         setLibraryOpen(false);
         setVcsOpen(false);
         setActivityOpen(false);
+        setTerminalOpen(false);
       }    } finally {
       creatingInFlight.current = false;
     }
@@ -306,6 +322,7 @@ function App() {
     setSettingsOpen(false);
     setVcsOpen(false);
     setActivityOpen(false);
+    setTerminalOpen(false);
   };
 
   const openSettings = useCallback((section?: PaletteSettingsSection) => {
@@ -314,6 +331,7 @@ function App() {
     setLibraryOpen(false);
     setVcsOpen(false);
     setActivityOpen(false);
+    setTerminalOpen(false);
   }, []);
   const openLibrary = useCallback(() => {
     // A fresh entry to the library opens the list, not a previously staged edit.
@@ -322,6 +340,7 @@ function App() {
     setSettingsOpen(false);
     setVcsOpen(false);
     setActivityOpen(false);
+    setTerminalOpen(false);
   }, []);
   const closeLibrary = () => {
     setLibraryOpen(false);
@@ -333,9 +352,21 @@ function App() {
     setLibraryOpen(false);
     setSettingsOpen(false);
     setActivityOpen(false);
+    setTerminalOpen(false);
   }, []);
   const closeVcs = () => {
     setVcsOpen(false);
+  };
+  const openTerminal = useCallback((request?: PaletteTerminalRequest) => {
+    setTerminalRequest(request ? { token: Date.now(), action: request } : null);
+    setTerminalOpen(true);
+    setLibraryOpen(false);
+    setSettingsOpen(false);
+    setVcsOpen(false);
+    setActivityOpen(false);
+  }, []);
+  const closeTerminal = () => {
+    setTerminalOpen(false);
   };
   const openActivity = useCallback((tab: ActivityHealthTab = "activity") => {
     // Deep links always retarget the tab (even when already open): the
@@ -346,6 +377,7 @@ function App() {
     setLibraryOpen(false);
     setSettingsOpen(false);
     setVcsOpen(false);
+    setTerminalOpen(false);
   }, []);
   const closeActivity = () => {
     setActivityOpen(false);
@@ -359,6 +391,7 @@ function App() {
     setPromptToEditId(promptId);
     setVcsOpen(false);
     setActivityOpen(false);
+    setTerminalOpen(false);
   };
 
   // FR-007 "Use": stage the prompt's content into the active pane's composer,
@@ -388,13 +421,15 @@ function App() {
   }, []);
 
   // Overlay-exit contract shared by tab mutations and palette commands:
-  // switching surface closes Settings/Library/VCS/Activity (same as clicking a
-  // tab or sidebar row — overlays never sit above a switched tab).
+  // switching surface closes Settings/Library/VCS/Activity/Terminal (same
+  // as clicking a tab or sidebar row — overlays never sit above a switched
+  // tab).
   const closeOverlays = useCallback(() => {
     setLibraryOpen(false);
     setSettingsOpen(false);
     setVcsOpen(false);
     setActivityOpen(false);
+    setTerminalOpen(false);
   }, []);
 
   // Focus the active pane's composer (palette "Focus message input"):
@@ -404,6 +439,7 @@ function App() {
     setSettingsOpen(false);
     setVcsOpen(false);
     setActivityOpen(false);
+    setTerminalOpen(false);
     window.setTimeout(() => {
       document
         .querySelector<HTMLTextAreaElement>(".nex-composer-input")
@@ -583,6 +619,20 @@ function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [openActivity]);
 
+  // Terminal shortcut (shortcut:go.terminal — Ctrl+`): same guarded pattern
+  // (opens from anywhere including typing targets — the combo inserts no
+  // text — while an open dialog still owns the keyboard).
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!matchesCombo(event, COMBO_TERMINAL_OPEN)) return;
+      if (document.querySelector('[role="dialog"]') !== null) return;
+      event.preventDefault();
+      openTerminal();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [openTerminal]);
+
   // The palette registry: every entry wraps the existing UI handler, so
   // invoking from the palette === clicking its UI equivalent.
   const paletteCommands = useMemo(
@@ -593,6 +643,7 @@ function App() {
         openLibrary,
         openVcs,
         openActivity,
+        openTerminal,
         newConversation: () => void handleNewConversation(),
         openImport: () => setImportOpen(true),
         exportActive: exportActiveConversation,
@@ -624,6 +675,7 @@ function App() {
       openLibrary,
       openVcs,
       openActivity,
+      openTerminal,
       handleNewConversation,
       exportActiveConversation,
       focusComposer,
@@ -671,7 +723,7 @@ function App() {
   // A prompt can only be staged when a conversation is open.
   const hasActiveConversation = activeConversation != null;
   const showOverlays =
-    libraryOpen || settingsOpen || vcsOpen || activityOpen;
+    libraryOpen || settingsOpen || vcsOpen || activityOpen || terminalOpen;
   // The split grid stays mounted in zen (the secondary pane hides via
   // .nex-zen CSS, same technique as the zen chrome rules) so both
   // ConversationView instances survive entering/exiting zen. Split
@@ -781,6 +833,8 @@ function App() {
         onOpenVersionControl={openVcs}
         activityActive={activityOpen}
         onOpenActivity={() => openActivity("activity")}
+        terminalActive={terminalOpen}
+        onOpenTerminal={() => openTerminal()}
         onSelectPrompt={handleSelectPrompt}
         onImport={() => setImportOpen(true)}
         onRename={rename}
@@ -801,6 +855,7 @@ function App() {
               setSettingsOpen(false);
               setVcsOpen(false);
               setActivityOpen(false);
+              setTerminalOpen(false);
             }}
             onClose={tabs.close}
             onNewConversation={() => void handleNewConversation()}
@@ -838,6 +893,8 @@ function App() {
                 tabRequest={activityRequest}
                 activeConversationId={tabs.activeId}
               />
+            ) : terminalOpen ? (
+              <TerminalPanel onClose={closeTerminal} request={terminalRequest} />
             ) : (
               <SettingsView
                 store={providers}

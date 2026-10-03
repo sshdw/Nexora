@@ -26,5 +26,6 @@ pub mod prompts;
 pub mod providers;
 pub mod search;
 pub mod settings;
+pub mod terminal;
 pub mod version_control;
 pub mod workspace;

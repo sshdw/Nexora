@@ -1,0 +1,121 @@
+/* ============================================================
+   Terminal — workspace command panel (scrollback + input row).
+   Header reuses the shared .nex-vcs-header primitives; scrollback
+   blocks reuse the shared .nex-agent-terminal containment primitives
+   (conversation.css); only panel layout, the scroll region, the input
+   row, and the exit badges live here. All values via tokens.
+   No entrance animation: the panel renders instantly (reduced-motion
+   safe by construction).
+   ============================================================ */
+
+/* ---- Full surface ---- */
+.nex-term {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.nex-term-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--nex-sys-space-sm);
+  padding: var(--nex-sys-space-md);
+  overflow: hidden;
+}
+
+/* ---- Scrollback: flexed log region (no fixed max-height — the panel
+   owns the height, so no raw size token is needed). ---- */
+.nex-term-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: var(--nex-sys-space-sm);
+  padding: var(--nex-sys-space-xs);
+  border: 1px solid var(--nex-sys-color-outline-variant);
+  border-radius: var(--nex-sys-shape-small);
+  background: var(--nex-sys-color-surface-container-low);
+}
+.nex-term-scroll:focus-visible {
+  outline: 2px solid var(--nex-sys-color-primary);
+  outline-offset: 2px;
+}
+
+/* ---- Exit badges: text + tone, never color alone (the label carries
+   the state). ---- */
+.nex-term-exit-ok {
+  background: var(--nex-sys-color-success-container);
+  color: var(--nex-sys-color-on-success-container);
+}
+.nex-term-exit-fail {
+  background: var(--nex-sys-color-error-container);
+  color: var(--nex-sys-color-on-error-container);
+}
+.nex-term-exit-stopped {
+  background: var(--nex-sys-color-warning-container);
+  color: var(--nex-sys-color-on-warning-container);
+}
+.nex-term-exit-running {
+  background: var(--nex-sys-color-secondary-container);
+  color: var(--nex-sys-color-on-secondary-container);
+}
+.nex-term-exit-truncated {
+  background: var(--nex-sys-color-surface-container-highest);
+  color: var(--nex-sys-color-on-surface-variant);
+}
+
+/* ---- Input row: prompt + cwd tag + field + Run/Stop. ---- */
+.nex-term-input-row {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--nex-sys-space-xs);
+  padding: var(--nex-sys-space-xs) var(--nex-sys-space-sm);
+  border: 1px solid var(--nex-sys-color-outline-variant);
+  border-radius: var(--nex-sys-shape-small);
+  background: var(--nex-sys-color-surface-container-high);
+}
+.nex-term-input-row:focus-within {
+  border-color: var(--nex-sys-focus-field-color);
+}
+.nex-term-prompt {
+  color: var(--nex-sys-color-primary);
+  font-weight: var(--nex-sys-type-weight-emphasized);
+  font-family: var(--nex-sys-type-family-mono);
+  font-size: var(--nex-sys-type-size-body-medium);
+  flex-shrink: 0;
+}
+.nex-term-cwd {
+  flex-shrink: 0;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--nex-sys-color-on-surface-faint);
+}
+.nex-term-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--nex-sys-color-on-surface);
+  font-family: var(--nex-sys-type-family-mono);
+  font-size: var(--nex-sys-type-size-body-medium);
+  line-height: var(--nex-sys-type-line-height-normal);
+  padding: var(--nex-sys-space-xxs) 0;
+}
+.nex-term-input:focus {
+  outline: none;
+}
+.nex-term-input::placeholder {
+  color: var(--nex-sys-color-on-surface-faint);
+}
+.nex-term-input:disabled {
+  opacity: var(--nex-sys-state-disabled-opacity);
+}

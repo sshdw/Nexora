@@ -428,3 +428,43 @@ export function ActivityIcon(props: ComponentPropsWithoutRef<"svg">) {
     </svg>
   );
 }
+
+/** Terminal glyph for the sidebar Terminal entry: a prompt chevron plus
+ * input line, on the same 18px stroke grid as the rail set. */
+export function TerminalIcon(props: ComponentPropsWithoutRef<"svg">) {
+  return (
+    <svg
+      aria-hidden="true"
+      focusable="false"
+      width="18"
+      height="18"
+      viewBox="0 0 18 18"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      {...props}
+    >
+      <rect
+        x="2"
+        y="3"
+        width="14"
+        height="12"
+        rx="2"
+        stroke="currentColor"
+        strokeWidth="1.4"
+      />
+      <path
+        d="M5.5 6.5l2.5 2-2.5 2"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M9 10.5h3.5"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
