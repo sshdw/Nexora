@@ -66,7 +66,7 @@ export default function ConversationView({
   draft,
   setDraft,
 }: ConversationViewProps) {
-  const { t } = useStrings();
+  const { locale, t } = useStrings();
   const { messages, loading, error, sending, send } = useConversation(conversationId);
   const {
     attachments,
@@ -365,7 +365,7 @@ export default function ConversationView({
                     className="nex-message-time"
                     dateTime={new Date(item.message.created_at * 1000).toISOString()}
                   >
-                    {formatRelativeTime(item.message.created_at)}
+                    {formatRelativeTime(item.message.created_at, locale)}
                   </time>
                 </div>
                 <div className="nex-message-body">{item.message.content}</div>

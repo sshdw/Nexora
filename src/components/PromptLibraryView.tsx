@@ -63,7 +63,7 @@ export default function PromptLibraryView({
   // 0.3.0: deletion confirms in the Nexora dialog system (was
   // window.confirm) — same explicit-confirm behavior, in-app chrome.
   const [pendingDelete, setPendingDelete] = useState<Prompt | null>(null);
-  const { t } = useStrings();
+  const { locale, t } = useStrings();
 
   useEffect(() => {
     if (initialEditId == null) return;
@@ -213,7 +213,7 @@ export default function PromptLibraryView({
                     className="nex-prompt-time"
                     dateTime={new Date(prompt.updated_at * 1000).toISOString()}
                   >
-                    {formatRelativeTime(prompt.updated_at)}
+                    {formatRelativeTime(prompt.updated_at, locale)}
                   </time>
                 </div>
                 <span className="nex-prompt-preview">{prompt.content}</span>

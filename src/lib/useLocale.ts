@@ -55,6 +55,9 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
 
   // Keep the module-level locale (non-React call sites: format.ts, hook
   // fallbacks, label helpers) and <html lang> in sync with React state.
+  // The effect below is the backstop (covers the initial mount); setLocale
+  // also syncs synchronously so module-locale readers never observe the
+  // previous language between the state update and the effect.
   useEffect(() => {
     setCurrentLocale(locale);
     document.documentElement.lang = locale;
@@ -63,6 +66,7 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
   const setLocale = useCallback((next: Locale) => {
     if (!isLocale(next)) return;
     persistLocale(next);
+    setCurrentLocale(next);
     setLocaleState(next);
   }, []);
 

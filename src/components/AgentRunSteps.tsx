@@ -189,7 +189,7 @@ export function DiffView({ observation }: { observation: string | null }) {
 }
 
 function StepSection({ step, defaultOpen }: { step: AgentStepView; defaultOpen: boolean }) {
-  const { t } = useStrings();
+  const { locale, t } = useStrings();
   const [open, setOpen] = useState<boolean>(defaultOpen);
   const isLong = (step.observation?.length ?? 0) > 2000;
   const observation = step.observation ?? "";
@@ -206,7 +206,7 @@ function StepSection({ step, defaultOpen }: { step: AgentStepView; defaultOpen: 
         onClick={() => setOpen((v) => !v)}
       >
         <span className="nex-agent-step-seq">#{step.seq}</span>
-        <span className="nex-agent-step-kind">{kindLabel(step)}</span>
+        <span className="nex-agent-step-kind">{kindLabel(step, locale)}</span>
         {step.tool_name && step.kind === "tool_call" && (
           <span className="nex-agent-step-tool">{step.tool_name}</span>
         )}
@@ -258,7 +258,7 @@ export default function AgentRunSteps({
   onPause,
   onResume,
 }: AgentRunStepsProps) {
-  const { t } = useStrings();
+  const { locale, t } = useStrings();
   const sorted = [...run.steps].sort((a, b) => a.seq - b.seq);
   const isRunning = run.status === "running";
   const isPaused = run.status === "paused";
@@ -271,7 +271,7 @@ export default function AgentRunSteps({
         <span className={statusClass(run.status)} role="status">
           {isRunning && <span className="nex-spinner nex-agent-spinner" aria-hidden="true" />}
           {isPaused && <span className="nex-agent-paused-dot" aria-hidden="true" />}
-          {statusLabel(run.status)}
+          {statusLabel(run.status, locale)}
         </span>
         <span className="nex-agent-run-meta">
           <span className="nex-tag nex-tag-mono" title={t("agent.modelTitle")}>

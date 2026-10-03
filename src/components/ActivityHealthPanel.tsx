@@ -428,7 +428,7 @@ export default function ActivityHealthPanel({
                     <div className="nex-activity-row-meta">
                       <span>{row.detail}</span>
                       <time dateTime={new Date(row.time * 1000).toISOString()}>
-                        {formatRelativeTime(row.time)}
+                        {formatRelativeTime(row.time, locale)}
                       </time>
                     </div>
                   </li>

@@ -20,7 +20,10 @@ import {
 import { getLocale, tr } from "./strings";
 
 /** Default title for a created conversation, in the current UI locale (data,
- * not chrome — persisted as the row title, so a RU user gets a RU default). */
+ * not chrome — persisted as the row title, so a RU user gets a RU default).
+ * Data-language mixing is accepted: the title is stored verbatim and keeps
+ * its creation language after a later language switch (stored titles are
+ * user data and are never retranslated). */
 function defaultNewConversationTitle(): string {
   return tr(getLocale(), "app.newConversationDefault");
 }
@@ -132,6 +135,9 @@ function toCommandError(error: unknown): CommandError {
   if (error instanceof Error) return { kind: "unknown", message: error.message };
   return {
     kind: "unknown",
+    // Accepted: the fallback message is built in the locale active when the
+    // error fired (transient — cleared on the next retry/reload, so it never
+    // pins the UI to a stale language).
     message: tr(getLocale(), "common.dbUnreachable"),
   };
 }

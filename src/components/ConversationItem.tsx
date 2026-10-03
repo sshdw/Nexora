@@ -45,7 +45,7 @@ export default function ConversationItem({
   // 0.3.0: deletion confirms in the Nexora dialog system (was
   // window.confirm) — same explicit-confirm behavior, in-app chrome.
   const [confirmingDelete, setConfirmingDelete] = useState(false);
-  const { t } = useStrings();
+  const { locale, t } = useStrings();
 
   const beginRename = () => {
     setDraftTitle(conversation.title);
@@ -119,7 +119,7 @@ export default function ConversationItem({
             className="nex-conversation-time"
             dateTime={new Date(conversation.updated_at * 1000).toISOString()}
           >
-            {formatRelativeTime(conversation.updated_at)}
+            {formatRelativeTime(conversation.updated_at, locale)}
           </time>
         </M3RailItem>
         {/* Compact icon actions replace the timestamp while hovered /

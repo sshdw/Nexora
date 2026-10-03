@@ -162,5 +162,8 @@ function toCommandError(error: unknown): CommandError {
   }
   if (typeof error === "string") return { kind: "unknown", message: error };
   if (error instanceof Error) return { kind: "unknown", message: error.message };
+  // Accepted: the fallback message is built in the locale active when the
+  // error fired (transient — cleared on the next retry, so it never pins
+  // the UI to a stale language).
   return { kind: "unknown", message: tr(getLocale(), "common.backendUnreachable") };
 }

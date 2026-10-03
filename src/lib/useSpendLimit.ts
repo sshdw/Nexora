@@ -73,6 +73,9 @@ export function useSpendLimit(): SpendLimitStore {
 
   const setLimit = useCallback(async (value: number | null): Promise<boolean> => {
     if (value !== null && (!Number.isInteger(value) || value < 0)) {
+      // Accepted: this transient validation error is built in the locale
+      // active when it fired (cleared on the next attempt, so it never pins
+      // the UI to a stale language).
       setError({ kind: "invalidInput", message: tr(getLocale(), "common.spendInvalid") });
       return false;
     }

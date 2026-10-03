@@ -153,7 +153,7 @@ export interface VersionControlPanelProps {
 }
 
 export default function VersionControlPanel({ onClose, request = null }: VersionControlPanelProps) {
-  const { t, tp: tpn } = useStrings();
+  const { locale, t, tp: tpn } = useStrings();
   const [tab, setTab] = useState<VcsTab>("working");
   const [info, setInfo] = useState<GitInfo | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
@@ -482,7 +482,7 @@ export default function VersionControlPanel({ onClose, request = null }: Version
                                 onClick={() => void loadDiff(file.path)}
                               >
                                 <span className="nex-tag nex-tag-mono nex-vcs-file-status">
-                                  {statusLabel(file.status)}
+                                  {statusLabel(file.status, locale)}
                                 </span>
                                 <span
                                   className="nex-tag nex-tag-mono nex-vcs-file-path"
@@ -651,10 +651,10 @@ export default function VersionControlPanel({ onClose, request = null }: Version
                                 {commit.author || t("vcs.unknownAuthor")}
                                 {" · "}
                                 <time dateTime={new Date(commit.time * 1000).toISOString()}>
-                                  {formatRelativeTime(commit.time)}
+                                  {formatRelativeTime(commit.time, locale)}
                                 </time>
                                 {" · "}
-                                {statsLine(commit)}
+                                {statsLine(commit, locale)}
                               </span>
                               {commit.risk_signals.length > 0 && (
                                 <span className="nex-vcs-risk-row">
@@ -663,7 +663,7 @@ export default function VersionControlPanel({ onClose, request = null }: Version
                                       key={signal}
                                       className="nex-tag nex-tag-mono nex-vcs-risk"
                                     >
-                                      {riskLabel(signal)}
+                                      {riskLabel(signal, locale)}
                                     </span>
                                   ))}
                                 </span>
