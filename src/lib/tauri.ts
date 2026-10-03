@@ -1044,6 +1044,35 @@ export function terminalKill(): Promise<boolean> {
   return invoke<boolean>("terminal_kill");
 }
 
+/** AI diagnosis of one failed terminal run (`terminal_explain`).
+ * `explanation` says what went wrong, `suggested_fix` is copy-only text
+ * (never auto-applied — the user copies it or retypes the command
+ * manually). `truncated_input` reports whether the failed output fed to
+ * the model was truncated server-side. */
+export interface ErrorExplanation {
+  explanation: string;
+  suggested_fix: string;
+  truncated_input: boolean;
+}
+
+/** Explain one failed terminal run via `terminal_explain`, using the
+ * existing AI execution path (keyring-only credentials, nothing
+ * persisted). `exitContext` is the short display line for the failure
+ * (e.g. the exit badge text); `null` sends output only. */
+export function terminalExplain(
+  output: string,
+  exitContext: string | null,
+  provider: string,
+  model: string,
+): Promise<ErrorExplanation> {
+  return invoke<ErrorExplanation>("terminal_explain", {
+    output,
+    exitContext,
+    provider,
+    model,
+  });
+}
+
 /** Generate a conventional-commit message for the staged changes via
  * `git_generate_commit_message`, using the existing AI execution path
  * (keyring-only credentials, nothing persisted). */

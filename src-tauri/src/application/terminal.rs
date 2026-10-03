@@ -40,7 +40,10 @@ use serde::Serialize;
 
 use crate::application::agent::control::CancellationToken;
 use crate::application::agent::tools::{ToolError, ToolRegistry};
-use crate::application::execution::ToolCall;
+use crate::application::execution::{AiMessage, AiRequest, AiRole, RequestError, ToolCall};
+use crate::infrastructure::database::Database;
+
+use super::agent::runner::DEFAULT_REQUEST_TIMEOUT;
 
 // ---------------------------------------------------------------------------
 // Result and error
@@ -276,6 +279,257 @@ impl TerminalRegistry {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Error intelligence: AI diagnosis of failed runs
+// ---------------------------------------------------------------------------
+
+/// Cap for the failed-output excerpt fed to the explain prompt — the same
+/// 64 KiB summary shape as the commit-message path. Longer output is cut
+/// with a notice, and the cut is flagged to the model and the caller.
+pub(crate) const MAX_EXPLAIN_BYTES: usize = 64 * 1024;
+
+/// Longest exit-context string kept (the caller sends a short display line
+/// such as the exit badge text; anything longer is cut, never an error).
+const MAX_EXIT_CONTEXT_CHARS: usize = 512;
+
+/// Longest diagnosis / suggested-fix text returned, in characters.
+const MAX_EXPLANATION_CHARS: usize = 4000;
+
+/// AI diagnosis of one failed terminal run plus a copy-only fix suggestion.
+/// Nothing is persisted; the failed output is sent to the provider once and
+/// dropped with the request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) struct ErrorExplanation {
+    /// What went wrong, in plain language.
+    pub explanation: String,
+    /// What to try next, as copyable text (never auto-applied).
+    pub suggested_fix: String,
+    /// Whether the failed output fed to the model was cut at
+    /// [`MAX_EXPLAIN_BYTES`].
+    pub truncated_input: bool,
+}
+
+/// Secret-free failures for error explanation: the failed output may carry
+/// user secrets, so no variant echoes caller content — not in `Display`, not
+/// in logs, not across IPC.
+#[derive(Debug)]
+pub(crate) enum ExplainError {
+    /// The failed output was empty (the exit context is only the fixed
+    /// badge line on this path and can never substitute for output).
+    InvalidInput,
+    /// The AI request failed (unknown provider, missing credentials,
+    /// provider failure). Carries no prompt or output content.
+    Request(RequestError),
+}
+
+impl std::fmt::Display for ExplainError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidInput => write!(f, "the failed output to explain is invalid"),
+            Self::Request(_) => write!(f, "the error explanation could not be generated"),
+        }
+    }
+}
+
+impl std::error::Error for ExplainError {}
+
+impl From<RequestError> for ExplainError {
+    fn from(err: RequestError) -> Self {
+        Self::Request(err)
+    }
+}
+
+/// Narrow prompt turning one failed run's output into a diagnosis plus a
+/// fix suggestion. The model must reply with exactly two sections —
+/// `Diagnosis:` then `Suggested fix:` — and plain text only (no code fences
+/// needed, though fences are stripped by the sanitizer anyway).
+pub(crate) fn build_error_prompt(output: &str, exit_context: &str, truncated: bool) -> String {
+    let mut prompt = String::from(
+        "Explain why the terminal command below failed and suggest a fix.\n\
+         Reply with ONLY two sections, each a short plain-text paragraph:\n\
+         `Diagnosis:` what went wrong, then `Suggested fix:` one concrete command \
+         or edit to try next. Do not run anything; describe only.\n",
+    );
+    if truncated {
+        prompt.push_str(
+            "Note: the failed output was truncated to fit; diagnose only what is shown.\n",
+        );
+    }
+    if !exit_context.trim().is_empty() {
+        prompt.push_str("Exit context: ");
+        prompt.push_str(exit_context.trim());
+        prompt.push('\n');
+    }
+    prompt.push_str("Failed output:\n");
+    prompt.push_str(output);
+    prompt
+}
+
+/// Cut `text` to `max_chars` characters on a char boundary.
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let mut end = max_chars;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].trim_end().to_string()
+}
+
+/// Coerce raw model output into a `(diagnosis, suggested fix)` pair: strip
+/// NULs and code fences, split on the first `Suggested fix` header line,
+/// and fall back to fixed-vocabulary text for any missing half. Both halves
+/// are capped at [`MAX_EXPLANATION_CHARS`].
+pub(crate) fn sanitize_explanation(raw: &str) -> (String, String) {
+    // Strip NULs upfront so neither half can carry one through.
+    let without_nul = raw.replace('\0', "");
+    let all: Vec<&str> = without_nul
+        .lines()
+        .map(str::trim_end)
+        .filter(|line| {
+            let trimmed = line.trim();
+            trimmed != "```" && !trimmed.starts_with("```")
+        })
+        .collect();
+    // Drop leading prose before an explicit `Diagnosis:` / `Explanation:`
+    // header (mirrors the commit-message sanitizer, which takes the first
+    // conventional line): a model that chats first still parses.
+    let lines: Vec<&str> = match all.iter().position(|line| {
+        let lowered = line.trim().to_lowercase();
+        lowered.starts_with("diagnosis") || lowered.starts_with("explanation")
+    }) {
+        Some(index) => all[index..].to_vec(),
+        None => all,
+    };
+    let fix_at = lines
+        .iter()
+        .position(|line| line.trim().to_lowercase().starts_with("suggested fix"));
+    let (diagnosis_lines, fix_lines) = match fix_at {
+        Some(index) => (&lines[..index], &lines[index..]),
+        None => (lines.as_slice(), &[][..]),
+    };
+    // Drop a leading `Diagnosis:` / `Explanation:` header line, keeping any
+    // inline content after the colon.
+    let mut diagnosis: Vec<&str> = diagnosis_lines.to_vec();
+    if let Some(first) = diagnosis.first() {
+        let lowered = first.trim().to_lowercase();
+        if lowered.starts_with("diagnosis") || lowered.starts_with("explanation") {
+            match first.split_once(':') {
+                Some((_, rest)) if !rest.trim().is_empty() => {
+                    diagnosis[0] = rest.trim();
+                }
+                _ => {
+                    diagnosis.remove(0);
+                }
+            }
+        }
+    }
+    // Drop the `Suggested fix:` header line itself, keeping inline content.
+    let mut suggested: Vec<&str> = fix_lines.to_vec();
+    if let Some(first) = suggested.first() {
+        match first.split_once(':') {
+            Some((_, rest)) if !rest.trim().is_empty() => {
+                suggested[0] = rest.trim();
+            }
+            _ => {
+                suggested.remove(0);
+            }
+        }
+    }
+    let trim_blanks = |lines: &[&str]| -> String {
+        let start = lines
+            .iter()
+            .position(|line| !line.trim().is_empty())
+            .unwrap_or(lines.len());
+        let end = lines
+            .iter()
+            .rposition(|line| !line.trim().is_empty())
+            .map_or(0, |index| index + 1);
+        if start < end {
+            lines[start..end].join("\n").trim().to_string()
+        } else {
+            String::new()
+        }
+    };
+    let mut explanation = trim_blanks(&diagnosis);
+    if explanation.is_empty() {
+        explanation =
+            "The command failed; the cause could not be determined from the output.".to_string();
+    }
+    let mut fix = trim_blanks(&suggested);
+    if fix.is_empty() {
+        fix =
+            "No suggested fix was produced — review the diagnosis and retry manually.".to_string();
+    }
+    (
+        truncate_chars(&explanation, MAX_EXPLANATION_CHARS),
+        truncate_chars(&fix, MAX_EXPLANATION_CHARS),
+    )
+}
+
+/// Explain one failed terminal run through the existing AI execution path:
+/// the failed output (capped at [`MAX_EXPLAIN_BYTES`]) feeds a narrow
+/// prompt to a single text-only [`AiRequest`] executed by the shared
+/// [`RequestExecutionService`](crate::application::execution::RequestExecutionService)
+/// — the same execution boundary `send_message`, the agent-run bridge, and
+/// commit-message generation use. Credentials resolve from the OS keyring
+/// only; no new key input exists on this path, and nothing is persisted.
+///
+/// The failed output may contain secrets: it is capped and truncated, never
+/// logged, and never echoed by [`ExplainError`].
+///
+/// # Errors
+///
+/// Returns [`ExplainError::InvalidInput`] when the output is empty (the
+/// exit context is only the fixed badge line on this path and can never
+/// substitute for output), [`ExplainError::Request`] when AI execution fails.
+pub(crate) fn explain_terminal_error(
+    db: &Database,
+    output: &str,
+    exit_context: &str,
+    provider: &str,
+    model: &str,
+) -> Result<ErrorExplanation, ExplainError> {
+    use crate::application::execution::RequestExecutionService;
+    if output.trim().is_empty() {
+        return Err(ExplainError::InvalidInput);
+    }
+    let context = truncate_chars(exit_context.trim(), MAX_EXIT_CONTEXT_CHARS);
+    let (excerpt, truncated) = if output.len() > MAX_EXPLAIN_BYTES {
+        let mut end = MAX_EXPLAIN_BYTES;
+        while !output.is_char_boundary(end) {
+            end -= 1;
+        }
+        (output[..end].to_string(), true)
+    } else {
+        (output.to_string(), false)
+    };
+    let prompt = build_error_prompt(&excerpt, &context, truncated);
+    let request = AiRequest {
+        provider: provider.to_string(),
+        model: model.to_string(),
+        messages: vec![AiMessage {
+            role: AiRole::User,
+            content: prompt,
+            attachments: Vec::new(),
+            tool_calls: Vec::new(),
+            tool_result: None,
+        }],
+        tools: Vec::new(),
+        model_config: None,
+        request_timeout: Some(DEFAULT_REQUEST_TIMEOUT),
+    };
+    let response = RequestExecutionService::new(db).execute(&request)?;
+    let (explanation, suggested_fix) = sanitize_explanation(&response.content);
+    Ok(ErrorExplanation {
+        explanation,
+        suggested_fix,
+        truncated_input: truncated,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -448,5 +702,99 @@ mod tests {
         );
         registry.finish(second);
         assert!(!registry.has_active());
+    }
+
+    #[test]
+    fn error_prompt_flags_truncation_and_carries_context() {
+        let prompt = build_error_prompt("boom output", "non-zero exit", false);
+        assert!(prompt.contains("Diagnosis:"));
+        assert!(prompt.contains("Suggested fix:"));
+        assert!(prompt.contains("boom output"));
+        assert!(prompt.contains("non-zero exit"));
+        assert!(!prompt.contains("truncated to fit"));
+        let prompt = build_error_prompt("boom output", "non-zero exit", true);
+        assert!(prompt.contains("truncated to fit"));
+    }
+
+    #[test]
+    fn sanitize_explanation_splits_sections_with_fallbacks() {
+        let (diagnosis, fix) =
+            sanitize_explanation("Diagnosis: missing file\n\nSuggested fix: touch it");
+        assert_eq!(diagnosis, "missing file");
+        assert_eq!(fix, "touch it");
+        // Fences and prose around the sections are stripped, not echoed.
+        let (diagnosis, fix) = sanitize_explanation(
+            "Sure! ```\nDiagnosis: bad flag\n\nSuggested fix:\n```\nuse --help\n```",
+        );
+        assert_eq!(diagnosis, "bad flag");
+        assert_eq!(fix, "use --help");
+        // A missing half falls back to fixed vocabulary.
+        let (diagnosis, fix) = sanitize_explanation("just some prose");
+        assert!(!diagnosis.is_empty());
+        assert!(fix.contains("review the diagnosis"));
+        let (diagnosis, _) = sanitize_explanation("Suggested fix: only a fix");
+        assert!(diagnosis.contains("could not be determined"));
+        // NULs never pass through.
+        let (diagnosis, fix) = sanitize_explanation("Diagnosis: a\0b\n\nSuggested fix: c\0d");
+        assert!(!diagnosis.contains('\0'));
+        assert!(!fix.contains('\0'));
+        // Overlong halves are capped.
+        let long = "x".repeat(MAX_EXPLANATION_CHARS + 100);
+        let (diagnosis, _) =
+            sanitize_explanation(&format!("Diagnosis: {long}\n\nSuggested fix: ok"));
+        assert!(diagnosis.chars().count() <= MAX_EXPLANATION_CHARS);
+    }
+
+    #[test]
+    fn explain_refuses_empty_input_secret_free() {
+        // Empty output refuses with fixed vocabulary, even when the fixed
+        // badge-line context is present (context can never substitute for
+        // output on this path). No database or provider is touched:
+        // `explain_terminal_error` validates before any request is built,
+        // so this needs no keyring.
+        let db = crate::infrastructure::database::in_memory_database();
+        for (output, context) in [
+            ("", ""),
+            ("   ", "  "),
+            ("", "non-zero exit"),
+            ("   ", "non-zero exit"),
+        ] {
+            let err = explain_terminal_error(&db, output, context, "openai", "m")
+                .expect_err("empty input must be refused");
+            assert!(
+                matches!(err, ExplainError::InvalidInput),
+                "unexpected: {err:?}"
+            );
+            assert_eq!(format!("{err}"), "the failed output to explain is invalid");
+        }
+        assert_eq!(
+            format!(
+                "{}",
+                ExplainError::Request(
+                    crate::application::execution::RequestError::UnknownProvider {
+                        name: "x".to_string(),
+                    }
+                )
+            ),
+            "the error explanation could not be generated"
+        );
+    }
+
+    #[test]
+    fn oversized_output_is_capped_with_notice() {
+        // The cap helper shape: output past the budget cuts on a char
+        // boundary and reports truncation (mirrors the commit-summary cap).
+        let big = "e".repeat(MAX_EXPLAIN_BYTES + 1024);
+        let prompt = build_error_prompt(&big, "", false);
+        assert!(prompt.contains(&big[..MAX_EXPLAIN_BYTES]));
+        let (excerpt, truncated) = if big.len() > MAX_EXPLAIN_BYTES {
+            (big[..MAX_EXPLAIN_BYTES].to_string(), true)
+        } else {
+            (big.clone(), false)
+        };
+        assert!(truncated);
+        assert!(excerpt.len() <= MAX_EXPLAIN_BYTES);
+        let prompt = build_error_prompt(&excerpt, "", truncated);
+        assert!(prompt.contains("truncated to fit"));
     }
 }
