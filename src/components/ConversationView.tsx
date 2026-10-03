@@ -12,6 +12,7 @@
 //! frontend draft state only; persisted history is never modified.
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 
 import { formatBytes, formatRelativeTime } from "../lib/format";
 import {
@@ -29,9 +30,10 @@ import {
 import { useAgentRun } from "../lib/useAgentRun";
 import { useAttachments } from "../lib/useAttachments";
 import { useConversation } from "../lib/useConversation";
-import Tooltip from "./Tooltip";
 import AgentRunSteps from "./AgentRunSteps";
 import ContextPanel from "./ContextPanel";
+import M3Button from "./M3Button";
+import M3IconButton from "./M3IconButton";
 import M3LoadingIndicator from "./M3LoadingIndicator";
 import M3SegmentedGroup from "./M3SegmentedGroup";
 import { ArrowUpIcon, CloseIcon, PaperclipIcon } from "./icons";
@@ -260,6 +262,24 @@ export default function ConversationView({
     ...runs.map((r) => ({ kind: "run" as const, ts: r.started_at, run: r })),
   ].sort((a, b) => a.ts - b.ts);
 
+  // Stagger order for the spatial slide-in: genuinely inserted messages
+  // animate in sequence (contract motion table streaming/insertion row);
+  // reduced motion collapses to instant append via the global gate.
+  const freshOrder = new Map<number, number>();
+  {
+    let order = 0;
+    for (const item of threadItems) {
+      if (item.kind === "message" && freshMessageIds?.has(item.message.id)) {
+        freshOrder.set(item.message.id, Math.min(order, 6));
+        order += 1;
+      }
+    }
+  }
+  // Tone + spacing grouping: a message that directly follows another of
+  // the same role reads as one turn cluster (spacing groups, never
+  // per-row borders). Runs break the chain.
+  let prevThreadRole: string | null = null;
+
   return (
     <div className="nex-main-conversation">
       <div className="nex-context-tabs">
@@ -292,8 +312,25 @@ export default function ConversationView({
             </p>
           </div>
         ) : (
-          threadItems.map((item) =>
-            item.kind === "message" ? (
+          threadItems.map((item) => {
+            if (item.kind === "run") {
+              prevThreadRole = null;
+              return (
+                <AgentRunSteps
+                  key={`run-${item.run.run_id}`}
+                  run={item.run}
+                  onResolveApproval={(callId, approved) => void handleAgentApprove(item.run.run_id, callId, approved)}
+                  onCancel={() => void handleAgentCancel(item.run.run_id)}
+                  onContinue={() => void handleAgentContinue(item.run.run_id)}
+                  onPause={() => void handleAgentPause(item.run.run_id)}
+                  onResume={() => void handleAgentResume(item.run.run_id)}
+                />
+              );
+            }
+            const isFresh = freshMessageIds?.has(item.message.id) ?? false;
+            const grouped = prevThreadRole === item.message.role;
+            prevThreadRole = item.message.role;
+            return (
               <article
                 key={`msg-${item.message.id}`}
                 className={
@@ -301,7 +338,13 @@ export default function ConversationView({
                   (item.message.role === "user"
                     ? "nex-message-user"
                     : "nex-message-assistant") +
-                  (freshMessageIds?.has(item.message.id) ? " nex-message-enter" : "")
+                  (grouped ? " nex-message-grouped" : "") +
+                  (isFresh ? " nex-message-enter" : "")
+                }
+                style={
+                  isFresh
+                    ? ({ "--nex-chat-insert-index": freshOrder.get(item.message.id) ?? 0 } as CSSProperties)
+                    : undefined
                 }
               >
                 <div className="nex-message-meta">
@@ -325,35 +368,17 @@ export default function ConversationView({
                 </div>
                 <div className="nex-message-body">{item.message.content}</div>
               </article>
-            ) : (
-              <AgentRunSteps
-                key={`run-${item.run.run_id}`}
-                run={item.run}
-                onResolveApproval={(callId, approved) => void handleAgentApprove(item.run.run_id, callId, approved)}
-                onCancel={() => void handleAgentCancel(item.run.run_id)}
-                onContinue={() => void handleAgentContinue(item.run.run_id)}
-                onPause={() => void handleAgentPause(item.run.run_id)}
-                onResume={() => void handleAgentResume(item.run.run_id)}
-              />
-            ),
-          )
+            );
+          })
         )}
         {sending && !agentMode && (
-          <div
-            className="nex-typing"
-            role="status"
-            aria-label="Assistant is responding"
-          >
-            <span className="nex-typing-dot" />
-            <span className="nex-typing-dot" />
-            <span className="nex-typing-dot" />
+          <div className="nex-thread-waiting">
+            <M3LoadingIndicator label="Assistant is responding" size="sm" />
           </div>
         )}
         {agentBusy && (
-          <div className="nex-typing" role="status" aria-label="Agent is responding">
-            <span className="nex-typing-dot" />
-            <span className="nex-typing-dot" />
-            <span className="nex-typing-dot" />
+          <div className="nex-thread-waiting">
+            <M3LoadingIndicator label="Agent is working" size="sm" />
           </div>
         )}
       </div>
@@ -414,15 +439,15 @@ export default function ConversationView({
                         </span>
                       )}
                     </span>
-                    <button
-                      type="button"
+                    <M3IconButton
+                      label={`Remove ${attachment.file_name}`}
+                      size="sm"
                       className="nex-chip-remove"
-                      aria-label={`Remove ${attachment.file_name}`}
                       disabled={attachmentsBusy || sending}
                       onClick={() => void remove(attachment.id)}
                     >
                       <CloseIcon />
-                    </button>
+                    </M3IconButton>
                   </li>
                 ))}
               </ul>
@@ -443,17 +468,14 @@ export default function ConversationView({
               }}
             />
             <div className="nex-composer-bar">
-              <Tooltip label="Add file">
-                <button
-                  type="button"
-                  className="nex-composer-attach"
-                  aria-label="Add file"
-                  disabled={sending || attachmentsBusy || agentBusy}
-                  onClick={() => void pickAndAttach()}
-                >
-                  <PaperclipIcon />
-                </button>
-              </Tooltip>
+              <M3IconButton
+                label="Add file"
+                className="nex-composer-attach"
+                disabled={sending || attachmentsBusy || agentBusy}
+                onClick={() => void pickAndAttach()}
+              >
+                <PaperclipIcon />
+              </M3IconButton>
               <label className="nex-composer-agent-toggle" title="Stream steps via the agent (opt-in)">
                 <input
                   type="checkbox"
@@ -472,25 +494,21 @@ export default function ConversationView({
                   {selectedModel}
                 </span>
               )}
-              <button
-                type="button"
-                className="nex-composer-send nex-morph-pill"
+              <M3Button
+                variant="primary"
+                expressive
+                loading={sending || agentBusy}
+                className="nex-composer-send"
                 onClick={() => void handleSubmit()}
                 disabled={!canSend}
-                aria-busy={sending || agentBusy}
               >
-                {sending || agentBusy ? (
-                  <>
-                    <span className="nex-spinner" aria-hidden="true" />
-                    {agentMode ? "Running…" : "Sending…"}
-                  </>
-                ) : (
+                {sending || agentBusy ? (agentMode ? "Running…" : "Sending…") : (
                   <>
                     Send
                     <ArrowUpIcon aria-hidden="true" />
                   </>
                 )}
-              </button>
+              </M3Button>
             </div>
           </div>
           {ready ? (
@@ -504,13 +522,9 @@ export default function ConversationView({
               <span className="nex-composer-shortcut">
                 Choose a provider and model in Settings to send messages.{" "}
               </span>
-              <button
-                type="button"
-                className="nex-btn nex-btn-accent nex-btn-sm"
-                onClick={onOpenSettings}
-              >
+              <M3Button variant="quiet" size="sm" onClick={onOpenSettings}>
                 Open Settings
-              </button>
+              </M3Button>
             </p>
           )}
         </div>

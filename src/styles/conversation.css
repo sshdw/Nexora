@@ -426,6 +426,10 @@
 }
 
 .nex-message-assistant .nex-message-author {
+  /* Accent role for the assistant voice (full-M3E role discipline).
+     Grayscale note: hierarchy never depends on this hue — user turns
+     are contained + end-aligned while assistant turns read on the bare
+     canvas, so the distinction survives accent removal. */
   color: var(--nex-sys-color-primary);
 }
 
@@ -446,19 +450,73 @@
   color: var(--nex-sys-color-on-surface);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  /* Reading surface stays selectable/copyable (accessibility.md). */
+  user-select: text;
 }
 
-/* New-message insertion (skill motion.md §7 "New item insertion"):
-   fade + small translate-in on the OFFICIAL expressive-default
-   spatial conversion pair — a single soft overshoot, whitelisted
-   for insertion moments only (NEXORA ADAPTATION rationing).
-   Applied by ConversationView only to genuinely inserted messages,
-   never to the initial history fill; reduced motion resolves
-   instantly via the global gate. */
+/* Code containment: fenced or inline code inside a message reads inside
+   a quiet tone container — never bare accent text on the canvas. */
+.nex-message-body pre {
+  margin: var(--nex-sys-space-xs) 0 0;
+  padding: var(--nex-sys-space-xs) var(--nex-sys-space-sm);
+  border-radius: var(--nex-sys-shape-extra-small);
+  background: var(--nex-sys-color-surface-container-high);
+  border: 1px solid var(--nex-sys-color-outline-variant);
+  font-family: var(--nex-sys-type-family-mono);
+  font-size: var(--nex-sys-type-size-body-small);
+  line-height: var(--nex-sys-type-line-height-normal);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow-x: auto;
+  user-select: text;
+}
+.nex-message-body code {
+  font-family: var(--nex-sys-type-family-mono);
+  font-size: var(--nex-sys-type-size-body-small);
+  background: var(--nex-sys-color-surface-container-high);
+  border-radius: var(--nex-sys-shape-extra-small);
+  padding: 0 var(--nex-sys-space-xxxs);
+}
+.nex-message-body pre code {
+  background: transparent;
+  border-radius: var(--nex-sys-shape-none);
+  padding: 0;
+}
+
+/* Turn clustering: consecutive same-role messages group via tighter
+   spacing (tone + spacing group items, never per-row borders). */
+.nex-thread > .nex-message-grouped {
+  margin-top: calc(var(--nex-sys-space-xs) * -1);
+}
+.nex-message-grouped .nex-message-meta {
+  /* Clustered turns share one reading beat: the repeat author line
+     stays but compresses toward the body. */
+  margin-bottom: calc(var(--nex-sys-space-xxxs) * -1);
+}
+
+/* Contained waiting state: the quiet M3 loading pill sits in the
+   reading column (loading <5s, contained, text-carried). */
+.nex-thread-waiting {
+  width: 100%;
+  max-width: var(--nex-sys-layout-measure-max);
+  margin-inline: auto;
+  display: flex;
+  justify-content: flex-start;
+  padding: var(--nex-sys-space-xxs) 0;
+}
+
+/* New-message insertion (contract motion table streaming/insertion row):
+   spatial slide-in on the OFFICIAL expressive-default spatial pair, with
+   stagger across genuinely inserted messages via --nex-chat-insert-index
+   (set inline by ConversationView, stepped by the stagger token).
+   Reduced motion resolves to instant append via the global gate. */
 .nex-message-enter {
   animation: nex-message-insert
     var(--motion-spring-expressive-default-spatial-duration)
     var(--motion-spring-expressive-default-spatial-curve);
+  animation-delay: calc(
+    var(--nex-chat-insert-index, 0) * var(--motion-stagger-step)
+  );
 }
 
 @keyframes nex-message-insert {
@@ -571,87 +629,22 @@
   flex: 1 1 auto;
 }
 
-/* Attach: quiet icon action inside the shell. */
+/* Attach: M3IconButton carries the quiet-at-rest grammar (components.css);
+   this hook only reserves its slot inside the shell bar. */
 .nex-composer-attach {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
   flex-shrink: 0;
-  border: none;
-  border-radius: var(--nex-sys-shape-full);
-  background: transparent;
-  color: var(--nex-sys-color-on-surface-variant);
-  cursor: pointer;
-  transition: background-color var(--motion-duration-fast) var(--motion-easing-standard),
-    color var(--motion-duration-fast) var(--motion-easing-standard);
-}
-.nex-composer-attach:hover:not(:disabled) {
-  background: var(--nex-sys-state-hover);
-  color: var(--nex-sys-color-on-surface);
-}
-.nex-composer-attach:active:not(:disabled) {
-  background: var(--nex-sys-state-pressed);
-}
-.nex-composer-attach:disabled {
-  opacity: var(--nex-sys-state-disabled-opacity);
-  cursor: default;
 }
 
 .nex-composer-model-tag {
   margin-right: var(--nex-sys-space-xxs);
 }
 
-/* ---- Send: the thread's primary action. Full pill (the single
-   full-corner element of the workspace — shape-break emphasis,
-   skill shape.md §4) + shape-morph press (.nex-morph-pill) +
-   whitelisted expressive moment. Reduced motion collapses both. ---- */
+/* ---- Send: the thread's primary action (M3Button primary expressive).
+   The filled-pill grammar + spring-overshoot press + loading state live
+   in the shared .nex-btn system (components.css); this hook only keeps
+   the send control clear of the model tag beside it. ---- */
 .nex-composer-send {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--nex-sys-space-xxs);
-  min-height: 36px;
-  padding: 0 var(--nex-sys-space-lg);
-  border: none;
-  border-radius: var(--nex-sys-shape-full);
-  background: var(--nex-sys-color-primary);
-  color: var(--nex-sys-color-on-primary);
-  font-size: var(--nex-sys-type-size-label-large);
-  font-weight: var(--nex-sys-type-weight-emphasized);
-  cursor: pointer;
-  outline: none;
-  transition: background-color var(--motion-duration-fast) var(--motion-easing-standard),
-    opacity var(--motion-duration-fast) var(--motion-easing-standard);
-}
-.nex-composer-send::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  background: var(--nex-sys-state-pressed);
-  opacity: 0;
-  pointer-events: none;
-}
-.nex-composer-send:hover:not(:disabled) {
-  background: var(--nex-sys-color-primary-hover);
-}
-.nex-composer-send:active:not(:disabled) {
-  background: var(--nex-sys-color-primary);
-}
-.nex-composer-send:active:not(:disabled)::after {
-  opacity: 1;
-}
-.nex-composer-send:disabled {
-  opacity: var(--nex-sys-state-disabled-opacity);
-  cursor: default;
-}
-.nex-composer-send .nex-spinner {
-  width: 14px;
-  height: 14px;
-  border-width: 2px;
+  flex-shrink: 0;
 }
 
 /* Hint row under the composed control. */

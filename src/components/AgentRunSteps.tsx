@@ -321,13 +321,13 @@ export default function AgentRunSteps({
             >
               Approve
             </M3Button>
-            <button
-              type="button"
-              className="nex-btn nex-btn-outline nex-btn-sm"
+            <M3Button
+              variant="destructive"
+              size="sm"
               onClick={() => onResolveApproval(pending.call_id, false)}
             >
               Deny
-            </button>
+            </M3Button>
           </div>
         </div>
       )}
