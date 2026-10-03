@@ -1002,6 +1002,48 @@ export interface GeneratedCommitMessage {
   truncated_input: boolean;
 }
 
+// ---- Workspace terminal (user-authored commands via the agent tool path) -
+// One thin command area over the existing `execute_command` tool:
+// `terminal_run` dispatches a real tool call (workspace-scoped cwd,
+// hard timeout, bounded capture, truncation with notice) and returns its
+// combined output with `truncated`/`success` display flags;
+// `terminal_kill` cancels the active run's token (the executor kills the
+// child). Single session: at most one run is active. Payloads stay
+// snake_case; command args are camelCase (`command`, `cwd`, `confirmed`),
+// like every other command.
+
+/** Combined output of one finished terminal run (`terminal_run`).
+ * `success` is false when the tool path rendered its non-zero-exit
+ * marker; the status text stays inside `output` (no structured code
+ * crosses IPC). `truncated` mirrors the tool path's truncation notice
+ * inside `output`. Timestamps: none (runs are session-only). */
+export interface TerminalRunResult {
+  run_id: number;
+  output: string;
+  truncated: boolean;
+  success: boolean;
+}
+
+/** Run one workspace command via `terminal_run`. The call blocks until the
+ * tool path returns (completion, timeout kill, or stop kill). The wrapper
+ * always passes the explicit per-call confirmation the backend requires
+ * for writes — clicking Run IS the approval (user-authored commands need
+ * no agent park). `cwd` is workspace-relative (`null` = workspace root);
+ * absolute escape is refused backend-side. */
+export function terminalRun(command: string, cwd: string | null): Promise<TerminalRunResult> {
+  return invoke<TerminalRunResult>("terminal_run", {
+    command,
+    cwd,
+    confirmed: true,
+  });
+}
+
+/** Stop the active terminal run via `terminal_kill`. Returns whether a run
+ * was active (and is now cancelled); `false` means nothing was running. */
+export function terminalKill(): Promise<boolean> {
+  return invoke<boolean>("terminal_kill");
+}
+
 /** Generate a conventional-commit message for the staged changes via
  * `git_generate_commit_message`, using the existing AI execution path
  * (keyring-only credentials, nothing persisted). */

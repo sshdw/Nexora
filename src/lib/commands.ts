@@ -15,6 +15,9 @@
 //!   activity & health ....... ActivityHealthPanel.tsx (read-only feed +
 //!                             project snapshot; go.activity/go.health deep
 //!                             links raise the panel's tab request)
+//!   terminal ................ TerminalPanel.tsx (workspace command runs;
+//!                             go.terminal opens, focus-input/clear raise the
+//!                             panel's request)
 //!   chat commands .......... ConversationView.tsx:463-469 composer Enter,
 //!                             497-511 Send button; App.tsx:233-245 create
 //!   settings sections ...... SettingsView GROUP MAP comment (7 groups)
@@ -57,6 +60,9 @@ export type PaletteSettingsSection =
 /** VCS panel requests the palette can raise (handled inside the panel). */
 export type PaletteVcsRequest = "refresh" | "focus-commit";
 
+/** Terminal panel requests the palette can raise (handled inside the panel). */
+export type PaletteTerminalRequest = "clear" | "focus-input";
+
 /** One invokable command: stable id, display title, NL keyword aliases, run. */
 export interface PaletteCommand {
   /** Stable id (also the MRU key). Never renamed once shipped. */
@@ -77,6 +83,8 @@ export interface PaletteDeps {
   openSettings: (section?: PaletteSettingsSection) => void;
   openLibrary: () => void;
   openVcs: (request?: PaletteVcsRequest) => void;
+  /** Open the workspace Terminal overlay (optional panel request). */
+  openTerminal: (request?: PaletteTerminalRequest) => void;
   /** Open the Activity & Health overlay on the requested tab. */
   openActivity: (tab: "activity" | "health") => void;
   newConversation: () => void;
@@ -116,6 +124,13 @@ export function buildCommands(deps: PaletteDeps): PaletteCommand[] {
       section: "Go",
       keywords: ["git", "vcs", "version control", "source control", "commits", "status"],
       run: () => deps.openVcs(),
+    },
+    {
+      id: "go.terminal",
+      title: "Go to Terminal",
+      section: "Go",
+      keywords: ["terminal", "console", "shell", "command line", "cli", "run command", "prompt"],
+      run: () => deps.openTerminal(),
     },
     {
       id: "go.activity",
@@ -288,6 +303,20 @@ export function buildCommands(deps: PaletteDeps): PaletteCommand[] {
         "check in",
       ],
       run: () => deps.openVcs("focus-commit"),
+    },
+    {
+      id: "terminal.focus-input",
+      title: "Terminal: focus command input",
+      section: "Terminal",
+      keywords: ["terminal", "focus", "input", "type", "command line", "shell prompt"],
+      run: () => deps.openTerminal("focus-input"),
+    },
+    {
+      id: "terminal.clear",
+      title: "Terminal: clear scrollback",
+      section: "Terminal",
+      keywords: ["terminal", "clear", "clean", "wipe", "scrollback", "reset output"],
+      run: () => deps.openTerminal("clear"),
     },
   ];
   // Per-tab jumps mirror Alt+1..Alt+9 (useConversationTabs.ts:21) for the

@@ -112,6 +112,8 @@ pub fn run() {
             commands::agent::add_permission_rule,
             commands::agent::remove_permission_rule,
             commands::agent::list_permission_rules,
+            commands::terminal::terminal_run,
+            commands::terminal::terminal_kill,
             commands::version_control::git_info,
             commands::version_control::git_file_diff,
             commands::version_control::git_stage,
@@ -142,6 +144,13 @@ pub fn run() {
             // `spawn_blocking` and the spawned run threads.
             app.manage(std::sync::Arc::new(
                 application::agent::service::AgentRunRegistry::default(),
+            ));
+            // Hold the single-session terminal registry as managed state
+            // (terminal panel): an `Arc` so the terminal IPC commands can
+            // claim the session and clone the kill token into
+            // `spawn_blocking`.
+            app.manage(std::sync::Arc::new(
+                application::terminal::TerminalRegistry::new(),
             ));
             // Confirm the shared connection is reachable through managed state
             // and record the applied schema version; startup fails loudly if it
