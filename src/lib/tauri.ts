@@ -931,3 +931,50 @@ export function gitInfo(limit?: number): Promise<GitInfo> {
 export function gitFileDiff(path: string): Promise<GitFileDiff> {
   return invoke<GitFileDiff>("git_file_diff", { path });
 }
+
+/** Stage `paths` (repository-relative) into the index via `git_stage`.
+ * Returns how many were staged. The wrapper always passes the explicit
+ * per-call confirmation the backend requires for writes. */
+export function gitStage(paths: string[]): Promise<number> {
+  return invoke<number>("git_stage", { paths, confirmed: true });
+}
+
+/** Unstage `paths` (repository-relative) back to `HEAD` via `git_unstage`.
+ * Returns how many were unstaged; confirmed like `gitStage`. */
+export function gitUnstage(paths: string[]): Promise<number> {
+  return invoke<number>("git_unstage", { paths, confirmed: true });
+}
+
+/** Commit the staged index with `message` via `git_commit`. Returns the new
+ * commit hash. The backend validates the message and refuses without the
+ * explicit confirmation this wrapper always passes. */
+export function gitCommit(message: string): Promise<string> {
+  return invoke<string>("git_commit", { message, confirmed: true });
+}
+
+/** Push the current branch to `origin` via `git_push` (never forced; only
+ * `origin` is accepted backend-side). Confirmed like `gitStage`. */
+export function gitPush(): Promise<void> {
+  return invoke<void>("git_push", { remote: "origin", confirmed: true });
+}
+
+/** AI-generated commit message for the staged changes
+ * (`git_generate_commit_message`). `truncated_input` reports whether the
+ * staged summary fed to the model was truncated server-side. */
+export interface GeneratedCommitMessage {
+  message: string;
+  truncated_input: boolean;
+}
+
+/** Generate a conventional-commit message for the staged changes via
+ * `git_generate_commit_message`, using the existing AI execution path
+ * (keyring-only credentials, nothing persisted). */
+export function gitGenerateCommitMessage(
+  provider: string,
+  model: string,
+): Promise<GeneratedCommitMessage> {
+  return invoke<GeneratedCommitMessage>("git_generate_commit_message", {
+    provider,
+    model,
+  });
+}
