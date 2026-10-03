@@ -61,7 +61,7 @@ function MainContent({
         </span>
         <p className="nex-placeholder-title">No conversation selected</p>
         <p className="nex-placeholder-text">
-          Choose a conversation from the sidebar, or start a new one.
+          Choose a conversation from the sidebar, or create one with New Conversation.
         </p>
       </div>
     );

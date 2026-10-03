@@ -95,16 +95,14 @@ export default function ConversationItem({
         {/* Row selection rides the shared M3RailItem primitive (contract
             §Shell expanded-rail grammar): active = pill + tone step +
             emphasized label on the default-speed spring, with the
-            title/time composed inside the rail label. aria-selected is
-            preserved for the list-selection semantics; aria-current comes
-            from the rail item (navigation destination). */}
+            title/time composed inside the rail label. Selection is conveyed
+            by aria-current only. */}
         <M3RailItem
           label={conversation.title}
           active={selected}
           className={
             "nex-conversation-item" + (archived ? " is-archived" : "")
           }
-          aria-selected={selected}
           onClick={() => onSelect(conversation.id)}
         >
           <span
