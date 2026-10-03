@@ -17,6 +17,7 @@ import {
   type ConversationContextStats,
 } from "../lib/tauri";
 import { DiffView } from "./AgentRunSteps";
+import M3LoadingIndicator from "./M3LoadingIndicator";
 
 export interface ChangedFile {
   path: string;
@@ -120,11 +121,7 @@ export default function ContextPanel({ conversationId }: { conversationId: numbe
   }, [conversationId]);
 
   if (loading) {
-    return (
-      <p className="nex-thread-status nex-fade-in" role="status">
-        Loading context…
-      </p>
-    );
+    return <M3LoadingIndicator label="Loading context" />;
   }
 
   if (error || !stats) {

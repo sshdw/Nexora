@@ -7,6 +7,7 @@ import type {
   SearchResults,
 } from "../lib/tauri";
 import { search } from "../lib/tauri";
+import M3LoadingIndicator from "./M3LoadingIndicator";
 import { SearchIcon } from "./icons";
 
 export interface SearchBoxProps {
@@ -102,9 +103,7 @@ export default function SearchBox({
           aria-label="Search results"
         >
           {loading && (
-            <p className="nex-search-status nex-fade-in" role="status">
-              Searching…
-            </p>
+            <M3LoadingIndicator size="sm" label="Searching" />
           )}
           {error && (
             <p className="nex-search-status nex-fade-in" role="alert">

@@ -11,6 +11,8 @@
 import { useState } from "react";
 
 import type { AgentRunView, AgentStepView } from "../lib/useAgentRun";
+import M3Button from "./M3Button";
+import M3Toolbar from "./M3Toolbar";
 
 export interface AgentRunStepsProps {
   run: AgentRunView;
@@ -228,9 +230,9 @@ function StepSection({ step, defaultOpen }: { step: AgentStepView; defaultOpen: 
             </>
           )}
           {isLong && (
-            <button type="button" className="nex-btn nex-btn-ghost nex-btn-sm" onClick={() => setOpen((v) => !v)}>
+            <M3Button variant="quiet" size="sm" onClick={() => setOpen((v) => !v)}>
               {open ? "Show less" : "Show more"}
-            </button>
+            </M3Button>
           )}
           {/* For terminal/diff views that already handled observation, still show args if needed? */}
           {isTerminal && step.arguments && isLong && null}
@@ -268,26 +270,29 @@ export default function AgentRunSteps({
           </span>
           <span className="nex-agent-run-id">run {run.run_id}</span>
         </span>
-        <span className="nex-agent-run-actions">
+        <M3Toolbar
+          label={`Controls for agent run ${run.run_id}`}
+          className="nex-agent-run-actions"
+        >
           {isRunning && onPause && (
-            <button type="button" className="nex-btn nex-btn-ghost nex-btn-sm" onClick={onPause}>
+            <M3Button variant="quiet" size="sm" onClick={onPause}>
               Pause
-            </button>
+            </M3Button>
           )}
           {isPaused && onResume && (
-            <button type="button" className="nex-btn nex-btn-tonal nex-btn-sm" onClick={onResume}>
+            <M3Button variant="secondary" size="sm" onClick={onResume}>
               Resume
-            </button>
+            </M3Button>
           )}
           {isActive && (
-            <button type="button" className="nex-btn nex-btn-ghost nex-btn-sm" onClick={onCancel}>
+            <M3Button variant="quiet" size="sm" onClick={onCancel}>
               Cancel
-            </button>
+            </M3Button>
           )}
           {run.status === "budget_exhausted" && (
-            <button type="button" className="nex-btn nex-btn-tonal nex-btn-sm" onClick={() => onContinue(10)}>
+            <M3Button variant="secondary" size="sm" onClick={() => onContinue(10)}>
               Continue
-            </button>
+            </M3Button>
           )}
           {run.status === "spend_limit_exceeded" && run.error && (
             <span className="nex-agent-run-error nex-fade-in" role="alert">
@@ -299,7 +304,7 @@ export default function AgentRunSteps({
               {run.error}
             </span>
           )}
-        </span>
+        </M3Toolbar>
       </header>
 
       {pending && (
@@ -309,13 +314,13 @@ export default function AgentRunSteps({
             <pre className="nex-agent-step-args nex-tag-mono">{pending.arguments}</pre>
           </div>
           <div className="nex-agent-approval-actions">
-            <button
-              type="button"
-              className="nex-btn nex-btn-primary nex-btn-sm"
+            <M3Button
+              variant="primary"
+              size="sm"
               onClick={() => onResolveApproval(pending.call_id, true)}
             >
               Approve
-            </button>
+            </M3Button>
             <button
               type="button"
               className="nex-btn nex-btn-outline nex-btn-sm"

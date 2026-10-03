@@ -4,11 +4,13 @@ import ConversationView from "./components/ConversationView";
 import EmptyState from "./components/EmptyState";
 import { ExportIcon } from "./components/icons";
 import { ExportModal, ImportModal } from "./components/ImportExportModals";
+import M3Button from "./components/M3Button";
+import M3IconButton from "./components/M3IconButton";
+import M3Toolbar from "./components/M3Toolbar";
 import NexoraMark from "./components/NexoraMark";
 import PromptLibraryView from "./components/PromptLibraryView";
 import SettingsView from "./components/SettingsView";
 import Sidebar from "./components/Sidebar";
-import Tooltip from "./components/Tooltip";
 import WorkspaceChip from "./components/WorkspaceChip";
 import type { Conversation } from "./lib/tauri";
 import { useAppearance } from "./lib/useAppearance";
@@ -67,13 +69,9 @@ function MainContent({
           Choose a conversation from the sidebar, or start a new one.
         </p>
         <div className="nex-empty-actions">
-          <button
-            type="button"
-            className="nex-btn nex-btn-tonal"
-            onClick={onNewConversation}
-          >
+          <M3Button variant="secondary" onClick={onNewConversation}>
             New conversation
-          </button>
+          </M3Button>
         </div>
       </div>
     );
@@ -91,19 +89,18 @@ function MainContent({
             </span>
           )}
         </h2>
-        <div className="nex-main-header-actions">
+        <M3Toolbar
+          label="Conversation actions"
+          className="nex-main-header-actions"
+        >
           <WorkspaceChip root={workspaceRoot} loading={workspaceLoading} />
-          <Tooltip label="Export conversation">
-            <button
-              type="button"
-              className="nex-icon-btn"
-              aria-label="Export conversation"
-              onClick={() => onExport(selected.id)}
-            >
-              <ExportIcon />
-            </button>
-          </Tooltip>
-        </div>
+          <M3IconButton
+            label="Export conversation"
+            onClick={() => onExport(selected.id)}
+          >
+            <ExportIcon />
+          </M3IconButton>
+        </M3Toolbar>
       </header>
       <ConversationView
         conversationId={selected.id}

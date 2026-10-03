@@ -1,3 +1,4 @@
+import M3RailItem from "./M3RailItem";
 import { SettingsIcon } from "./icons";
 
 export interface SettingsEntryProps {
@@ -5,19 +6,11 @@ export interface SettingsEntryProps {
 }
 
 // Navigation entry point for the Settings view (Phase 10.3.2: functional
-// provider / model / credential management in the panel it opens). Uses the
-// shared .nex-nav-entry row primitive (0.2.2 component layer).
+// provider / model / credential management in the panel it opens). Rendered
+// on the shared M3RailItem row primitive (M3E rail canon: pill + tone step
+// when active, filled-active/outlined-inactive icon contract).
 export default function SettingsEntry({ onClick }: SettingsEntryProps) {
   return (
-    <button
-      type="button"
-      className="nex-nav-entry"
-      aria-label="Settings"
-      title="Settings"
-      onClick={onClick}
-    >
-      <SettingsIcon className="nex-nav-entry-icon" />
-      <span>Settings</span>
-    </button>
+    <M3RailItem label="Settings" icon={<SettingsIcon />} onClick={onClick} />
   );
 }

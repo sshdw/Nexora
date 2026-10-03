@@ -1,5 +1,6 @@
 import type { CommandError, Conversation } from "../lib/tauri";
 import ConversationItem from "./ConversationItem";
+import M3Button from "./M3Button";
 
 export interface ConversationListProps {
   conversations: Conversation[];
@@ -47,13 +48,9 @@ export default function ConversationList({
       <nav className="nex-conversation-nav" aria-label="Conversations">
         <div className="nex-conversation-error nex-fade-in" role="alert">
           <span className="nex-conversation-error-text">{error.message}</span>
-          <button
-            type="button"
-            className="nex-btn nex-btn-ghost nex-btn-sm"
-            onClick={onRetry}
-          >
+          <M3Button variant="quiet" size="sm" onClick={onRetry}>
             Try again
-          </button>
+          </M3Button>
         </div>
       </nav>
     );

@@ -11,6 +11,9 @@
 import { useEffect, useState } from "react";
 
 import ConfirmDialog from "./ConfirmDialog";
+import M3Button from "./M3Button";
+import M3IconButton from "./M3IconButton";
+import M3Toolbar from "./M3Toolbar";
 import ModalShell from "./Modal";
 import NexoraMark from "./NexoraMark";
 import { PencilIcon, SearchIcon, TrashIcon } from "./icons";
@@ -116,12 +119,12 @@ export default function PromptLibraryView({
             Reusable message templates for any conversation.
           </p>
         </div>
-        <button type="button" className="nex-btn nex-btn-ghost" onClick={onClose}>
+        <M3Button variant="quiet" onClick={onClose}>
           Back to conversations
-        </button>
+        </M3Button>
       </header>
 
-      <div className="nex-prompt-toolbar">
+      <M3Toolbar label="Prompt library actions" className="nex-prompt-toolbar">
         <div className="nex-search nex-prompt-search">
           <label htmlFor="nex-prompt-search-input" className="nex-sr-only">
             Search prompts
@@ -138,15 +141,15 @@ export default function PromptLibraryView({
             spellCheck={false}
           />
         </div>
-        <button
-          type="button"
-          className="nex-btn nex-btn-primary nex-btn-expressive"
+        <M3Button
+          variant="primary"
+          expressive
           onClick={openCreate}
           disabled={saving}
         >
           New Prompt
-        </button>
-      </div>
+        </M3Button>
+      </M3Toolbar>
 
       <div className="nex-prompt-library-body">
         {store.loading ? (
@@ -164,13 +167,13 @@ export default function PromptLibraryView({
         ) : store.error && editor === null ? (
           <div className="nex-prompt-error nex-fade-in" role="alert">
             <span className="nex-prompt-error-text">{store.error.message}</span>
-            <button
-              type="button"
-              className="nex-btn nex-btn-ghost nex-btn-sm"
+            <M3Button
+              variant="quiet"
+              size="sm"
               onClick={() => void store.reload()}
             >
               Try again
-            </button>
+            </M3Button>
           </div>
         ) : store.prompts.length === 0 && filtered.length === 0 ? (
           <div className="nex-prompt-empty nex-empty-enter">
@@ -183,14 +186,14 @@ export default function PromptLibraryView({
               conversation with “Use”.
             </p>
             <div className="nex-empty-actions">
-              <button
-                type="button"
-                className="nex-btn nex-btn-primary nex-btn-expressive"
+              <M3Button
+                variant="primary"
+                expressive
                 onClick={openCreate}
                 disabled={saving}
               >
                 New Prompt
-              </button>
+              </M3Button>
             </div>
           </div>
         ) : filtered.length === 0 ? (
@@ -214,9 +217,9 @@ export default function PromptLibraryView({
                 </div>
                 <span className="nex-prompt-preview">{prompt.content}</span>
                 <div className="nex-prompt-card-foot">
-                  <button
-                    type="button"
-                    className="nex-btn nex-btn-primary nex-btn-sm"
+                  <M3Button
+                    variant="primary"
+                    size="sm"
                     onClick={() => handleUse(prompt)}
                     disabled={!hasActiveConversation || saving}
                     aria-label={`Insert ${prompt.title} into the active conversation`}
@@ -227,30 +230,30 @@ export default function PromptLibraryView({
                     }
                   >
                     Use
-                  </button>
+                  </M3Button>
                   <span className="nex-prompt-card-foot-spacer" />
-                  <div className="nex-prompt-card-tools">
-                    <button
-                      type="button"
-                      className="nex-icon-btn nex-icon-btn-sm"
+                  <M3Toolbar
+                    label={`Tools for ${prompt.title}`}
+                    className="nex-prompt-card-tools"
+                  >
+                    <M3IconButton
+                      size="sm"
+                      label={`Edit ${prompt.title}`}
                       onClick={() => openEdit(prompt)}
                       disabled={saving}
-                      aria-label={`Edit ${prompt.title}`}
-                      title="Edit"
                     >
                       <PencilIcon />
-                    </button>
-                    <button
-                      type="button"
-                      className="nex-icon-btn nex-icon-btn-sm nex-icon-btn-danger"
+                    </M3IconButton>
+                    <M3IconButton
+                      size="sm"
+                      danger
+                      label={`Delete ${prompt.title}`}
                       onClick={() => handleDelete(prompt)}
                       disabled={saving}
-                      aria-label={`Delete ${prompt.title}`}
-                      title="Delete"
                     >
                       <TrashIcon />
-                    </button>
-                  </div>
+                    </M3IconButton>
+                  </M3Toolbar>
                 </div>
               </li>
             ))}
@@ -366,26 +369,20 @@ function PromptEditor({
       </div>
 
       <div className="nex-dialog-actions">
-        <button
-          type="button"
-          className="nex-btn nex-btn-ghost"
-          onClick={onCancel}
-          disabled={saving}
-        >
+        <M3Button variant="quiet" onClick={onCancel} disabled={saving}>
           Cancel
-        </button>
-        <button
-          type="button"
-          className="nex-btn nex-btn-primary"
-          onClick={onSave}
+        </M3Button>
+        <M3Button
+          variant="primary"
+          loading={saving}
           disabled={
             editor.title.trim() === "" ||
-            editor.content.trim() === "" ||
-            saving
+            editor.content.trim() === ""
           }
+          onClick={onSave}
         >
           {editor.editing ? "Save changes" : "Create prompt"}
-        </button>
+        </M3Button>
       </div>
     </ModalShell>
   );

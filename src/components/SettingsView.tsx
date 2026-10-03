@@ -5,6 +5,9 @@ import { clearApplicationData } from "../lib/tauri";
 import type { AppearanceStore } from "../lib/useAppearance";
 import { isCustomModelId, type ProvidersStore } from "../lib/useProviders";
 import type { SpendLimitStore } from "../lib/useSpendLimit";
+import M3Button from "./M3Button";
+import M3RailItem from "./M3RailItem";
+import M3SegmentedGroup from "./M3SegmentedGroup";
 
 /** Settings sections (Phase 10.8). Only approved areas with defined behavior
  * are offered: Appearance (theme), Provider & model (FR-004), Data management
@@ -187,9 +190,9 @@ export default function SettingsView({
             Preferences for this device. Everything stays local.
           </p>
         </div>
-        <button type="button" className="nex-btn nex-btn-ghost" onClick={onClose}>
+        <M3Button variant="quiet" onClick={onClose}>
           Back to conversations
-        </button>
+        </M3Button>
       </header>
 
       <div className="nex-settings-layout">
@@ -198,15 +201,14 @@ export default function SettingsView({
             <div key={group.label} className="nex-settings-nav-group">
               <p className="nex-settings-nav-label">{group.label}</p>
               {group.items.map((item) => (
-                <button
+                <M3RailItem
                   key={item.id}
-                  type="button"
-                  className={`nex-settings-nav-item${section === item.id ? " is-active" : ""}`}
-                  aria-current={section === item.id ? "true" : undefined}
+                  label={item.t}
+                  active={section === item.id}
                   onClick={() => setSection(item.id)}
                 >
                   {item.t}
-                </button>
+                </M3RailItem>
               ))}
             </div>
           ))}
@@ -232,24 +234,15 @@ export default function SettingsView({
                   <span className="nex-settings-label" id="theme-label">
                     Theme
                   </span>
-                  <div className="nex-seg" role="group" aria-labelledby="theme-label">
-                    <button
-                      type="button"
-                      className={appearance.theme === "dark" ? "is-active" : ""}
-                      aria-pressed={appearance.theme === "dark"}
-                      onClick={() => void appearance.setTheme("dark")}
-                    >
-                      Dark
-                    </button>
-                    <button
-                      type="button"
-                      className={appearance.theme === "light" ? "is-active" : ""}
-                      aria-pressed={appearance.theme === "light"}
-                      onClick={() => void appearance.setTheme("light")}
-                    >
-                      Light
-                    </button>
-                  </div>
+                  <M3SegmentedGroup
+                    labelledBy="theme-label"
+                    value={appearance.theme}
+                    onChange={(theme) => void appearance.setTheme(theme)}
+                    options={[
+                      { value: "dark", label: "Dark" },
+                      { value: "light", label: "Light" },
+                    ]}
+                  />
                   <p className="nex-settings-hint">
                     The light theme is provisional — the final palette is still open.
                   </p>
@@ -404,13 +397,9 @@ export default function SettingsView({
                     cannot be undone.
                   </p>
                   {!confirmingClear ? (
-                    <button
-                      type="button"
-                      className="nex-btn nex-btn-ghost nex-danger-button"
-                      onClick={openClearConfirmation}
-                    >
+                    <M3Button variant="destructive" onClick={openClearConfirmation}>
                       Clear all data…
-                    </button>
+                    </M3Button>
                   ) : (
                     <div className="nex-danger-confirm">
                       <label className="nex-settings-label" htmlFor="clear-confirm-input">
@@ -440,23 +429,22 @@ export default function SettingsView({
                         </p>
                       )}
                       <div className="nex-provider-actions">
-                        <button
-                          type="button"
-                          className="nex-btn nex-btn-ghost"
+                        <M3Button
+                          variant="quiet"
                           disabled={clearing}
                           onClick={cancelClearConfirmation}
                         >
                           Cancel
-                        </button>
-                        <button
-                          type="button"
-                          className="nex-btn nex-btn-ghost nex-danger-button"
-                          disabled={clearing || clearPhrase !== CLEAR_CONFIRMATION_PHRASE}
-                          aria-busy={clearing}
+                        </M3Button>
+                        <M3Button
+                          variant="destructive"
+                          filled
+                          loading={clearing}
+                          disabled={clearPhrase !== CLEAR_CONFIRMATION_PHRASE}
                           onClick={() => void handleClearData()}
                         >
                           {clearing ? "Clearing…" : "Clear all data"}
-                        </button>
+                        </M3Button>
                       </div>
                     </div>
                   )}
@@ -518,23 +506,23 @@ export default function SettingsView({
                       setDraftKeys((prev) => ({ ...prev, [supported.name]: event.target.value }))
                     }
                   />
-                  <button
-                    type="button"
-                    className="nex-btn nex-btn-primary nex-btn-sm"
+                  <M3Button
+                    variant="primary"
+                    size="sm"
                     disabled={store.working || !(draftKeys[supported.name]?.trim())}
                     onClick={() => handleConnect(supported)}
                   >
                     {credentialed ? "Update" : "Connect"}
-                  </button>
+                  </M3Button>
                   {credentialed && (
-                    <button
-                      type="button"
-                      className="nex-btn nex-btn-ghost nex-provider-remove"
+                    <M3Button
+                      variant="quiet"
+                      className="nex-provider-remove"
                       disabled={store.working}
                       onClick={() => handleDisconnect(supported)}
                     >
                       Disconnect
-                    </button>
+                    </M3Button>
                   )}
                 </div>
               </li>
