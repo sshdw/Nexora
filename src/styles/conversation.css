@@ -60,25 +60,23 @@
 .nex-conversation-item:focus-visible {
   outline-offset: var(--nex-sys-focus-ring-offset-inset);
 }
-/* Selected: tone step + thin accent pill (sanctioned thin-marker
-   accent use) + emphasized title (OFFICIAL selected-list grammar). */
-.nex-conversation-item.is-selected {
-  background: var(--nex-sys-color-surface-container-high);
-}
-.nex-conversation-item.is-selected::before {
-  content: "";
-  position: absolute;
-  left: 4px;
-  top: 50%;
-  width: var(--nex-sys-nav-indicator-width);
-  height: var(--nex-sys-nav-indicator-height);
-  transform: translateY(-50%);
+/* Selected: the M3RailItem active grammar drives visuals (pill + tone
+   step + emphasized label on the default-speed spring, components.css).
+   These rules only compose the title/time inside the rail label and let
+   the title inherit the rail's emphasized primary treatment. */
+.nex-m3-rail-item.nex-conversation-item {
   border-radius: var(--nex-sys-shape-full);
-  background: var(--nex-sys-color-primary);
 }
-.nex-conversation-item.is-selected .nex-conversation-title {
-  color: var(--nex-sys-color-on-surface);
-  font-weight: var(--nex-sys-type-weight-emphasized);
+.nex-conversation-item .nex-m3-rail-label {
+  display: flex;
+  align-items: center;
+  gap: var(--nex-sys-space-sm);
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.nex-m3-rail-item.nex-conversation-item.is-active .nex-conversation-title {
+  color: inherit;
+  font-weight: inherit;
 }
 /* Archived rows stay visibly quiet — their title never previews selection. */
 .nex-conversation-item.is-archived .nex-conversation-title {
@@ -161,10 +159,10 @@
 }
 
 /* Selected rows keep their actions visible; the timestamp hides. */
-.nex-conversation-row:has(.nex-conversation-item.is-selected) .nex-conversation-time {
+.nex-conversation-row:has(.nex-conversation-item.is-active) .nex-conversation-time {
   opacity: 0;
 }
-.nex-conversation-row:has(.nex-conversation-item.is-selected) .nex-conversation-actions {
+.nex-conversation-row:has(.nex-conversation-item.is-active) .nex-conversation-actions {
   opacity: 1;
   visibility: visible;
 }
@@ -261,7 +259,9 @@
   opacity: 0.95;
 }
 .nex-empty-title {
-  font-size: var(--nex-sys-type-size-headline-small);
+  /* Display band, reserved ~once per app for the empty-state heading
+     (contract §Density / skill tactic 3: typography attention). */
+  font-size: var(--nex-sys-type-size-display-small);
   font-weight: var(--nex-sys-type-weight-semibold);
   letter-spacing: -0.01em;
   line-height: var(--nex-sys-type-line-height-tight);

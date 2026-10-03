@@ -4,7 +4,6 @@ import ConversationView from "./components/ConversationView";
 import EmptyState from "./components/EmptyState";
 import { ExportIcon } from "./components/icons";
 import { ExportModal, ImportModal } from "./components/ImportExportModals";
-import M3Button from "./components/M3Button";
 import M3IconButton from "./components/M3IconButton";
 import M3Toolbar from "./components/M3Toolbar";
 import NexoraMark from "./components/NexoraMark";
@@ -29,7 +28,6 @@ interface MainContentProps {
   setDraft: (value: string) => void;
   onOpenSettings: () => void;
   onMessageSent: () => void;
-  onNewConversation: () => void;
   onExport: (id: number) => void;
   workspaceRoot: string | null;
   workspaceLoading: boolean;
@@ -44,19 +42,16 @@ function MainContent({
   setDraft,
   onOpenSettings,
   onMessageSent,
-  onNewConversation,
   onExport,
   workspaceRoot,
   workspaceLoading,
 }: MainContentProps) {
   if (!selected) {
     if (!hasConversations) {
-      return (
-        <EmptyState
-          actionLabel="New conversation"
-          onAction={onNewConversation}
-        />
-      );
+      // First-run empty state: logo + heading + supporting line only. The
+      // sidebar's New Conversation row is the single creation CTA (one
+      // primary per region) — no duplicate CTA here (contract §Shell).
+      return <EmptyState />;
     }
     // Conversations exist but none is open.
     return (
@@ -68,11 +63,6 @@ function MainContent({
         <p className="nex-placeholder-text">
           Choose a conversation from the sidebar, or start a new one.
         </p>
-        <div className="nex-empty-actions">
-          <M3Button variant="secondary" onClick={onNewConversation}>
-            New conversation
-          </M3Button>
-        </div>
       </div>
     );
   }
@@ -231,6 +221,9 @@ function App() {
 
   return (
     <div className="nex-app">
+      <a className="nex-skip-link" href="#nex-main-content">
+        Skip to main content
+      </a>
       <Sidebar
         conversations={conversations}
         loading={loading}
@@ -253,7 +246,7 @@ function App() {
         onDelete={(id) => void remove(id)}
         workspace={workspace}
       />
-      <div className="nex-main">
+      <div className="nex-main" id="nex-main-content" tabIndex={-1}>
         {libraryOpen ? (
           <PromptLibraryView
             onClose={closeLibrary}
@@ -281,7 +274,6 @@ function App() {
             setDraft={setDraft}
             onOpenSettings={openSettings}
             onMessageSent={() => void reload()}
-            onNewConversation={() => void handleNewConversation()}
             onExport={setExportTargetId}
             workspaceRoot={workspace.root}
             workspaceLoading={workspace.loading}

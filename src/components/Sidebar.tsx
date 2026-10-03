@@ -94,20 +94,25 @@ export default function Sidebar({
         onDelete={onDelete}
       />
 
-      <SettingsEntry onClick={onOpenSettings} />
-      <PromptLibraryEntry active={libraryActive} onClick={onOpenPromptLibrary} />
-      <WorkspaceFolderButton store={workspace} />
-      <WorkspaceRecentList store={workspace} />
-      {workspace.error && (
-        <p className="nex-sidebar-error" role="alert">
-          {workspace.error.message}
-        </p>
-      )}
-      <M3RailItem
-        label="Import conversation"
-        icon={<ImportIcon />}
-        onClick={onImport}
-      />
+      {/* Bottom-anchored rail destinations (settings entry + workspace):
+          .nex-sidebar-footer pins this group to the rail foot with
+          margin-top:auto, separated by a single hairline seam. */}
+      <div className="nex-sidebar-footer">
+        <SettingsEntry onClick={onOpenSettings} />
+        <PromptLibraryEntry active={libraryActive} onClick={onOpenPromptLibrary} />
+        <WorkspaceFolderButton store={workspace} />
+        <WorkspaceRecentList store={workspace} />
+        {workspace.error && (
+          <p className="nex-sidebar-error" role="alert">
+            {workspace.error.message}
+          </p>
+        )}
+        <M3RailItem
+          label="Import conversation"
+          icon={<ImportIcon />}
+          onClick={onImport}
+        />
+      </div>
     </aside>
   );
 }

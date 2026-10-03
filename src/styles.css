@@ -21,6 +21,31 @@
   overflow: hidden;
 }
 
+/* ---- Skip link: first Tab stop into the shell, held offscreen until
+   keyboard focus (a11y acceptance: full keyboard operability, visible
+   focus). Primary-fill pill on the dialog z-step so it floats above both
+   shell planes. Reduced motion: the global gate collapses the slide to
+   an instant appearance. ---- */
+.nex-skip-link {
+  position: fixed;
+  top: var(--nex-sys-space-sm);
+  left: var(--nex-sys-space-sm);
+  z-index: var(--nex-sys-z-dialog);
+  padding: var(--nex-sys-space-xs) var(--nex-sys-space-md);
+  border-radius: var(--nex-sys-shape-full);
+  background: var(--nex-sys-color-primary);
+  color: var(--nex-sys-color-on-primary);
+  font-size: var(--nex-sys-type-size-label-large);
+  font-weight: var(--nex-sys-type-weight-emphasized);
+  text-decoration: none;
+  transform: translateY(calc(-100% - var(--nex-sys-space-sm)));
+  transition: transform var(--nex-sys-motion-duration-fast)
+    var(--nex-sys-motion-easing-standard);
+}
+.nex-skip-link:focus-visible {
+  transform: translateY(0);
+}
+
 /* ---- Sidebar: expanded-rail navigation surface (one tone step
    above the app backdrop; the seam is carried by tone, the
    hairline marks only the shell boundary) ---- */
