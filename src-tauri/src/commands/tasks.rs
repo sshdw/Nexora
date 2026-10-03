@@ -41,7 +41,7 @@
 //! autonomy mode, run preset, per-run spend limit, step budget, and approval
 //! gate apply to autonomous steps exactly as to manual runs — the loop never
 //! auto-extends a parked budget and never auto-resolves an approval. A
-//! budget-parked step stops the loop (its run id stays on the task row for
+//! budget-parked step waits (its run id stays on the task row for
 //! `extend_agent_run`); a spend-guard trip fails the step and stops the
 //! loop; `stop_task_run` aborts the in-flight run through the existing
 //! registry cancel path.

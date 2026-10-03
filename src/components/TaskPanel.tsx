@@ -48,21 +48,21 @@ function taskStatusLabel(status: AgentTask["status"], t: Strings["t"]): string {
   }
 }
 
-/** Fixed-vocabulary step-status label; unknown values echo defensively. */
+/** Fixed-vocabulary step-status label (masculine — шаг); unknown values echo defensively. */
 function stepStatusLabel(status: AgentTaskStep["status"], t: Strings["t"]): string {
   switch (status) {
     case "pending":
-      return t("task.statusPending");
+      return t("task.stepStatusPending");
     case "running":
-      return t("task.statusRunning");
+      return t("task.stepStatusRunning");
     case "completed":
-      return t("task.statusCompleted");
+      return t("task.stepStatusCompleted");
     case "failed":
-      return t("task.statusFailed");
+      return t("task.stepStatusFailed");
     case "skipped":
-      return t("task.statusSkipped");
+      return t("task.stepStatusSkipped");
     case "cancelled":
-      return t("task.statusCancelled");
+      return t("task.stepStatusCancelled");
     default:
       return status;
   }
