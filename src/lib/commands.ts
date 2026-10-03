@@ -14,7 +14,7 @@
 //!                             346-387 commit composer, 389-410 push
 //!   chat commands .......... ConversationView.tsx:463-469 composer Enter,
 //!                             497-511 Send button; App.tsx:233-245 create
-//!   settings sections ...... SettingsView.tsx:19-24 NAV groups
+//!   settings sections ...... SettingsView.tsx GROUP MAP comment (7 groups)
 //!
 //! NL-tolerance WITHOUT an LLM (explicit scope decision): each command
 //! carries hand-written keyword aliases (including common verbs like
@@ -40,13 +40,15 @@
 //! the existing settings store holds device preferences, not usage stats,
 //! and a new persistence shape is scope creep for this task.
 
-/** A settings section the palette can deep-link (SettingsView NAV ids). */
+/** A settings section the palette can deep-link (SettingsView group ids). */
 export type PaletteSettingsSection =
   | "appearance"
   | "provider"
-  | "data"
+  | "agent"
+  | "workspace"
   | "credentials"
-  | "workspace";
+  | "data"
+  | "advanced";
 
 /** VCS panel requests the palette can raise (handled inside the panel). */
 export type PaletteVcsRequest = "refresh" | "focus-commit";
@@ -130,6 +132,13 @@ export function buildCommands(deps: PaletteDeps): PaletteCommand[] {
       run: () => deps.openSettings("provider"),
     },
     {
+      id: "settings.agent",
+      title: "Settings: Agent & budgets",
+      section: "Go",
+      keywords: ["agent", "autonomy", "budget", "spend", "cost limit", "supervised"],
+      run: () => deps.openSettings("agent"),
+    },
+    {
       id: "settings.workspace",
       title: "Settings: Workspace folder",
       section: "Go",
@@ -149,6 +158,13 @@ export function buildCommands(deps: PaletteDeps): PaletteCommand[] {
       section: "Go",
       keywords: ["data", "clear", "delete all", "reset", "storage", "database"],
       run: () => deps.openSettings("data"),
+    },
+    {
+      id: "settings.advanced",
+      title: "Settings: Advanced",
+      section: "Go",
+      keywords: ["advanced", "power", "flags", "routing", "mcp", "preset", "internals"],
+      run: () => deps.openSettings("advanced"),
     },
     {
       id: "chat.new",

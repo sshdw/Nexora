@@ -58,7 +58,7 @@ const VALID_AUTONOMY: &[&str] = &["supervised", "semi_autonomous", "full_autonom
 /// implementation (FR-012: invalid values are rejected before persistence).
 ///
 /// Rules:
-/// - Only the explicitly supported setting keys may be written: the eight
+/// - Only the explicitly supported setting keys may be written: the nine
 ///   base keys below, the `mcp.servers` MCP server list, plus the four
 ///   `flags.*` feature-flag keys.
 /// - A `None` value (clearing back to the default state) is always valid.
@@ -71,6 +71,10 @@ const VALID_AUTONOMY: &[&str] = &["supervised", "semi_autonomous", "full_autonom
 ///   or a custom model ID (1..=200 chars of `A-Za-z0-9._/:-+`, no `..`).
 /// - [`AUTONOMY_KEY`] accepts only the three autonomy modes
 ///   (`supervised`, `semi_autonomous`, `full_autonomous`).
+/// - `agent.spend_limit_micro_usd` accepts a trimmed `u64` greater than zero
+///   — exactly the domain `resolve_spend_limit`
+///   (`application/agent/service.rs`) resolves, so the command gate and the
+///   service agree exactly.
 /// - [`CHAT_PROFILE_KEY`] / [`AGENT_PROFILE_KEY`] accept a JSON array of
 ///   1..=16 `{provider, model}` entries where each provider is a supported
 ///   provider name and each model is listed for that provider or a valid
@@ -137,6 +141,16 @@ fn validate_setting(key: &str, value: Option<&str>) -> Result<(), CommandError> 
                 Ok(())
             } else {
                 Err(rejected(key, value))
+            }
+        }
+        crate::application::agent::service::SPEND_LIMIT_KEY => {
+            // Mirror `resolve_spend_limit` parsing exactly: a trimmed `u64`
+            // greater than zero. Non-empty writes outside this domain are
+            // rejected before persistence; clearing (`None`) restores the
+            // no-limit default and stays allowed (handled above).
+            match value.trim().parse::<u64>() {
+                Ok(limit) if limit > 0 => Ok(()),
+                _ => Err(rejected(key, value)),
             }
         }
         WORKSPACE_ROOT_KEY => {
@@ -683,6 +697,22 @@ mod tests {
                 *expected,
                 "setup import verdict for {key} {value:?}"
             );
+        }
+    }
+
+    #[test]
+    fn spend_limit_key_accepts_positive_and_rejects_the_rest() {
+        // Positive integers persist (and resolve to a guard); clearing
+        // restores the no-limit default and stays allowed.
+        for value in ["1", "250000", "1000000"] {
+            assert_accepted(crate::application::agent::service::SPEND_LIMIT_KEY, value);
+        }
+        assert!(
+            validate_setting(crate::application::agent::service::SPEND_LIMIT_KEY, None).is_ok()
+        );
+        // Zero, negatives, and non-numeric values are rejected secret-free.
+        for value in ["0", "-5", "abc", "", "  ", "1.5"] {
+            assert_rejected(crate::application::agent::service::SPEND_LIMIT_KEY, value);
         }
     }
 }

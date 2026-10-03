@@ -231,6 +231,51 @@
   background: var(--nex-sys-color-surface-container);
 }
 
+/* ---- Settings search + advanced power-key rows (slim surface).
+    Token-only: no raw colors, sizes, or radii. ---- */
+.nex-settings-search {
+  margin-bottom: var(--nex-sys-space-sm);
+}
+
+.nex-settings-result-count {
+  margin: var(--nex-sys-space-xs) 0 0;
+  padding-left: var(--nex-sys-space-sm);
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-on-surface-tertiary);
+}
+
+/* Advanced flag toggles: native checkbox + label rows separated by
+   hairlines (structural seams, same language as the credential list). */
+.nex-flag-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--nex-sys-space-sm);
+  padding: var(--nex-sys-space-xs) 0;
+  border-bottom: 1px solid var(--nex-sys-color-outline-variant);
+  cursor: pointer;
+}
+
+.nex-flag-row:last-child {
+  border-bottom: none;
+}
+
+/* Advanced read-only power keys: demarked collapsible containers on the
+   quiet sidebar tone (native <details> — keyboard + reduced-motion safe). */
+.nex-settings-details {
+  margin-top: var(--nex-sys-space-xs);
+  padding: var(--nex-sys-space-sm) var(--nex-sys-space-md);
+  border: 1px solid var(--nex-sys-color-outline-variant);
+  border-radius: var(--nex-sys-shape-small);
+  background: var(--nex-sys-color-surface-container-low);
+}
+
+.nex-settings-details summary {
+  cursor: pointer;
+  font-size: var(--nex-sys-type-size-body-medium);
+  font-weight: var(--nex-sys-type-weight-medium);
+  color: var(--nex-sys-color-on-surface);
+}
+
 /* ---- Inline validation / command errors (FR-012) ---- */
 .nex-settings-error {
   margin: var(--nex-sys-space-xs) 0 0;

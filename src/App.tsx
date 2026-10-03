@@ -728,6 +728,8 @@ function App() {
                 onClose={() => setSettingsOpen(false)}
                 onDataCleared={() => void reload()}
                 initialSection={settingsSection}
+                onOpenImport={() => setImportOpen(true)}
+                onExportActive={exportActiveConversation}
               />
             )}
           </>
