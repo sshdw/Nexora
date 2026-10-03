@@ -16,6 +16,9 @@ import M3SegmentedGroup from "./M3SegmentedGroup";
  * intentionally absent (no invented MVP settings). */
 type SettingsSectionId = "appearance" | "provider" | "data" | "credentials" | "workspace";
 
+/** Re-exported for the command-palette registry (deep links). */
+export type { SettingsSectionId };
+
 const NAV: { label: string; items: { id: SettingsSectionId; t: string }[] }[] = [
   { label: "General", items: [{ id: "appearance", t: "Appearance" }] },
   { label: "AI", items: [{ id: "provider", t: "Provider & model" }, { id: "workspace", t: "Workspace folder" }] },
@@ -41,6 +44,8 @@ export interface SettingsViewProps {
   spendLimit: SpendLimitStore;
   /** Refresh conversation-dependent UI after all local data is cleared. */
   onDataCleared: () => void;
+  /** Section to show on open (palette deep links); defaults to appearance. */
+  initialSection?: SettingsSectionId;
 }
 
 export default function SettingsView({
@@ -51,8 +56,9 @@ export default function SettingsView({
   workspaceLoading,
   spendLimit,
   onDataCleared,
+  initialSection = "appearance",
 }: SettingsViewProps) {
-  const [section, setSection] = useState<SettingsSectionId>("appearance");
+  const [section, setSection] = useState<SettingsSectionId>(initialSection);
   const [draftKeys, setDraftKeys] = useState<Record<string, string>>({});
   // Clear-all-data confirmation state (typed phrase; no accidental runs).
   const [confirmingClear, setConfirmingClear] = useState(false);

@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import CommandPalette from "./components/CommandPalette";
 import ConversationTabs, { type TabEntry } from "./components/ConversationTabs";
 import ConversationView from "./components/ConversationView";
 import EmptyState from "./components/EmptyState";
@@ -15,6 +16,13 @@ import Sidebar from "./components/Sidebar";
 import VersionControlPanel from "./components/VersionControlPanel";
 import WorkspaceChip from "./components/WorkspaceChip";
 import type { Conversation } from "./lib/tauri";
+import {
+  buildCommands,
+  recordUse,
+  type PaletteCommand,
+  type PaletteSettingsSection,
+  type PaletteVcsRequest,
+} from "./lib/commands";
 import { useAppearance } from "./lib/useAppearance";
 import { useConversations } from "./lib/useConversations";
 import { useConversationTabs } from "./lib/useConversationTabs";
@@ -175,6 +183,19 @@ function App() {
   // Zen reading mode: chromeless (sidebar + tab strip + pane headers hidden
   // via .nex-zen), Esc exits. Session-only, like tab state.
   const [zen, setZen] = useState(false);
+  // Command palette (Ctrl+K): launcher over the registry in lib/commands.ts.
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  // A palette-chosen command runs after the palette unmounts (see the
+  // deferred-run effect below), so focus moves land on live targets.
+  const [pendingPaletteRun, setPendingPaletteRun] = useState<(() => void) | null>(null);
+  // Palette deep-link targets: the settings section to show and the VCS
+  // panel request to raise when those overlays open from the palette.
+  const [settingsSection, setSettingsSection] =
+    useState<PaletteSettingsSection>("appearance");
+  const [vcsRequest, setVcsRequest] = useState<{
+    token: number;
+    action: PaletteVcsRequest;
+  } | null>(null);
   const mainRef = useRef<HTMLDivElement>(null);
 
   const draftFor = useCallback(
@@ -252,7 +273,8 @@ function App() {
     setVcsOpen(false);
   };
 
-  const openSettings = () => {
+  const openSettings = (section?: PaletteSettingsSection) => {
+    setSettingsSection(section ?? "appearance");
     setSettingsOpen(true);
     setLibraryOpen(false);
     setVcsOpen(false);
@@ -268,7 +290,8 @@ function App() {
     setLibraryOpen(false);
     setPromptToEditId(null);
   };
-  const openVcs = () => {
+  const openVcs = (request?: PaletteVcsRequest) => {
+    setVcsRequest(request ? { token: Date.now(), action: request } : null);
     setVcsOpen(true);
     setLibraryOpen(false);
     setSettingsOpen(false);
@@ -312,6 +335,32 @@ function App() {
     setZen((prev) => !prev);
   }, []);
 
+  // Overlay-exit contract shared by tab mutations and palette commands:
+  // switching surface closes Settings/Library/VCS (same as clicking a
+  // tab or sidebar row — overlays never sit above a switched tab).
+  const closeOverlays = useCallback(() => {
+    setLibraryOpen(false);
+    setSettingsOpen(false);
+    setVcsOpen(false);
+  }, []);
+
+  // Focus the active pane's composer (palette "Focus message input"):
+  // overlays close first, then focus lands after the re-render commits.
+  const focusComposer = useCallback(() => {
+    setLibraryOpen(false);
+    setSettingsOpen(false);
+    setVcsOpen(false);
+    window.setTimeout(() => {
+      document
+        .querySelector<HTMLTextAreaElement>(".nex-composer-input")
+        ?.focus();
+    }, 0);
+  }, []);
+
+  const exportActiveConversation = useCallback(() => {
+    if (tabs.activeId !== null) setExportTargetId(tabs.activeId);
+  }, [tabs.activeId]);
+
   // Entering zen keeps focus in content (the main landmark); leaving zen
   // returns focus to the active tab so keyboard users resume where they
   // were. Reduced-motion users get the same instant chrome swap — zen never
@@ -349,29 +398,24 @@ function App() {
       }
       // Tab mutations surface the conversation: same overlay-exit contract
       // as clicking a tab or sidebar row (Settings/Library/VCS never sit
-      // above a switched tab).
-      const leaveOverlays = () => {
-        setLibraryOpen(false);
-        setSettingsOpen(false);
-        setVcsOpen(false);
-      };
+      // above a switched tab) — see closeOverlays above.
       if (event.ctrlKey && !event.altKey && !event.metaKey) {
         if (event.key === "Tab") {
           event.preventDefault();
-          leaveOverlays();
+          closeOverlays();
           if (event.shiftKey) tabs.prev();
           else tabs.next();
           return;
         }
         if (event.key === "PageDown") {
           event.preventDefault();
-          leaveOverlays();
+          closeOverlays();
           tabs.next();
           return;
         }
         if (event.key === "PageUp") {
           event.preventDefault();
-          leaveOverlays();
+          closeOverlays();
           tabs.prev();
           return;
         }
@@ -384,7 +428,7 @@ function App() {
         switch (event.key.toLowerCase()) {
           case "w":
             event.preventDefault();
-            leaveOverlays();
+            closeOverlays();
             if (tabs.activeId !== null) tabs.close(tabs.activeId);
             break;
           case "s":
@@ -399,7 +443,7 @@ function App() {
             if (isTypingTarget(event.target)) return;
             if (event.key >= "1" && event.key <= "9") {
               event.preventDefault();
-              leaveOverlays();
+              closeOverlays();
               const position =
                 event.key === "9" ? tabs.openIds.length - 1 : Number(event.key) - 1;
               tabs.jumpTo(position);
@@ -410,7 +454,99 @@ function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [zen, tabs, handleToggleSplit, toggleZen]);
+  }, [zen, tabs, handleToggleSplit, toggleZen, closeOverlays]);
+
+  // Command-palette toggle (Ctrl+K, with Ctrl+P as a collision-free alias:
+  // the existing Ctrl map owns only Tab/PageUp/PageDown — see
+  // useConversationTabs.ts:12-28 — and no other feature binds Ctrl+P).
+  // Guarded like the Alt+digit branch above: typing targets (inputs,
+  // textareas, selects, contentEditable, rename fields) keep their keys,
+  // and an open dialog owns the keyboard (no stacked dialogs). The
+  // palette input autofocuses on open; ModalShell restores focus to the
+  // invoker on close.
+  useEffect(() => {
+    const isTypingTarget = (target: EventTarget | null) => {
+      if (!(target instanceof HTMLElement)) return false;
+      if (target.isContentEditable) return true;
+      const tag = target.tagName;
+      return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!event.ctrlKey || event.altKey || event.metaKey) return;
+      const key = event.key.toLowerCase();
+      if (key !== "k" && key !== "p") return;
+      if (isTypingTarget(event.target)) return;
+      if (document.querySelector('[role="dialog"]') !== null) return;
+      event.preventDefault();
+      setPaletteOpen((prev) => !prev);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  // The palette registry: every entry wraps the existing UI handler, so
+  // invoking from the palette === clicking its UI equivalent.
+  const paletteCommands = useMemo(
+    () =>
+      buildCommands({
+        goConversations: closeOverlays,
+        openSettings,
+        openLibrary,
+        openVcs,
+        newConversation: () => void handleNewConversation(),
+        openImport: () => setImportOpen(true),
+        exportActive: exportActiveConversation,
+        focusComposer,
+        tabNext: () => {
+          closeOverlays();
+          tabs.next();
+        },
+        tabPrev: () => {
+          closeOverlays();
+          tabs.prev();
+        },
+        tabCloseActive: () => {
+          closeOverlays();
+          if (tabs.activeId !== null) tabs.close(tabs.activeId);
+        },
+        toggleSplit: handleToggleSplit,
+        toggleZen,
+        jumpToTab: (index: number) => {
+          closeOverlays();
+          tabs.jumpTo(index);
+        },
+        tabCount: () => tabs.openIds.length,
+      }),
+    [
+      closeOverlays,
+      openSettings,
+      openLibrary,
+      openVcs,
+      handleNewConversation,
+      exportActiveConversation,
+      focusComposer,
+      tabs,
+      handleToggleSplit,
+      toggleZen,
+    ],
+  );
+
+  // Choosing a command closes the palette first; the command itself runs
+  // after the palette unmounts (post-commit, inert lifted), so focus moves
+  // and overlay switches land on live targets.
+  const handlePaletteRun = useCallback((command: PaletteCommand) => {
+    recordUse(command.id);
+    setPendingPaletteRun(() => command.run);
+    setPaletteOpen(false);
+  }, []);
+
+  useEffect(() => {
+    if (!paletteOpen && pendingPaletteRun !== null) {
+      const run = pendingPaletteRun;
+      setPendingPaletteRun(null);
+      run();
+    }
+  });
 
   const activeConversation =
     tabs.activeId !== null
@@ -588,7 +724,7 @@ function App() {
                 initialEditId={promptToEditId}
               />
             ) : vcsOpen ? (
-              <VersionControlPanel onClose={closeVcs} />
+              <VersionControlPanel onClose={closeVcs} request={vcsRequest} />
             ) : (
               <SettingsView
                 store={providers}
@@ -598,6 +734,7 @@ function App() {
                 spendLimit={spendLimit}
                 onClose={() => setSettingsOpen(false)}
                 onDataCleared={() => void reload()}
+                initialSection={settingsSection}
               />
             )}
           </>
@@ -650,6 +787,13 @@ function App() {
             setImportOpen(false);
             io.clearStatus();
           }}
+        />
+      )}
+      {paletteOpen && (
+        <CommandPalette
+          commands={paletteCommands}
+          onClose={() => setPaletteOpen(false)}
+          onRun={handlePaletteRun}
         />
       )}
     </div>

@@ -18,7 +18,7 @@
 //! only ("+N more") — no raw backend values. The panel never animates on
 //! entry (instant render under reduced motion).
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { formatRelativeTime } from "../lib/format";
 import {
@@ -79,9 +79,13 @@ function shortHash(hash: string): string {
 
 export interface VersionControlPanelProps {
   onClose: () => void;
+  /** Palette-raised action (refresh / focus-commit). The token identifies
+   * the request so a re-render never replays it; mount already loads, so
+   * refresh is an idempotent re-read that also keeps the selection. */
+  request?: { token: number; action: "refresh" | "focus-commit" } | null;
 }
 
-export default function VersionControlPanel({ onClose }: VersionControlPanelProps) {
+export default function VersionControlPanel({ onClose, request = null }: VersionControlPanelProps) {
   const [info, setInfo] = useState<GitInfo | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -95,6 +99,7 @@ export default function VersionControlPanel({ onClose }: VersionControlPanelProp
   const [generating, setGenerating] = useState<boolean>(false);
   const [generatedTruncated, setGeneratedTruncated] = useState<boolean>(false);
   const [pushArmed, setPushArmed] = useState<boolean>(false);
+  const commitRef = useRef<HTMLTextAreaElement>(null);
 
   const loadInfo = useCallback(async (keepSelection: boolean) => {
     setLoading(true);
@@ -141,6 +146,24 @@ export default function VersionControlPanel({ onClose }: VersionControlPanelProp
       if (selectedPath) void loadDiff(selectedPath);
     });
   }, [loadInfo, loadDiff, selectedPath]);
+
+  // Palette requests (same handlers as the panel's own buttons — no
+  // duplicated logic). Refresh reuses handleRefresh; commit-focus moves
+  // focus to the commit composer once the panel has loaded.
+  const refreshRef = useRef(handleRefresh);
+  refreshRef.current = handleRefresh;
+  const seenRequestRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!request || seenRequestRef.current === request.token) return;
+    if (request.action === "refresh") {
+      seenRequestRef.current = request.token;
+      refreshRef.current();
+      return;
+    }
+    if (loading || !info) return;
+    seenRequestRef.current = request.token;
+    commitRef.current?.focus();
+  }, [request, loading, info]);
 
   const handleToggleStage = useCallback(
     async (path: string, staged: boolean) => {
@@ -346,6 +369,7 @@ export default function VersionControlPanel({ onClose }: VersionControlPanelProp
             <section className="nex-vcs-section" aria-label="Commit staged changes">
               <h3 className="nex-vcs-section-title">Commit: {stagedCount} staged</h3>
               <textarea
+                ref={commitRef}
                 className="nex-composer-input"
                 rows={3}
                 placeholder="type(scope): subject"

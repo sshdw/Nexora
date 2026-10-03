@@ -1,0 +1,103 @@
+/* ============================================================
+   COMMAND PALETTE (NL-palette, Ctrl+K launcher)
+   Top-anchored dialog over the command registry: query input +
+   grouped listbox + footer hint row. Tokens only
+   (--nex-sys-* / --motion-*) — zero raw values.
+   Enter motion: scale+fade from the top anchor on the OFFICIAL
+   medium2 · emphasized-decelerate pair (skill motion.md §7 menu
+   pattern, via .nex-pop-enter in components.css). List
+   navigation swaps the active tone step instantly (calm chrome,
+   same grammar as tab selection). Reduced motion: the global
+   motion.css gate resolves every animation to its final frame.
+   ============================================================ */
+
+/* Top-anchored dialog variant: the card docks near the viewport
+   top (launcher pattern) instead of centering. */
+.nex-dialog-backdrop.is-top {
+  align-items: flex-start;
+  padding-top: var(--nex-sys-space-xl);
+}
+
+.nex-palette {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nex-sys-space-xs);
+}
+
+.nex-palette-input {
+  width: 100%;
+}
+
+.nex-palette-list {
+  list-style: none;
+  margin: 0;
+  padding: var(--nex-sys-space-xxs);
+  /* Cap ≈ 8 rows: token multiple, not a raw value. */
+  max-height: calc(var(--nex-sys-space-2xl) * 10);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--nex-sys-space-xxxs);
+}
+
+.nex-palette-section {
+  font-size: var(--nex-sys-type-size-label-small);
+  font-weight: var(--nex-sys-type-weight-medium);
+  color: var(--nex-sys-color-on-surface-variant);
+  padding: var(--nex-sys-space-xxs) var(--nex-sys-space-xs) 0;
+}
+
+.nex-palette-item {
+  display: flex;
+  align-items: center;
+  gap: var(--nex-sys-space-xs);
+  padding: var(--nex-sys-space-xs) var(--nex-sys-space-sm);
+  border-radius: var(--nex-sys-shape-small);
+  font-size: var(--nex-sys-type-size-body-medium);
+  color: var(--nex-sys-color-on-surface);
+  cursor: pointer;
+}
+
+.nex-palette-item:hover {
+  background: var(--nex-sys-state-hover);
+}
+
+.nex-palette-item.is-active {
+  background: var(--nex-sys-color-secondary-container);
+  color: var(--nex-sys-color-on-secondary-container);
+  font-weight: var(--nex-sys-type-weight-emphasized);
+}
+
+.nex-palette-item-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nex-palette-empty {
+  margin: 0;
+  padding: var(--nex-sys-space-sm);
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-on-surface-variant);
+}
+
+.nex-palette-hints {
+  display: flex;
+  gap: var(--nex-sys-space-md);
+  margin: 0;
+  padding: var(--nex-sys-space-xxs) var(--nex-sys-space-xs) 0;
+  border-top: 1px solid var(--nex-sys-color-outline-variant);
+  font-size: var(--nex-sys-type-size-label-small);
+  color: var(--nex-sys-color-on-surface-variant);
+}
+
+.nex-palette-hints kbd {
+  font-family: var(--nex-sys-type-family);
+  font-size: var(--nex-sys-type-size-label-small);
+  background: var(--nex-sys-color-surface-container);
+  border: 1px solid var(--nex-sys-color-outline-variant);
+  border-radius: var(--nex-sys-shape-extra-small);
+  padding: 0 var(--nex-sys-space-xxxs);
+  margin-right: var(--nex-sys-space-xxxs);
+}
