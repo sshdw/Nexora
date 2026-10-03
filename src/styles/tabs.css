@@ -1,0 +1,226 @@
+/* ============================================================
+   Nexora Conversation Tabs + Split + Zen — M3E shell extension
+   Docked tab strip (first row of .nex-main, above the per-pane
+   conversation header), side-by-side split panes, and chromeless
+   zen reading mode. Tokens only (--nex-sys-*, --motion-*); no raw
+   values. Motion is transform/opacity only; the global
+   prefers-reduced-motion gate in motion.css collapses every
+   transition below to an instant state change.
+   ============================================================ */
+
+/* ---- Tab strip: docked persistent row (contract §Shell — docked
+   rows for persistent chrome). Calm surface-container tone with a
+   single hairline seam; the strip scrolls horizontally on
+   overflow so tabs never shrink below a tappable width. ---- */
+.nex-tabstrip {
+  display: flex;
+  align-items: center;
+  gap: var(--nex-sys-space-xs);
+  min-height: var(--nex-sys-layout-header-height);
+  padding: var(--nex-sys-space-xs) var(--nex-sys-space-sm);
+  background: var(--nex-sys-color-surface-container);
+  border-bottom: 1px solid var(--nex-sys-color-outline-variant);
+  flex-shrink: 0;
+}
+
+.nex-tabstrip-list {
+  display: flex;
+  align-items: center;
+  gap: var(--nex-sys-space-xxs);
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
+.nex-tabstrip-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--nex-sys-space-xxs);
+  flex-shrink: 0;
+}
+
+/* ---- Tab: quiet rounded-square row; selected = container tone +
+   emphasized label (the M3SegmentedGroup selection grammar, applied
+   to a tablist). The thin top marker is the sanctioned
+   thin-indicator accent. ---- */
+.nex-tab {
+  display: flex;
+  align-items: center;
+  gap: var(--nex-sys-space-xxs);
+  max-width: var(--nex-sys-layout-sidebar-width);
+  min-height: var(--nex-sys-space-2xl);
+  padding: 0 var(--nex-sys-space-xxs) 0 var(--nex-sys-space-sm);
+  border-radius: var(--nex-sys-shape-small);
+  background: transparent;
+  color: var(--nex-sys-color-on-surface-variant);
+  position: relative;
+  flex-shrink: 0;
+}
+
+/* Expressive enter on create only (contract motion table,
+   send/create row): fast-spatial spring slide+fade. Tab switching
+   itself animates nothing — instant content swap + tone change. */
+.nex-tab-enter {
+  animation: nex-tab-in var(--nex-sys-motion-spring-expressive-fast-spatial-duration)
+    var(--nex-sys-motion-spring-expressive-fast-spatial-curve);
+}
+
+@keyframes nex-tab-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--nex-sys-motion-view-travel));
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.nex-tab:hover {
+  background: var(--nex-sys-state-hover);
+  color: var(--nex-sys-color-on-surface);
+}
+
+.nex-tab.is-active {
+  background: var(--nex-sys-color-primary-container);
+  color: var(--nex-sys-color-on-surface);
+}
+
+.nex-tab.is-active::before {
+  content: "";
+  position: absolute;
+  top: var(--nex-sys-space-xxs);
+  left: var(--nex-sys-space-sm);
+  right: var(--nex-sys-space-sm);
+  height: var(--nex-sys-nav-indicator-height);
+  max-height: var(--nex-sys-space-xxs);
+  border-radius: var(--nex-sys-shape-full);
+  background: var(--nex-sys-color-primary);
+}
+
+.nex-tab-label {
+  display: flex;
+  align-items: center;
+  gap: var(--nex-sys-space-xxs);
+  flex: 1 1 auto;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: var(--nex-sys-type-size-label-large);
+  font-weight: var(--nex-sys-type-weight-medium);
+  cursor: pointer;
+  padding: 0;
+}
+
+.nex-tab.is-active .nex-tab-label {
+  font-weight: var(--nex-sys-type-weight-emphasized);
+}
+
+.nex-tab-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+/* Split-pane marker: quiet mono count badge on tabs shown in the
+   secondary pane. */
+.nex-tab-split-mark {
+  flex-shrink: 0;
+  font-family: var(--nex-sys-type-family-mono);
+  font-size: var(--nex-sys-type-size-label-small);
+  color: var(--nex-sys-color-on-surface-variant);
+  border: 1px solid var(--nex-sys-color-outline-variant);
+  border-radius: var(--nex-sys-shape-extra-small);
+  padding: 0 var(--nex-sys-space-xxs);
+}
+
+.nex-tab-close {
+  flex-shrink: 0;
+}
+
+/* ---- Split: two live panes side by side on the layout seam.
+   The divider is a single hairline on outline-variant (layout
+   tokens carry the structure; tone steps carry the separation).
+   Each pane is an independent column: header + conversation. ---- */
+.nex-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.nex-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Single-pane mode: the pane is a direct .nex-main child and takes the
+   remaining column height below the tab strip (same flex contract as
+   .nex-main-conversation inside it). */
+.nex-main > .nex-pane {
+  flex: 1 1 auto;
+}
+
+.nex-pane + .nex-pane {
+  border-left: 1px solid var(--nex-sys-color-outline-variant);
+}
+
+.nex-pane-header {
+  display: flex;
+  align-items: center;
+  gap: var(--nex-sys-space-sm);
+  min-height: var(--nex-sys-layout-header-height);
+  padding: var(--nex-sys-space-xs) var(--nex-sys-space-md);
+  background: var(--nex-sys-color-surface-container);
+  border-bottom: 1px solid var(--nex-sys-color-outline-variant);
+  flex-shrink: 0;
+}
+
+.nex-pane-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ---- Zen: chromeless reading mode. The app grid collapses to a
+   single column; sidebar, tab strip, and pane headers are removed
+   from layout (display:none keeps tab order clean — nothing hidden
+   stays focusable). The floating exit control is the single way
+   back besides Esc, pinned to the dialog z-step. ---- */
+.nex-app.nex-zen {
+  grid-template-columns: 1fr;
+}
+
+.nex-app.nex-zen .nex-sidebar,
+.nex-app.nex-zen .nex-tabstrip,
+.nex-app.nex-zen .nex-pane-header {
+  display: none;
+}
+
+.nex-app.nex-zen .nex-main {
+  background: var(--nex-sys-color-surface);
+}
+
+.nex-zen-exit {
+  position: fixed;
+  top: var(--nex-sys-space-sm);
+  right: var(--nex-sys-space-sm);
+  z-index: var(--nex-sys-z-dialog);
+  background: var(--nex-sys-color-surface-container-high);
+  border: 1px solid var(--nex-sys-color-outline-variant);
+  border-radius: var(--nex-sys-shape-full);
+  box-shadow: var(--nex-sys-elevation-level1);
+}
