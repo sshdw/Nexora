@@ -24,6 +24,20 @@
 //! run, never echoing content) — the same fallback rule as the profile
 //! precedence.
 //!
+//! # Enforcement status (phased rollout)
+//!
+//! `injection` and `assembly` are enforced in the run path today: the run
+//! bridge resolves [`ResolvedFlags::run_flags`] once per run and the runner
+//! consumes it
+//! ([`AgentRunner::with_run_flags`](crate::application::agent::runner::AgentRunner::with_run_flags)).
+//! `snapshots` and `self_audit` are resolved-but-not-yet-enforced: their
+//! values and sources resolve through the same precedence and appear in the
+//! status view, but no snapshot or self-audit record path reads them yet, so
+//! setting `{"snapshots": false}` changes the reported value without
+//! changing run behavior. The status view marks this per flag
+//! ([`FlagStatus::enforced`], pinned by `status_marks_only_enforced_flags`)
+//! until snapshot and self-audit recording land in the run path.
+//!
 //! The workspace document is a flat JSON object of known-name boolean values
 //! (`{"snapshots": false}`); anything else (malformed JSON, a non-object, an
 //! unknown flag name, a non-boolean value) is invalid and triggers the
@@ -223,6 +237,32 @@ pub(crate) struct FlagStatus {
     pub enabled: bool,
     /// Fixed source vocabulary (`workspace` / `global` / `default`).
     pub source: &'static str,
+    /// Whether the run path enforces this flag today (phased rollout:
+    /// `injection`/`assembly` only — see the module docs). Resolved the same
+    /// way for every flag; enforcement is a property of the flag name.
+    pub enforced: bool,
+}
+
+/// Whether `name` is enforced in the run path today (phased rollout:
+/// `injection` and `assembly` ride `RunFlags` into the runner; `snapshots`
+/// and `self_audit` resolve but gate nothing yet — see the module docs).
+/// Unknown names report not enforced (fail-closed, like [`FlagService::is_enabled`]).
+#[must_use]
+pub(crate) fn is_flag_enforced(name: &str) -> bool {
+    matches!(name, "injection" | "assembly")
+}
+
+/// Read-only status response for the `flags_status` command: every
+/// registered flag mapped to its effective value, fixed-vocabulary source,
+/// and enforcement mark, plus the workspace-file fallback notice ([`None`]
+/// unless a present file failed to load).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct FlagsStatusView {
+    /// Per-flag status keyed by flag name.
+    pub flags: BTreeMap<String, FlagStatus>,
+    /// [`INVALID_WORKSPACE_FLAGS_NOTICE`] when a present workspace file
+    /// failed to load and the global tier applied; [`None`] otherwise.
+    pub notice: Option<&'static str>,
 }
 
 /// A validated workspace flags document: known-name boolean values only.
@@ -330,7 +370,12 @@ impl<'a> FlagService<'a> {
     }
 
     /// Read-only status view for the `flags_status` command: every registered
-    /// flag mapped to its effective value plus its fixed-vocabulary source.
+    /// flag mapped to its effective value, fixed-vocabulary source, and
+    /// enforcement mark, plus the workspace-file fallback notice.
+    ///
+    /// A present-but-invalid workspace file never errors here: resolution
+    /// falls back to the global tier and the fixed-vocabulary notice travels
+    /// on the returned view.
     ///
     /// # Errors
     ///
@@ -338,20 +383,23 @@ impl<'a> FlagService<'a> {
     pub(crate) fn status(
         &self,
         workspace_root: Option<&std::path::Path>,
-    ) -> Result<BTreeMap<String, FlagStatus>, FlagError> {
+    ) -> Result<FlagsStatusView, FlagError> {
         let workspace = Self::workspace_tier(workspace_root);
-        let mut view = BTreeMap::new();
+        let notice =
+            matches!(workspace, WorkspaceTier::Invalid).then_some(INVALID_WORKSPACE_FLAGS_NOTICE);
+        let mut flags = BTreeMap::new();
         for flag in FLAGS {
             let (enabled, source) = self.resolve_one_strict(flag, &workspace)?;
-            view.insert(
+            flags.insert(
                 flag.name.to_string(),
                 FlagStatus {
                     enabled,
                     source: source.as_str(),
+                    enforced: is_flag_enforced(flag.name),
                 },
             );
         }
-        Ok(view)
+        Ok(FlagsStatusView { flags, notice })
     }
 
     /// Resolve one flag against a pre-loaded workspace tier, degrading an
@@ -428,14 +476,19 @@ impl<'a> FlagService<'a> {
 
 impl ResolvedFlags {
     /// Set one flag value by registry name (the table is fixed, so every name
-    /// matches exactly one field).
+    /// matches exactly one field; anything else is a programming error).
     fn set(&mut self, name: &str, enabled: bool) {
         match name {
             "snapshots" => self.snapshots = enabled,
             "self_audit" => self.self_audit = enabled,
             "injection" => self.injection = enabled,
             "assembly" => self.assembly = enabled,
-            _ => {}
+            _ => {
+                debug_assert!(
+                    matches!(name, "snapshots" | "self_audit" | "injection" | "assembly"),
+                    "ResolvedFlags::set reached with an unregistered flag"
+                );
+            }
         }
     }
 
@@ -446,7 +499,13 @@ impl ResolvedFlags {
             "self_audit" => self.self_audit,
             "injection" => self.injection,
             "assembly" => self.assembly,
-            _ => false,
+            _ => {
+                debug_assert!(
+                    matches!(name, "snapshots" | "self_audit" | "injection" | "assembly"),
+                    "ResolvedFlags::get reached with an unregistered flag"
+                );
+                false
+            }
         }
     }
 }
@@ -743,11 +802,13 @@ mod tests {
         assert_eq!(resolved.notice, None);
         // The status view agrees and stays secret-free.
         let status = service.status(None).expect("status succeeds");
+        assert_eq!(status.notice, None);
         assert_eq!(
-            status["assembly"],
+            status.flags["assembly"],
             FlagStatus {
                 enabled: true,
-                source: "default"
+                source: "default",
+                enforced: true,
             }
         );
         let rendered = serde_json::to_string(&status).expect("serialize status");
@@ -773,37 +834,42 @@ mod tests {
         let ws = temp_root();
         seed_workspace(&ws, r#"{"injection": false}"#);
         let status = service.status(Some(ws.as_path())).expect("status succeeds");
-        let names: Vec<&str> = status.keys().map(String::as_str).collect();
+        assert_eq!(status.notice, None);
+        let names: Vec<&str> = status.flags.keys().map(String::as_str).collect();
         assert_eq!(
             names,
             vec!["assembly", "injection", "self_audit", "snapshots"]
         );
         assert_eq!(
-            status["snapshots"],
+            status.flags["snapshots"],
             FlagStatus {
                 enabled: true,
-                source: "default"
+                source: "default",
+                enforced: false,
             }
         );
         assert_eq!(
-            status["self_audit"],
+            status.flags["self_audit"],
             FlagStatus {
                 enabled: false,
-                source: "global"
+                source: "global",
+                enforced: false,
             }
         );
         assert_eq!(
-            status["injection"],
+            status.flags["injection"],
             FlagStatus {
                 enabled: false,
-                source: "workspace"
+                source: "workspace",
+                enforced: true,
             }
         );
         assert_eq!(
-            status["assembly"],
+            status.flags["assembly"],
             FlagStatus {
                 enabled: true,
-                source: "default"
+                source: "default",
+                enforced: true,
             }
         );
         // Response-side snake_case shape.
@@ -811,6 +877,78 @@ mod tests {
         assert!(rendered.contains("\"enabled\""));
         assert!(rendered.contains("\"source\""));
         let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn status_marks_only_enforced_flags() {
+        // Phased rollout (module docs): `injection`/`assembly` are enforced
+        // in the run path; `snapshots`/`self_audit` resolve but gate nothing
+        // yet. The per-flag mark pins that contract.
+        assert!(is_flag_enforced("injection"));
+        assert!(is_flag_enforced("assembly"));
+        assert!(!is_flag_enforced("snapshots"));
+        assert!(!is_flag_enforced("self_audit"));
+        assert!(!is_flag_enforced("ghost-flag"));
+        let db = test_db();
+        let service = FlagService::new(&db);
+        let status = service.status(None).expect("status succeeds");
+        assert!(status.flags["injection"].enforced);
+        assert!(status.flags["assembly"].enforced);
+        assert!(!status.flags["snapshots"].enforced);
+        assert!(!status.flags["self_audit"].enforced);
+        // Additive field on the stable per-flag shape.
+        let rendered = serde_json::to_string(&status).expect("serialize status");
+        assert!(rendered.contains("\"enforced\""));
+    }
+
+    #[test]
+    fn status_carries_notice_for_invalid_workspace_file() {
+        let db = test_db();
+        let service = FlagService::new(&db);
+        seed_global(&db, "snapshots", "false");
+        // A valid workspace file resolves cleanly with no notice.
+        let ws = temp_root();
+        seed_workspace(&ws, r#"{"snapshots": true}"#);
+        let status = service.status(Some(ws.as_path())).expect("status succeeds");
+        assert_eq!(status.notice, None);
+        assert!(status.flags["snapshots"].enabled);
+        // A present-but-invalid file falls back to the global tier and the
+        // fixed-vocabulary notice travels on the view (never an error, never
+        // echoing content).
+        seed_workspace(&ws, r#"{"ghost-flag": true}"#);
+        let status = service.status(Some(ws.as_path())).expect("status succeeds");
+        assert!(!status.flags["snapshots"].enabled);
+        assert_eq!(status.notice, Some(INVALID_WORKSPACE_FLAGS_NOTICE));
+        let rendered = serde_json::to_string(&status).expect("serialize status");
+        assert!(rendered.contains(INVALID_WORKSPACE_FLAGS_NOTICE));
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn resolved_flags_set_get_round_trip_every_registered_flag() {
+        // Every registry entry must survive a set/get round-trip: a missing
+        // arm in either accessor (silently absorbing the name) fails here.
+        let mut resolved = ResolvedFlags {
+            snapshots: true,
+            self_audit: true,
+            injection: true,
+            assembly: true,
+            notice: None,
+        };
+        for flag in FLAGS {
+            resolved.set(flag.name, false);
+            assert!(
+                !resolved.get(flag.name),
+                "flag {:?} must round-trip false",
+                flag.name
+            );
+            resolved.set(flag.name, true);
+            assert!(
+                resolved.get(flag.name),
+                "flag {:?} must round-trip true",
+                flag.name
+            );
+        }
     }
 
     #[test]

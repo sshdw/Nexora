@@ -14,12 +14,11 @@
 // (Same justification as the other command modules, e.g. conversations.rs.)
 #![allow(clippy::needless_pass_by_value)]
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use tauri::{AppHandle, Manager, State};
 
-use crate::application::flags::{FlagService, FlagStatus};
+use crate::application::flags::{FlagService, FlagsStatusView};
 use crate::infrastructure::database::Database;
 
 use super::error::{CommandError, ErrorKind};
@@ -42,23 +41,28 @@ fn default_root(app: &AppHandle) -> Result<PathBuf, CommandError> {
 }
 
 /// Read-only feature-flag status: every registered flag mapped to its
-/// effective value plus its fixed-vocabulary source
-/// (`workspace` / `global` / `default`).
+/// effective value, fixed-vocabulary source (`workspace` / `global` /
+/// `default`), and enforcement mark (`injection`/`assembly` enforced in the
+/// run path; `snapshots`/`self_audit` resolved-but-not-yet-enforced), plus
+/// the workspace-file fallback notice (`None` unless a present workspace
+/// flags file failed to load).
 ///
 /// Resolution is workspace → global → default with the current behavior as
 /// every default, so an unconfigured install reports every flag enabled from
-/// `default`. Values and sources are fixed vocabulary and booleans only, so
-/// the response is secret-free by construction.
+/// `default`. Values, sources, and the notice are fixed vocabulary and
+/// booleans only, so the response is secret-free by construction.
 ///
 /// # Errors
 ///
 /// Returns a classified [`CommandError`] when the app-data dir is
-/// unavailable or the settings store cannot be read.
+/// unavailable or the settings store cannot be read. A present-but-invalid
+/// workspace flags file never errors: it falls back with the notice on the
+/// view.
 #[tauri::command]
 pub(crate) fn flags_status(
     app: AppHandle,
     db: State<'_, Database>,
-) -> Result<BTreeMap<String, FlagStatus>, CommandError> {
+) -> Result<FlagsStatusView, CommandError> {
     let fallback = default_root(&app)?;
     let root = crate::application::workspace::resolve_workspace_root(db.inner(), &fallback);
     FlagService::new(db.inner())
@@ -81,7 +85,7 @@ impl From<crate::application::flags::FlagError> for CommandError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::application::flags::FLAGS;
+    use crate::application::flags::{FlagStatus, FLAGS};
     use crate::application::settings::SettingsService;
 
     fn test_db() -> Database {
@@ -91,7 +95,7 @@ mod tests {
     /// Drive the exact producer the command delegates to (the command body
     /// needs `State<'_, _>` and cannot be invoked here): the status view over
     /// a workspace root, mirroring the `inspect_run_not_found` pattern.
-    fn status_for(db: &Database, ws: Option<&std::path::Path>) -> BTreeMap<String, FlagStatus> {
+    fn status_for(db: &Database, ws: Option<&std::path::Path>) -> FlagsStatusView {
         FlagService::new(db).status(ws).expect("status succeeds")
     }
 
@@ -99,14 +103,15 @@ mod tests {
     fn status_shape_lists_every_flag_with_fixed_vocab_sources() {
         let db = test_db();
         let status = status_for(&db, None);
-        assert_eq!(status.len(), FLAGS.len());
+        assert_eq!(status.notice, None);
+        assert_eq!(status.flags.len(), FLAGS.len());
         for flag in FLAGS {
-            let entry = status.get(flag.name).expect("every flag listed");
+            let entry = status.flags.get(flag.name).expect("every flag listed");
             assert!(entry.enabled, "unconfigured flags report current behavior");
             assert_eq!(entry.source, "default");
             assert!(["workspace", "global", "default"].contains(&entry.source));
         }
-        // Response-side snake_case shape.
+        // Response-side snake_case shape, with the additive `enforced` mark.
         let rendered = serde_json::to_string(&status).expect("serialize status");
         for flag in FLAGS {
             assert!(
@@ -117,6 +122,8 @@ mod tests {
         }
         assert!(rendered.contains("\"enabled\""));
         assert!(rendered.contains("\"source\""));
+        assert!(rendered.contains("\"enforced\""));
+        assert!(rendered.contains("\"notice\""));
         for camel in ["workspaceRoot", "flagStatus", "isEnabled"] {
             assert!(
                 !rendered.contains(camel),
@@ -144,12 +151,14 @@ mod tests {
         .expect("seed flags");
         let status = status_for(&db, Some(ws.as_path()));
         assert_eq!(
-            status["assembly"],
+            status.flags["assembly"],
             FlagStatus {
                 enabled: true,
-                source: "workspace"
+                source: "workspace",
+                enforced: true,
             }
         );
+        assert_eq!(status.notice, None);
         let _ = std::fs::remove_dir_all(&ws);
     }
 
@@ -176,14 +185,51 @@ mod tests {
         .expect("seed hostile flags");
         let status = status_for(&db, Some(ws.as_path()));
         assert_eq!(
-            status["assembly"],
+            status.flags["assembly"],
             FlagStatus {
                 enabled: true,
-                source: "default"
+                source: "default",
+                enforced: true,
             }
+        );
+        // The hostile workspace document falls back with the fixed-vocabulary
+        // notice (never an error, never echoing the hostile content).
+        assert_eq!(
+            status.notice,
+            Some(crate::application::flags::INVALID_WORKSPACE_FLAGS_NOTICE)
         );
         let rendered = serde_json::to_string(&status).expect("serialize status");
         assert!(!rendered.to_lowercase().contains("sk-test-sentinel-63cd"));
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn status_surfaces_notice_for_invalid_workspace_file() {
+        // A present-but-invalid workspace file falls back to the global tier
+        // with the fixed-vocabulary notice on the view — driven through the
+        // same `status_for` producer the command delegates to.
+        let db = test_db();
+        SettingsService::new(&db)
+            .write("flags.injection", Some("false"))
+            .expect("seed global");
+        let dir =
+            std::env::temp_dir().join(format!("nexora-flags-cmd-notice-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp root");
+        let ws: PathBuf =
+            crate::application::workspace::strip_verbatim(dir.canonicalize().expect("canon"));
+        crate::application::project_dir::init_nexora_dir(&ws).expect("init");
+        std::fs::write(ws.join(".nexora").join("flags.json"), "not json at all")
+            .expect("seed broken flags");
+        let status = status_for(&db, Some(ws.as_path()));
+        assert!(
+            !status.flags["injection"].enabled,
+            "broken file falls back to the global tier"
+        );
+        assert_eq!(
+            status.notice,
+            Some(crate::application::flags::INVALID_WORKSPACE_FLAGS_NOTICE)
+        );
         let _ = std::fs::remove_dir_all(&ws);
     }
 

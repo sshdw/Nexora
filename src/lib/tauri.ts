@@ -802,10 +802,21 @@ export function saveWorkspaceProfile(task: "chat" | "agent", document: string): 
 export interface FlagStatus {
   enabled: boolean;
   source: "workspace" | "global" | "default";
+  /** Whether the run path enforces this flag today (phased rollout:
+   * `injection`/`assembly` only; `snapshots`/`self_audit` resolve but gate
+   * nothing yet). */
+  enforced: boolean;
 }
 
 /** Read-only feature-flag status (`flags_status`): every registered flag
- * mapped to its effective value plus its fixed-vocabulary source. */
-export function flagsStatus(): Promise<Record<string, FlagStatus>> {
-  return invoke<Record<string, FlagStatus>>("flags_status");
+ * mapped to its effective value, fixed-vocabulary source, and enforcement
+ * mark, plus the workspace-file fallback notice (`null` unless a present
+ * workspace flags file failed to load). */
+export interface FlagsStatus {
+  flags: Record<string, FlagStatus>;
+  notice: string | null;
+}
+
+export function flagsStatus(): Promise<FlagsStatus> {
+  return invoke<FlagsStatus>("flags_status");
 }
