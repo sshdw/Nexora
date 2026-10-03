@@ -1041,6 +1041,7 @@ function App() {
       )}
       {onboarding.open && (
         <OnboardingFlow
+          key={onboarding.runId}
           providers={providers}
           workspace={workspace}
           onClose={dismissOnboarding}

@@ -20,9 +20,9 @@
 //! completion (useOnboarding) so the app stays usable with zero keys —
 //! the composer unconfigured notice (ConversationView.tsx) is untouched.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
-import type { ProvidersStore } from "../lib/useProviders";
+import { isCustomModelId, type ProvidersStore } from "../lib/useProviders";
 import type { WorkspaceStore } from "../lib/useWorkspace";
 import M3Button from "./M3Button";
 import ModalShell from "./Modal";
@@ -59,6 +59,18 @@ export default function OnboardingFlow({
   const [apiKey, setApiKey] = useState("");
   const [connecting, setConnecting] = useState(false);
   const [connectDone, setConnectDone] = useState(false);
+  // Until the user picks a provider manually, follow the persisted
+  // selection / first available provider so the dropdown fills in once
+  // the provider list loads after mount (replay-after-load).
+  const [manualPick, setManualPick] = useState(false);
+  useEffect(() => {
+    if (manualPick) return;
+    const next =
+      providers.selectedProvider ??
+      providers.providers[0]?.supported.name ??
+      "";
+    setProviderName((current) => (current === next ? current : next));
+  }, [providers.selectedProvider, providers.providers, manualPick]);
 
   const activeProvider = providers.providers.find(
     (p) => p.supported.name === providerName,
@@ -82,11 +94,11 @@ export default function OnboardingFlow({
       // Make the connected provider the active selection (same defaulting
       // as SettingsView provider change: keep a valid custom model,
       // otherwise persist the provider default).
+      const keepCustom = providers.selectedModel
+        ? isCustomModelId(providers.selectedModel)
+        : false;
       await providers.selectProvider(activeProvider.supported.name);
-      if (
-        providers.selectedModel === null &&
-        activeProvider.supported.models.length > 0
-      ) {
+      if (!keepCustom && activeProvider.supported.models.length > 0) {
         await providers.selectModel(activeProvider.supported.models[0]);
       }
     } finally {
@@ -98,7 +110,11 @@ export default function OnboardingFlow({
   const back = () => setStep((s) => Math.max(s - 1, 0));
 
   return (
-    <ModalShell title="Welcome to Nexora" onClose={onClose}>
+    <ModalShell
+      title="Welcome to Nexora"
+      busy={connecting || workspace.saving}
+      onClose={onClose}
+    >
       <div className="nex-onboarding nex-pop-enter">
         <ol className="nex-onboarding-steps" aria-label="Onboarding progress">
           {STEP_TITLES.map((title, index) => (
@@ -168,6 +184,7 @@ export default function OnboardingFlow({
                     value={providerName}
                     disabled={connecting}
                     onChange={(event) => {
+                      setManualPick(true);
                       setProviderName(event.target.value);
                       setConnectDone(false);
                     }}

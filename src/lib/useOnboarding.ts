@@ -42,9 +42,13 @@ export interface OnboardingStore {
   completed: boolean;
   /** Whether the flow overlay is open. */
   open: boolean;
+  /** Replay generation: incremented on every `replay` so an already-open
+   * flow can restart at step 0 (consumed as `key` in App). */
+  runId: number;
   /** Mark complete and close (Finish, Skip-all, Esc, backdrop). */
   dismiss: () => void;
-  /** Open the flow (auto-show or explicit replay — never clears the flag). */
+  /** Open the flow (auto-show or explicit replay — never clears the flag).
+   * Replays while open restart the flow via `runId`. */
   replay: () => void;
 }
 
@@ -53,6 +57,7 @@ export function useOnboarding(): OnboardingStore {
     hasCompletedOnboarding(),
   );
   const [open, setOpen] = useState<boolean>(false);
+  const [runId, setRunId] = useState<number>(0);
 
   const dismiss = useCallback(() => {
     persistOnboardingComplete();
@@ -61,8 +66,9 @@ export function useOnboarding(): OnboardingStore {
   }, []);
 
   const replay = useCallback(() => {
+    setRunId((n) => n + 1);
     setOpen(true);
   }, []);
 
-  return { completed, open, dismiss, replay };
+  return { completed, open, runId, dismiss, replay };
 }
