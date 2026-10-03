@@ -66,6 +66,10 @@ export interface ActivityHealthPanelProps {
 }
 
 const FEED_LIMIT = 50;
+// Server-max page for the spend filter: the backend clamps `limit` to
+// 1..=100, and totals cover every persisted run, so the spend set derives
+// from this wider page (the main list keeps FEED_LIMIT).
+const FEED_MAX = 100;
 
 function toMessage(error: unknown): string {
   if (
@@ -165,6 +169,9 @@ export default function ActivityHealthPanel({
   }, [initialTab]);
 
   const [feed, setFeed] = useState<ActivityFeed | null>(null);
+  // Wider (server-max) page backing the "spend" filter only; `null` =
+  // unavailable → the filter falls back to the main `feed` page.
+  const [spendFeed, setSpendFeed] = useState<ActivityFeed | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activityLoading, setActivityLoading] = useState<boolean>(true);
   const [activityError, setActivityError] = useState<string | null>(null);
@@ -187,15 +194,18 @@ export default function ActivityHealthPanel({
     setActivityLoading(true);
     setActivityError(null);
     try {
-      const [feedData, convs] = await Promise.all([
+      const [feedData, convs, spendData] = await Promise.all([
         activityFeed(FEED_LIMIT),
         listConversations(),
+        activityFeed(FEED_MAX).catch(() => null),
       ]);
       setFeed(feedData);
       setConversations(convs);
+      setSpendFeed(spendData);
     } catch (e) {
       setActivityError(toMessage(e));
       setFeed(null);
+      setSpendFeed(null);
     } finally {
       setActivityLoading(false);
     }
@@ -274,8 +284,7 @@ export default function ActivityHealthPanel({
   }, [conversations]);
 
   const rows = useMemo<FeedRow[]>(() => {
-    const merged: FeedRow[] = [];
-    for (const run of feed?.runs ?? []) {
+    const toRunRow = (run: NonNullable<ActivityFeed["runs"]>[number]): FeedRow => {
       const convTitle =
         run.conversation_id !== null
           ? titles.get(run.conversation_id)
@@ -285,7 +294,7 @@ export default function ActivityHealthPanel({
         `${run.total_steps} steps`,
         formatMicroUsd(run.spent_micro_usd),
       ];
-      merged.push({
+      return {
         key: `run-${run.run_id}`,
         at: run.started_at,
         kind: "run",
@@ -296,7 +305,21 @@ export default function ActivityHealthPanel({
         detail: parts.join(" · "),
         status: run.status,
         time: run.started_at,
-      });
+      };
+    };
+    if (kind === "spend") {
+      // Full-history-adjacent scope: totals cover every persisted run, so
+      // derive the spent set from the server-max page, not the capped
+      // 50-row list page. Falls back to the main page when unavailable.
+      const wideRuns = spendFeed?.runs ?? feed?.runs ?? [];
+      return wideRuns
+        .filter((run) => run.spent_micro_usd !== null)
+        .map(toRunRow)
+        .sort((a, b) => b.at - a.at);
+    }
+    const merged: FeedRow[] = [];
+    for (const run of feed?.runs ?? []) {
+      merged.push(toRunRow(run));
     }
     for (const conv of conversations) {
       merged.push({
@@ -313,16 +336,8 @@ export default function ActivityHealthPanel({
     if (kind === "runs") return merged.filter((row) => row.kind === "run");
     if (kind === "conversations")
       return merged.filter((row) => row.kind === "conversation");
-    if (kind === "spend") {
-      const spentById = new Map(
-        (feed?.runs ?? [])
-          .filter((run) => run.spent_micro_usd !== null)
-          .map((run) => [run.run_id, true]),
-      );
-      return merged.filter((row) => row.runId !== undefined && spentById.has(row.runId));
-    }
     return merged;
-  }, [feed, conversations, titles, kind]);
+  }, [feed, spendFeed, conversations, titles, kind]);
 
   const flagEntries = useMemo(() => {
     if (!flags) return [];
