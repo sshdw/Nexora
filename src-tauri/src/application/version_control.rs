@@ -6,8 +6,10 @@
 //! `git_stage` / `git_unstage` / `git_commit` / `git_push` and the
 //! AI-generated commit message (`git_generate_commit_message`):
 //!
-//! - Reads: status (changed/staged/untracked files), recent commits, and
-//!   per-file unified diffs. Everything read-only is unchanged from the base.
+//! - Reads: status (changed/staged/untracked files), recent commits with
+//!   per-commit file statistics and heuristic risk signals (timeline view),
+//!   per-file unified diffs, and per-commit unified diffs. Everything
+//!   read-only is additive history detail; no new writes exist here.
 //! - Writes: staging, unstaging, committing (author = local git config only),
 //!   and pushing to the preconfigured `origin` remote. There is no pull/fetch,
 //!   branch, merge, rebase, stash, or amend-of-others path here.
@@ -55,6 +57,21 @@ use super::agent::runner::DEFAULT_REQUEST_TIMEOUT;
 /// Largest per-file diff returned before it is truncated with a notice.
 pub(crate) const MAX_DIFF_BYTES: usize = 256 * 1024;
 
+/// Cap for the commit-diff excerpt fed to the commit-explain prompt — the
+/// same 64 KiB summary shape as the commit-message and terminal-explain
+/// paths. Longer diffs are cut with a notice, and the cut is flagged to the
+/// model and the caller.
+pub(crate) const MAX_COMMIT_EXPLAIN_BYTES: usize = 64 * 1024;
+
+/// Longest commit-explanation text returned, in characters.
+const MAX_COMMIT_EXPLANATION_CHARS: usize = 4000;
+
+/// Added-plus-removed line count at or above which a commit reads
+/// `"large-diff"`.
+const LARGE_DIFF_LINES: usize = 500;
+
+/// Changed-file count at or above which a commit reads `"many-files"`.
+const MANY_FILES_COUNT: usize = 10;
 /// Upper bound for the log `limit` argument (clamped, never an error).
 pub(crate) const MAX_LOG_ENTRIES: u32 = 100;
 
@@ -143,9 +160,14 @@ pub(crate) struct GitFileStatus {
     pub status: String,
 }
 
-/// One recent commit: full hash plus summary, author name, and Unix-seconds
-/// time. The message is the commit summary (first line) only, so payloads
-/// stay small.
+/// One recent commit: full hash plus summary, author name, Unix-seconds
+/// time, per-commit file statistics, and heuristic risk signals. The message
+/// is the commit summary (first line) only, so payloads stay small. Stats and
+/// signals are computed locally from the tree diff against the first parent
+/// (no network, no AI): `files_changed` counts the changed paths,
+/// `insertions`/`deletions` count added/removed lines, and `risk_signals`
+/// carries zero or more of the fixed vocabulary `"large-diff"`,
+/// `"many-files"`, `"binary"`, `"merge-commit"`, `"unfamiliar-author"`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct GitCommit {
     /// Full commit hash (hex); the frontend shortens it for display.
@@ -156,6 +178,15 @@ pub(crate) struct GitCommit {
     pub author: String,
     /// Commit time, seconds since the Unix epoch.
     pub time: i64,
+    /// Number of paths changed by this commit (against its first parent).
+    pub files_changed: usize,
+    /// Added lines in this commit (against its first parent).
+    pub insertions: usize,
+    /// Removed lines in this commit (against its first parent).
+    pub deletions: usize,
+    /// Heuristic risk signals, fixed vocabulary, in signal order (see
+    /// [`commit_risk_signals`]).
+    pub risk_signals: Vec<String>,
 }
 
 /// Aggregate read-only view backing the version-control panel: the current
@@ -299,8 +330,27 @@ fn read_status(
     Ok((files, overflow))
 }
 
+/// One log entry mid-assembly: identity plus locally computed statistics.
+/// [`read_log`] maps these onto [`GitCommit`] with page-relative signals.
+struct RawCommit {
+    hash: String,
+    message: String,
+    author: String,
+    time: i64,
+    files_changed: usize,
+    insertions: usize,
+    deletions: usize,
+    binary: bool,
+    is_merge: bool,
+}
+
 /// Read up to `limit` recent commits from `HEAD`, newest first. A repository
 /// with no commits yet (unborn `HEAD`) yields an empty list, not an error.
+///
+/// Every entry carries locally computed file statistics plus heuristic risk
+/// signals (see [`commit_risk_signals`]): the `"unfamiliar-author"` signal is
+/// relative to the returned page — the modal (most frequent, newest wins
+/// ties) author counts as familiar, any other author as unfamiliar.
 ///
 /// # Errors
 ///
@@ -312,13 +362,14 @@ fn read_log(repo: &git2::Repository, limit: usize) -> Result<Vec<GitCommit>, Ver
     if walk.push_head().is_err() {
         return Ok(Vec::new());
     }
-    let mut commits = Vec::new();
+    let mut raw: Vec<RawCommit> = Vec::new();
     for oid in walk.take(limit) {
         let oid = oid.map_err(|_| VersionControlError::GitFailed)?;
         let commit = repo
             .find_commit(oid)
             .map_err(|_| VersionControlError::GitFailed)?;
-        commits.push(GitCommit {
+        let stats = commit_stats(repo, &commit)?;
+        raw.push(RawCommit {
             hash: oid.to_string(),
             message: commit
                 .summary_bytes()
@@ -326,11 +377,304 @@ fn read_log(repo: &git2::Repository, limit: usize) -> Result<Vec<GitCommit>, Ver
                 .unwrap_or_default(),
             author: String::from_utf8_lossy(commit.author().name_bytes()).into_owned(),
             time: commit.time().seconds(),
+            files_changed: stats.files_changed,
+            insertions: stats.insertions,
+            deletions: stats.deletions,
+            binary: stats.binary,
+            is_merge: commit.parent_count() > 1,
         });
     }
-    Ok(commits)
+    // The modal author of the page (most frequent; newest commit wins ties
+    // by first-seen order) counts as familiar.
+    let mut counts: Vec<(String, usize)> = Vec::new();
+    for entry in &raw {
+        match counts.iter_mut().find(|(name, _)| *name == entry.author) {
+            Some((_, count)) => *count += 1,
+            None => counts.push((entry.author.clone(), 1)),
+        }
+    }
+    let mut familiar: Option<&str> = None;
+    let mut best = 0;
+    for (name, count) in &counts {
+        if *count > best {
+            best = *count;
+            familiar = Some(name);
+        }
+    }
+    let familiar = familiar.unwrap_or_default();
+    Ok(raw
+        .into_iter()
+        .map(|entry| {
+            let risk_signals = commit_risk_signals(
+                entry.files_changed,
+                entry.insertions,
+                entry.deletions,
+                entry.binary,
+                entry.is_merge,
+                entry.author.as_str() != familiar,
+            );
+            GitCommit {
+                hash: entry.hash,
+                message: entry.message,
+                author: entry.author,
+                time: entry.time,
+                files_changed: entry.files_changed,
+                insertions: entry.insertions,
+                deletions: entry.deletions,
+                risk_signals,
+            }
+        })
+        .collect())
 }
 
+/// File statistics for one commit's tree diff.
+struct CommitStats {
+    files_changed: usize,
+    insertions: usize,
+    deletions: usize,
+    binary: bool,
+}
+
+/// Diff statistics for `commit` against its first parent (against the empty
+/// tree for a root commit): changed-path count, added/removed lines, and
+/// whether any delta is binary (a missing patch or a null byte, the same
+/// detection the per-file diff path uses). Context is zero — stats need no
+/// surrounding lines — so the walk stays cheap.
+///
+/// # Errors
+///
+/// Returns [`VersionControlError::GitFailed`] when a tree or diff read fails.
+fn commit_stats(
+    repo: &git2::Repository,
+    commit: &git2::Commit<'_>,
+) -> Result<CommitStats, VersionControlError> {
+    let new_tree = commit.tree().map_err(|_| VersionControlError::GitFailed)?;
+    let old_tree = if commit.parent_count() > 0 {
+        Some(
+            commit
+                .parent(0)
+                .map_err(|_| VersionControlError::GitFailed)?
+                .tree()
+                .map_err(|_| VersionControlError::GitFailed)?,
+        )
+    } else {
+        None
+    };
+    let mut opts = git2::DiffOptions::new();
+    opts.context_lines(0);
+    let diff = repo
+        .diff_tree_to_tree(old_tree.as_ref(), Some(&new_tree), Some(&mut opts))
+        .map_err(|_| VersionControlError::GitFailed)?;
+    let stats = diff.stats().map_err(|_| VersionControlError::GitFailed)?;
+    let mut binary = false;
+    // `Deltas` walks `0..count` in order, so the enumerated index is the
+    // delta index `Patch::from_diff` needs. Binary detection reads the
+    // delta flags first (libgit2 renders binary deltas as printable
+    // `Binary files differ` text, so content sniffing alone would miss
+    // them); a missing patch or a null byte is the backstop.
+    for (index, delta) in diff.deltas().enumerate() {
+        if delta.flags().is_binary() {
+            binary = true;
+            break;
+        }
+        let Ok(Some(mut patch)) = git2::Patch::from_diff(&diff, index) else {
+            binary = true;
+            break;
+        };
+        let Ok(buf) = patch.to_buf() else {
+            binary = true;
+            break;
+        };
+        let bytes: &[u8] = &buf;
+        if bytes.contains(&0) {
+            binary = true;
+            break;
+        }
+    }
+    Ok(CommitStats {
+        files_changed: stats.files_changed(),
+        insertions: stats.insertions(),
+        deletions: stats.deletions(),
+        binary,
+    })
+}
+
+/// Heuristic risk signals for one commit, computed locally without AI.
+/// Fixed vocabulary in fixed order: `"large-diff"` (added plus removed lines
+/// at or above [`LARGE_DIFF_LINES`]), `"many-files"` (changed paths at or
+/// above [`MANY_FILES_COUNT`]), `"binary"` (at least one binary delta),
+/// `"merge-commit"` (more than one parent), `"unfamiliar-author"` (the author
+/// differs from the page's modal author — see [`read_log`]).
+#[must_use]
+fn commit_risk_signals(
+    files_changed: usize,
+    insertions: usize,
+    deletions: usize,
+    binary: bool,
+    is_merge: bool,
+    unfamiliar_author: bool,
+) -> Vec<String> {
+    let mut signals = Vec::new();
+    if insertions.saturating_add(deletions) >= LARGE_DIFF_LINES {
+        signals.push("large-diff".to_string());
+    }
+    if files_changed >= MANY_FILES_COUNT {
+        signals.push("many-files".to_string());
+    }
+    if binary {
+        signals.push("binary".to_string());
+    }
+    if is_merge {
+        signals.push("merge-commit".to_string());
+    }
+    if unfamiliar_author {
+        signals.push("unfamiliar-author".to_string());
+    }
+    signals
+}
+
+/// Resolve `raw` (a full 40-hex commit hash, as returned by [`read_log`])
+/// to its commit. Only full hashes are accepted: prefixes stay unresolved
+/// rather than guessed. Any failure — bad shape or unknown hash — is the
+/// fixed-vocabulary [`VersionControlError::GitFailed`], so a hash (which the
+/// frontend already holds) is never echoed.
+///
+/// # Errors
+///
+/// Returns [`VersionControlError::GitFailed`] when the hash is malformed or
+/// unknown.
+fn find_commit_by_hash<'repo>(
+    repo: &'repo git2::Repository,
+    raw: &str,
+) -> Result<git2::Commit<'repo>, VersionControlError> {
+    let trimmed = raw.trim();
+    if trimmed.len() != 40 || !trimmed.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(VersionControlError::GitFailed);
+    }
+    let oid = git2::Oid::from_str(trimmed).map_err(|_| VersionControlError::GitFailed)?;
+    repo.find_commit(oid)
+        .map_err(|_| VersionControlError::GitFailed)
+}
+
+/// Unified diff of one historical commit (against its first parent, against
+/// the empty tree for a root commit), capped at [`MAX_DIFF_BYTES`] with a
+/// truncation notice. Binary deltas are skipped with an inline placeholder
+/// line (content omitted); `binary` reports whether any delta was binary.
+/// `files` lists the changed repository-relative paths, sorted, capped at
+/// [`MAX_STATUS_FILES`] with the remainder in `files_overflow`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct GitCommitDiff {
+    /// Full commit hash, as resolved.
+    pub hash: String,
+    /// Unified diff text (empty when the commit changed no content).
+    pub diff: String,
+    /// Whether `diff` was cut at [`MAX_DIFF_BYTES`].
+    pub truncated: bool,
+    /// Whether any changed file is binary (its content is omitted).
+    pub binary: bool,
+    /// Changed repository-relative paths, sorted, capped.
+    pub files: Vec<String>,
+    /// Number of changed paths omitted beyond [`MAX_STATUS_FILES`].
+    pub files_overflow: usize,
+}
+
+/// Unified diff of the commit `raw_hash` (full hash only), for the timeline
+/// detail view. Read-only; no working-tree state is touched.
+///
+/// # Errors
+///
+/// Returns [`VersionControlError::GitFailed`] for a malformed or unknown
+/// hash; see [`open_workspace_repo`] for the remaining failures.
+pub(crate) fn git_commit_diff(
+    workspace_root: &Path,
+    raw_hash: &str,
+) -> Result<GitCommitDiff, VersionControlError> {
+    let (_, repo) = open_workspace_repo(workspace_root)?;
+    let commit = find_commit_by_hash(&repo, raw_hash)?;
+    let hash = commit.id().to_string();
+    let new_tree = commit.tree().map_err(|_| VersionControlError::GitFailed)?;
+    let old_tree = if commit.parent_count() > 0 {
+        Some(
+            commit
+                .parent(0)
+                .map_err(|_| VersionControlError::GitFailed)?
+                .tree()
+                .map_err(|_| VersionControlError::GitFailed)?,
+        )
+    } else {
+        None
+    };
+    let mut opts = git2::DiffOptions::new();
+    opts.context_lines(3);
+    let diff = repo
+        .diff_tree_to_tree(old_tree.as_ref(), Some(&new_tree), Some(&mut opts))
+        .map_err(|_| VersionControlError::GitFailed)?;
+    let mut paths: Vec<String> = Vec::new();
+    let mut text = String::new();
+    let mut binary = false;
+    // `Deltas` walks `0..count` in order, so the enumerated index is the
+    // delta index `Patch::from_diff` needs.
+    for (index, delta) in diff.deltas().enumerate() {
+        let delta_path = delta
+            .new_file()
+            .path_bytes()
+            .or_else(|| delta.old_file().path_bytes())
+            .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+            .unwrap_or_default();
+        if !delta_path.is_empty() {
+            paths.push(delta_path);
+        }
+        // Binary deltas carry no printable patch (see `commit_stats`): skip
+        // the content and note the omission once below.
+        if delta.flags().is_binary() {
+            binary = true;
+            continue;
+        }
+        let Ok(Some(mut patch)) = git2::Patch::from_diff(&diff, index) else {
+            binary = true;
+            continue;
+        };
+        let Ok(buf) = patch.to_buf() else {
+            binary = true;
+            continue;
+        };
+        let bytes: &[u8] = &buf;
+        if bytes.contains(&0) {
+            binary = true;
+            continue;
+        }
+        text.push_str(&String::from_utf8_lossy(bytes));
+        if text.len() >= MAX_DIFF_BYTES {
+            break;
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    let overflow = paths.len().saturating_sub(MAX_STATUS_FILES);
+    paths.truncate(MAX_STATUS_FILES);
+    // Binary deltas contribute the placeholder, not content: the truncation
+    // cut below applies to the emitted text only.
+    let mut out = text;
+    if binary {
+        out.push_str("(binary files changed by this commit have their content omitted)\n");
+    }
+    let truncated = out.len() > MAX_DIFF_BYTES;
+    if truncated {
+        let mut end = MAX_DIFF_BYTES;
+        while !out.is_char_boundary(end) {
+            end -= 1;
+        }
+        out.truncate(end);
+    }
+    Ok(GitCommitDiff {
+        hash,
+        diff: out,
+        truncated,
+        binary,
+        files: paths,
+        files_overflow: overflow,
+    })
+}
 /// Aggregate read-only git view for `workspace_root`: branch, changed files,
 /// and the `limit` most recent commits (`limit` clamps to `1..=MAX_LOG_ENTRIES`,
 /// defaulting to [`DEFAULT_LOG_ENTRIES`] when [`None`]).
@@ -1040,6 +1384,203 @@ pub(crate) fn generate_commit_message(
     })
 }
 
+// ---------------------------------------------------------------------------
+// AI-generated commit explanation (timeline detail)
+// ---------------------------------------------------------------------------
+
+/// AI explanation of one historical commit plus whether the diff excerpt was
+/// truncated. Copy-only: the text is rendered for copying, never applied.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct CommitExplanation {
+    /// What the commit changed and why it matters, in plain language.
+    pub explanation: String,
+    /// Whether the commit diff fed to the model was cut at
+    /// [`MAX_COMMIT_EXPLAIN_BYTES`].
+    pub truncated_input: bool,
+}
+
+/// Failures for AI commit explanation: repository/commit problems or the
+/// shared AI execution failure. Both sides stay secret-free: the diff may
+/// carry user secrets, so no variant echoes caller content.
+#[derive(Debug)]
+pub(crate) enum CommitExplainError {
+    /// The commit hash was malformed or unknown, or the commit changed no
+    /// files (nothing to explain).
+    InvalidInput,
+    /// The AI request failed (unknown provider, missing credentials,
+    /// provider failure). Carries no prompt or diff content.
+    Request(RequestError),
+}
+
+impl std::fmt::Display for CommitExplainError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidInput => write!(f, "the commit diff to explain is invalid"),
+            Self::Request(_) => write!(f, "the commit explanation could not be generated"),
+        }
+    }
+}
+
+impl std::error::Error for CommitExplainError {}
+
+impl From<RequestError> for CommitExplainError {
+    fn from(err: RequestError) -> Self {
+        Self::Request(err)
+    }
+}
+
+/// Narrow prompt turning one commit's diff into a plain-language
+/// explanation. The model must reply with ONLY a short explanation: what
+/// changed and why it matters. No commands, no fixes, nothing to run.
+pub(crate) fn build_commit_explain_prompt(
+    summary_line: &str,
+    excerpt: &str,
+    truncated: bool,
+) -> String {
+    let mut prompt = String::from(
+        "Explain the git commit below in plain language.\n\
+         Reply with ONLY a short explanation: what changed and why it matters. \
+         Do not suggest commands or edits; describe only.\n",
+    );
+    if truncated {
+        prompt
+            .push_str("Note: the commit diff was truncated to fit; explain only what is shown.\n");
+    }
+    prompt.push_str("Commit: ");
+    prompt.push_str(summary_line);
+    prompt.push('\n');
+    prompt.push_str("Diff:\n");
+    prompt.push_str(excerpt);
+    prompt
+}
+
+/// Cut `text` to `max_chars` characters on a char boundary.
+fn truncate_explain_chars(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let mut end = max_chars;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].trim_end().to_string()
+}
+
+/// Coerce raw model output into a copy-only explanation: strip NULs and code
+/// fences, trim blank edges, and fall back to fixed vocabulary when nothing
+/// remains. The result is capped at [`MAX_COMMIT_EXPLANATION_CHARS`].
+pub(crate) fn sanitize_commit_explanation(raw: &str) -> String {
+    // Strip NULs upfront so the result can never carry one through.
+    let without_nul = raw.replace('\0', "");
+    let lines: Vec<&str> = without_nul
+        .lines()
+        .map(str::trim_end)
+        .filter(|line| {
+            let trimmed = line.trim();
+            trimmed != "```" && !trimmed.starts_with("```")
+        })
+        .collect();
+    let start = lines
+        .iter()
+        .position(|line| !line.trim().is_empty())
+        .unwrap_or(lines.len());
+    let end = lines
+        .iter()
+        .rposition(|line| !line.trim().is_empty())
+        .map_or(0, |index| index + 1);
+    let explanation = if start < end {
+        lines[start..end].join("\n").trim().to_string()
+    } else {
+        String::new()
+    };
+    if explanation.is_empty() {
+        return "The commit changes could not be summarized from the diff.".to_string();
+    }
+    truncate_explain_chars(&explanation, MAX_COMMIT_EXPLANATION_CHARS)
+}
+
+/// Explain one historical commit through the existing AI execution path: the
+/// commit diff (capped at [`MAX_COMMIT_EXPLAIN_BYTES`]) feeds a narrow
+/// prompt to a single text-only [`AiRequest`] executed by the shared
+/// [`RequestExecutionService`](crate::application::execution::RequestExecutionService)
+/// — the same execution boundary `send_message`, the agent-run bridge, the
+/// commit-message path, and the terminal explain path use. Credentials
+/// resolve from the OS keyring only; no new key input exists on this path,
+/// and nothing is persisted.
+///
+/// The commit diff may contain secrets: it is capped and truncated, never
+/// logged, and never echoed by [`CommitExplainError`]. The returned
+/// explanation is copy-only — no caller may feed it back into a write.
+///
+/// # Errors
+///
+/// Returns [`CommitExplainError::InvalidInput`] when the hash is malformed
+/// or unknown, or the commit changed no files;
+/// [`CommitExplainError::Request`] when AI execution fails.
+pub(crate) fn explain_commit(
+    db: &Database,
+    workspace_root: &Path,
+    raw_hash: &str,
+    provider: &str,
+    model: &str,
+) -> Result<CommitExplanation, CommitExplainError> {
+    use crate::application::execution::RequestExecutionService;
+    let (_, repo) =
+        open_workspace_repo(workspace_root).map_err(|_| CommitExplainError::InvalidInput)?;
+    let commit =
+        find_commit_by_hash(&repo, raw_hash).map_err(|_| CommitExplainError::InvalidInput)?;
+    let detail = git_commit_diff(workspace_root, &commit.id().to_string())
+        .map_err(|_| CommitExplainError::InvalidInput)?;
+    if detail.files.is_empty() {
+        return Err(CommitExplainError::InvalidInput);
+    }
+    let summary = commit
+        .summary_bytes()
+        .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+        .unwrap_or_default();
+    let summary = summary.trim();
+    let summary = if summary.is_empty() {
+        "(no message)"
+    } else {
+        summary
+    };
+    let author_sig = commit.author();
+    let author = String::from_utf8_lossy(author_sig.name_bytes());
+    let summary_line = format!("{summary} by {author}");
+    let (excerpt, truncated) = if detail.diff.len() > MAX_COMMIT_EXPLAIN_BYTES {
+        let mut end = MAX_COMMIT_EXPLAIN_BYTES;
+        while !detail.diff.is_char_boundary(end) {
+            end -= 1;
+        }
+        (detail.diff[..end].to_string(), true)
+    } else {
+        (detail.diff.clone(), detail.truncated)
+    };
+    if excerpt.trim().is_empty() {
+        return Err(CommitExplainError::InvalidInput);
+    }
+    let prompt = build_commit_explain_prompt(&summary_line, &excerpt, truncated);
+    let request = AiRequest {
+        provider: provider.to_string(),
+        model: model.to_string(),
+        messages: vec![AiMessage {
+            role: AiRole::User,
+            content: prompt,
+            attachments: Vec::new(),
+            tool_calls: Vec::new(),
+            tool_result: None,
+        }],
+        tools: Vec::new(),
+        model_config: None,
+        request_timeout: Some(DEFAULT_REQUEST_TIMEOUT),
+    };
+    let response = RequestExecutionService::new(db).execute(&request)?;
+    Ok(CommitExplanation {
+        explanation: sanitize_commit_explanation(&response.content),
+        truncated_input: truncated,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1731,5 +2272,375 @@ mod tests {
         assert!(prompt.contains("conventional commit message"));
         assert!(prompt.contains("note.txt"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -----------------------------------------------------------------------
+    // Timeline: per-commit stats, risk signals, commit diffs, explain input
+    // -----------------------------------------------------------------------
+
+    /// Write `rel` under `repo`, stage it, and commit with `message` under an
+    /// explicit author identity (the shared `commit_file` helper always signs
+    /// as `nexora-test`; timeline tests need mixed authorship).
+    fn commit_file_as(
+        repo: &git2::Repository,
+        rel: &str,
+        content: &[u8],
+        message: &str,
+        name: &str,
+        email: &str,
+    ) {
+        let workdir = repo.workdir().expect("test repo has a workdir");
+        let path = workdir.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create test parent");
+        }
+        std::fs::write(&path, content).expect("write test file");
+        let mut index = repo.index().expect("test index");
+        index.add_path(Path::new(rel)).expect("stage test file");
+        index.write().expect("write test index");
+        let tree_id = index.write_tree().expect("write test tree");
+        let tree = repo.find_tree(tree_id).expect("find test tree");
+        let signature = git2::Signature::now(name, email).expect("test signature");
+        let parents: Vec<git2::Commit<'_>> = repo
+            .head()
+            .ok()
+            .and_then(|head| head.peel_to_commit().ok())
+            .into_iter()
+            .collect();
+        let parent_refs: Vec<&git2::Commit<'_>> = parents.iter().collect();
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            message,
+            &tree,
+            &parent_refs,
+        )
+        .expect("test commit");
+    }
+
+    /// N lines of `line {i}` text for large-diff fixtures.
+    fn big_text_lines(count: usize) -> Vec<u8> {
+        use std::fmt::Write as _;
+        let mut text = String::new();
+        for i in 0..count {
+            let _ = writeln!(text, "line {i}");
+        }
+        text.into_bytes()
+    }
+
+    #[test]
+    fn timeline_stats_count_files_and_lines() {
+        let dir = temp_root();
+        let repo = init_repo(&dir);
+        commit_file(&repo, "a.txt", b"l1\nl2\n", "add a");
+        // Second commit: modify `a.txt` (one removed, two added lines) and
+        // add `b.txt` (one added line).
+        std::fs::write(dir.join("a.txt"), "l1\nl2 changed\nl3\n").expect("modify a");
+        std::fs::write(dir.join("b.txt"), "b1\n").expect("seed b");
+        let mut index = repo.index().expect("test index");
+        index.add_path(Path::new("a.txt")).expect("stage a");
+        index.add_path(Path::new("b.txt")).expect("stage b");
+        index.write().expect("write test index");
+        let tree_id = index.write_tree().expect("write test tree");
+        let tree = repo.find_tree(tree_id).expect("find test tree");
+        let head = repo
+            .head()
+            .expect("test head")
+            .peel_to_commit()
+            .expect("test commit");
+        let signature = test_signature();
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "change a and add b",
+            &tree,
+            &[&head],
+        )
+        .expect("test commit");
+        let info = git_info(&dir, None).expect("timeline reads");
+        assert_eq!(info.commits.len(), 2);
+        let newest = &info.commits[0];
+        assert_eq!(newest.message, "change a and add b");
+        assert_eq!(newest.files_changed, 2);
+        assert_eq!(newest.insertions, 3);
+        assert_eq!(newest.deletions, 1);
+        assert!(newest.risk_signals.is_empty());
+        let root = &info.commits[1];
+        assert_eq!(root.files_changed, 1);
+        assert_eq!(root.insertions, 2);
+        assert_eq!(root.deletions, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn timeline_risk_large_diff_and_many_files() {
+        // Large diff: 600 added lines in one commit.
+        let dir = temp_root();
+        let repo = init_repo(&dir);
+        commit_file(&repo, "big.txt", &big_text_lines(600), "add big file");
+        let info = git_info(&dir, None).expect("timeline reads");
+        assert_eq!(info.commits[0].risk_signals, vec!["large-diff"]);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // Many files: eleven new paths in one commit.
+        let dir = temp_root();
+        let repo = init_repo(&dir);
+        for index in 0..11 {
+            let rel = format!("many-{index}.txt");
+            let workdir = repo.workdir().expect("test repo has a workdir");
+            std::fs::write(workdir.join(&rel), "x\n").expect("seed many file");
+            let mut index_repo = repo.index().expect("test index");
+            index_repo
+                .add_path(Path::new(&rel))
+                .expect("stage many file");
+            index_repo.write().expect("write test index");
+        }
+        let tree_id = repo
+            .index()
+            .expect("test index")
+            .write_tree()
+            .expect("write test tree");
+        let tree = repo.find_tree(tree_id).expect("find test tree");
+        let signature = test_signature();
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "add many files",
+            &tree,
+            &[],
+        )
+        .expect("test commit");
+        let info = git_info(&dir, None).expect("timeline reads");
+        assert_eq!(info.commits[0].files_changed, 11);
+        assert_eq!(info.commits[0].risk_signals, vec!["many-files"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn timeline_risk_binary_and_merge_commit() {
+        // Binary content: a null byte marks the commit.
+        let dir = temp_root();
+        let repo = init_repo(&dir);
+        commit_file(&repo, "blob.bin", b"a\0b", "add binary");
+        let info = git_info(&dir, None).expect("timeline reads");
+        assert_eq!(info.commits[0].risk_signals, vec!["binary"]);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // Merge commit: two parents read `merge-commit` even with an empty
+        // tree diff against the first parent.
+        let dir = temp_root();
+        let repo = init_repo(&dir);
+        commit_file(&repo, "base.txt", b"base\n", "base commit");
+        commit_file(&repo, "side.txt", b"side\n", "side commit");
+        let second = repo
+            .head()
+            .expect("test head")
+            .peel_to_commit()
+            .expect("test commit");
+        let first = second.parent(0).expect("test parent");
+        let tree = second.tree().expect("test tree");
+        let signature = test_signature();
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "merge side",
+            &tree,
+            &[&second, &first],
+        )
+        .expect("test merge");
+        let info = git_info(&dir, None).expect("timeline reads");
+        assert_eq!(info.commits[0].risk_signals, vec!["merge-commit"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn timeline_risk_unfamiliar_author() {
+        // Unfamiliar author: two commits by alice, one by bob — only bob's
+        // commit is flagged (order-independent lookup).
+        let dir = temp_root();
+        let repo = init_repo(&dir);
+        commit_file_as(
+            &repo,
+            "a.txt",
+            b"a\n",
+            "alice one",
+            "alice",
+            "a@example.com",
+        );
+        commit_file_as(
+            &repo,
+            "b.txt",
+            b"b\n",
+            "alice two",
+            "alice",
+            "a@example.com",
+        );
+        commit_file_as(&repo, "c.txt", b"c\n", "bob one", "bob", "b@example.com");
+        let info = git_info(&dir, None).expect("timeline reads");
+        assert_eq!(info.commits.len(), 3);
+        for entry in &info.commits {
+            if entry.author == "bob" {
+                assert_eq!(entry.risk_signals, vec!["unfamiliar-author"]);
+            } else {
+                assert!(entry.risk_signals.is_empty(), "alice: {entry:?}");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn timeline_risk_signal_order_is_fixed() {
+        // Signal order is fixed: one commit holding a large text change plus
+        // a binary file reads `large-diff` before `binary`.
+        let dir = temp_root();
+        let repo = init_repo(&dir);
+        let workdir = repo.workdir().expect("test repo has a workdir");
+        std::fs::write(workdir.join("big.txt"), big_text_lines(600)).expect("seed big");
+        std::fs::write(workdir.join("blob.bin"), b"a\0b").expect("seed binary");
+        let mut index = repo.index().expect("test index");
+        index.add_path(Path::new("big.txt")).expect("stage big");
+        index.add_path(Path::new("blob.bin")).expect("stage binary");
+        index.write().expect("write test index");
+        let tree_id = index.write_tree().expect("write test tree");
+        let tree = repo.find_tree(tree_id).expect("find test tree");
+        let signature = test_signature();
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "big plus binary",
+            &tree,
+            &[],
+        )
+        .expect("test commit");
+        let info = git_info(&dir, None).expect("timeline reads");
+        assert_eq!(info.commits[0].risk_signals, vec!["large-diff", "binary"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn commit_diff_reads_unified_text_and_rejects_bad_hashes() {
+        let dir = temp_root();
+        let repo = init_repo(&dir);
+        commit_file(&repo, "note.txt", b"line one\nline two\n", "add note");
+        commit_file(
+            &repo,
+            "note.txt",
+            b"line one\nline two changed\n",
+            "update note",
+        );
+        let info = git_info(&dir, None).expect("timeline reads");
+        let hash = info.commits[0].hash.clone();
+        let detail = git_commit_diff(&dir, hash.as_str()).expect("commit diff reads");
+        assert_eq!(detail.hash, hash);
+        assert_eq!(detail.files, vec!["note.txt"]);
+        assert_eq!(detail.files_overflow, 0);
+        assert!(!detail.binary);
+        assert!(!detail.truncated);
+        assert!(detail.diff.contains("-line two"), "diff: {}", detail.diff);
+        assert!(
+            detail.diff.contains("+line two changed"),
+            "diff: {}",
+            detail.diff
+        );
+
+        // Malformed hashes (short, non-hex, empty, traversal-shaped) and
+        // well-formed but unknown hashes all fail with fixed vocabulary.
+        for bad in [
+            String::new(),
+            "   ".to_string(),
+            "abc".to_string(),
+            "a".repeat(7),
+            "z".repeat(40),
+            "0".repeat(40),
+            "../evil".to_string(),
+        ] {
+            let err = git_commit_diff(&dir, bad.as_str()).expect_err("bad hash must be denied");
+            assert_eq!(err, VersionControlError::GitFailed, "input: {bad:?}");
+            assert_eq!(format!("{err}"), "the git operation failed");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn commit_explain_rejects_commits_without_changes() {
+        // A merge commit whose tree equals its first parent changes no files:
+        // explanation refuses with fixed vocabulary before any provider is
+        // touched (no keyring needed).
+        let dir = temp_root();
+        let repo = init_repo(&dir);
+        commit_file(&repo, "base.txt", b"base\n", "base commit");
+        commit_file(&repo, "side.txt", b"side\n", "side commit");
+        let second = repo
+            .head()
+            .expect("test head")
+            .peel_to_commit()
+            .expect("test commit");
+        let first = second.parent(0).expect("test parent");
+        let tree = second.tree().expect("test tree");
+        let signature = test_signature();
+        let oid = repo
+            .commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                "merge side",
+                &tree,
+                &[&second, &first],
+            )
+            .expect("test merge");
+        let db = crate::infrastructure::database::in_memory_database();
+        let err = explain_commit(&db, &dir, oid.to_string().as_str(), "openai", "m")
+            .expect_err("empty commit diff must be refused");
+        assert!(
+            matches!(err, CommitExplainError::InvalidInput),
+            "unexpected: {err:?}"
+        );
+        assert_eq!(format!("{err}"), "the commit diff to explain is invalid");
+        // Malformed hashes refuse the same way.
+        let err =
+            explain_commit(&db, &dir, "nope", "openai", "m").expect_err("bad hash must be refused");
+        assert!(matches!(err, CommitExplainError::InvalidInput));
+        assert_eq!(
+            format!(
+                "{}",
+                CommitExplainError::Request(
+                    crate::application::execution::RequestError::UnknownProvider {
+                        name: "x".to_string(),
+                    }
+                )
+            ),
+            "the commit explanation could not be generated"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn commit_explain_prompt_flags_truncation_and_sanitizer_caps() {
+        let prompt = build_commit_explain_prompt("abc by alice", "diff text", false);
+        assert!(prompt.contains("what changed"));
+        assert!(prompt.contains("abc by alice"));
+        assert!(prompt.contains("diff text"));
+        assert!(!prompt.contains("truncated to fit"));
+        let prompt = build_commit_explain_prompt("abc by alice", "diff text", true);
+        assert!(prompt.contains("truncated to fit"));
+
+        let explanation = sanitize_commit_explanation("```\nThe commit adds logging.\n```");
+        assert_eq!(explanation, "The commit adds logging.");
+        let explanation = sanitize_commit_explanation("Sure! The commit adds logging.");
+        assert_eq!(explanation, "Sure! The commit adds logging.");
+        let explanation = sanitize_commit_explanation("");
+        assert!(!explanation.is_empty());
+        let explanation = sanitize_commit_explanation("   \n```\n  ");
+        assert!(!explanation.is_empty());
+        let explanation = sanitize_commit_explanation("a\0b");
+        assert!(!explanation.contains('\0'));
+        let long = "x".repeat(MAX_COMMIT_EXPLANATION_CHARS + 100);
+        let explanation = sanitize_commit_explanation(&long);
+        assert!(explanation.chars().count() <= MAX_COMMIT_EXPLANATION_CHARS);
     }
 }

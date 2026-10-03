@@ -911,12 +911,18 @@ export function flagsStatus(): Promise<FlagsStatus> {
   return invoke<FlagsStatus>("flags_status");
 }
 
-// ---- Version control (read-only git base) ------------------------------
-// Read-only git inspection for the opened workspace: branch + changed files
-// + recent commits in one `git_info` round trip, per-file unified diffs via
-// `git_file_diff` (lazy, server-side capped with a truncation notice).
+// ---- Version control (git inspection, guarded writes, timeline) --------
+// Git inspection for the opened workspace: branch + changed files + recent
+// commits (with per-commit stats and risk signals) in one `git_info` round
+// trip, per-file unified diffs via `git_file_diff` (lazy, server-side capped
+// with a truncation notice), per-commit diffs via `git_commit_diff` (lazy,
+// same cap shape), guarded writes (`git_stage` / `git_unstage` / `git_commit`
+// / `git_push`, each with an explicit per-call confirmation), and two AI
+// assists through the existing execution path (`git_generate_commit_message`
+// for staged changes, `git_explain_commit` for one historical commit — both
+// keyring-only, nothing persisted, copy-only results).
 // Payloads stay snake_case like every other backend struct; command args are
-// camelCase (`limit`, `path`). No staging/committing/pushing exists here.
+// camelCase (`limit`, `path`, `hash`, `commitHash`).
 
 /** One changed file: repository-relative path plus a fixed-vocabulary
  * status (`"modified"`, `"staged"`, `"untracked"`, `"deleted"`, `"renamed"`). */
@@ -925,13 +931,20 @@ export interface GitFileStatus {
   status: string;
 }
 
-/** One recent commit: full hash plus summary, author name, and Unix-seconds
- * time. The message is the commit summary (first line) only. */
+/** One recent commit: full hash plus summary, author name, Unix-seconds
+ * time, per-commit file statistics, and heuristic risk signals. The message
+ * is the commit summary (first line) only. `risk_signals` carries zero or
+ * more of the fixed vocabulary `"large-diff"`, `"many-files"`, `"binary"`,
+ * `"merge-commit"`, `"unfamiliar-author"` (computed locally, no AI). */
 export interface GitCommit {
   hash: string;
   message: string;
   author: string;
   time: number; // seconds since unix epoch
+  files_changed: number;
+  insertions: number;
+  deletions: number;
+  risk_signals: string[];
 }
 
 /** Aggregate read-only git view: current branch (`null` when detached or
@@ -966,6 +979,27 @@ export function gitInfo(limit?: number): Promise<GitInfo> {
  * with a fixed-vocabulary error. */
 export function gitFileDiff(path: string): Promise<GitFileDiff> {
   return invoke<GitFileDiff>("git_file_diff", { path });
+}
+
+/** One historical commit's unified diff (`git_commit_diff`): the full hash
+ * as resolved, the capped diff text, and the changed repository-relative
+ * paths (sorted, capped server-side with the remainder in
+ * `files_overflow`). Binary deltas are omitted with a placeholder line;
+ * `binary` reports whether any delta was binary. */
+export interface GitCommitDiff {
+  hash: string;
+  diff: string;
+  truncated: boolean;
+  binary: boolean;
+  files: string[];
+  files_overflow: number;
+}
+
+/** Load one historical commit's unified diff via `git_commit_diff`. `hash`
+ * is the full hash from `GitInfo.commits` (prefixes are never guessed);
+ * malformed or unknown hashes fail with a fixed-vocabulary error. */
+export function gitCommitDiff(hash: string): Promise<GitCommitDiff> {
+  return invoke<GitCommitDiff>("git_commit_diff", { hash });
 }
 
 /** Stage `paths` (repository-relative) into the index via `git_stage`.
@@ -1081,6 +1115,31 @@ export function gitGenerateCommitMessage(
   model: string,
 ): Promise<GeneratedCommitMessage> {
   return invoke<GeneratedCommitMessage>("git_generate_commit_message", {
+    provider,
+    model,
+  });
+}
+
+/** AI explanation of one historical commit (`git_explain_commit`).
+ * `explanation` says what changed and why it matters; it is copy-only text
+ * (never auto-applied — the user copies it manually). `truncated_input`
+ * reports whether the commit diff fed to the model was truncated
+ * server-side. */
+export interface CommitExplanation {
+  explanation: string;
+  truncated_input: boolean;
+}
+
+/** Explain one historical commit via `git_explain_commit`, using the
+ * existing AI execution path (keyring-only credentials, nothing
+ * persisted). `commitHash` is the full hash from `GitInfo.commits`. */
+export function gitExplainCommit(
+  commitHash: string,
+  provider: string,
+  model: string,
+): Promise<CommitExplanation> {
+  return invoke<CommitExplanation>("git_explain_commit", {
+    commitHash,
     provider,
     model,
   });

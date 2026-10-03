@@ -10,8 +10,9 @@
 //!   header actions ......... App.tsx:76-101 (Split toggle, Export)
 //!   tab commands ........... useConversationTabs.ts:12-28 shortcut map +
 //!                             ConversationTabs.tsx:174-203 strip actions
-//!   VCS actions ............ VersionControlPanel.tsx:235-237 Refresh,
-//!                             346-387 commit composer, 389-410 push
+//!   VCS actions ............ VersionControlPanel.tsx (tabs: Working tree +
+//!                             Timeline; Refresh, commit composer, push,
+//!                             commit explain)
 //!   activity & health ....... ActivityHealthPanel.tsx (read-only feed +
 //!                             project snapshot; go.activity/go.health deep
 //!                             links raise the panel's tab request)
