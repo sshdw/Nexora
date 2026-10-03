@@ -295,11 +295,12 @@ export default function SettingsView({
   const [flagsError, setFlagsError] = useState<string | null>(null);
 
   // Power-key values (autonomy default, recent folders, flags, routing
-  // profiles, MCP servers, agent preset) load once via the existing
-  // get_setting command — no backend change.
+  // profiles, MCP servers, agent preset) load on mount and re-sync whenever
+  // the panel regains visibility: ConversationView can persist autonomy
+  // while Settings is open, which would otherwise leave this copy stale.
   useEffect(() => {
     let cancelled = false;
-    void (async () => {
+    const load = async () => {
       try {
         const results = await Promise.all([
           getSetting(AUTONOMY_KEY),
@@ -331,9 +332,17 @@ export default function SettingsView({
           setRecentFolders([]);
         }
       }
-    })();
+    };
+    void load();
+    const resync = () => {
+      if (document.visibilityState === "visible") void load();
+    };
+    window.addEventListener("focus", resync);
+    document.addEventListener("visibilitychange", resync);
     return () => {
       cancelled = true;
+      window.removeEventListener("focus", resync);
+      document.removeEventListener("visibilitychange", resync);
     };
   }, []);
 
@@ -468,6 +477,7 @@ export default function SettingsView({
   };
 
   const handleAutonomyChange = async (mode: AutonomyMode) => {
+    const previous = autonomy;
     setAutonomy(mode);
     setAutonomyError(null);
     try {
@@ -475,6 +485,9 @@ export default function SettingsView({
       // the conversation header owns the live-switch (ConversationView).
       await setSetting(AUTONOMY_KEY, mode);
     } catch (e) {
+      // Roll back the optimistic control: a rejected write must not leave
+      // the selector showing a mode that was never persisted.
+      setAutonomy(previous);
       setAutonomyError(
         typeof e === "object" && e !== null && "message" in e
           ? String((e as { message: unknown }).message)
@@ -728,6 +741,11 @@ export default function SettingsView({
             <p className="nex-settings-hint">
               Empty = no limit. 1 USD = 1000000 micro-USD. Applies to new runs.
             </p>
+            {spendLimit.error && (
+              <p className="nex-settings-error nex-fade-in" role="alert">
+                {spendLimit.error.message}
+              </p>
+            )}
           </div>
         </section>
       );
@@ -1090,12 +1108,12 @@ export default function SettingsView({
               </p>
             )}
           </div>
-          {visibleSections.map((id) => (
+          {SECTION_ORDER.map((id) => (
             <M3RailItem
               key={id}
               label={SECTION_TITLES[id]}
-              active={matches === null && section === id}
-              aria-current={matches === null && section === id ? "page" : undefined}
+              active={section === id}
+              aria-current={section === id ? "page" : undefined}
               onClick={() => handleNavSelect(id)}
             >
               {SECTION_TITLES[id]}
