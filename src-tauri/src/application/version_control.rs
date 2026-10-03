@@ -16,8 +16,9 @@
 //!   no parent references, no `.git` components, no null bytes, bounded
 //!   length), a lexical [`is_within_workspace`](crate::application::agent::tools::is_within_workspace)
 //!   prefix check against the canonical repository workdir, and a
-//!   canonicalize-and-recheck backstop for existing symlinks. Traversal
-//!   attempts fail with [`VersionControlError::InvalidPath`].
+//!   canonicalize-and-recheck backstop for symlinks (including symlinked
+//!   intermediate directories, resolved via the nearest existing ancestor).
+//!   Traversal attempts fail with [`VersionControlError::InvalidPath`].
 //! - Failures are secret-free: [`VersionControlError`] carries no payload, so
 //!   formatting it can never leak diff content (which may contain user
 //!   secrets), credentials, SQL, or file content. The command layer maps it to
@@ -45,6 +46,11 @@ pub(crate) const MAX_LOG_ENTRIES: u32 = 100;
 
 /// Default number of commits returned when the caller passes no limit.
 pub(crate) const DEFAULT_LOG_ENTRIES: u32 = 20;
+
+/// Largest changed-file list returned by `git_info` before it is capped with
+/// an overflow count. Untracked dumps (an un-ignored `node_modules`, a
+/// vendored tree) can otherwise make the list slow and unbounded.
+pub(crate) const MAX_STATUS_FILES: usize = 500;
 
 /// Longest diff `path` argument accepted (matches the workspace-root bound).
 const MAX_PATH_LEN: usize = 1024;
@@ -111,8 +117,11 @@ pub(crate) struct GitCommit {
 pub(crate) struct GitInfo {
     /// Current branch short name, or [`None`] when detached/unborn.
     pub branch: Option<String>,
-    /// Changed files, sorted by path.
+    /// Changed files, sorted by path, capped at [`MAX_STATUS_FILES`].
     pub files: Vec<GitFileStatus>,
+    /// Number of changed files omitted beyond [`MAX_STATUS_FILES`] (a count
+    /// only — never file content, so it stays secret-free).
+    pub files_overflow: usize,
     /// Recent commits, newest first.
     pub commits: Vec<GitCommit>,
 }
@@ -206,12 +215,14 @@ fn current_branch(repo: &git2::Repository) -> Option<String> {
 }
 
 /// Read the changed-file list (staged, worktree, and untracked), sorted by
-/// path.
+/// path and capped at [`MAX_STATUS_FILES`] with an overflow count.
 ///
 /// # Errors
 ///
 /// Returns [`VersionControlError::GitFailed`] when the status read fails.
-fn read_status(repo: &git2::Repository) -> Result<Vec<GitFileStatus>, VersionControlError> {
+fn read_status(
+    repo: &git2::Repository,
+) -> Result<(Vec<GitFileStatus>, usize), VersionControlError> {
     let mut opts = git2::StatusOptions::new();
     opts.include_untracked(true)
         .recurse_untracked_dirs(true)
@@ -235,7 +246,9 @@ fn read_status(repo: &git2::Repository) -> Result<Vec<GitFileStatus>, VersionCon
         })
         .collect();
     files.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(files)
+    let overflow = files.len().saturating_sub(MAX_STATUS_FILES);
+    files.truncate(MAX_STATUS_FILES);
+    Ok((files, overflow))
 }
 
 /// Read up to `limit` recent commits from `HEAD`, newest first. A repository
@@ -285,9 +298,11 @@ pub(crate) fn git_info(
     let count = limit
         .unwrap_or(DEFAULT_LOG_ENTRIES)
         .clamp(1, MAX_LOG_ENTRIES) as usize;
+    let (files, files_overflow) = read_status(&repo)?;
     Ok(GitInfo {
         branch: current_branch(&repo),
-        files: read_status(&repo)?,
+        files,
+        files_overflow,
         commits: read_log(&repo, count)?,
     })
 }
@@ -360,16 +375,31 @@ pub(crate) fn git_file_diff(
     if !is_within_workspace(&canon_repo, &joined) {
         return Err(VersionControlError::InvalidPath);
     }
-    // Backstop for existing symlinks: a link escaping the workdir refuses,
-    // even though the lexical check above passed.
-    if let Ok(meta) = std::fs::symlink_metadata(&joined) {
-        if meta.file_type().is_symlink() {
-            let canon = joined
-                .canonicalize()
-                .map(strip_verbatim)
-                .map_err(|_| VersionControlError::InvalidPath)?;
-            if !is_within_workspace(&canon_repo, &canon) {
-                return Err(VersionControlError::InvalidPath);
+    // Backstop for symlinks anywhere along the path (including symlinked
+    // intermediate directories): resolve the nearest existing ancestor
+    // through the filesystem, re-attach the unresolved tail, and re-check
+    // containment. A request like `link/secret` where `link` escapes the
+    // workdir refuses even though the lexical check above passed.
+    {
+        let mut ancestor: &Path = &joined;
+        loop {
+            if std::fs::symlink_metadata(ancestor).is_ok() {
+                let canon = ancestor
+                    .canonicalize()
+                    .map(strip_verbatim)
+                    .map_err(|_| VersionControlError::InvalidPath)?;
+                let tail = joined
+                    .strip_prefix(ancestor)
+                    .map_err(|_| VersionControlError::InvalidPath)?;
+                let resolved = canon.join(tail);
+                if !is_within_workspace(&canon_repo, &resolved) {
+                    return Err(VersionControlError::InvalidPath);
+                }
+                break;
+            }
+            match ancestor.parent() {
+                Some(parent) if !parent.as_os_str().is_empty() => ancestor = parent,
+                _ => break,
             }
         }
     }
@@ -659,6 +689,84 @@ mod tests {
         assert_eq!(info.commits.len(), 1);
         let info = git_info(&dir, Some(10_000)).expect("huge limit clamps");
         assert_eq!(info.commits.len(), 5);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn symlinked_intermediate_dir_is_denied() {
+        let dir = temp_root();
+        let _repo = init_repo(&dir);
+        let outside = temp_root();
+        std::fs::write(outside.join("secret.txt"), "outside").expect("seed outside file");
+        let link = dir.join("link");
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_dir(&outside, &link).is_ok();
+        #[cfg(not(windows))]
+        let made = std::os::unix::fs::symlink(&outside, &link).is_ok();
+        if !made {
+            // Symlink creation needs elevated privilege on some setups
+            // (Windows without Developer Mode): skip gracefully.
+            let _ = std::fs::remove_dir_all(&dir);
+            let _ = std::fs::remove_dir_all(&outside);
+            return;
+        }
+        // A file reached through the escaping link refuses ...
+        let err = git_file_diff(&dir, "link/secret.txt").expect_err("escaping link must be denied");
+        assert_eq!(err, VersionControlError::InvalidPath);
+        // ... and so does an absent path routed through it (the nearest
+        // existing ancestor — the link itself — already escapes).
+        let err =
+            git_file_diff(&dir, "link/missing.txt").expect_err("escaping link must be denied");
+        assert_eq!(err, VersionControlError::InvalidPath);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn untracked_tree_is_capped_with_overflow_count() {
+        let dir = temp_root();
+        let _repo = init_repo(&dir);
+        let total = MAX_STATUS_FILES + 37;
+        for index in 0..total {
+            let name = format!("bulk-{index:05}.txt");
+            std::fs::write(dir.join(&name), "bulk").expect("seed bulk untracked");
+        }
+        let info = git_info(&dir, None).expect("capped status reads");
+        assert_eq!(info.files.len(), MAX_STATUS_FILES);
+        assert_eq!(info.files_overflow, 37);
+        // The cap keeps the first entries by sort order (zero-padded names
+        // sort numerically).
+        assert_eq!(info.files[0].path, "bulk-00000.txt");
+        assert_eq!(info.files[MAX_STATUS_FILES - 1].path, "bulk-00499.txt");
+        assert!(info.files.iter().all(|file| file.status == "untracked"));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // Small trees report no overflow.
+        let dir = temp_root();
+        let _repo = init_repo(&dir);
+        std::fs::write(dir.join("note.txt"), "hello").expect("seed untracked");
+        let info = git_info(&dir, None).expect("small status reads");
+        assert_eq!(info.files.len(), 1);
+        assert_eq!(info.files_overflow, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn detached_head_reports_no_branch_but_reads_commits() {
+        let dir = temp_root();
+        let repo = init_repo(&dir);
+        commit_file(&repo, "note.txt", b"hello", "add note");
+        let oid = repo
+            .head()
+            .expect("test head")
+            .peel_to_commit()
+            .expect("test commit")
+            .id();
+        repo.set_head_detached(oid).expect("detach test head");
+        let info = git_info(&dir, None).expect("detached info reads");
+        assert!(info.branch.is_none());
+        assert_eq!(info.commits.len(), 1);
+        assert_eq!(info.commits[0].message, "add note");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -899,10 +899,13 @@ export interface GitCommit {
 }
 
 /** Aggregate read-only git view: current branch (`null` when detached or
- * unborn), changed files sorted by path, and recent commits newest-first. */
+ * unborn), changed files sorted by path, and recent commits newest-first.
+ * `files` is capped server-side (500, sorted order) with any remainder
+ * reported in `files_overflow` (a count only, never content). */
 export interface GitInfo {
   branch: string | null;
   files: GitFileStatus[];
+  files_overflow: number;
   commits: GitCommit[];
 }
 
