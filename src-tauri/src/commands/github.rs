@@ -9,13 +9,22 @@
 //! [`CommandError`] values. No business logic lives here beyond that
 //! translation.
 //!
-//! Command-shape decision (one feature area, TWO commands — the area's
-//! maximum): `gh_issues` and `gh_pulls` stay separate because the panel's
-//! kind tabs invoke them independently with their own state filter (`open` /
-//! `closed` / `all`), exactly like the VCS panel's separate lazy diff
-//! commands. Both are pure GETs against `https://api.github.com` — there is
-//! no commenting, labeling, or merging anywhere on this path (read-only; a
-//! static test pins GET-only on the service side).
+//! Command-shape decision (one feature area, THREE commands): `gh_issues` and
+//! `gh_pulls` stay separate because the panel's kind tabs invoke them
+//! independently with their own state filter (`open` / `closed` / `all`),
+//! exactly like the VCS panel's separate lazy diff commands. `gh_actions`
+//! is the area's ONE new command for this task (the allowed maximum): a
+//! single no-arg batch call returning the recent workflow runs with failing
+//! runs expanded (failed jobs + capped, scrubbed log tails), so the panel
+//! needs no per-run/per-job round trips. Both are pure GETs against
+//! `https://api.github.com` — there is no commenting, labeling, merging,
+//! re-running, or any other write anywhere on this path (read-only; static
+//! tests pin GET-only on the service side).
+//!
+//! Fix-loop entry: the panel turns a failing run into a prefilled
+//! task-manager task through the EXISTING task creation command (user
+//! confirms every step; approval/budget inherited) — this module creates no
+//! task and starts no run.
 //!
 //! Auth: the token resolves inside the backend from the OS keyring entry
 //! `github` and never crosses IPC. A missing token is not an error: the
@@ -29,7 +38,7 @@
 
 use tauri::{AppHandle, Manager};
 
-use crate::application::github::{GhIssuesResponse, GhPullsResponse};
+use crate::application::github::{GhActionsResponse, GhIssuesResponse, GhPullsResponse};
 use crate::application::workspace::resolve_workspace_root;
 use crate::infrastructure::database::Database;
 
@@ -110,6 +119,46 @@ pub(crate) async fn gh_pulls(
     }
 }
 
+/// List the workspace `origin` repo's recent workflow runs with failing runs
+/// expanded (failed jobs + capped, secret-scrubbed log tails each).
+/// Read-only: one batch GET round (runs envelope, per-failure jobs
+/// envelopes, per-failure text logs) with the rate-limit snapshot; an
+/// exhausted quota resolves to an empty list with `rate_limited: true`,
+/// never an error dump. The fix loop lives in the panel: it prefills a task
+/// through the existing task-manager creation command — this command creates
+/// and starts nothing.
+///
+/// Like the sibling commands, the blocking HTTP round trips run on the
+/// runtime's dedicated blocking pool via
+/// [`tauri::async_runtime::spawn_blocking`]: plain OS threads with no ambient
+/// async context.
+#[tauri::command]
+pub(crate) async fn gh_actions(app: AppHandle) -> Result<GhActionsResponse, CommandError> {
+    // Owned handle so the workspace root and managed state can be reached
+    // from the blocking thread (borrowed `State<'_, _>` cannot cross into
+    // `'static` work).
+    let handle = app.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let fallback = default_root(&handle)?;
+        let db = handle.state::<Database>();
+        let root = resolve_workspace_root(db.inner(), &fallback);
+        crate::application::github::list_actions(&root).map_err(CommandError::from)
+    })
+    .await;
+    match outcome {
+        Ok(result) => result,
+        Err(err) => {
+            // Only reachable if the blocking task panicked: report a safe,
+            // classified failure instead of leaving the promise dangling.
+            log::error!("gh_actions blocking task failed: {err}");
+            Err(CommandError::new(
+                super::error::ErrorKind::Request,
+                "the GitHub workflow runs could not be listed",
+            ))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,6 +212,32 @@ mod tests {
             assert!(
                 !SOURCE.contains(needle),
                 "commands/github.rs must not write or spawn, found {needle:?}"
+            );
+        }
+    }
+
+    /// The fail-loop batch command exists exactly once and delegates to the
+    /// Actions service (`list_actions`) — the panel's fix loop prefills a
+    /// task through the existing task-manager creation command, so this
+    /// module must never mention task creation or run starting.
+    #[test]
+    fn gh_actions_command_delegates_to_the_actions_service() {
+        assert!(
+            SOURCE.contains("gh_actions"),
+            "the gh_actions command must exist"
+        );
+        assert!(
+            SOURCE.contains("list_actions"),
+            "gh_actions must delegate to the Actions service"
+        );
+        for needle in [
+            concat!("create", "_task"),
+            concat!("start_task", "_run"),
+            concat!("start_agent", "_run"),
+        ] {
+            assert!(
+                !SOURCE.contains(needle),
+                "commands/github.rs must not create tasks or start runs, found {needle:?}"
             );
         }
     }

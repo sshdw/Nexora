@@ -31,6 +31,19 @@
 //! `gh_pulls` stay separate because the panel's kind tabs invoke them
 //! independently with their own state filter, exactly like the VCS panel's
 //! separate lazy diff commands.
+//!
+//! Actions fail-loop extension (read-only CI surface for the same panel):
+//! [`list_actions`] reports the recent workflow runs through three GET-only
+//! endpoints — the runs envelope (`GET .../actions/runs`), the per-run jobs
+//! envelope (`GET .../actions/runs/{run_id}/jobs`, fetched only for failing
+//! runs), and the per-job TEXT log (`GET .../actions/jobs/{job_id}/logs`,
+//! redirect-following download — deliberately not the per-run ZIP, which
+//! would need a zip dependency for a 200-line tail). Each failed job keeps
+//! its failed step names plus a capped tail (last [`LOG_TAIL_LINES`] lines
+//! under [`LOG_MAX_CHARS`] chars) scrubbed by [`redact_secrets`], since CI
+//! logs may echo secrets. The fix loop creates a task-manager task prefilled
+//! with the failure context (existing task path — approval/budget inherited);
+//! there is no auto-fix and no re-run (no POST anywhere on this path).
 
 use std::path::Path;
 use std::time::Duration;
@@ -51,6 +64,28 @@ const GITHUB_API_BASE: &str = "https://api.github.com";
 
 /// One page of at most this many items (`per_page` + a defensive cut).
 pub(crate) const MAX_ITEMS: usize = 50;
+
+/// Workflow runs listed per `gh_actions` call (`per_page` + defensive cut).
+pub(crate) const MAX_RUNS: usize = 20;
+
+/// Failing runs expanded with jobs/logs per `gh_actions` call (the rest
+/// render as metadata rows pointing at GitHub).
+pub(crate) const MAX_FAILED_RUNS_EXPANDED: usize = 5;
+
+/// Jobs fetched per expanded run (`per_page` + defensive cut), of which at
+/// most [`MAX_FAILED_JOBS_KEPT`] failed jobs are kept.
+const MAX_JOBS_FETCHED: usize = 30;
+pub(crate) const MAX_FAILED_JOBS_KEPT: usize = 5;
+
+/// Log tail: the last this many lines of a failed job's text log.
+pub(crate) const LOG_TAIL_LINES: usize = 200;
+
+/// Log tail: at most this many chars (cut from the front when longer).
+pub(crate) const LOG_MAX_CHARS: usize = 24_000;
+
+/// Oversized text-log downloads keep only their last this many bytes (the
+/// failure is at the tail) before decoding.
+const LOG_DOWNLOAD_BYTES: usize = 512_000;
 
 /// Item bodies longer than this (chars) are cut server-side with
 /// `body_truncated: true`.
@@ -173,6 +208,64 @@ pub(crate) struct GhPullsResponse {
     pub rate_limit: GhRateLimit,
 }
 
+/// One failed CI job inside a failing workflow run: fixed-vocabulary
+/// metadata, the failed step names (at most 10), and the capped,
+/// secret-scrubbed log tail. `log_unavailable` means the log was expired or
+/// never uploaded (empty download) or its fetch failed — the panel points
+/// at GitHub instead. `log_redacted` flags a scrubbed excerpt so the panel
+/// can warn.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct GhActionJob {
+    pub id: u64,
+    pub run_id: u64,
+    pub name: String,
+    pub status: String,
+    pub conclusion: String,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub html_url: Option<String>,
+    pub failed_steps: Vec<String>,
+    pub log_excerpt: String,
+    pub log_truncated: bool,
+    pub log_unavailable: bool,
+    pub log_redacted: bool,
+}
+
+/// One workflow run: fixed-vocabulary metadata plus the failed jobs (only
+/// failing runs expand — at most [`MAX_FAILED_JOBS_KEPT`], with
+/// `jobs_truncated` marking the remainder). Non-failing runs carry an empty
+/// `failed_jobs` list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct GhActionRun {
+    pub id: u64,
+    pub name: String,
+    pub head_branch: Option<String>,
+    pub head_sha: Option<String>,
+    pub event: String,
+    pub status: String,
+    pub conclusion: String,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub html_url: Option<String>,
+    pub failed_jobs: Vec<GhActionJob>,
+    pub jobs_truncated: bool,
+}
+
+/// One `gh_actions` response: the resolved repo, the recent runs (at most
+/// [`MAX_RUNS`], newest first per the API), the API's `total_count`, whether
+/// a token was sent, and the rate-limit snapshot. A quota-exhausted API
+/// answers with empty `runs` and `rate_limited: true`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct GhActionsResponse {
+    pub owner: String,
+    pub repo: String,
+    pub runs: Vec<GhActionRun>,
+    pub total_runs: u64,
+    pub authenticated: bool,
+    pub rate_limited: bool,
+    pub rate_limit: GhRateLimit,
+}
+
 /// Minimal GitHub item shape: only the fields the panel renders. Unknown or
 /// missing fields fall back to fixed vocabulary — the panel never invents
 /// content.
@@ -224,6 +317,72 @@ struct RawLabel {
 struct RawRef {
     #[serde(default, rename = "ref")]
     ref_name: Option<String>,
+}
+
+/// Minimal workflow-runs envelope: only the fields the panel renders.
+#[derive(Debug, Deserialize)]
+struct RawRuns {
+    #[serde(default)]
+    total_count: u64,
+    #[serde(default)]
+    workflow_runs: Vec<RawRun>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawRun {
+    id: u64,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    head_branch: Option<String>,
+    #[serde(default)]
+    head_sha: Option<String>,
+    #[serde(default)]
+    event: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    conclusion: Option<String>,
+    #[serde(default)]
+    created_at: Option<String>,
+    #[serde(default)]
+    updated_at: Option<String>,
+    #[serde(default)]
+    html_url: Option<String>,
+}
+
+/// Minimal jobs envelope for one expanded run.
+#[derive(Debug, Deserialize)]
+struct RawJobs {
+    #[serde(default)]
+    jobs: Vec<RawJob>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawJob {
+    id: u64,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    conclusion: Option<String>,
+    #[serde(default)]
+    started_at: Option<String>,
+    #[serde(default)]
+    completed_at: Option<String>,
+    #[serde(default)]
+    html_url: Option<String>,
+    #[serde(default)]
+    steps: Vec<RawStep>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawStep {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    conclusion: Option<String>,
 }
 
 /// Parse an `origin` remote URL into `(owner, repo)`.
@@ -540,6 +699,414 @@ pub(crate) fn list_pulls(
     })
 }
 
+/// Failed-run vocabulary: conclusions that make a run a fix-loop candidate.
+/// `success` / `neutral` / `skipped` need no fix; `stale` is a scheduling
+/// artefact, not a failure; `unknown` (unparseable API text) never expands —
+/// the panel points at GitHub instead.
+fn is_failed_conclusion(conclusion: &str) -> bool {
+    matches!(
+        conclusion,
+        "failure" | "timed_out" | "cancelled" | "action_required"
+    )
+}
+
+/// A run expands (jobs + log tails) only when it completed with a failed
+/// conclusion. In-flight runs render as metadata rows.
+fn run_is_failed(run: &GhActionRun) -> bool {
+    run.status == "completed" && is_failed_conclusion(&run.conclusion)
+}
+
+/// Keep only allowlisted run conclusions; anything else renders as `unknown`
+/// rather than echoing raw text.
+fn clean_conclusion(conclusion: Option<String>) -> String {
+    match conclusion.as_deref() {
+        Some(
+            "success" | "failure" | "neutral" | "cancelled" | "skipped" | "timed_out"
+            | "action_required" | "stale",
+        ) => conclusion.unwrap_or_default(),
+        _ => "unknown".to_string(),
+    }
+}
+
+/// Keep only allowlisted run/job statuses; anything else renders as `unknown`.
+fn clean_run_status(status: Option<String>) -> String {
+    match status.as_deref() {
+        Some("queued" | "in_progress" | "completed" | "requested" | "waiting" | "pending") => {
+            status.unwrap_or_default()
+        }
+        _ => "unknown".to_string(),
+    }
+}
+
+/// Workflow trigger events are open vocabulary (`push`, `pull_request`,
+/// ...): echo the trimmed value capped at 64 chars, `unknown` when empty.
+fn clean_event(event: Option<String>) -> String {
+    let event = event.unwrap_or_default();
+    let trimmed = event.trim();
+    if trimmed.is_empty() {
+        return "unknown".to_string();
+    }
+    trimmed.chars().take(64).collect()
+}
+
+fn to_action_run(raw: RawRun) -> GhActionRun {
+    GhActionRun {
+        id: raw.id,
+        name: clean_title(raw.name),
+        head_branch: raw.head_branch,
+        head_sha: raw.head_sha,
+        event: clean_event(raw.event),
+        status: clean_run_status(raw.status),
+        conclusion: clean_conclusion(raw.conclusion),
+        created_at: raw.created_at,
+        updated_at: raw.updated_at,
+        html_url: raw.html_url,
+        failed_jobs: Vec::new(),
+        jobs_truncated: false,
+    }
+}
+
+/// Failed step names of one job (at most 10, each capped at 120 chars).
+fn failed_step_names(steps: Vec<RawStep>) -> Vec<String> {
+    steps
+        .into_iter()
+        .filter(|step| step.conclusion.as_deref().is_some_and(is_failed_conclusion))
+        .filter_map(|step| step.name)
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .map(|name| name.chars().take(120).collect::<String>())
+        .take(10)
+        .collect()
+}
+
+/// Keep the last [`LOG_TAIL_LINES`] lines under [`LOG_MAX_CHARS`] chars,
+/// reporting any cut. The failure is at the tail, so cuts drop the head.
+fn tail_log(text: &str) -> (String, bool) {
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines.len().saturating_sub(LOG_TAIL_LINES);
+    let joined = lines[start..].join("\n");
+    let count = joined.chars().count();
+    if count > LOG_MAX_CHARS {
+        let skip = count - LOG_MAX_CHARS;
+        (joined.chars().skip(skip).collect(), true)
+    } else {
+        (joined, start > 0)
+    }
+}
+
+/// Token prefixes scrubbed from log excerpts (prefix kept, value replaced).
+const SECRET_PREFIXES: [&str; 13] = [
+    "ghp_",
+    "gho_",
+    "ghu_",
+    "ghs_",
+    "ghr_",
+    "github_pat_",
+    "sk-",
+    "sk-ant-",
+    "sk-proj-",
+    "xoxb-",
+    "xoxp-",
+    "xoxa-",
+    "AKIA",
+];
+
+/// Scrub probable secret values from a log excerpt: known token prefixes
+/// keep their prefix with the value replaced, and `Bearer <value>` (any
+/// ASCII case) keeps the scheme with the value replaced. Returns the
+/// scrubbed text and whether anything was replaced (the panel warns when
+/// true). Short runs under 4 value chars are left alone so ordinary words
+/// like `sk-` prose are never mangled.
+fn redact_secrets(text: &str) -> (String, bool) {
+    fn is_token_byte(byte: u8) -> bool {
+        byte.is_ascii_alphanumeric()
+            || matches!(byte, b'_' | b'-' | b'~' | b'+' | b'/' | b'.' | b'=')
+    }
+    let bytes = text.as_bytes();
+    let mut scrubbed = String::with_capacity(text.len());
+    let mut index = 0;
+    let mut hit = false;
+    // `index` starts at 0 and advances by ASCII runs or whole chars, so it
+    // is always a char boundary and the slicing below is safe.
+    while index < bytes.len() {
+        if index + 7 <= bytes.len() && bytes[index..index + 7].eq_ignore_ascii_case(b"bearer ") {
+            scrubbed.push_str(&text[index..index + 7]);
+            index += 7;
+            let value_start = index;
+            while index < bytes.len() && is_token_byte(bytes[index]) {
+                index += 1;
+            }
+            if index > value_start {
+                scrubbed.push_str("[redacted]");
+                hit = true;
+            }
+            continue;
+        }
+        let mut prefix_len = 0;
+        for prefix in SECRET_PREFIXES {
+            if text[index..].starts_with(prefix) {
+                prefix_len = prefix.len();
+                break;
+            }
+        }
+        if prefix_len == 0 {
+            match text[index..].chars().next() {
+                Some(ch) => {
+                    scrubbed.push(ch);
+                    index += ch.len_utf8();
+                }
+                None => break,
+            }
+            continue;
+        }
+        scrubbed.push_str(&text[index..index + prefix_len]);
+        index += prefix_len;
+        let value_start = index;
+        while index < bytes.len() && is_token_byte(bytes[index]) {
+            index += 1;
+        }
+        if index - value_start >= 4 {
+            scrubbed.push_str("[redacted]");
+            hit = true;
+        } else {
+            scrubbed.push_str(&text[value_start..index]);
+        }
+    }
+    (scrubbed, hit)
+}
+
+/// Outcome of one per-job text-log download.
+struct LogDownload {
+    /// Decoded tail bytes (empty when the log is missing).
+    text: String,
+    /// The download was cut (oversized) — the excerpt flags truncation.
+    cut: bool,
+}
+
+/// GET one JSON envelope (`{...}`) for the Actions path: runs and jobs both
+/// answer envelopes, unlike the issues/pulls lists. Same auth, timeout, and
+/// status contract as [`fetch_from`]: quota exhaustion (403 with
+/// `remaining == 0`, or 429) resolves to `Ok((None, rate, true))`.
+fn fetch_json_value(
+    base_url: &str,
+    path: &str,
+    token: Option<&str>,
+) -> Result<(Option<serde_json::Value>, GhRateLimit, bool), GitHubError> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .user_agent("Nexora")
+        .build()
+        .map_err(|_| GitHubError::RequestFailed)?;
+    let mut request = client
+        .get(format!("{base_url}{path}"))
+        .header("Accept", "application/vnd.github+json");
+    if let Some(token) = token {
+        request = request.bearer_auth(token);
+    }
+    let response = request.send().map_err(|_| GitHubError::RequestFailed)?;
+    let rate_limit = rate_snapshot(response.headers());
+    let rate_limited = rate_limit.remaining == Some(0);
+    match response.status().as_u16() {
+        200 => {
+            let value: serde_json::Value =
+                response.json().map_err(|_| GitHubError::RequestFailed)?;
+            Ok((Some(value), rate_limit, false))
+        }
+        401 => Err(GitHubError::Unauthorized),
+        403 if rate_limited => Ok((None, rate_limit, true)),
+        403 => Err(GitHubError::Forbidden),
+        404 => Err(GitHubError::NotFound),
+        429 => Ok((None, rate_limit, true)),
+        _ => Err(GitHubError::RequestFailed),
+    }
+}
+
+/// GET one failed job's text log (`.../actions/jobs/{job_id}/logs`).
+///
+/// Deliberately the per-job TEXT endpoint, not the per-run ZIP
+/// (`.../runs/{run_id}/logs` returns a ZIP archive: extracting a 200-line
+/// tail from it would need a zip dependency, out of scope). No `Accept:
+/// vnd.github+json` header here — the endpoint serves `text/plain`
+/// (possibly via redirect, which the client follows). Oversized downloads
+/// keep only their last [`LOG_DOWNLOAD_BYTES`] bytes before decoding; 404 /
+/// 410 (expired or never uploaded) resolve to an empty download, which the
+/// caller renders as `log_unavailable`.
+fn fetch_log_text(
+    base_url: &str,
+    owner: &str,
+    repo: &str,
+    job_id: u64,
+    token: Option<&str>,
+) -> Result<LogDownload, GitHubError> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .user_agent("Nexora")
+        .build()
+        .map_err(|_| GitHubError::RequestFailed)?;
+    let mut request = client.get(format!(
+        "{base_url}/repos/{owner}/{repo}/actions/jobs/{job_id}/logs"
+    ));
+    if let Some(token) = token {
+        request = request.bearer_auth(token);
+    }
+    let response = request.send().map_err(|_| GitHubError::RequestFailed)?;
+    match response.status().as_u16() {
+        200 => {
+            let bytes = response.bytes().map_err(|_| GitHubError::RequestFailed)?;
+            let all: &[u8] = bytes.as_ref();
+            let (cut, tail) = if all.len() > LOG_DOWNLOAD_BYTES {
+                (true, &all[all.len() - LOG_DOWNLOAD_BYTES..])
+            } else {
+                (false, all)
+            };
+            Ok(LogDownload {
+                text: String::from_utf8_lossy(tail).into_owned(),
+                cut,
+            })
+        }
+        401 => Err(GitHubError::Unauthorized),
+        403 => Err(GitHubError::Forbidden),
+        404 | 410 => Ok(LogDownload {
+            text: String::new(),
+            cut: false,
+        }),
+        _ => Err(GitHubError::RequestFailed),
+    }
+}
+
+/// Build one failed job row: failed step names plus the capped, scrubbed log
+/// tail. Any log-fetch failure degrades to `log_unavailable` — one expired
+/// log never fails the whole response.
+fn build_failed_job(
+    base_url: &str,
+    owner: &str,
+    repo: &str,
+    token: Option<&str>,
+    run_id: u64,
+    raw: RawJob,
+) -> GhActionJob {
+    let failed_steps = failed_step_names(raw.steps);
+    let (log_excerpt, log_truncated, log_unavailable, log_redacted) =
+        match fetch_log_text(base_url, owner, repo, raw.id, token) {
+            Ok(download) if download.text.is_empty() => (String::new(), false, true, false),
+            Ok(download) => {
+                let (tail, tail_cut) = tail_log(&download.text);
+                let (scrubbed, redacted) = redact_secrets(&tail);
+                (scrubbed, tail_cut || download.cut, false, redacted)
+            }
+            Err(_) => (String::new(), false, true, false),
+        };
+    GhActionJob {
+        id: raw.id,
+        run_id,
+        name: clean_title(raw.name),
+        status: clean_run_status(raw.status),
+        conclusion: clean_conclusion(raw.conclusion),
+        started_at: raw.started_at,
+        completed_at: raw.completed_at,
+        html_url: raw.html_url,
+        failed_steps,
+        log_excerpt,
+        log_truncated,
+        log_unavailable,
+        log_redacted,
+    }
+}
+
+/// Expand one failing run with its failed jobs (at most
+/// [`MAX_FAILED_JOBS_KEPT`]). Any jobs-fetch failure leaves the run with an
+/// empty job list — the panel still points at GitHub.
+fn expand_failed_run(
+    base_url: &str,
+    owner: &str,
+    repo: &str,
+    token: Option<&str>,
+    run: &mut GhActionRun,
+) {
+    let fetched = fetch_json_value(
+        base_url,
+        &format!(
+            "/repos/{owner}/{repo}/actions/runs/{}/jobs?per_page={MAX_JOBS_FETCHED}",
+            run.id
+        ),
+        token,
+    );
+    let Ok((Some(value), _, _)) = fetched else {
+        return;
+    };
+    let envelope: RawJobs = match serde_json::from_value(value) {
+        Ok(envelope) => envelope,
+        Err(_) => return,
+    };
+    let mut failed: Vec<RawJob> = envelope
+        .jobs
+        .into_iter()
+        .filter(|job| job.conclusion.as_deref().is_some_and(is_failed_conclusion))
+        .collect();
+    let total_failed = failed.len();
+    failed.truncate(MAX_FAILED_JOBS_KEPT);
+    run.jobs_truncated = total_failed > failed.len();
+    for raw in failed {
+        run.failed_jobs
+            .push(build_failed_job(base_url, owner, repo, token, run.id, raw));
+    }
+}
+
+/// List the workspace `origin` repo's recent workflow runs with failing runs
+/// expanded (failed jobs + capped, scrubbed log tails).
+///
+/// Read-only: three GET shapes only (runs envelope, per-run jobs envelope,
+/// per-job text log). Sub-call failures degrade to empty jobs / unavailable
+/// logs — only the top-level runs fetch can fail the call.
+///
+/// # Errors
+///
+/// Returns [`GitHubError::NotARepository`] / [`GitHubError::NoGitHubRemote`]
+/// when the workspace has no usable `github.com` origin, and the classified
+/// transport/auth failures otherwise. A missing keyring token is NOT an
+/// error — the requests go out unauthenticated with `authenticated: false`.
+pub(crate) fn list_actions(workspace_root: &Path) -> Result<GhActionsResponse, GitHubError> {
+    let (owner, repo) = resolve_origin(workspace_root)?;
+    let token = read_token();
+    let (value, rate_limit, rate_limited) = fetch_json_value(
+        GITHUB_API_BASE,
+        &format!("/repos/{owner}/{repo}/actions/runs?per_page={MAX_RUNS}"),
+        token.as_deref(),
+    )?;
+    let Some(value) = value else {
+        return Ok(GhActionsResponse {
+            owner,
+            repo,
+            runs: Vec::new(),
+            total_runs: 0,
+            authenticated: token.is_some(),
+            rate_limited: true,
+            rate_limit,
+        });
+    };
+    let envelope: RawRuns =
+        serde_json::from_value(value).map_err(|_| GitHubError::RequestFailed)?;
+    let mut runs: Vec<GhActionRun> = Vec::new();
+    let mut expanded = 0_usize;
+    for raw in envelope.workflow_runs.into_iter().take(MAX_RUNS) {
+        let mut run = to_action_run(raw);
+        if expanded < MAX_FAILED_RUNS_EXPANDED && run_is_failed(&run) {
+            expanded += 1;
+            expand_failed_run(GITHUB_API_BASE, &owner, &repo, token.as_deref(), &mut run);
+        }
+        runs.push(run);
+    }
+    Ok(GhActionsResponse {
+        owner,
+        repo,
+        runs,
+        total_runs: envelope.total_count,
+        authenticated: token.is_some(),
+        rate_limited,
+        rate_limit,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -837,6 +1404,160 @@ mod tests {
             fetch_from(&base, "o", "r", "issues", "open", None).map(|_| ()),
             Err(GitHubError::Forbidden)
         );
+    }
+
+    #[test]
+    fn action_conclusions_classify_failures_only() {
+        for conclusion in ["failure", "timed_out", "cancelled", "action_required"] {
+            assert!(
+                is_failed_conclusion(conclusion),
+                "{conclusion:?} must expand"
+            );
+        }
+        for conclusion in [
+            "success", "neutral", "skipped", "stale", "unknown", "", "bogus",
+        ] {
+            assert!(
+                !is_failed_conclusion(conclusion),
+                "{conclusion:?} must never expand"
+            );
+        }
+        // Only completed runs with a failed conclusion expand; in-flight or
+        // successful runs render as metadata rows.
+        let failed = GhActionRun {
+            id: 1,
+            name: "ci".to_string(),
+            head_branch: None,
+            head_sha: None,
+            event: "push".to_string(),
+            status: "completed".to_string(),
+            conclusion: "failure".to_string(),
+            created_at: None,
+            updated_at: None,
+            html_url: None,
+            failed_jobs: Vec::new(),
+            jobs_truncated: false,
+        };
+        assert!(run_is_failed(&failed));
+        let running = GhActionRun {
+            status: "in_progress".to_string(),
+            ..failed.clone()
+        };
+        assert!(!run_is_failed(&running));
+        let green = GhActionRun {
+            status: "completed".to_string(),
+            conclusion: "success".to_string(),
+            ..failed.clone()
+        };
+        assert!(!run_is_failed(&green));
+    }
+
+    #[test]
+    fn action_mapping_fixes_vocabulary_and_failed_steps() {
+        let raw: RawRun = serde_json::from_str(
+            r#"{
+                "id": 42,
+                "name": " ",
+                "head_branch": "main",
+                "head_sha": "abc123",
+                "event": "push",
+                "status": "bogus",
+                "conclusion": "bogus",
+                "html_url": "https://github.com/o/r/actions/runs/42"
+            }"#,
+        )
+        .expect("fixture parses");
+        let run = to_action_run(raw);
+        assert_eq!(run.name, "(no title)");
+        assert_eq!(run.status, "unknown");
+        assert_eq!(run.conclusion, "unknown");
+        assert!(run.failed_jobs.is_empty());
+        assert!(!run.jobs_truncated);
+
+        let steps = vec![
+            RawStep {
+                name: Some(" build ".to_string()),
+                conclusion: Some("failure".to_string()),
+            },
+            RawStep {
+                name: Some("ok".to_string()),
+                conclusion: Some("success".to_string()),
+            },
+            RawStep {
+                name: Some(String::new()),
+                conclusion: Some("timed_out".to_string()),
+            },
+            RawStep {
+                name: None,
+                conclusion: Some("failure".to_string()),
+            },
+        ];
+        assert_eq!(failed_step_names(steps), vec!["build".to_string()]);
+    }
+
+    #[test]
+    fn log_tail_keeps_the_last_lines_under_both_caps() {
+        let lines: Vec<String> = (1..=500).map(|n| format!("line {n}")).collect();
+        let (tail, truncated) = tail_log(&lines.join("\n"));
+        assert!(truncated);
+        let kept: Vec<&str> = tail.lines().collect();
+        assert_eq!(kept.len(), LOG_TAIL_LINES);
+        assert_eq!(kept[0], "line 301");
+        assert_eq!(kept[LOG_TAIL_LINES - 1], "line 500");
+
+        let (tail, truncated) = tail_log("a\nb");
+        assert!(!truncated);
+        assert_eq!(tail, "a\nb");
+
+        let wide = "y".repeat(LOG_MAX_CHARS + 10);
+        let (tail, truncated) = tail_log(&wide);
+        assert!(truncated);
+        assert_eq!(tail.chars().count(), LOG_MAX_CHARS);
+    }
+
+    #[test]
+    fn log_redaction_scrubs_token_values_and_reports() {
+        const PLANTED_GH: &str = "ghp_plantedvalue0123456789";
+        const PLANTED_BEARER: &str = "supersecretbearer01";
+        const PLANTED_SK: &str = "sk-ant-plantedvalue99";
+        let text = format!(
+            "token {PLANTED_GH} failed\nAuthorization: Bearer {PLANTED_BEARER}\nkey {PLANTED_SK} here\nplain prose stays"
+        );
+        let (scrubbed, hit) = redact_secrets(&text);
+        assert!(hit);
+        assert!(!scrubbed.contains(PLANTED_GH));
+        assert!(!scrubbed.contains(PLANTED_BEARER));
+        assert!(!scrubbed.contains(PLANTED_SK));
+        assert!(scrubbed.contains("[redacted]"));
+        assert!(scrubbed.contains("plain prose stays"));
+
+        let (scrubbed, hit) = redact_secrets("nothing secret here\njust lines");
+        assert!(!hit);
+        assert_eq!(scrubbed, "nothing secret here\njust lines");
+    }
+
+    #[test]
+    fn actions_envelope_parses_runs_jobs_and_rate_state() {
+        let seen = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let base = serve_once(
+            200,
+            br#"{"total_count":1,"workflow_runs":[{"id":42,"name":"CI","head_branch":"main","status":"completed","conclusion":"success"}]}"#.to_vec(),
+            Some(("60".to_string(), "59".to_string(), "1234567890".to_string())),
+            std::sync::Arc::clone(&seen),
+        );
+        let (value, rate, limited) =
+            fetch_json_value(&base, "/repos/o/r/actions/runs?per_page=20", None)
+                .expect("200 parses");
+        assert!(!limited);
+        assert_eq!(rate.remaining, Some(59));
+        let envelope: RawRuns =
+            serde_json::from_value(value.expect("envelope present")).expect("envelope parses");
+        assert_eq!(envelope.total_count, 1);
+        assert_eq!(envelope.workflow_runs.len(), 1);
+        let run = to_action_run(envelope.workflow_runs.into_iter().next().expect("one run"));
+        assert_eq!(run.id, 42);
+        assert_eq!(run.conclusion, "success");
+        assert!(!run_is_failed(&run));
     }
 
     /// Static proof of the read-only contract: the service performs GET
