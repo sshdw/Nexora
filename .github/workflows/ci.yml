@@ -115,3 +115,6 @@ jobs:
 
       - name: npx eslint src
         run: npx eslint src
+
+      - name: npm run build
+        run: npm run build
