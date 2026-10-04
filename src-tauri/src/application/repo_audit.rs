@@ -13,6 +13,9 @@
 //! brace-depth function lengths miscount braces inside strings and block
 //! comments; `.ok()` / `.clone()` tallies cannot tell an intentional
 //! conversion from a swallowed error or a wasteful clone.
+//! `unwrap-hotspot` skips test code (files under `tests/` or `test/`,
+//! `*_test.rs` / `*.test.ts(x)` / `*.spec.ts(x)` names, and `#[cfg(test)]`
+//! items) — `unwrap` / `expect` there is idiomatic, not a panic risk.
 //!
 //! Read-only contract: this module only reads directory entries and file
 //! bytes (`read_dir`, `metadata`, `read_to_string`); it never creates,
@@ -208,6 +211,14 @@ struct PubDef {
     excerpt: String,
 }
 
+/// One source file read exactly once and shared by the declaration pass and
+/// the heuristic/use-tally pass ([`audit_workspace`]).
+struct CachedFile {
+    rel: String,
+    lang: Lang,
+    text: String,
+}
+
 /// Severity for one kind: panic paths, swallowed errors, suppressed checks,
 /// and clone density warn; debt, size, docs, and dead-code candidates inform.
 #[must_use]
@@ -243,25 +254,35 @@ fn excerpt_at(lines: &[String], line: usize) -> String {
         .join("\n")
 }
 
+/// Push one finding with no cap: callers collect every candidate, then
+/// [`cap_findings`] sorts by `(path, line, kind)` and truncates to
+/// [`MAX_FINDINGS`]. Capping only after the sort keeps late passes (dead-code
+/// candidates) from starving behind early line findings.
 fn push_finding(
     findings: &mut Vec<AuditFinding>,
-    overflow: &mut usize,
     kind: &str,
     path: &str,
     line: usize,
     excerpt: String,
 ) {
-    if findings.len() < MAX_FINDINGS {
-        findings.push(AuditFinding {
-            kind: kind.to_string(),
-            severity: severity_for(kind).to_string(),
-            path: path.to_string(),
-            line,
-            excerpt,
-        });
-    } else {
-        *overflow += 1;
-    }
+    findings.push(AuditFinding {
+        kind: kind.to_string(),
+        severity: severity_for(kind).to_string(),
+        path: path.to_string(),
+        line,
+        excerpt,
+    });
+}
+
+/// Sort findings by `(path, line, kind)` and keep the first [`MAX_FINDINGS`].
+/// Returns the omitted count (0 when everything fit).
+fn cap_findings(findings: &mut Vec<AuditFinding>) -> usize {
+    findings.sort_by(|a, b| {
+        (a.path.clone(), a.line, a.kind.clone()).cmp(&(b.path.clone(), b.line, b.kind.clone()))
+    });
+    let overflow = findings.len().saturating_sub(MAX_FINDINGS);
+    findings.truncate(MAX_FINDINGS);
+    overflow
 }
 
 fn push_skipped(skipped: &mut Vec<SkippedFile>, overflow: &mut usize, path: String, reason: &str) {
@@ -430,21 +451,62 @@ fn rs_pub_item(line: &str) -> Option<String> {
 }
 
 /// Rust public-API items that must carry a `///` doc comment. Only true `pub`
-/// items are findings (`pub(crate)` / `pub(super)` are intentionally out of
-/// scope); `const` and `static` are excluded — associated constants
-/// conventionally document on the parent item, so flagging each would be
-/// noise.
+/// items are findings (`pub(crate)` / `pub(super)` never start with `pub `,
+/// so they are out of scope by construction); `const` and `static` items are
+/// excluded — associated constants conventionally document on the parent
+/// item, so flagging each would be noise. Common `fn` modifiers (`async`,
+/// `unsafe`, `const`, `extern "ABI"`, in any order and combination) are
+/// stripped before the item check, mirroring [`rs_pub_item`].
 #[must_use]
 fn rs_doc_item(line: &str) -> bool {
-    line.starts_with("pub fn ")
-        || line.starts_with("pub async fn ")
-        || line.starts_with("pub unsafe fn ")
-        || line.starts_with("pub struct ")
-        || line.starts_with("pub enum ")
-        || line.starts_with("pub trait ")
-        || line.starts_with("pub type ")
-        || line.starts_with("pub mod ")
-        || line.starts_with("pub const fn ")
+    let Some(mut rest) = line.strip_prefix("pub ") else {
+        return false;
+    };
+    loop {
+        if let Some(next) = rest
+            .strip_prefix("async ")
+            .or_else(|| rest.strip_prefix("unsafe "))
+            .or_else(|| rest.strip_prefix("const "))
+            .or_else(|| rest.strip_prefix("extern "))
+        {
+            rest = next;
+        } else if let Some(quoted) = rest.strip_prefix('"') {
+            // `extern "C" fn`: skip the quoted ABI before the `fn` token.
+            let Some(closing) = quoted.find('"') else {
+                return false;
+            };
+            rest = quoted[closing + 1..].trim_start();
+        } else {
+            break;
+        }
+    }
+    rest.starts_with("fn ")
+        || rest.starts_with("struct ")
+        || rest.starts_with("enum ")
+        || rest.starts_with("trait ")
+        || rest.starts_with("type ")
+        || rest.starts_with("mod ")
+}
+
+/// Test-code paths whose `.unwrap()` / `.expect(` calls are idiomatic and
+/// never flag [`KIND_UNWRAP`]: files under `tests/` or `test/` directories,
+/// Rust `*_test.rs` / `test_*.rs` / `tests.rs` names, and TS
+/// `*.test.*` / `*.spec.*` names.
+#[must_use]
+fn is_test_source_path(rel: &str) -> bool {
+    let mut parts = rel.split('/');
+    let file = parts.next_back().unwrap_or(rel);
+    if parts.any(|dir| dir == "tests" || dir == "test") {
+        return true;
+    }
+    if file.contains(".test.") || file.contains(".spec.") {
+        return true;
+    }
+    let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
+    stem == "tests"
+        || stem.starts_with("test_")
+        || stem.ends_with("_test")
+        || stem.ends_with("_tests")
 }
 
 /// Whether the `pub` item at `index` carries a `///` doc comment: walk upward
@@ -552,54 +614,63 @@ fn brace_delta(line: &str) -> i32 {
 
 /// Scan one file's lines: debt, panic paths, swallowed errors, suppressed
 /// checks, missing docs, clone tallies, and brace-depth function lengths.
+/// `unwrap-hotspot` skips test code — [`is_test_source_path`] files and lines
+/// inside `#[cfg(test)]` items (module scope tracked by brace depth).
 #[allow(clippy::too_many_lines)]
-fn scan_lines(
-    rel: &str,
-    lang: Lang,
-    text: &str,
-    findings: &mut Vec<AuditFinding>,
-    overflow: &mut usize,
-) {
+fn scan_lines(rel: &str, lang: Lang, text: &str, findings: &mut Vec<AuditFinding>) {
     let owned: Vec<String> = text.lines().map(str::to_string).collect();
     let lines: &[String] = &owned;
     if lines.len() >= LARGE_FILE_LINES {
-        push_finding(
-            findings,
-            overflow,
-            KIND_LARGE_FILE,
-            rel,
-            1,
-            excerpt_at(lines, 1),
-        );
+        push_finding(findings, KIND_LARGE_FILE, rel, 1, excerpt_at(lines, 1));
     }
+    let test_file = lang == Lang::Rs && is_test_source_path(rel);
     let mut depth: i32 = 0;
     let mut pending_start: Option<usize> = None;
     let mut pending_depth: i32 = 0;
     let mut pending_opened = false;
+    // `#[cfg(test)]` scope: the attribute arms `cfg_pending`; the next code
+    // line opens a scope at the current brace depth (covers `mod tests {`
+    // blocks and directly-annotated `fn`s alike) that closes when the depth
+    // returns. Attribute/blank lines in between do not consume the arm.
+    let mut cfg_pending = false;
+    let mut cfg_depth: Option<i32> = None;
     let mut clones: usize = 0;
     let mut first_clone_line: usize = 0;
     for (index, line) in lines.iter().enumerate() {
         let lineno = index + 1;
         let trimmed = line.trim();
         if trimmed.contains("TODO") || trimmed.contains("FIXME") {
-            push_finding(
-                findings,
-                overflow,
-                KIND_TODO,
-                rel,
-                lineno,
-                excerpt_at(lines, lineno),
-            );
+            push_finding(findings, KIND_TODO, rel, lineno, excerpt_at(lines, lineno));
         }
+        if lang == Lang::Rs && trimmed.starts_with("#[cfg(test)]") {
+            // Same-line form (`#[cfg(test)] mod tests {`) opens the scope
+            // immediately; otherwise the next code line does.
+            if trimmed.contains("mod ") {
+                cfg_depth = Some(depth);
+                cfg_pending = false;
+            } else {
+                cfg_pending = true;
+            }
+        } else if cfg_pending
+            && !trimmed.is_empty()
+            && !trimmed.starts_with("#[")
+            && !is_comment_line(trimmed, lang)
+        {
+            cfg_depth = Some(depth);
+            cfg_pending = false;
+        }
+        let in_cfg_test = cfg_depth.is_some();
         if is_comment_line(trimmed, lang) {
             continue;
         }
         match lang {
             Lang::Rs => {
-                if trimmed.contains(".unwrap()") || trimmed.contains(".expect(") {
+                if !test_file
+                    && !in_cfg_test
+                    && (trimmed.contains(".unwrap()") || trimmed.contains(".expect("))
+                {
                     push_finding(
                         findings,
-                        overflow,
                         KIND_UNWRAP,
                         rel,
                         lineno,
@@ -612,7 +683,6 @@ fn scan_lines(
                 {
                     push_finding(
                         findings,
-                        overflow,
                         KIND_SWALLOWED,
                         rel,
                         lineno,
@@ -622,7 +692,6 @@ fn scan_lines(
                 if trimmed.starts_with("#[allow(") {
                     push_finding(
                         findings,
-                        overflow,
                         KIND_UNCHECKED,
                         rel,
                         lineno,
@@ -632,7 +701,6 @@ fn scan_lines(
                 if rs_doc_item(trimmed) && !has_rs_doc(lines, index) {
                     push_finding(
                         findings,
-                        overflow,
                         KIND_MISSING_DOCS,
                         rel,
                         lineno,
@@ -655,7 +723,6 @@ fn scan_lines(
                 {
                     push_finding(
                         findings,
-                        overflow,
                         KIND_UNCHECKED,
                         rel,
                         lineno,
@@ -663,14 +730,7 @@ fn scan_lines(
                     );
                 }
                 if line.contains("JSON.parse(JSON.stringify") {
-                    push_finding(
-                        findings,
-                        overflow,
-                        KIND_CLONE,
-                        rel,
-                        lineno,
-                        excerpt_at(lines, lineno),
-                    );
+                    push_finding(findings, KIND_CLONE, rel, lineno, excerpt_at(lines, lineno));
                 }
             }
         }
@@ -680,6 +740,14 @@ fn scan_lines(
             pending_opened = false;
         }
         depth += brace_delta(line);
+        // A `#[cfg(test)]` scope closes once the brace depth returns to (or
+        // below) the depth where it opened — a braceless annotated item
+        // clears on its own line.
+        if let Some(opened) = cfg_depth {
+            if depth <= opened {
+                cfg_depth = None;
+            }
+        }
         if let Some(start) = pending_start {
             if depth > pending_depth {
                 pending_opened = true;
@@ -687,7 +755,6 @@ fn scan_lines(
                 if index + 1 - start >= LARGE_FUNCTION_LINES {
                     push_finding(
                         findings,
-                        overflow,
                         KIND_LARGE_FN,
                         rel,
                         start + 1,
@@ -707,7 +774,6 @@ fn scan_lines(
         if pending_opened && lines.len() - start >= LARGE_FUNCTION_LINES {
             push_finding(
                 findings,
-                overflow,
                 KIND_LARGE_FN,
                 rel,
                 start + 1,
@@ -718,7 +784,6 @@ fn scan_lines(
     if lang == Lang::Rs && clones >= CLONE_DENSITY {
         push_finding(
             findings,
-            overflow,
             KIND_CLONE,
             rel,
             first_clone_line,
@@ -765,8 +830,11 @@ pub(crate) fn audit_workspace(root: &Path) -> Result<RepoAuditReport, RepoAuditE
     if sources.is_empty() && skipped.is_empty() && root.read_dir().is_err() {
         return Err(RepoAuditError::Io);
     }
-    // Pass 1: public/exported item declarations (names only; text dropped).
-    let mut defs: Vec<PubDef> = Vec::new();
+    // Single read: each file hits the filesystem once; the cached text is
+    // shared by the declaration pass below and the heuristic/use-tally
+    // pass. Cached entries are bounded by the walk caps ([`MAX_AUDIT_FILES`]
+    // files, [`MAX_FILE_BYTES`] bytes each).
+    let mut cached: Vec<CachedFile> = Vec::new();
     for source in &sources {
         let Ok(text) = std::fs::read_to_string(&source.full) else {
             push_skipped(
@@ -786,9 +854,19 @@ pub(crate) fn audit_workspace(root: &Path) -> Result<RepoAuditReport, RepoAuditE
             );
             continue;
         }
-        for (index, line) in text.lines().enumerate() {
+        cached.push(CachedFile {
+            rel: source.rel.clone(),
+            lang: source.lang,
+            text,
+        });
+    }
+    // Pass 1: public/exported item declarations (names only; text kept in
+    // `cached` for pass 2).
+    let mut defs: Vec<PubDef> = Vec::new();
+    for file in &cached {
+        for (index, line) in file.text.lines().enumerate() {
             let trimmed = line.trim();
-            let name = match source.lang {
+            let name = match file.lang {
                 Lang::Rs => rs_pub_item(trimmed),
                 Lang::Ts => ts_export_item(trimmed),
             };
@@ -796,7 +874,7 @@ pub(crate) fn audit_workspace(root: &Path) -> Result<RepoAuditReport, RepoAuditE
                 if name.len() >= MIN_DEF_NAME_LEN {
                     defs.push(PubDef {
                         name,
-                        path: source.rel.clone(),
+                        path: file.rel.clone(),
                         line: index + 1,
                         excerpt: truncate_chars(trimmed),
                     });
@@ -808,25 +886,12 @@ pub(crate) fn audit_workspace(root: &Path) -> Result<RepoAuditReport, RepoAuditE
     let name_set: HashSet<&str> = def_names.iter().map(String::as_str).collect();
     // Pass 2: line heuristics plus whole-word use tallies for pass 3.
     let mut findings: Vec<AuditFinding> = Vec::new();
-    let mut findings_overflow: usize = 0;
     let mut uses: HashMap<String, usize> = HashMap::new();
     let mut files_scanned: usize = 0;
-    for source in &sources {
-        let Ok(text) = std::fs::read_to_string(&source.full) else {
-            continue; // Already reported as a skip in pass 1.
-        };
-        if text.len() > MAX_FILE_BYTES {
-            continue; // Already reported as a skip in pass 1.
-        }
+    for file in &cached {
         files_scanned += 1;
-        scan_lines(
-            &source.rel,
-            source.lang,
-            &text,
-            &mut findings,
-            &mut findings_overflow,
-        );
-        tally_uses(&text, &name_set, &mut uses);
+        scan_lines(&file.rel, file.lang, &file.text, &mut findings);
+        tally_uses(&file.text, &name_set, &mut uses);
     }
     // Pass 3: `pub`-never-used candidates (candidates, not proof — see the
     // module docs). The declaration line itself is the single expected hit.
@@ -834,7 +899,6 @@ pub(crate) fn audit_workspace(root: &Path) -> Result<RepoAuditReport, RepoAuditE
         if uses.get(&def.name).copied().unwrap_or(0) <= 1 {
             push_finding(
                 &mut findings,
-                &mut findings_overflow,
                 KIND_DEAD_CODE,
                 &def.path,
                 def.line,
@@ -842,9 +906,11 @@ pub(crate) fn audit_workspace(root: &Path) -> Result<RepoAuditReport, RepoAuditE
             );
         }
     }
-    findings.sort_by(|a, b| {
-        (a.path.clone(), a.line, a.kind.clone()).cmp(&(b.path.clone(), b.line, b.kind.clone()))
-    });
+    // Sort-then-truncate: every pass contributes uncapped, the full set is
+    // ordered by `(path, line, kind)`, and only then is the [`MAX_FINDINGS`]
+    // cap applied — so dead-code candidates sort in on merit instead of
+    // starving behind earlier line findings.
+    let findings_overflow = cap_findings(&mut findings);
     let files_skipped = skipped.len() + skipped_overflow;
     Ok(RepoAuditReport {
         findings,
@@ -1134,20 +1200,138 @@ mod tests {
         }
         assert_eq!(skipped.len(), MAX_SKIPPED_LISTED);
         assert_eq!(skipped_overflow, 7);
+        // Findings collect uncapped; the cap applies once, on the sorted set.
         let mut findings = Vec::new();
-        let mut findings_overflow = 0;
-        for index in 0..(MAX_FINDINGS + 3) {
+        for index in (0..(MAX_FINDINGS + 3)).rev() {
             push_finding(
                 &mut findings,
-                &mut findings_overflow,
                 KIND_TODO,
                 "src/todo.rs",
                 index + 1,
                 String::new(),
             );
         }
+        let overflow = cap_findings(&mut findings);
         assert_eq!(findings.len(), MAX_FINDINGS);
-        assert_eq!(findings_overflow, 3);
+        assert_eq!(overflow, 3);
+        assert!(
+            findings.windows(2).all(|pair| {
+                (pair[0].path.clone(), pair[0].line, pair[0].kind.clone())
+                    <= (pair[1].path.clone(), pair[1].line, pair[1].kind.clone())
+            }),
+            "kept findings stay sorted by (path, line, kind)"
+        );
+        assert_eq!(findings[0].line, 1, "truncation keeps the sorted head");
+    }
+
+    #[test]
+    fn late_dead_code_survives_truncation_on_merit() {
+        // Regression: the cap used to fill at push time, so pass-2 line
+        // findings starved pass-3 dead-code candidates. Uncapped collection
+        // plus sort-then-truncate keeps the sorted head, whatever the pass.
+        let root = test_root();
+        let mut filler = String::new();
+        for _ in 0..MAX_FINDINGS {
+            filler.push_str("// TODO: filler debt\n");
+        }
+        write_file(&root, "mmm/filler.rs", &filler);
+        write_file(
+            &root,
+            "aaa/orphan.rs",
+            "/// Orphaned entry.\npub fn orphaned_tail_api() {}\n",
+        );
+        let report = audit_workspace(&root).expect("audit runs");
+        // 2000 filler TODOs + 1 oversized-file + 1 dead-code candidate.
+        assert_eq!(report.findings.len(), MAX_FINDINGS);
+        assert_eq!(report.findings_overflow, 2);
+        assert!(
+            of_kind(&report, KIND_DEAD_CODE)
+                .iter()
+                .any(|finding| finding.excerpt.contains("orphaned_tail_api")),
+            "the late dead-code candidate sorts into the kept head, {report:?}"
+        );
+        with_cleanup(&root);
+    }
+
+    #[test]
+    fn unwrap_in_test_code_is_not_a_hotspot() {
+        let root = test_root();
+        write_file(
+            &root,
+            "src/live.rs",
+            "/// Live entry.\npub fn live_api() {\n    let burst = required().unwrap();\n}\n",
+        );
+        write_file(
+            &root,
+            "tests/integration.rs",
+            "fn fetch() {\n    let burst = required().unwrap();\n    let trusted = required().expect(\"local invariant\");\n}\n",
+        );
+        write_file(
+            &root,
+            "src/lib.rs",
+            "#[cfg(test)]\nmod checks {\n    fn graded() {\n        let burst = required().unwrap();\n    }\n}\n/// Live helper.\npub fn helper_api() {}\n",
+        );
+        let report = audit_workspace(&root).expect("audit runs");
+        let hotspots = of_kind(&report, KIND_UNWRAP);
+        assert_eq!(
+            hotspots.len(),
+            1,
+            "only production unwrap flags, {hotspots:?}"
+        );
+        assert_eq!(hotspots[0].path, "src/live.rs");
+        with_cleanup(&root);
+    }
+
+    #[test]
+    fn test_source_paths_cover_common_layouts() {
+        for rel in [
+            "tests/integration.rs",
+            "src/test/helpers.rs",
+            "src/parser_test.rs",
+            "src/test_parser.rs",
+            "src/tests.rs",
+            "src/panel.test.ts",
+            "src/panel.spec.tsx",
+        ] {
+            assert!(is_test_source_path(rel), "{rel:?} reads as test code");
+        }
+        for rel in [
+            "src/lib.rs",
+            "src/contest.rs",
+            "src/latest.rs",
+            "src/panel.ts",
+            "src/testing_utils.rs",
+        ] {
+            assert!(
+                !is_test_source_path(rel),
+                "{rel:?} reads as production code"
+            );
+        }
+    }
+
+    #[test]
+    fn doc_check_handles_fn_modifiers_but_ignores_restricted_pub() {
+        for line in [
+            "pub fn bare_api() {}",
+            "pub async fn bare_api() {}",
+            "pub unsafe fn bare_api() {}",
+            "pub async unsafe fn bare_api() {}",
+            "pub unsafe async fn bare_api() {}",
+            "pub const fn bare_api() {}",
+            "pub async const fn bare_api() {}",
+            "pub extern \"C\" fn bare_api() {}",
+        ] {
+            assert!(rs_doc_item(line), "{line:?} needs a doc comment");
+        }
+        for line in [
+            "pub(crate) fn hidden_api() {}",
+            "pub(super) fn hidden_api() {}",
+            "pub const LIMIT: usize = 1;",
+            "pub static FLAG: bool = true;",
+            "fn private_api() {}",
+        ] {
+            assert!(!rs_doc_item(line), "{line:?} is out of doc scope");
+        }
     }
 
     #[test]

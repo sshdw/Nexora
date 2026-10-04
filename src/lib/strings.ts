@@ -780,7 +780,7 @@ const en = {
   "audit.subtitle":
     "Read-only static analysis of the workspace — findings only, never changes. Runs manually.",
   "audit.limitsNote":
-    "Heuristic line scan with no type information: dead-code hits are candidates, not proof — re-exports, trait impls, and dynamic uses are missed. TypeScript is scanned as text only. Capped at 2000 files and 256 KiB per file.",
+    "Heuristic line scan with no type information: dead-code hits are candidates, not proof — re-exports, trait impls, and dynamic uses are missed. TypeScript is scanned as text only. Unwrap hotspots skip test code. Capped at 2000 files and 256 KiB per file; only the first 2000 findings (sorted) are kept, so group counts cover kept findings.",
   "audit.run": "Run audit",
   "audit.running": "Scanning…",
   "audit.rerun": "Run again",
@@ -1837,7 +1837,7 @@ const ru: Record<StringKey, string> = {
   "audit.subtitle":
     "Статический анализ рабочей папки только для чтения — только находки, без изменений. Запуск вручную.",
   "audit.limitsNote":
-    "Эвристическое построчное сканирование без информации о типах: совпадения «мёртвого» кода — кандидаты, а не доказательство (реэкспорты, реализации трейтов и динамические использования пропускаются). TypeScript сканируется как текст. Ограничение: 2000 файлов и 256 КиБ на файл.",
+    "Эвристическое построчное сканирование без информации о типах: совпадения «мёртвого» кода — кандидаты, а не доказательство (реэкспорты, реализации трейтов и динамические использования пропускаются). TypeScript сканируется как текст. Точки unwrap в тестовом коде пропускаются. Ограничение: 2000 файлов и 256 КиБ на файл; сохраняются только первые 2000 находок (отсортированные), поэтому счётчики групп отражают сохранённые находки.",
   "audit.run": "Запустить аудит",
   "audit.running": "Сканирование…",
   "audit.rerun": "Запустить снова",

@@ -210,6 +210,11 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
                 </option>
               ))}
             </select>
+            {report.findings_overflow > 0 && (
+              <p className="nex-vcs-notice" role="note">
+                {t("audit.moreFindings", { n: report.findings_overflow })}
+              </p>
+            )}
             {visibleTotal === 0 ? (
               <p className="nex-agent-empty">{t("audit.noFindingsText")}</p>
             ) : (
@@ -240,11 +245,6 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
                   </section>
                 );
               })
-            )}
-            {report.findings_overflow > 0 && (
-              <p className="nex-vcs-notice" role="note">
-                {t("audit.moreFindings", { n: report.findings_overflow })}
-              </p>
             )}
             {report.skipped.length > 0 && (
               <section className="nex-vcs-section" aria-label={t("audit.skippedTitle")}>
