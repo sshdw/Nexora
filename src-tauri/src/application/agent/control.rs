@@ -217,6 +217,12 @@ pub(crate) struct RunControl {
     token: CancellationToken,
     state: Arc<Mutex<GovernorState>>,
     signal: Arc<Condvar>,
+    /// Set while a runner thread is parked inside
+    /// [`Self::wait_for_allowance`] (budget exhausted, awaiting
+    /// `extend_steps` or `cancel`). Lock-free so external pollers (e.g. the
+    /// task loop's terminal-wait) can observe the park without contending
+    /// the governor mutex. Shared by all clones.
+    budget_parked: Arc<AtomicBool>,
 }
 
 impl Default for RunControl {
@@ -232,6 +238,7 @@ impl RunControl {
             token: CancellationToken::new(),
             state: Arc::new(Mutex::new(GovernorState::default())),
             signal: Arc::new(Condvar::new()),
+            budget_parked: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -335,9 +342,23 @@ impl RunControl {
     /// Returns `false` when cancellation ended the wait.
     pub(crate) fn wait_for_allowance(&self, base: usize, taken: usize) -> bool {
         let mut state = self.lock_state();
+        if taken < base.saturating_add(state.extra_steps) {
+            return !self.is_cancelled();
+        }
+        self.budget_parked.store(true, Ordering::SeqCst);
         while taken >= base.saturating_add(state.extra_steps) && !self.is_cancelled() {
             state = self.wait_on_signal(state);
         }
+        self.budget_parked.store(false, Ordering::SeqCst);
         !self.is_cancelled()
+    }
+
+    /// Whether a runner thread is currently parked in
+    /// [`Self::wait_for_allowance`]. Observed by the task loop's
+    /// terminal-wait so a budget-parked step run (whose persisted row stays
+    /// `'running'`) is surfaced instead of polled forever.
+    #[must_use]
+    pub(crate) fn is_budget_parked(&self) -> bool {
+        self.budget_parked.load(Ordering::SeqCst)
     }
 }
