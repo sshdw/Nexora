@@ -18,8 +18,18 @@
 //! the stored setting on every use (re-canonicalise + blocklist) and falls
 //! back to the default when it no longer resolves, so a path that becomes a
 //! symlink/junction after being saved cannot widen the tool scope.
+//!
+//! Multi-root (registry): the same two keys double as the root registry —
+//! [`WORKSPACE_ROOT_KEY`] is the active root, [`WORKSPACE_RECENT_KEY`] the
+//! registered roots. [`list_roots`] / [`register_root`] / [`unregister_root`]
+//! own the registry; nesting is refused ([`paths_overlap`]) so registered
+//! roots stay disjoint. Every root-aware feature resolves through
+//! [`resolve_workspace_root`], so switching the active root moves all of them
+//! with no per-feature changes.
 
 use std::path::{Path, PathBuf};
+
+use serde::Serialize;
 
 use crate::application::settings::SettingsService;
 use crate::infrastructure::database::Database;
@@ -332,6 +342,168 @@ pub(crate) fn resolve_workspace_root(db: &Database, default_root: &Path) -> Path
     default_root.to_path_buf()
 }
 
+/// Multi-root registry view: the active root plus every registered root.
+///
+/// Storage decision (documented per task scope): the registry reuses the two
+/// existing settings keys — [`WORKSPACE_ROOT_KEY`] (the active root) and
+/// [`WORKSPACE_RECENT_KEY`] (the up-to-5 registry entries, most-recent
+/// first). No `SQLite` migration: the registry is a tiny bounded list of paths
+/// with no relational joins, and the settings store already owns both keys
+/// (including the `set_setting` syntactic validation in
+/// `commands/settings.rs`). `active` is the resolved effective root (the
+/// stored value when it still validates, else `default_root`); `roots` is
+/// the active root first, then the stored registry entries de-duplicated.
+/// Stale entries (deleted directories) are listed as-is — removal is explicit
+/// via [`unregister_root`], never silent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct RootsList {
+    /// The effective root every `resolve_workspace_root` consumer follows.
+    pub active: String,
+    /// Every registered root, active first, de-duplicated.
+    pub roots: Vec<String>,
+}
+
+/// List the registry: the resolved active root plus the stored entries.
+///
+/// Scope decision (documented per task scope): switching is via this shared
+/// active-root state, not per-command root params — every feature that calls
+/// [`resolve_workspace_root`] (git panel, audit, terminal, agent runs,
+/// GitHub lists, flags, diagnostics, dep tools, `.nexora/` init/profiles)
+/// follows the active root with zero per-feature changes. Search and the
+/// conversation list are NOT root-scoped (global `SQLite` content; conversation
+/// rows only carry a `workspace_root` tag for per-folder history).
+#[must_use]
+pub(crate) fn list_roots(db: &Database, default_root: &Path) -> RootsList {
+    let active = resolve_workspace_root(db, default_root);
+    let active_text = active.to_string_lossy().to_string();
+    let mut roots = vec![active_text.clone()];
+    for item in stored_registry(db) {
+        if item != active_text && !roots.contains(&item) {
+            roots.push(item);
+        }
+    }
+    RootsList {
+        active: active_text,
+        roots,
+    }
+}
+
+/// Register `raw` as a root and make it the active root (idempotent).
+///
+/// Validation: the shared [`validate_workspace_root`] guard (must exist,
+/// canonicalized, no UNC / system / drive-root) plus registry rules —
+/// duplicates collapse to set-active (the ring already de-duplicates), and
+/// nesting is REFUSED in both directions (a root inside another root, or a
+/// root containing an existing root): tool scoping, audit, and git ops all
+/// assume disjoint roots, and nested roots would double-scan and confuse the
+/// per-folder history tags. Only entries that still resolve on disk
+/// participate in the overlap check; stale entries are dead weight awaiting
+/// explicit removal, never a veto.
+pub(crate) fn register_root(db: &Database, raw: &str) -> Result<PathBuf, WorkspaceError> {
+    let canonical = validate_workspace_root(raw)?;
+    let text = canonical.to_string_lossy().to_string();
+    for other in stored_registry(db) {
+        if other == text {
+            continue;
+        }
+        let Ok(other_canonical) = std::fs::canonicalize(other.as_str()) else {
+            continue;
+        };
+        let other_canonical = strip_verbatim(other_canonical);
+        if paths_overlap(&canonical, &other_canonical) {
+            return Err(WorkspaceError::Invalid(
+                "path overlaps an existing root".to_string(),
+            ));
+        }
+    }
+    let service = SettingsService::new(db);
+    service
+        .write(WORKSPACE_ROOT_KEY, Some(text.as_str()))
+        .map_err(|_| WorkspaceError::Invalid("the root could not be saved".to_string()))?;
+    let existing = service.read(WORKSPACE_RECENT_KEY).ok().flatten();
+    let next = push_recent(existing.as_deref(), text.as_str());
+    service
+        .write(WORKSPACE_RECENT_KEY, Some(next.as_str()))
+        .map_err(|_| WorkspaceError::Invalid("the root could not be saved".to_string()))?;
+    Ok(canonical)
+}
+
+/// Unregister `raw` from the registry and return the updated view.
+///
+/// Matching is by normalized text (separator/case/verbatim-insensitive), so a
+/// stale entry for a deleted directory can still be removed — `validate` is
+/// deliberately NOT used here (it requires existence). Removing the active
+/// root clears [`WORKSPACE_ROOT_KEY`], so resolution falls back to the
+/// default root; every root-aware feature follows on its next manual refresh
+/// (no watching/HMR on switch — documented out of scope). Unknown paths fail
+/// with fixed vocabulary. Errors and results are secret-free: fixed strings
+/// plus caller-supplied paths only (paths are user data, rendered raw).
+pub(crate) fn unregister_root(
+    db: &Database,
+    raw: &str,
+    default_root: &Path,
+) -> Result<RootsList, WorkspaceError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(WorkspaceError::Invalid(
+            "path must not be empty".to_string(),
+        ));
+    }
+    let service = SettingsService::new(db);
+    let stored = stored_registry(db);
+    let wanted = normalize_guard_path(Path::new(trimmed));
+    let matched = stored
+        .iter()
+        .find(|item| normalize_guard_path(Path::new(item.as_str())) == wanted)
+        .cloned();
+    let Some(matched) = matched else {
+        return Err(WorkspaceError::Invalid(
+            "path is not a registered root".to_string(),
+        ));
+    };
+    let kept: Vec<String> = stored.into_iter().filter(|item| item != &matched).collect();
+    service
+        .write(
+            WORKSPACE_RECENT_KEY,
+            Some(
+                serde_json::to_string(&kept)
+                    .unwrap_or_else(|_| "[]".to_string())
+                    .as_str(),
+            ),
+        )
+        .map_err(|_| WorkspaceError::Invalid("the root could not be saved".to_string()))?;
+    let stored_active = service.read(WORKSPACE_ROOT_KEY).ok().flatten();
+    let active_is_removed = stored_active
+        .as_deref()
+        .is_some_and(|active| normalize_guard_path(Path::new(active.trim())) == wanted);
+    if active_is_removed {
+        service
+            .delete(WORKSPACE_ROOT_KEY)
+            .map_err(|_| WorkspaceError::Invalid("the root could not be saved".to_string()))?;
+    }
+    Ok(list_roots(db, default_root))
+}
+
+/// Read the stored registry entries (recent list, tolerant of corrupt input).
+#[must_use]
+fn stored_registry(db: &Database) -> Vec<String> {
+    let service = SettingsService::new(db);
+    let raw = service.read(WORKSPACE_RECENT_KEY).ok().flatten();
+    parse_recent(raw.as_deref())
+}
+
+/// Whether two canonical roots overlap: equal, or one contains the other.
+/// Both inputs must already be canonicalized; comparison reuses the
+/// separator/case/verbatim-insensitive guard normalization.
+#[must_use]
+fn paths_overlap(a: &Path, b: &Path) -> bool {
+    let norm_a = normalize_guard_path(a);
+    let norm_b = normalize_guard_path(b);
+    norm_a == norm_b
+        || norm_b.starts_with(&format!("{norm_a}\\"))
+        || norm_a.starts_with(&format!("{norm_b}\\"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -566,5 +738,177 @@ mod tests {
             .expect("write system path");
         assert_eq!(resolve_workspace_root(&db, &fallback), fallback);
         let _ = std::fs::remove_dir_all(&fallback);
+    }
+
+    #[test]
+    fn roots_register_two_roots_and_switch_active() {
+        // Acceptance core: two real local roots registered, active switches,
+        // and the shared resolver (used by git panel, audit, terminal, ...)
+        // follows the switch.
+        let db = crate::infrastructure::database::in_memory_database();
+        let fallback = temp_dir();
+        let root_a = temp_dir();
+        let root_b = temp_dir();
+        register_root(&db, root_a.to_string_lossy().as_ref()).expect("register A");
+        let canon_a = strip_verbatim(std::fs::canonicalize(&root_a).expect("root A resolves"))
+            .to_string_lossy()
+            .to_string();
+        let canon_b = strip_verbatim(std::fs::canonicalize(&root_b).expect("root B resolves"))
+            .to_string_lossy()
+            .to_string();
+        register_root(&db, root_b.to_string_lossy().as_ref()).expect("register B");
+        let listed = list_roots(&db, &fallback);
+        assert_eq!(listed.roots.len(), 2, "two disjoint roots registered");
+        assert!(listed.roots.contains(&canon_a));
+        assert!(listed.roots.contains(&canon_b));
+        assert_eq!(listed.active, canon_b);
+        assert_eq!(
+            resolve_workspace_root(&db, &fallback),
+            PathBuf::from(&canon_b)
+        );
+        // Switch back to A via idempotent re-add: registry size unchanged.
+        register_root(&db, root_a.to_string_lossy().as_ref()).expect("re-add A");
+        let switched = list_roots(&db, &fallback);
+        assert_eq!(switched.roots.len(), 2);
+        assert_eq!(switched.active, canon_a);
+        assert_eq!(
+            resolve_workspace_root(&db, &fallback),
+            PathBuf::from(&canon_a)
+        );
+        for dir in [fallback, root_a, root_b] {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn roots_reject_nesting_in_both_directions() {
+        let db = crate::infrastructure::database::in_memory_database();
+        let fallback = temp_dir();
+        let outer = temp_dir();
+        register_root(&db, outer.to_string_lossy().as_ref()).expect("register outer");
+        let inner = outer.join("child-7e1b");
+        std::fs::create_dir_all(&inner).expect("create child dir");
+        let err = register_root(&db, inner.to_string_lossy().as_ref())
+            .expect_err("nested root must be refused");
+        assert_eq!(
+            format!("{err}"),
+            "invalid workspace root: path overlaps an existing root"
+        );
+        // And the reverse: a fresh registry holding the child refuses the parent.
+        let db2 = crate::infrastructure::database::in_memory_database();
+        register_root(&db2, inner.to_string_lossy().as_ref()).expect("register inner");
+        let err = register_root(&db2, outer.to_string_lossy().as_ref())
+            .expect_err("containing root must be refused");
+        assert_eq!(
+            format!("{err}"),
+            "invalid workspace root: path overlaps an existing root"
+        );
+        // Registry state untouched by the refused adds.
+        assert_eq!(list_roots(&db, &fallback).roots.len(), 1);
+        let _ = std::fs::remove_dir_all(&outer);
+        let _ = std::fs::remove_dir_all(&fallback);
+    }
+
+    #[test]
+    fn roots_reject_missing_paths_and_unknown_removal() {
+        let db = crate::infrastructure::database::in_memory_database();
+        let fallback = temp_dir();
+        let missing = std::env::temp_dir().join("nexora-roots-missing-9f3c2a1e");
+        let _ = std::fs::remove_dir_all(&missing);
+        let err = register_root(&db, missing.to_string_lossy().as_ref())
+            .expect_err("missing path must be rejected");
+        assert_eq!(
+            format!("{err}"),
+            "invalid workspace root: path does not exist"
+        );
+        let err = unregister_root(&db, missing.to_string_lossy().as_ref(), &fallback)
+            .expect_err("unknown removal must fail");
+        assert_eq!(
+            format!("{err}"),
+            "invalid workspace root: path is not a registered root"
+        );
+        let err = unregister_root(&db, "   ", &fallback).expect_err("empty removal must fail");
+        assert_eq!(
+            format!("{err}"),
+            "invalid workspace root: path must not be empty"
+        );
+        let _ = std::fs::remove_dir_all(&fallback);
+    }
+
+    #[test]
+    fn roots_remove_active_falls_back_to_default() {
+        let db = crate::infrastructure::database::in_memory_database();
+        let fallback = temp_dir();
+        let root_a = temp_dir();
+        let root_b = temp_dir();
+        register_root(&db, root_a.to_string_lossy().as_ref()).expect("register A");
+        register_root(&db, root_b.to_string_lossy().as_ref()).expect("register B");
+        let canon_b = strip_verbatim(std::fs::canonicalize(&root_b).expect("root B resolves"))
+            .to_string_lossy()
+            .to_string();
+        // Remove the active root (B): the registry keeps A, active falls back
+        // to the default until the user switches again.
+        let after = unregister_root(&db, root_b.to_string_lossy().as_ref(), &fallback)
+            .expect("remove active");
+        assert!(!after.roots.contains(&canon_b));
+        assert_eq!(after.active, fallback.to_string_lossy().to_string());
+        assert_eq!(resolve_workspace_root(&db, &fallback), fallback);
+        // Stale entries (deleted dirs) remain removable by normalized text.
+        std::fs::remove_dir_all(&root_a).expect("delete root A");
+        unregister_root(&db, root_a.to_string_lossy().as_ref(), &fallback)
+            .expect("stale entry removable");
+        assert_eq!(list_roots(&db, &fallback).roots.len(), 1);
+        let _ = std::fs::remove_dir_all(&root_b);
+        let _ = std::fs::remove_dir_all(&fallback);
+    }
+
+    #[test]
+    fn roots_errors_are_secret_free() {
+        let db = crate::infrastructure::database::in_memory_database();
+        let fallback = temp_dir();
+        for err in [
+            register_root(&db, "").expect_err("empty rejected"),
+            unregister_root(&db, "C:\\nope-9f3c2a1e", &fallback).expect_err("unknown rejected"),
+        ] {
+            let text = format!("{err}").to_lowercase();
+            for needle in ["sk-", "secret", "credential", "api_key", "bearer"] {
+                assert!(
+                    !text.contains(needle),
+                    "error leaks a secret marker: {text:?}"
+                );
+            }
+        }
+        let _ = std::fs::remove_dir_all(&fallback);
+    }
+
+    /// Static wiring check: the git panel and the audit command stay on the
+    /// shared resolver, so switching the active root moves both features with
+    /// no per-feature changes. Needles use `concat!` so this test's own
+    /// source never matches them verbatim.
+    #[test]
+    fn root_aware_features_share_the_active_root_resolver() {
+        const VCS: &str = include_str!("../commands/version_control.rs");
+        const AUDIT: &str = include_str!("../commands/repo_audit.rs");
+        const RESOLVER: &str = concat!("resolve", "_workspace_root");
+        assert!(
+            VCS.contains(RESOLVER),
+            "version_control commands must resolve the shared active root"
+        );
+        assert!(
+            AUDIT.contains(RESOLVER),
+            "repo_audit must resolve the shared active root"
+        );
+        for source in [VCS, AUDIT] {
+            for needle in [
+                concat!("C", ":\\"),
+                concat!("/home", "/"),
+                concat!("canonical", "ize"),
+            ] {
+                assert!(
+                    !source.contains(needle),
+                    "root-aware commands must not hardcode roots, found {needle:?}"
+                );
+            }
+        }
     }
 }

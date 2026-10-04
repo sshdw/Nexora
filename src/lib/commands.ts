@@ -116,6 +116,8 @@ export interface PaletteDeps {
   showShortcuts: () => void;
   /** Flip the interface language EN <-> RU (Settings appearance owns it). */
   toggleLanguage: () => void;
+  /** Register a workspace root via the native folder picker (roots switcher). */
+  addWorkspaceRoot: () => void;
   /** Reopen the first-run onboarding flow (Help re-entry point). */
   replayOnboarding: () => void;
   jumpToTab: (index: number) => void;
@@ -242,6 +244,13 @@ export function buildCommands(deps: PaletteDeps, locale: Locale = "en"): Palette
       section: go,
       keywords: ["workspace", "folder", "directory", "root", "project path"],
       run: () => deps.openSettings("workspace"),
+    },
+    {
+      id: "workspace.add-root",
+      title: tr(locale, "palette.cmd.workspace_add-root"),
+      section: go,
+      keywords: ["workspace", "add", "folder", "register", "root", "multi-root", "project path"],
+      run: deps.addWorkspaceRoot,
     },
     {
       id: "settings.credentials",

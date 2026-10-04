@@ -107,6 +107,19 @@ const en = {
   "nav.workspaceUnset": "Workspace unset",
   "nav.workspaceChipAria": "Current workspace folder: {label}",
 
+  // ---- workspace roots registry (multi-root switcher) -----------------------
+  "roots.title": "Workspace roots",
+  "roots.listAria": "Registered workspace roots",
+  "roots.active": "Active",
+  "roots.use": "Use",
+  "roots.useTitle": "Switch the active root to this folder",
+  "roots.remove": "Remove",
+  "roots.removeTitle": "Unregister this folder (the folder itself is never deleted)",
+  "roots.add": "Add folder…",
+  "roots.empty": "No registered folders yet.",
+  "roots.coverageNote":
+    "The active root drives Version Control, Code Audit, Terminal, Tasks and agent runs, Issues & PRs (origin of the active root), flags, and diagnostics. Global search and the conversation list stay global — conversations only carry a folder tag. Switching refreshes manually.",
+
   // ---- sidebar search (SearchBox.tsx) ---------------------------------------
   "search.label": "Search conversations and prompts",
   "search.placeholder": "Search",
@@ -480,6 +493,7 @@ const en = {
   "palette.cmd.settings_provider": "Settings: Provider & model",
   "palette.cmd.settings_agent": "Settings: Agent & budgets",
   "palette.cmd.settings_workspace": "Settings: Workspace folder",
+  "palette.cmd.workspace_add-root": "Workspace: Add Folder…",
   "palette.cmd.settings_credentials": "Settings: Provider credentials",
   "palette.cmd.settings_data": "Settings: Data management",
   "palette.cmd.settings_advanced": "Settings: Advanced",
@@ -1393,6 +1407,18 @@ const ru: Record<StringKey, string> = {
   "nav.workspaceUnset": "Папка не выбрана",
   "nav.workspaceChipAria": "Текущая рабочая папка: {label}",
 
+  "roots.title": "Рабочие папки",
+  "roots.listAria": "Зарегистрированные рабочие папки",
+  "roots.active": "Активна",
+  "roots.use": "Выбрать",
+  "roots.useTitle": "Сделать эту папку активной",
+  "roots.remove": "Убрать",
+  "roots.removeTitle": "Убрать папку из списка (сама папка не удаляется)",
+  "roots.add": "Добавить папку…",
+  "roots.empty": "Пока нет зарегистрированных папок.",
+  "roots.coverageNote":
+    "Активная папка определяет версионный контроль, аудит кода, терминал, задачи и запуски агента, Issues и PR (origin активной папки), флаги и диагностику. Глобальный поиск и список разговоров остаются общими — у разговоров лишь метка папки. После переключения обновляйте виды вручную.",
+
   "search.label": "Поиск по разговорам и промптам",
   "search.placeholder": "Поиск",
   "search.resultsAria": "Результаты поиска",
@@ -1756,6 +1782,7 @@ const ru: Record<StringKey, string> = {
   "palette.cmd.settings_provider": "Настройки: провайдер и модель",
   "palette.cmd.settings_agent": "Настройки: агент и бюджеты",
   "palette.cmd.settings_workspace": "Настройки: рабочая папка",
+  "palette.cmd.workspace_add-root": "Воркспейс: добавить папку…",
   "palette.cmd.settings_credentials": "Настройки: учётные данные провайдеров",
   "palette.cmd.settings_data": "Настройки: управление данными",
   "palette.cmd.settings_advanced": "Настройки: продвинутые",

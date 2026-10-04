@@ -18,8 +18,8 @@ use tauri::{AppHandle, Manager, State};
 use crate::application::routing::{profile_file_name, RoutingProfile, TaskKind};
 use crate::application::settings::SettingsService;
 use crate::application::workspace::{
-    parse_recent, push_recent, resolve_workspace_root, validate_workspace_root,
-    WORKSPACE_RECENT_KEY, WORKSPACE_ROOT_KEY,
+    list_roots, parse_recent, push_recent, register_root, resolve_workspace_root, unregister_root,
+    validate_workspace_root, RootsList, WORKSPACE_RECENT_KEY, WORKSPACE_ROOT_KEY,
 };
 use crate::infrastructure::database::Database;
 
@@ -89,6 +89,56 @@ pub(crate) fn list_workspace_recent(db: State<'_, Database>) -> Result<Vec<Strin
         .read(WORKSPACE_RECENT_KEY)
         .map_err(CommandError::from)?;
     Ok(parse_recent(raw.as_deref()))
+}
+
+/// List the multi-root registry: the active root plus every registered root.
+///
+/// Read-only: the active entry is the resolved effective root (the stored
+/// `agent.workspace_root` when it still validates, else the default
+/// `agent_workspace` directory), followed by the stored registry entries
+/// de-duplicated. Every root-aware feature (git panel, audit, terminal,
+/// agent runs, GitHub lists, flags, diagnostics) follows the active entry.
+#[tauri::command]
+pub(crate) fn roots_list(
+    app: AppHandle,
+    db: State<'_, Database>,
+) -> Result<RootsList, CommandError> {
+    let fallback = default_root(&app)?;
+    Ok(list_roots(db.inner(), &fallback))
+}
+
+/// Register `path` as a root and make it the active root (idempotent).
+///
+/// Validates with the workspace guard (must exist, canonicalized, no UNC /
+/// system / drive-root) and refuses nesting inside (or around) an existing
+/// root with fixed vocabulary. Returns the updated registry view so the
+/// switcher refreshes in one round trip.
+#[tauri::command]
+pub(crate) fn roots_add(
+    path: String,
+    app: AppHandle,
+    db: State<'_, Database>,
+) -> Result<RootsList, CommandError> {
+    let fallback = default_root(&app)?;
+    register_root(db.inner(), path.as_str())
+        .map_err(|err| CommandError::new(ErrorKind::InvalidInput, err.to_string()))?;
+    Ok(list_roots(db.inner(), &fallback))
+}
+
+/// Unregister `path` from the registry and return the updated view.
+///
+/// Removing the active root clears it, so resolution falls back to the
+/// default root; every root-aware feature follows on its next manual refresh.
+/// Removal never deletes directories — registry bookkeeping only.
+#[tauri::command]
+pub(crate) fn roots_remove(
+    path: String,
+    app: AppHandle,
+    db: State<'_, Database>,
+) -> Result<RootsList, CommandError> {
+    let fallback = default_root(&app)?;
+    unregister_root(db.inner(), path.as_str(), &fallback)
+        .map_err(|err| CommandError::new(ErrorKind::InvalidInput, err.to_string()))
 }
 
 /// Initialize the workspace `.nexora/` project directory (idempotent).

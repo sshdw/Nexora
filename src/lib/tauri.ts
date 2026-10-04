@@ -968,6 +968,37 @@ export function listWorkspaceRecent(): Promise<string[]> {
   return invoke<string[]>("list_workspace_recent");
 }
 
+// ---- Multi-root registry (workspace roots switcher) --------------------
+// The registry spans multiple repo roots: `active` is the effective root
+// every root-aware feature follows (git panel, audit, terminal, agent runs,
+// GitHub lists, flags, diagnostics); `roots` lists every registered root,
+// active first. Registration validates backend-side (must exist,
+// canonicalized, disjoint — nesting refused); removal never deletes
+// directories, and removing the active root falls back to the default.
+
+/** Multi-root registry view: the active root plus every registered root. */
+export interface RootsList {
+  active: string;
+  roots: string[];
+}
+
+/** List the registered roots with the active root first (`roots_list`). */
+export function rootsList(): Promise<RootsList> {
+  return invoke<RootsList>("roots_list");
+}
+
+/** Register `path` as a root and make it active (`roots_add`).
+ * Returns the updated registry view. */
+export function rootsAdd(path: string): Promise<RootsList> {
+  return invoke<RootsList>("roots_add", { path });
+}
+
+/** Unregister `path` from the registry (`roots_remove`). Removing the
+ * active root falls back to the default. Returns the updated view. */
+export function rootsRemove(path: string): Promise<RootsList> {
+  return invoke<RootsList>("roots_remove", { path });
+}
+
 // ---- Workspace project directory (`.nexora/`) --------------------------
 // Per-workspace Nexora home: a `nexora.json` manifest (forward-only
 // version), workspace-relative ignore rules, and a `profiles/` scaffold.
