@@ -738,6 +738,17 @@ impl ToolRegistry {
 /// Validate `execute_command` arguments and resolve the working directory.
 ///
 /// Returns the command string and its workspace-confined absolute directory.
+///
+/// NOTE (NEX-SEC-001 defence-in-depth, deliberately deferred): no static
+/// command allowlist/profile is enforced here. A `sh -c` / `cmd /C` string
+/// cannot be statically classified — quoting, `&&` chains, environment
+/// indirection, and `powershell -EncodedCommand` all defeat prefix matching
+/// — so an allowlist would either break legitimate coding runs or create
+/// false confidence while adding a second policy surface to keep in sync
+/// with the approval ladder. The enforced control is the NEX-SEC-001
+/// deny-floor instead: the shell always parks for explicit user consent
+/// (`RiskClass::DangerousShell` + the dispatch `Ask` non-collapse), and the
+/// child's `cwd` stays workspace-confined with TOCTOU re-verification below.
 fn validated_command_args(
     args: &Value,
     workspace_root: &Path,

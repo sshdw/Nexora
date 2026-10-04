@@ -20,8 +20,9 @@
 //! 3. No match: fall back to the autonomy ladder (`ApprovalGate`).
 //! 4. Mode overrides (applied by the runner, not the store): `Supervised`
 //!    ignores `Allow` rows; `FullAutonomous` still enforces `Deny`, treats
-//!    `Ask` as `Allow`. Unknown tools never reach the store (dispatch rejects
-//!    them).
+//!    `Ask` as `Allow` — except for `execute_command`, whose `Ask` never
+//!    collapses and always parks (NEX-SEC-001 shell deny-floor). Unknown
+//!    tools never reach the store (dispatch rejects them).
 
 use rusqlite::params;
 use serde::Serialize;
@@ -202,14 +203,18 @@ impl PermissionStore {
 }
 
 /// Whether a rule path matches the request path.
+///
+/// Both sides are collapsed through [`normalize_rel`] first (NEX-SEC-002):
+/// without it a `deny` rule on `private` misses `./private/x`, and the call
+/// falls through to the ladder and auto-executes.
 fn path_matches(rule_path: Option<&str>, request_path: Option<&str>) -> bool {
     match rule_path {
         None | Some("*") => true,
         Some(pattern) => match request_path {
             None => false,
             Some(request) => {
-                let pattern = pattern.trim_end_matches('/');
-                let request = request.trim_end_matches('/');
+                let pattern = normalize_rel(pattern);
+                let request = normalize_rel(request);
                 request == pattern || request.starts_with(&format!("{pattern}/"))
             }
         },
@@ -231,13 +236,44 @@ fn specificity(rule: &PermissionRule) -> u8 {
     }
 }
 
+/// Collapse a workspace-relative path to canonical form for permission
+/// matching (NEX-SEC-002).
+///
+/// Normalizes separators (`\` -> `/`), trims whitespace per segment,
+/// collapses `.` and duplicate separators, and resolves `..` against the
+/// workspace root (clamped: leading `..` cannot escape above the root).
+/// Empty/root results map to `"*"`, matching [`normalize_dir`]'s root
+/// convention so both helpers compose.
+fn normalize_rel(path: &str) -> String {
+    let slashed = path.replace('\\', "/");
+    let mut parts: Vec<&str> = Vec::new();
+    for component in slashed.split('/') {
+        let component = component.trim();
+        if component.is_empty() || component == "." {
+            continue;
+        }
+        if component == ".." {
+            parts.pop();
+        } else {
+            parts.push(component);
+        }
+    }
+    if parts.is_empty() {
+        "*".to_string()
+    } else {
+        parts.join("/")
+    }
+}
+
 /// Extract the request path from a tool call's raw JSON arguments.
 ///
 /// File tools (`read_file`, `write_file`, `edit_file`) normalise to the
 /// parent directory; directory tools (`list_directory` `path`,
 /// `execute_command` `cwd`) use the directory itself; `search_files` uses its
 /// scope (`directory`, with `path` as alias — mirroring the executor's
-/// fallback). Returns `None` for pathless calls (or unparseable args); a
+/// fallback). Every arm is collapsed through [`normalize_rel`] so the
+/// matcher and the executor (which canonicalizes) agree (NEX-SEC-002).
+/// Returns `None` for pathless calls (or unparseable args); a
 /// `None` request only matches pathless (`NULL`/`'*'`) rules.
 #[must_use]
 pub(crate) fn extract_path(tool_name: &str, arguments_json: &str) -> Option<String> {
@@ -248,14 +284,14 @@ pub(crate) fn extract_path(tool_name: &str, arguments_json: &str) -> Option<Stri
             if path.trim().is_empty() {
                 return None;
             }
-            Some(parent_dir(path))
+            Some(normalize_rel(&parent_dir(path)))
         }
         "list_directory" => {
             let path = args.get("path")?.as_str()?;
             if path.trim().is_empty() {
                 return None;
             }
-            Some(normalize_dir(path))
+            Some(normalize_rel(&normalize_dir(path)))
         }
         "search_files" => {
             let scope = args
@@ -265,14 +301,14 @@ pub(crate) fn extract_path(tool_name: &str, arguments_json: &str) -> Option<Stri
             if scope.trim().is_empty() {
                 return None;
             }
-            Some(normalize_dir(scope))
+            Some(normalize_rel(&normalize_dir(scope)))
         }
         "execute_command" => {
             let cwd = args.get("cwd")?.as_str()?;
             if cwd.trim().is_empty() {
                 return None;
             }
-            Some(normalize_dir(cwd))
+            Some(normalize_rel(&normalize_dir(cwd)))
         }
         _ => None,
     }
@@ -706,6 +742,109 @@ mod tests {
                 Some("public"),
                 RiskClass::ReadOnly
             )
+            .is_none());
+    }
+
+    #[test]
+    fn normalize_rel_table() {
+        // NEX-SEC-002: every spelling the executor would resolve into the
+        // workspace must collapse to one canonical form for matching.
+        let cases = [
+            ("private", "private"),
+            ("./private", "private"),
+            ("private/./sub", "private/sub"),
+            ("private//sub", "private/sub"),
+            ("//private//x//", "private/x"),
+            ("a/../private", "private"),
+            ("../private", "private"),
+            ("..", "*"),
+            (".", "*"),
+            ("", "*"),
+            ("./", "*"),
+            ("private/", "private"),
+            ("private ", "private"),
+            (" private/sub ", "private/sub"),
+            ("private\\sub", "private/sub"),
+            (".\\private\\x", "private/x"),
+            ("*", "*"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(normalize_rel(input), expected, "input={input:?}");
+        }
+    }
+
+    #[test]
+    fn deny_rule_on_private_blocks_dot_slash_evasion() {
+        // NEX-SEC-002 regression: the executor resolves `./private/x` into
+        // `private/`, so a deny rule on `private` must hit every spelling —
+        // otherwise the call falls through to the ladder and auto-executes.
+        let store = PermissionStore::from_rules(vec![rule(
+            1,
+            "coding",
+            "write_file",
+            Some("private"),
+            RuleEffect::Deny,
+            0,
+        )]);
+        for raw in [
+            "private/secret.txt",
+            "./private/secret.txt",
+            ".\\private\\secret.txt",
+            "private//secret.txt",
+            "sub/../private/secret.txt",
+            " ./private/secret.txt ",
+            "./private/./secret.txt",
+        ] {
+            let args = format!(r#"{{"path": {raw:?}, "content": "x"}}"#);
+            let path = extract_path("write_file", &args);
+            let outcome =
+                store.decide("coding", "write_file", path.as_deref(), RiskClass::Mutating);
+            assert!(
+                matches!(outcome, Some(PermissionOutcome::Deny { .. })),
+                "raw={raw:?} extracted={path:?} must hit the deny rule"
+            );
+        }
+        // Outside the scope nothing matches (falls back to the ladder).
+        let outside = extract_path(
+            "write_file",
+            r#"{"path": "public/note.txt", "content": "x"}"#,
+        );
+        assert!(store
+            .decide(
+                "coding",
+                "write_file",
+                outside.as_deref(),
+                RiskClass::Mutating
+            )
+            .is_none());
+        // `..` that escapes the scope must not match either.
+        assert!(store
+            .decide("coding", "write_file", Some("other"), RiskClass::Mutating)
+            .is_none());
+    }
+
+    #[test]
+    fn rule_patterns_are_normalized_before_matching() {
+        // A rule stored with an un-normalized pattern (`./private/`) still
+        // scopes correctly once both sides collapse.
+        let store = PermissionStore::from_rules(vec![rule(
+            1,
+            "coding",
+            "read_file",
+            Some("./private/"),
+            RuleEffect::Deny,
+            0,
+        )]);
+        assert!(store
+            .decide(
+                "coding",
+                "read_file",
+                Some("private/x"),
+                RiskClass::ReadOnly
+            )
+            .is_some());
+        assert!(store
+            .decide("coding", "read_file", Some("public/x"), RiskClass::ReadOnly)
             .is_none());
     }
 }
