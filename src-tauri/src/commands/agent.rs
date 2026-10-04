@@ -294,7 +294,8 @@ pub(crate) fn resolve_agent_approval(
         ResolveOutcome::Resolved => {
             // M1-core persistent "never ask for this pattern": group-scope
             // approvals for non-shell tools persist an allow rule. Shell
-            // groups never persist (they always park except FullAutonomous).
+            // groups never persist (they always park in every mode,
+            // including FullAutonomous (NEX-SEC-001 deny-floor)).
             if scope_ref == Some("group") && approved {
                 if let Some((tool_name, group_key)) = pending {
                     if tool_name != "execute_command" {
@@ -342,8 +343,8 @@ fn group_path_pattern(group_key: Option<&str>) -> Option<String> {
 /// Best-effort insert of the group-allow rule (`effect='allow'`,
 /// `priority=200`). Failures (e.g. duplicate) are ignored: the session-sticky
 /// verdict already governs this run. Shell tools never persist (defense in
-/// depth alongside the caller's guard): shell groups always park except
-/// under `FullAutonomous`.
+/// depth alongside the caller's guard): shell groups always park in every
+/// mode, including `FullAutonomous` (NEX-SEC-001 deny-floor).
 fn insert_group_allow_rule(
     db: &Database,
     preset: &str,
@@ -563,7 +564,8 @@ pub(crate) fn activity_feed(
 /// (1..64 chars); `path_pattern` is `None` (no path dimension) or 1..1024
 /// chars (`*` = match-any); `effect` is `allow`/`ask`/`deny`. Persistent
 /// `allow` for `execute_command` (or `*`, which includes the shell) is
-/// rejected: shell groups always park except under `FullAutonomous`.
+/// rejected: shell groups always park in every mode, including
+/// `FullAutonomous` (NEX-SEC-001 deny-floor).
 #[tauri::command]
 pub(crate) fn add_permission_rule(
     preset: String,

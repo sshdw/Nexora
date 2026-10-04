@@ -468,6 +468,26 @@ fn stress_cancel_under_load() {
                 break;
             }
         }
+        // NEX-SEC-001 deny-floor: the shell parks for approval in every
+        // mode, including FullAutonomous, so approve the parked call to let
+        // the child actually spawn. Without this the cancel below would hit
+        // the parked wait (duplicating scenario (b)) and the child-kill
+        // path would lose its only coverage.
+        loop {
+            let frame = recv_deadline(&rx, deadline);
+            if let RunFrame::Governance {
+                event: AgentRunEvent::ApprovalRequested { call_id, .. },
+                ..
+            } = &frame
+            {
+                assert_eq!(
+                    registry.resolve(run_id, call_id, true),
+                    ResolveOutcome::Resolved,
+                    "shell approval must resolve so the child spawns"
+                );
+                break;
+            }
+        }
         // Give the child process time to spawn, then cancel.
         std::thread::sleep(Duration::from_millis(800));
         assert!(registry.cancel(run_id), "active run must cancel");
