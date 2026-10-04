@@ -98,6 +98,8 @@ export interface PaletteDeps {
   openTerminal: (request?: PaletteTerminalRequest) => void;
   /** Open the Tasks overlay (task manager + autonomous mode). */
   openTasks: () => void;
+  /** Open the Code Audit overlay (read-only repo findings). */
+  openAudit: () => void;
   /** Open the Activity & Health overlay on the requested tab. */
   openActivity: (tab: "activity" | "health") => void;
   newConversation: () => void;
@@ -161,6 +163,13 @@ export function buildCommands(deps: PaletteDeps, locale: Locale = "en"): Palette
       section: go,
       keywords: ["tasks", "todo", "autonomous", "plan", "checklist", "agent tasks", "run tasks"],
       run: () => deps.openTasks(),
+    },
+    {
+      id: "go.audit",
+      title: tr(locale, "palette.cmd.go_audit"),
+      section: go,
+      keywords: ["audit", "code audit", "lint", "static analysis", "dead code", "review", "bugs", "quality"],
+      run: () => deps.openAudit(),
     },
     {
       id: "go.activity",

@@ -517,3 +517,35 @@ export function TaskIcon(props: ComponentPropsWithoutRef<"svg">) {
     </svg>
   );
 }
+
+/** Audit glyph for the sidebar Code Audit entry: a magnifier with a check
+ * stroke, on the same 18px stroke grid as the rail set. */
+export function AuditIcon(props: ComponentPropsWithoutRef<"svg">) {
+  return (
+    <svg
+      aria-hidden="true"
+      focusable="false"
+      width="18"
+      height="18"
+      viewBox="0 0 18 18"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      {...props}
+    >
+      <circle cx="8" cy="8" r="5" stroke="currentColor" strokeWidth="1.4" />
+      <path
+        d="M11.8 11.8 15.5 15.5"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+      <path
+        d="M6 8.2l1.4 1.4 2.8-3"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}

@@ -58,6 +58,7 @@ pub fn run() {
             commands::prompts::update_prompt,
             commands::prompts::delete_prompt,
             commands::prompts::insert_prompt_into_conversation,
+            commands::repo_audit::repo_audit,
             commands::attachments::attach_file,
             commands::attachments::list_attachments,
             commands::attachments::remove_attachment,
