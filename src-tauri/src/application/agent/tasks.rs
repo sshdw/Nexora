@@ -22,8 +22,10 @@
 //! limits are honored by construction, never bypassed:
 //!
 //! - the step budget parks the run on `BudgetExhausted` exactly as for a
-//!   manual run (the loop waits; it never auto-extends — extending stays a
-//!   user decision via `extend_agent_run`, stopping via `stop_task_run`);
+//!   manual run; the loop never auto-extends — a parked step run stops the
+//!   loop with an honest report (the parked run is cancelled first so the
+//!   conversation stays reusable) instead of polling its `'running'` row
+//!   forever (NEX-AGENT-001);
 //! - the approval gate parks mutating tool calls per the persisted autonomy
 //!   mode (resolved through the existing `resolve_agent_approval` command);
 //! - the per-run spend guard terminates the run on `SpendLimitExceeded`
@@ -33,7 +35,10 @@
 //! Boundedness: task creation rejects more than [`TASK_MAX_STEPS`] steps and
 //! `max_steps` outside `1..=TASK_MAX_STEPS`; the loop additionally executes
 //! at most `max_steps` steps and then marks the remainder `skipped`, so no
-//! infinite loop is possible. [`TaskRegistry`] carries the per-task
+//! infinite loop is possible. A wall-clock [`TASK_LOOP_DEADLINE`] bounds the
+//! whole loop as a safety net (NEX-AGENT-001): a step run that never reaches
+//! a terminal status and never parks observably stops the loop with an
+//! honest report instead of polling forever. [`TaskRegistry`] carries the per-task
 //! cancellation flag (plus the current step's `run_id` so `stop` also aborts
 //! the in-flight agent run through the existing
 //! [`AgentRunRegistry::cancel`] path — the cancellation-token precedent).
@@ -46,7 +51,7 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
@@ -94,6 +99,20 @@ const RUN_POLL_INTERVAL: Duration = Duration::from_millis(20);
 /// step is failed (a persistently unreadable database must terminate the
 /// loop, not spin it forever).
 const MAX_CONSECUTIVE_READ_ERRORS: u32 = 150;
+
+/// Overall wall-clock bound on one autonomous loop, from loop start to the
+/// terminal report (NEX-AGENT-001 safety net). Generous by design:
+/// legitimate tasks finish far sooner; only a genuinely stuck loop — a step
+/// run that never reaches a terminal status and never parks observably —
+/// trips it, and then the loop stops with an honest report instead of
+/// polling forever.
+const TASK_LOOP_DEADLINE: Duration = Duration::from_mins(30);
+
+/// Consecutive polls observing the in-memory budget park before the loop
+/// treats the step as parked (NEX-AGENT-001). A single poll could win a race
+/// against a user `extend_steps` landing just as the run parks; requiring a
+/// short streak keeps the loop honest without hanging on a true park.
+const PARK_CONFIRM_POLLS: u32 = 3;
 
 // ---------------------------------------------------------------------------
 // Events (`agent-task-event` frames)
@@ -558,6 +577,36 @@ pub(crate) fn spawn_task_run(
     task_id: i64,
     config: TaskRunConfig,
 ) -> Result<(), TaskError> {
+    spawn_task_run_with_deadline(
+        db,
+        agent_registry,
+        task_registry,
+        host,
+        emit,
+        task_id,
+        config,
+        Instant::now() + TASK_LOOP_DEADLINE,
+    )
+}
+
+/// Deadline-parameterized [`spawn_task_run`]: production passes the default
+/// [`TASK_LOOP_DEADLINE`]; tests pass short bounds to prove the loop
+/// terminates without waiting out the production bound.
+///
+/// # Errors
+///
+/// Same as [`spawn_task_run`].
+#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+pub(crate) fn spawn_task_run_with_deadline(
+    db: &Database,
+    agent_registry: Arc<AgentRunRegistry>,
+    task_registry: Arc<TaskRegistry>,
+    host: Arc<dyn AgentRunHost>,
+    emit: Arc<dyn Fn(TaskEvent) + Send + Sync>,
+    task_id: i64,
+    config: TaskRunConfig,
+    deadline: Instant,
+) -> Result<(), TaskError> {
     let service = TaskService::new(db);
     let task = service.read_task(task_id)?;
     if task_registry.is_active(task_id) || task.status == "running" {
@@ -588,7 +637,7 @@ pub(crate) fn spawn_task_run(
     std::thread::Builder::new()
         .name(format!("agent-task-{task_id}"))
         .spawn(move || {
-            run_task_loop(
+            run_task_loop_with_deadline(
                 &thread_db,
                 &agent_registry,
                 &task_registry,
@@ -600,6 +649,7 @@ pub(crate) fn spawn_task_run(
                 &model,
                 &steps,
                 &config,
+                deadline,
             );
             task_registry.release(task_id);
         })
@@ -625,6 +675,9 @@ struct LoopCtx<'a> {
     provider: &'a str,
     model: &'a str,
     config: &'a TaskRunConfig,
+    /// Absolute wall-clock bound for the whole loop (NEX-AGENT-001 safety
+    /// net): the step wait stops with [`RunOutcome::TimedOut`] past it.
+    deadline: Instant,
 }
 
 /// How one step ended for the loop driver.
@@ -705,6 +758,7 @@ impl LoopCtx<'_> {
             self.task_registry,
             self.task_id,
             run_id,
+            self.deadline,
         );
         self.task_registry.set_run_id(self.task_id, None);
         self.apply_outcome(step, seq, run_id, outcome, prior)
@@ -752,6 +806,41 @@ impl LoopCtx<'_> {
                 self.record_failed(seq, Some(run_id), "the step stopped at the run step budget");
                 StepControl::Stop {
                     reason: "stopped at the run step budget",
+                    cancelled: false,
+                }
+            }
+            RunOutcome::Parked => {
+                // The step hit its iteration budget and parked awaiting a
+                // budget decision; the loop never auto-extends, so stop here
+                // instead of polling the `'running'` row forever
+                // (NEX-AGENT-001). Cancel the parked run first: the wake
+                // finalizes its persisted row and frees the conversation for
+                // future runs.
+                let _ = self.agent_registry.cancel(run_id);
+                self.record_failed(
+                    seq,
+                    Some(run_id),
+                    "the step run parked at the run step budget",
+                );
+                StepControl::Stop {
+                    reason: "stopped at the run step budget (parked)",
+                    cancelled: false,
+                }
+            }
+            RunOutcome::TimedOut => {
+                // The overall task deadline tripped while the step run was
+                // neither terminal nor observably parked. Cancel best-effort
+                // (wakes budget and approval parks; a provider call blocked
+                // mid-flight still runs to its request timeout) and stop
+                // with an honest report.
+                let _ = self.agent_registry.cancel(run_id);
+                self.record_failed(
+                    seq,
+                    Some(run_id),
+                    "the step run exceeded the task time bound",
+                );
+                StepControl::Stop {
+                    reason: "exceeded the task time bound",
                     cancelled: false,
                 }
             }
@@ -832,6 +921,43 @@ fn run_task_loop(
     steps: &[AgentTaskStep],
     config: &TaskRunConfig,
 ) {
+    run_task_loop_with_deadline(
+        db,
+        agent_registry,
+        task_registry,
+        host,
+        emit,
+        task_id,
+        conversation_id,
+        provider,
+        model,
+        steps,
+        config,
+        Instant::now() + TASK_LOOP_DEADLINE,
+    );
+}
+
+/// Deadline-parameterized [`run_task_loop`]: production passes the default
+/// [`TASK_LOOP_DEADLINE`]; tests pass short bounds to prove the loop
+/// terminates without waiting out the production bound.
+// The loop thread receives one bundle per boundary by construction (the
+// spawned-thread handoff mirrors `service::spawn_run`, which allows the
+// same lint for the same reason).
+#[allow(clippy::too_many_arguments)]
+fn run_task_loop_with_deadline(
+    db: &Database,
+    agent_registry: &Arc<AgentRunRegistry>,
+    task_registry: &Arc<TaskRegistry>,
+    host: &Arc<dyn AgentRunHost>,
+    emit: &Arc<dyn Fn(TaskEvent) + Send + Sync>,
+    task_id: i64,
+    conversation_id: i64,
+    provider: &str,
+    model: &str,
+    steps: &[AgentTaskStep],
+    config: &TaskRunConfig,
+    deadline: Instant,
+) {
     let repo = AgentTaskRepository::new(db);
     // Reset any previous attempt's step states, then bound the pass. The
     // runtime `min` is load-bearing: even a row whose `max_steps` predates a
@@ -858,6 +984,7 @@ fn run_task_loop(
         provider,
         model,
         config,
+        deadline,
     };
     let mut prior: Vec<String> = Vec::new();
     let mut stop_reason: Option<&str> = None;
@@ -867,6 +994,12 @@ fn run_task_loop(
         let seq = i64::try_from(index + 1).unwrap_or(i64::MAX);
         if task_registry.is_cancelled(task_id) {
             task_cancelled = true;
+            break;
+        }
+        // Overall wall-clock safety net (NEX-AGENT-001): never start another
+        // step past the task deadline — stop with an honest report instead.
+        if Instant::now() >= deadline {
+            stop_reason = Some("exceeded the task time bound");
             break;
         }
         match ctx.execute_step(step, seq, index + 1, total, &mut prior) {
@@ -932,6 +1065,15 @@ enum RunOutcome {
     /// `budget_exhausted`: the step budget parked the run (honored as a
     /// stop — the loop never auto-extends).
     BudgetExhausted,
+    /// The step run parked at its iteration budget (persisted `'running'`
+    /// until extended or cancelled — and the loop never auto-extends), so
+    /// the wait stopped rather than polling forever (NEX-AGENT-001). The
+    /// loop cancels the parked run and records the step failed.
+    Parked,
+    /// The overall task `deadline` tripped while the step run was neither
+    /// terminal nor observably parked (NEX-AGENT-001 safety net). The loop
+    /// cancels best-effort and records the step failed.
+    TimedOut,
     /// `spend_limit_exceeded`: the spend guard tripped (honored as a stop).
     SpendLimited,
     /// `error` (or an unreadable row): classified error text.
@@ -944,17 +1086,40 @@ enum RunOutcome {
 /// stop aborts the in-flight run first (through
 /// [`AgentRunRegistry::cancel`]); the poll then observes its `cancelled`
 /// terminal like any other terminal.
+///
+/// Two NEX-AGENT-001 guards keep the poll bounded (terminal rows resolve
+/// exactly as before — neither guard changes completed/budget/spend/
+/// cancelled/error behavior):
+///
+/// - a step run parked at its iteration budget (persisted `'running'`
+///   forever until extended or cancelled) surfaces as
+///   [`RunOutcome::Parked`] once the in-memory park is confirmed across
+///   [`PARK_CONFIRM_POLLS`] consecutive polls;
+/// - the overall task `deadline` surfaces as [`RunOutcome::TimedOut`].
 fn wait_for_run_terminal(
     runs: &AgentRunRepository<'_>,
     agent_registry: &Arc<AgentRunRegistry>,
     task_registry: &Arc<TaskRegistry>,
     task_id: i64,
     run_id: i64,
+    deadline: Instant,
 ) -> RunOutcome {
     let mut read_errors: u32 = 0;
+    let mut parked_polls: u32 = 0;
     loop {
         if task_registry.is_cancelled(task_id) {
             let _ = agent_registry.cancel(run_id);
+        }
+        if agent_registry.is_budget_parked(run_id) {
+            parked_polls += 1;
+            if parked_polls >= PARK_CONFIRM_POLLS {
+                return RunOutcome::Parked;
+            }
+        } else {
+            parked_polls = 0;
+        }
+        if Instant::now() >= deadline {
+            return RunOutcome::TimedOut;
         }
         match runs.read_run(run_id) {
             Ok(Some(run)) => {
@@ -1471,6 +1636,292 @@ mod tests {
         assert_eq!(steps[0].status, "failed");
         assert_eq!(steps[1].status, "skipped");
         let _ = std::fs::remove_dir_all(temp_workspace("err"));
+    }
+
+    #[test]
+    fn spawn_succeeds_after_orphan_sweep() {
+        // NEX-TASK-001: a quit mid-task leaves `status='running'`, bricking
+        // the task (spawn/update/delete all refuse). The startup sweep fails
+        // the orphan so the task is runnable again.
+        let harness = LoopHarness::new("sweep", vec![Ok(text_response("recovered"))]);
+        let service = TaskService::new(&harness.db);
+        let id = harness.create_task(&["one"], None);
+        AgentTaskRepository::new(&harness.db)
+            .mark_task_running(id, 1)
+            .expect("simulate a crash mid-task");
+        assert!(
+            matches!(
+                spawn_task_run(
+                    &harness.db,
+                    Arc::clone(&harness.agent_registry),
+                    Arc::clone(&harness.task_registry),
+                    Arc::clone(&harness.host),
+                    Arc::clone(&harness.emit),
+                    id,
+                    harness.config(None),
+                )
+                .expect_err("orphaned running task must refuse spawn"),
+                TaskError::AlreadyRunning { .. }
+            ),
+            "pre-sweep spawn must be refused"
+        );
+        let swept = AgentTaskRepository::new(&harness.db)
+            .fail_orphaned_running_tasks("task interrupted by application shutdown")
+            .expect("sweep");
+        assert_eq!(swept, 1);
+        assert_eq!(service.read_task(id).expect("read").status, "failed");
+        harness.run_to_completion(id, None);
+        assert_eq!(
+            service.read_task(id).expect("read").status,
+            "completed",
+            "the swept task runs cleanly again"
+        );
+        let _ = std::fs::remove_dir_all(temp_workspace("sweep"));
+    }
+
+    /// One read-only tool-call response (auto-approved in `SemiAutonomous`):
+    /// enough of these in a row exhaust the default step budget (10) and
+    /// park the step run instead of terminating it.
+    fn tool_list_response(id: &str) -> AiResponse {
+        AiResponse {
+            content: String::new(),
+            model: "test-model".to_string(),
+            tool_calls: vec![crate::application::execution::ToolCall {
+                id: id.to_string(),
+                name: "list_directory".to_string(),
+                arguments: "{}".to_string(),
+                thought_signature: None,
+            }],
+            usage: None,
+        }
+    }
+
+    #[test]
+    fn loop_stops_when_step_parks_at_budget() {
+        // NEX-AGENT-001 integration: more tool turns than the step budget
+        // allows, so the step run parks at its iteration budget (persisted
+        // `'running'` forever until extended or cancelled — and the loop
+        // never auto-extends). The loop must surface the in-memory park and
+        // stop with an honest report instead of polling forever.
+        let scripts: Vec<Result<AiResponse, ExecutorError>> = (0..12)
+            .map(|n| Ok(tool_list_response(&format!("park-{n}"))))
+            .collect();
+        let harness = LoopHarness::new("park", scripts);
+        let id = harness.create_task(&["grind"], None);
+        harness.run_to_completion(id, None);
+
+        let service = TaskService::new(&harness.db);
+        let task = service.read_task(id).expect("read");
+        assert_eq!(task.status, "failed");
+        assert!(
+            task.report
+                .as_deref()
+                .unwrap_or("")
+                .contains("run step budget"),
+            "report stays honest about the budget, got {:?}",
+            task.report
+        );
+        let steps = service.list_steps(id).expect("steps");
+        assert_eq!(steps[0].status, "failed");
+        assert!(
+            steps[0].result.as_deref().unwrap_or("").contains("parked"),
+            "step records the park, got {:?}",
+            steps[0].result
+        );
+        assert_eq!(
+            harness.executor.calls(),
+            10,
+            "the budget parks the run before an 11th turn"
+        );
+
+        // The loop cancels the parked run: its persisted row reaches a
+        // terminal status (no leaked parked thread) and the conversation is
+        // reusable for future runs.
+        let run_id = steps[0].run_id.expect("step links its run");
+        let start = std::time::Instant::now();
+        let run = loop {
+            let row = AgentRunRepository::new(&harness.db)
+                .read_run(run_id)
+                .expect("read run")
+                .expect("exists");
+            if row.status != "running" {
+                break row;
+            }
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(10),
+                "the cancelled park must finalize promptly"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert_eq!(run.status, "cancelled");
+        let _ = std::fs::remove_dir_all(temp_workspace("park"));
+    }
+
+    /// Provider executor whose calls block forever: a step run that never
+    /// terminates benignly and never parks observably.
+    struct BlockingExecutor;
+
+    impl ProviderExecutor for BlockingExecutor {
+        fn execute(
+            &self,
+            _request: &AiRequest,
+            _credential: &str,
+            _token: &CancellationToken,
+        ) -> Result<AiResponse, ExecutorError> {
+            std::thread::park();
+            Err(ExecutorError::Failure)
+        }
+    }
+
+    #[test]
+    fn loop_enforces_overall_deadline() {
+        // NEX-AGENT-001 safety net: the step run never terminates (provider
+        // call blocks forever), so neither a persisted terminal nor a park
+        // ever arrives. The overall task deadline must still bring the task
+        // to a terminal status within a bounded time (short test cap — the
+        // production bound is far longer).
+        let db = crate::infrastructure::database::in_memory_database();
+        let agent_registry = Arc::new(AgentRunRegistry::default());
+        let task_registry = Arc::new(TaskRegistry::default());
+        let host: Arc<dyn AgentRunHost> = Arc::new(QuietHost);
+        let events: Arc<Mutex<Vec<TaskEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&events);
+        let emit: Arc<dyn Fn(TaskEvent) + Send + Sync> =
+            Arc::new(move |event| sink.lock().expect("events lock").push(event));
+        let workspace = temp_workspace("deadline");
+        let id = TaskService::new(&db)
+            .create_task(
+                "task",
+                Some("goal"),
+                None,
+                Some("openai"),
+                Some("test-model"),
+                &["stuck".to_string()],
+                None,
+            )
+            .expect("create task");
+        let config = TaskRunConfig {
+            executor: Arc::new(BlockingExecutor),
+            workspace_root: workspace.clone(),
+            credential: "sk-secret-test-credential".to_string(),
+            mode: AutonomyMode::SemiAutonomous,
+            preset: RunPreset::Coding,
+            spend_limit_micro_usd: None,
+        };
+        spawn_task_run_with_deadline(
+            &db,
+            Arc::clone(&agent_registry),
+            Arc::clone(&task_registry),
+            Arc::clone(&host),
+            Arc::clone(&emit),
+            id,
+            config,
+            std::time::Instant::now() + std::time::Duration::from_secs(3),
+        )
+        .expect("spawn");
+
+        let start = std::time::Instant::now();
+        let task = loop {
+            let task = TaskService::new(&db).read_task(id).expect("read");
+            if task.status == "failed" || task.status == "completed" || task.status == "cancelled" {
+                break task;
+            }
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(30),
+                "the task loop must hit the deadline and terminate"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert_eq!(task.status, "failed");
+        assert!(
+            task.report.as_deref().unwrap_or("").contains("time bound"),
+            "report stays honest about the deadline, got {:?}",
+            task.report
+        );
+        let start = std::time::Instant::now();
+        while task_registry.is_active(id) {
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(10),
+                "the loop thread must release the task"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn wait_detects_budget_park_without_polling_forever() {
+        // NEX-AGENT-001 unit probe: a run row stuck at `'running'` whose
+        // control is budget-parked must surface `Parked` quickly — the
+        // exact case that used to poll forever.
+        use crate::application::agent::approval::ApprovalGate;
+        use crate::application::agent::control::RunControl;
+        use crate::application::agent::registry::ActiveAgentRun;
+
+        let db = crate::infrastructure::database::in_memory_database();
+        let runs = AgentRunRepository::new(&db);
+        let run_id = runs.create_run(None, "m", "supervised").expect("run");
+        let agent_registry = Arc::new(AgentRunRegistry::default());
+        let task_registry = Arc::new(TaskRegistry::default());
+        let control = RunControl::new();
+        agent_registry.register(
+            run_id,
+            ActiveAgentRun {
+                conversation_id: 1,
+                control: control.clone(),
+                gate: ApprovalGate::new(AutonomyMode::Supervised),
+            },
+        );
+        let parked = control.clone();
+        let handle = std::thread::spawn(move || {
+            assert!(!parked.wait_for_allowance(0, 0), "cancel ends park");
+        });
+
+        let start = std::time::Instant::now();
+        while !control.is_budget_parked() {
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(10),
+                "the control must park"
+            );
+            std::thread::yield_now();
+        }
+        let outcome = wait_for_run_terminal(
+            &runs,
+            &agent_registry,
+            &task_registry,
+            7,
+            run_id,
+            std::time::Instant::now() + std::time::Duration::from_secs(30),
+        );
+        assert!(
+            matches!(outcome, RunOutcome::Parked),
+            "a budget park must surface, not poll forever"
+        );
+        control.cancel();
+        handle.join().expect("parked wait joins after cancel");
+    }
+
+    #[test]
+    fn wait_enforces_deadline_on_stuck_running_row() {
+        // NEX-AGENT-001 unit probe: a `'running'` row with no observable
+        // park and an expired deadline returns immediately — never polls.
+        let db = crate::infrastructure::database::in_memory_database();
+        let runs = AgentRunRepository::new(&db);
+        let run_id = runs.create_run(None, "m", "supervised").expect("run");
+        let agent_registry = Arc::new(AgentRunRegistry::default());
+        let task_registry = Arc::new(TaskRegistry::default());
+        let outcome = wait_for_run_terminal(
+            &runs,
+            &agent_registry,
+            &task_registry,
+            7,
+            run_id,
+            std::time::Instant::now(),
+        );
+        assert!(
+            matches!(outcome, RunOutcome::TimedOut),
+            "an expired deadline must surface immediately"
+        );
     }
 
     #[test]

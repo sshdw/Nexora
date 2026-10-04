@@ -20,6 +20,23 @@ fn sweep_orphaned_agent_runs(db: &infrastructure::database::Database) {
     }
 }
 
+/// Sweep orphaned `running` tasks/steps from crashed sessions to `failed` at
+/// startup (NEX-TASK-001): without it a quit mid-task bricks the task
+/// forever (`spawn_task_run`/`update_task`/`delete_task` all refuse while
+/// `status='running'`). Only `status='running'` rows are touched; all other
+/// statuses and row counts untouched.
+fn sweep_orphaned_task_runs(db: &infrastructure::database::Database) {
+    let swept = crate::infrastructure::repository::agent_tasks::AgentTaskRepository::new(db)
+        .fail_orphaned_running_tasks("task interrupted by application shutdown")
+        .unwrap_or_else(|err| {
+            log::warn!("orphaned task sweep failed: {err}");
+            0
+        });
+    if swept > 0 {
+        log::info!("swept {swept} orphaned agent tasks to failed");
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 /// Run the Tauri desktop application.
 ///
@@ -188,6 +205,7 @@ pub fn run() {
             // is not (DATABASE.md §4–§5).
             let db = app.state::<infrastructure::database::Database>();
             sweep_orphaned_agent_runs(&db);
+            sweep_orphaned_task_runs(&db);
             let conn = db.lock()?;
             let version: i64 = conn.query_row(
                 "SELECT COALESCE(MAX(version), 0) FROM schema_version",

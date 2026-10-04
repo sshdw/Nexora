@@ -171,6 +171,20 @@ impl AgentRunRegistry {
         }
     }
 
+    /// Whether the run's worker thread is currently parked at the exhausted
+    /// step budget (awaiting `extend_steps` or `cancel`). Returns `false`
+    /// when the run is not active. Polled by the task loop's terminal-wait
+    /// so a budget-parked step run — whose persisted row stays `'running'`
+    /// until extended or cancelled — is surfaced instead of polled forever.
+    #[must_use]
+    pub(crate) fn is_budget_parked(&self, run_id: i64) -> bool {
+        self.runs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&run_id)
+            .is_some_and(|entry| entry.control.is_budget_parked())
+    }
+
     /// Change the autonomy mode of an active run (Task 5.2, DP-AUTONOMY).
     /// A parked approval is never auto-resolved by a mode switch.
     /// Returns `false` when the run is not active.

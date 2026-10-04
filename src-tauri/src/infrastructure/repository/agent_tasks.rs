@@ -258,6 +258,32 @@ impl AgentTaskRepository<'_> {
         Ok(())
     }
 
+    /// Sweep orphaned `running` tasks and steps to `failed` at startup
+    /// (NEX-TASK-001): a quit mid-task otherwise bricks the task forever —
+    /// `spawn_task_run` / `update_task` / `delete_task` all refuse while
+    /// `status='running'`.
+    ///
+    /// `UPDATE agent_tasks SET status='failed', report=?1 ... WHERE
+    /// status='running'` (plus the same for `agent_task_steps` rows stuck in
+    /// `'running'`) — only `running` rows are touched; all other statuses
+    /// and row counts are unchanged. Returns the number of task rows swept.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DatabaseError`] if either update fails.
+    pub(crate) fn fail_orphaned_running_tasks(&self, reason: &str) -> Result<usize> {
+        let conn = self.conn()?;
+        let swept = conn.execute(
+            "UPDATE agent_tasks SET status = 'failed', report = ?1, updated_at = (unixepoch()) WHERE status = 'running'",
+            params![reason],
+        )?;
+        conn.execute(
+            "UPDATE agent_task_steps SET status = 'failed', result = ?1, finished_at = (unixepoch()) WHERE status = 'running'",
+            params![reason],
+        )?;
+        Ok(swept)
+    }
+
     /// Delete a task by `id`. Deleting a non-existent `id` is a no-op.
     /// Cascading deletion of the task's steps is schema-enforced.
     ///
@@ -591,5 +617,67 @@ mod tests {
         let done = tasks.read_task(id).expect("read").expect("exists");
         assert_eq!(done.status, "completed");
         assert_eq!(done.report.as_deref(), Some("report text"));
+    }
+
+    #[test]
+    fn orphaned_sweep_fails_running_tasks_and_steps_only() {
+        let db = in_memory_database();
+        let tasks = repo(&db);
+
+        // One running task (one running step, one pending step) plus one
+        // task per other terminal status.
+        let running_id = tasks
+            .create_task("running", None, None, None, None, 25)
+            .expect("task");
+        tasks.append_step(running_id, 1, "one").expect("step 1");
+        tasks.append_step(running_id, 2, "two").expect("step 2");
+        tasks
+            .mark_task_running(running_id, 2)
+            .expect("mark running");
+        tasks
+            .mark_step_running(running_id, 1)
+            .expect("step running");
+
+        let mut others = Vec::new();
+        for status in ["completed", "failed", "cancelled"] {
+            let id = tasks
+                .create_task(status, None, None, None, None, 25)
+                .expect("task");
+            tasks.finalize_task(id, status, "report").expect("finalize");
+            others.push((id, status));
+        }
+
+        let swept = tasks
+            .fail_orphaned_running_tasks("task interrupted by application shutdown")
+            .expect("sweep");
+        assert_eq!(swept, 1, "only running tasks should be swept");
+
+        let swept_task = tasks.read_task(running_id).expect("read").expect("exists");
+        assert_eq!(swept_task.status, "failed");
+        assert_eq!(
+            swept_task.report.as_deref(),
+            Some("task interrupted by application shutdown")
+        );
+        let steps = tasks.list_steps(running_id).expect("steps");
+        assert_eq!(steps[0].status, "failed");
+        assert_eq!(
+            steps[0].result.as_deref(),
+            Some("task interrupted by application shutdown")
+        );
+        assert!(
+            steps[0].finished_at.is_some(),
+            "swept step must have finished_at"
+        );
+        assert_eq!(steps[1].status, "pending", "pending steps untouched");
+
+        for (id, status) in others {
+            let row = tasks.read_task(id).expect("read").expect("exists");
+            assert_eq!(row.status, status, "non-running status must be untouched");
+        }
+
+        let swept_again = tasks
+            .fail_orphaned_running_tasks("task interrupted by application shutdown")
+            .expect("sweep again");
+        assert_eq!(swept_again, 0, "second sweep should touch none");
     }
 }
