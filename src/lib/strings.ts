@@ -824,6 +824,44 @@ const en = {
   "testgen.copied": "Copied",
   "testgen.draftNote": "Draft only — fill the TODOs, review intent, then copy manually.",
 
+  // ---- dependency inventory (read-only lockfile tables, no install/update)
+  "dep.sectionTitle": "Dependencies",
+  "dep.hint":
+    "Locked versions from src-tauri/Cargo.lock and package-lock.json — inventory only. Nothing installs, updates, or removes; declared ranges from the manifests never appear. Totals cover the whole lockfile.",
+  "dep.load": "Load dependencies",
+  "dep.loading": "Loading…",
+  "dep.reload": "Reload",
+  "dep.cargoTitle": "Cargo ({n})",
+  "dep.npmTitle": "npm ({n})",
+  "dep.moreDeps": "(+{n} more — the table is capped)",
+  "dep.empty": "No dependencies listed — the lockfiles are missing or unreadable.",
+  "dep.srcCratesIo": "crates.io",
+  "dep.srcRegistry": "registry",
+  "dep.srcGit": "git",
+  "dep.srcLocal": "local",
+
+  // ---- safe refactor apply (confirmed dead-code removals only, Rust only)
+  "refactor.sectionTitle": "Safe apply",
+  "refactor.hint":
+    "Applies ONE confirmed dead-code removal (Rust only). The file must be committed and clean; the change shows in git diff and reverts with git checkout.",
+  "refactor.allowNote":
+    "Allowlist: dead-code-candidate only. TODO debt, unwrap hotspots, swallowed errors, unchecked results, clones, missing docs, and size findings are never auto-applied.",
+  "refactor.pathLabel": "File (workspace-relative .rs path)",
+  "refactor.pathPh": "src-tauri/src/application/example.rs",
+  "refactor.startLabel": "Start line",
+  "refactor.endLabel": "End line",
+  "refactor.kindLabel": "Finding kind",
+  "refactor.confirmLabel": "I confirm removing these lines",
+  "refactor.apply": "Apply removal",
+  "refactor.applying": "Applying…",
+  "refactor.applied": "Removed {n} lines from {path} ({lines} lines now).",
+  "refactor.verified":
+    "Verified: git diff shows exactly this removal — revert with git checkout.",
+  "refactor.notVerified":
+    "Applied, but the post-check did not verify — inspect git diff before continuing.",
+  "refactor.fillAll": "Fill the file path and line range first.",
+  "refactor.needConfirm": "Tick the confirmation box first.",
+
   // ---- activity & health -----------------------------------------------------------------------------------------------
   "activity.group": "Activity and health",
   "activity.title": "Activity & Health",
@@ -1894,6 +1932,44 @@ const ru: Record<StringKey, string> = {
   "testgen.copy": "Копировать",
   "testgen.copied": "Скопировано",
   "testgen.draftNote": "Только черновик — заполните TODO, проверьте намерение и скопируйте вручную.",
+
+  // ---- dependency inventory (read-only lockfile tables, no install/update)
+  "dep.sectionTitle": "Зависимости",
+  "dep.hint":
+    "Зафиксированные версии из src-tauri/Cargo.lock и package-lock.json — только список. Ничего не устанавливается, не обновляется и не удаляется; объявленные диапазоны из манифестов не показываются. Счётчики охватывают весь локфайл.",
+  "dep.load": "Показать зависимости",
+  "dep.loading": "Загрузка…",
+  "dep.reload": "Обновить",
+  "dep.cargoTitle": "Cargo ({n})",
+  "dep.npmTitle": "npm ({n})",
+  "dep.moreDeps": "(+{n} ещё — таблица ограничена)",
+  "dep.empty": "Зависимости не найдены — локфайлы отсутствуют или не читаются.",
+  "dep.srcCratesIo": "crates.io",
+  "dep.srcRegistry": "реестр",
+  "dep.srcGit": "git",
+  "dep.srcLocal": "локальный",
+
+  // ---- safe refactor apply (confirmed dead-code removals only, Rust only)
+  "refactor.sectionTitle": "Безопасное применение",
+  "refactor.hint":
+    "Применяет ОДНО подтверждённое удаление мёртвого кода (только Rust). Файл должен быть закоммичен и чист; изменение видно в git diff и отменяется через git checkout.",
+  "refactor.allowNote":
+    "Разрешено: только dead-code-candidate. Долги TODO, точки unwrap, проглоченные ошибки, непроверенные результаты, клоны, отсутствие документации и размерные находки никогда не применяются автоматически.",
+  "refactor.pathLabel": "Файл (относительный .rs-путь)",
+  "refactor.pathPh": "src-tauri/src/application/example.rs",
+  "refactor.startLabel": "Начальная строка",
+  "refactor.endLabel": "Конечная строка",
+  "refactor.kindLabel": "Тип находки",
+  "refactor.confirmLabel": "Подтверждаю удаление этих строк",
+  "refactor.apply": "Применить удаление",
+  "refactor.applying": "Применение…",
+  "refactor.applied": "Удалено строк: {n} из {path} (теперь {lines}).",
+  "refactor.verified":
+    "Проверено: git diff показывает ровно это удаление — отмена через git checkout.",
+  "refactor.notVerified":
+    "Применено, но пост-проверка не прошла — проверьте git diff перед продолжением.",
+  "refactor.fillAll": "Сначала укажите путь к файлу и диапазон строк.",
+  "refactor.needConfirm": "Сначала поставьте отметку подтверждения.",
 
   "activity.group": "Активность и здоровье",
   "activity.title": "Активность и здоровье",

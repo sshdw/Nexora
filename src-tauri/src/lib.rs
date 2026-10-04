@@ -60,6 +60,8 @@ pub fn run() {
             commands::prompts::insert_prompt_into_conversation,
             commands::repo_audit::repo_audit,
             commands::testgen::testgen_drafts,
+            commands::dep_refactor::dep_inventory,
+            commands::dep_refactor::refactor_apply,
             commands::attachments::attach_file,
             commands::attachments::list_attachments,
             commands::attachments::remove_attachment,
