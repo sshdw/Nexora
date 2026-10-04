@@ -809,6 +809,21 @@ const en = {
   "audit.skipUnreadable": "unreadable",
   "audit.skipFileCap": "over the file cap",
 
+  // ---- test drafts (template-generated Rust #[test] scaffolds, review buffer only)
+  "testgen.sectionTitle": "Test drafts",
+  "testgen.hint":
+    "Template-generated locally from Rust signatures only — no agent run, no budget spent. Drafts are a review buffer: nothing is written, copy them into test modules manually. TypeScript is out of scope (Rust only). Intent is unknowable statically, so every draft carries TODOs.",
+  "testgen.generate": "Generate drafts",
+  "testgen.generating": "Generating…",
+  "testgen.regenerate": "Regenerate",
+  "testgen.targets": "Targets {considered} · drafts {n}",
+  "testgen.moreDrafts": "(+{n} more drafts omitted — capped at 20)",
+  "testgen.auditOverflow": "(audit capped upstream: +{n} findings omitted, further targets unconsidered)",
+  "testgen.noTargets": "No eligible targets — undocumented or unused public Rust functions only.",
+  "testgen.copy": "Copy",
+  "testgen.copied": "Copied",
+  "testgen.draftNote": "Draft only — fill the TODOs, review intent, then copy manually.",
+
   // ---- activity & health -----------------------------------------------------------------------------------------------
   "activity.group": "Activity and health",
   "activity.title": "Activity & Health",
@@ -1865,6 +1880,20 @@ const ru: Record<StringKey, string> = {
   "audit.skipTooLarge": "слишком большой",
   "audit.skipUnreadable": "нечитаемый",
   "audit.skipFileCap": "сверх лимита файлов",
+
+  "testgen.sectionTitle": "Черновики тестов",
+  "testgen.hint":
+    "Шаблонная генерация локально только по сигнатурам Rust — без агент-запусков и трат бюджета. Черновики — буфер для ревью: ничего не записывается, копируйте их в тестовые модули вручную. TypeScript вне области (только Rust). Намерение статически неизвестно, поэтому каждый черновик содержит TODO.",
+  "testgen.generate": "Сгенерировать черновики",
+  "testgen.generating": "Генерация…",
+  "testgen.regenerate": "Сгенерировать снова",
+  "testgen.targets": "Цели: {considered} · черновики: {n}",
+  "testgen.moreDrafts": "(ещё +{n} черновиков опущено — лимит 20)",
+  "testgen.auditOverflow": "(аудит обрезан выше: +{n} находок опущено, остальные цели не рассмотрены)",
+  "testgen.noTargets": "Нет подходящих целей — только недокументированные или неиспользуемые публичные функции Rust.",
+  "testgen.copy": "Копировать",
+  "testgen.copied": "Скопировано",
+  "testgen.draftNote": "Только черновик — заполните TODO, проверьте намерение и скопируйте вручную.",
 
   "activity.group": "Активность и здоровье",
   "activity.title": "Активность и здоровье",

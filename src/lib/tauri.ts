@@ -1295,3 +1295,38 @@ export interface RepoAuditReport {
 export function repoAudit(): Promise<RepoAuditReport> {
   return invoke<RepoAuditReport>("repo_audit");
 }
+
+// ---- Test drafts (template-generated Rust #[test] scaffolds, review buffer)
+// One batch command over the workspace sources: `testgen_drafts` runs the
+// read-only audit, then derives template-based drafts for undocumented or
+// unused public Rust functions (capped server-side with an overflow count).
+// Drafts are response data only — nothing is written; the user copies them
+// manually. Payloads stay snake_case like every other backend struct; the
+// command takes no arguments.
+
+/** One draft test scaffold: arrange/act/assert skeleton with honest TODO
+ * markers (`fn_name` tested as `test_<fn_name>`; `signature` is the
+ * declaration line the scaffold was derived from). */
+export interface TestDraft {
+  path: string;
+  line: number;
+  fn_name: string;
+  source_kind: string;
+  signature: string;
+  code: string;
+}
+
+/** One read-only testgen run: capped drafts plus generation accounting. */
+export interface TestgenReport {
+  drafts: TestDraft[];
+  drafts_overflow: number;
+  targets_considered: number;
+  files_scanned: number;
+  audit_overflow: number;
+}
+
+/** Generate draft test scaffolds via `testgen_drafts`. Manual runs only —
+ * the panel never generates live. */
+export function testgenDrafts(): Promise<TestgenReport> {
+  return invoke<TestgenReport>("testgen_drafts");
+}

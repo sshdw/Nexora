@@ -492,8 +492,12 @@ fn rs_doc_item(line: &str) -> bool {
 /// never flag [`KIND_UNWRAP`]: files under `tests/` or `test/` directories,
 /// Rust `*_test.rs` / `test_*.rs` / `tests.rs` names, and TS
 /// `*.test.*` / `*.spec.*` names.
+///
+/// `pub(crate)` so the test-generation slice
+/// ([`crate::application::testgen`]) reuses the same production-vs-test
+/// boundary instead of duplicating it.
 #[must_use]
-fn is_test_source_path(rel: &str) -> bool {
+pub(crate) fn is_test_source_path(rel: &str) -> bool {
     let mut parts = rel.split('/');
     let file = parts.next_back().unwrap_or(rel);
     if parts.any(|dir| dir == "tests" || dir == "test") {

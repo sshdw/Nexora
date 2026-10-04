@@ -7,6 +7,13 @@
 //! modify code: rows are copy/read-only text (no auto-fix path exists in
 //! this slice).
 //!
+//! Test-drafts extension (same panel, second batch command): `testgen_drafts`
+//! derives template-generated Rust `#[test]` scaffolds for undocumented or
+//! unused public functions from a fresh read-only scan. Drafts are a review
+//! buffer — rows carry a copy button plus a per-draft honest-limits note,
+//! and nothing is ever written (the user copies manually; applying is a
+//! separate slice). TypeScript is out of scope (Rust only).
+//!
 //! Display rules (secret-free): kinds, severities, and skip reasons render
 //! as fixed-vocabulary catalog labels (unknown tokens echo defensively);
 //! rows show the workspace-relative `path:line` plus the capped backend
@@ -19,9 +26,12 @@ import { useCallback, useState } from "react";
 
 import {
   repoAudit,
+  testgenDrafts,
   type AuditFinding,
   type CommandError,
   type RepoAuditReport,
+  type TestDraft,
+  type TestgenReport,
 } from "../lib/tauri";
 import { useStrings, type Strings } from "../lib/useLocale";
 import M3Button from "./M3Button";
@@ -125,12 +135,49 @@ function FindingRow({ finding, t }: { finding: AuditFinding; t: Strings["t"] }) 
   );
 }
 
+function DraftRow({
+  draft,
+  copied,
+  onCopy,
+  t,
+}: {
+  draft: TestDraft;
+  copied: boolean;
+  onCopy: () => void;
+  t: Strings["t"];
+}) {
+  const location = `${draft.path}:${draft.line}`;
+  return (
+    <li className="nex-vcs-file-row">
+      <div>
+        <span className="nex-tag nex-tag-mono">{kindLabel(draft.source_kind, t)}</span>{" "}
+        <span className="nex-tag nex-tag-mono" title={location}>
+          {location}
+        </span>
+      </div>
+      <pre className="nex-agent-terminal-stdout">{draft.code}</pre>
+      <p className="nex-vcs-notice" role="note">
+        {t("testgen.draftNote")}
+      </p>
+      <div>
+        <M3Button variant="quiet" onClick={onCopy}>
+          {copied ? t("testgen.copied") : t("testgen.copy")}
+        </M3Button>
+      </div>
+    </li>
+  );
+}
+
 export default function AuditPanel({ onClose }: AuditPanelProps) {
   const { t } = useStrings();
   const [running, setRunning] = useState(false);
   const [report, setReport] = useState<RepoAuditReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [kindFilter, setKindFilter] = useState<string>("all");
+  const [draftsRunning, setDraftsRunning] = useState(false);
+  const [drafts, setDrafts] = useState<TestgenReport | null>(null);
+  const [draftsError, setDraftsError] = useState<string | null>(null);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
   // Synchronous in-flight guard: rapid Run presses collapse into the active
   // scan instead of stacking backend walks.
@@ -146,6 +193,34 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
       setRunning(false);
     }
   }, [running]);
+
+  // Same guard shape for draft generation: one batch round trip at a time.
+  const generate = useCallback(async () => {
+    if (draftsRunning) return;
+    setDraftsRunning(true);
+    setDraftsError(null);
+    setCopiedKey(null);
+    try {
+      setDrafts(await testgenDrafts());
+    } catch (err) {
+      setDraftsError(toMessage(err));
+    } finally {
+      setDraftsRunning(false);
+    }
+  }, [draftsRunning]);
+
+  const copyDraft = useCallback(
+    async (draft: TestDraft) => {
+      const key = `${draft.path}:${draft.line}:${draft.fn_name}`;
+      try {
+        await navigator.clipboard.writeText(draft.code);
+        setCopiedKey(key);
+      } catch {
+        setDraftsError(t("common.copyFailed"));
+      }
+    },
+    [t],
+  );
 
   const visibleKinds =
     kindFilter === "all"
@@ -270,6 +345,69 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
             )}
           </>
         )}
+        <section className="nex-vcs-section" aria-label={t("testgen.sectionTitle")}>
+          <h3 className="nex-vcs-section-title">{t("testgen.sectionTitle")}</h3>
+          <p className="nex-vcs-notice" role="note">
+            {t("testgen.hint")}
+          </p>
+          <div>
+            <M3Button
+              variant="quiet"
+              onClick={() => void generate()}
+              disabled={draftsRunning}
+            >
+              {draftsRunning
+                ? t("testgen.generating")
+                : drafts
+                  ? t("testgen.regenerate")
+                  : t("testgen.generate")}
+            </M3Button>
+          </div>
+          {draftsError && (
+            <div className="nex-composer-error nex-fade-in" role="alert">
+              {draftsError}
+            </div>
+          )}
+          {draftsRunning && <M3LoadingIndicator label={t("testgen.generating")} />}
+          {!draftsRunning && drafts && (
+            <>
+              <p className="nex-vcs-notice" role="note">
+                {t("testgen.targets", {
+                  considered: drafts.targets_considered,
+                  n: drafts.drafts.length,
+                })}
+              </p>
+              {drafts.drafts_overflow > 0 && (
+                <p className="nex-vcs-notice" role="note">
+                  {t("testgen.moreDrafts", { n: drafts.drafts_overflow })}
+                </p>
+              )}
+              {drafts.audit_overflow > 0 && (
+                <p className="nex-vcs-notice" role="note">
+                  {t("testgen.auditOverflow", { n: drafts.audit_overflow })}
+                </p>
+              )}
+              {drafts.drafts.length === 0 ? (
+                <p className="nex-agent-empty">{t("testgen.noTargets")}</p>
+              ) : (
+                <ul className="nex-vcs-file-list">
+                  {drafts.drafts.map((draft) => {
+                    const key = `${draft.path}:${draft.line}:${draft.fn_name}`;
+                    return (
+                      <DraftRow
+                        key={key}
+                        draft={draft}
+                        copied={copiedKey === key}
+                        onCopy={() => void copyDraft(draft)}
+                        t={t}
+                      />
+                    );
+                  })}
+                </ul>
+              )}
+            </>
+          )}
+        </section>
       </div>
     </div>
   );
