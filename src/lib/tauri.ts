@@ -1438,6 +1438,54 @@ export function ghActionLog(runId: number, jobId: number): Promise<GhActionLog> 
   return invoke<GhActionLog>("gh_action_log", { runId, jobId });
 }
 
+// ---- GitHub runners detect (read-only detect surface, same panel) --------
+// One batch command over the workspace `origin` repo: `gh_runners` lists the
+// repo's self-hosted runners (at most 30, with label names) plus the local
+// readiness checklist (`git` + `gh` + `docker` presence via `PATH` lookup —
+// never executed). Listing self-hosted runners needs an admin-scoped token,
+// so an anonymous or under-scoped read resolves to empty `runners` with
+// `runners_needs_auth: true` (the panel shows its needs-token state, never
+// an error dump). Detection only: no registration, removal, or dispatch
+// exists anywhere on this path. Payloads stay snake_case like every other
+// backend struct; the command takes no arguments.
+
+/** One self-hosted runner: fixed-vocabulary metadata plus label names. */
+export interface GhRunner {
+  id: number;
+  name: string;
+  os: string;
+  status: string;
+  busy: boolean;
+  labels: string[];
+}
+
+/** One local readiness entry: whether the tool resolves on `PATH`. */
+export interface GhToolReadiness {
+  name: string;
+  found: boolean;
+}
+
+/** One `gh_runners` response: resolved repo, self-hosted runners, the API's
+ * total runner count, the needs-token flag, the local readiness checklist,
+ * token presence, and the rate-limit snapshot. */
+export interface GhRunnersResult {
+  owner: string;
+  repo: string;
+  runners: GhRunner[];
+  runners_total: number;
+  runners_needs_auth: boolean;
+  local: GhToolReadiness[];
+  authenticated: boolean;
+  rate_limited: boolean;
+  rate_limit: GhRateLimit;
+}
+
+/** List the workspace origin repo's self-hosted runners plus the local
+ * readiness probe via `gh_runners` (detection only). */
+export function ghRunners(): Promise<GhRunnersResult> {
+  return invoke<GhRunnersResult>("gh_runners");
+}
+
 // ---- Repository audit (read-only static analysis, findings only) ---------
 // One batch command over the workspace sources: `repo_audit` scans `.rs` /
 // `.ts` / `.tsx` files under the effective workspace root (capped server-side

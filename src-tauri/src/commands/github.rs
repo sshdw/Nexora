@@ -9,7 +9,7 @@
 //! [`CommandError`] values. No business logic lives here beyond that
 //! translation.
 //!
-//! Command-shape decision (one feature area, FOUR commands): `gh_issues` and
+//! Command-shape decision (one feature area, FIVE commands): `gh_issues` and
 //! `gh_pulls` stay separate because the panel's kind tabs invoke them
 //! independently with their own state filter (`open` / `closed` / `all`),
 //! exactly like the VCS panel's separate lazy diff commands. `gh_actions`
@@ -18,6 +18,10 @@
 //! never fans out into dozens of log downloads); `gh_action_log` is the
 //! area's ONE additional lazy command (the allowed maximum), fetching a
 //! single job's capped, scrubbed log tail when the user expands that job.
+//! `gh_runners` is the area's detect-only batch call (repo self-hosted
+//! runners plus the spawn-free local `PATH` probe in one round trip — it
+//! rides its own call instead of folding into `gh_actions` because the
+//! runners endpoint degrades independently on token scope).
 //! Both are pure GETs against `https://api.github.com` — there is no
 //! commenting, labeling, merging, re-running, or any other write anywhere on
 //! this path (read-only; static tests pin GET-only on the service side).
@@ -40,7 +44,7 @@
 use tauri::{AppHandle, Manager};
 
 use crate::application::github::{
-    GhActionLog, GhActionsResponse, GhIssuesResponse, GhPullsResponse,
+    GhActionLog, GhActionsResponse, GhIssuesResponse, GhPullsResponse, GhRunnersResponse,
 };
 use crate::application::workspace::resolve_workspace_root;
 use crate::infrastructure::database::Database;
@@ -232,6 +236,55 @@ pub(crate) async fn gh_action_log(
     }
 }
 
+/// List the workspace `origin` repo's self-hosted runners plus the local
+/// readiness probe (detection only — no registration, removal, or dispatch
+/// anywhere on this path).
+///
+/// Read-only: one batch GET round (runners envelope) plus the spawn-free
+/// `PATH` probe (`git` + `gh` + `docker` presence, never executed), with
+/// the rate-limit snapshot. Listing self-hosted runners needs an
+/// admin-scoped token, so an anonymous or under-scoped read resolves to
+/// empty `runners` with `runners_needs_auth: true` (the panel shows its
+/// needs-token state) — never an error dump. The local checklist always
+/// ships real `PATH` results, even when the remote side degrades.
+///
+/// Like the sibling commands, the blocking HTTP round trip runs on the
+/// runtime's dedicated blocking pool via
+/// [`tauri::async_runtime::spawn_blocking`]: plain OS threads with no ambient
+/// async context.
+#[tauri::command]
+pub(crate) async fn gh_runners(app: AppHandle) -> Result<GhRunnersResponse, CommandError> {
+    // Owned handle so the workspace root and managed state can be reached
+    // from the blocking thread (borrowed `State<'_, _>` cannot cross into
+    // `'static` work).
+    let handle = app.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let fallback = default_root(&handle)?;
+        let db = handle.state::<Database>();
+        let root = resolve_workspace_root(db.inner(), &fallback);
+        let result = crate::application::github::list_runners(&root).map_err(CommandError::from);
+        if result.is_ok() {
+            // Local usage ledger (counts only): one best-effort tick per
+            // successful read — a ledger failure never fails the read.
+            crate::application::privacy::record(db.inner(), "github_read");
+        }
+        result
+    })
+    .await;
+    match outcome {
+        Ok(result) => result,
+        Err(err) => {
+            // Only reachable if the blocking task panicked: report a safe,
+            // classified failure instead of leaving the promise dangling.
+            log::error!("gh_runners blocking task failed: {err}");
+            Err(CommandError::new(
+                super::error::ErrorKind::Request,
+                "the GitHub runners could not be listed",
+            ))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -328,5 +381,32 @@ mod tests {
             SOURCE.contains("fetch_action_log"),
             "gh_action_log must delegate to the log service"
         );
+    }
+
+    /// The runners detect command exists exactly once and delegates to the
+    /// runners service (`list_runners`): repo self-hosted runners plus the
+    /// local probe in one batch call — detection only, so this module must
+    /// never mention registration, removal, or dispatch.
+    #[test]
+    fn gh_runners_command_delegates_to_the_runners_service() {
+        assert!(
+            SOURCE.contains("gh_runners"),
+            "the gh_runners command must exist"
+        );
+        assert!(
+            SOURCE.contains("list_runners"),
+            "gh_runners must delegate to the runners service"
+        );
+        for needle in [
+            concat!("register", "_runner"),
+            concat!("remove", "_runner"),
+            concat!("delete", "_runner"),
+            concat!("dispatch", "_workflow"),
+        ] {
+            assert!(
+                !SOURCE.contains(needle),
+                "commands/github.rs must stay detect-only, found {needle:?}"
+            );
+        }
     }
 }

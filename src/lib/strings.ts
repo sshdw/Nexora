@@ -762,6 +762,22 @@ const en = {
   "gh.fixTaskCreated":
     "Fix task #{id} created — review and run it in Tasks. Nothing runs automatically.",
   "gh.fixTaskFailed": "The fix task could not be created.",
+  "gh.runnersTitle": "Runners",
+  "gh.runnersHint":
+    "Self-hosted runners for this repo plus this machine's readiness — detection only, nothing registers or runs.",
+  "gh.runnersLoading": "Loading runners…",
+  "gh.runnersNeedToken":
+    "Runner listing needs an admin-scoped GitHub token — store one to see this repo's self-hosted runners.",
+  "gh.runnersEmpty": "No self-hosted runners registered for this repo.",
+  "gh.runnersCount": "Showing {n} of {total} self-hosted runners",
+  "gh.runnerOnline": "online",
+  "gh.runnerOffline": "offline",
+  "gh.runnerBusy": "busy",
+  "gh.runnerIdle": "idle",
+  "gh.localTitle": "This machine",
+  "gh.localHint": "PATH lookup only — tools are never executed.",
+  "gh.toolFound": "found",
+  "gh.toolMissing": "missing",
 
   // ---- terminal -------------------------------------------------------------------------------------------------
   "term.group": "Terminal",
@@ -2017,6 +2033,22 @@ const ru: Record<StringKey, string> = {
   "gh.fixTaskCreated":
     "Задача на починку #{id} создана — проверьте и запустите её в «Задачах». Ничего не запускается само.",
   "gh.fixTaskFailed": "Не удалось создать задачу на починку.",
+  "gh.runnersTitle": "Раннеры",
+  "gh.runnersHint":
+    "Self-hosted раннеры этого репозитория и готовность этой машины — только определение, ничего не регистрируется и не запускается.",
+  "gh.runnersLoading": "Загрузка раннеров…",
+  "gh.runnersNeedToken":
+    "Список раннеров требует GitHub-токен с админ-правами — сохраните его, чтобы увидеть self-hosted раннеры репозитория.",
+  "gh.runnersEmpty": "Self-hosted раннеры за этим репозиторием не числятся.",
+  "gh.runnersCount": "Показаны {n} из {total} self-hosted раннеров",
+  "gh.runnerOnline": "в сети",
+  "gh.runnerOffline": "не в сети",
+  "gh.runnerBusy": "занят",
+  "gh.runnerIdle": "свободен",
+  "gh.localTitle": "Эта машина",
+  "gh.localHint": "Только поиск в PATH — инструменты никогда не запускаются.",
+  "gh.toolFound": "найден",
+  "gh.toolMissing": "нет",
 
   "term.group": "Терминал",
   "term.title": "Терминал",
