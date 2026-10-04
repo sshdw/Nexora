@@ -22,6 +22,7 @@ pub mod data_management;
 pub mod dep_refactor;
 pub mod error;
 pub mod flags;
+pub mod github;
 pub mod import_export;
 pub mod prompts;
 pub mod providers;

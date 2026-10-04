@@ -135,6 +135,8 @@ pub fn run() {
             commands::version_control::git_push,
             commands::version_control::git_generate_commit_message,
             commands::version_control::git_explain_commit,
+            commands::github::gh_issues,
+            commands::github::gh_pulls,
         ])
         .setup(|app| {
             // Locate the per-user application data directory and ensure it

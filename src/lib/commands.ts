@@ -100,6 +100,8 @@ export interface PaletteDeps {
   openTasks: () => void;
   /** Open the Code Audit overlay (read-only repo findings). */
   openAudit: () => void;
+  /** Open the Issues & PRs overlay (read-only GitHub lists). */
+  openGh: () => void;
   /** Open the Activity & Health overlay on the requested tab. */
   openActivity: (tab: "activity" | "health") => void;
   newConversation: () => void;
@@ -170,6 +172,13 @@ export function buildCommands(deps: PaletteDeps, locale: Locale = "en"): Palette
       section: go,
       keywords: ["audit", "code audit", "lint", "static analysis", "dead code", "review", "bugs", "quality"],
       run: () => deps.openAudit(),
+    },
+    {
+      id: "go.gh",
+      title: tr(locale, "palette.cmd.go_gh"),
+      section: go,
+      keywords: ["github", "issues", "pull requests", "prs", "bugs", "tickets"],
+      run: () => deps.openGh(),
     },
     {
       id: "go.activity",
