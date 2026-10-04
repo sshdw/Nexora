@@ -29,6 +29,7 @@ pub mod providers;
 pub mod repo_audit;
 pub mod search;
 pub mod settings;
+pub mod system;
 pub mod tasks;
 pub mod terminal;
 pub mod testgen;

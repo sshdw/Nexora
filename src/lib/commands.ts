@@ -195,6 +195,13 @@ export function buildCommands(deps: PaletteDeps, locale: Locale = "en"): Palette
       run: () => deps.openActivity("health"),
     },
     {
+      id: "go.diagnostics",
+      title: tr(locale, "palette.cmd.go_diagnostics"),
+      section: go,
+      keywords: ["diagnostics", "system info", "version", "update", "upgrade", "backup", "snapshot", "crash", "bundle"],
+      run: () => deps.openActivity("health"),
+    },
+    {
       id: "go.settings",
       title: tr(locale, "palette.cmd.go_settings"),
       section: go,

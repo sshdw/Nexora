@@ -1215,6 +1215,195 @@ pub(crate) fn list_actions(workspace_root: &Path) -> Result<GhActionsResponse, G
     })
 }
 
+/// Read-only update check against the workspace `origin` repo's latest
+/// GitHub release: one GET (`/repos/{owner}/{repo}/releases/latest`) reusing
+/// this module's client story (timeout, `User-Agent`, optional keyring
+/// token). Check and download-prompt ONLY — there is no download, no
+/// install, and no silent write anywhere on this path; the panel renders the
+/// release URL as text for the user to open themselves.
+///
+/// A repository with no releases (404 on the endpoint) resolves to
+/// `latest_tag: None` with `update_available: false` — never an error dump.
+/// The version comparison is an exact normalized-tag compare (a leading `v`
+/// is ignored): `update_available` is true when the latest tag differs from
+/// the running build, so pre-release/downgrade nuances stay the user's
+/// judgment call on GitHub, not the panel's.
+///
+/// One update check: the resolved repo, the running build, the latest
+/// release (when the repo publishes any), the exact-tag verdict, and the
+/// rate-limit snapshot. The token is borrowed for the header only and never
+/// stored or echoed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct UpdateCheck {
+    pub owner: String,
+    pub repo: String,
+    pub current_version: String,
+    pub latest_tag: Option<String>,
+    pub latest_name: String,
+    pub latest_url: Option<String>,
+    pub published_at: Option<String>,
+    pub update_available: bool,
+    pub authenticated: bool,
+    pub rate_limited: bool,
+    pub rate_limit: GhRateLimit,
+}
+
+/// Raw `releases/latest` envelope: tag, name, URL, and publish time only —
+/// bodies (release notes) are deliberately not fetched, so arbitrary
+/// markdown never crosses IPC.
+#[derive(Debug, Deserialize)]
+struct RawRelease {
+    #[serde(default)]
+    tag_name: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    html_url: Option<String>,
+    #[serde(default)]
+    published_at: Option<String>,
+}
+
+/// Release-tag character budget: tags echo into the panel, so overlong API
+/// text is cut rather than rendered raw.
+const MAX_TAG_CHARS: usize = 64;
+
+/// Normalize a version tag for the exact compare: trim whitespace and drop
+/// one leading `v`/`V` (`v1.5.0` and `1.5.0` are the same build).
+fn normalize_tag(tag: &str) -> String {
+    let trimmed = tag.trim();
+    trimmed
+        .strip_prefix('v')
+        .or_else(|| trimmed.strip_prefix('V'))
+        .unwrap_or(trimmed)
+        .to_string()
+}
+
+/// Whether `latest` names a different build than `current` (exact
+/// normalized-tag compare — not semver: anything but equality is the user's
+/// call on GitHub).
+fn tag_is_newer(current: &str, latest: &str) -> bool {
+    normalize_tag(current) != normalize_tag(latest)
+}
+
+/// Keep only `https://github.com/` release URLs; anything else (an API
+/// surprise, a redirect artefact) resolves to `None` rather than echoing an
+/// unexpected URL into the panel.
+fn clean_release_url(url: Option<String>) -> Option<String> {
+    let url = url.unwrap_or_default();
+    let trimmed = url.trim();
+    if trimmed.starts_with("https://github.com/") && trimmed.chars().count() <= 512 {
+        Some(trimmed.to_string())
+    } else {
+        None
+    }
+}
+
+fn clean_tag(tag: Option<String>) -> Option<String> {
+    let tag = tag.unwrap_or_default();
+    let trimmed = tag.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.chars().take(MAX_TAG_CHARS).collect())
+    }
+}
+
+/// Check the workspace `origin` repo's latest release against the running
+/// build (read-only: one GET, never a download or install).
+///
+/// # Errors
+///
+/// Returns [`GitHubError::NotARepository`] / [`GitHubError::NoGitHubRemote`]
+/// when the workspace has no usable `github.com` origin, and the classified
+/// transport/auth failures otherwise. A missing keyring token is NOT an
+/// error — the request goes out unauthenticated with `authenticated: false`.
+/// A repo with no releases resolves to `latest_tag: None` (never an error).
+pub(crate) fn check_update(workspace_root: &Path) -> Result<UpdateCheck, GitHubError> {
+    let (owner, repo) = resolve_origin(workspace_root)?;
+    let token = read_token();
+    let current_version = env!("CARGO_PKG_VERSION").to_string();
+    let fetched = (|| {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(REQUEST_TIMEOUT)
+            .user_agent("Nexora")
+            .build()
+            .map_err(|_| GitHubError::RequestFailed)?;
+        let mut request = client
+            .get(format!(
+                "{GITHUB_API_BASE}/repos/{owner}/{repo}/releases/latest"
+            ))
+            .header("Accept", "application/vnd.github+json");
+        if let Some(token) = token.as_deref() {
+            request = request.bearer_auth(token);
+        }
+        let response = request.send().map_err(|_| GitHubError::RequestFailed)?;
+        let rate_limit = rate_snapshot(response.headers());
+        let rate_limited = rate_limit.remaining == Some(0);
+        match response.status().as_u16() {
+            200 => {
+                let raw: RawRelease = response.json().map_err(|_| GitHubError::RequestFailed)?;
+                Ok((Some(raw), rate_limit, false))
+            }
+            401 => Err(GitHubError::Unauthorized),
+            403 if rate_limited => Ok((None, rate_limit, true)),
+            403 => Err(GitHubError::Forbidden),
+            // No releases published (or repo without the feature): a quiet
+            // "no release" state, not an error dump.
+            404 => Err(GitHubError::NotFound),
+            429 => Ok((None, rate_limit, true)),
+            _ => Err(GitHubError::RequestFailed),
+        }
+    })();
+    let (raw, rate_limit, rate_limited) = match fetched {
+        Ok(triple) => triple,
+        Err(GitHubError::NotFound) => (
+            None,
+            GhRateLimit {
+                limit: None,
+                remaining: None,
+                reset: None,
+            },
+            false,
+        ),
+        Err(other) => return Err(other),
+    };
+    let Some(raw) = raw else {
+        return Ok(UpdateCheck {
+            owner,
+            repo,
+            current_version,
+            latest_tag: None,
+            latest_name: String::new(),
+            latest_url: None,
+            published_at: None,
+            update_available: false,
+            authenticated: token.is_some(),
+            rate_limited,
+            rate_limit,
+        });
+    };
+    let latest_tag = clean_tag(raw.tag_name);
+    let update_available = latest_tag
+        .as_deref()
+        .is_some_and(|tag| tag_is_newer(&current_version, tag));
+    Ok(UpdateCheck {
+        owner,
+        repo,
+        current_version,
+        latest_tag,
+        latest_name: clean_title(raw.name).chars().take(200).collect(),
+        latest_url: clean_release_url(raw.html_url),
+        published_at: raw.published_at.and_then(|at| {
+            let trimmed = at.trim();
+            (!trimmed.is_empty()).then(|| trimmed.chars().take(64).collect())
+        }),
+        update_available,
+        authenticated: token.is_some(),
+        rate_limited,
+        rate_limit,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1795,5 +1984,72 @@ mod tests {
                 "the GitHub path must stay read-only, found {needle:?}"
             );
         }
+    }
+
+    #[test]
+    fn update_tag_compare_ignores_a_leading_v_only() {
+        assert_eq!(normalize_tag("v1.5.0"), "1.5.0");
+        assert_eq!(normalize_tag("V1.5.0"), "1.5.0");
+        assert_eq!(normalize_tag("  v1.5.0  "), "1.5.0");
+        assert_eq!(normalize_tag("1.5.0"), "1.5.0");
+        assert!(!tag_is_newer("1.5.0", "v1.5.0"));
+        assert!(!tag_is_newer("1.5.0", "1.5.0"));
+        assert!(tag_is_newer("1.5.0", "v1.6.0"));
+        assert!(tag_is_newer("1.5.0", "1.5.0-rc"));
+    }
+
+    #[test]
+    fn update_release_cleaning_fixes_vocabulary_and_urls() {
+        assert_eq!(clean_tag(None), None);
+        assert_eq!(clean_tag(Some("   ".to_string())), None);
+        assert_eq!(
+            clean_tag(Some("v1.6.0".to_string())),
+            Some("v1.6.0".to_string())
+        );
+        assert_eq!(
+            clean_release_url(Some(
+                "https://github.com/o/r/releases/tag/v1.6.0".to_string()
+            )),
+            Some("https://github.com/o/r/releases/tag/v1.6.0".to_string())
+        );
+        assert_eq!(
+            clean_release_url(Some("https://example.com/evil".to_string())),
+            None,
+            "non-github release URLs never echo into the panel"
+        );
+        assert_eq!(clean_release_url(None), None);
+    }
+
+    #[test]
+    fn update_check_serializes_without_token_material() {
+        let check = UpdateCheck {
+            owner: "o".to_string(),
+            repo: "r".to_string(),
+            current_version: env!("CARGO_PKG_VERSION").to_string(),
+            latest_tag: Some("v9.9.9".to_string()),
+            latest_name: "planted name".to_string(),
+            latest_url: Some("https://github.com/o/r/releases/tag/v9.9.9".to_string()),
+            published_at: Some("2026-01-01".to_string()),
+            update_available: true,
+            authenticated: true,
+            rate_limited: false,
+            rate_limit: GhRateLimit {
+                limit: Some(60),
+                remaining: Some(59),
+                reset: None,
+            },
+        };
+        let json = serde_json::to_string(&check).expect("update check serializes");
+        let lowered = json.to_lowercase();
+        for sentinel in SECRET_SENTINELS {
+            assert!(
+                !lowered.contains(sentinel),
+                "update check must stay secret-free, found {sentinel:?}"
+            );
+        }
+        assert!(
+            json.contains("update_available"),
+            "the snake_case verdict shape must survive: {json}"
+        );
     }
 }

@@ -1591,3 +1591,82 @@ export function refactorApply(
     confirmed: true,
   });
 }
+
+// ---- Diagnostics / update check / pre-update snapshot ---------------------
+// Three read-mostly commands behind the health panel's System section:
+// `diagnostics_bundle` collects the secret-free bundle (versions, platform,
+// storage counts, swept crash rows — never content, credentials, or paths),
+// `update_check` compares the running build against the workspace origin
+// repo's latest GitHub release (one GET — check only, no download or
+// install; the panel renders the release URL as text), and
+// `snapshot_database` writes one user-initiated `VACUUM INTO` copy under the
+// app-data `backups` directory before an update (never silent, never on a
+// timer). Payloads stay snake_case like every other backend struct.
+
+/** Storage counters in the diagnostics bundle: row counts only. */
+export interface BundleCounts {
+  conversations: number;
+  messages: number;
+  prompts: number;
+  agent_runs: number;
+  agent_steps: number;
+  agent_tasks: number;
+}
+
+/** One retained crash row: startup-sweep rows only (id, model, timestamp). */
+export interface CrashedRun {
+  run_id: number;
+  model: string;
+  started_at: number;
+}
+
+/** Secret-free diagnostics bundle: versions, platform, storage, crashes. */
+export interface DiagnosticsBundle {
+  app_version: string;
+  platform_os: string;
+  platform_arch: string;
+  schema_version: number;
+  schema_target: number;
+  db_size_bytes: number | null;
+  counts: BundleCounts;
+  fts_present: boolean;
+  crashed_runs: CrashedRun[];
+  error_runs: number;
+}
+
+/** Collect the secret-free diagnostics bundle via `diagnostics_bundle`. */
+export function diagnosticsBundle(): Promise<DiagnosticsBundle> {
+  return invoke<DiagnosticsBundle>("diagnostics_bundle");
+}
+
+/** One update check: running build vs the origin repo's latest release. */
+export interface UpdateCheck {
+  owner: string;
+  repo: string;
+  current_version: string;
+  latest_tag: string | null;
+  latest_name: string;
+  latest_url: string | null;
+  published_at: string | null;
+  update_available: boolean;
+  authenticated: boolean;
+  rate_limited: boolean;
+  rate_limit: GhRateLimit;
+}
+
+/** Check the origin repo's latest release via `update_check` (GET only). */
+export function updateCheck(): Promise<UpdateCheck> {
+  return invoke<UpdateCheck>("update_check");
+}
+
+/** A pre-update snapshot copy: file name (never the path) plus size. */
+export interface SnapshotInfo {
+  file_name: string;
+  size_bytes: number;
+  created_at: number;
+}
+
+/** Write one user-initiated pre-update snapshot via `snapshot_database`. */
+export function snapshotDatabase(): Promise<SnapshotInfo> {
+  return invoke<SnapshotInfo>("snapshot_database");
+}
