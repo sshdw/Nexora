@@ -775,7 +775,7 @@ const en = {
   "gh.runnerBusy": "busy",
   "gh.runnerIdle": "idle",
   "gh.localTitle": "This machine",
-  "gh.localHint": "PATH lookup only — tools are never executed.",
+  "gh.localHint": "PATH lookup only — tools are never executed. Uses the app's inherited PATH, which may differ from the terminal.",
   "gh.toolFound": "found",
   "gh.toolMissing": "missing",
 
@@ -2046,7 +2046,7 @@ const ru: Record<StringKey, string> = {
   "gh.runnerBusy": "занят",
   "gh.runnerIdle": "свободен",
   "gh.localTitle": "Эта машина",
-  "gh.localHint": "Только поиск в PATH — инструменты никогда не запускаются.",
+  "gh.localHint": "Только поиск в PATH — инструменты никогда не запускаются. Используется унаследованный PATH приложения, который может отличаться от терминала.",
   "gh.toolFound": "найден",
   "gh.toolMissing": "нет",
 

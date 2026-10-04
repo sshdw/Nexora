@@ -411,6 +411,7 @@ interface RunnersViewProps {
   needsAuth: boolean;
   local: GhToolReadiness[];
   loading: boolean;
+  error: string | null;
 }
 
 /** Runners section: the repo's self-hosted runners table plus this
@@ -419,7 +420,7 @@ interface RunnersViewProps {
  * needs-token state; the local checklist always renders real `PATH`
  * results. All visuals ride the shared panel/tag/notice primitives — zero
  * new CSS, zero raw values. */
-function RunnersView({ runners, total, needsAuth, local, loading }: RunnersViewProps): ReactNode {
+function RunnersView({ runners, total, needsAuth, local, loading, error }: RunnersViewProps): ReactNode {
   const { t } = useStrings();
   return (
     <section className="nex-vcs-section" aria-label={t("gh.runnersTitle")}>
@@ -427,6 +428,11 @@ function RunnersView({ runners, total, needsAuth, local, loading }: RunnersViewP
       <p className="nex-vcs-notice" role="note">
         {t("gh.runnersHint")}
       </p>
+      {error !== null && (
+        <div className="nex-composer-error nex-fade-in" role="alert">
+          {error}
+        </div>
+      )}
       {loading && runners.length === 0 ? (
         <M3LoadingIndicator label={t("gh.runnersLoading")} />
       ) : needsAuth ? (
@@ -444,6 +450,7 @@ function RunnersView({ runners, total, needsAuth, local, loading }: RunnersViewP
             {runners.map((runner) => (
               <li key={runner.id} className="nex-vcs-file-row">
                 <span className="nex-tag nex-tag-mono">{runner.name}</span>{" "}
+                <span className="nex-tag nex-tag-mono">{runner.os}</span>{" "}
                 <span className="nex-tag nex-tag-mono">
                   {runnerStatusTag(runner.status, t)}
                 </span>{" "}
@@ -510,6 +517,8 @@ export default function IssuesPanel({ onClose }: IssuesPanelProps) {
   const [runnersNeedsAuth, setRunnersNeedsAuth] = useState(false);
   const [localTools, setLocalTools] = useState<GhToolReadiness[]>([]);
   const [runnersLoading, setRunnersLoading] = useState(false);
+  const [actionsError, setActionsError] = useState<string | null>(null);
+  const [runnersError, setRunnersError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (loading) return;
@@ -544,7 +553,7 @@ export default function IssuesPanel({ onClose }: IssuesPanelProps) {
   const loadActions = useCallback(async () => {
     if (loading) return;
     setLoading(true);
-    setError(null);
+    setActionsError(null);
     try {
       const result = await ghActions();
       setRuns(result.runs);
@@ -560,7 +569,7 @@ export default function IssuesPanel({ onClose }: IssuesPanelProps) {
       setJobLogs({});
       setLogsLoading({});
     } catch (err) {
-      setError(toMessage(err));
+      setActionsError(toMessage(err));
     } finally {
       setLoading(false);
     }
@@ -568,19 +577,21 @@ export default function IssuesPanel({ onClose }: IssuesPanelProps) {
 
   /** Load the runners detect batch (repo self-hosted runners + the local
    * `PATH` probe) alongside the Actions tab. A failed fetch keeps the
-   * previous runners state — the section degrades to its last render
-   * instead of blanking the checklist. */
+   * previous runners state and surfaces the failure as an inline notice —
+   * the section degrades to its last render plus the error instead of
+   * blanking the checklist or failing silently. */
   const loadRunners = useCallback(async () => {
     if (runnersLoading) return;
     setRunnersLoading(true);
+    setRunnersError(null);
     try {
       const result = await ghRunners();
       setRunners(result.runners);
       setRunnersTotal(result.runners_total);
       setRunnersNeedsAuth(result.runners_needs_auth);
       setLocalTools(result.local);
-    } catch {
-      // Keep the previous runners state (honest last render over blank).
+    } catch (err) {
+      setRunnersError(toMessage(err));
     } finally {
       setRunnersLoading(false);
     }
@@ -672,6 +683,8 @@ export default function IssuesPanel({ onClose }: IssuesPanelProps) {
   );
 
   const noRemote = error !== null && error.includes("github.com");
+  const actionsNoRemote =
+    actionsError !== null && actionsError.includes("github.com");
   const items: Array<{ number: number }> =
     kind === "issues" ? issues : pulls;
   const selectedIssue =
@@ -766,7 +779,52 @@ export default function IssuesPanel({ onClose }: IssuesPanelProps) {
         {loading && items.length === 0 && (
           <M3LoadingIndicator label={t("gh.loading")} />
         )}
-        {noRemote ? (
+        {kind === "actions" ? (
+          actionsNoRemote ? (
+            <p className="nex-agent-empty" role="note">
+              {t("gh.noRemote")}
+            </p>
+          ) : (
+            <>
+              {actionsError !== null && (
+                <div className="nex-composer-error nex-fade-in" role="alert">
+                  {actionsError}
+                </div>
+              )}
+              {rateLimited ? (
+                <div className="nex-composer-error nex-fade-in" role="alert">
+                  {t("gh.rateLimited")}
+                </div>
+              ) : (
+                <ActionsView
+                  runs={runs}
+                  totalRuns={totalRuns}
+                  selectedRun={selectedActionRun}
+                  selectedRunId={selectedRun}
+                  onSelectRun={(id) =>
+                    setSelectedRun((current) => (current === id ? null : id))
+                  }
+                  loading={loading}
+                  fixBusy={fixBusy}
+                  fixCreated={fixCreated}
+                  fixFailed={fixFailed}
+                  onCreateFixTask={(run) => void createFixTask(run)}
+                  jobLogs={jobLogs}
+                  logsLoading={logsLoading}
+                  onShowLog={(job) => void showJobLog(job)}
+                />
+              )}
+              <RunnersView
+                runners={runners}
+                total={runnersTotal}
+                needsAuth={runnersNeedsAuth}
+                local={localTools}
+                loading={runnersLoading}
+                error={runnersError}
+              />
+            </>
+          )
+        ) : noRemote ? (
           <p className="nex-agent-empty" role="note">
             {t("gh.noRemote")}
           </p>
@@ -778,33 +836,6 @@ export default function IssuesPanel({ onClose }: IssuesPanelProps) {
           <div className="nex-composer-error nex-fade-in" role="alert">
             {t("gh.rateLimited")}
           </div>
-        ) : kind === "actions" ? (
-          <>
-            <ActionsView
-              runs={runs}
-              totalRuns={totalRuns}
-              selectedRun={selectedActionRun}
-              selectedRunId={selectedRun}
-              onSelectRun={(id) =>
-                setSelectedRun((current) => (current === id ? null : id))
-              }
-              loading={loading}
-              fixBusy={fixBusy}
-              fixCreated={fixCreated}
-              fixFailed={fixFailed}
-              onCreateFixTask={(run) => void createFixTask(run)}
-              jobLogs={jobLogs}
-              logsLoading={logsLoading}
-              onShowLog={(job) => void showJobLog(job)}
-            />
-            <RunnersView
-              runners={runners}
-              total={runnersTotal}
-              needsAuth={runnersNeedsAuth}
-              local={localTools}
-              loading={runnersLoading}
-            />
-          </>
         ) : items.length === 0 && !loading ? (
           <p className="nex-agent-empty">
             {kind === "issues" ? t("gh.emptyIssues") : t("gh.emptyPulls")}
