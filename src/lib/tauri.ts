@@ -1253,6 +1253,97 @@ export function gitExplainCommit(
   });
 }
 
+// ---- GitHub issues & PRs (read-only panel, github.com only) --------------
+// Two batch commands over the workspace `origin` repo: `gh_issues` lists
+// issues (pull-request rows excluded backend-side) and `gh_pulls` lists
+// pull requests, each one capped page (at most 50 items) for the `state`
+// filter (`open` / `closed` / `all`, default `open`). Read-only end to end:
+// GET only, no commenting/labeling/merging anywhere on the path. The token
+// resolves backend-side from the OS keyring entry `github` and never
+// crosses IPC — a missing token is not an error (`authenticated: false`,
+// panel shows its connect-hint; the shared unauthenticated quota applies).
+// Payloads stay snake_case like every other backend struct; the command arg
+// is camelCase (`state`), like every other command.
+
+/** Rate-limit snapshot echoed from the response headers (`null` when the
+ * header was absent — render as "unknown", never as zero). */
+export interface GhRateLimit {
+  limit: number | null;
+  remaining: number | null;
+  reset: number | null;
+}
+
+/** One issue row: fixed-vocabulary metadata plus the capped body. */
+export interface GhIssue {
+  number: number;
+  title: string;
+  state: string;
+  author: string;
+  labels: string[];
+  comments: number;
+  created_at: string | null;
+  updated_at: string | null;
+  html_url: string | null;
+  body: string;
+  body_truncated: boolean;
+}
+
+/** One pull-request row: fixed-vocabulary metadata plus the capped body. */
+export interface GhPull {
+  number: number;
+  title: string;
+  state: string;
+  author: string;
+  draft: boolean;
+  head_ref: string | null;
+  base_ref: string | null;
+  comments: number;
+  created_at: string | null;
+  updated_at: string | null;
+  html_url: string | null;
+  body: string;
+  body_truncated: boolean;
+}
+
+/** State filter vocabulary for both list commands. */
+export type GhState = "open" | "closed" | "all";
+
+/** One `gh_issues` response: resolved repo, filter echo, capped items,
+ * token presence, and the rate-limit snapshot. A quota-exhausted API
+ * answers with empty `items` and `rate_limited: true` (never a silent
+ * empty, never an error dump). */
+export interface GhIssuesResult {
+  owner: string;
+  repo: string;
+  state: string;
+  items: GhIssue[];
+  authenticated: boolean;
+  rate_limited: boolean;
+  rate_limit: GhRateLimit;
+}
+
+/** One `gh_pulls` response: same envelope as `GhIssuesResult`. */
+export interface GhPullsResult {
+  owner: string;
+  repo: string;
+  state: string;
+  items: GhPull[];
+  authenticated: boolean;
+  rate_limited: boolean;
+  rate_limit: GhRateLimit;
+}
+
+/** List the workspace origin repo's issues via `gh_issues`. `state`
+ * selects `open` / `closed` / `all` (default `open`). */
+export function ghIssues(state?: GhState): Promise<GhIssuesResult> {
+  return invoke<GhIssuesResult>("gh_issues", { state: state ?? null });
+}
+
+/** List the workspace origin repo's pull requests via `gh_pulls`. */
+export function ghPulls(state?: GhState): Promise<GhPullsResult> {
+  return invoke<GhPullsResult>("gh_pulls", { state: state ?? null });
+}
+
 // ---- Repository audit (read-only static analysis, findings only) ---------
 // One batch command over the workspace sources: `repo_audit` scans `.rs` /
 // `.ts` / `.tsx` files under the effective workspace root (capped server-side

@@ -17,6 +17,7 @@ use crate::application::data_management::DataManagementError;
 use crate::application::dep_inventory::DepInventoryError;
 use crate::application::execution::RequestError;
 use crate::application::export::ExportError;
+use crate::application::github::GitHubError;
 use crate::application::import::ImportError;
 use crate::application::project_dir::ProjectDirError;
 use crate::application::prompts::PromptLibraryError;
@@ -369,6 +370,41 @@ impl From<CommitMessageError> for CommandError {
             // The inner failure is already secret-free fixed vocabulary.
             CommitMessageError::VersionControl(inner) => Self::from(inner),
             CommitMessageError::Request(inner) => Self::from(inner),
+        }
+    }
+}
+
+impl From<GitHubError> for CommandError {
+    fn from(err: GitHubError) -> Self {
+        match err {
+            // Same text as the version-control mapping: the workspace has no
+            // usable repository behind it.
+            GitHubError::NotARepository => Self::new(
+                ErrorKind::InvalidInput,
+                "the workspace is not inside a git repository",
+            ),
+            // The origin URL itself is never echoed: it may carry a user
+            // name, so even the fixed text names no remote.
+            GitHubError::NoGitHubRemote => Self::new(
+                ErrorKind::InvalidInput,
+                "the workspace origin is not a github.com repository",
+            ),
+            GitHubError::InvalidState => {
+                Self::new(ErrorKind::InvalidInput, "the state filter is invalid")
+            }
+            // Transport, timeout, parse, unexpected statuses, and non-quota
+            // refusals: the request could not be completed. The token and the
+            // response body never reach the text.
+            GitHubError::RequestFailed | GitHubError::Forbidden => Self::new(
+                ErrorKind::Request,
+                "the GitHub request could not be completed",
+            ),
+            GitHubError::Unauthorized => {
+                Self::new(ErrorKind::Request, "the stored GitHub token was rejected")
+            }
+            GitHubError::NotFound => {
+                Self::new(ErrorKind::NotFound, "the GitHub repository was not found")
+            }
         }
     }
 }

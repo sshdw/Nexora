@@ -49,6 +49,8 @@
 //!     Ctrl+Shift is unbound, collision-free (inserts no text).
 //!   - Ctrl+Shift+U (code audit): same map plus tasks T — U with Ctrl+Shift
 //!     is unbound, collision-free (inserts no text).
+//!   - Ctrl+Shift+G (issues & PRs): same map plus audit U — G with
+//!     Ctrl+Shift is unbound, collision-free (inserts no text).
 //!
 //! Out of scope (deferred, documented): user-customizable bindings. The
 //! registry shape (stable ids + combo definitions) is designed so a future
@@ -163,6 +165,12 @@ export const COMBO_TASKS_OPEN: ShortcutCombo = { key: "t", ctrl: true, alt: fals
  * Shift produces; inserts no text, so it opens from anywhere including
  * typing targets). */
 export const COMBO_AUDIT_OPEN: ShortcutCombo = { key: "u", ctrl: true, alt: false, meta: false, shift: true, ci: true };
+/** Ctrl+Shift+G (issues & PRs): the Ctrl map owns only Tab/PageUp/PageDown (+
+ * palette K/P, help //?, activity/health A/H, terminal `, tasks T, audit U)
+ * — G with Ctrl+Shift is unbound, collision-free (`ci` matches the "G" key
+ * value Shift produces; inserts no text, so it opens from anywhere
+ * including typing targets). */
+export const COMBO_GH_OPEN: ShortcutCombo = { key: "g", ctrl: true, alt: false, meta: false, shift: true, ci: true };
 
 // --- The inventory (100% of the Phase-1 grep — see module header). ----------
 
@@ -231,6 +239,15 @@ export const SHORTCUTS: readonly ShortcutEntry[] = [
     description: "Open the Code audit",
     source: "App.tsx (audit effect)",
     combos: [COMBO_AUDIT_OPEN],
+  },
+  {
+    id: "go.gh",
+    keys: ["Ctrl+Shift+G"],
+    group: "Go",
+    scope: "Global (any focus, no open dialog)",
+    description: "Open Issues & PRs",
+    source: "App.tsx (gh effect)",
+    combos: [COMBO_GH_OPEN],
   },
   // Tabs.
   {

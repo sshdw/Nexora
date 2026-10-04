@@ -3,6 +3,7 @@ import type { WorkspaceStore } from "../lib/useWorkspace";
 import ActivityHealthEntry from "./ActivityHealthEntry";
 import AuditEntry from "./AuditEntry";
 import ConversationList from "./ConversationList";
+import IssuesEntry from "./IssuesEntry";
 import M3RailItem from "./M3RailItem";
 import NewConversationButton from "./NewConversationButton";
 import NexoraMark from "./NexoraMark";
@@ -47,6 +48,9 @@ export interface SidebarProps {
   /** Whether the Code Audit screen is currently shown. */
   auditActive: boolean;
   onOpenAudit: () => void;
+  /** Whether the Issues & PRs screen is currently shown. */
+  ghActive: boolean;
+  onOpenGh: () => void;
   /** Open a prompt found by search in the Prompt Library editor. */
   onSelectPrompt: (promptId: number) => void;
   /** Open the import-conversation flow (FR-011). */
@@ -83,6 +87,8 @@ export default function Sidebar({
   onOpenTasks,
   auditActive,
   onOpenAudit,
+  ghActive,
+  onOpenGh,
   onSelectPrompt,
   onImport,
   onRename,
@@ -137,6 +143,7 @@ export default function Sidebar({
         <TerminalEntry active={terminalActive} onClick={onOpenTerminal} />
         <TaskEntry active={tasksActive} onClick={onOpenTasks} />
         <AuditEntry active={auditActive} onClick={onOpenAudit} />
+        <IssuesEntry active={ghActive} onClick={onOpenGh} />
         <WorkspaceFolderButton store={workspace} />
         <WorkspaceRecentList store={workspace} />
         {workspace.error && (

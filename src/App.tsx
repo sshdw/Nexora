@@ -10,6 +10,7 @@ import AuditPanel from "./components/AuditPanel";
 import EmptyState from "./components/EmptyState";
 import { ExportIcon } from "./components/icons";
 import { ExportModal, ImportModal } from "./components/ImportExportModals";
+import IssuesPanel from "./components/IssuesPanel";
 import M3Button from "./components/M3Button";
 import M3IconButton from "./components/M3IconButton";
 import M3Toolbar from "./components/M3Toolbar";
@@ -35,6 +36,7 @@ import {
 import {
   COMBO_ACTIVITY_OPEN,
   COMBO_AUDIT_OPEN,
+  COMBO_GH_OPEN,
   COMBO_HEALTH_OPEN,
   COMBO_HELP_F1,
   COMBO_HELP_QUESTION,
@@ -272,6 +274,12 @@ function AppShell() {
   // opening an overlay over the still-mounted panes (palette + Ctrl+Shift+U
   // open it too; the panel scans manually on Run only, never on mount).
   const [auditOpen, setAuditOpen] = useState(false);
+  // Issues & PRs screen: a workspace-scoped navigation destination like
+  // Settings/Library/VCS/Activity/Terminal/Tasks/Audit — a sidebar rail
+  // entry opening an overlay over the still-mounted panes (palette +
+  // Ctrl+Shift+G open it too; the panel loads from the backend on mount
+  // and on every kind/state change, plus manual Refresh).
+  const [ghOpen, setGhOpen] = useState(false);
   const mainRef = useRef<HTMLDivElement>(null);
 
   const draftFor = useCallback(
@@ -325,6 +333,7 @@ function AppShell() {
     setTerminalOpen(false);
     setTasksOpen(false);
     setAuditOpen(false);
+    setGhOpen(false);
   };
 
   // Leading-edge guard for conversation creation: synchronous rapid clicks on
@@ -344,6 +353,7 @@ function AppShell() {
         setTerminalOpen(false);
         setTasksOpen(false);
         setAuditOpen(false);
+        setGhOpen(false);
       }    } finally {
       creatingInFlight.current = false;
     }
@@ -359,6 +369,7 @@ function AppShell() {
     setTerminalOpen(false);
     setTasksOpen(false);
     setAuditOpen(false);
+    setGhOpen(false);
   };
 
   const openSettings = useCallback((section?: PaletteSettingsSection) => {
@@ -370,6 +381,7 @@ function AppShell() {
     setTerminalOpen(false);
     setTasksOpen(false);
     setAuditOpen(false);
+    setGhOpen(false);
   }, []);
   const openLibrary = useCallback(() => {
     // A fresh entry to the library opens the list, not a previously staged edit.
@@ -381,6 +393,7 @@ function AppShell() {
     setTerminalOpen(false);
     setTasksOpen(false);
     setAuditOpen(false);
+    setGhOpen(false);
   }, []);
   const closeLibrary = () => {
     setLibraryOpen(false);
@@ -395,6 +408,7 @@ function AppShell() {
     setTerminalOpen(false);
     setTasksOpen(false);
     setAuditOpen(false);
+    setGhOpen(false);
   }, []);
   const closeVcs = () => {
     setVcsOpen(false);
@@ -423,6 +437,7 @@ function AppShell() {
     setTerminalOpen(false);
     setTasksOpen(false);
     setAuditOpen(false);
+    setGhOpen(false);
   }, []);
   const closeActivity = () => {
     setActivityOpen(false);
@@ -435,6 +450,7 @@ function AppShell() {
     setActivityOpen(false);
     setTerminalOpen(false);
     setAuditOpen(false);
+    setGhOpen(false);
   }, []);
   const closeTasks = () => {
     setTasksOpen(false);
@@ -446,10 +462,25 @@ function AppShell() {
     setActivityOpen(false);
     setTerminalOpen(false);
     setTasksOpen(false);
+    setGhOpen(false);
     setAuditOpen(true);
   }, []);
   const closeAudit = () => {
     setAuditOpen(false);
+    setGhOpen(false);
+  };
+  const openGh = useCallback(() => {
+    setLibraryOpen(false);
+    setSettingsOpen(false);
+    setVcsOpen(false);
+    setActivityOpen(false);
+    setTerminalOpen(false);
+    setTasksOpen(false);
+    setAuditOpen(false);
+    setGhOpen(true);
+  }, []);
+  const closeGh = () => {
+    setGhOpen(false);
   };
 
   // Open a prompt found by search: show the Prompt Library and open the selected
@@ -463,6 +494,7 @@ function AppShell() {
     setTerminalOpen(false);
     setTasksOpen(false);
     setAuditOpen(false);
+    setGhOpen(false);
   };
 
   // FR-007 "Use": stage the prompt's content into the active pane's composer,
@@ -509,6 +541,7 @@ function AppShell() {
     setTerminalOpen(false);
     setTasksOpen(false);
     setAuditOpen(false);
+    setGhOpen(false);
   }, []);
 
   // Focus the active pane's composer (palette "Focus message input"):
@@ -521,6 +554,7 @@ function AppShell() {
     setTerminalOpen(false);
     setTasksOpen(false);
     setAuditOpen(false);
+    setGhOpen(false);
     window.setTimeout(() => {
       document
         .querySelector<HTMLTextAreaElement>(".nex-composer-input")
@@ -742,6 +776,20 @@ function AppShell() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [openAudit]);
 
+  // Issues & PRs shortcut (shortcut:go.gh — Ctrl+Shift+G): same guarded
+  // pattern (opens from anywhere including typing targets — the combo
+  // inserts no text — while an open dialog still owns the keyboard).
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!matchesCombo(event, COMBO_GH_OPEN)) return;
+      if (document.querySelector('[role="dialog"]') !== null) return;
+      event.preventDefault();
+      openGh();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [openGh]);
+
   // Onboarding re-entry (palette "Replay onboarding walkthrough" + Settings
   // nav entry): overlays close first so the flow never stacks above another
   // dialog (same overlay-exit contract as closeOverlays).
@@ -775,6 +823,7 @@ function AppShell() {
       terminalOpen ||
       tasksOpen ||
       auditOpen ||
+      ghOpen ||
       paletteOpen ||
       shortcutsOpen
     ) {
@@ -797,6 +846,7 @@ function AppShell() {
     terminalOpen,
     tasksOpen,
     auditOpen,
+    ghOpen,
     paletteOpen,
     shortcutsOpen,
   ]);
@@ -816,6 +866,7 @@ function AppShell() {
           openTerminal,
           openTasks,
           openAudit,
+          openGh,
           newConversation: () => void handleNewConversation(),
           openImport: () => setImportOpen(true),
           exportActive: exportActiveConversation,
@@ -854,6 +905,7 @@ function AppShell() {
       openTerminal,
       openTasks,
       openAudit,
+      openGh,
       handleNewConversation,
       exportActiveConversation,
       focusComposer,
@@ -910,7 +962,8 @@ function AppShell() {
     activityOpen ||
     terminalOpen ||
     tasksOpen ||
-    auditOpen;
+    auditOpen ||
+    ghOpen;
   // The split grid stays mounted in zen (the secondary pane hides via
   // .nex-zen CSS, same technique as the zen chrome rules) so both
   // ConversationView instances survive entering/exiting zen. Split
@@ -1026,6 +1079,8 @@ function AppShell() {
         onOpenTasks={openTasks}
         auditActive={auditOpen}
         onOpenAudit={openAudit}
+        ghActive={ghOpen}
+        onOpenGh={openGh}
         onSelectPrompt={handleSelectPrompt}
         onImport={() => setImportOpen(true)}
         onRename={rename}
@@ -1049,6 +1104,7 @@ function AppShell() {
               setTerminalOpen(false);
               setTasksOpen(false);
               setAuditOpen(false);
+              setGhOpen(false);
             }}
             onClose={tabs.close}
             onNewConversation={() => void handleNewConversation()}
@@ -1096,6 +1152,8 @@ function AppShell() {
               />
             ) : auditOpen ? (
               <AuditPanel onClose={closeAudit} />
+            ) : ghOpen ? (
+              <IssuesPanel onClose={closeGh} />
             ) : (
               <SettingsView
                 store={providers}

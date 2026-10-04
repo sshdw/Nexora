@@ -549,3 +549,24 @@ export function AuditIcon(props: ComponentPropsWithoutRef<"svg">) {
     </svg>
   );
 }
+
+/** Issues glyph for the sidebar Issues & PRs entry: an issue-ring (circle
+ * outline) with a centered dot, on the same 18px stroke grid as the rail
+ * set — distinct from the audit magnifier. */
+export function IssuesIcon(props: ComponentPropsWithoutRef<"svg">) {
+  return (
+    <svg
+      aria-hidden="true"
+      focusable="false"
+      width="18"
+      height="18"
+      viewBox="0 0 18 18"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      {...props}
+    >
+      <circle cx="9" cy="9" r="5.5" stroke="currentColor" strokeWidth="1.4" />
+      <circle cx="9" cy="9" r="1.2" fill="currentColor" />
+    </svg>
+  );
+}

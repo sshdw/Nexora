@@ -31,6 +31,7 @@ pub mod dep_inventory;
 pub mod execution;
 pub mod export;
 pub mod flags;
+pub mod github;
 pub mod import;
 pub mod project_dir;
 pub mod prompts;
