@@ -957,8 +957,10 @@ export function getWorkspaceRoot(): Promise<string> {
   return invoke<string>("get_workspace_root");
 }
 
-/** Validate, canonicalize, persist `path` and prepend it to the recent list
- * (`set_workspace_root`). Returns the canonical path. */
+/** Validate, canonicalize, persist `path` as the active root and register it
+ * (`set_workspace_root` — runs the identical validation as `roots_add`,
+ * including the nesting refusal). Joins the registry and the 5-entry picker
+ * history. Returns the canonical path. */
 export function setWorkspaceRoot(path: string): Promise<string> {
   return invoke<string>("set_workspace_root", { path });
 }
@@ -966,6 +968,38 @@ export function setWorkspaceRoot(path: string): Promise<string> {
 /** Recent workspace roots, most-recent first (at most 5). */
 export function listWorkspaceRecent(): Promise<string[]> {
   return invoke<string[]>("list_workspace_recent");
+}
+
+// ---- Multi-root registry (workspace roots switcher) --------------------
+// The registry spans multiple repo roots: `active` is the effective root
+// every root-aware feature follows (git panel, audit, terminal, agent runs,
+// GitHub lists, flags, diagnostics); `roots` lists every registered root,
+// active first. Registration validates backend-side (must exist,
+// canonicalized, disjoint — nesting refused) into an unbounded registry
+// (registering never evicts); removal never deletes
+// directories, and removing the active root falls back to the default.
+
+/** Multi-root registry view: the active root plus every registered root. */
+export interface RootsList {
+  active: string;
+  roots: string[];
+}
+
+/** List the registered roots with the active root first (`roots_list`). */
+export function rootsList(): Promise<RootsList> {
+  return invoke<RootsList>("roots_list");
+}
+
+/** Register `path` as a root and make it active (`roots_add`).
+ * Returns the updated registry view. */
+export function rootsAdd(path: string): Promise<RootsList> {
+  return invoke<RootsList>("roots_add", { path });
+}
+
+/** Unregister `path` from the registry (`roots_remove`). Removing the
+ * active root falls back to the default. Returns the updated view. */
+export function rootsRemove(path: string): Promise<RootsList> {
+  return invoke<RootsList>("roots_remove", { path });
 }
 
 // ---- Workspace project directory (`.nexora/`) --------------------------

@@ -14,7 +14,7 @@ import TaskEntry from "./TaskEntry";
 import TerminalEntry from "./TerminalEntry";
 import VersionControlEntry from "./VersionControlEntry";
 import WorkspaceFolderButton from "./WorkspaceFolderButton";
-import WorkspaceRecentList from "./WorkspaceRecentList";
+import WorkspaceRootsSwitcher from "./WorkspaceRootsSwitcher";
 import { ImportIcon } from "./icons";
 import { useStrings } from "../lib/useLocale";
 
@@ -145,7 +145,7 @@ export default function Sidebar({
         <AuditEntry active={auditActive} onClick={onOpenAudit} />
         <IssuesEntry active={ghActive} onClick={onOpenGh} />
         <WorkspaceFolderButton store={workspace} />
-        <WorkspaceRecentList store={workspace} />
+        <WorkspaceRootsSwitcher store={workspace} />
         {workspace.error && (
           <p className="nex-sidebar-error" role="alert">
             {workspace.error.message}

@@ -53,8 +53,8 @@ use super::routing::{
 };
 use super::settings::SettingsService;
 use super::workspace::{
-    parse_recent, WORKSPACE_RECENT_KEY, WORKSPACE_RECENT_MAX, WORKSPACE_ROOT_KEY,
-    WORKSPACE_ROOT_MAX_LEN,
+    parse_recent, parse_registry, WORKSPACE_RECENT_KEY, WORKSPACE_RECENT_MAX, WORKSPACE_ROOTS_KEY,
+    WORKSPACE_ROOT_KEY, WORKSPACE_ROOT_MAX_LEN,
 };
 use crate::application::agent::injection::contains_secret;
 use crate::infrastructure::database::{Database, DatabaseError};
@@ -798,9 +798,9 @@ struct SetupDocument {
 }
 
 /// Whether `key` may be written by a setup import at all: the eight
-/// gate-owned settings keys, the two routing profile keys, the registered
-/// `flags.*` keys, and [`MCP_SERVERS_KEY`]. Anything else is skipped, never
-/// stored.
+/// gate-owned settings keys, the workspace-roots registry key, the two
+/// routing profile keys, the registered `flags.*` keys, and
+/// [`MCP_SERVERS_KEY`]. Anything else is skipped, never stored.
 fn is_allowlisted_key(key: &str) -> bool {
     matches!(
         key,
@@ -810,6 +810,7 @@ fn is_allowlisted_key(key: &str) -> bool {
             | AUTONOMY_KEY
             | WORKSPACE_ROOT_KEY
             | WORKSPACE_RECENT_KEY
+            | WORKSPACE_ROOTS_KEY
             | CHAT_PROFILE_KEY
             | AGENT_PROFILE_KEY
             | MCP_SERVERS_KEY
@@ -828,6 +829,22 @@ fn is_valid_recent_value(value: &str) -> bool {
                 && list
                     .iter()
                     .all(|s| !s.trim().is_empty() && s.len() <= WORKSPACE_ROOT_MAX_LEN)
+                && items.len() == list.len()
+        }
+        Err(_) => false,
+    }
+}
+
+/// Strict `agent.workspace_roots` domain check, mirroring the
+/// settings-command gate exactly: the value must be a JSON array (any length
+/// — the registry never evicts) of non-empty strings within
+/// [`WORKSPACE_ROOT_MAX_LEN`] that round-trips through [`parse_registry`].
+fn is_valid_registry_value(value: &str) -> bool {
+    let items = parse_registry(Some(value));
+    match serde_json::from_str::<Vec<String>>(value) {
+        Ok(list) => {
+            list.iter()
+                .all(|s| !s.trim().is_empty() && s.len() <= WORKSPACE_ROOT_MAX_LEN)
                 && items.len() == list.len()
         }
         Err(_) => false,
@@ -890,6 +907,13 @@ fn setup_denial_reason(key: &str, value: &str) -> Option<&'static str> {
         }
         WORKSPACE_RECENT_KEY => {
             if is_valid_recent_value(value) {
+                None
+            } else {
+                Some(DENY_UNSUPPORTED_VALUE)
+            }
+        }
+        WORKSPACE_ROOTS_KEY => {
+            if is_valid_registry_value(value) {
                 None
             } else {
                 Some(DENY_UNSUPPORTED_VALUE)

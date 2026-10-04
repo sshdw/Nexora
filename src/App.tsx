@@ -887,6 +887,7 @@ function AppShell() {
           toggleZen,
           showShortcuts: () => setShortcutsOpen(true),
           toggleLanguage,
+          addWorkspaceRoot: () => void workspace.addRootFolder(),
           replayOnboarding,
           jumpToTab: (index: number) => {
             closeOverlays();
@@ -914,6 +915,7 @@ function AppShell() {
       toggleZen,
       toggleLanguage,
       replayOnboarding,
+      workspace,
       locale,
     ],
   );

@@ -28,8 +28,8 @@ use crate::application::routing::{
 };
 use crate::application::settings::SettingsService;
 use crate::application::workspace::{
-    parse_recent, WORKSPACE_RECENT_KEY, WORKSPACE_RECENT_MAX, WORKSPACE_ROOT_KEY,
-    WORKSPACE_ROOT_MAX_LEN,
+    parse_recent, parse_registry, WORKSPACE_RECENT_KEY, WORKSPACE_RECENT_MAX, WORKSPACE_ROOTS_KEY,
+    WORKSPACE_ROOT_KEY, WORKSPACE_ROOT_MAX_LEN,
 };
 use crate::infrastructure::database::Database;
 use crate::infrastructure::providers::supported_providers;
@@ -58,7 +58,7 @@ const VALID_AUTONOMY: &[&str] = &["supervised", "semi_autonomous", "full_autonom
 /// implementation (FR-012: invalid values are rejected before persistence).
 ///
 /// Rules:
-/// - Only the explicitly supported setting keys may be written: the nine
+/// - Only the explicitly supported setting keys may be written: the ten
 ///   base keys below, the `mcp.servers` MCP server list, plus the four
 ///   `flags.*` feature-flag keys.
 /// - A `None` value (clearing back to the default state) is always valid.
@@ -94,6 +94,8 @@ const VALID_AUTONOMY: &[&str] = &["supervised", "semi_autonomous", "full_autonom
 ///   check only keeps obvious junk out of the generic key/value path.
 /// - [`WORKSPACE_RECENT_KEY`] accepts a JSON array of at most 5 non-empty
 ///   strings, each up to 1024 chars.
+/// - [`WORKSPACE_ROOTS_KEY`] accepts a JSON array of non-empty strings, each
+///   up to 1024 chars, with NO length cap — the registry must never evict.
 /// - [`MCP_SERVERS_KEY`] accepts a JSON array of MCP server entries
 ///   (`{name, command, args, env}`) that passes
 ///   [`McpServerList::from_json`] — the single source shared with the setup
@@ -164,21 +166,18 @@ fn validate_setting(key: &str, value: Option<&str>) -> Result<(), CommandError> 
             }
         }
         WORKSPACE_RECENT_KEY => {
-            let items = parse_recent(Some(value));
             // `parse_recent` truncates to the max; a round-trip mismatch means
-            // the stored value was corrupt or overfull. Re-parse strictly:
-            // the value must be a JSON array of <= 5 non-empty <= 1024 strings.
-            let strict: bool = match serde_json::from_str::<Vec<String>>(value) {
-                Ok(list) => {
-                    list.len() <= WORKSPACE_RECENT_MAX
-                        && list
-                            .iter()
-                            .all(|s| !s.trim().is_empty() && s.len() <= WORKSPACE_ROOT_MAX_LEN)
-                        && items.len() == list.len()
-                }
-                Err(_) => false,
-            };
-            if strict {
+            // the stored value was corrupt or overfull.
+            if is_valid_root_list(value, Some(WORKSPACE_RECENT_MAX)) {
+                Ok(())
+            } else {
+                Err(rejected(key, value))
+            }
+        }
+        WORKSPACE_ROOTS_KEY => {
+            // The registry is unbounded (no eviction): any-length JSON array
+            // of non-empty paths round-tripping through `parse_registry`.
+            if is_valid_root_list(value, None) {
                 Ok(())
             } else {
                 Err(rejected(key, value))
@@ -225,6 +224,33 @@ fn validate_setting(key: &str, value: Option<&str>) -> Result<(), CommandError> 
 /// so the command gate and the service load/save paths agree exactly.
 fn is_valid_routing_profile(value: &str) -> bool {
     RoutingProfile::from_json(value).is_ok()
+}
+
+/// Strict JSON-array-of-paths check shared by the workspace list gate arms:
+/// every entry non-empty and within [`WORKSPACE_ROOT_MAX_LEN`], and the
+/// tolerant parse must preserve every entry (a truncation or corrupt-input
+/// mismatch means the value is out of domain). `Some(max)` enforces a length
+/// cap (the 5-entry picker-history ring); `None` leaves the length unbounded
+/// (the registry never evicts).
+fn is_valid_root_list(value: &str, cap: Option<usize>) -> bool {
+    let items = match cap {
+        Some(_) => parse_recent(Some(value)),
+        None => parse_registry(Some(value)),
+    };
+    match serde_json::from_str::<Vec<String>>(value) {
+        Ok(list) => {
+            let within_cap = match cap {
+                Some(max) => list.len() <= max,
+                None => true,
+            };
+            within_cap
+                && list
+                    .iter()
+                    .all(|s| !s.trim().is_empty() && s.len() <= WORKSPACE_ROOT_MAX_LEN)
+                && items.len() == list.len()
+        }
+        Err(_) => false,
+    }
 }
 
 /// Build the uniform secret-free rejection for an out-of-domain value.
@@ -448,6 +474,18 @@ mod tests {
         assert_rejected(WORKSPACE_RECENT_KEY, r#"["a","b","c","d","e","f"]"#);
         assert_rejected(WORKSPACE_RECENT_KEY, r#"[""]"#);
         assert_rejected(WORKSPACE_RECENT_KEY, r#"{"a":1}"#);
+    }
+
+    #[test]
+    fn workspace_roots_registry_is_uncapped_but_strict() {
+        assert_accepted(WORKSPACE_ROOTS_KEY, r#"["a","b","c","d","e","f"]"#);
+        assert_accepted(WORKSPACE_ROOTS_KEY, "[]");
+        assert_rejected(WORKSPACE_ROOTS_KEY, "not json");
+        assert_rejected(WORKSPACE_ROOTS_KEY, r#"[""]"#);
+        assert_rejected(WORKSPACE_ROOTS_KEY, r#"["  "]"#);
+        assert_rejected(WORKSPACE_ROOTS_KEY, r#"{"a":1}"#);
+        let overlong = format!(r#"["{}"]"#, "a".repeat(1025));
+        assert_rejected(WORKSPACE_ROOTS_KEY, overlong.as_str());
     }
 
     #[test]
@@ -675,6 +713,12 @@ mod tests {
             (WORKSPACE_ROOT_KEY, String::new(), false),
             (WORKSPACE_RECENT_KEY, r#"["C:\\a"]"#.to_string(), true),
             (WORKSPACE_RECENT_KEY, "not json".to_string(), false),
+            (
+                WORKSPACE_ROOTS_KEY,
+                r#"["a","b","c","d","e","f"]"#.to_string(),
+                true,
+            ),
+            (WORKSPACE_ROOTS_KEY, "not json".to_string(), false),
             (CHAT_PROFILE_KEY, routing_single.clone(), true),
             (AGENT_PROFILE_KEY, routing_single.clone(), true),
             (CHAT_PROFILE_KEY, "[]".to_string(), false),

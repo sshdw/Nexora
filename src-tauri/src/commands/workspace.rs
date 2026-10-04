@@ -18,8 +18,8 @@ use tauri::{AppHandle, Manager, State};
 use crate::application::routing::{profile_file_name, RoutingProfile, TaskKind};
 use crate::application::settings::SettingsService;
 use crate::application::workspace::{
-    parse_recent, push_recent, resolve_workspace_root, validate_workspace_root,
-    WORKSPACE_RECENT_KEY, WORKSPACE_ROOT_KEY,
+    list_roots, parse_recent, register_root, resolve_workspace_root, unregister_root, RootsList,
+    WORKSPACE_RECENT_KEY,
 };
 use crate::infrastructure::database::Database;
 
@@ -56,29 +56,23 @@ pub(crate) fn get_workspace_root(
     Ok(resolved.to_string_lossy().to_string())
 }
 
-/// Validate `path` with the workspace guard, canonicalize it, persist it as
-/// `agent.workspace_root`, prepend it to the 5-entry
-/// `agent.workspace_recent` ring, and return the canonical path.
+/// Persist `path` as the active workspace root and return its canonical form.
+///
+/// Back-compat single-root picker path: this runs the IDENTICAL validation
+/// as `roots_add` by delegating to the shared registry
+/// ([`register_root`]) — the guard (existence, UNC / system / drive-root)
+/// plus the nesting refusal — so the legacy picker cannot register
+/// overlapping roots that would defeat the disjoint-roots assumption. The
+/// root becomes active and joins the registry and the 5-entry picker
+/// history, exactly as if added via `roots_add`.
 #[tauri::command]
 pub(crate) fn set_workspace_root(
     path: String,
     db: State<'_, Database>,
 ) -> Result<String, CommandError> {
-    let canonical = validate_workspace_root(&path)
-        .map_err(|err| CommandError::new(ErrorKind::InvalidInput, err.to_string()))?;
-    let text = canonical.to_string_lossy().to_string();
-    let service = SettingsService::new(db.inner());
-    service
-        .write(WORKSPACE_ROOT_KEY, Some(text.as_str()))
-        .map_err(CommandError::from)?;
-    let existing = service
-        .read(WORKSPACE_RECENT_KEY)
-        .map_err(CommandError::from)?;
-    let next = push_recent(existing.as_deref(), text.as_str());
-    service
-        .write(WORKSPACE_RECENT_KEY, Some(next.as_str()))
-        .map_err(CommandError::from)?;
-    Ok(text)
+    register_root(db.inner(), path.as_str())
+        .map(|canonical| canonical.to_string_lossy().to_string())
+        .map_err(|err| CommandError::new(ErrorKind::InvalidInput, err.to_string()))
 }
 
 /// List the recent workspace roots (most-recent first, at most 5).
@@ -89,6 +83,56 @@ pub(crate) fn list_workspace_recent(db: State<'_, Database>) -> Result<Vec<Strin
         .read(WORKSPACE_RECENT_KEY)
         .map_err(CommandError::from)?;
     Ok(parse_recent(raw.as_deref()))
+}
+
+/// List the multi-root registry: the active root plus every registered root.
+///
+/// Read-only: the active entry is the resolved effective root (the stored
+/// `agent.workspace_root` when it still validates, else the default
+/// `agent_workspace` directory), followed by the stored registry entries
+/// de-duplicated. Every root-aware feature (git panel, audit, terminal,
+/// agent runs, GitHub lists, flags, diagnostics) follows the active entry.
+#[tauri::command]
+pub(crate) fn roots_list(
+    app: AppHandle,
+    db: State<'_, Database>,
+) -> Result<RootsList, CommandError> {
+    let fallback = default_root(&app)?;
+    Ok(list_roots(db.inner(), &fallback))
+}
+
+/// Register `path` as a root and make it the active root (idempotent).
+///
+/// Validates with the workspace guard (must exist, canonicalized, no UNC /
+/// system / drive-root) and refuses nesting inside (or around) an existing
+/// root with fixed vocabulary. Returns the updated registry view so the
+/// switcher refreshes in one round trip.
+#[tauri::command]
+pub(crate) fn roots_add(
+    path: String,
+    app: AppHandle,
+    db: State<'_, Database>,
+) -> Result<RootsList, CommandError> {
+    let fallback = default_root(&app)?;
+    register_root(db.inner(), path.as_str())
+        .map_err(|err| CommandError::new(ErrorKind::InvalidInput, err.to_string()))?;
+    Ok(list_roots(db.inner(), &fallback))
+}
+
+/// Unregister `path` from the registry and return the updated view.
+///
+/// Removing the active root clears it, so resolution falls back to the
+/// default root; every root-aware feature follows on its next manual refresh.
+/// Removal never deletes directories — registry bookkeeping only.
+#[tauri::command]
+pub(crate) fn roots_remove(
+    path: String,
+    app: AppHandle,
+    db: State<'_, Database>,
+) -> Result<RootsList, CommandError> {
+    let fallback = default_root(&app)?;
+    unregister_root(db.inner(), path.as_str(), &fallback)
+        .map_err(|err| CommandError::new(ErrorKind::InvalidInput, err.to_string()))
 }
 
 /// Initialize the workspace `.nexora/` project directory (idempotent).
@@ -144,4 +188,33 @@ pub(crate) fn save_workspace_profile(
         .join(file_name)
         .to_string_lossy()
         .to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    /// Static wiring check (Fix 2 regression): the legacy `set_workspace_root`
+    /// picker path must run the identical validation as `roots_add`,
+    /// including the nesting refusal — it delegates to the shared
+    /// [`crate::application::workspace::register_root`], never to a
+    /// validate-and-write of its own. Needles use `concat!` so this test's
+    /// own source never matches them verbatim.
+    #[test]
+    fn legacy_setter_delegates_to_the_shared_registry() {
+        const SELF_SOURCE: &str = include_str!("workspace.rs");
+        const DELEGATE: &str = concat!("register", "_root(db.inner()");
+        const SOLO_GUARD: &str = concat!("validate", "_workspace_root");
+        const SOLO_RING: &str = concat!("push", "_recent(");
+        assert!(
+            SELF_SOURCE.contains(DELEGATE),
+            "set_workspace_root must delegate to the shared registry"
+        );
+        assert!(
+            !SELF_SOURCE.contains(SOLO_GUARD),
+            "no validate-only path may remain in the workspace commands"
+        );
+        assert!(
+            !SELF_SOURCE.contains(SOLO_RING),
+            "no direct ring write may remain in the workspace commands"
+        );
+    }
 }
