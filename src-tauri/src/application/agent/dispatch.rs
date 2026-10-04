@@ -358,7 +358,13 @@ fn handle_permission_store_decision(
                         }
                     }
                     PermissionOutcome::Ask { rule_id } => {
-                        if matches!(mode, AutonomyMode::FullAutonomous) {
+                        // NEX-SEC-001 shell deny-floor: an `Ask` rule for
+                        // `execute_command` never collapses to execute, in
+                        // any mode. Fall through to the ladder below, which
+                        // always parks the shell for an explicit decision.
+                        if matches!(mode, AutonomyMode::FullAutonomous)
+                            && call.name != "execute_command"
+                        {
                             let dispatch_started = Instant::now();
                             let outcome = ToolRegistry::execute_with_cancellation(
                                 call,
@@ -2202,6 +2208,113 @@ mod tests {
         runner.run("openai", "m", "cred", "q").expect("completes");
         driver.join().expect("driver");
         let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn full_autonomous_shell_parks_for_approval_without_rule() {
+        // NEX-SEC-001 deny-floor: FullAutonomous + execute_command (no rule
+        // at all) must emit ApprovalRequested and park — previously it
+        // auto-executed with no prompt and no confinement.
+        let ws = temp_workspace();
+        let gate = ApprovalGate::new(AutonomyMode::FullAutonomous);
+        let gate_clone = gate.clone();
+        let (tx, rx) = channel();
+        let fake = FakeExecutor::new(vec![
+            Ok(AiResponse {
+                content: String::new(),
+                model: "m".to_string(),
+                tool_calls: vec![approval_call(
+                    "s1",
+                    "execute_command",
+                    serde_json::json!({"command": "echo hi"}),
+                )],
+                usage: None,
+            }),
+            Ok(text_response("done")),
+        ]);
+        let runner = AgentRunner::new(&fake, &ws)
+            .with_approval_gate(gate_clone)
+            .with_event_sender(tx);
+        let gate_for_driver = gate.clone();
+        let driver = thread::spawn(move || {
+            let ev = rx.recv_timeout(Duration::from_secs(5)).expect("requested");
+            assert!(
+                matches!(ev, AgentRunEvent::ApprovalRequested { ref name, .. } if name=="execute_command"),
+                "FullAutonomous shell must park, got {ev:?}"
+            );
+            gate_for_driver.respond("s1", ApprovalDecision::Approved);
+            rx.recv_timeout(Duration::from_secs(5)).expect("resolved");
+            rx.recv_timeout(Duration::from_secs(5)).expect("completed")
+        });
+        runner.run("openai", "m", "cred", "q").expect("completes");
+        driver.join().expect("driver");
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn shell_ask_rule_parks_in_every_mode() {
+        // NEX-SEC-001 rule x mode table: an Ask rule for execute_command
+        // never collapses to execute — it parks in Supervised,
+        // SemiAutonomous, AND FullAutonomous. (Non-shell Ask still
+        // collapses in FullAutonomous; pinned by
+        // `ask_rule_on_search_files_auto_runs_under_full_autonomous`.)
+        for mode in [
+            AutonomyMode::Supervised,
+            AutonomyMode::SemiAutonomous,
+            AutonomyMode::FullAutonomous,
+        ] {
+            let store = PermissionStore::from_rules(vec![permissions::PermissionRule {
+                id: 1,
+                preset: "coding".to_string(),
+                tool_pattern: "execute_command".to_string(),
+                path_pattern: None,
+                effect: permissions::RuleEffect::Ask,
+                priority: 0,
+            }]);
+            let ws = temp_workspace();
+            let gate = ApprovalGate::new(mode);
+            let gate_clone = gate.clone();
+            let (tx, rx) = channel();
+            let fake = FakeExecutor::new(vec![
+                Ok(AiResponse {
+                    content: String::new(),
+                    model: "m".to_string(),
+                    tool_calls: vec![approval_call(
+                        "s1",
+                        "execute_command",
+                        serde_json::json!({"command": "echo hi"}),
+                    )],
+                    usage: None,
+                }),
+                Ok(text_response("recovered")),
+            ]);
+            let runner = AgentRunner::new(&fake, &ws)
+                .with_approval_gate(gate_clone)
+                .with_permission_store(store)
+                .with_event_sender(tx);
+            let gate_for_driver = gate.clone();
+            let driver = thread::spawn(move || {
+                let ev = rx.recv_timeout(Duration::from_secs(5)).expect("requested");
+                assert!(
+                    matches!(ev, AgentRunEvent::ApprovalRequested { ref name, .. } if name=="execute_command"),
+                    "mode={mode:?}: shell Ask must park, got {ev:?}"
+                );
+                gate_for_driver.respond("s1", ApprovalDecision::Denied);
+                let ev2 = rx.recv_timeout(Duration::from_secs(5)).expect("resolved");
+                assert!(matches!(
+                    ev2,
+                    AgentRunEvent::ApprovalResolved {
+                        approved: false,
+                        ..
+                    }
+                ));
+                rx.recv_timeout(Duration::from_secs(5)).expect("completed")
+            });
+            let answer = runner.run("openai", "m", "cred", "q").expect("completes");
+            assert_eq!(answer, "recovered");
+            driver.join().expect("driver");
+            let _ = fs::remove_dir_all(&ws);
+        }
     }
 
     #[test]

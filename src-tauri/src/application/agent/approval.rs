@@ -26,10 +26,13 @@ use crate::application::execution::ToolCall;
 pub(crate) enum RiskClass {
     /// `read_file`, `list_directory`, `search_files`.
     ReadOnly,
-    /// `write_file`, `edit_file`, `execute_command`, and any unknown tool.
-    /// Every shell command counts as mutating because the shell cannot be
-    /// statically classified.
+    /// `write_file`, `edit_file`, and any unknown tool.
     Mutating,
+    /// `execute_command` only: an unconfined shell (NEX-SEC-001). The
+    /// command string, its network access, and its file reach cannot be
+    /// statically classified, so the shell always requires explicit user
+    /// consent — even in `FullAutonomous`.
+    DangerousShell,
 }
 
 impl RiskClass {
@@ -38,6 +41,7 @@ impl RiskClass {
     pub(crate) fn classify(name: &str) -> Self {
         match name {
             "read_file" | "list_directory" | "search_files" => Self::ReadOnly,
+            "execute_command" => Self::DangerousShell,
             _ => Self::Mutating,
         }
     }
@@ -180,14 +184,21 @@ impl ApprovalGate {
 
     /// Whether `call` would require user approval under the current mode and
     /// risk class. Does not park.
+    ///
+    /// NEX-SEC-001 deny-floor: `DangerousShell` (`execute_command`) always
+    /// requires explicit consent, even in `FullAutonomous`.
     #[must_use]
     pub(crate) fn needs_approval(&self, call: &ToolCall) -> bool {
         let risk = RiskClass::classify(&call.name);
         let mode = self.mode();
         match mode {
             AutonomyMode::Supervised => true,
-            AutonomyMode::SemiAutonomous => matches!(risk, RiskClass::Mutating),
-            AutonomyMode::FullAutonomous => false,
+            AutonomyMode::SemiAutonomous => {
+                matches!(risk, RiskClass::Mutating | RiskClass::DangerousShell)
+            }
+            AutonomyMode::FullAutonomous => {
+                matches!(risk, RiskClass::DangerousShell)
+            }
         }
     }
 
@@ -410,7 +421,11 @@ mod tests {
         assert_eq!(RiskClass::classify("read_file"), RiskClass::ReadOnly);
         assert_eq!(RiskClass::classify("list_directory"), RiskClass::ReadOnly);
         assert_eq!(RiskClass::classify("write_file"), RiskClass::Mutating);
-        assert_eq!(RiskClass::classify("execute_command"), RiskClass::Mutating);
+        // NEX-SEC-001: the shell is its own risk class, never plain Mutating.
+        assert_eq!(
+            RiskClass::classify("execute_command"),
+            RiskClass::DangerousShell
+        );
         // Unknown tools are conservative.
         assert_eq!(RiskClass::classify("does_not_exist"), RiskClass::Mutating);
         assert_eq!(RiskClass::classify(""), RiskClass::Mutating);
@@ -450,12 +465,47 @@ mod tests {
         assert!(semi.needs_approval(&tool_call("3", "write_file")));
         assert!(semi.needs_approval(&tool_call("4", "execute_command")));
 
-        // Full: everything auto.
+        // Full: everything auto except the NEX-SEC-001 shell deny-floor.
         let full = ApprovalGate::new(AutonomyMode::FullAutonomous);
         assert!(!full.needs_approval(&tool_call("1", "read_file")));
         assert!(!full.needs_approval(&tool_call("2", "list_directory")));
         assert!(!full.needs_approval(&tool_call("3", "write_file")));
-        assert!(!full.needs_approval(&tool_call("4", "execute_command")));
+        assert!(full.needs_approval(&tool_call("4", "execute_command")));
+    }
+
+    #[test]
+    fn shell_deny_floor_mode_x_tool_matrix() {
+        // NEX-SEC-001 table: every mode x every tool. The shell
+        // (`execute_command`) parks in all three modes; every non-shell
+        // outcome is exactly the pre-fix ladder behavior.
+        let modes = [
+            AutonomyMode::Supervised,
+            AutonomyMode::SemiAutonomous,
+            AutonomyMode::FullAutonomous,
+        ];
+        let tools = [
+            "read_file",
+            "list_directory",
+            "search_files",
+            "write_file",
+            "edit_file",
+            "execute_command",
+            "does_not_exist",
+        ];
+        for mode in modes {
+            let gate = ApprovalGate::new(mode);
+            for tool in tools {
+                let needs = gate.needs_approval(&tool_call("t", tool));
+                let expected = match mode {
+                    AutonomyMode::Supervised => true,
+                    AutonomyMode::SemiAutonomous => {
+                        !matches!(RiskClass::classify(tool), RiskClass::ReadOnly)
+                    }
+                    AutonomyMode::FullAutonomous => tool == "execute_command",
+                };
+                assert_eq!(needs, expected, "mode={mode:?} tool={tool}");
+            }
+        }
     }
 
     #[test]
