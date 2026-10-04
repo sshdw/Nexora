@@ -957,8 +957,10 @@ export function getWorkspaceRoot(): Promise<string> {
   return invoke<string>("get_workspace_root");
 }
 
-/** Validate, canonicalize, persist `path` and prepend it to the recent list
- * (`set_workspace_root`). Returns the canonical path. */
+/** Validate, canonicalize, persist `path` as the active root and register it
+ * (`set_workspace_root` — runs the identical validation as `roots_add`,
+ * including the nesting refusal). Joins the registry and the 5-entry picker
+ * history. Returns the canonical path. */
 export function setWorkspaceRoot(path: string): Promise<string> {
   return invoke<string>("set_workspace_root", { path });
 }
@@ -973,7 +975,8 @@ export function listWorkspaceRecent(): Promise<string[]> {
 // every root-aware feature follows (git panel, audit, terminal, agent runs,
 // GitHub lists, flags, diagnostics); `roots` lists every registered root,
 // active first. Registration validates backend-side (must exist,
-// canonicalized, disjoint — nesting refused); removal never deletes
+// canonicalized, disjoint — nesting refused) into an unbounded registry
+// (registering never evicts); removal never deletes
 // directories, and removing the active root falls back to the default.
 
 /** Multi-root registry view: the active root plus every registered root. */

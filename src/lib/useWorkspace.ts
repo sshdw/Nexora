@@ -1,13 +1,15 @@
 //! Agent workspace folder state hook (1.3.0; multi-root registry follow-up).
 //!
-//! Loads the effective root via `get_workspace_root`, the 5-entry recent
-//! list via `list_workspace_recent`, and the registry via `roots_list`.
-//! Folder picking uses the Tauri dialog plugin (`directory: true`); the
-//! chosen path is persisted backend-side via `set_workspace_root` (single
-//! active root) or `roots_add` (register + activate), which canonicalize,
-//! guard, and maintain the registry. Removal (`roots_remove`) unregisters
-//! only — directories are never deleted. The backend owns validation; this
-//! hook preserves order.
+//! Loads the effective root via `get_workspace_root`, the 5-entry MRU picker
+//! history via `list_workspace_recent`, and the unbounded registry via
+//! `roots_list` (the registry lives apart from the 5-entry ring so registering
+//! one more root never evicts another). Folder picking uses the Tauri dialog
+//! plugin (`directory: true`); the chosen path is persisted backend-side via
+//! `set_workspace_root` (single active root — runs the identical validation
+//! as `roots_add`, including the nesting refusal) or `roots_add` (register +
+//! activate), which canonicalize, guard, and maintain the registry. Removal
+//! (`roots_remove`) unregisters only — directories are never deleted. The
+//! backend owns validation; this hook preserves order.
 
 import { useCallback, useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -104,9 +106,17 @@ export function useWorkspace(): WorkspaceStore {
       setSaving(true);
       setError(null);
       try {
+        // `set_workspace_root` runs the identical registry validation as
+        // `roots_add` backend-side (including the nesting refusal) and joins
+        // the registry, so refresh the registry view alongside root+recent.
         const canonical = await setWorkspaceRoot(path);
+        const [recents, registry] = await Promise.all([
+          listWorkspaceRecent(),
+          rootsList(),
+        ]);
         setRoot(canonical);
-        setRecent(await listWorkspaceRecent());
+        setRecent(recents);
+        setRoots(registry.roots);
         return canonical;
       } catch (e) {
         setError(toCommandError(e));
