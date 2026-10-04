@@ -1345,22 +1345,25 @@ export function ghPulls(state?: GhState): Promise<GhPullsResult> {
 }
 
 // ---- GitHub Actions fail-loop (read-only CI surface, same panel) ---------
-// One batch command over the workspace `origin` repo: `gh_actions` lists the
+// Two commands over the workspace `origin` repo. `gh_actions` lists the
 // recent workflow runs (at most 20, newest first) with failing runs expanded
-// (failed jobs plus a capped, secret-scrubbed log tail each — the last 200
-// lines under 24000 chars; oversized downloads keep their tail). Read-only
-// end to end: GET only, no re-running anywhere on the path (the user
-// re-runs on GitHub; the panel points at the run URL). The fix loop creates
-// a task-manager task prefilled with the failure context through the
-// existing `createTask` wrapper — creating the task starts nothing; the
-// user reviews and runs it from Tasks with approvals and budgets intact.
-// Payloads stay snake_case like every other backend struct; the command
-// takes no arguments.
+// (failed jobs metadata only — failed step names, no log bodies, so one
+// batch call never fans out into dozens of log downloads). `gh_action_log`
+// fetches one job's capped, secret-scrubbed log tail on job-expand (the last
+// 200 lines under 24000 chars; oversized downloads keep their tail). An
+// expired or missing log resolves to `log_unavailable`; an auth refusal
+// (401/403) to `log_needs_auth`. Read-only end to end: GET only, no
+// re-running anywhere on the path (the user re-runs on GitHub; the panel
+// points at the run URL). The fix loop creates a task-manager task prefilled
+// with the failure context through the existing `createTask` wrapper —
+// creating the task starts nothing; the user reviews and runs it from Tasks
+// with approvals and budgets intact.
+// Payloads stay snake_case like every other backend struct.
 
 /** One failed CI job inside a failing workflow run: fixed-vocabulary
- * metadata, failed step names, and the capped log tail. `log_unavailable`
- * means the log was expired, never uploaded, or its fetch failed (see the
- * run on GitHub instead); `log_redacted` flags a scrubbed excerpt. */
+ * metadata and failed step names. Log bodies are lazy: `gh_actions` ships
+ * jobs with an empty `log_excerpt` and all log flags false, and the panel
+ * fetches each log on job-expand via `gh_action_log`. */
 export interface GhActionJob {
   id: number;
   run_id: number;
@@ -1374,6 +1377,7 @@ export interface GhActionJob {
   log_excerpt: string;
   log_truncated: boolean;
   log_unavailable: boolean;
+  log_needs_auth: boolean;
   log_redacted: boolean;
 }
 
@@ -1412,6 +1416,26 @@ export interface GhActionsResult {
 /** List the workspace origin repo's recent workflow runs via `gh_actions`. */
 export function ghActions(): Promise<GhActionsResult> {
   return invoke<GhActionsResult>("gh_actions");
+}
+
+/** One lazily fetched job log via `gh_action_log`: the capped,
+ * secret-scrubbed tail of one failed job. `log_unavailable` means the log
+ * was expired, never uploaded, or its fetch failed (see the run on GitHub
+ * instead); `log_needs_auth` means the endpoint refused for auth reasons
+ * (sign in first); `log_redacted` flags a scrubbed excerpt. */
+export interface GhActionLog {
+  job_id: number;
+  run_id: number;
+  log_excerpt: string;
+  log_truncated: boolean;
+  log_unavailable: boolean;
+  log_needs_auth: boolean;
+  log_redacted: boolean;
+}
+
+/** Fetch one failed job's log tail via `gh_action_log`. */
+export function ghActionLog(runId: number, jobId: number): Promise<GhActionLog> {
+  return invoke<GhActionLog>("gh_action_log", { runId, jobId });
 }
 
 // ---- Repository audit (read-only static analysis, findings only) ---------

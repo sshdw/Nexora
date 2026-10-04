@@ -33,17 +33,21 @@
 //! separate lazy diff commands.
 //!
 //! Actions fail-loop extension (read-only CI surface for the same panel):
-//! [`list_actions`] reports the recent workflow runs through three GET-only
-//! endpoints — the runs envelope (`GET .../actions/runs`), the per-run jobs
-//! envelope (`GET .../actions/runs/{run_id}/jobs`, fetched only for failing
-//! runs), and the per-job TEXT log (`GET .../actions/jobs/{job_id}/logs`,
-//! redirect-following download — deliberately not the per-run ZIP, which
-//! would need a zip dependency for a 200-line tail). Each failed job keeps
-//! its failed step names plus a capped tail (last [`LOG_TAIL_LINES`] lines
-//! under [`LOG_MAX_CHARS`] chars) scrubbed by [`redact_secrets`], since CI
-//! logs may echo secrets. The fix loop creates a task-manager task prefilled
-//! with the failure context (existing task path — approval/budget inherited);
-//! there is no auto-fix and no re-run (no POST anywhere on this path).
+//! [`list_actions`] reports the recent workflow runs through two GET-only
+//! endpoints — the runs envelope (`GET .../actions/runs`) and the per-run
+//! jobs envelope (`GET .../actions/runs/{run_id}/jobs`, fetched only for
+//! failing runs). Jobs stay metadata-only (failed step names, no log bodies)
+//! so one `gh_actions` call costs at most 1 runs + [`MAX_FAILED_RUNS_EXPANDED`]
+//! jobs requests and never fans out into log downloads: log bodies are lazy
+//! via [`fetch_action_log`] (one `GET .../actions/jobs/{job_id}/logs`
+//! TEXT download per user-expanded job — deliberately not the per-run ZIP,
+//! which would need a zip dependency for a 200-line tail). Each fetched log
+//! keeps its failed step names plus a capped tail (last [`LOG_TAIL_LINES`]
+//! lines under [`LOG_MAX_CHARS`] chars) scrubbed by [`redact_secrets`], since
+//! CI logs may echo secrets. The fix loop creates a task-manager task
+//! prefilled with the failure context (existing task path — approval/budget
+//! inherited); there is no auto-fix and no re-run (no POST anywhere on this
+//! path).
 
 use std::path::Path;
 use std::time::Duration;
@@ -209,11 +213,19 @@ pub(crate) struct GhPullsResponse {
 }
 
 /// One failed CI job inside a failing workflow run: fixed-vocabulary
-/// metadata, the failed step names (at most 10), and the capped,
-/// secret-scrubbed log tail. `log_unavailable` means the log was expired or
-/// never uploaded (empty download) or its fetch failed — the panel points
-/// at GitHub instead. `log_redacted` flags a scrubbed excerpt so the panel
-/// can warn.
+/// metadata plus the failed step names (at most 10). Log bodies are lazy
+/// (see [`fetch_action_log`]): `gh_actions` ships jobs with an empty
+/// `log_excerpt` and all three log flags false, and the panel fetches each
+/// log on job-expand. `log_unavailable` means the log was expired or never
+/// uploaded (empty download) or its fetch failed — the panel points at GitHub
+/// instead. `log_needs_auth` means the endpoint refused for auth reasons
+/// (401/403, e.g. an anonymous read of private-repo logs) — the panel shows
+/// its sign-in hint instead of the expired-log text. `log_redacted` flags a
+/// scrubbed excerpt so the panel can warn.
+///
+/// The four log flags stay individual bools (not an enum) so the IPC payload
+/// keeps its established `snake_case` shape; the struct is pure data.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct GhActionJob {
     pub id: u64,
@@ -228,6 +240,7 @@ pub(crate) struct GhActionJob {
     pub log_excerpt: String,
     pub log_truncated: bool,
     pub log_unavailable: bool,
+    pub log_needs_auth: bool,
     pub log_redacted: bool,
 }
 
@@ -264,6 +277,28 @@ pub(crate) struct GhActionsResponse {
     pub authenticated: bool,
     pub rate_limited: bool,
     pub rate_limit: GhRateLimit,
+}
+
+/// One lazily fetched job log: the capped, secret-scrubbed tail of one
+/// failed job (`gh_action_log`). `log_unavailable` means the log was expired
+/// or never uploaded (empty download) or its fetch failed — the panel points
+/// at GitHub instead. `log_needs_auth` means the endpoint refused for auth
+/// reasons (401/403) — the panel shows its sign-in hint, not the
+/// expired-log text. `log_redacted` flags a scrubbed excerpt.
+///
+/// The four log flags stay individual bools (not an enum) to mirror
+/// [`GhActionJob`] so the panel can merge a fetched log straight into the
+/// job row; the struct is pure data.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct GhActionLog {
+    pub job_id: u64,
+    pub run_id: u64,
+    pub log_excerpt: String,
+    pub log_truncated: bool,
+    pub log_unavailable: bool,
+    pub log_needs_auth: bool,
+    pub log_redacted: bool,
 }
 
 /// Minimal GitHub item shape: only the fields the panel renders. Unknown or
@@ -795,6 +830,10 @@ fn tail_log(text: &str) -> (String, bool) {
 }
 
 /// Token prefixes scrubbed from log excerpts (prefix kept, value replaced).
+/// Distinctive provider prefixes (`ghp_`, `AKIA`, ...) never appear in
+/// prose, so short values still redact; the short generic prefixes (`sk-`,
+/// `Bearer `) collide with ordinary words (`risk-free`, `the bearer of good
+/// news`), so they need a long value run (see [`SHORT_PREFIX_MIN_VALUE`]).
 const SECRET_PREFIXES: [&str; 13] = [
     "ghp_",
     "gho_",
@@ -811,12 +850,25 @@ const SECRET_PREFIXES: [&str; 13] = [
     "AKIA",
 ];
 
+/// Minimum secret-value length for the short generic prefixes (`sk-`,
+/// `Bearer ` in any ASCII case): real keys and tokens run far longer, while
+/// prose fragments (`-free`, `of good news`) stay short. Distinctive
+/// provider prefixes keep the 4-char minimum below.
+const SHORT_PREFIX_MIN_VALUE: usize = 16;
+
+/// Minimum secret-value length for the distinctive provider prefixes
+/// (`ghp_`, `AKIA`, ...): long enough to skip stray punctuation, short
+/// enough for real (truncated) keys.
+const DISTINCT_PREFIX_MIN_VALUE: usize = 4;
+
 /// Scrub probable secret values from a log excerpt: known token prefixes
 /// keep their prefix with the value replaced, and `Bearer <value>` (any
 /// ASCII case) keeps the scheme with the value replaced. Returns the
 /// scrubbed text and whether anything was replaced (the panel warns when
-/// true). Short runs under 4 value chars are left alone so ordinary words
-/// like `sk-` prose are never mangled.
+/// true). Short runs stay intact so ordinary prose is never mangled:
+/// `risk-free` / `task-setup` survive (their `sk-` value is 4 chars, not
+/// 16+), and `the bearer of good news` survives (its `Bearer ` value is 2
+/// chars, not 16+).
 fn redact_secrets(text: &str) -> (String, bool) {
     fn is_token_byte(byte: u8) -> bool {
         byte.is_ascii_alphanumeric()
@@ -836,16 +888,22 @@ fn redact_secrets(text: &str) -> (String, bool) {
             while index < bytes.len() && is_token_byte(bytes[index]) {
                 index += 1;
             }
-            if index > value_start {
+            if index - value_start >= SHORT_PREFIX_MIN_VALUE {
                 scrubbed.push_str("[redacted]");
                 hit = true;
+            } else {
+                scrubbed.push_str(&text[value_start..index]);
             }
             continue;
         }
         let mut prefix_len = 0;
+        let mut prefix_is_short = false;
         for prefix in SECRET_PREFIXES {
             if text[index..].starts_with(prefix) {
                 prefix_len = prefix.len();
+                // `sk-` also matches `sk-ant-...` / `sk-proj-...` (it sorts
+                // first), which is intended: all three take the long minimum.
+                prefix_is_short = prefix == "sk-";
                 break;
             }
         }
@@ -865,7 +923,12 @@ fn redact_secrets(text: &str) -> (String, bool) {
         while index < bytes.len() && is_token_byte(bytes[index]) {
             index += 1;
         }
-        if index - value_start >= 4 {
+        let minimum = if prefix_is_short {
+            SHORT_PREFIX_MIN_VALUE
+        } else {
+            DISTINCT_PREFIX_MIN_VALUE
+        };
+        if index - value_start >= minimum {
             scrubbed.push_str("[redacted]");
             hit = true;
         } else {
@@ -876,6 +939,7 @@ fn redact_secrets(text: &str) -> (String, bool) {
 }
 
 /// Outcome of one per-job text-log download.
+#[derive(Debug)]
 struct LogDownload {
     /// Decoded tail bytes (empty when the log is missing).
     text: String,
@@ -921,6 +985,20 @@ fn fetch_json_value(
     }
 }
 
+/// What one per-job text-log GET resolved to, before tailing/redaction:
+/// auth refusals stay distinct from genuinely missing logs so the panel can
+/// render "sign in" versus "expired or never uploaded" as two states.
+#[derive(Debug)]
+enum LogFetch {
+    /// 200 with the decoded tail bytes (possibly empty).
+    Body(LogDownload),
+    /// 404/410: expired or never uploaded.
+    Missing,
+    /// 401/403: the endpoint refused for auth reasons (e.g. an anonymous
+    /// read of private-repo logs) — the caller needs a (better) token.
+    NeedsAuth,
+}
+
 /// GET one failed job's text log (`.../actions/jobs/{job_id}/logs`).
 ///
 /// Deliberately the per-job TEXT endpoint, not the per-run ZIP
@@ -928,16 +1006,17 @@ fn fetch_json_value(
 /// tail from it would need a zip dependency, out of scope). No `Accept:
 /// vnd.github+json` header here — the endpoint serves `text/plain`
 /// (possibly via redirect, which the client follows). Oversized downloads
-/// keep only their last [`LOG_DOWNLOAD_BYTES`] bytes before decoding; 404 /
-/// 410 (expired or never uploaded) resolve to an empty download, which the
-/// caller renders as `log_unavailable`.
+/// keep only their last [`LOG_DOWNLOAD_BYTES`] bytes before decoding;
+/// 404 / 410 (expired or never uploaded) resolve to [`LogFetch::Missing`],
+/// 401 / 403 resolve to [`LogFetch::NeedsAuth`], and any other failure is
+/// the caller's to degrade.
 fn fetch_log_text(
     base_url: &str,
     owner: &str,
     repo: &str,
     job_id: u64,
     token: Option<&str>,
-) -> Result<LogDownload, GitHubError> {
+) -> Result<LogFetch, GitHubError> {
     let client = reqwest::blocking::Client::builder()
         .timeout(REQUEST_TIMEOUT)
         .user_agent("Nexora")
@@ -959,43 +1038,22 @@ fn fetch_log_text(
             } else {
                 (false, all)
             };
-            Ok(LogDownload {
+            Ok(LogFetch::Body(LogDownload {
                 text: String::from_utf8_lossy(tail).into_owned(),
                 cut,
-            })
+            }))
         }
-        401 => Err(GitHubError::Unauthorized),
-        403 => Err(GitHubError::Forbidden),
-        404 | 410 => Ok(LogDownload {
-            text: String::new(),
-            cut: false,
-        }),
+        401 | 403 => Ok(LogFetch::NeedsAuth),
+        404 | 410 => Ok(LogFetch::Missing),
         _ => Err(GitHubError::RequestFailed),
     }
 }
 
-/// Build one failed job row: failed step names plus the capped, scrubbed log
-/// tail. Any log-fetch failure degrades to `log_unavailable` — one expired
-/// log never fails the whole response.
-fn build_failed_job(
-    base_url: &str,
-    owner: &str,
-    repo: &str,
-    token: Option<&str>,
-    run_id: u64,
-    raw: RawJob,
-) -> GhActionJob {
-    let failed_steps = failed_step_names(raw.steps);
-    let (log_excerpt, log_truncated, log_unavailable, log_redacted) =
-        match fetch_log_text(base_url, owner, repo, raw.id, token) {
-            Ok(download) if download.text.is_empty() => (String::new(), false, true, false),
-            Ok(download) => {
-                let (tail, tail_cut) = tail_log(&download.text);
-                let (scrubbed, redacted) = redact_secrets(&tail);
-                (scrubbed, tail_cut || download.cut, false, redacted)
-            }
-            Err(_) => (String::new(), false, true, false),
-        };
+/// Build one failed job row: fixed-vocabulary metadata plus the failed step
+/// names. Log bodies stay lazy — the row ships with an empty excerpt and all
+/// log flags false, and the panel fetches each log on job-expand through
+/// [`fetch_action_log`].
+fn to_action_job(run_id: u64, raw: RawJob) -> GhActionJob {
     GhActionJob {
         id: raw.id,
         run_id,
@@ -1005,16 +1063,63 @@ fn build_failed_job(
         started_at: raw.started_at,
         completed_at: raw.completed_at,
         html_url: raw.html_url,
-        failed_steps,
-        log_excerpt,
-        log_truncated,
-        log_unavailable,
-        log_redacted,
+        failed_steps: failed_step_names(raw.steps),
+        log_excerpt: String::new(),
+        log_truncated: false,
+        log_unavailable: false,
+        log_needs_auth: false,
+        log_redacted: false,
     }
 }
 
+/// Fetch one failed job's log tail on job-expand (the panel's lazy `gh_action_log`).
+///
+/// Read-only: a single GET for the per-job TEXT log. Any download failure
+/// degrades to `log_unavailable` — one expired log never fails the call —
+/// while an auth refusal (401/403) resolves to `log_needs_auth` so the panel
+/// can show its sign-in hint instead of the expired-log text.
+///
+/// # Errors
+///
+/// Returns [`GitHubError::NotARepository`] / [`GitHubError::NoGitHubRemote`]
+/// when the workspace has no usable `github.com` origin. A missing keyring
+/// token is NOT an error — the request goes out unauthenticated with
+/// private-repo logs resolving to `log_needs_auth`.
+pub(crate) fn fetch_action_log(
+    workspace_root: &Path,
+    run_id: u64,
+    job_id: u64,
+) -> Result<GhActionLog, GitHubError> {
+    let (owner, repo) = resolve_origin(workspace_root)?;
+    let token = read_token();
+    let fetched = fetch_log_text(GITHUB_API_BASE, &owner, &repo, job_id, token.as_deref());
+    let (log_excerpt, log_truncated, log_unavailable, log_needs_auth, log_redacted) = match fetched
+    {
+        Ok(LogFetch::Body(download)) if download.text.is_empty() => {
+            (String::new(), false, true, false, false)
+        }
+        Ok(LogFetch::Body(download)) => {
+            let (tail, tail_cut) = tail_log(&download.text);
+            let (scrubbed, redacted) = redact_secrets(&tail);
+            (scrubbed, tail_cut || download.cut, false, false, redacted)
+        }
+        Ok(LogFetch::Missing) | Err(_) => (String::new(), false, true, false, false),
+        Ok(LogFetch::NeedsAuth) => (String::new(), false, false, true, false),
+    };
+    Ok(GhActionLog {
+        job_id,
+        run_id,
+        log_excerpt,
+        log_truncated,
+        log_unavailable,
+        log_needs_auth,
+        log_redacted,
+    })
+}
+
 /// Expand one failing run with its failed jobs (at most
-/// [`MAX_FAILED_JOBS_KEPT`]). Any jobs-fetch failure leaves the run with an
+/// [`MAX_FAILED_JOBS_KEPT`], metadata only — log bodies stay lazy via
+/// [`fetch_action_log`]). Any jobs-fetch failure leaves the run with an
 /// empty job list — the panel still points at GitHub.
 fn expand_failed_run(
     base_url: &str,
@@ -1047,17 +1152,20 @@ fn expand_failed_run(
     failed.truncate(MAX_FAILED_JOBS_KEPT);
     run.jobs_truncated = total_failed > failed.len();
     for raw in failed {
-        run.failed_jobs
-            .push(build_failed_job(base_url, owner, repo, token, run.id, raw));
+        run.failed_jobs.push(to_action_job(run.id, raw));
     }
 }
 
 /// List the workspace `origin` repo's recent workflow runs with failing runs
-/// expanded (failed jobs + capped, scrubbed log tails).
+/// expanded (failed jobs metadata only — log bodies stay lazy).
 ///
-/// Read-only: three GET shapes only (runs envelope, per-run jobs envelope,
-/// per-job text log). Sub-call failures degrade to empty jobs / unavailable
-/// logs — only the top-level runs fetch can fail the call.
+/// Read-only: two GET shapes only (runs envelope, per-failure jobs
+/// envelopes) plus one lazy per-job text log on job-expand
+/// ([`fetch_action_log`]). Bounding the batch to 1 runs + at most
+/// [`MAX_FAILED_RUNS_EXPANDED`] jobs requests keeps one `gh_actions` call
+/// from hanging on a failure storm: logs download only when the user expands
+/// a job. Sub-call failures degrade to empty jobs — only the top-level runs
+/// fetch can fail the call.
 ///
 /// # Errors
 ///
@@ -1534,6 +1642,112 @@ mod tests {
         let (scrubbed, hit) = redact_secrets("nothing secret here\njust lines");
         assert!(!hit);
         assert_eq!(scrubbed, "nothing secret here\njust lines");
+    }
+
+    #[test]
+    fn log_redaction_leaves_prose_alone_but_scrubs_real_keys() {
+        // Ordinary prose colliding with the short generic prefixes must
+        // survive verbatim with no redaction flag (previously `risk-free`
+        // became `risk-[redacted]` and `the bearer of good news` flagged
+        // `log_redacted`).
+        for prose in [
+            "deploy risk-free task-setup done",
+            "the bearer of good news arrived",
+            "Bearer of good news",
+            "sk-",
+            "sk-abc",
+        ] {
+            let (scrubbed, hit) = redact_secrets(prose);
+            assert!(!hit, "{prose:?} must not redact");
+            assert_eq!(scrubbed, prose, "{prose:?} must survive verbatim");
+        }
+        // Real-looking values still redact: a long `sk-` run and a long
+        // Bearer token.
+        let (scrubbed, hit) = redact_secrets("key sk-abcdefghijklmnop1234 failed");
+        assert!(hit);
+        assert!(!scrubbed.contains("sk-abcdefghijklmnop1234"));
+        assert!(scrubbed.contains("sk-[redacted]"));
+        let (scrubbed, hit) = redact_secrets("Authorization: Bearer supersecretbearer01");
+        assert!(hit);
+        assert!(!scrubbed.contains("supersecretbearer01"));
+        assert!(scrubbed.contains("Bearer [redacted]"));
+        // Distinctive provider prefixes keep the short minimum.
+        let (scrubbed, hit) = redact_secrets("token ghp_plantedvalue0123456789 leaked");
+        assert!(hit);
+        assert!(!scrubbed.contains("ghp_plantedvalue0123456789"));
+    }
+
+    #[test]
+    fn log_fetch_keeps_auth_refusals_distinct_from_missing_logs() {
+        // A 403 (e.g. an anonymous read of private-repo logs) resolves to
+        // `NeedsAuth` — the panel shows its sign-in hint, not the
+        // expired-log text.
+        let base = serve_once(
+            403,
+            b"{}".to_vec(),
+            None,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        assert!(matches!(
+            fetch_log_text(&base, "o", "r", 7, None),
+            Ok(LogFetch::NeedsAuth)
+        ));
+        // A 404/410 (expired or never uploaded) resolves to `Missing`.
+        for status in [404, 410] {
+            let base = serve_once(
+                status,
+                b"{}".to_vec(),
+                None,
+                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            );
+            assert!(
+                matches!(
+                    fetch_log_text(&base, "o", "r", 7, None),
+                    Ok(LogFetch::Missing)
+                ),
+                "status {status} must resolve to Missing"
+            );
+        }
+        // A 200 serves the decoded tail bytes.
+        let base = serve_once(
+            200,
+            b"line one\nline two".to_vec(),
+            None,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        match fetch_log_text(&base, "o", "r", 7, None) {
+            Ok(LogFetch::Body(download)) => {
+                assert!(!download.cut);
+                assert_eq!(download.text, "line one\nline two");
+            }
+            other => panic!("200 must resolve to Body, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn expanded_jobs_ship_metadata_only_with_lazy_logs() {
+        // `gh_actions` never fans out into log downloads: expanded jobs carry
+        // an empty excerpt with all log flags false, and the panel fetches
+        // each log on job-expand through `fetch_action_log`.
+        let raw = RawJob {
+            id: 9,
+            name: Some("build".to_string()),
+            status: Some("completed".to_string()),
+            conclusion: Some("failure".to_string()),
+            started_at: None,
+            completed_at: None,
+            html_url: None,
+            steps: Vec::new(),
+        };
+        let job = to_action_job(42, raw);
+        assert_eq!(job.id, 9);
+        assert_eq!(job.run_id, 42);
+        assert_eq!(job.name, "build");
+        assert!(job.log_excerpt.is_empty());
+        assert!(!job.log_truncated);
+        assert!(!job.log_unavailable);
+        assert!(!job.log_needs_auth);
+        assert!(!job.log_redacted);
     }
 
     #[test]
