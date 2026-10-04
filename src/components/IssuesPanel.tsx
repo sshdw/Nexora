@@ -1,12 +1,16 @@
 //! GitHub Issues & PRs + Actions panel: read-only lists for the workspace origin repo.
 //!
-//! Presentational over the `gh_issues` / `gh_pulls` / `gh_actions` IPC wrappers:
+//! Presentational over the `gh_issues` / `gh_pulls` / `gh_actions` /
+//! `gh_runners` IPC wrappers:
 //! one capped page (at most 50 items) per issues/PRs kind tab + state filter
 //! (`open` / `closed` / `all`), plus the Actions tab (recent workflow runs
 //! with failing runs expanded to failed jobs; each job's capped,
-//! secret-scrubbed log tail loads lazily on job-expand). Loads on mount and on every kind/state change (reads are cheap
+//! secret-scrubbed log tail loads lazily on job-expand; the Runners section
+//! below lists the repo's self-hosted runners plus this machine's readiness
+//! checklist). Loads on mount and on every kind/state change (reads are cheap
 //! GETs), plus manual Refresh — there is no watching or live polling.
-//! Read-only end to end: no commenting, labeling, merging, re-running, or
+//! Read-only end to end: no commenting, labeling, merging, re-running,
+//! runner registration, or
 //! any other write exists anywhere on this path.
 //!
 //! Fix loop: a failing run offers "Create fix task", which prefills a
@@ -37,6 +41,7 @@ import {
   ghActions,
   ghIssues,
   ghPulls,
+  ghRunners,
   type CommandError,
   type GhActionJob,
   type GhActionLog,
@@ -44,7 +49,9 @@ import {
   type GhIssue,
   type GhPull,
   type GhRateLimit,
+  type GhRunner,
   type GhState,
+  type GhToolReadiness,
 } from "../lib/tauri";
 import { useStrings, type Strings } from "../lib/useLocale";
 import M3Button from "./M3Button";
@@ -390,6 +397,99 @@ function ActionsView({
   );
 }
 
+/** Backend runner-status vocabulary echoed defensively (allowlisted
+ * backend-side; anything else renders the catalog unknown tag). */
+function runnerStatusTag(status: string, t: Strings["t"]): string {
+  if (status === "online") return t("gh.runnerOnline");
+  if (status === "offline") return t("gh.runnerOffline");
+  return t("gh.tagUnknown");
+}
+
+interface RunnersViewProps {
+  runners: GhRunner[];
+  total: number;
+  needsAuth: boolean;
+  local: GhToolReadiness[];
+  loading: boolean;
+  error: string | null;
+}
+
+/** Runners section: the repo's self-hosted runners table plus this
+ * machine's readiness checklist. An auth refusal (anonymous or
+ * under-scoped token — listing needs admin scope) renders the honest
+ * needs-token state; the local checklist always renders real `PATH`
+ * results. All visuals ride the shared panel/tag/notice primitives — zero
+ * new CSS, zero raw values. */
+function RunnersView({ runners, total, needsAuth, local, loading, error }: RunnersViewProps): ReactNode {
+  const { t } = useStrings();
+  return (
+    <section className="nex-vcs-section" aria-label={t("gh.runnersTitle")}>
+      <h3 className="nex-vcs-section-title">{t("gh.runnersTitle")}</h3>
+      <p className="nex-vcs-notice" role="note">
+        {t("gh.runnersHint")}
+      </p>
+      {error !== null && (
+        <div className="nex-composer-error nex-fade-in" role="alert">
+          {error}
+        </div>
+      )}
+      {loading && runners.length === 0 ? (
+        <M3LoadingIndicator label={t("gh.runnersLoading")} />
+      ) : needsAuth ? (
+        <p className="nex-vcs-notice" role="note">
+          {t("gh.runnersNeedToken")}
+        </p>
+      ) : runners.length === 0 ? (
+        <p className="nex-agent-empty">{t("gh.runnersEmpty")}</p>
+      ) : (
+        <>
+          <p className="nex-vcs-notice" role="note">
+            {t("gh.runnersCount", { n: runners.length, total })}
+          </p>
+          <ul className="nex-vcs-file-list" aria-label={t("gh.runnersTitle")}>
+            {runners.map((runner) => (
+              <li key={runner.id} className="nex-vcs-file-row">
+                <span className="nex-tag nex-tag-mono">{runner.name}</span>{" "}
+                <span className="nex-tag nex-tag-mono">{runner.os}</span>{" "}
+                <span className="nex-tag nex-tag-mono">
+                  {runnerStatusTag(runner.status, t)}
+                </span>{" "}
+                <span className="nex-tag nex-tag-mono">
+                  {runner.busy ? t("gh.runnerBusy") : t("gh.runnerIdle")}
+                </span>
+                {runner.labels.length > 0 && (
+                  <>
+                    {" "}
+                    {runner.labels.map((label) => (
+                      <span key={label} className="nex-tag nex-tag-mono" title={label}>
+                        {label}
+                      </span>
+                    ))}
+                  </>
+                )}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      <h3 className="nex-vcs-section-title">{t("gh.localTitle")}</h3>
+      <p className="nex-vcs-notice" role="note">
+        {t("gh.localHint")}
+      </p>
+      <ul className="nex-vcs-file-list" aria-label={t("gh.localTitle")}>
+        {local.map((tool) => (
+          <li key={tool.name} className="nex-vcs-file-row">
+            <span className="nex-tag nex-tag-mono">{tool.name}</span>{" "}
+            <span className="nex-tag nex-tag-mono">
+              {tool.found ? t("gh.toolFound") : t("gh.toolMissing")}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 export default function IssuesPanel({ onClose }: IssuesPanelProps) {
   const { t } = useStrings();
   const [kind, setKind] = useState<Kind>("issues");
@@ -412,6 +512,13 @@ export default function IssuesPanel({ onClose }: IssuesPanelProps) {
   const [fixFailed, setFixFailed] = useState(false);
   const [jobLogs, setJobLogs] = useState<Record<number, GhActionLog>>({});
   const [logsLoading, setLogsLoading] = useState<Record<number, boolean>>({});
+  const [runners, setRunners] = useState<GhRunner[]>([]);
+  const [runnersTotal, setRunnersTotal] = useState(0);
+  const [runnersNeedsAuth, setRunnersNeedsAuth] = useState(false);
+  const [localTools, setLocalTools] = useState<GhToolReadiness[]>([]);
+  const [runnersLoading, setRunnersLoading] = useState(false);
+  const [actionsError, setActionsError] = useState<string | null>(null);
+  const [runnersError, setRunnersError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (loading) return;
@@ -446,7 +553,7 @@ export default function IssuesPanel({ onClose }: IssuesPanelProps) {
   const loadActions = useCallback(async () => {
     if (loading) return;
     setLoading(true);
-    setError(null);
+    setActionsError(null);
     try {
       const result = await ghActions();
       setRuns(result.runs);
@@ -462,19 +569,45 @@ export default function IssuesPanel({ onClose }: IssuesPanelProps) {
       setJobLogs({});
       setLogsLoading({});
     } catch (err) {
-      setError(toMessage(err));
+      setActionsError(toMessage(err));
     } finally {
       setLoading(false);
     }
   }, []);
 
+  /** Load the runners detect batch (repo self-hosted runners + the local
+   * `PATH` probe) alongside the Actions tab. A failed fetch keeps the
+   * previous runners state and surfaces the failure as an inline notice —
+   * the section degrades to its last render plus the error instead of
+   * blanking the checklist or failing silently. */
+  const loadRunners = useCallback(async () => {
+    if (runnersLoading) return;
+    setRunnersLoading(true);
+    setRunnersError(null);
+    try {
+      const result = await ghRunners();
+      setRunners(result.runners);
+      setRunnersTotal(result.runners_total);
+      setRunnersNeedsAuth(result.runners_needs_auth);
+      setLocalTools(result.local);
+    } catch (err) {
+      setRunnersError(toMessage(err));
+    } finally {
+      setRunnersLoading(false);
+    }
+    // Fixed deps (mirrors `loadActions` above): the guard reads the render
+    // snapshot, so the identity stays stable and the tab effect below never
+    // refires on loading flips.
+  }, []);
+
   useEffect(() => {
     if (kind === "actions") {
       void loadActions();
+      void loadRunners();
     } else {
       void load();
     }
-  }, [kind, load, loadActions]);
+  }, [kind, load, loadActions, loadRunners]);
 
   /** Fetch one job's log tail on job-expand (lazy `gh_action_log`). A
    * failed fetch degrades to the unavailable state — the panel points at
@@ -550,6 +683,8 @@ export default function IssuesPanel({ onClose }: IssuesPanelProps) {
   );
 
   const noRemote = error !== null && error.includes("github.com");
+  const actionsNoRemote =
+    actionsError !== null && actionsError.includes("github.com");
   const items: Array<{ number: number }> =
     kind === "issues" ? issues : pulls;
   const selectedIssue =
@@ -578,7 +713,14 @@ export default function IssuesPanel({ onClose }: IssuesPanelProps) {
         <div className="nex-vcs-header-actions">
           <M3Button
             variant="quiet"
-            onClick={() => void (kind === "actions" ? loadActions() : load())}
+            onClick={() => {
+              if (kind === "actions") {
+                void loadActions();
+                void loadRunners();
+              } else {
+                void load();
+              }
+            }}
             disabled={loading}
           >
             {loading ? t("gh.refreshing") : t("gh.refresh")}
@@ -637,7 +779,52 @@ export default function IssuesPanel({ onClose }: IssuesPanelProps) {
         {loading && items.length === 0 && (
           <M3LoadingIndicator label={t("gh.loading")} />
         )}
-        {noRemote ? (
+        {kind === "actions" ? (
+          actionsNoRemote ? (
+            <p className="nex-agent-empty" role="note">
+              {t("gh.noRemote")}
+            </p>
+          ) : (
+            <>
+              {actionsError !== null && (
+                <div className="nex-composer-error nex-fade-in" role="alert">
+                  {actionsError}
+                </div>
+              )}
+              {rateLimited ? (
+                <div className="nex-composer-error nex-fade-in" role="alert">
+                  {t("gh.rateLimited")}
+                </div>
+              ) : (
+                <ActionsView
+                  runs={runs}
+                  totalRuns={totalRuns}
+                  selectedRun={selectedActionRun}
+                  selectedRunId={selectedRun}
+                  onSelectRun={(id) =>
+                    setSelectedRun((current) => (current === id ? null : id))
+                  }
+                  loading={loading}
+                  fixBusy={fixBusy}
+                  fixCreated={fixCreated}
+                  fixFailed={fixFailed}
+                  onCreateFixTask={(run) => void createFixTask(run)}
+                  jobLogs={jobLogs}
+                  logsLoading={logsLoading}
+                  onShowLog={(job) => void showJobLog(job)}
+                />
+              )}
+              <RunnersView
+                runners={runners}
+                total={runnersTotal}
+                needsAuth={runnersNeedsAuth}
+                local={localTools}
+                loading={runnersLoading}
+                error={runnersError}
+              />
+            </>
+          )
+        ) : noRemote ? (
           <p className="nex-agent-empty" role="note">
             {t("gh.noRemote")}
           </p>
@@ -649,24 +836,6 @@ export default function IssuesPanel({ onClose }: IssuesPanelProps) {
           <div className="nex-composer-error nex-fade-in" role="alert">
             {t("gh.rateLimited")}
           </div>
-        ) : kind === "actions" ? (
-          <ActionsView
-            runs={runs}
-            totalRuns={totalRuns}
-            selectedRun={selectedActionRun}
-            selectedRunId={selectedRun}
-            onSelectRun={(id) =>
-              setSelectedRun((current) => (current === id ? null : id))
-            }
-            loading={loading}
-            fixBusy={fixBusy}
-            fixCreated={fixCreated}
-            fixFailed={fixFailed}
-            onCreateFixTask={(run) => void createFixTask(run)}
-            jobLogs={jobLogs}
-            logsLoading={logsLoading}
-            onShowLog={(job) => void showJobLog(job)}
-          />
         ) : items.length === 0 && !loading ? (
           <p className="nex-agent-empty">
             {kind === "issues" ? t("gh.emptyIssues") : t("gh.emptyPulls")}

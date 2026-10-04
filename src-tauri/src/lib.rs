@@ -139,6 +139,7 @@ pub fn run() {
             commands::github::gh_pulls,
             commands::github::gh_actions,
             commands::github::gh_action_log,
+            commands::github::gh_runners,
             commands::system::diagnostics_bundle,
             commands::system::update_check,
             commands::system::snapshot_database,

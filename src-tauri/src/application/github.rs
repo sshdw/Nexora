@@ -1404,6 +1404,272 @@ pub(crate) fn check_update(workspace_root: &Path) -> Result<UpdateCheck, GitHubE
     })
 }
 
+/// Self-hosted runners detect extension (read-only detect surface, same
+/// panel): [`list_runners`] reports the workspace `origin` repo's
+/// self-hosted runners through one GET-only endpoint
+/// (`GET .../actions/runners`, at most [`MAX_RUNNERS`] runners with their
+/// label names) plus the local readiness probe ([`probe_local_tools`]).
+///
+/// Command-shape decision (ONE new command `gh_runners`, batched): runners
+/// ride their own call instead of folding into `gh_actions` because the
+/// runners endpoint degrades independently — listing self-hosted runners
+/// needs an admin-scoped token, so anonymous or under-scoped reads refuse
+/// (401/403/404) while the runs list on the same repo may still succeed.
+/// Folding would couple two different degradation states into one payload.
+/// The local probe (PATH lookup only — no process spawn, no `--version`
+/// execution) always ships, even when the remote side degrades, so the
+/// checklist renders real results in every state.
+///
+/// Degradation contract: an auth refusal (401/403) or a missing repo/runners
+/// feature (404 — the API also answers 404 for under-scoped tokens instead
+/// of leaking existence) resolves to empty `runners` with
+/// `runners_needs_auth: true` — the panel shows its "needs admin token"
+/// state, never an error dump. Quota exhaustion resolves to empty runners
+/// with `rate_limited: true`. Only transport/parse failures and unusable
+/// workspaces (`NotARepository` / `NoGitHubRemote`) fail the call.
+///
+/// There is no registration, removal, or dispatch anywhere on this path
+/// (no POST/DELETE — pinned by the existing `read_path_uses_get_only`
+/// test): detection only.
+///
+/// Runners listed per `gh_runners` call (`per_page` + defensive cut).
+pub(crate) const MAX_RUNNERS: usize = 30;
+
+/// Local runner-readiness probe: the minimal documented tool set. `git`
+/// checks out and runs workflows locally, `gh` talks to Actions from the
+/// CLI, and `docker` covers container jobs — the three executables a machine
+/// needs to act as (or mimic) a runner host. Presence only: each entry
+/// reports whether the name resolves on `PATH`, never a version.
+pub(crate) const LOCAL_TOOLS: [&str; 3] = ["git", "gh", "docker"];
+
+/// One self-hosted runner: fixed-vocabulary metadata plus the label names
+/// the panel matches workflows against. `os` is open vocabulary echoed
+/// trimmed and capped (`unknown` when empty); `status` is allowlisted
+/// (`online` / `offline`, else `unknown`) rather than echoed raw.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct GhRunner {
+    pub id: u64,
+    pub name: String,
+    pub os: String,
+    pub status: String,
+    pub busy: bool,
+    pub labels: Vec<String>,
+}
+
+/// One local readiness entry: whether the tool name resolves on `PATH`
+/// (lookup only — never executed).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct GhToolReadiness {
+    pub name: String,
+    pub found: bool,
+}
+
+/// One `gh_runners` response: the resolved repo, the self-hosted runners
+/// (at most [`MAX_RUNNERS`]), the API's `total_count`, the local readiness
+/// checklist (always real `PATH` results), whether a token was sent, and
+/// the rate-limit snapshot. `runners_needs_auth` means the endpoint refused
+/// for auth reasons (anonymous or under-scoped token — self-hosted listing
+/// needs admin scope): the panel shows its needs-token state. A
+/// quota-exhausted API answers with empty `runners` and `rate_limited:
+/// true`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct GhRunnersResponse {
+    pub owner: String,
+    pub repo: String,
+    pub runners: Vec<GhRunner>,
+    pub runners_total: u64,
+    pub runners_needs_auth: bool,
+    pub local: Vec<GhToolReadiness>,
+    pub authenticated: bool,
+    pub rate_limited: bool,
+    pub rate_limit: GhRateLimit,
+}
+
+/// Minimal runners envelope: only the fields the panel renders.
+#[derive(Debug, Deserialize)]
+struct RawRunners {
+    #[serde(default)]
+    total_count: u64,
+    #[serde(default)]
+    runners: Vec<RawRunner>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawRunner {
+    id: u64,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    os: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    busy: Option<bool>,
+    #[serde(default)]
+    labels: Vec<RawRunnerLabel>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawRunnerLabel {
+    #[serde(default)]
+    name: Option<String>,
+}
+
+/// Keep only allowlisted runner statuses; anything else renders as
+/// `unknown` rather than echoing raw text.
+fn clean_runner_status(status: Option<String>) -> String {
+    match status.as_deref() {
+        Some("online" | "offline") => status.unwrap_or_default(),
+        _ => "unknown".to_string(),
+    }
+}
+
+/// Runner operating systems are open vocabulary (`Linux`, `Windows`,
+/// `macOS`, ...): echo the trimmed value capped at 32 chars, `unknown`
+/// when empty.
+fn clean_runner_os(os: Option<String>) -> String {
+    let os = os.unwrap_or_default();
+    let trimmed = os.trim();
+    if trimmed.is_empty() {
+        return "unknown".to_string();
+    }
+    trimmed.chars().take(32).collect()
+}
+
+/// Runner label names only (at most 20, each capped at 64 chars — the panel
+/// matches workflows against tokens, not prose).
+fn clean_runner_labels(labels: Vec<RawRunnerLabel>) -> Vec<String> {
+    labels
+        .into_iter()
+        .filter_map(|label| label.name)
+        .map(|name| name.trim().chars().take(64).collect::<String>())
+        .filter(|name| !name.is_empty())
+        .take(20)
+        .collect()
+}
+
+fn to_runner(raw: RawRunner) -> GhRunner {
+    GhRunner {
+        id: raw.id,
+        name: clean_title(raw.name),
+        os: clean_runner_os(raw.os),
+        status: clean_runner_status(raw.status),
+        busy: raw.busy.unwrap_or(false),
+        labels: clean_runner_labels(raw.labels),
+    }
+}
+
+/// Whether the tool `name` resolves in one of the `dirs` (a split `PATH`):
+/// file presence only, never executed. On Windows the executable extensions
+/// (`.exe` / `.cmd` / `.bat`) count, since `PATH` entries rarely carry them.
+fn tool_on_path(dirs: &[std::path::PathBuf], name: &str) -> bool {
+    dirs.iter().any(|dir| {
+        if dir.join(name).is_file() {
+            return true;
+        }
+        #[cfg(windows)]
+        {
+            ["exe", "cmd", "bat"]
+                .iter()
+                .any(|ext| dir.join(format!("{name}.{ext}")).is_file())
+        }
+        #[cfg(not(windows))]
+        {
+            false
+        }
+    })
+}
+
+/// Probe the local machine's runner readiness: one [`GhToolReadiness`] per
+/// [`LOCAL_TOOLS`] entry, each a `PATH` lookup only (no process is ever
+/// spawned — versions are deliberately not checked, so `--version`
+/// execution differences between tools cannot skew the checklist).
+pub(crate) fn probe_local_tools() -> Vec<GhToolReadiness> {
+    let dirs: Vec<std::path::PathBuf> = std::env::var_os("PATH")
+        .map_or_else(Vec::new, |paths| std::env::split_paths(&paths).collect());
+    LOCAL_TOOLS
+        .iter()
+        .map(|tool| GhToolReadiness {
+            name: (*tool).to_string(),
+            found: tool_on_path(&dirs, tool),
+        })
+        .collect()
+}
+
+/// List the workspace `origin` repo's self-hosted runners plus the local
+/// readiness probe (detection only — no registration, removal, or
+/// dispatch anywhere on this path).
+///
+/// Read-only: one GET (`.../actions/runners`) reusing this module's client
+/// story (timeout, `User-Agent`, optional keyring token) plus the
+/// spawn-free `PATH` probe.
+///
+/// # Errors
+///
+/// Returns [`GitHubError::NotARepository`] / [`GitHubError::NoGitHubRemote`]
+/// when the workspace has no usable `github.com` origin, and the classified
+/// transport failures otherwise. Auth refusals (401/403) and missing
+/// runners (404) are NOT errors — they resolve to empty `runners` with
+/// `runners_needs_auth: true`. A missing keyring token is NOT an error —
+/// the request goes out unauthenticated with `authenticated: false`
+/// (anonymous listing degrades to the same needs-token state on repos that
+/// require admin scope).
+pub(crate) fn list_runners(workspace_root: &Path) -> Result<GhRunnersResponse, GitHubError> {
+    let (owner, repo) = resolve_origin(workspace_root)?;
+    let token = read_token();
+    let local = probe_local_tools();
+    let base = GhRunnersResponse {
+        owner: owner.clone(),
+        repo: repo.clone(),
+        runners: Vec::new(),
+        runners_total: 0,
+        runners_needs_auth: false,
+        local,
+        authenticated: token.is_some(),
+        rate_limited: false,
+        rate_limit: GhRateLimit {
+            limit: None,
+            remaining: None,
+            reset: None,
+        },
+    };
+    let fetched = fetch_json_value(
+        GITHUB_API_BASE,
+        &format!("/repos/{owner}/{repo}/actions/runners?per_page={MAX_RUNNERS}"),
+        token.as_deref(),
+    );
+    match fetched {
+        Ok((Some(value), rate_limit, _)) => {
+            let envelope: RawRunners =
+                serde_json::from_value(value).map_err(|_| GitHubError::RequestFailed)?;
+            let runners = envelope
+                .runners
+                .into_iter()
+                .take(MAX_RUNNERS)
+                .map(to_runner)
+                .collect();
+            Ok(GhRunnersResponse {
+                runners,
+                runners_total: envelope.total_count,
+                rate_limit,
+                ..base
+            })
+        }
+        Ok((None, rate_limit, _)) => Ok(GhRunnersResponse {
+            rate_limited: true,
+            rate_limit,
+            ..base
+        }),
+        Err(GitHubError::Unauthorized | GitHubError::Forbidden | GitHubError::NotFound) => {
+            Ok(GhRunnersResponse {
+                runners_needs_auth: true,
+                ..base
+            })
+        }
+        Err(other) => Err(other),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2050,6 +2316,135 @@ mod tests {
         assert!(
             json.contains("update_available"),
             "the snake_case verdict shape must survive: {json}"
+        );
+    }
+
+    #[test]
+    fn runner_mapping_fixes_vocabulary_and_label_names() {
+        let raw: RawRunner = serde_json::from_str(
+            r#"{
+                "id": 3,
+                "name": " ",
+                "os": "  ",
+                "status": "bogus",
+                "busy": true,
+                "labels": [{"name": " self-hosted "}, {}, {"name": ""}]
+            }"#,
+        )
+        .expect("fixture parses");
+        let runner = to_runner(raw);
+        assert_eq!(runner.id, 3);
+        assert_eq!(runner.name, "(no title)");
+        assert_eq!(runner.os, "unknown");
+        assert_eq!(runner.status, "unknown");
+        assert!(runner.busy);
+        assert_eq!(runner.labels, vec!["self-hosted".to_string()]);
+
+        for (status, expected) in [
+            (Some("online".to_string()), "online"),
+            (Some("offline".to_string()), "offline"),
+            (Some("bogus".to_string()), "unknown"),
+            (None, "unknown"),
+        ] {
+            assert_eq!(clean_runner_status(status), expected);
+        }
+        assert_eq!(clean_runner_os(Some("Linux".to_string())), "Linux");
+        assert_eq!(clean_runner_os(Some("   ".to_string())), "unknown");
+        assert_eq!(clean_runner_os(None), "unknown");
+    }
+
+    #[test]
+    fn runners_envelope_parses_runners_and_total() {
+        let seen = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let base = serve_once(
+            200,
+            br#"{"total_count":1,"runners":[{"id":3,"name":"pi-runner","os":"Linux","status":"online","busy":false,"labels":[{"name":"self-hosted"}]}]}"#.to_vec(),
+            Some(("60".to_string(), "59".to_string(), "1234567890".to_string())),
+            std::sync::Arc::clone(&seen),
+        );
+        let (value, rate, limited) =
+            fetch_json_value(&base, "/repos/o/r/actions/runners?per_page=30", None)
+                .expect("200 parses");
+        assert!(!limited);
+        assert_eq!(rate.remaining, Some(59));
+        let envelope: RawRunners =
+            serde_json::from_value(value.expect("envelope present")).expect("envelope parses");
+        assert_eq!(envelope.total_count, 1);
+        let runner = to_runner(envelope.runners.into_iter().next().expect("one runner"));
+        assert_eq!(runner.id, 3);
+        assert_eq!(runner.name, "pi-runner");
+        assert_eq!(runner.os, "Linux");
+        assert_eq!(runner.status, "online");
+        assert!(!runner.busy);
+        assert_eq!(runner.labels, vec!["self-hosted".to_string()]);
+    }
+
+    #[test]
+    fn local_probe_reports_the_documented_tool_set_from_path_only() {
+        // Hermetic: a scratch directory with planted executables stands in
+        // for PATH — the probe never spawns anything.
+        let scratch =
+            std::env::temp_dir().join(format!("nexora-runners-probe-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).expect("scratch dir");
+        #[cfg(windows)]
+        let planted = "git.exe";
+        #[cfg(not(windows))]
+        let planted = "git";
+        std::fs::write(scratch.join(planted), "planted").expect("plant fixture");
+        let dirs = vec![scratch.clone()];
+        assert!(tool_on_path(&dirs, "git"));
+        assert!(!tool_on_path(&dirs, "gh"));
+        assert!(!tool_on_path(&dirs, "docker"));
+        assert!(!tool_on_path(&dirs, ""));
+        std::fs::remove_dir_all(&scratch).expect("scratch cleanup");
+
+        // The real probe always reports exactly the documented set (values
+        // depend on the machine's PATH — only the shape is asserted).
+        let local = probe_local_tools();
+        assert_eq!(local.len(), LOCAL_TOOLS.len());
+        for (entry, tool) in local.iter().zip(LOCAL_TOOLS.iter()) {
+            assert_eq!(entry.name, *tool);
+        }
+        let json = serde_json::to_string(&local).expect("probe serializes");
+        for sentinel in SECRET_SENTINELS {
+            assert!(
+                !json.to_lowercase().contains(sentinel),
+                "probe must stay secret-free, found {sentinel:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn runners_response_serializes_without_token_material() {
+        let response = GhRunnersResponse {
+            owner: "o".to_string(),
+            repo: "r".to_string(),
+            runners: Vec::new(),
+            runners_total: 0,
+            runners_needs_auth: true,
+            local: vec![GhToolReadiness {
+                name: "git".to_string(),
+                found: true,
+            }],
+            authenticated: false,
+            rate_limited: false,
+            rate_limit: GhRateLimit {
+                limit: Some(60),
+                remaining: Some(59),
+                reset: None,
+            },
+        };
+        let json = serde_json::to_string(&response).expect("runners response serializes");
+        let lowered = json.to_lowercase();
+        for sentinel in SECRET_SENTINELS {
+            assert!(
+                !lowered.contains(sentinel),
+                "runners response must stay secret-free, found {sentinel:?}"
+            );
+        }
+        assert!(
+            json.contains("runners_needs_auth"),
+            "the snake_case needs-token shape must survive: {json}"
         );
     }
 }
