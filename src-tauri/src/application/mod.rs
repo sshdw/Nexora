@@ -39,5 +39,6 @@ pub mod routing;
 pub mod search;
 pub mod settings;
 pub mod terminal;
+pub mod testgen;
 pub mod version_control;
 pub mod workspace;
