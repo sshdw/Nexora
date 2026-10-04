@@ -14,12 +14,14 @@ use crate::application::attachments::AttachmentError;
 use crate::application::compat::CompatError;
 use crate::application::conversations::ConversationError;
 use crate::application::data_management::DataManagementError;
+use crate::application::dep_inventory::DepInventoryError;
 use crate::application::execution::RequestError;
 use crate::application::export::ExportError;
 use crate::application::import::ImportError;
 use crate::application::project_dir::ProjectDirError;
 use crate::application::prompts::PromptLibraryError;
 use crate::application::providers::ProviderError;
+use crate::application::refactor_apply::RefactorApplyError;
 use crate::application::repo_audit::RepoAuditError;
 use crate::application::search::SearchError;
 use crate::application::version_control::{CommitMessageError, VersionControlError};
@@ -270,6 +272,66 @@ impl From<SearchError> for CommandError {
     fn from(err: SearchError) -> Self {
         match err {
             SearchError::Database(inner) => Self::from(inner),
+        }
+    }
+}
+
+impl From<DepInventoryError> for CommandError {
+    fn from(err: DepInventoryError) -> Self {
+        match err {
+            // The workspace path may contain a user name, so even the
+            // fixed text names no path.
+            DepInventoryError::InvalidRoot => Self::new(
+                ErrorKind::InvalidInput,
+                "the workspace folder is not available for inventory",
+            ),
+            DepInventoryError::Io => Self::new(
+                ErrorKind::Io,
+                "the dependency inventory could not read the workspace",
+            ),
+        }
+    }
+}
+
+impl From<RefactorApplyError> for CommandError {
+    fn from(err: RefactorApplyError) -> Self {
+        match err {
+            RefactorApplyError::NotARepository => Self::new(
+                ErrorKind::InvalidInput,
+                "the workspace is not inside a git repository",
+            ),
+            // The destructive-action confirmation pattern, like the git
+            // writes and data management (never the raw backend text, so no
+            // path or content can leak).
+            RefactorApplyError::Unconfirmed => Self::new(
+                ErrorKind::ConfirmationRequired,
+                "explicit confirmation is required before a refactor can be applied",
+            ),
+            RefactorApplyError::UnsafeKind => Self::new(
+                ErrorKind::InvalidInput,
+                "this finding kind is never auto-applied; only confirmed dead-code removals apply",
+            ),
+            RefactorApplyError::InvalidPath => {
+                Self::new(ErrorKind::InvalidInput, "the file path is invalid")
+            }
+            RefactorApplyError::UncleanFile => Self::new(
+                ErrorKind::InvalidInput,
+                "the file has uncommitted changes or is untracked; commit or revert first",
+            ),
+            RefactorApplyError::InvalidRange => {
+                Self::new(ErrorKind::InvalidInput, "the line range is invalid")
+            }
+            RefactorApplyError::ContentMismatch => Self::new(
+                ErrorKind::InvalidInput,
+                "the target lines no longer match a public item declaration",
+            ),
+            // Never log the underlying git detail: workspace content may
+            // carry user-written secrets, so even server-side logging stays
+            // fixed.
+            RefactorApplyError::GitFailed => Self::new(ErrorKind::Io, "the git operation failed"),
+            RefactorApplyError::Io => {
+                Self::new(ErrorKind::Io, "the file could not be read or written")
+            }
         }
     }
 }

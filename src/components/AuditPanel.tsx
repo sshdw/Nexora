@@ -14,21 +14,38 @@
 //! and nothing is ever written (the user copies manually; applying is a
 //! separate slice). TypeScript is out of scope (Rust only).
 //!
-//! Display rules (secret-free): kinds, severities, and skip reasons render
-//! as fixed-vocabulary catalog labels (unknown tokens echo defensively);
-//! rows show the workspace-relative `path:line` plus the capped backend
-//! excerpt (at most 3 lines — never full files); counts interpolate through
-//! the catalog. The panel never animates on entry (instant render under
-//! reduced motion); all visuals ride the shared panel/tag/terminal
+//! Dependency-inventory extension (same panel, third batch command):
+//! `dep_inventory` renders the locked cargo + npm tables (name/version/source
+//! rows from `src-tauri/Cargo.lock` and `package-lock.json`, capped
+//! server-side). Inventory only — no install/update/remove path exists.
+//!
+//! Safe-apply extension (same panel, the first WRITE path): `refactor_apply`
+//! deletes one confirmed `dead-code-candidate` line range in a Rust file.
+//! Every other audit kind refuses; the file must be tracked and clean so the
+//! working-tree diff is exactly the apply (revert with `git checkout`), and
+//! the panel requires an explicit confirmation tick before sending — the tick
+//! IS the approval, and the wrapper always passes `confirmed: true`.
+//!
+//! Display rules (secret-free): kinds, severities, skip reasons, and dep
+//! sources render as fixed-vocabulary catalog labels (unknown tokens echo
+//! defensively); rows show the workspace-relative `path:line` plus the capped
+//! backend excerpt (at most 3 lines — never full files); counts interpolate
+//! through the catalog. The panel never animates on entry (instant render
+//! under reduced motion); all visuals ride the shared panel/tag/terminal
 //! primitives — zero new CSS, zero raw values.
 
 import { useCallback, useState } from "react";
 
 import {
+  depInventory,
+  refactorApply,
   repoAudit,
   testgenDrafts,
   type AuditFinding,
   type CommandError,
+  type DepEntry,
+  type DepInventory,
+  type RefactorApplyResult,
   type RepoAuditReport,
   type TestDraft,
   type TestgenReport,
@@ -120,6 +137,36 @@ function skipReasonLabel(reason: string, t: Strings["t"]): string {
   }
 }
 
+/** Fixed-vocabulary dep-source label; unknown tokens echo defensively. */
+function depSourceLabel(source: string, t: Strings["t"]): string {
+  switch (source) {
+    case "crates.io":
+      return t("dep.srcCratesIo");
+    case "registry":
+      return t("dep.srcRegistry");
+    case "git":
+      return t("dep.srcGit");
+    case "local":
+      return t("dep.srcLocal");
+    case "unknown":
+      return t("common.unknown");
+    default:
+      return source;
+  }
+}
+
+function DepRow({ entry, t }: { entry: DepEntry; t: Strings["t"] }) {
+  return (
+    <li className="nex-vcs-file-row">
+      <span className="nex-tag nex-tag-mono" title={entry.name}>
+        {entry.name}
+      </span>{" "}
+      <span className="nex-tag nex-tag-mono">{entry.version}</span>{" "}
+      <span className="nex-tag nex-tag-mono">{depSourceLabel(entry.source, t)}</span>
+    </li>
+  );
+}
+
 function FindingRow({ finding, t }: { finding: AuditFinding; t: Strings["t"] }) {
   const location = `${finding.path}:${finding.line}`;
   return (
@@ -178,6 +225,16 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
   const [drafts, setDrafts] = useState<TestgenReport | null>(null);
   const [draftsError, setDraftsError] = useState<string | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [depsRunning, setDepsRunning] = useState(false);
+  const [deps, setDeps] = useState<DepInventory | null>(null);
+  const [depsError, setDepsError] = useState<string | null>(null);
+  const [applyPath, setApplyPath] = useState("");
+  const [applyStart, setApplyStart] = useState("");
+  const [applyEnd, setApplyEnd] = useState("");
+  const [applyConfirmed, setApplyConfirmed] = useState(false);
+  const [applyRunning, setApplyRunning] = useState(false);
+  const [applyResult, setApplyResult] = useState<RefactorApplyResult | null>(null);
+  const [applyError, setApplyError] = useState<string | null>(null);
 
   // Synchronous in-flight guard: rapid Run presses collapse into the active
   // scan instead of stacking backend walks.
@@ -221,6 +278,55 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
     },
     [t],
   );
+
+  // Same guard shape for the dependency inventory: one batch round trip at a
+  // time. Inventory only — the backend never writes on this path.
+  const loadDeps = useCallback(async () => {
+    if (depsRunning) return;
+    setDepsRunning(true);
+    setDepsError(null);
+    try {
+      setDeps(await depInventory());
+    } catch (err) {
+      setDepsError(toMessage(err));
+    } finally {
+      setDepsRunning(false);
+    }
+  }, [depsRunning]);
+
+  // Safe apply: one confirmed dead-code removal per press. Frontend
+  // validation mirrors the backend guards (non-empty path, positive integer
+  // range, explicit tick); the backend re-verifies everything before writing.
+  const applyRemoval = useCallback(async () => {
+    if (applyRunning) return;
+    const path = applyPath.trim();
+    const start = Number(applyStart);
+    const end = Number(applyEnd);
+    if (
+      path === "" ||
+      !Number.isInteger(start) ||
+      !Number.isInteger(end) ||
+      start < 1 ||
+      end < start
+    ) {
+      setApplyError(t("refactor.fillAll"));
+      return;
+    }
+    if (!applyConfirmed) {
+      setApplyError(t("refactor.needConfirm"));
+      return;
+    }
+    setApplyRunning(true);
+    setApplyError(null);
+    setApplyResult(null);
+    try {
+      setApplyResult(await refactorApply(path, start, end, "dead-code-candidate"));
+    } catch (err) {
+      setApplyError(toMessage(err));
+    } finally {
+      setApplyRunning(false);
+    }
+  }, [applyRunning, applyPath, applyStart, applyEnd, applyConfirmed, t]);
 
   const visibleKinds =
     kindFilter === "all"
@@ -405,6 +511,147 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
                   })}
                 </ul>
               )}
+            </>
+          )}
+        </section>
+        <section className="nex-vcs-section" aria-label={t("dep.sectionTitle")}>
+          <h3 className="nex-vcs-section-title">{t("dep.sectionTitle")}</h3>
+          <p className="nex-vcs-notice" role="note">
+            {t("dep.hint")}
+          </p>
+          <div>
+            <M3Button variant="quiet" onClick={() => void loadDeps()} disabled={depsRunning}>
+              {depsRunning ? t("dep.loading") : deps ? t("dep.reload") : t("dep.load")}
+            </M3Button>
+          </div>
+          {depsError && (
+            <div className="nex-composer-error nex-fade-in" role="alert">
+              {depsError}
+            </div>
+          )}
+          {depsRunning && <M3LoadingIndicator label={t("dep.loading")} />}
+          {!depsRunning && deps && (
+            <>
+              {deps.cargo_total === 0 && deps.npm_total === 0 ? (
+                <p className="nex-agent-empty">{t("dep.empty")}</p>
+              ) : (
+                <>
+                  <h4 className="nex-vcs-section-title">
+                    {t("dep.cargoTitle", { n: deps.cargo_total })}
+                  </h4>
+                  <ul className="nex-vcs-file-list">
+                    {deps.cargo.map((entry) => (
+                      <DepRow key={`cargo:${entry.name}`} entry={entry} t={t} />
+                    ))}
+                  </ul>
+                  {deps.cargo_overflow > 0 && (
+                    <p className="nex-vcs-notice" role="note">
+                      {t("dep.moreDeps", { n: deps.cargo_overflow })}
+                    </p>
+                  )}
+                  <h4 className="nex-vcs-section-title">
+                    {t("dep.npmTitle", { n: deps.npm_total })}
+                  </h4>
+                  <ul className="nex-vcs-file-list">
+                    {deps.npm.map((entry) => (
+                      <DepRow key={`npm:${entry.name}`} entry={entry} t={t} />
+                    ))}
+                  </ul>
+                  {deps.npm_overflow > 0 && (
+                    <p className="nex-vcs-notice" role="note">
+                      {t("dep.moreDeps", { n: deps.npm_overflow })}
+                    </p>
+                  )}
+                </>
+              )}
+            </>
+          )}
+        </section>
+        <section className="nex-vcs-section" aria-label={t("refactor.sectionTitle")}>
+          <h3 className="nex-vcs-section-title">{t("refactor.sectionTitle")}</h3>
+          <p className="nex-vcs-notice" role="note">
+            {t("refactor.hint")}
+          </p>
+          <p className="nex-vcs-notice" role="note">
+            {t("refactor.allowNote")}
+          </p>
+          <p className="nex-vcs-notice" role="note">
+            {t("refactor.breakNote")}
+          </p>
+          <label className="nex-vcs-notice" htmlFor="nex-refactor-path">
+            {t("refactor.pathLabel")}
+          </label>
+          <input
+            id="nex-refactor-path"
+            className="nex-input"
+            value={applyPath}
+            onChange={(event) => setApplyPath(event.target.value)}
+            placeholder={t("refactor.pathPh")}
+            autoComplete="off"
+            spellCheck={false}
+          />
+          <label className="nex-vcs-notice" htmlFor="nex-refactor-start">
+            {t("refactor.startLabel")}
+          </label>
+          <input
+            id="nex-refactor-start"
+            className="nex-input"
+            value={applyStart}
+            onChange={(event) => setApplyStart(event.target.value)}
+            inputMode="numeric"
+            autoComplete="off"
+          />
+          <label className="nex-vcs-notice" htmlFor="nex-refactor-end">
+            {t("refactor.endLabel")}
+          </label>
+          <input
+            id="nex-refactor-end"
+            className="nex-input"
+            value={applyEnd}
+            onChange={(event) => setApplyEnd(event.target.value)}
+            inputMode="numeric"
+            autoComplete="off"
+          />
+          <p className="nex-vcs-notice" role="note">
+            {t("refactor.kindLabel")}: {t("audit.kindDeadCode")}
+          </p>
+          <label className="nex-vcs-notice" htmlFor="nex-refactor-confirm">
+            <input
+              id="nex-refactor-confirm"
+              type="checkbox"
+              checked={applyConfirmed}
+              onChange={(event) => setApplyConfirmed(event.target.checked)}
+            />{" "}
+            {t("refactor.confirmLabel")}
+          </label>
+          <div>
+            <M3Button
+              variant="quiet"
+              onClick={() => void applyRemoval()}
+              disabled={applyRunning}
+            >
+              {applyRunning ? t("refactor.applying") : t("refactor.apply")}
+            </M3Button>
+          </div>
+          {applyError && (
+            <div className="nex-composer-error nex-fade-in" role="alert">
+              {applyError}
+            </div>
+          )}
+          {applyRunning && <M3LoadingIndicator label={t("refactor.applying")} />}
+          {!applyRunning && applyResult && (
+            <>
+              <p className="nex-vcs-notice" role="note">
+                {t("refactor.applied", {
+                  n: applyResult.removed_lines,
+                  path: applyResult.path,
+                  lines: applyResult.file_lines,
+                })}
+              </p>
+              <p className="nex-vcs-notice" role="note">
+                {applyResult.verified ? t("refactor.verified") : t("refactor.notVerified")}
+              </p>
+              <pre className="nex-agent-terminal-stdout">{applyResult.removed_preview}</pre>
             </>
           )}
         </section>
