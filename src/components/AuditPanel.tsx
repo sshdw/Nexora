@@ -575,6 +575,9 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
           <p className="nex-vcs-notice" role="note">
             {t("refactor.allowNote")}
           </p>
+          <p className="nex-vcs-notice" role="note">
+            {t("refactor.breakNote")}
+          </p>
           <label className="nex-vcs-notice" htmlFor="nex-refactor-path">
             {t("refactor.pathLabel")}
           </label>

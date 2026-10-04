@@ -843,9 +843,11 @@ const en = {
   // ---- safe refactor apply (confirmed dead-code removals only, Rust only)
   "refactor.sectionTitle": "Safe apply",
   "refactor.hint":
-    "Applies ONE confirmed dead-code removal (Rust only). The file must be committed and clean; the change shows in git diff and reverts with git checkout.",
+    "Applies ONE confirmed dead-code removal (Rust only). The file must be committed and clean; the change shows in git diff and reverts with git checkout. One apply per file until you commit; each apply needs a clean file.",
   "refactor.allowNote":
     "Allowlist: dead-code-candidate only. TODO debt, unwrap hotspots, swallowed errors, unchecked results, clones, missing docs, and size findings are never auto-applied.",
+  "refactor.breakNote":
+    "Candidates are heuristic — removal may break the build. Run `cargo check` after applying; revert with `git checkout -- <path>`.",
   "refactor.pathLabel": "File (workspace-relative .rs path)",
   "refactor.pathPh": "src-tauri/src/application/example.rs",
   "refactor.startLabel": "Start line",
@@ -1945,16 +1947,18 @@ const ru: Record<StringKey, string> = {
   "dep.moreDeps": "(+{n} ещё — таблица ограничена)",
   "dep.empty": "Зависимости не найдены — локфайлы отсутствуют или не читаются.",
   "dep.srcCratesIo": "crates.io",
-  "dep.srcRegistry": "реестр",
+  "dep.srcRegistry": "registry",
   "dep.srcGit": "git",
   "dep.srcLocal": "локальный",
 
   // ---- safe refactor apply (confirmed dead-code removals only, Rust only)
   "refactor.sectionTitle": "Безопасное применение",
   "refactor.hint":
-    "Применяет ОДНО подтверждённое удаление мёртвого кода (только Rust). Файл должен быть закоммичен и чист; изменение видно в git diff и отменяется через git checkout.",
+    "Применяет ОДНО подтверждённое удаление мёртвого кода (только Rust). Файл должен быть закоммичен и чист; изменение видно в git diff и отменяется через git checkout. Одно применение на файл до коммита; для каждого применения файл должен быть чистым.",
   "refactor.allowNote":
     "Разрешено: только dead-code-candidate. Долги TODO, точки unwrap, проглоченные ошибки, непроверенные результаты, клоны, отсутствие документации и размерные находки никогда не применяются автоматически.",
+  "refactor.breakNote":
+    "Кандидаты эвристические — удаление может сломать сборку. После применения выполните `cargo check`; отмена — `git checkout -- <путь>`.",
   "refactor.pathLabel": "Файл (относительный .rs-путь)",
   "refactor.pathPh": "src-tauri/src/application/example.rs",
   "refactor.startLabel": "Начальная строка",
@@ -1963,7 +1967,7 @@ const ru: Record<StringKey, string> = {
   "refactor.confirmLabel": "Подтверждаю удаление этих строк",
   "refactor.apply": "Применить удаление",
   "refactor.applying": "Применение…",
-  "refactor.applied": "Удалено строк: {n} из {path} (теперь {lines}).",
+  "refactor.applied": "Удалено строк: {n} из {path} (теперь строк: {lines}).",
   "refactor.verified":
     "Проверено: git diff показывает ровно это удаление — отмена через git checkout.",
   "refactor.notVerified":

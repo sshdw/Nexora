@@ -180,6 +180,11 @@ fn npm_source_label(resolved: Option<&str>, linked: bool) -> &'static str {
 /// key (nested `node_modules/<a>/node_modules/<b>` duplicates are skipped —
 /// the table lists each install root once). A missing `version` reads
 /// `"unknown"`.
+///
+/// Lockfile choice: `lockfileVersion` 2/3 carry this map. A v1 lockfile has no
+/// `packages` key — only the legacy [`parse_npm_dependencies`] map — so an
+/// empty or missing `packages` map falls through to the legacy parser in
+/// [`parse_npm_lockfile`] instead of reporting a silent wrong-empty table.
 #[must_use]
 fn parse_npm_packages(packages: &serde_json::Map<String, serde_json::Value>) -> Vec<DepEntry> {
     let mut entries: Vec<DepEntry> = Vec::new();
@@ -210,6 +215,51 @@ fn parse_npm_packages(packages: &serde_json::Map<String, serde_json::Value>) -> 
     }
     entries.sort_by(|a, b| a.name.cmp(&b.name));
     entries
+}
+
+/// Read the legacy npm `dependencies` map (`lockfileVersion` 1): one entry
+/// per top-level name, with `version` / `resolved` on the nested object. A
+/// missing `version` reads `"unknown"`; source labels reuse
+/// [`npm_source_label`] (v1 carries no `link` flag, so nothing reads local).
+#[must_use]
+fn parse_npm_dependencies(
+    dependencies: &serde_json::Map<String, serde_json::Value>,
+) -> Vec<DepEntry> {
+    let mut entries: Vec<DepEntry> = Vec::new();
+    for (name, meta) in dependencies {
+        if name.is_empty() {
+            continue;
+        }
+        let version = meta
+            .get("version")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown");
+        let resolved = meta.get("resolved").and_then(serde_json::Value::as_str);
+        entries.push(DepEntry {
+            name: name.clone(),
+            version: version.to_string(),
+            source: npm_source_label(resolved, false).to_string(),
+        });
+    }
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    entries
+}
+
+/// Pick the npm table off a parsed `package-lock.json`: the `packages` map
+/// first (`lockfileVersion` 2/3), falling back to the legacy `dependencies`
+/// map (v1). Missing, non-object, or otherwise unusable shapes yield an empty
+/// table — never an error.
+#[must_use]
+fn parse_npm_lockfile(value: &serde_json::Value) -> Vec<DepEntry> {
+    if let Some(packages) = value.get("packages").and_then(serde_json::Value::as_object) {
+        if !packages.is_empty() {
+            return parse_npm_packages(packages);
+        }
+    }
+    value
+        .get("dependencies")
+        .and_then(serde_json::Value::as_object)
+        .map_or_else(Vec::new, parse_npm_dependencies)
 }
 
 /// Cap one sorted table at [`MAX_DEP_ENTRIES`], returning the kept list plus
@@ -248,9 +298,7 @@ pub(crate) fn inventory_workspace(root: &Path) -> Result<DepInventory, DepInvent
         let text = std::fs::read_to_string(&npm_lock).map_err(|_| DepInventoryError::Io)?;
         serde_json::from_str::<serde_json::Value>(&text)
             .ok()
-            .and_then(|value| value.get("packages").cloned())
-            .and_then(|packages| packages.as_object().cloned())
-            .map_or_else(Vec::new, |packages| parse_npm_packages(&packages))
+            .map_or_else(Vec::new, |value| parse_npm_lockfile(&value))
     } else {
         Vec::new()
     };
@@ -357,6 +405,38 @@ mod tests {
     }
 
     #[test]
+    fn npm_legacy_dependencies_map_parses_v1_lockfiles() {
+        let value: serde_json::Value = serde_json::from_str(
+            r#"{"lockfileVersion": 1, "dependencies": {"react": {"version": "16.0.0", "resolved": "https://registry.npmjs.org/react/-/react-16.0.0.tgz"}, "gitter": {"version": "1.0.0", "resolved": "git+https://example.com/r.git"}, "bare": {}}}"#,
+        )
+        .expect("fixture parses");
+        let entries = parse_npm_lockfile(&value);
+        assert_eq!(entries.len(), 3, "v1 lockfiles inventory, {entries:?}");
+        assert_eq!(entries[0].name, "bare");
+        assert_eq!(entries[0].version, "unknown");
+        assert_eq!(entries[0].source, "unknown");
+        assert_eq!(entries[1].name, "gitter");
+        assert_eq!(entries[1].source, "git");
+        assert_eq!(entries[2].name, "react");
+        assert_eq!(entries[2].version, "16.0.0");
+        assert_eq!(entries[2].source, "registry");
+    }
+
+    #[test]
+    fn npm_packages_map_wins_over_legacy_duplicates() {
+        // `lockfileVersion` 2 carries both maps with the same packages —
+        // the table lists each install root once, off `packages`.
+        let value: serde_json::Value = serde_json::from_str(
+            r#"{"packages": {"node_modules/react": {"version": "19.0.0"}}, "dependencies": {"react": {"version": "19.0.0"}}}"#,
+        )
+        .expect("fixture parses");
+        let entries = parse_npm_lockfile(&value);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "react");
+        assert_eq!(entries[0].version, "19.0.0");
+    }
+
+    #[test]
     fn tables_cap_with_overflow() {
         let mut entries: Vec<DepEntry> = (0..(MAX_DEP_ENTRIES + 4))
             .map(|index| DepEntry {
@@ -405,6 +485,21 @@ mod tests {
         assert_eq!(report.npm_total, 1);
         assert_eq!(report.npm[0].name, "react");
         assert_eq!(report.npm[0].source, "unknown");
+        with_cleanup(&root);
+    }
+
+    #[test]
+    fn inventory_reads_a_v1_npm_lockfile() {
+        let root = test_root();
+        write_file(
+            &root,
+            "package-lock.json",
+            r#"{"lockfileVersion": 1, "dependencies": {"react": {"version": "16.0.0"}}}"#,
+        );
+        let report = inventory_workspace(&root).expect("inventory runs");
+        assert_eq!(report.npm_total, 1);
+        assert_eq!(report.npm[0].name, "react");
+        assert_eq!(report.npm[0].version, "16.0.0");
         with_cleanup(&root);
     }
 

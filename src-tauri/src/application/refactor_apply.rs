@@ -48,6 +48,10 @@
 //!   exactly by the removed span). Revert path: the file was clean before,
 //!   so `git checkout -- <path>` (or `git diff`) restores it — the panel
 //!   states this on every apply.
+//! - Best-effort check-then-write: the guards run before the write, so a
+//!   concurrent external writer could interleave between check and write —
+//!   re-run `git diff` after applying to confirm the change is exactly this
+//!   removal.
 //!
 //! Errors are fixed-vocabulary with no paths, no file content, and no diff
 //! text (workspace content may contain user names or secrets).
@@ -278,13 +282,37 @@ pub(crate) fn refactor_apply(
                 .map(strip_verbatim)
                 .map_err(|_| RefactorApplyError::GitFailed)
         })?;
-    let joined = canon_repo.join(&rel);
-    if !is_within_workspace(&canon_repo, &joined) {
+    let joined = canon_ws.join(&rel);
+    if !is_within_workspace(&canon_ws, &joined) || !is_within_workspace(&canon_repo, &joined) {
         return Err(RefactorApplyError::InvalidPath);
     }
+    // Symlink guard: `fs::write` follows symlinks, so a lexical containment
+    // check alone could mutate a target outside the repository — a committed
+    // `.rs` symlink pointing elsewhere refuses before any read.
+    if std::fs::symlink_metadata(&joined).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Err(RefactorApplyError::InvalidPath);
+    }
+    // Parent-dir symlinks resolve too: the canonical target must stay inside
+    // both the workspace and the repository workdir. A missing file skips
+    // this (later guards refuse it); nothing here relaxes a guard.
+    if let Ok(canon_target) = std::fs::canonicalize(&joined).map(strip_verbatim) {
+        if !is_within_workspace(&canon_ws, &canon_target)
+            || !is_within_workspace(&canon_repo, &canon_target)
+        {
+            return Err(RefactorApplyError::InvalidPath);
+        }
+    }
     let spec = rel.to_string_lossy().replace('\\', "/");
+    // The git status path is repository-relative (the workspace root may be a
+    // subdirectory of the workdir); the result keeps the workspace-relative
+    // `spec` the caller passed.
+    let repo_spec = joined
+        .strip_prefix(&canon_repo)
+        .map_err(|_| RefactorApplyError::InvalidPath)?
+        .to_string_lossy()
+        .replace('\\', "/");
     let status = repo
-        .status_file(Path::new(&spec))
+        .status_file(Path::new(&repo_spec))
         .map_err(|_| RefactorApplyError::GitFailed)?;
     if !status.is_empty() {
         return Err(RefactorApplyError::UncleanFile);
@@ -381,6 +409,38 @@ mod tests {
         confirmed: bool,
     ) -> Result<RefactorApplyResult, RefactorApplyError> {
         refactor_apply(root, path, start, end, kind, confirmed)
+    }
+
+    /// Stage `rels` (repository-relative) and commit on top of HEAD, for
+    /// tests that need more than one commit (symlink and subdir shapes).
+    fn commit_paths(root: &Path, rels: &[&str], message: &str) {
+        let repo = git2::Repository::open(root).expect("repo opens");
+        let mut index = repo.index().expect("index reads");
+        for rel in rels {
+            index.add_path(Path::new(rel)).expect("path stages");
+        }
+        index.write().expect("index writes");
+        let tree_id = index.write_tree().expect("tree writes");
+        let tree = repo.find_tree(tree_id).expect("tree reads");
+        let signature =
+            git2::Signature::now("nexora-test", "nexora-test@example.com").expect("signs");
+        let head = repo
+            .head()
+            .ok()
+            .and_then(|reference| reference.peel_to_commit().ok());
+        let mut parents = Vec::new();
+        if let Some(ref commit) = head {
+            parents.push(commit);
+        }
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            message,
+            &tree,
+            &parents,
+        )
+        .expect("commits");
     }
 
     #[test]
@@ -502,6 +562,81 @@ mod tests {
                 .expect_err("non-pub lines must refuse");
             assert_eq!(err, RefactorApplyError::ContentMismatch, "line {line}");
         }
+        with_cleanup(&root);
+    }
+
+    #[test]
+    fn committed_symlink_refuses_before_any_write() {
+        let root = test_root();
+        let outside = test_root();
+        let secret = outside.join("secret.rs");
+        std::fs::write(&secret, "pub fn secret() {}\n").expect("outside target writes");
+        let link_rel = "src/link.rs";
+        let link_full = root.join(link_rel);
+        if let Some(parent) = link_full.parent() {
+            std::fs::create_dir_all(parent).expect("test parent creates");
+        }
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(&secret, &link_full).is_ok();
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_file(&secret, &link_full).is_ok();
+        #[cfg(not(any(unix, windows)))]
+        let linked = false;
+        if !linked {
+            eprintln!("skipping symlink test: the platform refused symlink creation");
+            with_cleanup(&root);
+            with_cleanup(&outside);
+            return;
+        }
+        git2::Repository::init(&root).expect("repo inits");
+        commit_paths(&root, &[link_rel], "commit a symlink");
+        let err = apply(&root, link_rel, 1, 1, "dead-code-candidate", true)
+            .expect_err("a committed symlink must refuse");
+        assert_eq!(err, RefactorApplyError::InvalidPath);
+        let content = std::fs::read_to_string(&secret).expect("outside target reads");
+        assert_eq!(
+            content, "pub fn secret() {}\n",
+            "the refusal writes nothing through the link"
+        );
+        with_cleanup(&root);
+        with_cleanup(&outside);
+    }
+
+    #[test]
+    fn workspace_subdir_of_repo_applies_to_the_right_file() {
+        let root = test_root();
+        // Decoy: the same workspace-relative shape at the repo root is a
+        // shorter file, so joining the path to the repo workdir instead of
+        // the workspace root would hit the wrong file (or range-refuse).
+        init_repo_with_file(
+            &root,
+            "src/lib.rs",
+            "/// Root entry.\npub fn root_fn() {}\n",
+        );
+        let workspace = root.join("sub");
+        std::fs::create_dir_all(workspace.join("src")).expect("test parent creates");
+        std::fs::write(
+            workspace.join("src/lib.rs"),
+            "/// Kept entry.\npub fn kept() {}\n/// Orphaned entry.\npub fn orphaned() {}\n",
+        )
+        .expect("test file writes");
+        commit_paths(&root, &["sub/src/lib.rs"], "commit the workspace file");
+        let result = apply(&workspace, "src/lib.rs", 4, 4, "dead-code-candidate", true)
+            .expect("the subdir-workspace apply runs");
+        assert_eq!(result.path, "src/lib.rs");
+        assert_eq!(result.removed_lines, 1);
+        assert_eq!(result.file_lines, 3);
+        assert!(result.verified, "the post-apply re-read verifies");
+        let sub_content = std::fs::read_to_string(workspace.join("src/lib.rs")).expect("reads");
+        assert_eq!(
+            sub_content,
+            "/// Kept entry.\npub fn kept() {}\n/// Orphaned entry.\n"
+        );
+        let root_content = std::fs::read_to_string(root.join("src/lib.rs")).expect("reads");
+        assert_eq!(
+            root_content, "/// Root entry.\npub fn root_fn() {}\n",
+            "the repo-root decoy stays untouched"
+        );
         with_cleanup(&root);
     }
 
