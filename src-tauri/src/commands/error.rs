@@ -25,6 +25,7 @@ use crate::application::providers::ProviderError;
 use crate::application::refactor_apply::RefactorApplyError;
 use crate::application::repo_audit::RepoAuditError;
 use crate::application::search::SearchError;
+use crate::application::system::SystemError;
 use crate::application::version_control::{CommitMessageError, VersionControlError};
 use crate::infrastructure::database::DatabaseError;
 use crate::infrastructure::providers::credentials::CredentialError;
@@ -273,6 +274,22 @@ impl From<SearchError> for CommandError {
     fn from(err: SearchError) -> Self {
         match err {
             SearchError::Database(inner) => Self::from(inner),
+        }
+    }
+}
+
+impl From<SystemError> for CommandError {
+    fn from(err: SystemError) -> Self {
+        match err {
+            // The curated database text names no SQL and no stored value;
+            // the raw detail stays in the server log only.
+            SystemError::Database(inner) => Self::from(inner),
+            // The backup directory or snapshot file could not be written.
+            // The path itself is never echoed: it may carry a user name.
+            SystemError::Io => Self::new(
+                ErrorKind::Io,
+                "the pre-update snapshot could not be written",
+            ),
         }
     }
 }
