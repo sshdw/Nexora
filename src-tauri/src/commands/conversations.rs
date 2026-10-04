@@ -130,7 +130,7 @@ pub(crate) async fn send_message(
     let handle = app.clone();
     let outcome = tauri::async_runtime::spawn_blocking(move || {
         let db = handle.state::<Database>();
-        ConversationService::new(db.inner())
+        let result: Result<AiResponse, CommandError> = ConversationService::new(db.inner())
             .send_message(
                 conversation_id,
                 &content,
@@ -138,7 +138,13 @@ pub(crate) async fn send_message(
                 &model,
                 &attachment_ids,
             )
-            .map_err(Into::into)
+            .map_err(Into::into);
+        if result.is_ok() {
+            // Local usage ledger (counts only): one best-effort tick per
+            // sent message — a ledger failure never fails the send.
+            crate::application::privacy::record(db.inner(), "message");
+        }
+        result
     })
     .await;
     match outcome {

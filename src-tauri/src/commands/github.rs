@@ -72,7 +72,14 @@ pub(crate) async fn gh_issues(
         let db = handle.state::<Database>();
         let root = resolve_workspace_root(db.inner(), &fallback);
         let state = state.as_deref().unwrap_or("open");
-        crate::application::github::list_issues(&root, state).map_err(CommandError::from)
+        let result =
+            crate::application::github::list_issues(&root, state).map_err(CommandError::from);
+        if result.is_ok() {
+            // Local usage ledger (counts only): one best-effort tick per
+            // successful read — a ledger failure never fails the read.
+            crate::application::privacy::record(db.inner(), "github_read");
+        }
+        result
     })
     .await;
     match outcome {
@@ -105,7 +112,14 @@ pub(crate) async fn gh_pulls(
         let db = handle.state::<Database>();
         let root = resolve_workspace_root(db.inner(), &fallback);
         let state = state.as_deref().unwrap_or("open");
-        crate::application::github::list_pulls(&root, state).map_err(CommandError::from)
+        let result =
+            crate::application::github::list_pulls(&root, state).map_err(CommandError::from);
+        if result.is_ok() {
+            // Local usage ledger (counts only): one best-effort tick per
+            // successful read — a ledger failure never fails the read.
+            crate::application::privacy::record(db.inner(), "github_read");
+        }
+        result
     })
     .await;
     match outcome {
@@ -146,7 +160,13 @@ pub(crate) async fn gh_actions(app: AppHandle) -> Result<GhActionsResponse, Comm
         let fallback = default_root(&handle)?;
         let db = handle.state::<Database>();
         let root = resolve_workspace_root(db.inner(), &fallback);
-        crate::application::github::list_actions(&root).map_err(CommandError::from)
+        let result = crate::application::github::list_actions(&root).map_err(CommandError::from);
+        if result.is_ok() {
+            // Local usage ledger (counts only): one best-effort tick per
+            // successful read — a ledger failure never fails the read.
+            crate::application::privacy::record(db.inner(), "github_read");
+        }
+        result
     })
     .await;
     match outcome {
@@ -188,8 +208,14 @@ pub(crate) async fn gh_action_log(
         let fallback = default_root(&handle)?;
         let db = handle.state::<Database>();
         let root = resolve_workspace_root(db.inner(), &fallback);
-        crate::application::github::fetch_action_log(&root, run_id, job_id)
-            .map_err(CommandError::from)
+        let result = crate::application::github::fetch_action_log(&root, run_id, job_id)
+            .map_err(CommandError::from);
+        if result.is_ok() {
+            // Local usage ledger (counts only): one best-effort tick per
+            // successful read — a ledger failure never fails the read.
+            crate::application::privacy::record(db.inner(), "github_read");
+        }
+        result
     })
     .await;
     match outcome {

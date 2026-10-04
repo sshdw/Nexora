@@ -80,7 +80,13 @@ pub(crate) async fn update_check(app: AppHandle) -> Result<UpdateCheck, CommandE
         let fallback = default_root(&handle)?;
         let db = handle.state::<Database>();
         let root = resolve_workspace_root(db.inner(), &fallback);
-        crate::application::github::check_update(&root).map_err(CommandError::from)
+        let result = crate::application::github::check_update(&root).map_err(CommandError::from);
+        if result.is_ok() {
+            // Local usage ledger (counts only): one best-effort tick per
+            // successful check — a ledger failure never fails the check.
+            crate::application::privacy::record(db.inner(), "update_check");
+        }
+        result
     })
     .await;
     match outcome {

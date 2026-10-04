@@ -395,6 +395,10 @@ pub(crate) fn start_run(
     );
     if started.is_err() {
         registry.unclaim_conversation(request.conversation_id);
+    } else {
+        // Local usage ledger (counts only): one best-effort tick per
+        // started run — a ledger failure never fails the start.
+        crate::application::privacy::record(db, "agent_run");
     }
     started
 }

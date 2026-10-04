@@ -202,6 +202,13 @@ export function buildCommands(deps: PaletteDeps, locale: Locale = "en"): Palette
       run: () => deps.openActivity("health"),
     },
     {
+      id: "go.privacy",
+      title: tr(locale, "palette.cmd.go_privacy"),
+      section: go,
+      keywords: ["privacy", "telemetry", "tracking", "usage stats", "export ledger", "wipe", "what leaves", "egress"],
+      run: () => deps.openActivity("health"),
+    },
+    {
       id: "go.settings",
       title: tr(locale, "palette.cmd.go_settings"),
       section: go,

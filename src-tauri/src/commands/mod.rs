@@ -24,6 +24,7 @@ pub mod error;
 pub mod flags;
 pub mod github;
 pub mod import_export;
+pub mod privacy;
 pub mod prompts;
 pub mod providers;
 pub mod repo_audit;
