@@ -815,7 +815,25 @@ impl LoopCtx<'_> {
                 // instead of polling the `'running'` row forever
                 // (NEX-AGENT-001). Cancel the parked run first: the wake
                 // finalizes its persisted row and frees the conversation for
-                // future runs.
+                // future runs. Re-check the park immediately before the
+                // destructive cancel: an `extend_steps` landing in the
+                // return→cancel gap clears the in-memory park and wakes the
+                // runner with fresh allowance, and cancelling then would
+                // kill a healthy extended run — keep polling to the fresh
+                // terminal instead of stopping.
+                if !self.agent_registry.is_budget_parked(run_id) {
+                    self.task_registry.set_run_id(self.task_id, Some(run_id));
+                    let outcome = wait_for_run_terminal(
+                        &AgentRunRepository::new(self.db),
+                        self.agent_registry,
+                        self.task_registry,
+                        self.task_id,
+                        run_id,
+                        self.deadline,
+                    );
+                    self.task_registry.set_run_id(self.task_id, None);
+                    return self.apply_outcome(step, seq, run_id, outcome, prior);
+                }
                 let _ = self.agent_registry.cancel(run_id);
                 self.record_failed(
                     seq,
@@ -1757,6 +1775,63 @@ mod tests {
         let _ = std::fs::remove_dir_all(temp_workspace("park"));
     }
 
+    #[test]
+    fn parked_outcome_with_cleared_park_keeps_polling() {
+        // Return→cancel race guard: a `Parked` outcome whose in-memory park
+        // already cleared (an `extend_steps` landed in the gap) must not
+        // cancel or stop — the wait resumes to the fresh terminal instead.
+        // Deterministic: the run was never registered (never parked) and its
+        // row is already `completed`, so the re-poll resolves immediately.
+        let harness = LoopHarness::new("park-race", Vec::new());
+        let id = harness.create_task(&["grind"], None);
+        let steps = TaskService::new(&harness.db).list_steps(id).expect("steps");
+        let conversation_id = TaskService::new(&harness.db)
+            .read_task(id)
+            .expect("read")
+            .conversation_id
+            .expect("conv");
+        let run_id = AgentRunRepository::new(&harness.db)
+            .create_run(None, "m", "supervised")
+            .expect("run");
+        AgentRunRepository::new(&harness.db)
+            .finalize_run(
+                run_id,
+                "completed",
+                1,
+                Some("fresh result"),
+                None,
+                None,
+                None,
+            )
+            .expect("finalize");
+        let config = harness.config(None);
+        let ctx = LoopCtx {
+            db: &harness.db,
+            agent_registry: &harness.agent_registry,
+            task_registry: &harness.task_registry,
+            host: &harness.host,
+            emit: &harness.emit,
+            task_id: id,
+            conversation_id,
+            provider: "openai",
+            model: "test-model",
+            config: &config,
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(30),
+        };
+        let mut prior = Vec::new();
+        let seq = steps[0].seq;
+        match ctx.apply_outcome(&steps[0], seq, run_id, RunOutcome::Parked, &mut prior) {
+            StepControl::Continue => {}
+            StepControl::Stop { reason, .. } => {
+                panic!("a cleared park must keep polling, not stop ({reason})")
+            }
+        }
+        assert_eq!(prior.len(), 1, "the fresh terminal is recorded");
+        let steps = TaskService::new(&harness.db).list_steps(id).expect("steps");
+        assert_eq!(steps[0].status, "completed");
+        let _ = std::fs::remove_dir_all(temp_workspace("park-race"));
+    }
+
     /// Provider executor whose calls block forever: a step run that never
     /// terminates benignly and never parks observably.
     struct BlockingExecutor;
@@ -1766,9 +1841,15 @@ mod tests {
             &self,
             _request: &AiRequest,
             _credential: &str,
-            _token: &CancellationToken,
+            token: &CancellationToken,
         ) -> Result<AiResponse, ExecutorError> {
-            std::thread::park();
+            // Block until the loop's deadline trips and cancels the run:
+            // honour the token so the harness run thread exits in-test
+            // instead of parking forever (one leaked thread + registry
+            // entry per test-process run otherwise).
+            while !token.is_cancelled() {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
             Err(ExecutorError::Failure)
         }
     }
