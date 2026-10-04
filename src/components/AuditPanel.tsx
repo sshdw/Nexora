@@ -382,6 +382,11 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
                   {t("testgen.moreDrafts", { n: drafts.drafts_overflow })}
                 </p>
               )}
+              {drafts.audit_overflow > 0 && (
+                <p className="nex-vcs-notice" role="note">
+                  {t("testgen.auditOverflow", { n: drafts.audit_overflow })}
+                </p>
+              )}
               {drafts.drafts.length === 0 ? (
                 <p className="nex-agent-empty">{t("testgen.noTargets")}</p>
               ) : (

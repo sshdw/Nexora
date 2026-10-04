@@ -1322,6 +1322,7 @@ export interface TestgenReport {
   drafts_overflow: number;
   targets_considered: number;
   files_scanned: number;
+  audit_overflow: number;
 }
 
 /** Generate draft test scaffolds via `testgen_drafts`. Manual runs only —

@@ -33,6 +33,10 @@
 //!   (Rust only); only `.rs` findings are eligible.
 //! - Test-code paths ([`is_test_source_path`]) — NOT targets: scaffolding
 //!   tests for tests is noise.
+//! - Blocking entry points (`main`/`run` bare names) — NOT targets: calling
+//!   them from a test would block forever (event loop) or re-enter the
+//!   process, so entry points are out of scope for scaffolding (see
+//!   [`ENTRY_POINT_DENYLIST`]).
 //!
 //! Read-only contract: this module only reads via
 //! [`audit_workspace`] (which itself only reads directory entries and file
@@ -64,6 +68,11 @@ pub(crate) const MAX_DRAFT_CHARS: usize = 2000;
 /// for public Rust items (see the module docs for the full kind map).
 pub(crate) const TESTGEN_SOURCE_KINDS: [&str; 2] = [KIND_MISSING_DOCS, KIND_DEAD_CODE];
 
+/// Bare entry-point names never scaffolded: calling `main`/`run` from a
+/// test would block forever (event loop) or re-enter the process.
+/// Exact bare-name matches only (`run_migrations` still scaffolds).
+pub(crate) const ENTRY_POINT_DENYLIST: [&str; 2] = ["main", "run"];
+
 /// One draft test scaffold: review-buffer data only, never written to disk.
 /// The `code` is an arrange/act/assert skeleton derived from the signature
 /// with honest `TODO` markers everywhere intent is unknowable statically.
@@ -92,6 +101,11 @@ pub(crate) struct TestgenReport {
     pub drafts: Vec<TestDraft>,
     /// Eligible targets omitted by the cap (0 when everything fit).
     pub drafts_overflow: usize,
+    /// Findings omitted upstream by the audit cap
+    /// ([`RepoAuditReport::findings_overflow`]): drafts derive from capped
+    /// findings, so a nonzero value means further targets were never
+    /// considered — the UI surfaces this rather than implying completeness.
+    pub audit_overflow: usize,
     /// Eligible findings considered (pre-cap, post-dedupe by `path:line`).
     pub targets_considered: usize,
     /// Source files fully scanned by the underlying audit.
@@ -135,8 +149,9 @@ fn parse_sig(excerpt: &str) -> Option<ParsedSig> {
     let open = after_name.find('(')?;
     let after_open = &after_name[open + 1..];
     // Flat first-`)` cut: nested parens (fn-pointer params) truncate the
-    // list, and a truncated excerpt may carry no `)` at all. Both cases
-    // surface as `params: None` — the scaffold then says so honestly.
+    // list mid-shape, yielding an unbalanced `Some(...)` the scaffold
+    // flags honestly (see `scaffold`); only a truncated excerpt carrying
+    // no `)` at all surfaces as `params: None`.
     let params = after_open
         .find(')')
         .map(|close| after_open[..close].to_string());
@@ -207,6 +222,26 @@ fn arg_placeholders(params: &str) -> Vec<String> {
         .collect()
 }
 
+/// Whether a raw parameter list survived the flat first-`)` cut intact:
+/// balanced inner parens mean the call shape is whole; unbalanced means
+/// the cut truncated a nested shape (fn-pointer param) and the scaffold
+/// must say so honestly instead of scaffolding a guess silently.
+#[must_use]
+fn params_intact(params: &str) -> bool {
+    let mut depth = 0i32;
+    for ch in params.chars() {
+        if ch == '(' {
+            depth += 1;
+        } else if ch == ')' {
+            depth -= 1;
+            if depth < 0 {
+                return false;
+            }
+        }
+    }
+    depth == 0
+}
+
 /// Truncate draft code to [`MAX_DRAFT_CHARS`] characters (char-boundary
 /// safe — byte slicing could split multi-byte text).
 #[must_use]
@@ -220,7 +255,9 @@ fn truncate_code(code: &str) -> String {
 
 /// Build the arrange/act/assert scaffold for one parsed signature. Every
 /// unknowable — input values, expected outcome — is a `TODO`/`todo!()`
-/// marker; the scaffold documents the call shape and nothing more.
+/// marker; the scaffold documents the call shape and nothing more. Every
+/// scaffold ends with a failing `todo!()`, so an unfilled draft fails
+/// loudly until a human writes a real assertion (no vacuous pass).
 #[must_use]
 fn scaffold(path: &str, line: usize, signature: &str, parsed: &ParsedSig) -> String {
     use std::fmt::Write as _;
@@ -228,20 +265,24 @@ fn scaffold(path: &str, line: usize, signature: &str, parsed: &ParsedSig) -> Str
     let mut code = format!(
         "#[test]\nfn {test_name}() {{\n    // DRAFT scaffold for `{path}:{line}` (`{signature}`).\n    // Template-generated locally from the signature only — no agent run,\n    // no budget spent. Intent is unknowable statically: fill in the TODOs,\n    // review, then copy into a test module manually (nothing is written).\n"
     );
+    let incomplete_params = parsed
+        .params
+        .as_deref()
+        .is_none_or(|params| !params.trim().is_empty() && !params_intact(params));
     match parsed.params.as_deref().map(str::trim) {
         None | Some("") => {
             code.push_str("    // TODO: picks up no inputs — the target takes no arguments.\n");
             if parsed.returns.is_some() {
                 let _ = writeln!(
                     code,
-                    "    let result = {}();\n    // TODO: assert the observable outcome, e.g. `assert_eq!(result, ...)`.\n    let _ = result;",
-                    parsed.name
+                    "    let result = {}();\n    // TODO: assert the observable outcome, e.g. `assert_eq!(result, ...)`.\n    let _ = result;\n    todo!(\"assert the observable outcome for `{}`\");",
+                    parsed.name, parsed.name
                 );
             } else {
                 let _ = writeln!(
                     code,
-                    "    {}();\n    // TODO: assert the observable outcome (state change, return value, ...).",
-                    parsed.name
+                    "    {}();\n    // TODO: assert the observable outcome (state change, return value, ...).\n    todo!(\"assert the observable outcome for `{}`\");",
+                    parsed.name, parsed.name
                 );
             }
         }
@@ -255,12 +296,14 @@ fn scaffold(path: &str, line: usize, signature: &str, parsed: &ParsedSig) -> Str
             if parsed.returns.is_some() {
                 let _ = writeln!(
                     code,
-                    "    let result = {call};\n    // TODO: assert the observable outcome, e.g. `assert_eq!(result, ...)`.\n    let _ = result;"
+                    "    let result = {call};\n    // TODO: assert the observable outcome, e.g. `assert_eq!(result, ...)`.\n    let _ = result;\n    todo!(\"assert the observable outcome for `{}`\");",
+                    parsed.name
                 );
             } else {
                 let _ = writeln!(
                     code,
-                    "    {call};\n    // TODO: assert the observable outcome (state change, ...)."
+                    "    {call};\n    // TODO: assert the observable outcome (state change, ...).\n    todo!(\"assert the observable outcome for `{}`\");",
+                    parsed.name
                 );
             }
             if args.iter().any(|arg| arg.starts_with("todo!")) {
@@ -270,7 +313,7 @@ fn scaffold(path: &str, line: usize, signature: &str, parsed: &ParsedSig) -> Str
             }
         }
     }
-    if parsed.params.is_none() {
+    if incomplete_params {
         code.push_str(
             "    // NOTE: the source excerpt carries no complete parameter list\n    // (truncated line or unusual shape) — reconstruct the call by hand.\n",
         );
@@ -281,7 +324,9 @@ fn scaffold(path: &str, line: usize, signature: &str, parsed: &ParsedSig) -> Str
 
 /// Whether one audit finding is an eligible testgen target (see the module
 /// docs for the kind map): a `TESTGEN_SOURCE_KINDS` finding on a Rust
-/// non-test path whose excerpt carries a `fn` declaration.
+/// non-test path whose excerpt carries a `fn` declaration. Blocking
+/// entry-point names (`main`/`run`) pass this shape check and are filtered
+/// by bare name later (see [`ENTRY_POINT_DENYLIST`]).
 #[must_use]
 fn is_target(path: &str, excerpt: &str, kind: &str) -> bool {
     TESTGEN_SOURCE_KINDS.contains(&kind)
@@ -310,6 +355,11 @@ pub(crate) fn drafts_for_report(report: &RepoAuditReport) -> TestgenReport {
         let Some(parsed) = parse_sig(decl_line) else {
             continue;
         };
+        // Blocking entry points are out of scope: calling `main`/`run`
+        // from a test would block forever or re-enter the process.
+        if ENTRY_POINT_DENYLIST.contains(&parsed.name.as_str()) {
+            continue;
+        }
         let key = (finding.path.clone(), finding.line);
         if seen.contains(&key) {
             continue;
@@ -333,6 +383,7 @@ pub(crate) fn drafts_for_report(report: &RepoAuditReport) -> TestgenReport {
         drafts_overflow,
         targets_considered,
         files_scanned: report.files_scanned,
+        audit_overflow: report.findings_overflow,
     }
 }
 
@@ -611,18 +662,122 @@ mod tests {
             KIND_MISSING_DOCS,
             "src/lib.rs",
             37,
-            "pub fn run() {\n    // Initialize logging first.\n    infrastructure::logging::init();",
+            "pub fn flush_all() {\n    // Flush every buffer first.\n    buffers::flush();",
         )]);
         let testgen = drafts_for_report(&report);
         assert_eq!(testgen.drafts.len(), 1);
         let draft = &testgen.drafts[0];
-        assert_eq!(draft.signature, "pub fn run() {");
+        assert_eq!(draft.signature, "pub fn flush_all() {");
         assert!(
-            !draft.code.contains("Initialize logging"),
+            !draft.code.contains("Flush every buffer"),
             "trailing excerpt lines stay out of the draft, got:\n{}",
             draft.code
         );
-        assert!(draft.code.contains("fn test_run()"));
+        assert!(draft.code.contains("fn test_flush_all()"));
+    }
+
+    #[test]
+    fn unfilled_drafts_fail_loudly() {
+        // Every scaffold ends with a failing `todo!()`: an unfilled draft
+        // must fail, never pass vacuously (nullary or not, return or not).
+        let report = report_of(vec![
+            finding(KIND_MISSING_DOCS, "src/a.rs", 1, "pub fn bare() {"),
+            finding(
+                KIND_MISSING_DOCS,
+                "src/b.rs",
+                2,
+                "pub fn computed() -> i32 {",
+            ),
+            finding(KIND_DEAD_CODE, "src/c.rs", 3, "pub fn reset(flag: bool) {"),
+            finding(
+                KIND_DEAD_CODE,
+                "src/d.rs",
+                4,
+                "pub fn add(left: i32, right: i32) -> i32 {",
+            ),
+        ]);
+        let testgen = drafts_for_report(&report);
+        assert_eq!(testgen.drafts.len(), 4);
+        for draft in &testgen.drafts {
+            assert!(
+                draft.code.contains("todo!(\"assert the observable outcome"),
+                "unfilled draft for `{}` must fail loudly, got:\n{}",
+                draft.fn_name,
+                draft.code
+            );
+        }
+    }
+
+    #[test]
+    fn entry_point_names_are_not_targets() {
+        // Calling `main`/`run` from a test would block forever (event loop)
+        // or re-enter the process: bare-name matches are skipped, while
+        // longer names sharing the prefix still scaffold.
+        let report = report_of(vec![
+            finding(KIND_MISSING_DOCS, "src/main.rs", 1, "pub fn main() {"),
+            finding(KIND_MISSING_DOCS, "src/lib.rs", 2, "pub fn run() {"),
+            finding(
+                KIND_MISSING_DOCS,
+                "src/migrate.rs",
+                3,
+                "pub fn run_migrations() {",
+            ),
+        ]);
+        let testgen = drafts_for_report(&report);
+        let targets: Vec<&str> = testgen
+            .drafts
+            .iter()
+            .map(|draft| draft.fn_name.as_str())
+            .collect();
+        assert_eq!(
+            targets,
+            vec!["run_migrations"],
+            "only the non-entry-point scaffolds, got {targets:?}"
+        );
+        assert_eq!(testgen.targets_considered, 1);
+    }
+
+    #[test]
+    fn nested_paren_truncation_scaffolds_honestly() {
+        // The flat first-`)` cut truncates fn-pointer params mid-shape
+        // (`cb: fn(i32` — unbalanced): the draft must admit the guess.
+        let report = report_of(vec![finding(
+            KIND_MISSING_DOCS,
+            "src/events.rs",
+            9,
+            "pub fn on_event(cb: fn(i32) -> i32, label: &str) {",
+        )]);
+        let testgen = drafts_for_report(&report);
+        assert_eq!(testgen.drafts.len(), 1);
+        let code = &testgen.drafts[0].code;
+        assert!(
+            code.contains("no complete parameter list"),
+            "the draft admits the truncated shape, got:\n{code}"
+        );
+        assert!(
+            code.contains("todo!(\"assert the observable outcome"),
+            "the truncated draft still fails until filled in, got:\n{code}"
+        );
+    }
+
+    #[test]
+    fn audit_overflow_propagates_instead_of_implying_completeness() {
+        // Drafts derive from capped audit findings: a nonzero upstream
+        // `findings_overflow` must surface on the report for the UI notice.
+        let mut report = report_of(vec![finding(
+            KIND_MISSING_DOCS,
+            "src/lib.rs",
+            10,
+            "pub fn bare_api() {}",
+        )]);
+        report.findings_overflow = 7;
+        let testgen = drafts_for_report(&report);
+        assert_eq!(testgen.drafts.len(), 1);
+        assert_eq!(
+            testgen.audit_overflow, 7,
+            "upstream audit truncation propagates, got {}",
+            testgen.audit_overflow
+        );
     }
 
     #[test]
