@@ -1252,3 +1252,46 @@ export function gitExplainCommit(
     model,
   });
 }
+
+// ---- Repository audit (read-only static analysis, findings only) ---------
+// One batch command over the workspace sources: `repo_audit` scans `.rs` /
+// `.ts` / `.tsx` files under the effective workspace root (capped server-side
+// with skip notices) and returns fixed-vocabulary findings with `file:line`
+// evidence plus capped excerpts. Findings never modify code — there is no
+// auto-fix path; results are copy/read-only. Payloads stay snake_case like
+// every other backend struct; the command takes no arguments.
+
+/** One audit finding: fixed-vocabulary kind + severity with `file:line`
+ * evidence (workspace-relative `path`, 1-based `line`) and a capped code
+ * excerpt (at most 3 lines). */
+export interface AuditFinding {
+  kind: string;
+  severity: string;
+  path: string;
+  line: number;
+  excerpt: string;
+}
+
+/** One file the scan did not read: path plus a fixed-vocabulary reason
+ * (`"too-large"`, `"unreadable"`, `"file-cap"`). */
+export interface SkippedFile {
+  path: string;
+  reason: string;
+}
+
+/** One read-only audit run: capped findings plus scan accounting. Totals
+ * always cover the whole walk; lists stay capped with overflow counts. */
+export interface RepoAuditReport {
+  findings: AuditFinding[];
+  findings_overflow: number;
+  files_scanned: number;
+  files_skipped: number;
+  skipped: SkippedFile[];
+  skipped_overflow: number;
+}
+
+/** Run the read-only repository audit via `repo_audit`. Manual runs only —
+ * the panel never watches or re-audits live. */
+export function repoAudit(): Promise<RepoAuditReport> {
+  return invoke<RepoAuditReport>("repo_audit");
+}

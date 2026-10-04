@@ -34,6 +34,7 @@ pub mod import;
 pub mod project_dir;
 pub mod prompts;
 pub mod providers;
+pub mod repo_audit;
 pub mod routing;
 pub mod search;
 pub mod settings;

@@ -6,6 +6,7 @@ import ConversationView from "./components/ConversationView";
 import ActivityHealthPanel, {
   type ActivityHealthTab,
 } from "./components/ActivityHealthPanel";
+import AuditPanel from "./components/AuditPanel";
 import EmptyState from "./components/EmptyState";
 import { ExportIcon } from "./components/icons";
 import { ExportModal, ImportModal } from "./components/ImportExportModals";
@@ -33,6 +34,7 @@ import {
 } from "./lib/commands";
 import {
   COMBO_ACTIVITY_OPEN,
+  COMBO_AUDIT_OPEN,
   COMBO_HEALTH_OPEN,
   COMBO_HELP_F1,
   COMBO_HELP_QUESTION,
@@ -264,7 +266,13 @@ function AppShell() {
   // Settings/Library/VCS/Activity/Terminal — a sidebar rail entry opening
   // an overlay over the still-mounted panes (palette + Ctrl+Shift+T open it
   // too; no panel request token — the panel reloads from the backend).
-  const [tasksOpen, setTasksOpen] = useState(false);  const mainRef = useRef<HTMLDivElement>(null);
+  const [tasksOpen, setTasksOpen] = useState(false);
+  // Code Audit screen: a workspace-scoped navigation destination like
+  // Settings/Library/VCS/Activity/Terminal/Tasks — a sidebar rail entry
+  // opening an overlay over the still-mounted panes (palette + Ctrl+Shift+U
+  // open it too; the panel scans manually on Run only, never on mount).
+  const [auditOpen, setAuditOpen] = useState(false);
+  const mainRef = useRef<HTMLDivElement>(null);
 
   const draftFor = useCallback(
     (id: number) => drafts[id] ?? "",
@@ -316,6 +324,7 @@ function AppShell() {
     setActivityOpen(false);
     setTerminalOpen(false);
     setTasksOpen(false);
+    setAuditOpen(false);
   };
 
   // Leading-edge guard for conversation creation: synchronous rapid clicks on
@@ -334,6 +343,7 @@ function AppShell() {
         setActivityOpen(false);
         setTerminalOpen(false);
         setTasksOpen(false);
+        setAuditOpen(false);
       }    } finally {
       creatingInFlight.current = false;
     }
@@ -348,6 +358,7 @@ function AppShell() {
     setActivityOpen(false);
     setTerminalOpen(false);
     setTasksOpen(false);
+    setAuditOpen(false);
   };
 
   const openSettings = useCallback((section?: PaletteSettingsSection) => {
@@ -358,6 +369,7 @@ function AppShell() {
     setActivityOpen(false);
     setTerminalOpen(false);
     setTasksOpen(false);
+    setAuditOpen(false);
   }, []);
   const openLibrary = useCallback(() => {
     // A fresh entry to the library opens the list, not a previously staged edit.
@@ -368,6 +380,7 @@ function AppShell() {
     setActivityOpen(false);
     setTerminalOpen(false);
     setTasksOpen(false);
+    setAuditOpen(false);
   }, []);
   const closeLibrary = () => {
     setLibraryOpen(false);
@@ -381,6 +394,7 @@ function AppShell() {
     setActivityOpen(false);
     setTerminalOpen(false);
     setTasksOpen(false);
+    setAuditOpen(false);
   }, []);
   const closeVcs = () => {
     setVcsOpen(false);
@@ -408,6 +422,7 @@ function AppShell() {
     setVcsOpen(false);
     setTerminalOpen(false);
     setTasksOpen(false);
+    setAuditOpen(false);
   }, []);
   const closeActivity = () => {
     setActivityOpen(false);
@@ -419,9 +434,22 @@ function AppShell() {
     setVcsOpen(false);
     setActivityOpen(false);
     setTerminalOpen(false);
+    setAuditOpen(false);
   }, []);
   const closeTasks = () => {
     setTasksOpen(false);
+  };
+  const openAudit = useCallback(() => {
+    setLibraryOpen(false);
+    setSettingsOpen(false);
+    setVcsOpen(false);
+    setActivityOpen(false);
+    setTerminalOpen(false);
+    setTasksOpen(false);
+    setAuditOpen(true);
+  }, []);
+  const closeAudit = () => {
+    setAuditOpen(false);
   };
 
   // Open a prompt found by search: show the Prompt Library and open the selected
@@ -434,6 +462,7 @@ function AppShell() {
     setActivityOpen(false);
     setTerminalOpen(false);
     setTasksOpen(false);
+    setAuditOpen(false);
   };
 
   // FR-007 "Use": stage the prompt's content into the active pane's composer,
@@ -479,6 +508,7 @@ function AppShell() {
     setActivityOpen(false);
     setTerminalOpen(false);
     setTasksOpen(false);
+    setAuditOpen(false);
   }, []);
 
   // Focus the active pane's composer (palette "Focus message input"):
@@ -490,6 +520,7 @@ function AppShell() {
     setActivityOpen(false);
     setTerminalOpen(false);
     setTasksOpen(false);
+    setAuditOpen(false);
     window.setTimeout(() => {
       document
         .querySelector<HTMLTextAreaElement>(".nex-composer-input")
@@ -697,6 +728,20 @@ function AppShell() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [openTasks]);
 
+  // Code Audit shortcut (shortcut:go.audit — Ctrl+Shift+U): same guarded
+  // pattern (opens from anywhere including typing targets — the combo
+  // inserts no text — while an open dialog still owns the keyboard).
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!matchesCombo(event, COMBO_AUDIT_OPEN)) return;
+      if (document.querySelector('[role="dialog"]') !== null) return;
+      event.preventDefault();
+      openAudit();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [openAudit]);
+
   // Onboarding re-entry (palette "Replay onboarding walkthrough" + Settings
   // nav entry): overlays close first so the flow never stacks above another
   // dialog (same overlay-exit contract as closeOverlays).
@@ -729,6 +774,7 @@ function AppShell() {
       activityOpen ||
       terminalOpen ||
       tasksOpen ||
+      auditOpen ||
       paletteOpen ||
       shortcutsOpen
     ) {
@@ -750,6 +796,7 @@ function AppShell() {
     activityOpen,
     terminalOpen,
     tasksOpen,
+    auditOpen,
     paletteOpen,
     shortcutsOpen,
   ]);
@@ -768,6 +815,7 @@ function AppShell() {
           openActivity,
           openTerminal,
           openTasks,
+          openAudit,
           newConversation: () => void handleNewConversation(),
           openImport: () => setImportOpen(true),
           exportActive: exportActiveConversation,
@@ -805,6 +853,7 @@ function AppShell() {
       openActivity,
       openTerminal,
       openTasks,
+      openAudit,
       handleNewConversation,
       exportActiveConversation,
       focusComposer,
@@ -855,7 +904,13 @@ function AppShell() {
   // A prompt can only be staged when a conversation is open.
   const hasActiveConversation = activeConversation != null;
   const showOverlays =
-    libraryOpen || settingsOpen || vcsOpen || activityOpen || terminalOpen || tasksOpen;
+    libraryOpen ||
+    settingsOpen ||
+    vcsOpen ||
+    activityOpen ||
+    terminalOpen ||
+    tasksOpen ||
+    auditOpen;
   // The split grid stays mounted in zen (the secondary pane hides via
   // .nex-zen CSS, same technique as the zen chrome rules) so both
   // ConversationView instances survive entering/exiting zen. Split
@@ -969,6 +1024,8 @@ function AppShell() {
         onOpenTerminal={() => openTerminal()}
         tasksActive={tasksOpen}
         onOpenTasks={openTasks}
+        auditActive={auditOpen}
+        onOpenAudit={openAudit}
         onSelectPrompt={handleSelectPrompt}
         onImport={() => setImportOpen(true)}
         onRename={rename}
@@ -991,6 +1048,7 @@ function AppShell() {
               setActivityOpen(false);
               setTerminalOpen(false);
               setTasksOpen(false);
+              setAuditOpen(false);
             }}
             onClose={tabs.close}
             onNewConversation={() => void handleNewConversation()}
@@ -1036,6 +1094,8 @@ function AppShell() {
                 defaultProvider={providers.selectedProvider}
                 defaultModel={providers.selectedModel}
               />
+            ) : auditOpen ? (
+              <AuditPanel onClose={closeAudit} />
             ) : (
               <SettingsView
                 store={providers}

@@ -1,6 +1,7 @@
 import type { CommandError, Conversation } from "../lib/tauri";
 import type { WorkspaceStore } from "../lib/useWorkspace";
 import ActivityHealthEntry from "./ActivityHealthEntry";
+import AuditEntry from "./AuditEntry";
 import ConversationList from "./ConversationList";
 import M3RailItem from "./M3RailItem";
 import NewConversationButton from "./NewConversationButton";
@@ -43,6 +44,9 @@ export interface SidebarProps {
   /** Whether the Tasks screen is currently shown. */
   tasksActive: boolean;
   onOpenTasks: () => void;
+  /** Whether the Code Audit screen is currently shown. */
+  auditActive: boolean;
+  onOpenAudit: () => void;
   /** Open a prompt found by search in the Prompt Library editor. */
   onSelectPrompt: (promptId: number) => void;
   /** Open the import-conversation flow (FR-011). */
@@ -77,6 +81,8 @@ export default function Sidebar({
   onOpenTerminal,
   tasksActive,
   onOpenTasks,
+  auditActive,
+  onOpenAudit,
   onSelectPrompt,
   onImport,
   onRename,
@@ -130,6 +136,7 @@ export default function Sidebar({
         <ActivityHealthEntry active={activityActive} onClick={onOpenActivity} />
         <TerminalEntry active={terminalActive} onClick={onOpenTerminal} />
         <TaskEntry active={tasksActive} onClick={onOpenTasks} />
+        <AuditEntry active={auditActive} onClick={onOpenAudit} />
         <WorkspaceFolderButton store={workspace} />
         <WorkspaceRecentList store={workspace} />
         {workspace.error && (

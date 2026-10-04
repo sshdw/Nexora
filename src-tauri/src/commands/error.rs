@@ -20,6 +20,7 @@ use crate::application::import::ImportError;
 use crate::application::project_dir::ProjectDirError;
 use crate::application::prompts::PromptLibraryError;
 use crate::application::providers::ProviderError;
+use crate::application::repo_audit::RepoAuditError;
 use crate::application::search::SearchError;
 use crate::application::version_control::{CommitMessageError, VersionControlError};
 use crate::infrastructure::database::DatabaseError;
@@ -244,6 +245,23 @@ impl From<AttachmentError> for CommandError {
                 format!("invalid {field}: {reason}"),
             ),
             AttachmentError::Database(inner) => Self::from(inner),
+        }
+    }
+}
+
+impl From<RepoAuditError> for CommandError {
+    fn from(err: RepoAuditError) -> Self {
+        match err {
+            // The workspace path may contain a user name, so even the
+            // fixed text names no path.
+            RepoAuditError::InvalidRoot => Self::new(
+                ErrorKind::InvalidInput,
+                "the workspace folder is not available for audit",
+            ),
+            RepoAuditError::Io => Self::new(
+                ErrorKind::Io,
+                "the repository audit could not read the workspace",
+            ),
         }
     }
 }

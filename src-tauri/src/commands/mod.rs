@@ -24,6 +24,7 @@ pub mod flags;
 pub mod import_export;
 pub mod prompts;
 pub mod providers;
+pub mod repo_audit;
 pub mod search;
 pub mod settings;
 pub mod tasks;
