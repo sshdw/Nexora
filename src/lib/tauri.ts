@@ -1670,3 +1670,67 @@ export interface SnapshotInfo {
 export function snapshotDatabase(): Promise<SnapshotInfo> {
   return invoke<SnapshotInfo>("snapshot_database");
 }
+
+// ---- Privacy center (telemetry controls + local usage ledger) -------------
+// Three commands behind the health panel's Privacy section:
+// `privacy_status` (every egress surface with its live state + the ledger
+// aggregates), `privacy_export` (the same aggregates as copy/download JSON),
+// and `privacy_wipe` (user-confirmed delete behind `confirmed`). Payloads
+// stay snake_case like every other backend struct. There is no telemetry
+// upload anywhere: the ledger never leaves the machine except through the
+// user's own copy/download of this export.
+
+/** Live state of one egress surface. */
+export type PrivacySurfaceState = "on" | "off" | "manual" | "local";
+
+/** One egress surface: where data can leave, its live state, honest detail. */
+export interface PrivacySurface {
+  id: string;
+  title: string;
+  destination: string;
+  state: PrivacySurfaceState;
+  detail: string;
+}
+
+/** One aggregated ledger row: event kind + day bucket + count. Counts only. */
+export interface LedgerStat {
+  kind: string;
+  day: number;
+  count: number;
+}
+
+/** Privacy status: the surface inventory plus ledger aggregates. */
+export interface PrivacyStatus {
+  surfaces: PrivacySurface[];
+  stats: LedgerStat[];
+  total_events: number;
+  retention_days: number;
+  oldest_day: number | null;
+}
+
+/** Ledger export: aggregates plus metadata, shaped for copy/download. */
+export interface LedgerExport {
+  exported_at: number;
+  retention_days: number;
+  stats: LedgerStat[];
+}
+
+/** Result of a confirmed ledger wipe: how many rows were deleted. */
+export interface WipeResult {
+  deleted_rows: number;
+}
+
+/** Collect the privacy status via `privacy_status` (read-only, local). */
+export function privacyStatus(): Promise<PrivacyStatus> {
+  return invoke<PrivacyStatus>("privacy_status");
+}
+
+/** Export the ledger aggregates via `privacy_export` (counts only). */
+export function privacyExport(): Promise<LedgerExport> {
+  return invoke<LedgerExport>("privacy_export");
+}
+
+/** Wipe every ledger row via `privacy_wipe` (needs `confirmed: true`). */
+export function privacyWipe(confirmed: boolean): Promise<WipeResult> {
+  return invoke<WipeResult>("privacy_wipe", { confirmed });
+}

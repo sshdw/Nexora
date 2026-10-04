@@ -897,6 +897,34 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
       return "C:\\mock\\conversation.json";
     case "plugin:fs|read_text_file":
       return JSON.stringify({ version: 1, title: "Imported conversation" });
+    case "privacy_status": {
+      // Static DEV-ONLY mirror of the backend `privacy_status` command:
+      // surface inventory with honest states plus counts-only aggregates.
+      const day = Math.floor(Date.now() / 1000 / 86400);
+      return {
+        surfaces: [
+          { id: "provider:openai", title: "OpenAI API", destination: "api.openai.com", state: "off", detail: "no key stored — sends nothing" },
+          { id: "github_api", title: "GitHub issues / PRs / Actions", destination: "api.github.com", state: "manual", detail: "no token — unauthenticated reads on panel open only" },
+          { id: "release_check", title: "Release check", destination: "api.github.com (releases/latest)", state: "manual", detail: "button only — never automatic" },
+          { id: "crash_upload", title: "Crash upload", destination: "none", state: "off", detail: "no crash upload exists" },
+          { id: "usage_ledger", title: "Usage ledger", destination: "local SQLite (usage_ledger, 90 days)", state: "local", detail: "per-day counters only" },
+        ],
+        stats: [{ kind: "message", day, count: 3 }],
+        total_events: 3,
+        retention_days: 90,
+        oldest_day: day,
+      };
+    }
+    case "privacy_export": {
+      const day = Math.floor(Date.now() / 1000 / 86400);
+      return {
+        exported_at: Math.floor(Date.now() / 1000),
+        retention_days: 90,
+        stats: [{ kind: "message", day, count: 3 }],
+      };
+    }
+    case "privacy_wipe":
+      return { deleted_rows: 1 };
     default:
       fail(`Mock backend: unhandled command “${command}”.`);
   }

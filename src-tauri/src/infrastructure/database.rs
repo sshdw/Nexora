@@ -112,6 +112,10 @@ impl From<rusqlite::Error> for DatabaseError {
 /// - v8: the task-manager tables `agent_tasks` and `agent_task_steps` (task
 ///   manager + autonomous mode): user-defined task lists whose steps the
 ///   autonomous loop executes through the existing agent run path.
+/// - v9: the local-only usage ledger `usage_ledger` (privacy center): per-day
+///   counters of whitelisted event kinds — no content columns by construction
+///   (only the fixed `kind` vocabulary plus integer `day` / `count`), kept to
+///   the last 90 days by the recording path. There is no upload anywhere.
 pub(crate) const MIGRATIONS: &[(i64, &str)] = &[
     // v1 — base tables and functional indexes (DATABASE.md §7, §8).
     (
@@ -484,6 +488,28 @@ CREATE INDEX idx_agent_task_steps_task_seq
     ON agent_task_steps (task_id, seq);
 ",
     ),
+    // v9 — local-only usage ledger (privacy center). Counts only: the fixed
+    // `kind` vocabulary plus integer day-bucket / counter columns. There is
+    // deliberately NO text content column — titles, prompts, message bodies,
+    // URLs, and error text can never be recorded here (enforced by the
+    // schema itself, not by caller discipline). Rows older than 90 days are
+    // pruned by the recording path. Nothing on this path ever leaves the
+    // machine: the ledger is read by `privacy_status` / `privacy_export`
+    // and cleared by the user-confirmed `privacy_wipe` only.
+    (
+        9,
+        r"CREATE TABLE usage_ledger (
+    kind TEXT NOT NULL
+        CHECK (kind IN ('agent_run', 'message', 'github_read', 'update_check')),
+    day INTEGER NOT NULL CHECK (day > 0),
+    count INTEGER NOT NULL CHECK (count >= 0),
+    PRIMARY KEY (kind, day)
+);
+
+CREATE INDEX idx_usage_ledger_day
+    ON usage_ledger (day);
+",
+    ),
 ];
 
 /// Open the `SQLite` database at `path`, apply connection pragmas, and run any
@@ -704,6 +730,7 @@ mod tests {
             "permission_rules",
             "prompts",
             "providers",
+            "usage_ledger",
         ] {
             assert!(
                 schema_object_exists(&conn, table, "table"),
@@ -727,6 +754,7 @@ mod tests {
             "idx_conversations_status_updated",
             "idx_messages_conversation_created",
             "idx_providers_name",
+            "idx_usage_ledger_day",
         ] {
             assert!(
                 schema_object_exists(&conn, index, "index"),
@@ -752,14 +780,14 @@ mod tests {
             );
         }
 
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
     }
 
     #[test]
     fn migration_state_is_recorded_correctly() {
         let conn = in_memory_migrated();
 
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
 
         let applied_at: i64 = conn
             .query_row(
@@ -773,17 +801,17 @@ mod tests {
         let version_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .expect("count schema_version rows");
-        assert_eq!(version_count, 8, "one row per applied migration");
+        assert_eq!(version_count, 9, "one row per applied migration");
     }
 
     #[test]
     fn re_running_migrations_is_a_no_op() {
         let mut conn = in_memory_migrated();
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
 
         migrate(&mut conn).expect("a second migration run must succeed");
 
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
         // The no-op run created or dropped nothing.
         assert!(schema_object_exists(&conn, "conversations", "table"));
         assert!(schema_object_exists(&conn, "conversations_fts", "table"));
@@ -812,7 +840,7 @@ mod tests {
             !schema_object_exists(&conn, "partial_table", "table"),
             "the valid part of the failed migration must roll back"
         );
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
     }
 
     #[test]
@@ -1422,7 +1450,7 @@ mod tests {
         // Migrate to v5 (and any later)
         migrate(&mut conn).expect("migrate to v5");
         // Schema version is 5
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
         // Row preserved, new columns NULL for pre-v5 rows
         let (status, spent, limit): (String, Option<i64>, Option<i64>) = conn
             .query_row(
@@ -1510,7 +1538,7 @@ mod tests {
         )
         .expect("seed message");
         migrate(&mut conn).expect("migrate to v6");
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
         // Seeded row survives with a NULL workspace root.
         let root: Option<String> = conn
             .query_row(
@@ -1585,7 +1613,7 @@ mod tests {
         // Build a v6-only DB (mirrors the v5 test), then migrate to v7.
         let (mut conn, run_id) = v6_database_with_run_and_step();
         migrate(&mut conn).expect("migrate to v7");
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
         // Old rows intact with NULL provenance.
         let (kind, rule_id, group_key, decided_by): (
             String,

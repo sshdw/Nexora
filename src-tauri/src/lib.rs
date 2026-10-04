@@ -142,6 +142,9 @@ pub fn run() {
             commands::system::diagnostics_bundle,
             commands::system::update_check,
             commands::system::snapshot_database,
+            commands::privacy::privacy_status,
+            commands::privacy::privacy_export,
+            commands::privacy::privacy_wipe,
         ])
         .setup(|app| {
             // Locate the per-user application data directory and ensure it

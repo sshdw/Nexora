@@ -19,6 +19,7 @@ use crate::application::execution::RequestError;
 use crate::application::export::ExportError;
 use crate::application::github::GitHubError;
 use crate::application::import::ImportError;
+use crate::application::privacy::PrivacyError;
 use crate::application::project_dir::ProjectDirError;
 use crate::application::prompts::PromptLibraryError;
 use crate::application::providers::ProviderError;
@@ -290,6 +291,28 @@ impl From<SystemError> for CommandError {
                 ErrorKind::Io,
                 "the pre-update snapshot could not be written",
             ),
+        }
+    }
+}
+
+impl From<PrivacyError> for CommandError {
+    fn from(err: PrivacyError) -> Self {
+        match err {
+            // The curated database text names no SQL and no stored value;
+            // the raw detail stays in the server log only.
+            PrivacyError::Database(inner) => Self::from(inner),
+            // The destructive-action confirmation pattern, like the
+            // refactor apply and data management (never the raw backend
+            // text).
+            PrivacyError::Unconfirmed => Self::new(
+                ErrorKind::ConfirmationRequired,
+                "explicit confirmation is required before the ledger can be wiped",
+            ),
+            // Recording outside the fixed kind vocabulary is a caller bug,
+            // never user input: fixed text, no kind echoed.
+            PrivacyError::UnknownKind => {
+                Self::new(ErrorKind::InvalidInput, "unknown ledger event kind")
+            }
         }
     }
 }
