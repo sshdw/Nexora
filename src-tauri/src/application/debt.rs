@@ -12,14 +12,27 @@
 //! The slice deliberately reuses the existing scanners where cheap: each
 //! [`AuditFinding`] maps onto one debt row whose `audit_key` is
 //! `kind<US>path<US>line` (`<US>` = U+001F, unusable in file names on the
-//! supported platforms, so distinct findings never share a key). The key
-//! column is `UNIQUE`, and the repository inserts with `INSERT OR IGNORE` —
-//! re-running the import over unchanged sources inserts nothing new. Status
-//! changes on already-imported rows survive re-imports (the ignore path
-//! never touches existing rows). There is no watching or live re-audit: the
-//! frontend runs the import manually, exactly like the audit panel's Run.
+//! supported platforms, so distinct findings never share a key) — with one
+//! refinement: [`AuditFinding`] carries no column/offset, so two distinct
+//! findings of the same kind can share one line. The import counts
+//! occurrences per `(kind, path, line)` in report order and appends
+//! `<US>occurrence` to the second and later rows sharing a key; the first
+//! keeps the legacy three-segment key so rows imported before the
+//! discriminator stay idempotent across upgrades. The key column is `UNIQUE`,
+//! and the repository inserts with `INSERT OR IGNORE` — re-running the import
+//! over unchanged sources inserts nothing new. Status changes on
+//! already-imported rows survive re-imports (the ignore path never touches
+//! existing rows). Findings whose key or location would exceed the length caps
+//! are skipped rather than truncated into a possible collision, and the
+//! import reports that skipped count alongside the inserted count (so the UI
+//! can tell "already tracked" apart from "dropped as unimportable"). There is
+//! no watching or live re-audit: the frontend runs the import manually,
+//! exactly like the audit panel's Run.
 
+use std::collections::HashMap;
 use std::path::Path;
+
+use serde::Serialize;
 
 use crate::application::repo_audit::{audit_workspace, AuditFinding, RepoAuditError};
 use crate::infrastructure::database::{Database, DatabaseError};
@@ -39,8 +52,9 @@ const MAX_LOCATION_CHARS: usize = 1024;
 const MAX_NOTE_CHARS: usize = 4000;
 
 /// Longest stored import key in characters (mirrors the schema CHECK). The
-/// key is `kind<US>path<US>line`; workspace-relative paths beyond this make
-/// the row unimportable rather than silently colliding after truncation.
+/// key is `kind<US>path<US>line` (plus `<US>occurrence` for the second and
+/// later same-key findings); workspace-relative paths beyond this make the
+/// row unimportable rather than silently colliding after truncation.
 const MAX_AUDIT_KEY_CHARS: usize = 2048;
 
 /// Field separator inside `audit_key` (U+001F UNIT SEPARATOR): unusable in
@@ -73,6 +87,20 @@ pub(crate) const STATUS_WONT_FIX: &str = "wontfix";
 /// Every accepted status, in lifecycle order.
 pub(crate) const STATUSES: [&str; 4] =
     [STATUS_OPEN, STATUS_ACCEPTED, STATUS_FIXED, STATUS_WONT_FIX];
+
+/// Outcome of one audit import: rows newly inserted plus findings skipped
+/// as unimportable (overlong location or key — never truncated into a
+/// possible collision). Findings already tracked are neither: re-runs ignore
+/// their keys without touching triaged rows, so `inserted == 0 && skipped
+/// == 0` means "already tracked", while `skipped > 0` means rows were
+/// dropped as unimportable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(crate) struct ImportSummary {
+    /// Rows newly inserted by this import (0 when everything was already tracked).
+    pub inserted: usize,
+    /// Findings skipped as unimportable (0 on the healthy path).
+    pub skipped: usize,
+}
 
 /// Application-layer service managing the technical-debt backlog.
 ///
@@ -160,18 +188,35 @@ impl<'a> DebtService<'a> {
     /// survive re-imports); findings whose key would exceed the length cap
     /// are skipped rather than truncated into a possible collision.
     ///
-    /// Returns the number of newly inserted rows (0 when everything was
-    /// already tracked).
+    /// Two distinct findings of the same kind can share one line (no
+    /// column/offset on [`AuditFinding`]): the second and later rows sharing
+    /// a key carry a `<US>occurrence` suffix, so no finding is silently
+    /// swallowed by `INSERT OR IGNORE`.
+    ///
+    /// Returns the [`ImportSummary`] for the run: newly inserted rows plus
+    /// rows skipped as unimportable (`inserted == 0 && skipped == 0` when
+    /// everything was already tracked).
     ///
     /// # Errors
     ///
     /// Returns [`DebtError::Audit`] when the workspace scan fails, or
     /// [`DebtError::Database`] when an insert fails.
-    pub(crate) fn import_from_audit(&self, root: &Path) -> Result<usize> {
+    pub(crate) fn import_from_audit(&self, root: &Path) -> Result<ImportSummary> {
         let report = audit_workspace(root).map_err(DebtError::Audit)?;
-        let mut inserted = 0;
+        let mut summary = ImportSummary {
+            inserted: 0,
+            skipped: 0,
+        };
+        // Findings arrive sorted by `(path, line, kind)`, so same-key
+        // findings are adjacent and these counts are deterministic run to
+        // run over unchanged sources.
+        let mut occurrences: HashMap<(&str, &str, usize), usize> = HashMap::new();
         for finding in &report.findings {
-            let Some((title, location, note, key)) = import_row(finding) else {
+            let group = (finding.kind.as_str(), finding.path.as_str(), finding.line);
+            let occurrence = occurrences.get(&group).copied().unwrap_or(0);
+            occurrences.insert(group, occurrence + 1);
+            let Some((title, location, note, key)) = import_row(finding, occurrence) else {
+                summary.skipped += 1;
                 continue;
             };
             if self.items.insert_import(
@@ -181,10 +226,10 @@ impl<'a> DebtService<'a> {
                 Some(&note),
                 &key,
             )? {
-                inserted += 1;
+                summary.inserted += 1;
             }
         }
-        Ok(inserted)
+        Ok(summary)
     }
 }
 
@@ -318,17 +363,32 @@ fn truncate_chars(text: &str, max: usize) -> String {
 /// Map one audit finding onto an importable debt row
 /// `(title, location, note, audit_key)`, or `None` when the finding's key
 /// would exceed the length cap (skipped rather than truncated into a
-/// possible collision — the import reports only inserted rows, so a skipped
-/// overlong key simply never appears).
-fn import_row(finding: &AuditFinding) -> Option<(String, String, String, String)> {
+/// possible collision — the import counts it in
+/// [`ImportSummary::skipped`]).
+///
+/// `occurrence` is the finding's zero-based index within its
+/// `(kind, path, line)` group in report order: `0` keeps the legacy
+/// `kind<US>path<US>line` key, later rows append `<US>occurrence` so two
+/// distinct same-line findings never share a key.
+fn import_row(
+    finding: &AuditFinding,
+    occurrence: usize,
+) -> Option<(String, String, String, String)> {
     let location = format!("{}:{}", finding.path, finding.line);
     if location.chars().count() > MAX_LOCATION_CHARS {
         return None;
     }
-    let key = format!(
-        "{}{KEY_SEPARATOR}{}{KEY_SEPARATOR}{}",
-        finding.kind, finding.path, finding.line
-    );
+    let key = if occurrence == 0 {
+        format!(
+            "{}{KEY_SEPARATOR}{}{KEY_SEPARATOR}{}",
+            finding.kind, finding.path, finding.line
+        )
+    } else {
+        format!(
+            "{}{KEY_SEPARATOR}{}{KEY_SEPARATOR}{}{KEY_SEPARATOR}{occurrence}",
+            finding.kind, finding.path, finding.line
+        )
+    };
     if key.chars().count() > MAX_AUDIT_KEY_CHARS {
         return None;
     }
@@ -458,11 +518,15 @@ mod tests {
 
         let first = debt.import_from_audit(&root).expect("first import");
         assert!(
-            first > 0,
+            first.inserted > 0,
             "the TODO fixture must surface at least one finding"
         );
+        assert_eq!(
+            first.skipped, 0,
+            "the small fixture must import without unimportable rows"
+        );
         let rows = debt.list().expect("list");
-        assert_eq!(rows.len(), first);
+        assert_eq!(rows.len(), first.inserted);
         assert!(
             rows.iter()
                 .all(|row| row.source == SOURCE_AUDIT && row.status == STATUS_OPEN),
@@ -479,13 +543,92 @@ mod tests {
         debt.update_status(triaged, STATUS_ACCEPTED)
             .expect("triage");
         let second = debt.import_from_audit(&root).expect("second import");
-        assert_eq!(second, 0, "re-run over unchanged sources inserts nothing");
+        assert_eq!(
+            second.inserted, 0,
+            "re-run over unchanged sources inserts nothing"
+        );
+        assert_eq!(second.skipped, 0, "re-run skips nothing as unimportable");
         let rows = debt.list().expect("list");
-        assert_eq!(rows.len(), first, "no duplicates on re-run");
+        assert_eq!(rows.len(), first.inserted, "no duplicates on re-run");
         let kept = rows.iter().find(|row| row.id == triaged).expect("row kept");
         assert_eq!(kept.status, STATUS_ACCEPTED, "triage survives re-import");
 
         std::fs::remove_dir_all(&root).expect("clear workspace");
+    }
+
+    #[test]
+    fn import_row_discriminates_same_line_findings_without_breaking_legacy_keys() {
+        let first_finding = AuditFinding {
+            kind: "todo".to_string(),
+            severity: SEVERITY_INFO.to_string(),
+            path: "src/a.rs".to_string(),
+            line: 7,
+            excerpt: "TODO one".to_string(),
+        };
+        let second_finding = AuditFinding {
+            excerpt: "TODO two".to_string(),
+            ..first_finding.clone()
+        };
+        let (_, _, _, first_key) = import_row(&first_finding, 0).expect("first importable");
+        assert_eq!(
+            first_key,
+            format!("todo{KEY_SEPARATOR}src/a.rs{KEY_SEPARATOR}7"),
+            "occurrence 0 keeps the legacy key so pre-discriminator rows stay idempotent"
+        );
+        let (_, _, _, second_key) = import_row(&second_finding, 1).expect("second importable");
+        assert_ne!(
+            first_key, second_key,
+            "the second same-line finding must not share the first finding's key"
+        );
+    }
+
+    #[test]
+    fn import_row_skips_overlong_locations_as_unimportable() {
+        let finding = AuditFinding {
+            kind: "todo".to_string(),
+            severity: SEVERITY_INFO.to_string(),
+            path: "p".repeat(MAX_LOCATION_CHARS),
+            line: 1,
+            excerpt: "TODO".to_string(),
+        };
+        assert!(
+            import_row(&finding, 0).is_none(),
+            "overlong locations must be skipped, never truncated into a collision"
+        );
+    }
+
+    #[test]
+    fn same_line_findings_import_as_distinct_rows() {
+        let db = in_memory_database();
+        let debt = service(&db);
+        let base = AuditFinding {
+            kind: "todo".to_string(),
+            severity: SEVERITY_INFO.to_string(),
+            path: "src/a.rs".to_string(),
+            line: 7,
+            excerpt: "TODO one".to_string(),
+        };
+        let other = AuditFinding {
+            excerpt: "TODO two".to_string(),
+            ..base.clone()
+        };
+        for (occurrence, finding) in [base, other].iter().enumerate() {
+            let (title, location, note, key) =
+                import_row(finding, occurrence).expect("both importable");
+            assert!(
+                debt.items
+                    .insert_import(
+                        &title,
+                        &finding.severity,
+                        Some(&location),
+                        Some(&note),
+                        &key
+                    )
+                    .expect("insert"),
+                "same-line finding {occurrence} must insert its own row"
+            );
+        }
+        assert_eq!(debt.list().expect("list").len(), 2);
     }
 
     #[test]

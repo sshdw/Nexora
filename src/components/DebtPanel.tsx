@@ -13,8 +13,10 @@
 //! Display rules (secret-free): sources, severities, and statuses render as
 //! fixed-vocabulary catalog labels (unknown tokens echo defensively); rows
 //! show the stored `location` (`path:line` for imports) plus the stored note
-//! (the capped scanner excerpt for imports — at most 3 lines, never full
-//! files); counts interpolate through the catalog. The panel never animates
+//! rendered in full with no line clamping (imports carry the capped scanner
+//! excerpt — at most 3 lines, never full files — but hand-added notes run up
+//! to 4000 chars and render unclamped); counts interpolate through the
+//! catalog. The panel never animates
 //! on entry (instant render under reduced motion); all visuals ride the
 //! shared panel/tag primitives — zero new CSS, zero raw values.
 
@@ -136,9 +138,15 @@ export default function DebtPanel({ onClose }: DebtPanelProps) {
     setError(null);
     setImportNotice(null);
     try {
-      const inserted = await importDebtFromAudit();
+      const result = await importDebtFromAudit();
+      const base =
+        result.inserted > 0
+          ? t("debt.imported", { n: result.inserted })
+          : t("debt.importedNone");
       setImportNotice(
-        inserted > 0 ? t("debt.imported", { n: inserted }) : t("debt.importedNone"),
+        result.skipped > 0
+          ? `${base} ${t("debt.importSkipped", { n: result.skipped })}`
+          : base,
       );
       setItems(await listDebtItems());
     } catch (err) {

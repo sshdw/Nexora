@@ -1728,10 +1728,17 @@ export function deleteDebtItem(debtId: number): Promise<void> {
   return invoke<void>("delete_debt_item", { debtId });
 }
 
-/** Import current audit findings as debt rows. Returns the number of newly
- * inserted rows (0 when everything was already tracked). */
-export function importDebtFromAudit(): Promise<number> {
-  return invoke<number>("import_debt_from_audit");
+/** Outcome of one audit import: newly inserted rows plus rows skipped as
+ * unimportable (`inserted == 0 && skipped == 0` means already tracked). */
+export interface DebtImportResult {
+  inserted: number;
+  skipped: number;
+}
+
+/** Import current audit findings as debt rows. Returns inserted + skipped
+ * counts (0 + 0 when everything was already tracked). */
+export function importDebtFromAudit(): Promise<DebtImportResult> {
+  return invoke<DebtImportResult>("import_debt_from_audit");
 }
 
 // ---- Diagnostics / update check / pre-update snapshot ---------------------

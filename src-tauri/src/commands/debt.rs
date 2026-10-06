@@ -13,8 +13,9 @@
 //! lifecycle; `delete_debt_item` removes one row; `import_debt_from_audit`
 //! runs the read-only audit over the effective workspace root (exactly like
 //! `repo_audit`) and inserts fresh findings as rows, skipping keys it already
-//! imported. There is no watching or live re-import: the panel runs the
-//! import manually, and re-runs insert nothing new.
+//! imported and reporting unimportable rows in the returned summary. There is
+//! no watching or live re-import: the panel runs the import manually, and
+//! re-runs insert nothing new.
 
 // Tauri command handlers must take ownership of their deserialized
 // arguments: serde cannot borrow into the wire payload, so passing by
@@ -24,7 +25,7 @@
 
 use tauri::{AppHandle, State};
 
-use crate::application::debt::{DebtError, DebtService};
+use crate::application::debt::{DebtError, DebtService, ImportSummary};
 use crate::application::repo_audit::RepoAuditError;
 use crate::application::workspace::resolve_workspace_root;
 use crate::infrastructure::database::Database;
@@ -82,12 +83,13 @@ pub(crate) fn delete_debt_item(debt_id: i64, db: State<'_, Database>) -> Result<
 /// Import the current `repo_audit` scanner findings over the effective
 /// workspace root as debt rows. Findings already imported are skipped, so
 /// re-running inserts nothing new and never touches triaged rows. Returns
-/// the number of newly inserted rows.
+/// the [`ImportSummary`] for the run: newly inserted rows plus rows skipped
+/// as unimportable (`inserted == 0 && skipped == 0` means already tracked).
 #[tauri::command]
 pub(crate) fn import_debt_from_audit(
     app: AppHandle,
     db: State<'_, Database>,
-) -> Result<usize, CommandError> {
+) -> Result<ImportSummary, CommandError> {
     let fallback = default_root(&app)?;
     let root = resolve_workspace_root(db.inner(), &fallback);
     DebtService::new(db.inner())
