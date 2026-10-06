@@ -10,16 +10,21 @@ import { useCallback, useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 
 import {
+  acquireTaskLock,
   createTask,
   deleteTask,
+  heartbeatTaskLock,
   listTaskSteps,
   listTasks,
+  moveTask,
+  releaseTaskLock,
   startTaskRun,
   stopTaskRun,
   updateTask,
   type AgentTask,
   type AgentTaskEventPayload,
   type AgentTaskStep,
+  type TaskLock,
 } from "./tauri";
 
 /** One task with its steps as rendered by the TaskPanel. */
@@ -45,6 +50,21 @@ export interface TasksStore {
   remove: (taskId: number) => Promise<boolean>;
   start: (taskId: number) => Promise<boolean>;
   stop: (taskId: number) => Promise<boolean>;
+  /** Acquire the kanban edit lock (surfaces the backend `conflict` error
+   * with holder + deadline when another surface holds the task). */
+  acquireLock: (taskId: number, holder: string) => Promise<TaskLock | null>;
+  /** Release a held lock (best-effort — a wrong token reports failure). */
+  releaseLock: (taskId: number, token: string) => Promise<boolean>;
+  /** Refresh a live lock's deadline (never resurrects dead locks). */
+  heartbeatLock: (taskId: number, token: string) => Promise<TaskLock | null>;
+  /** Lock-guarded kanban move: acquire → move → release, then reload. A
+   * stale/invalid token or a `conflict` denial reports failure; the message
+   * carries the honest backend text (holder + deadline on conflict). */
+  move: (
+    taskId: number,
+    status: "pending" | "completed" | "failed" | "cancelled",
+    holder: string,
+  ) => Promise<{ ok: boolean; message: string | null }>;
 }
 
 function toMessage(error: unknown): string {
@@ -200,5 +220,73 @@ export function useTasks(): TasksStore {
     [reload],
   );
 
-  return { tasks, loading, error, reload, create, update, remove, start, stop };
+  const acquireLock = useCallback(
+    async (taskId: number, holder: string): Promise<TaskLock | null> => {
+      try {
+        return await acquireTaskLock(taskId, holder);
+      } catch (e) {
+        setError(toMessage(e));
+        return null;
+      }
+    },
+    [],
+  );
+
+  const releaseLock = useCallback(async (taskId: number, token: string): Promise<boolean> => {
+    try {
+      await releaseTaskLock(taskId, token);
+      return true;
+    } catch (e) {
+      setError(toMessage(e));
+      return false;
+    }
+  }, []);
+
+  const heartbeatLock = useCallback(
+    async (taskId: number, token: string): Promise<TaskLock | null> => {
+      try {
+        return await heartbeatTaskLock(taskId, token);
+      } catch (e) {
+        setError(toMessage(e));
+        return null;
+      }
+    },
+    [],
+  );
+
+  const move = useCallback(
+    async (
+      taskId: number,
+      status: "pending" | "completed" | "failed" | "cancelled",
+      holder: string,
+    ): Promise<{ ok: boolean; message: string | null }> => {
+      let token: string | null = null;
+      try {
+        const lock = await acquireTaskLock(taskId, holder);
+        token = lock.token;
+        await moveTask(taskId, status, lock.token);
+        await reload();
+        return { ok: true, message: null };
+      } catch (e) {
+        const message = toMessage(e);
+        setError(message);
+        return { ok: false, message };
+      } finally {
+        // Best-effort release: the lock expires on its own (120s default)
+        // when the release itself fails, so a dropped surface never holds
+        // a task forever. A stolen token's release fails honestly and is
+        // swallowed here — the result already carries the move outcome.
+        if (token !== null) {
+          try {
+            await releaseTaskLock(taskId, token);
+          } catch {
+            // Swallowed: expiry bounds the leftover lock.
+          }
+        }
+      }
+    },
+    [reload],
+  );
+
+  return { tasks, loading, error, reload, create, update, remove, start, stop, acquireLock, releaseLock, heartbeatLock, move };
 }

@@ -18,6 +18,7 @@ import "./styles/activityHealth.css";
 import "./styles/palette.css";
 import "./styles/shortcuts.css";
 import "./styles/onboarding.css";
+import "./styles/tasks.css";
 
 // DEV-ONLY visual-QA hook: with ?mock in the URL (dev builds only), install
 // the in-memory IPC stand-in from src/lib/mockBackend.ts before mounting so

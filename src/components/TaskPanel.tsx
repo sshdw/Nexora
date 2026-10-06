@@ -20,7 +20,9 @@ import { useCallback, useState } from "react";
 import { useTasks, type TaskView } from "../lib/useTasks";
 import type { AgentTask, AgentTaskStep } from "../lib/tauri";
 import { useStrings, type Strings } from "../lib/useLocale";
+import KanbanBoard from "./KanbanBoard";
 import M3Button from "./M3Button";
+import M3SegmentedGroup from "./M3SegmentedGroup";
 import M3LoadingIndicator from "./M3LoadingIndicator";
 
 export interface TaskPanelProps {
@@ -98,6 +100,7 @@ function parseSteps(text: string): string[] {
 export default function TaskPanel({ onClose, defaultProvider, defaultModel }: TaskPanelProps) {
   const { t } = useStrings();
   const store = useTasks();
+  const [view, setView] = useState<"list" | "board">("list");
   const [formOpen, setFormOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<TaskFormState>(() => blankForm(defaultProvider, defaultModel));
@@ -219,15 +222,30 @@ export default function TaskPanel({ onClose, defaultProvider, defaultModel }: Ta
           <p className="nex-vcs-subtitle">{t("task.subtitle")}</p>
         </div>
         <div className="nex-vcs-header-actions">
-          <M3Button variant="quiet" onClick={openCreate}>
-            {t("task.new")}
-          </M3Button>
+          <M3SegmentedGroup
+            label={t("kanban.viewLabel")}
+            semantics="tabs"
+            value={view}
+            onChange={setView}
+            options={[
+              { value: "list", label: t("kanban.list") },
+              { value: "board", label: t("kanban.board") },
+            ]}
+          />
+          {view === "list" && (
+            <M3Button variant="quiet" onClick={openCreate}>
+              {t("task.new")}
+            </M3Button>
+          )}
           <M3Button variant="quiet" onClick={onClose}>
             {t("common.backToConversations")}
           </M3Button>
         </div>
       </header>
 
+      {view === "board" ? (
+        <KanbanBoard store={store} />
+      ) : (
       <div className="nex-term-body">
         {store.error && (
           <div className="nex-composer-error nex-fade-in" role="alert">
@@ -419,6 +437,7 @@ export default function TaskPanel({ onClose, defaultProvider, defaultModel }: Ta
           })
         )}
       </div>
+      )}
     </div>
   );
 }

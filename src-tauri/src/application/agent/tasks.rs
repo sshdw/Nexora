@@ -51,7 +51,7 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
@@ -63,7 +63,7 @@ use crate::application::execution::ProviderExecutor;
 use crate::infrastructure::database::{Database, DatabaseError};
 use crate::infrastructure::repository::agent_runs::AgentRunRepository;
 use crate::infrastructure::repository::agent_tasks::{
-    AgentTask, AgentTaskRepository, AgentTaskStep,
+    AgentTask, AgentTaskRepository, AgentTaskStep, LockAcquireOutcome, TaskLock,
 };
 
 // ---------------------------------------------------------------------------
@@ -113,6 +113,31 @@ const TASK_LOOP_DEADLINE: Duration = Duration::from_mins(30);
 /// against a user `extend_steps` landing just as the run parks; requiring a
 /// short streak keeps the loop honest without hanging on a true park.
 const PARK_CONFIRM_POLLS: u32 = 3;
+
+// ---------------------------------------------------------------------------
+// Kanban edit locks (P2 kanban+locks)
+// ---------------------------------------------------------------------------
+
+/// Default lock time-to-live in seconds. Every lock carries a deadline (the
+/// v11 `CHECK (expires_at > acquired_at)`); the default keeps a forgotten
+/// lock to two minutes, never forever (NEX-AGENT-004 lesson).
+pub(crate) const TASK_LOCK_TTL_SECS: i64 = 120;
+
+/// Shortest accepted lock TTL in seconds (heartbeats stay meaningful; a
+/// sub-10s lock would expire before the UI can use it).
+pub(crate) const TASK_LOCK_TTL_MIN_SECS: i64 = 10;
+
+/// Longest accepted lock TTL in seconds (ten minutes caps how long a crashed
+/// surface can block a task; steal-on-expiry always bounds the wait).
+pub(crate) const TASK_LOCK_TTL_MAX_SECS: i64 = 600;
+
+/// Longest accepted lock holder label (v11 `CHECK (length(holder) <= 64)`).
+pub(crate) const TASK_LOCK_HOLDER_MAX_LEN: usize = 64;
+
+/// Kanban-move vocabulary: the statuses a lock-guarded move may set. The
+/// loop owns `'running'` (enter it only through `start_task_run`), so the
+/// board never writes it — moving a running task is rejected outright.
+const KANBAN_MOVE_STATUSES: [&str; 4] = ["pending", "completed", "failed", "cancelled"];
 
 // ---------------------------------------------------------------------------
 // Events (`agent-task-event` frames)
@@ -184,6 +209,23 @@ pub(crate) enum TaskError {
         /// Fixed-vocabulary reason.
         message: String,
     },
+    /// A live edit lock by another holder blocks the acquisition. Carries
+    /// only the task id, the holder label, and the deadline (Unix seconds)
+    /// so the UI can report who holds the task and when the lock lapses.
+    LockHeld {
+        /// The contested task id.
+        task_id: i64,
+        /// The holder label on the live lock row.
+        holder: String,
+        /// The live row's deadline (Unix seconds).
+        expires_at: i64,
+    },
+    /// The presented lock proof failed: no lock row, a token mismatch, or an
+    /// expired row (fixed-vocabulary message — never the stored token).
+    InvalidLock {
+        /// What was wrong (fixed vocabulary, never caller content).
+        message: String,
+    },
     /// Persistence failed.
     Database(DatabaseError),
 }
@@ -195,8 +237,17 @@ impl std::fmt::Display for TaskError {
             Self::AlreadyRunning { task_id } => {
                 write!(f, "task {task_id} already has an active run")
             }
-            Self::InvalidInput { message } | Self::RunStart { message } => {
+            Self::InvalidInput { message }
+            | Self::RunStart { message }
+            | Self::InvalidLock { message } => {
                 write!(f, "{message}")
+            }
+            Self::LockHeld {
+                task_id,
+                holder,
+                expires_at,
+            } => {
+                write!(f, "task {task_id} is locked by {holder} until {expires_at}")
             }
             Self::Database(err) => write!(f, "task persistence failed: {err}"),
         }
@@ -517,6 +568,180 @@ impl<'a> TaskService<'a> {
             .delete_task(id)
             .map_err(TaskError::Database)
     }
+
+    /// Validate a lock holder label (non-empty after trimming, within the
+    /// v11 bound).
+    fn validate_holder(holder: &str) -> Result<String, TaskError> {
+        let trimmed = holder.trim().to_string();
+        if trimmed.is_empty() || trimmed.chars().count() > TASK_LOCK_HOLDER_MAX_LEN {
+            return Err(TaskError::InvalidInput {
+                message: "the lock holder must be 1..64 characters".to_string(),
+            });
+        }
+        Ok(trimmed)
+    }
+
+    /// Resolve the effective lock TTL: explicit values must land in
+    /// `10..=600` seconds; absent means the 120s default. There is no path
+    /// to a lock without a deadline.
+    fn resolve_lock_ttl(ttl_secs: Option<i64>) -> Result<i64, TaskError> {
+        match ttl_secs {
+            None => Ok(TASK_LOCK_TTL_SECS),
+            Some(ttl) if (TASK_LOCK_TTL_MIN_SECS..=TASK_LOCK_TTL_MAX_SECS).contains(&ttl) => {
+                Ok(ttl)
+            }
+            Some(_) => Err(TaskError::InvalidInput {
+                message: "the lock TTL must be 10..600 seconds".to_string(),
+            }),
+        }
+    }
+
+    /// Acquire the kanban edit lock for `task_id` with a deadline of
+    /// `now + ttl`. Returns the lock row (its token is the proof a later
+    /// `move_task` / `release_lock` / `heartbeat_lock` must present).
+    ///
+    /// A live lock by another holder is denied with [`TaskError::LockHeld`]
+    /// (holder + deadline attached); an expired row is stolen.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TaskError::TaskNotFound`] for unknown ids,
+    /// [`TaskError::InvalidInput`] for out-of-bounds holders or TTLs, and
+    /// [`TaskError::LockHeld`] on contention; propagates [`DatabaseError`]
+    /// on write failure.
+    pub(crate) fn acquire_lock(
+        &self,
+        task_id: i64,
+        holder: &str,
+        ttl_secs: Option<i64>,
+    ) -> Result<TaskLock, TaskError> {
+        self.read_task(task_id)?;
+        let holder = Self::validate_holder(holder)?;
+        let ttl = Self::resolve_lock_ttl(ttl_secs)?;
+        let now = now_secs();
+        let token = mint_lock_token(task_id, &holder, now);
+        match AgentTaskRepository::new(self.db)
+            .acquire_task_lock(task_id, &holder, &token, now, now + ttl)
+            .map_err(TaskError::Database)?
+        {
+            LockAcquireOutcome::Acquired(lock) => Ok(lock),
+            LockAcquireOutcome::Denied(live) => Err(TaskError::LockHeld {
+                task_id,
+                holder: live.holder,
+                expires_at: live.expires_at,
+            }),
+        }
+    }
+
+    /// Release the edit lock for `task_id`. The presented token must match
+    /// the stored row exactly; a missing row or a mismatch fails with
+    /// [`TaskError::InvalidLock`] (fixed vocabulary — the stored token is
+    /// never echoed).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TaskError::TaskNotFound`] for unknown ids and
+    /// [`TaskError::InvalidLock`] for a missing/mismatched lock; propagates
+    /// [`DatabaseError`] on write failure.
+    pub(crate) fn release_lock(&self, task_id: i64, token: &str) -> Result<(), TaskError> {
+        self.read_task(task_id)?;
+        let repo = AgentTaskRepository::new(self.db);
+        let Some(lock) = repo.read_lock(task_id).map_err(TaskError::Database)? else {
+            return Err(TaskError::InvalidLock {
+                message: "the task has no active lock".to_string(),
+            });
+        };
+        if lock.token != token {
+            return Err(TaskError::InvalidLock {
+                message: "the lock token does not match".to_string(),
+            });
+        }
+        repo.delete_lock(task_id).map_err(TaskError::Database)
+    }
+
+    /// Extend a live lock's deadline by a fresh TTL (heartbeat). Only the
+    /// matching, still-valid token extends; a missing row, a mismatch, or an
+    /// already-expired row fails — heartbeats never resurrect dead locks.
+    /// Returns the refreshed row.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TaskError::TaskNotFound`] for unknown ids,
+    /// [`TaskError::InvalidInput`] for out-of-bounds TTLs, and
+    /// [`TaskError::InvalidLock`] when there is nothing live to extend;
+    /// propagates [`DatabaseError`] on write failure.
+    pub(crate) fn heartbeat_lock(
+        &self,
+        task_id: i64,
+        token: &str,
+        ttl_secs: Option<i64>,
+    ) -> Result<TaskLock, TaskError> {
+        self.read_task(task_id)?;
+        let ttl = Self::resolve_lock_ttl(ttl_secs)?;
+        let now = now_secs();
+        let repo = AgentTaskRepository::new(self.db);
+        let extended = repo
+            .extend_lock_expiry(task_id, token, now, now + ttl)
+            .map_err(TaskError::Database)?;
+        if !extended {
+            return Err(TaskError::InvalidLock {
+                message: "the lock is missing, mismatched, or expired".to_string(),
+            });
+        }
+        repo.read_lock(task_id)
+            .map_err(TaskError::Database)?
+            .ok_or(TaskError::InvalidLock {
+                message: "the lock is missing, mismatched, or expired".to_string(),
+            })
+    }
+
+    /// Move a task to a kanban status, guarded by a live lock token. The
+    /// token must match the stored row and be unexpired; stale, mismatched,
+    /// or missing locks fail with [`TaskError::InvalidLock`] and change
+    /// nothing. `'running'` is never a legal move target (the autonomous
+    /// loop owns it — start runs through `start_task_run`), and a task the
+    /// loop currently owns cannot be moved at all.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TaskError::TaskNotFound`] for unknown ids,
+    /// [`TaskError::InvalidInput`] for an illegal status or for a task the
+    /// loop owns, and [`TaskError::InvalidLock`] for a missing/stale token;
+    /// propagates [`DatabaseError`] on write failure.
+    pub(crate) fn move_task(
+        &self,
+        task_id: i64,
+        status: &str,
+        token: &str,
+    ) -> Result<(), TaskError> {
+        if !KANBAN_MOVE_STATUSES.contains(&status) {
+            return Err(TaskError::InvalidInput {
+                message: "the kanban status must be pending, completed, failed, or cancelled"
+                    .to_string(),
+            });
+        }
+        let task = self.read_task(task_id)?;
+        if task.status == "running" {
+            return Err(TaskError::InvalidInput {
+                message: "a running task is owned by the autonomous loop — stop it first"
+                    .to_string(),
+            });
+        }
+        let now = now_secs();
+        let repo = AgentTaskRepository::new(self.db);
+        let Some(lock) = repo.read_lock(task_id).map_err(TaskError::Database)? else {
+            return Err(TaskError::InvalidLock {
+                message: "the task has no active lock — acquire one before moving".to_string(),
+            });
+        };
+        if lock.token != token || lock.expires_at <= now {
+            return Err(TaskError::InvalidLock {
+                message: "the lock token is stale or expired — re-acquire the lock".to_string(),
+            });
+        }
+        repo.set_task_status(task_id, status)
+            .map_err(TaskError::Database)
+    }
 }
 
 /// Map empty/whitespace-only optionals to `None` (an explicit empty provider
@@ -530,6 +755,35 @@ fn non_empty(value: Option<&str>) -> Option<String> {
             Some(trimmed.to_string())
         }
     })
+}
+
+/// Current time as Unix seconds (lock deadlines ride wall-clock seconds,
+/// matching the `unixepoch()` the schema defaults use).
+fn now_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0))
+}
+
+/// Mint an opaque lock token. No `rand`/`uuid` dependency exists in this
+/// crate, so the token hashes the task, the holder, wall-clock seconds, and
+/// sub-second nanos plus the process id — unique per acquisition in practice,
+/// and uniqueness is additionally enforced by the v11 `UNIQUE(token)`
+/// constraint (a collision surfaces as a retryable database error, never a
+/// silent alias).
+fn mint_lock_token(task_id: i64, holder: &str, now: i64) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    let mut hasher = DefaultHasher::new();
+    task_id.hash(&mut hasher);
+    holder.hash(&mut hasher);
+    now.hash(&mut hasher);
+    nanos.hash(&mut hasher);
+    std::process::id().hash(&mut hasher);
+    format!("{:016x}-{:08x}", hasher.finish(), nanos)
 }
 
 // ---------------------------------------------------------------------------
@@ -1525,6 +1779,171 @@ mod tests {
             service.read_task(9999).expect_err("missing"),
             TaskError::TaskNotFound { .. }
         ));
+    }
+
+    fn lock_test_task(service: &TaskService<'_>) -> i64 {
+        service
+            .create_task("t", None, None, None, None, &["s".to_string()], None)
+            .expect("task")
+    }
+
+    #[test]
+    fn lock_acquire_denies_contention_with_holder_info() {
+        let db = crate::infrastructure::database::in_memory_database();
+        let service = TaskService::new(&db);
+        let id = lock_test_task(&service);
+
+        let first = service
+            .acquire_lock(id, "kanban", None)
+            .expect("first acquire");
+        assert_eq!(first.holder, "kanban");
+        assert!(!first.token.is_empty());
+        assert!(first.expires_at > first.acquired_at);
+
+        // Same holder re-enters idempotently with the same token, refreshing
+        // the deadline so a re-acquire just before expiry hands back a
+        // live lock rather than a nearly-dead one.
+        let reentry = service.acquire_lock(id, "kanban", None).expect("re-entry");
+        assert_eq!(reentry.token, first.token);
+        assert!(
+            reentry.expires_at >= first.expires_at,
+            "re-entry must not hand back a deader lock"
+        );
+
+        // Another holder is denied with the live holder + deadline attached.
+        let err = service
+            .acquire_lock(id, "list", None)
+            .expect_err("contended acquire");
+        match err {
+            TaskError::LockHeld {
+                task_id,
+                holder,
+                expires_at,
+            } => {
+                assert_eq!(task_id, id);
+                assert_eq!(holder, "kanban");
+                assert_eq!(expires_at, reentry.expires_at);
+            }
+            other => panic!("expected LockHeld, got {other:?}"),
+        }
+
+        assert!(matches!(
+            service
+                .acquire_lock(9999, "kanban", None)
+                .expect_err("missing"),
+            TaskError::TaskNotFound { .. }
+        ));
+        assert!(
+            service.acquire_lock(id, "  ", None).is_err(),
+            "blank holder must be rejected"
+        );
+        assert!(
+            service.acquire_lock(id, "kanban", Some(5)).is_err(),
+            "TTL below 10s must be rejected"
+        );
+        assert!(
+            service.acquire_lock(id, "kanban", Some(601)).is_err(),
+            "TTL above 600s must be rejected"
+        );
+    }
+
+    #[test]
+    fn expired_lock_is_stealable_and_heartbeat_extends_live_locks() {
+        let db = crate::infrastructure::database::in_memory_database();
+        let service = TaskService::new(&db);
+        let id = lock_test_task(&service);
+
+        // Seed an already-expired row directly (no sleeping): the next
+        // acquire must steal it rather than report contention.
+        AgentTaskRepository::new(&db)
+            .acquire_task_lock(id, "stale", "stale-token", 1000, 1010)
+            .expect("seed expired");
+        let stolen = service
+            .acquire_lock(id, "kanban", None)
+            .expect("steal after expiry");
+        assert_eq!(stolen.holder, "kanban");
+        assert_ne!(stolen.token, "stale-token");
+
+        // Heartbeat extends the live lock.
+        let refreshed = service
+            .heartbeat_lock(id, &stolen.token, None)
+            .expect("heartbeat");
+        assert_eq!(refreshed.token, stolen.token);
+        assert!(
+            refreshed.expires_at >= stolen.expires_at,
+            "heartbeat must not shorten the deadline"
+        );
+
+        // Wrong tokens and unknown tasks fail honestly.
+        assert!(
+            service.heartbeat_lock(id, "wrong-token", None).is_err(),
+            "mismatched heartbeat must fail"
+        );
+        assert!(
+            service.heartbeat_lock(9999, &stolen.token, None).is_err(),
+            "heartbeat on a missing task must fail"
+        );
+    }
+
+    #[test]
+    fn release_and_move_require_the_live_token() {
+        let db = crate::infrastructure::database::in_memory_database();
+        let service = TaskService::new(&db);
+        let id = lock_test_task(&service);
+
+        // Moving without any lock changes nothing.
+        assert!(
+            service.move_task(id, "completed", "nope").is_err(),
+            "move without a lock must fail"
+        );
+        assert_eq!(service.read_task(id).expect("read").status, "pending");
+
+        let lock = service.acquire_lock(id, "kanban", None).expect("acquire");
+
+        // Wrong token: rejected, status untouched.
+        assert!(
+            service.move_task(id, "completed", "wrong-token").is_err(),
+            "move with a wrong token must fail"
+        );
+        assert_eq!(service.read_task(id).expect("read").status, "pending");
+
+        // Unknown and loop-owned statuses are rejected even with a token.
+        assert!(service.move_task(id, "transcended", &lock.token).is_err());
+        assert!(service.move_task(id, "running", &lock.token).is_err());
+
+        // Valid move persists.
+        service
+            .move_task(id, "completed", &lock.token)
+            .expect("move");
+        assert_eq!(service.read_task(id).expect("read").status, "completed");
+
+        // Release with the wrong token fails; with the live token succeeds,
+        // and the spent token no longer authorizes moves.
+        assert!(service.release_lock(id, "wrong-token").is_err());
+        service.release_lock(id, &lock.token).expect("release");
+        assert!(
+            service.move_task(id, "failed", &lock.token).is_err(),
+            "a released token must not authorize moves"
+        );
+        assert!(service.release_lock(id, &lock.token).is_err());
+    }
+
+    #[test]
+    fn move_rejects_tasks_owned_by_the_loop() {
+        let db = crate::infrastructure::database::in_memory_database();
+        let service = TaskService::new(&db);
+        let id = lock_test_task(&service);
+        AgentTaskRepository::new(&db)
+            .mark_task_running(id, 1)
+            .expect("mark running");
+        let lock = service.acquire_lock(id, "kanban", None).expect("acquire");
+        let err = service
+            .move_task(id, "completed", &lock.token)
+            .expect_err("move a running task");
+        assert!(
+            matches!(err, TaskError::InvalidInput { .. }),
+            "loop-owned tasks stay out of the kanban write path"
+        );
     }
 
     #[test]

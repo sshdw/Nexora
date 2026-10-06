@@ -112,12 +112,17 @@ impl From<rusqlite::Error> for DatabaseError {
 /// - v8: the task-manager tables `agent_tasks` and `agent_task_steps` (task
 ///   manager + autonomous mode): user-defined task lists whose steps the
 ///   autonomous loop executes through the existing agent run path.
-/// - v10: the technical-debt backlog table `debt_items` (debt backlog):
-///   manual entries plus idempotent imports of `repo_audit` findings.
 /// - v9: the local-only usage ledger `usage_ledger` (privacy center): per-day
 ///   counters of whitelisted event kinds — no content columns by construction
 ///   (only the fixed `kind` vocabulary plus integer `day` / `count`), kept to
 ///   the last 90 days by the recording path. There is no upload anywhere.
+/// - v10: the technical-debt backlog table `debt_items` (debt backlog):
+///   manual entries plus idempotent imports of `repo_audit` findings.
+/// - v11: the kanban edit-lock table `task_locks` (P2 kanban+locks): at most
+///   one row per task (`task_id` PK, CASCADE on task delete), carrying the
+///   holder label, an opaque token, and a mandatory deadline
+///   (`CHECK (expires_at > acquired_at)` — no eternal lock; steal-on-expiry
+///   is enforced by the repository, never by the schema).
 pub(crate) const MIGRATIONS: &[(i64, &str)] = &[
     // v1 — base tables and functional indexes (DATABASE.md §7, §8).
     (
@@ -549,6 +554,27 @@ CREATE INDEX idx_debt_items_status_updated
     ON debt_items (status, updated_at);
 ",
     ),
+    // v11 — kanban edit locks (P2 kanban+locks). At most one lock row per
+    // task: `task_id` is the PK (CASCADE so task delete drops its lock),
+    // `holder` is a short surface label, `token` is the opaque proof the
+    // mutating command must present, and `expires_at` is the mandatory
+    // deadline (`CHECK (expires_at > acquired_at)` — a lock can never be
+    // eternal; an expired row is stealable by the next acquirer).
+    (
+        11,
+        r"CREATE TABLE task_locks (
+    task_id INTEGER PRIMARY KEY CHECK (task_id > 0)
+        REFERENCES agent_tasks (id) ON DELETE CASCADE,
+    holder TEXT NOT NULL CHECK (length(holder) > 0 AND length(holder) <= 64),
+    token TEXT NOT NULL UNIQUE CHECK (length(token) > 0 AND length(token) <= 128),
+    acquired_at INTEGER NOT NULL CHECK (acquired_at > 0),
+    expires_at INTEGER NOT NULL CHECK (expires_at > acquired_at)
+);
+
+CREATE INDEX idx_task_locks_expires
+    ON task_locks (expires_at);
+",
+    ),
 ];
 
 /// Open the `SQLite` database at `path`, apply connection pragmas, and run any
@@ -770,6 +796,7 @@ mod tests {
             "permission_rules",
             "prompts",
             "providers",
+            "task_locks",
             "usage_ledger",
         ] {
             assert!(
@@ -795,6 +822,7 @@ mod tests {
             "idx_debt_items_status_updated",
             "idx_messages_conversation_created",
             "idx_providers_name",
+            "idx_task_locks_expires",
             "idx_usage_ledger_day",
         ] {
             assert!(
@@ -823,7 +851,7 @@ mod tests {
 
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
         );
     }
 
@@ -833,7 +861,7 @@ mod tests {
 
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
         );
 
         let applied_at: i64 = conn
@@ -848,7 +876,24 @@ mod tests {
         let version_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .expect("count schema_version rows");
-        assert_eq!(version_count, 10, "one row per applied migration");
+        assert_eq!(version_count, 11, "one row per applied migration");
+    }
+
+    #[test]
+    fn migration_versions_are_unique_and_strictly_increasing() {
+        let mut seen = std::collections::HashSet::new();
+        let mut previous = 0;
+        for (version, _) in MIGRATIONS {
+            assert!(
+                seen.insert(*version),
+                "duplicate migration version {version}"
+            );
+            assert!(
+                *version > previous,
+                "migration versions must increase: {version} after {previous}"
+            );
+            previous = *version;
+        }
     }
 
     #[test]
@@ -856,14 +901,14 @@ mod tests {
         let mut conn = in_memory_migrated();
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
         );
 
         migrate(&mut conn).expect("a second migration run must succeed");
 
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
         );
         // The no-op run created or dropped nothing.
         assert!(schema_object_exists(&conn, "conversations", "table"));
@@ -895,7 +940,7 @@ mod tests {
         );
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
         );
     }
 
@@ -1505,10 +1550,10 @@ mod tests {
         .expect("seed step");
         // Migrate to v5 (and any later)
         migrate(&mut conn).expect("migrate to v5");
-        // Schema version is 5
+        // Schema version covers every known migration (v5 plus later ones)
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
         );
         // Row preserved, new columns NULL for pre-v5 rows
         let (status, spent, limit): (String, Option<i64>, Option<i64>) = conn
@@ -1599,7 +1644,7 @@ mod tests {
         migrate(&mut conn).expect("migrate to v6");
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
         );
         // Seeded row survives with a NULL workspace root.
         let root: Option<String> = conn
@@ -1677,7 +1722,7 @@ mod tests {
         migrate(&mut conn).expect("migrate to v7");
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
         );
         // Old rows intact with NULL provenance.
         let (kind, rule_id, group_key, decided_by): (

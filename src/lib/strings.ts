@@ -885,6 +885,15 @@ const en = {
     "“{title}” and all of its steps will be permanently deleted. This cannot be undone.",
   "task.deleteConfirm": "Delete",
 
+  // ---- kanban board (same task rows grouped by status, lock-guarded moves)
+  "kanban.list": "List",
+  "kanban.board": "Board",
+  "kanban.viewLabel": "Task view",
+  "kanban.moveTo": "Move to {status}",
+  "kanban.takeOver": "Take over",
+  "kanban.runningManaged": "Managed by the autonomous loop — stop the run to move it.",
+  "kanban.emptyColumn": "No tasks",
+
   // ---- code audit (read-only repo audit engine, findings only) -------------
   "audit.group": "Code audit",
   "audit.title": "Code Audit",
@@ -2212,6 +2221,14 @@ const ru: Record<StringKey, string> = {
   "task.deleteBody":
     "«{title}» и все её шаги будут удалены навсегда. Это действие необратимо.",
   "task.deleteConfirm": "Удалить",
+
+  "kanban.list": "Список",
+  "kanban.board": "Доска",
+  "kanban.viewLabel": "Вид задач",
+  "kanban.moveTo": "Переместить: {status}",
+  "kanban.takeOver": "Перехватить",
+  "kanban.runningManaged": "Управляется автономным циклом — остановите запуск, чтобы переместить.",
+  "kanban.emptyColumn": "Нет задач",
 
   "audit.group": "Аудит кода",
   "audit.title": "Аудит кода",

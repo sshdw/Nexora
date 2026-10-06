@@ -905,6 +905,66 @@ export function stopTaskRun(taskId: number): Promise<boolean> {
   return invoke<boolean>("stop_task_run", { taskId });
 }
 
+// ---- Kanban edit locks (P2 kanban+locks) -----------------------------------
+// Lightweight per-task locks over the SAME task rows: acquire before a
+// kanban move, present the token on `moveTask`, release afterwards. Every
+// lock carries a deadline (default 120s, range 10..600s — never eternal);
+// an expired row is stealable by the next acquirer. Payloads stay snake_case.
+
+/** One `task_locks` row as persisted (v10 migration). */
+export interface TaskLock {
+  task_id: number;
+  holder: string;
+  token: string;
+  acquired_at: number; // seconds since unix epoch
+  expires_at: number; // seconds since unix epoch (deadline, always > acquired_at)
+}
+
+/** Acquire the edit lock for a task. Contention with a live lock by another
+ * holder rejects with a `conflict`-kind `CommandError` naming the holder
+ * and the deadline; an expired row is stolen. */
+export function acquireTaskLock(
+  taskId: number,
+  holder: string,
+  ttlSecs?: number,
+): Promise<TaskLock> {
+  return invoke<TaskLock>("acquire_task_lock", {
+    taskId,
+    holder,
+    ttlSecs: ttlSecs ?? null,
+  });
+}
+
+/** Release the edit lock for a task. The token must match the stored row. */
+export function releaseTaskLock(taskId: number, token: string): Promise<void> {
+  return invoke<void>("release_task_lock", { taskId, token });
+}
+
+/** Extend a live lock's deadline by a fresh TTL. Never resurrects dead
+ * locks: a missing row, a mismatch, or an expired row rejects. */
+export function heartbeatTaskLock(
+  taskId: number,
+  token: string,
+  ttlSecs?: number,
+): Promise<TaskLock> {
+  return invoke<TaskLock>("heartbeat_task_lock", {
+    taskId,
+    token,
+    ttlSecs: ttlSecs ?? null,
+  });
+}
+
+/** Move a task to a kanban status (`pending` | `completed` | `failed` |
+ * `cancelled`). The token must match the live lock row and be unexpired —
+ * stale, mismatched, or missing locks reject and change nothing. */
+export function moveTask(
+  taskId: number,
+  status: "pending" | "completed" | "failed" | "cancelled",
+  token: string,
+): Promise<void> {
+  return invoke<void>("move_task", { taskId, status, token });
+}
+
 // ---- Context panel (read-only stats + diff render) ----------------------
 
 /** Read-only per-conversation context stats (`conversation_context_stats`).
