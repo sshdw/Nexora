@@ -61,6 +61,9 @@ pub(crate) enum ErrorKind {
     InvalidData,
     /// A filesystem I/O operation failed.
     Io,
+    /// The request conflicts with state held elsewhere (an edit lock owned
+    /// by another surface). The message names the holder and the deadline.
+    Conflict,
 }
 
 /// Serializable, secret-free command error returned to the frontend.

@@ -1,0 +1,91 @@
+//! Kanban board styles (P2 kanban+locks): five status columns over the same
+//! task rows the list view renders. Tokens only (`--nex-sys-*`); no raw
+//! colors, spacing, radii, or durations. No entry animation and no
+//! transitions anywhere (instant render under `prefers-reduced-motion` by
+//! construction — there is nothing to gate).
+
+.nex-kanban {
+  display: flex;
+  gap: var(--nex-sys-space-md);
+  align-items: flex-start;
+  overflow-x: auto;
+  padding: var(--nex-sys-space-sm) 0;
+}
+
+.nex-kanban-column {
+  flex: 1 1 0;
+  min-width: calc(var(--nex-sys-space-xl) * 8);
+  display: flex;
+  flex-direction: column;
+  gap: var(--nex-sys-space-xs);
+  background: var(--nex-sys-color-surface-container-low);
+  border: 1px solid var(--nex-sys-color-outline-variant);
+  border-radius: var(--nex-sys-shape-medium);
+  padding: var(--nex-sys-space-sm);
+}
+
+.nex-kanban-column.is-drop-target {
+  outline: 2px solid var(--nex-sys-color-primary);
+  outline-offset: -2px;
+}
+
+.nex-kanban-column-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--nex-sys-space-xs);
+  font-size: var(--nex-sys-type-size-label-large);
+  font-weight: var(--nex-sys-type-weight-emphasized);
+  color: var(--nex-sys-color-on-surface);
+}
+
+.nex-kanban-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nex-sys-space-xs);
+  background: var(--nex-sys-color-surface-container);
+  border: 1px solid var(--nex-sys-color-outline-variant);
+  border-radius: var(--nex-sys-shape-small);
+  padding: var(--nex-sys-space-xs) var(--nex-sys-space-sm);
+}
+
+.nex-kanban-card-title {
+  font-size: var(--nex-sys-type-size-body-medium);
+  color: var(--nex-sys-color-on-surface);
+  overflow-wrap: anywhere;
+}
+
+.nex-kanban-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--nex-sys-space-xxs);
+}
+
+.nex-kanban-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--nex-sys-space-xxs);
+}
+
+.nex-kanban-note {
+  font-size: var(--nex-sys-type-size-label-small);
+  color: var(--nex-sys-color-on-surface-variant);
+}
+
+.nex-kanban-denied {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nex-sys-space-xxs);
+  background: var(--nex-sys-color-error-container);
+  color: var(--nex-sys-color-on-error-container);
+  border: 1px solid var(--nex-sys-color-error-outline);
+  border-radius: var(--nex-sys-shape-small);
+  padding: var(--nex-sys-space-xxs) var(--nex-sys-space-xs);
+  font-size: var(--nex-sys-type-size-label-small);
+  overflow-wrap: anywhere;
+}
+
+.nex-kanban-empty {
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-on-surface-variant);
+}

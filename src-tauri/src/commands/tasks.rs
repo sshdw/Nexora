@@ -63,7 +63,7 @@ use crate::application::agent::tasks::{
 };
 use crate::application::execution::{ExecutorRegistry, RequestExecutionService};
 use crate::infrastructure::database::Database;
-use crate::infrastructure::repository::agent_tasks::{AgentTask, AgentTaskStep};
+use crate::infrastructure::repository::agent_tasks::{AgentTask, AgentTaskStep, TaskLock};
 
 use super::agent::ManagedRegistry;
 use super::error::{CommandError, ErrorKind};
@@ -271,6 +271,69 @@ pub(crate) fn stop_task_run(
     Ok(true)
 }
 
+/// Acquire the kanban edit lock for `task_id` (`acquire_task_lock {
+/// taskId, holder, ttlSecs? } → TaskLock`). The lock always carries a
+/// deadline (default 120s, range 10..600s — never eternal); contention with
+/// a live lock by another holder fails with a `Conflict` error naming the
+/// holder and the deadline, while an expired row is stolen.
+#[tauri::command]
+pub(crate) fn acquire_task_lock(
+    task_id: i64,
+    holder: String,
+    ttl_secs: Option<i64>,
+    db: State<'_, Database>,
+) -> Result<TaskLock, CommandError> {
+    TaskService::new(db.inner())
+        .acquire_lock(task_id, &holder, ttl_secs)
+        .map_err(CommandError::from)
+}
+
+/// Release the edit lock for `task_id` (`release_task_lock { taskId, token
+/// }`). The token must match the stored row; mismatches fail honestly and
+/// change nothing.
+#[tauri::command]
+pub(crate) fn release_task_lock(
+    task_id: i64,
+    token: String,
+    db: State<'_, Database>,
+) -> Result<(), CommandError> {
+    TaskService::new(db.inner())
+        .release_lock(task_id, &token)
+        .map_err(CommandError::from)
+}
+
+/// Extend a live lock's deadline by a fresh TTL (`heartbeat_task_lock {
+/// taskId, token, ttlSecs? } → TaskLock`). Heartbeats never resurrect dead
+/// locks: a missing row, a mismatch, or an expired row fails.
+#[tauri::command]
+pub(crate) fn heartbeat_task_lock(
+    task_id: i64,
+    token: String,
+    ttl_secs: Option<i64>,
+    db: State<'_, Database>,
+) -> Result<TaskLock, CommandError> {
+    TaskService::new(db.inner())
+        .heartbeat_lock(task_id, &token, ttl_secs)
+        .map_err(CommandError::from)
+}
+
+/// Move a task to a kanban status (`move_task { taskId, status, token }`).
+/// The token must match the live lock row and be unexpired; stale,
+/// mismatched, or missing locks fail with `InvalidInput` and change nothing.
+/// `'running'` is never a legal target (the loop owns it) and loop-owned
+/// tasks cannot be moved.
+#[tauri::command]
+pub(crate) fn move_task(
+    task_id: i64,
+    status: String,
+    token: String,
+    db: State<'_, Database>,
+) -> Result<(), CommandError> {
+    TaskService::new(db.inner())
+        .move_task(task_id, &status, &token)
+        .map_err(CommandError::from)
+}
+
 impl From<TaskError> for CommandError {
     fn from(err: TaskError) -> Self {
         match err {
@@ -281,8 +344,18 @@ impl From<TaskError> for CommandError {
                 ErrorKind::InvalidInput,
                 format!("task {task_id} already has an active run"),
             ),
-            TaskError::InvalidInput { message } => Self::new(ErrorKind::InvalidInput, message),
+            TaskError::InvalidInput { message } | TaskError::InvalidLock { message } => {
+                Self::new(ErrorKind::InvalidInput, message)
+            }
             TaskError::RunStart { message } => Self::new(ErrorKind::Request, message),
+            TaskError::LockHeld {
+                task_id,
+                holder,
+                expires_at,
+            } => Self::new(
+                ErrorKind::Conflict,
+                format!("task {task_id} is locked by {holder} until {expires_at}"),
+            ),
             TaskError::Database(inner) => Self::from(inner),
         }
     }
@@ -313,6 +386,14 @@ mod tests {
             },
             TaskError::RunStart {
                 message: "the step run could not be started".to_string(),
+            },
+            TaskError::LockHeld {
+                task_id: 7,
+                holder: "kanban".to_string(),
+                expires_at: 1_700_000_000,
+            },
+            TaskError::InvalidLock {
+                message: "the lock token does not match".to_string(),
             },
             TaskError::Database(crate::infrastructure::database::DatabaseError::Lock(
                 "sk-".into(),
@@ -347,6 +428,22 @@ mod tests {
             })
             .kind,
             ErrorKind::Request
+        );
+        assert_eq!(
+            CommandError::from(TaskError::LockHeld {
+                task_id: 1,
+                holder: "kanban".to_string(),
+                expires_at: 2,
+            })
+            .kind,
+            ErrorKind::Conflict
+        );
+        assert_eq!(
+            CommandError::from(TaskError::InvalidLock {
+                message: "x".to_string()
+            })
+            .kind,
+            ErrorKind::InvalidInput
         );
     }
 

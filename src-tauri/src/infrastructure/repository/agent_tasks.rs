@@ -92,6 +92,35 @@ pub(crate) struct AgentTaskStep {
     pub finished_at: Option<i64>,
 }
 
+/// A single `task_locks` row as persisted (v11 migration, P2 kanban+locks).
+/// At most one row per task: the holder label, the opaque token a mutating
+/// command must present, and the mandatory deadline (`expires_at`; an expired
+/// row is stealable by the next acquirer, never eternal).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct TaskLock {
+    /// Locked task (`task_id`, PK, CASCADE on task delete).
+    pub task_id: i64,
+    /// Short surface label that acquired the lock (`holder`, 1..=64 chars).
+    pub holder: String,
+    /// Opaque proof of ownership (`token`, UNIQUE).
+    pub token: String,
+    /// Acquisition timestamp (`acquired_at`, Unix seconds).
+    pub acquired_at: i64,
+    /// Mandatory deadline (`expires_at`, Unix seconds, `> acquired_at`).
+    pub expires_at: i64,
+}
+
+/// Outcome of [`AgentTaskRepository::acquire_task_lock`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum LockAcquireOutcome {
+    /// The caller now holds the lock (fresh row, steal, or same-holder
+    /// re-entry); the inner row carries the token to present on mutation.
+    Acquired(TaskLock),
+    /// A live lock by another holder blocks the acquisition; the inner row
+    /// identifies the holder and its deadline for an honest denial.
+    Denied(TaskLock),
+}
+
 /// Repository for the `agent_tasks` and `agent_task_steps` tables.
 ///
 /// Implements [`Repository`], supplying the shared [`Database`] handle, and
@@ -400,6 +429,181 @@ impl AgentTaskRepository<'_> {
         }
         Ok(steps)
     }
+
+    /// Set a task's lifecycle `status` (kanban move) and refresh
+    /// `updated_at`. The status vocabulary is validated by the caller (the
+    /// service rejects anything outside the fixed set before this write, so
+    /// the schema CHECK only fires on programmer error).
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DatabaseError`] if the update fails.
+    pub(crate) fn set_task_status(&self, id: i64, status: &str) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE agent_tasks SET status = ?2, updated_at = (unixepoch()) WHERE id = ?1",
+            params![id, status],
+        )?;
+        Ok(())
+    }
+
+    /// Read the active lock row for `task_id`, if any. Returns `Ok(None)`
+    /// when the task is unlocked.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DatabaseError`] if the read fails.
+    pub(crate) fn read_lock(&self, task_id: i64) -> Result<Option<TaskLock>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT task_id, holder, token, acquired_at, expires_at \
+             FROM task_locks WHERE task_id = ?1",
+        )?;
+        let mut rows = stmt.query_map([task_id], row_to_task_lock)?;
+        rows.next().transpose().map_err(DatabaseError::Sqlite)
+    }
+
+    /// Atomically acquire the edit lock for `task_id` (P2 kanban+locks).
+    ///
+    /// Inside one transaction: no row → insert and report [`Acquired`]; a
+    /// row expired at or before `now` → steal it (delete + insert the new
+    /// holder); a live row by the same `holder` → re-enter, refreshing the
+    /// deadline to the new `acquired_at` / `expires_at` and returning the
+    /// refreshed row (idempotent retry, same token); a live row by another
+    /// holder → [`Denied`] carrying that row so the caller can report who
+    /// holds the task and when the lock lapses.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DatabaseError`] if the transaction fails (for example a
+    /// missing `task_id` via the foreign key, or a `token` collision via
+    /// the UNIQUE constraint).
+    pub(crate) fn acquire_task_lock(
+        &self,
+        task_id: i64,
+        holder: &str,
+        token: &str,
+        acquired_at: i64,
+        expires_at: i64,
+    ) -> Result<LockAcquireOutcome> {
+        self.transaction(|tx| {
+            let existing: Option<TaskLock> = tx
+                .query_row(
+                    "SELECT task_id, holder, token, acquired_at, expires_at \
+                     FROM task_locks WHERE task_id = ?1",
+                    [task_id],
+                    row_to_task_lock,
+                )
+                .map(Some)
+                .or_else(|err| {
+                    if err == SqliteError::QueryReturnedNoRows {
+                        Ok(None)
+                    } else {
+                        Err(err)
+                    }
+                })?;
+            match existing {
+                None => {
+                    tx.execute(
+                        "INSERT INTO task_locks (task_id, holder, token, acquired_at, expires_at) \
+                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                        params![task_id, holder, token, acquired_at, expires_at],
+                    )?;
+                    Ok(LockAcquireOutcome::Acquired(TaskLock {
+                        task_id,
+                        holder: holder.to_string(),
+                        token: token.to_string(),
+                        acquired_at,
+                        expires_at,
+                    }))
+                }
+                Some(lock) if lock.expires_at <= acquired_at => {
+                    // Steal-on-expiry: the previous holder's deadline passed,
+                    // so its row is replaced (never resurrected, never
+                    // extended for the old holder).
+                    tx.execute("DELETE FROM task_locks WHERE task_id = ?1", [task_id])?;
+                    tx.execute(
+                        "INSERT INTO task_locks (task_id, holder, token, acquired_at, expires_at) \
+                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                        params![task_id, holder, token, acquired_at, expires_at],
+                    )?;
+                    Ok(LockAcquireOutcome::Acquired(TaskLock {
+                        task_id,
+                        holder: holder.to_string(),
+                        token: token.to_string(),
+                        acquired_at,
+                        expires_at,
+                    }))
+                }
+                Some(lock) if lock.holder == holder => {
+                    // Same-holder re-entry: refresh the deadline inside the
+                    // same transaction so a re-acquire just before expiry
+                    // hands back a live lock instead of a nearly-dead one.
+                    // The token is unchanged (idempotent retry).
+                    tx.execute(
+                        "UPDATE task_locks SET acquired_at = ?2, expires_at = ?3 \
+                         WHERE task_id = ?1",
+                        params![task_id, acquired_at, expires_at],
+                    )?;
+                    Ok(LockAcquireOutcome::Acquired(TaskLock {
+                        task_id,
+                        holder: lock.holder,
+                        token: lock.token,
+                        acquired_at,
+                        expires_at,
+                    }))
+                }
+                Some(lock) => Ok(LockAcquireOutcome::Denied(lock)),
+            }
+        })
+    }
+
+    /// Delete the lock row for `task_id` (release or task-teardown path).
+    /// Deleting a non-existent row is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DatabaseError`] if the delete fails.
+    pub(crate) fn delete_lock(&self, task_id: i64) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute("DELETE FROM task_locks WHERE task_id = ?1", [task_id])?;
+        Ok(())
+    }
+
+    /// Extend a live lock's deadline (heartbeat). Returns `true` when exactly
+    /// the matching, still-valid token row was extended; `false` when there
+    /// is no row, the token differs, or the row already expired (caller maps
+    /// that to a stale-token error — heartbeats never resurrect dead locks).
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DatabaseError`] if the update fails.
+    pub(crate) fn extend_lock_expiry(
+        &self,
+        task_id: i64,
+        token: &str,
+        now: i64,
+        new_expires_at: i64,
+    ) -> Result<bool> {
+        let conn = self.conn()?;
+        let changed = conn.execute(
+            "UPDATE task_locks SET expires_at = ?4 \
+             WHERE task_id = ?1 AND token = ?2 AND expires_at > ?3",
+            params![task_id, token, now, new_expires_at],
+        )?;
+        Ok(changed == 1)
+    }
+}
+
+/// Map one `task_locks` row onto a [`TaskLock`] record.
+fn row_to_task_lock(row: &rusqlite::Row<'_>) -> std::result::Result<TaskLock, SqliteError> {
+    Ok(TaskLock {
+        task_id: row.get(0)?,
+        holder: row.get(1)?,
+        token: row.get(2)?,
+        acquired_at: row.get(3)?,
+        expires_at: row.get(4)?,
+    })
 }
 
 /// Map one `agent_tasks` row onto an [`AgentTask`] record.
@@ -679,5 +883,153 @@ mod tests {
             .fail_orphaned_running_tasks("task interrupted by application shutdown")
             .expect("sweep again");
         assert_eq!(swept_again, 0, "second sweep should touch none");
+    }
+
+    #[test]
+    fn lock_acquire_reentry_release_round_trip() {
+        let db = in_memory_database();
+        let tasks = repo(&db);
+        let id = tasks
+            .create_task("t", None, None, None, None, 25)
+            .expect("task");
+
+        assert!(tasks.read_lock(id).expect("read").is_none());
+
+        let acquired = tasks
+            .acquire_task_lock(id, "kanban", "tok-1", 1000, 1120)
+            .expect("acquire");
+        let lock = match acquired {
+            LockAcquireOutcome::Acquired(lock) => lock,
+            LockAcquireOutcome::Denied(_) => panic!("first acquire must succeed"),
+        };
+        assert_eq!(lock.holder, "kanban");
+        assert_eq!(lock.token, "tok-1");
+
+        // Same-holder re-entry is idempotent (same token back) and refreshes
+        // the deadline so a re-acquire just before expiry hands back a
+        // live lock rather than a nearly-dead one.
+        match tasks
+            .acquire_task_lock(id, "kanban", "tok-2", 1001, 1121)
+            .expect("re-acquire")
+        {
+            LockAcquireOutcome::Acquired(same) => {
+                assert_eq!(same.token, "tok-1");
+                assert_eq!(same.acquired_at, 1001);
+                assert_eq!(same.expires_at, 1121);
+            }
+            LockAcquireOutcome::Denied(_) => panic!("same-holder re-entry must succeed"),
+        }
+        // The refreshed deadline is persisted, not just returned.
+        assert_eq!(
+            tasks.read_lock(id).expect("read").expect("lock").expires_at,
+            1121,
+            "re-acquire must persist the refreshed expiry"
+        );
+
+        // Another holder is denied with the live row attached.
+        match tasks
+            .acquire_task_lock(id, "list", "tok-3", 1002, 1122)
+            .expect("contended acquire")
+        {
+            LockAcquireOutcome::Denied(live) => {
+                assert_eq!(live.holder, "kanban");
+                assert_eq!(live.expires_at, 1121);
+            }
+            LockAcquireOutcome::Acquired(_) => panic!("contended acquire must be denied"),
+        }
+
+        tasks.delete_lock(id).expect("release");
+        assert!(tasks.read_lock(id).expect("read").is_none());
+        // Releasing an unlocked task is a no-op.
+        tasks.delete_lock(id).expect("second release");
+    }
+
+    #[test]
+    fn expired_lock_is_stealable_and_deadline_is_enforced() {
+        let db = in_memory_database();
+        let tasks = repo(&db);
+        let id = tasks
+            .create_task("t", None, None, None, None, 25)
+            .expect("task");
+
+        tasks
+            .acquire_task_lock(id, "kanban", "old", 1000, 1120)
+            .expect("first acquire");
+        // Past the deadline the row is stolen, not blocked.
+        match tasks
+            .acquire_task_lock(id, "list", "new", 1120, 1240)
+            .expect("steal")
+        {
+            LockAcquireOutcome::Acquired(stolen) => {
+                assert_eq!(stolen.holder, "list");
+                assert_eq!(stolen.token, "new");
+            }
+            LockAcquireOutcome::Denied(_) => panic!("expired lock must be stealable"),
+        }
+
+        // The schema rejects a lock without a deadline.
+        assert!(
+            tasks.acquire_task_lock(id, "x", "y", 2000, 2000).is_err(),
+            "expires_at must exceed acquired_at"
+        );
+        // A lock on a missing task violates the foreign key.
+        assert!(
+            tasks.acquire_task_lock(999, "x", "y", 2000, 2120).is_err(),
+            "orphan lock must be rejected"
+        );
+        // Deleting the task cascades its lock row.
+        tasks.delete_task(id).expect("delete task");
+        assert!(tasks.read_lock(id).expect("read").is_none());
+    }
+
+    #[test]
+    fn heartbeat_extends_only_the_matching_live_token() {
+        let db = in_memory_database();
+        let tasks = repo(&db);
+        let id = tasks
+            .create_task("t", None, None, None, None, 25)
+            .expect("task");
+        tasks
+            .acquire_task_lock(id, "kanban", "tok", 1000, 1120)
+            .expect("acquire");
+
+        assert!(
+            tasks
+                .extend_lock_expiry(id, "tok", 1100, 1220)
+                .expect("heartbeat"),
+            "matching live token must extend"
+        );
+        assert_eq!(
+            tasks.read_lock(id).expect("read").expect("lock").expires_at,
+            1220
+        );
+        assert!(
+            !tasks
+                .extend_lock_expiry(id, "wrong", 1100, 1300)
+                .expect("wrong token"),
+            "a wrong token must not extend"
+        );
+        assert!(
+            !tasks
+                .extend_lock_expiry(id, "tok", 1300, 1420)
+                .expect("late heartbeat"),
+            "an expired lock must not be resurrected"
+        );
+    }
+
+    #[test]
+    fn set_task_status_moves_and_touches_updated_at() {
+        let db = in_memory_database();
+        let tasks = repo(&db);
+        let id = tasks
+            .create_task("t", None, None, None, None, 25)
+            .expect("task");
+        tasks.set_task_status(id, "completed").expect("move");
+        let moved = tasks.read_task(id).expect("read").expect("exists");
+        assert_eq!(moved.status, "completed");
+        assert!(
+            tasks.set_task_status(id, "transcended").is_err(),
+            "unknown status must be rejected"
+        );
     }
 }
