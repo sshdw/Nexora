@@ -927,13 +927,13 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
       return { deleted_rows: 1 };
     case "docs_manifest": {
       // Static DEV-ONLY mirror of the backend `docs_manifest` command: the
-      // migration spine mirrors MIGRATIONS v1..v10 (database.rs) — update
+      // migration spine mirrors MIGRATIONS v1..v11 (database.rs) — update
       // this list when a migration lands so visual QA keeps showing the
       // full guide. Production always reads the backend-computed spine.
-      const migrations = Array.from({ length: 10 }, (_, index) => ({
+      const migrations = Array.from({ length: 11 }, (_, index) => ({
         version: index + 1,
       }));
-      return { schema_version: 10, migrations };
+      return { schema_version: 11, migrations };
     }
     default:
       fail(`Mock backend: unhandled command “${command}”.`);
