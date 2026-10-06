@@ -570,3 +570,29 @@ export function IssuesIcon(props: ComponentPropsWithoutRef<"svg">) {
     </svg>
   );
 }
+
+/** Debt glyph for the sidebar Debt backlog entry: a tag with a pin dot,
+ * on the same 18px stroke grid as the rail set — distinct from the audit
+ * magnifier and the issues ring. */
+export function DebtIcon(props: ComponentPropsWithoutRef<"svg">) {
+  return (
+    <svg
+      aria-hidden="true"
+      focusable="false"
+      width="18"
+      height="18"
+      viewBox="0 0 18 18"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      {...props}
+    >
+      <path
+        d="M3 3h6.5L15 8.5a1.4 1.4 0 010 2L9.5 16a1.4 1.4 0 01-2 0L2 10.5V3.8A.8.8 0 012.8 3H3z"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinejoin="round"
+      />
+      <circle cx="6.5" cy="6.5" r="1.2" fill="currentColor" />
+    </svg>
+  );
+}

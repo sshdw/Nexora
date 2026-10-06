@@ -7,6 +7,7 @@ import ActivityHealthPanel, {
   type ActivityHealthTab,
 } from "./components/ActivityHealthPanel";
 import AuditPanel from "./components/AuditPanel";
+import DebtPanel from "./components/DebtPanel";
 import EmptyState from "./components/EmptyState";
 import { ExportIcon } from "./components/icons";
 import { ExportModal, ImportModal } from "./components/ImportExportModals";
@@ -274,6 +275,11 @@ function AppShell() {
   // opening an overlay over the still-mounted panes (palette + Ctrl+Shift+U
   // open it too; the panel scans manually on Run only, never on mount).
   const [auditOpen, setAuditOpen] = useState(false);
+  // Debt backlog screen: a workspace-scoped navigation destination like
+  // Settings/Library/VCS/Activity/Terminal/Tasks/Audit — a sidebar rail
+  // entry opening an overlay over the still-mounted panes (palette opens it
+  // too; the panel lists from the backend on mount and imports manually).
+  const [debtOpen, setDebtOpen] = useState(false);
   // Issues & PRs screen: a workspace-scoped navigation destination like
   // Settings/Library/VCS/Activity/Terminal/Tasks/Audit — a sidebar rail
   // entry opening an overlay over the still-mounted panes (palette +
@@ -333,6 +339,7 @@ function AppShell() {
     setTerminalOpen(false);
     setTasksOpen(false);
     setAuditOpen(false);
+    setDebtOpen(false);
     setGhOpen(false);
   };
 
@@ -353,6 +360,7 @@ function AppShell() {
         setTerminalOpen(false);
         setTasksOpen(false);
         setAuditOpen(false);
+    setDebtOpen(false);
         setGhOpen(false);
       }    } finally {
       creatingInFlight.current = false;
@@ -369,6 +377,7 @@ function AppShell() {
     setTerminalOpen(false);
     setTasksOpen(false);
     setAuditOpen(false);
+    setDebtOpen(false);
     setGhOpen(false);
   };
 
@@ -381,6 +390,7 @@ function AppShell() {
     setTerminalOpen(false);
     setTasksOpen(false);
     setAuditOpen(false);
+    setDebtOpen(false);
     setGhOpen(false);
   }, []);
   const openLibrary = useCallback(() => {
@@ -393,6 +403,7 @@ function AppShell() {
     setTerminalOpen(false);
     setTasksOpen(false);
     setAuditOpen(false);
+    setDebtOpen(false);
     setGhOpen(false);
   }, []);
   const closeLibrary = () => {
@@ -408,6 +419,7 @@ function AppShell() {
     setTerminalOpen(false);
     setTasksOpen(false);
     setAuditOpen(false);
+    setDebtOpen(false);
     setGhOpen(false);
   }, []);
   const closeVcs = () => {
@@ -437,6 +449,7 @@ function AppShell() {
     setTerminalOpen(false);
     setTasksOpen(false);
     setAuditOpen(false);
+    setDebtOpen(false);
     setGhOpen(false);
   }, []);
   const closeActivity = () => {
@@ -450,6 +463,7 @@ function AppShell() {
     setActivityOpen(false);
     setTerminalOpen(false);
     setAuditOpen(false);
+    setDebtOpen(false);
     setGhOpen(false);
   }, []);
   const closeTasks = () => {
@@ -463,11 +477,26 @@ function AppShell() {
     setTerminalOpen(false);
     setTasksOpen(false);
     setGhOpen(false);
+    setDebtOpen(false);
     setAuditOpen(true);
   }, []);
   const closeAudit = () => {
     setAuditOpen(false);
     setGhOpen(false);
+  };
+  const openDebt = useCallback(() => {
+    setDebtOpen(true);
+    setLibraryOpen(false);
+    setSettingsOpen(false);
+    setVcsOpen(false);
+    setActivityOpen(false);
+    setTerminalOpen(false);
+    setTasksOpen(false);
+    setAuditOpen(false);
+    setGhOpen(false);
+  }, []);
+  const closeDebt = () => {
+    setDebtOpen(false);
   };
   const openGh = useCallback(() => {
     setLibraryOpen(false);
@@ -477,6 +506,7 @@ function AppShell() {
     setTerminalOpen(false);
     setTasksOpen(false);
     setAuditOpen(false);
+    setDebtOpen(false);
     setGhOpen(true);
   }, []);
   const closeGh = () => {
@@ -494,6 +524,7 @@ function AppShell() {
     setTerminalOpen(false);
     setTasksOpen(false);
     setAuditOpen(false);
+    setDebtOpen(false);
     setGhOpen(false);
   };
 
@@ -541,6 +572,7 @@ function AppShell() {
     setTerminalOpen(false);
     setTasksOpen(false);
     setAuditOpen(false);
+    setDebtOpen(false);
     setGhOpen(false);
   }, []);
 
@@ -554,6 +586,7 @@ function AppShell() {
     setTerminalOpen(false);
     setTasksOpen(false);
     setAuditOpen(false);
+    setDebtOpen(false);
     setGhOpen(false);
     window.setTimeout(() => {
       document
@@ -823,6 +856,7 @@ function AppShell() {
       terminalOpen ||
       tasksOpen ||
       auditOpen ||
+      debtOpen ||
       ghOpen ||
       paletteOpen ||
       shortcutsOpen
@@ -846,6 +880,7 @@ function AppShell() {
     terminalOpen,
     tasksOpen,
     auditOpen,
+    debtOpen,
     ghOpen,
     paletteOpen,
     shortcutsOpen,
@@ -866,6 +901,7 @@ function AppShell() {
           openTerminal,
           openTasks,
           openAudit,
+          openDebt,
           openGh,
           newConversation: () => void handleNewConversation(),
           openImport: () => setImportOpen(true),
@@ -906,6 +942,7 @@ function AppShell() {
       openTerminal,
       openTasks,
       openAudit,
+      openDebt,
       openGh,
       handleNewConversation,
       exportActiveConversation,
@@ -965,6 +1002,7 @@ function AppShell() {
     terminalOpen ||
     tasksOpen ||
     auditOpen ||
+    debtOpen ||
     ghOpen;
   // The split grid stays mounted in zen (the secondary pane hides via
   // .nex-zen CSS, same technique as the zen chrome rules) so both
@@ -1081,6 +1119,8 @@ function AppShell() {
         onOpenTasks={openTasks}
         auditActive={auditOpen}
         onOpenAudit={openAudit}
+        debtActive={debtOpen}
+        onOpenDebt={openDebt}
         ghActive={ghOpen}
         onOpenGh={openGh}
         onSelectPrompt={handleSelectPrompt}
@@ -1106,6 +1146,7 @@ function AppShell() {
               setTerminalOpen(false);
               setTasksOpen(false);
               setAuditOpen(false);
+    setDebtOpen(false);
               setGhOpen(false);
             }}
             onClose={tabs.close}
@@ -1154,6 +1195,8 @@ function AppShell() {
               />
             ) : auditOpen ? (
               <AuditPanel onClose={closeAudit} />
+            ) : debtOpen ? (
+              <DebtPanel onClose={closeDebt} />
             ) : ghOpen ? (
               <IssuesPanel onClose={closeGh} />
             ) : (

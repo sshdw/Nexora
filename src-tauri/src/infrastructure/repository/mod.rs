@@ -31,6 +31,7 @@ pub mod agent_runs;
 pub mod agent_tasks;
 pub mod attachments;
 pub mod conversations;
+pub mod debt_items;
 pub mod messages;
 pub mod prompts;
 pub mod providers;
