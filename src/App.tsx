@@ -10,6 +10,7 @@ import AuditPanel from "./components/AuditPanel";
 import DebtPanel from "./components/DebtPanel";
 import DocsPanel from "./components/DocsPanel";
 import EmptyState from "./components/EmptyState";
+import ReleasePanel from "./components/ReleasePanel";
 import { ExportIcon } from "./components/icons";
 import { ExportModal, ImportModal } from "./components/ImportExportModals";
 import IssuesPanel from "./components/IssuesPanel";
@@ -293,6 +294,12 @@ function AppShell() {
   // it too; the migration section loads its version spine from the backend
   // on mount, everything else renders from code-backed registries).
   const [docsOpen, setDocsOpen] = useState(false);
+  // Release screen: a workspace-scoped navigation destination like
+  // Settings/Library/VCS/Activity/Terminal/Tasks/Audit/Debt/GH/Docs — a
+  // sidebar rail entry opening an overlay over the still-mounted panes
+  // (palette opens it too; the panel loads from the backend on mount and on
+  // manual Refresh).
+  const [releaseOpen, setReleaseOpen] = useState(false);
   const mainRef = useRef<HTMLDivElement>(null);
 
   const draftFor = useCallback(
@@ -349,6 +356,7 @@ function AppShell() {
     setDebtOpen(false);
     setDocsOpen(false);
     setGhOpen(false);
+    setReleaseOpen(false);
   };
 
   // Leading-edge guard for conversation creation: synchronous rapid clicks on
@@ -371,6 +379,7 @@ function AppShell() {
     setDebtOpen(false);
     setDocsOpen(false);
         setGhOpen(false);
+        setReleaseOpen(false);
       }    } finally {
       creatingInFlight.current = false;
     }
@@ -389,6 +398,7 @@ function AppShell() {
     setDebtOpen(false);
     setDocsOpen(false);
     setGhOpen(false);
+    setReleaseOpen(false);
   };
 
   const openSettings = useCallback((section?: PaletteSettingsSection) => {
@@ -403,6 +413,7 @@ function AppShell() {
     setDebtOpen(false);
     setDocsOpen(false);
     setGhOpen(false);
+    setReleaseOpen(false);
   }, []);
   const openLibrary = useCallback(() => {
     // A fresh entry to the library opens the list, not a previously staged edit.
@@ -417,6 +428,7 @@ function AppShell() {
     setDebtOpen(false);
     setDocsOpen(false);
     setGhOpen(false);
+    setReleaseOpen(false);
   }, []);
   const closeLibrary = () => {
     setLibraryOpen(false);
@@ -434,6 +446,7 @@ function AppShell() {
     setDebtOpen(false);
     setDocsOpen(false);
     setGhOpen(false);
+    setReleaseOpen(false);
   }, []);
   const closeVcs = () => {
     setVcsOpen(false);
@@ -465,6 +478,7 @@ function AppShell() {
     setDebtOpen(false);
     setDocsOpen(false);
     setGhOpen(false);
+    setReleaseOpen(false);
   }, []);
   const closeActivity = () => {
     setActivityOpen(false);
@@ -480,6 +494,7 @@ function AppShell() {
     setDebtOpen(false);
     setDocsOpen(false);
     setGhOpen(false);
+    setReleaseOpen(false);
   }, []);
   const closeTasks = () => {
     setTasksOpen(false);
@@ -492,6 +507,7 @@ function AppShell() {
     setTerminalOpen(false);
     setTasksOpen(false);
     setGhOpen(false);
+    setReleaseOpen(false);
     setDebtOpen(false);
     setDocsOpen(false);
     setAuditOpen(true);
@@ -511,6 +527,7 @@ function AppShell() {
     setTasksOpen(false);
     setAuditOpen(false);
     setGhOpen(false);
+    setReleaseOpen(false);
   }, []);
   const closeDebt = () => {
     setDebtOpen(false);
@@ -525,6 +542,7 @@ function AppShell() {
     setAuditOpen(false);
     setDebtOpen(false);
     setDocsOpen(false);
+    setReleaseOpen(false);
     setGhOpen(true);
   }, []);
   const closeGh = () => {
@@ -541,9 +559,26 @@ function AppShell() {
     setAuditOpen(false);
     setDebtOpen(false);
     setGhOpen(false);
+    setReleaseOpen(false);
+  }, []);
+  const openRelease = useCallback(() => {
+    setReleaseOpen(true);
+    setLibraryOpen(false);
+    setSettingsOpen(false);
+    setVcsOpen(false);
+    setActivityOpen(false);
+    setTerminalOpen(false);
+    setTasksOpen(false);
+    setAuditOpen(false);
+    setDebtOpen(false);
+    setGhOpen(false);
+    setDocsOpen(false);
   }, []);
   const closeDocs = () => {
     setDocsOpen(false);
+  };
+  const closeRelease = () => {
+    setReleaseOpen(false);
   };
 
   // Open a prompt found by search: show the Prompt Library and open the selected
@@ -560,6 +595,7 @@ function AppShell() {
     setDebtOpen(false);
     setDocsOpen(false);
     setGhOpen(false);
+    setReleaseOpen(false);
   };
 
   // FR-007 "Use": stage the prompt's content into the active pane's composer,
@@ -609,6 +645,7 @@ function AppShell() {
     setDebtOpen(false);
     setDocsOpen(false);
     setGhOpen(false);
+    setReleaseOpen(false);
   }, []);
 
   // Focus the active pane's composer (palette "Focus message input"):
@@ -624,6 +661,7 @@ function AppShell() {
     setDebtOpen(false);
     setDocsOpen(false);
     setGhOpen(false);
+    setReleaseOpen(false);
     window.setTimeout(() => {
       document
         .querySelector<HTMLTextAreaElement>(".nex-composer-input")
@@ -895,6 +933,7 @@ function AppShell() {
       debtOpen ||
       ghOpen ||
       docsOpen ||
+      releaseOpen ||
       paletteOpen ||
       shortcutsOpen
     ) {
@@ -920,6 +959,7 @@ function AppShell() {
     debtOpen,
     ghOpen,
     docsOpen,
+    releaseOpen,
     paletteOpen,
     shortcutsOpen,
   ]);
@@ -942,6 +982,7 @@ function AppShell() {
           openDebt,
           openGh,
           openDocs,
+          openRelease,
           newConversation: () => void handleNewConversation(),
           openImport: () => setImportOpen(true),
           exportActive: exportActiveConversation,
@@ -984,6 +1025,7 @@ function AppShell() {
       openDebt,
       openGh,
       openDocs,
+      openRelease,
       handleNewConversation,
       exportActiveConversation,
       focusComposer,
@@ -1044,7 +1086,8 @@ function AppShell() {
     auditOpen ||
     debtOpen ||
     ghOpen ||
-    docsOpen;
+    docsOpen ||
+    releaseOpen;
   // The split grid stays mounted in zen (the secondary pane hides via
   // .nex-zen CSS, same technique as the zen chrome rules) so both
   // ConversationView instances survive entering/exiting zen. Split
@@ -1166,6 +1209,8 @@ function AppShell() {
         onOpenGh={openGh}
         docsActive={docsOpen}
         onOpenDocs={openDocs}
+        releaseActive={releaseOpen}
+        onOpenRelease={openRelease}
         onSelectPrompt={handleSelectPrompt}
         onImport={() => setImportOpen(true)}
         onRename={rename}
@@ -1192,6 +1237,7 @@ function AppShell() {
     setDebtOpen(false);
     setDocsOpen(false);
               setGhOpen(false);
+              setReleaseOpen(false);
             }}
             onClose={tabs.close}
             onNewConversation={() => void handleNewConversation()}
@@ -1245,6 +1291,8 @@ function AppShell() {
               <IssuesPanel onClose={closeGh} />
             ) : docsOpen ? (
               <DocsPanel onClose={closeDocs} />
+            ) : releaseOpen ? (
+              <ReleasePanel onClose={closeRelease} />
             ) : (
               <SettingsView
                 store={providers}

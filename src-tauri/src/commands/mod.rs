@@ -29,6 +29,7 @@ pub mod import_export;
 pub mod privacy;
 pub mod prompts;
 pub mod providers;
+pub mod release;
 pub mod repo_audit;
 pub mod search;
 pub mod settings;

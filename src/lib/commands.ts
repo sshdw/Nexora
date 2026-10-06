@@ -106,6 +106,8 @@ export interface PaletteDeps {
   openGh: () => void;
   /** Open the Docs overlay (in-app product documentation). */
   openDocs: () => void;
+  /** Open the Release overlay (readiness checklist + issue filing). */
+  openRelease: () => void;
   /** Open the Activity & Health overlay on the requested tab. */
   openActivity: (tab: "activity" | "health") => void;
   newConversation: () => void;
@@ -199,6 +201,13 @@ export function buildCommands(deps: PaletteDeps, locale: Locale = "en"): Palette
       section: go,
       keywords: ["docs", "documentation", "help", "guide", "manual", "migration", "migrate", "how to", "features"],
       run: () => deps.openDocs(),
+    },
+    {
+      id: "go.release",
+      title: tr(locale, "palette.cmd.go_release"),
+      section: go,
+      keywords: ["release", "readiness", "checklist", "ship", "versions", "migrations", "snapshot", "file issue"],
+      run: () => deps.openRelease(),
     },
     {
       id: "go.activity",

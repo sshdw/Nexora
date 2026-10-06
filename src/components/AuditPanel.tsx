@@ -53,6 +53,7 @@ import {
 import { useStrings, type Strings } from "../lib/useLocale";
 import M3Button from "./M3Button";
 import M3LoadingIndicator from "./M3LoadingIndicator";
+import FileIssueDialog, { type FileIssueTarget } from "./FileIssueDialog";
 
 export interface AuditPanelProps {
   onClose: () => void;
@@ -167,7 +168,15 @@ function DepRow({ entry, t }: { entry: DepEntry; t: Strings["t"] }) {
   );
 }
 
-function FindingRow({ finding, t }: { finding: AuditFinding; t: Strings["t"] }) {
+function FindingRow({
+  finding,
+  t,
+  onFileIssue,
+}: {
+  finding: AuditFinding;
+  t: Strings["t"];
+  onFileIssue: (finding: AuditFinding) => void;
+}) {
   const location = `${finding.path}:${finding.line}`;
   return (
     <li className="nex-vcs-file-row">
@@ -178,6 +187,11 @@ function FindingRow({ finding, t }: { finding: AuditFinding; t: Strings["t"] }) 
         </span>
       </div>
       <pre className="nex-agent-terminal-stdout">{finding.excerpt}</pre>
+      <div>
+        <M3Button variant="quiet" onClick={() => onFileIssue(finding)}>
+          {t("issue.fileIssue")}
+        </M3Button>
+      </div>
     </li>
   );
 }
@@ -235,6 +249,21 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
   const [applyRunning, setApplyRunning] = useState(false);
   const [applyResult, setApplyResult] = useState<RefactorApplyResult | null>(null);
   const [applyError, setApplyError] = useState<string | null>(null);
+  const [issueTarget, setIssueTarget] = useState<FileIssueTarget | null>(null);
+  const [issueNotice, setIssueNotice] = useState<string | null>(null);
+
+  // File one finding as a GitHub issue: the prefilled target carries the
+  // kind + `path:line` title, the location, and the capped excerpt as the
+  // fix detail — the backend assembles the Location/Problem/Fix/Verify body.
+  const fileFinding = useCallback((finding: AuditFinding) => {
+    const location = `${finding.path}:${finding.line}`;
+    setIssueTarget({
+      title: `${finding.kind}: ${location}`,
+      location,
+      detail: finding.excerpt,
+      source: "audit",
+    });
+  }, []);
 
   // Synchronous in-flight guard: rapid Run presses collapse into the active
   // scan instead of stacking backend walks.
@@ -365,6 +394,11 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
             {error}
           </div>
         )}
+        {issueNotice && !error && (
+          <p className="nex-vcs-notice" role="status">
+            {issueNotice}
+          </p>
+        )}
         {running && <M3LoadingIndicator label={t("audit.running")} />}
         {!running && !report && !error && (
           <p className="nex-agent-empty">{t("audit.emptyText")}</p>
@@ -420,6 +454,7 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
                           key={`${finding.path}:${finding.line}:${finding.kind}`}
                           finding={finding}
                           t={t}
+                          onFileIssue={fileFinding}
                         />
                       ))}
                     </ul>
@@ -656,6 +691,15 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
           )}
         </section>
       </div>
+
+      {issueTarget && (
+        <FileIssueDialog
+          target={issueTarget}
+          onFiled={(message) => setIssueNotice(message)}
+          onError={(message) => setError(message)}
+          onClose={() => setIssueTarget(null)}
+        />
+      )}
     </div>
   );
 }
