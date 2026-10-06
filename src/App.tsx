@@ -8,6 +8,7 @@ import ActivityHealthPanel, {
 } from "./components/ActivityHealthPanel";
 import AuditPanel from "./components/AuditPanel";
 import DebtPanel from "./components/DebtPanel";
+import DocsPanel from "./components/DocsPanel";
 import EmptyState from "./components/EmptyState";
 import { ExportIcon } from "./components/icons";
 import { ExportModal, ImportModal } from "./components/ImportExportModals";
@@ -286,6 +287,12 @@ function AppShell() {
   // Ctrl+Shift+G open it too; the panel loads from the backend on mount
   // and on every kind/state change, plus manual Refresh).
   const [ghOpen, setGhOpen] = useState(false);
+  // Docs screen: a workspace-scoped navigation destination like
+  // Settings/Library/VCS/Activity/Terminal/Tasks/Audit/Debt/GH — a sidebar
+  // rail entry opening an overlay over the still-mounted panes (palette opens
+  // it too; the migration section loads its version spine from the backend
+  // on mount, everything else renders from code-backed registries).
+  const [docsOpen, setDocsOpen] = useState(false);
   const mainRef = useRef<HTMLDivElement>(null);
 
   const draftFor = useCallback(
@@ -340,6 +347,7 @@ function AppShell() {
     setTasksOpen(false);
     setAuditOpen(false);
     setDebtOpen(false);
+    setDocsOpen(false);
     setGhOpen(false);
   };
 
@@ -361,6 +369,7 @@ function AppShell() {
         setTasksOpen(false);
         setAuditOpen(false);
     setDebtOpen(false);
+    setDocsOpen(false);
         setGhOpen(false);
       }    } finally {
       creatingInFlight.current = false;
@@ -378,6 +387,7 @@ function AppShell() {
     setTasksOpen(false);
     setAuditOpen(false);
     setDebtOpen(false);
+    setDocsOpen(false);
     setGhOpen(false);
   };
 
@@ -391,6 +401,7 @@ function AppShell() {
     setTasksOpen(false);
     setAuditOpen(false);
     setDebtOpen(false);
+    setDocsOpen(false);
     setGhOpen(false);
   }, []);
   const openLibrary = useCallback(() => {
@@ -404,6 +415,7 @@ function AppShell() {
     setTasksOpen(false);
     setAuditOpen(false);
     setDebtOpen(false);
+    setDocsOpen(false);
     setGhOpen(false);
   }, []);
   const closeLibrary = () => {
@@ -420,6 +432,7 @@ function AppShell() {
     setTasksOpen(false);
     setAuditOpen(false);
     setDebtOpen(false);
+    setDocsOpen(false);
     setGhOpen(false);
   }, []);
   const closeVcs = () => {
@@ -450,6 +463,7 @@ function AppShell() {
     setTasksOpen(false);
     setAuditOpen(false);
     setDebtOpen(false);
+    setDocsOpen(false);
     setGhOpen(false);
   }, []);
   const closeActivity = () => {
@@ -464,6 +478,7 @@ function AppShell() {
     setTerminalOpen(false);
     setAuditOpen(false);
     setDebtOpen(false);
+    setDocsOpen(false);
     setGhOpen(false);
   }, []);
   const closeTasks = () => {
@@ -478,6 +493,7 @@ function AppShell() {
     setTasksOpen(false);
     setGhOpen(false);
     setDebtOpen(false);
+    setDocsOpen(false);
     setAuditOpen(true);
   }, []);
   const closeAudit = () => {
@@ -486,6 +502,7 @@ function AppShell() {
   };
   const openDebt = useCallback(() => {
     setDebtOpen(true);
+    setDocsOpen(false);
     setLibraryOpen(false);
     setSettingsOpen(false);
     setVcsOpen(false);
@@ -507,10 +524,26 @@ function AppShell() {
     setTasksOpen(false);
     setAuditOpen(false);
     setDebtOpen(false);
+    setDocsOpen(false);
     setGhOpen(true);
   }, []);
   const closeGh = () => {
     setGhOpen(false);
+  };
+  const openDocs = useCallback(() => {
+    setDocsOpen(true);
+    setLibraryOpen(false);
+    setSettingsOpen(false);
+    setVcsOpen(false);
+    setActivityOpen(false);
+    setTerminalOpen(false);
+    setTasksOpen(false);
+    setAuditOpen(false);
+    setDebtOpen(false);
+    setGhOpen(false);
+  }, []);
+  const closeDocs = () => {
+    setDocsOpen(false);
   };
 
   // Open a prompt found by search: show the Prompt Library and open the selected
@@ -525,6 +558,7 @@ function AppShell() {
     setTasksOpen(false);
     setAuditOpen(false);
     setDebtOpen(false);
+    setDocsOpen(false);
     setGhOpen(false);
   };
 
@@ -573,6 +607,7 @@ function AppShell() {
     setTasksOpen(false);
     setAuditOpen(false);
     setDebtOpen(false);
+    setDocsOpen(false);
     setGhOpen(false);
   }, []);
 
@@ -587,6 +622,7 @@ function AppShell() {
     setTasksOpen(false);
     setAuditOpen(false);
     setDebtOpen(false);
+    setDocsOpen(false);
     setGhOpen(false);
     window.setTimeout(() => {
       document
@@ -858,6 +894,7 @@ function AppShell() {
       auditOpen ||
       debtOpen ||
       ghOpen ||
+      docsOpen ||
       paletteOpen ||
       shortcutsOpen
     ) {
@@ -882,6 +919,7 @@ function AppShell() {
     auditOpen,
     debtOpen,
     ghOpen,
+    docsOpen,
     paletteOpen,
     shortcutsOpen,
   ]);
@@ -903,6 +941,7 @@ function AppShell() {
           openAudit,
           openDebt,
           openGh,
+          openDocs,
           newConversation: () => void handleNewConversation(),
           openImport: () => setImportOpen(true),
           exportActive: exportActiveConversation,
@@ -944,6 +983,7 @@ function AppShell() {
       openAudit,
       openDebt,
       openGh,
+      openDocs,
       handleNewConversation,
       exportActiveConversation,
       focusComposer,
@@ -1003,7 +1043,8 @@ function AppShell() {
     tasksOpen ||
     auditOpen ||
     debtOpen ||
-    ghOpen;
+    ghOpen ||
+    docsOpen;
   // The split grid stays mounted in zen (the secondary pane hides via
   // .nex-zen CSS, same technique as the zen chrome rules) so both
   // ConversationView instances survive entering/exiting zen. Split
@@ -1123,6 +1164,8 @@ function AppShell() {
         onOpenDebt={openDebt}
         ghActive={ghOpen}
         onOpenGh={openGh}
+        docsActive={docsOpen}
+        onOpenDocs={openDocs}
         onSelectPrompt={handleSelectPrompt}
         onImport={() => setImportOpen(true)}
         onRename={rename}
@@ -1147,6 +1190,7 @@ function AppShell() {
               setTasksOpen(false);
               setAuditOpen(false);
     setDebtOpen(false);
+    setDocsOpen(false);
               setGhOpen(false);
             }}
             onClose={tabs.close}
@@ -1199,6 +1243,8 @@ function AppShell() {
               <DebtPanel onClose={closeDebt} />
             ) : ghOpen ? (
               <IssuesPanel onClose={closeGh} />
+            ) : docsOpen ? (
+              <DocsPanel onClose={closeDocs} />
             ) : (
               <SettingsView
                 store={providers}

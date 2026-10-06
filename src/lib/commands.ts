@@ -104,6 +104,8 @@ export interface PaletteDeps {
   openDebt: () => void;
   /** Open the Issues & PRs overlay (read-only GitHub lists). */
   openGh: () => void;
+  /** Open the Docs overlay (in-app product documentation). */
+  openDocs: () => void;
   /** Open the Activity & Health overlay on the requested tab. */
   openActivity: (tab: "activity" | "health") => void;
   newConversation: () => void;
@@ -190,6 +192,13 @@ export function buildCommands(deps: PaletteDeps, locale: Locale = "en"): Palette
       section: go,
       keywords: ["github", "issues", "pull requests", "prs", "bugs", "tickets"],
       run: () => deps.openGh(),
+    },
+    {
+      id: "go.docs",
+      title: tr(locale, "palette.cmd.go_docs"),
+      section: go,
+      keywords: ["docs", "documentation", "help", "guide", "manual", "migration", "migrate", "how to", "features"],
+      run: () => deps.openDocs(),
     },
     {
       id: "go.activity",
