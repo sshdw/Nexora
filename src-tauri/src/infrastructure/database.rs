@@ -112,6 +112,8 @@ impl From<rusqlite::Error> for DatabaseError {
 /// - v8: the task-manager tables `agent_tasks` and `agent_task_steps` (task
 ///   manager + autonomous mode): user-defined task lists whose steps the
 ///   autonomous loop executes through the existing agent run path.
+/// - v10: the technical-debt backlog table `debt_items` (debt backlog):
+///   manual entries plus idempotent imports of `repo_audit` findings.
 /// - v9: the local-only usage ledger `usage_ledger` (privacy center): per-day
 ///   counters of whitelisted event kinds — no content columns by construction
 ///   (only the fixed `kind` vocabulary plus integer `day` / `count`), kept to
@@ -510,6 +512,43 @@ CREATE INDEX idx_usage_ledger_day
     ON usage_ledger (day);
 ",
     ),
+    // v10 — technical-debt backlog (debt backlog): one row per tracked debt
+    // item, either manually added (`source='manual'`) or imported from the
+    // read-only repo-audit scanners (`source='audit'`). `status` tracks the
+    // triage lifecycle (`open` → `accepted` → `fixed`, or `wontfix`);
+    // `severity` reuses the audit `info` / `warning` vocabulary.
+    // `audit_key` is the import identity (`kind<US>path<US>line`, NULL for
+    // manual rows): UNIQUE so re-running the import skips rows it already
+    // created (`INSERT OR IGNORE`), while NULL manual rows never collide
+    // (SQLite treats NULL UNIQUE members as distinct). `updated_at` is
+    // refreshed explicitly on every status write (no trigger: only the
+    // status path touches it), keeping the `updated_at >= created_at`
+    // monotonic discipline of the sibling tables.
+    (
+        10,
+        r"CREATE TABLE debt_items (
+    id INTEGER PRIMARY KEY CHECK (id > 0),
+    title TEXT NOT NULL CHECK (length(title) > 0 AND length(title) <= 200),
+    source TEXT NOT NULL CHECK (source IN ('audit', 'manual')),
+    severity TEXT NOT NULL DEFAULT 'info'
+        CHECK (severity IN ('info', 'warning')),
+    status TEXT NOT NULL DEFAULT 'open'
+        CHECK (status IN ('open', 'accepted', 'fixed', 'wontfix')),
+    location TEXT
+        CHECK (location IS NULL OR (length(location) > 0 AND length(location) <= 1024)),
+    note TEXT
+        CHECK (note IS NULL OR length(note) <= 4000),
+    audit_key TEXT UNIQUE
+        CHECK (audit_key IS NULL OR length(audit_key) <= 2048),
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()) CHECK (created_at > 0),
+    updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+        CHECK (updated_at >= created_at)
+);
+
+CREATE INDEX idx_debt_items_status_updated
+    ON debt_items (status, updated_at);
+",
+    ),
 ];
 
 /// Open the `SQLite` database at `path`, apply connection pragmas, and run any
@@ -726,6 +765,7 @@ mod tests {
             "app_settings",
             "attachments",
             "conversations",
+            "debt_items",
             "messages",
             "permission_rules",
             "prompts",
@@ -752,6 +792,7 @@ mod tests {
             "idx_attachments_conversation",
             "idx_attachments_message",
             "idx_conversations_status_updated",
+            "idx_debt_items_status_updated",
             "idx_messages_conversation_created",
             "idx_providers_name",
             "idx_usage_ledger_day",
@@ -780,14 +821,20 @@ mod tests {
             );
         }
 
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(
+            schema_version_rows(&conn),
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        );
     }
 
     #[test]
     fn migration_state_is_recorded_correctly() {
         let conn = in_memory_migrated();
 
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(
+            schema_version_rows(&conn),
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        );
 
         let applied_at: i64 = conn
             .query_row(
@@ -801,17 +848,23 @@ mod tests {
         let version_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .expect("count schema_version rows");
-        assert_eq!(version_count, 9, "one row per applied migration");
+        assert_eq!(version_count, 10, "one row per applied migration");
     }
 
     #[test]
     fn re_running_migrations_is_a_no_op() {
         let mut conn = in_memory_migrated();
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(
+            schema_version_rows(&conn),
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        );
 
         migrate(&mut conn).expect("a second migration run must succeed");
 
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(
+            schema_version_rows(&conn),
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        );
         // The no-op run created or dropped nothing.
         assert!(schema_object_exists(&conn, "conversations", "table"));
         assert!(schema_object_exists(&conn, "conversations_fts", "table"));
@@ -840,7 +893,10 @@ mod tests {
             !schema_object_exists(&conn, "partial_table", "table"),
             "the valid part of the failed migration must roll back"
         );
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(
+            schema_version_rows(&conn),
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        );
     }
 
     #[test]
@@ -1450,7 +1506,10 @@ mod tests {
         // Migrate to v5 (and any later)
         migrate(&mut conn).expect("migrate to v5");
         // Schema version is 5
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(
+            schema_version_rows(&conn),
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        );
         // Row preserved, new columns NULL for pre-v5 rows
         let (status, spent, limit): (String, Option<i64>, Option<i64>) = conn
             .query_row(
@@ -1538,7 +1597,10 @@ mod tests {
         )
         .expect("seed message");
         migrate(&mut conn).expect("migrate to v6");
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(
+            schema_version_rows(&conn),
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        );
         // Seeded row survives with a NULL workspace root.
         let root: Option<String> = conn
             .query_row(
@@ -1613,7 +1675,10 @@ mod tests {
         // Build a v6-only DB (mirrors the v5 test), then migrate to v7.
         let (mut conn, run_id) = v6_database_with_run_and_step();
         migrate(&mut conn).expect("migrate to v7");
-        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(
+            schema_version_rows(&conn),
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        );
         // Old rows intact with NULL provenance.
         let (kind, rule_id, group_key, decided_by): (
             String,

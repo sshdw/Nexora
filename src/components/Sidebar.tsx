@@ -3,6 +3,7 @@ import type { WorkspaceStore } from "../lib/useWorkspace";
 import ActivityHealthEntry from "./ActivityHealthEntry";
 import AuditEntry from "./AuditEntry";
 import ConversationList from "./ConversationList";
+import DebtEntry from "./DebtEntry";
 import IssuesEntry from "./IssuesEntry";
 import M3RailItem from "./M3RailItem";
 import NewConversationButton from "./NewConversationButton";
@@ -48,6 +49,9 @@ export interface SidebarProps {
   /** Whether the Code Audit screen is currently shown. */
   auditActive: boolean;
   onOpenAudit: () => void;
+  /** Whether the Debt backlog screen is currently shown. */
+  debtActive: boolean;
+  onOpenDebt: () => void;
   /** Whether the Issues & PRs screen is currently shown. */
   ghActive: boolean;
   onOpenGh: () => void;
@@ -87,6 +91,8 @@ export default function Sidebar({
   onOpenTasks,
   auditActive,
   onOpenAudit,
+  debtActive,
+  onOpenDebt,
   ghActive,
   onOpenGh,
   onSelectPrompt,
@@ -143,6 +149,7 @@ export default function Sidebar({
         <TerminalEntry active={terminalActive} onClick={onOpenTerminal} />
         <TaskEntry active={tasksActive} onClick={onOpenTasks} />
         <AuditEntry active={auditActive} onClick={onOpenAudit} />
+        <DebtEntry active={debtActive} onClick={onOpenDebt} />
         <IssuesEntry active={ghActive} onClick={onOpenGh} />
         <WorkspaceFolderButton store={workspace} />
         <WorkspaceRootsSwitcher store={workspace} />

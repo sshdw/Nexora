@@ -27,6 +27,7 @@ pub mod compat;
 pub mod context_stats;
 pub mod conversations;
 pub mod data_management;
+pub mod debt;
 pub mod dep_inventory;
 pub mod execution;
 pub mod export;

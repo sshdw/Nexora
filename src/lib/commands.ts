@@ -100,6 +100,8 @@ export interface PaletteDeps {
   openTasks: () => void;
   /** Open the Code Audit overlay (read-only repo findings). */
   openAudit: () => void;
+  /** Open the Debt backlog overlay (manual entries + audit imports). */
+  openDebt: () => void;
   /** Open the Issues & PRs overlay (read-only GitHub lists). */
   openGh: () => void;
   /** Open the Activity & Health overlay on the requested tab. */
@@ -174,6 +176,13 @@ export function buildCommands(deps: PaletteDeps, locale: Locale = "en"): Palette
       section: go,
       keywords: ["audit", "code audit", "lint", "static analysis", "dead code", "review", "bugs", "quality"],
       run: () => deps.openAudit(),
+    },
+    {
+      id: "go.debt",
+      title: tr(locale, "palette.cmd.go_debt"),
+      section: go,
+      keywords: ["debt", "tech debt", "backlog", "todo", "fixme", "pay down", "cleanup", "backlog"],
+      run: () => deps.openDebt(),
     },
     {
       id: "go.gh",
