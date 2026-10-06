@@ -21,6 +21,7 @@ pub mod credentials;
 pub mod data_management;
 pub mod debt;
 pub mod dep_refactor;
+pub mod docs;
 pub mod error;
 pub mod flags;
 pub mod github;

@@ -81,6 +81,7 @@ pub fn run() {
             commands::debt::update_debt_item_status,
             commands::debt::delete_debt_item,
             commands::debt::import_debt_from_audit,
+            commands::docs::docs_manifest,
             commands::testgen::testgen_drafts,
             commands::dep_refactor::dep_inventory,
             commands::dep_refactor::refactor_apply,

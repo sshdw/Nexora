@@ -4,6 +4,7 @@ import ActivityHealthEntry from "./ActivityHealthEntry";
 import AuditEntry from "./AuditEntry";
 import ConversationList from "./ConversationList";
 import DebtEntry from "./DebtEntry";
+import DocsEntry from "./DocsEntry";
 import IssuesEntry from "./IssuesEntry";
 import M3RailItem from "./M3RailItem";
 import NewConversationButton from "./NewConversationButton";
@@ -55,6 +56,9 @@ export interface SidebarProps {
   /** Whether the Issues & PRs screen is currently shown. */
   ghActive: boolean;
   onOpenGh: () => void;
+  /** Whether the Docs screen is currently shown. */
+  docsActive: boolean;
+  onOpenDocs: () => void;
   /** Open a prompt found by search in the Prompt Library editor. */
   onSelectPrompt: (promptId: number) => void;
   /** Open the import-conversation flow (FR-011). */
@@ -95,6 +99,8 @@ export default function Sidebar({
   onOpenDebt,
   ghActive,
   onOpenGh,
+  docsActive,
+  onOpenDocs,
   onSelectPrompt,
   onImport,
   onRename,
@@ -151,6 +157,7 @@ export default function Sidebar({
         <AuditEntry active={auditActive} onClick={onOpenAudit} />
         <DebtEntry active={debtActive} onClick={onOpenDebt} />
         <IssuesEntry active={ghActive} onClick={onOpenGh} />
+        <DocsEntry active={docsActive} onClick={onOpenDocs} />
         <WorkspaceFolderButton store={workspace} />
         <WorkspaceRootsSwitcher store={workspace} />
         {workspace.error && (
