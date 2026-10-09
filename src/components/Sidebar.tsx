@@ -10,6 +10,7 @@ import M3RailItem from "./M3RailItem";
 import NewConversationButton from "./NewConversationButton";
 import NexoraMark from "./NexoraMark";
 import PromptLibraryEntry from "./PromptLibraryEntry";
+import ReleaseEntry from "./ReleaseEntry";
 import SearchBox from "./SearchBox";
 import SettingsEntry from "./SettingsEntry";
 import TaskEntry from "./TaskEntry";
@@ -59,6 +60,9 @@ export interface SidebarProps {
   /** Whether the Docs screen is currently shown. */
   docsActive: boolean;
   onOpenDocs: () => void;
+  /** Whether the Release screen is currently shown. */
+  releaseActive: boolean;
+  onOpenRelease: () => void;
   /** Open a prompt found by search in the Prompt Library editor. */
   onSelectPrompt: (promptId: number) => void;
   /** Open the import-conversation flow (FR-011). */
@@ -101,6 +105,8 @@ export default function Sidebar({
   onOpenGh,
   docsActive,
   onOpenDocs,
+  releaseActive,
+  onOpenRelease,
   onSelectPrompt,
   onImport,
   onRename,
@@ -158,6 +164,7 @@ export default function Sidebar({
         <DebtEntry active={debtActive} onClick={onOpenDebt} />
         <IssuesEntry active={ghActive} onClick={onOpenGh} />
         <DocsEntry active={docsActive} onClick={onOpenDocs} />
+        <ReleaseEntry active={releaseActive} onClick={onOpenRelease} />
         <WorkspaceFolderButton store={workspace} />
         <WorkspaceRootsSwitcher store={workspace} />
         {workspace.error && (

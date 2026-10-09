@@ -1903,6 +1903,79 @@ export function snapshotDatabase(): Promise<SnapshotInfo> {
   return invoke<SnapshotInfo>("snapshot_database");
 }
 
+// ---- Release readiness + issue automation ---------------------------------
+// Two commands behind the Release panel (operator close-the-loop surface):
+// `release_status` aggregates the honest readiness facts — manifest version
+// parity (`package.json` / `src-tauri/Cargo.toml` /
+// `src-tauri/tauri.conf.json` below the workspace root; missing manifests
+// surface as `null`, never an error), migration facts (known vs applied vs
+// pending), the newest pre-update snapshot presence, and the local `gh` CLI
+// probe. Read-only and network-free; no new tables. The update signal stays
+// on `update_check` (it needs the network) — the panel calls both.
+// `create_issue_for_finding` files one caller-confirmed issue through the
+// user's own `gh` CLI (`gh issue create` with `cwd` = workspace root, so the
+// repo resolves itself). Auth stays in the CLI: no token ever crosses IPC —
+// only the confirmed title/location/detail/source strings travel, and only
+// title/body strings reach the subprocess as argv. The per-call `confirmed`
+// flag carries the destructive-action confirmation pattern (bare IPC callers
+// cannot file). Payloads stay snake_case like every other backend struct;
+// command args are camelCase (`debtId` style) like every other command.
+
+/** Newest pre-update snapshot: file name (never the path) plus size. */
+export interface ReleaseSnapshot {
+  file_name: string;
+  size_bytes: number;
+}
+
+/** Release readiness facts, all computed backend-side (never hand-waved).
+ * The panel maps these to pass/warn/fail badges. */
+export interface ReleaseStatus {
+  app_version: string;
+  package_json_version: string | null;
+  cargo_version: string | null;
+  tauri_conf_version: string | null;
+  versions_agree: boolean;
+  migration_count: number;
+  schema_version: number;
+  schema_target: number;
+  pending_migrations: number;
+  snapshot: ReleaseSnapshot | null;
+  gh_available: boolean;
+  gh_version: string | null;
+}
+
+/** Collect the release readiness facts via `release_status`. */
+export function releaseStatus(): Promise<ReleaseStatus> {
+  return invoke<ReleaseStatus>("release_status");
+}
+
+/** Fixed-vocabulary issue source for the link-back line. */
+export type IssueSource = "debt" | "audit" | "release-check";
+
+/** One filed issue: the canonical URL `gh` printed plus its issue number. */
+export interface CreatedIssue {
+  url: string;
+  number: number;
+}
+
+/** File one caller-confirmed issue via `create_issue_for_finding`.
+ * `confirmed` must be true (the dialog owns the confirmation UX). */
+export function createIssueForFinding(
+  title: string,
+  source: IssueSource,
+  confirmed: boolean,
+  location?: string | null,
+  detail?: string | null,
+): Promise<CreatedIssue> {
+  return invoke<CreatedIssue>("create_issue_for_finding", {
+    title,
+    location: location ?? null,
+    detail: detail ?? null,
+    source,
+    confirmed,
+  });
+}
+
 // ---- Privacy center (telemetry controls + local usage ledger) -------------
 // Three commands behind the health panel's Privacy section:
 // `privacy_status` (every egress surface with its live state + the ledger

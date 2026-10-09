@@ -39,6 +39,7 @@ pub mod project_dir;
 pub mod prompts;
 pub mod providers;
 pub mod refactor_apply;
+pub mod release;
 pub mod repo_audit;
 pub mod routing;
 pub mod search;

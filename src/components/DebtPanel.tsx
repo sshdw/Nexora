@@ -35,6 +35,7 @@ import { useStrings, type Strings } from "../lib/useLocale";
 import M3Button from "./M3Button";
 import M3LoadingIndicator from "./M3LoadingIndicator";
 import ConfirmDialog from "./ConfirmDialog";
+import FileIssueDialog, { type FileIssueTarget } from "./FileIssueDialog";
 
 export interface DebtPanelProps {
   onClose: () => void;
@@ -112,6 +113,8 @@ export default function DebtPanel({ onClose }: DebtPanelProps) {
   const [saving, setSaving] = useState(false);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<DebtItem | null>(null);
+  const [issueTarget, setIssueTarget] = useState<FileIssueTarget | null>(null);
+  const [issueNotice, setIssueNotice] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -257,6 +260,11 @@ export default function DebtPanel({ onClose }: DebtPanelProps) {
             {importNotice}
           </p>
         )}
+        {issueNotice && !error && (
+          <p className="nex-vcs-notice" role="status">
+            {issueNotice}
+          </p>
+        )}
         {loading && <M3LoadingIndicator label={t("common.loading")} />}
         {!loading && (
           <>
@@ -343,6 +351,20 @@ export default function DebtPanel({ onClose }: DebtPanelProps) {
                         disabled={busyId === item.id}
                       >
                         {t("debt.delete")}
+                      </M3Button>{" "}
+                      <M3Button
+                        variant="quiet"
+                        onClick={() =>
+                          setIssueTarget({
+                            title: item.title,
+                            location: item.location,
+                            detail: item.note,
+                            source: "debt",
+                          })
+                        }
+                        disabled={busyId === item.id}
+                      >
+                        {t("issue.fileIssue")}
                       </M3Button>
                     </div>
                   </li>
@@ -442,6 +464,14 @@ export default function DebtPanel({ onClose }: DebtPanelProps) {
           confirmLabel={t("debt.deleteConfirm")}
           onConfirm={() => void confirmDelete()}
           onCancel={() => setDeleteTarget(null)}
+        />
+      )}
+      {issueTarget && (
+        <FileIssueDialog
+          target={issueTarget}
+          onFiled={(message) => setIssueNotice(message)}
+          onError={(message) => setError(message)}
+          onClose={() => setIssueTarget(null)}
         />
       )}
     </div>

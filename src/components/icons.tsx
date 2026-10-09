@@ -596,3 +596,35 @@ export function DebtIcon(props: ComponentPropsWithoutRef<"svg">) {
     </svg>
   );
 }
+
+/** Release glyph for the sidebar Release entry: a pennant flag on a pole
+ * (the release ships), on the same 18px stroke grid as the rail set —
+ * distinct from the tag, ring, magnifier, and task checkboxes. */
+export function ReleaseIcon(props: ComponentPropsWithoutRef<"svg">) {
+  return (
+    <svg
+      aria-hidden="true"
+      focusable="false"
+      width="18"
+      height="18"
+      viewBox="0 0 18 18"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      {...props}
+    >
+      <path
+        d="M4 2.5v13"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+      <path
+        d="M4 3.5h8.8L10.4 6l2.4 2.5H4"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
