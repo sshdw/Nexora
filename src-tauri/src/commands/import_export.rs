@@ -4,6 +4,17 @@
 //! Each command is a thin translation of Tauri inputs/outputs: it delegates to
 //! the existing application-layer export / import services (FR-010, FR-011)
 //! and converts their classified errors into safe [`CommandError`] values.
+//!
+//! # Confirmation coverage (incomplete — NEX-SEC-005)
+//!
+//! The write-to-disk exports here (`export_conversation_to_file`,
+//! `export_setup_to_file`, `export_setup`) write to a caller-chosen path with
+//! **no Rust-side confirmation gate at all**: unlike the terminal and
+//! data-management paths, which require a single-use id minted only after the
+//! user accepts a blocking native OS dialog, these take a raw path and run.
+//! Migrating them is the open audit item #137 (SEC-005); see
+//! `application/confirmations.rs` for the full coverage split. Do not describe
+//! the export paths as server-verified until then.
 
 // Tauri command handlers must take ownership of their deserialized
 // arguments: serde cannot borrow into the wire payload, so passing by

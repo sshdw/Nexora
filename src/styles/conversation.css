@@ -204,6 +204,14 @@
   color: var(--nex-sys-color-on-surface-tertiary);
 }
 
+/* ---- Cancelled delete: calm status, not the error panel. The native system
+   prompt's Cancel deletes nothing, so the notice reads as information. ---- */
+.nex-conversation-cancelled {
+  padding: var(--nex-sys-space-xs) var(--nex-sys-space-md);
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-on-surface-tertiary);
+}
+
 /* ---- Error state ---- */
 .nex-conversation-error {
   display: flex;

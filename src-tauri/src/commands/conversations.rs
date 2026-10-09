@@ -81,14 +81,6 @@ pub(crate) fn restore_conversation(id: i64, db: State<'_, Database>) -> Result<(
         .map_err(Into::into)
 }
 
-/// Delete a conversation and the messages/attachments that cascade from it.
-#[tauri::command]
-pub(crate) fn delete_conversation(id: i64, db: State<'_, Database>) -> Result<(), CommandError> {
-    ConversationService::new(db.inner())
-        .delete(id)
-        .map_err(Into::into)
-}
-
 /// Send a user message to a conversation and return the normalized AI
 /// response, which is also persisted as the assistant message. Any draft
 /// attachment ids supplied are linked to the created user message before the

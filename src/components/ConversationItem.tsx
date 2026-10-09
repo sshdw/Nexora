@@ -2,7 +2,6 @@ import { useState } from "react";
 
 import { formatRelativeTime } from "../lib/format";
 import type { Conversation } from "../lib/tauri";
-import ConfirmDialog from "./ConfirmDialog";
 import M3IconButton from "./M3IconButton";
 import M3RailItem from "./M3RailItem";
 import M3Toolbar from "./M3Toolbar";
@@ -42,9 +41,12 @@ export default function ConversationItem({
 }: ConversationItemProps) {
   const [renaming, setRenaming] = useState(false);
   const [draftTitle, setDraftTitle] = useState(conversation.title);
-  // 0.3.0: deletion confirms in the Nexora dialog system (was
-  // window.confirm) — same explicit-confirm behavior, in-app chrome.
-  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  // NEX-SEC-004: there is NO in-app confirm dialog for deletion. The trash
+  // action calls straight through to the gated permanent-delete path, whose
+  // blocking NATIVE OS prompt (bound to this exact row) is the single,
+  // honest confirmation — a cancel there deletes nothing. Same shape as the
+  // Prompt Library's delete flow; the old in-app ConfirmDialog step is gone
+  // on purpose so approval cannot be shown twice and drift from what runs.
   const { locale, t } = useStrings();
 
   const beginRename = () => {
@@ -169,26 +171,13 @@ export default function ConversationItem({
             size="sm"
             danger
             label={t("list.actionDelete")}
-            onClick={() => setConfirmingDelete(true)}
+            onClick={() => onDelete(conversation.id)}
             disabled={busy}
           >
             <TrashIcon />
           </M3IconButton>
         </M3Toolbar>
       </div>
-      {confirmingDelete && (
-        <ConfirmDialog
-          title={t("list.deleteTitle")}
-          body={t("list.deleteBody", { title: conversation.title })}
-          confirmLabel={t("list.deleteConfirm")}
-          danger
-          onConfirm={() => {
-            setConfirmingDelete(false);
-            onDelete(conversation.id);
-          }}
-          onCancel={() => setConfirmingDelete(false)}
-        />
-      )}
     </li>
   );
 }

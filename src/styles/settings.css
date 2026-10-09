@@ -218,19 +218,6 @@
   background: var(--nex-sys-state-hover);
 }
 
-.nex-danger-confirm {
-  display: flex;
-  flex-direction: column;
-  gap: var(--nex-sys-space-xs);
-  align-items: flex-start;
-}
-
-.nex-danger-confirm .nex-input {
-  max-width: 280px;
-  /* The confirm field sits on the tinted zone — keep it legible. */
-  background: var(--nex-sys-color-surface-container);
-}
-
 /* ---- Settings search + advanced power-key rows (slim surface).
     Token-only: no raw colors, sizes, or radii. ---- */
 .nex-settings-search {

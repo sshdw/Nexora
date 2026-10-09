@@ -12,7 +12,7 @@ import {
   type Conversation,
   archiveConversation,
   createConversation,
-  deleteConversation,
+  deleteConversationPermanently,
   listConversations,
   renameConversation,
   restoreConversation,
@@ -43,7 +43,11 @@ export interface ConversationsStore {
   archive: (id: number) => Promise<void>;
   /** Restore an archived conversation (FR-006). */
   restore: (id: number) => Promise<void>;
-  /** Delete a conversation and reload the list (FR-002). */
+  /** Permanently delete a conversation and reload the list (FR-002).
+   * NEX-SEC-004: the native OS confirmation prompt raised by
+   * `deleteConversationPermanently` IS the confirmation — there is no
+   * separate in-app confirm step. A cancel rejects with
+   * `confirmationRequired` and deletes nothing. */
   remove: (id: number) => Promise<void>;
 }
 
@@ -108,7 +112,10 @@ export function useConversations(): ConversationsStore {
   );
   const archive = useCallback((id: number) => run(() => archiveConversation(id)), [run]);
   const restore = useCallback((id: number) => run(() => restoreConversation(id)), [run]);
-  const remove = useCallback((id: number) => run(() => deleteConversation(id)), [run]);
+  const remove = useCallback(
+    (id: number) => run(() => deleteConversationPermanently(id)),
+    [run],
+  );
 
   useEffect(() => {
     reload();

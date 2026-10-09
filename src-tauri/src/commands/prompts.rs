@@ -52,14 +52,6 @@ pub(crate) fn update_prompt(
         .map_err(Into::into)
 }
 
-/// Delete a prompt from the library (a no-op when the id is unknown).
-#[tauri::command]
-pub(crate) fn delete_prompt(id: i64, db: State<'_, Database>) -> Result<(), CommandError> {
-    PromptLibraryService::new(db.inner())
-        .delete(id)
-        .map_err(Into::into)
-}
-
 /// Insert a prompt's content into a conversation as a user message.
 #[tauri::command]
 pub(crate) fn insert_prompt_into_conversation(

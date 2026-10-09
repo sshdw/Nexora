@@ -113,20 +113,6 @@ impl<'a> PromptLibraryService<'a> {
         Ok(())
     }
 
-    /// Delete a prompt by `id` (FR-007).
-    ///
-    /// Hard delete through the repository. Deleting a prompt that does not
-    /// exist is a no-op, matching the repository's existing delete semantics
-    /// (DATABASE.md §7.3).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PromptLibraryError::Database`] if the delete fails.
-    pub(crate) fn delete(&self, id: i64) -> Result<()> {
-        self.prompts.delete(id)?;
-        Ok(())
-    }
-
     /// Insert `prompt_id` into `conversation_id` (FR-007; ROADMAP.md Phase 5).
     ///
     /// A prompt acts as a reusable message text: its `content` is persisted
@@ -370,25 +356,6 @@ mod tests {
         let err = service.update(42, "X", "Y").expect_err("unknown prompt");
 
         assert!(matches!(err, PromptLibraryError::PromptNotFound { id: 42 }));
-    }
-
-    #[test]
-    fn delete_removes_a_prompt() {
-        let db = test_db();
-        let service = PromptLibraryService::new(&db);
-        let id = service.create("Plan", "content").expect("prompt created");
-
-        service.delete(id).expect("prompt deleted");
-
-        assert!(service.read(id).expect("read deleted").is_none());
-    }
-
-    #[test]
-    fn delete_of_unknown_prompt_is_a_no_op() {
-        let db = test_db();
-        let service = PromptLibraryService::new(&db);
-
-        service.delete(42).expect("delete unknown prompt succeeds");
     }
 
     #[test]

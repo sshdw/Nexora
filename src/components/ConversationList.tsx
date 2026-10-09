@@ -33,6 +33,12 @@ export default function ConversationList({
   onDelete,
 }: ConversationListProps) {
   const { t } = useStrings();
+  // NEX-SEC-004: a delete that ends at the native system prompt's Cancel
+  // rejects with `confirmationRequired` — nothing was deleted, so it renders
+  // as a calm status line over the untouched list (same shape as the Prompt
+  // Library's `deleteCancelled`), never as the error panel. Derived from the
+  // store error so it clears on the next operation.
+  const deleteCancelled = error?.kind === "confirmationRequired";
   if (loading) {
     return (
       <nav className="nex-conversation-nav" aria-label={t("list.navAria")}>
@@ -45,7 +51,7 @@ export default function ConversationList({
     );
   }
 
-  if (error) {
+  if (error && !deleteCancelled) {
     return (
       <nav className="nex-conversation-nav" aria-label={t("list.navAria")}>
         <div className="nex-conversation-error nex-fade-in" role="alert">
@@ -73,6 +79,11 @@ export default function ConversationList({
 
   return (
     <nav className="nex-conversation-nav" aria-label={t("list.navAria")}>
+      {deleteCancelled && (
+        <p className="nex-conversation-cancelled nex-fade-in" role="status">
+          {t("list.deleteCancelled")}
+        </p>
+      )}
       <ul className="nex-conversation-list">
         {active.length > 0 && (
           <li className="nex-conversation-group-label">{t("list.groupActive")}</li>

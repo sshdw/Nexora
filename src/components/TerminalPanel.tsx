@@ -11,8 +11,8 @@
 //!
 //! Approval UX: commands are typed by the user directly, so the Run press
 //! IS the approval (no agent park exists for user-authored commands); the
-//! wrapper always passes the backend's per-call confirmation, like the git
-//! writes. `cd <relative-path>` is intercepted client-side (each backend
+//! wrapper mints a single-use server-side confirmation id per run
+//! (NEX-SEC-004), like the data-management wrappers. `cd <relative-path>` is intercepted client-side (each backend
 //! run spawns a fresh shell, so `cd` could never persist there) and only
 //! changes the in-memory working directory shown in the indicator.
 //! Interactive-TUI programs (`vim`, `ssh`, …) are unsupported — stdin is
@@ -48,6 +48,8 @@ import { useStrings } from "../lib/useLocale";
 
 /** One scrollback entry: the command plus its outcome. `pending` marks the
  * in-flight run (Stop targets it); `stopped` marks a stop-killed run;
+ * `cancelled` marks a run refused at the native confirmation prompt (the
+ * command never executed — distinct from stopped and from failed);
  * `error` carries a backend rejection (shown in the body, never lost). */
 interface TerminalBlock {
   id: number;
@@ -58,6 +60,7 @@ interface TerminalBlock {
   truncated: boolean;
   pending: boolean;
   stopped: boolean;
+  cancelled: boolean;
   error: string | null;
 }
 
@@ -108,6 +111,17 @@ function toMessage(error: unknown): string {
   }
   if (error instanceof Error) return error.message;
   return String(error);
+}
+
+/** True when the backend refused because the user cancelled at the native OS
+ * confirmation prompt (`request_confirmation` mints nothing, so the command
+ * never ran). Distinct from a genuine run failure: nothing executed. */
+function isConfirmationCancelled(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as CommandError).kind === "confirmationRequired"
+  );
 }
 
 export interface TerminalPanelProps {
@@ -234,6 +248,7 @@ export default function TerminalPanel({ onClose, request = null }: TerminalPanel
           truncated: false,
           pending: true,
           stopped: false,
+          cancelled: false,
           error: null,
         },
       ]);
@@ -265,6 +280,25 @@ export default function TerminalPanel({ onClose, request = null }: TerminalPanel
           setBlocks((prev) =>
             prev.map((block) =>
               block.id === blockId ? { ...block, pending: false, stopped: true } : block,
+            ),
+          );
+        } else if (isConfirmationCancelled(e)) {
+          // Cancelled at the native confirmation prompt (NEX-SEC-004): no id
+          // was minted and the command never ran. Reported honestly as a
+          // cancelled run — never as a failed command, and never with the
+          // exit-ok badge: `cancelled` renders its own badge below while the
+          // body keeps the explanatory text.
+          setBlocks((prev) =>
+            prev.map((block) =>
+              block.id === blockId
+                ? {
+                    ...block,
+                    pending: false,
+                    success: false,
+                    cancelled: true,
+                    error: tr(getLocale(), "term.runCancelled"),
+                  }
+                : block,
             ),
           );
         } else {
@@ -481,20 +515,24 @@ export default function TerminalPanel({ onClose, request = null }: TerminalPanel
                       "nex-tag nex-tag-mono nex-term-exit" +
                       (block.pending
                         ? " nex-term-exit-running"
-                        : block.stopped
+                        : block.cancelled
                           ? " nex-term-exit-stopped"
-                          : block.success
-                            ? " nex-term-exit-ok"
-                            : " nex-term-exit-fail")
+                          : block.stopped
+                            ? " nex-term-exit-stopped"
+                            : block.success
+                              ? " nex-term-exit-ok"
+                              : " nex-term-exit-fail")
                     }
                   >
                     {block.pending
                       ? t("term.exitRunning")
-                      : block.stopped
-                        ? t("term.exitStopped")
-                        : block.success
-                          ? t("term.exitOk")
-                          : t("term.exitFail")}
+                      : block.cancelled
+                        ? t("term.exitCancelled")
+                        : block.stopped
+                          ? t("term.exitStopped")
+                          : block.success
+                            ? t("term.exitOk")
+                            : t("term.exitFail")}
                   </span>
                   {block.truncated && !block.pending && (
                     <span className="nex-tag nex-tag-mono nex-term-exit nex-term-exit-truncated">

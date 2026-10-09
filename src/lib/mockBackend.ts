@@ -249,7 +249,10 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
       row.status = "active";
       return null;
     }
-    case "delete_conversation": {
+    case "delete_conversation_permanently": {
+      if (typeof args.confirmationId !== "string" || args.confirmationId.length === 0) {
+        fail("Mock backend: a confirmation id is required.");
+      }
       const id = Number(args.id);
       const index = conversations.findIndex((c) => c.id === id);
       if (index >= 0) conversations.splice(index, 1);
@@ -329,8 +332,19 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
     case "delete_setting":
       settings.delete(String(args.key));
       return null;
+    case "request_confirmation": {
+      // DEV-ONLY mock: every scope mints the same canned id, and the
+      // destructive cases below accept any non-empty id (production mints
+      // unguessable single-use ids backend-side — see NEX-SEC-004).
+      if (args.scope !== "terminal" && args.scope !== "data_management") {
+        fail("Mock backend: unknown confirmation scope.");
+      }
+      return "mock-confirmation-id";
+    }
     case "clear_application_data": {
-      if (args.confirmation !== "confirm") fail("Confirmation phrase mismatch.");
+      if (typeof args.confirmationId !== "string" || args.confirmationId.length === 0) {
+        fail("Mock backend: a confirmation id is required.");
+      }
       conversations.length = 0;
       messages.length = 0;
       prompts.length = 0;
@@ -376,7 +390,9 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
       return null;
     }
     case "delete_prompt_permanently": {
-      if (args.confirmation !== "confirm") fail("Confirmation phrase mismatch.");
+      if (typeof args.confirmationId !== "string" || args.confirmationId.length === 0) {
+        fail("Mock backend: a confirmation id is required.");
+      }
       const index = prompts.findIndex((p) => p.id === Number(args.id));
       if (index >= 0) prompts.splice(index, 1);
       return null;

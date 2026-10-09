@@ -241,10 +241,13 @@ const STATIC_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
   { group: "advanced", title: "Agent preset", keywords: ["preset", "agent preset", "defaults"] },
 ];
 
-/** The exact phrase the backend's `clear_application_data` command requires
- * before it performs any destructive write (application::data_management::
- * CONFIRMATION — FR-013 AC-5). The user must type it explicitly. */
-const CLEAR_CONFIRMATION_PHRASE = "confirm";
+// NEX-SEC-004: there is deliberately NO typed-phrase gate and NO in-app
+// confirm dialog here. `clearApplicationData` raises a blocking NATIVE OS
+// confirmation prompt, and the backend mints a single-use id bound to
+// clear-all only if the user accepts. That native prompt is the single,
+// honest confirmation: the removed local gate was UX-only and would have
+// meant two prompts for one action, with the weaker of the two (a renderer-
+// skippable local check) implying it was the real one.
 
 export interface SettingsViewProps {
   onClose: () => void;
@@ -297,9 +300,10 @@ export default function SettingsView({
   }, [initialSection]);
   const [query, setQuery] = useState("");
   const [draftKeys, setDraftKeys] = useState<Record<string, string>>({});
-  // Clear-all-data confirmation state (typed phrase; no accidental runs).
-  const [confirmingClear, setConfirmingClear] = useState(false);
-  const [clearPhrase, setClearPhrase] = useState("");
+  // Clear-all-data state. The confirmation is the native OS prompt raised by
+  // `clearApplicationData` (see CLEAR-CONFIRMATION note above), so there is no
+  // local arming step here — `clearError` reports a cancel or a real failure
+  // and clears on the next attempt.
   const [clearError, setClearError] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
   // Agent-group state: persisted autonomy default for new runs.
@@ -555,39 +559,31 @@ export default function SettingsView({
     await store.disconnect(definition.name);
   };
 
-  const openClearConfirmation = () => {
-    setClearPhrase("");
-    setClearError(null);
-    setConfirmingClear(true);
-  };
-
-  const cancelClearConfirmation = () => {
-    setConfirmingClear(false);
-    setClearPhrase("");
-    setClearError(null);
-  };
-
   const handleClearData = async () => {
     if (clearing) return;
-    if (clearPhrase !== CLEAR_CONFIRMATION_PHRASE) {
-      setClearError(tr(getLocale(), "settings.clearMismatch", { phrase: CLEAR_CONFIRMATION_PHRASE }));
-      return;
-    }
     setClearing(true);
     setClearError(null);
     try {
-      // The backend refuses to run unless the phrase matches exactly and
+      // `clearApplicationData` raises the native OS confirmation prompt and
+      // only mints a clear-all-bound id if the user accepts; the backend then
       // clears everything atomically — a failure leaves all data intact.
-      await clearApplicationData(CLEAR_CONFIRMATION_PHRASE);
+      await clearApplicationData();
       // The cleared settings included the provider/model selection.
       await store.reload();
       onDataCleared();
-      cancelClearConfirmation();
     } catch (e) {
+      // A cancel at the native prompt is reported honestly and distinctly:
+      // nothing was deleted, and the panel stays open for another attempt.
+      const kind =
+        typeof e === "object" && e !== null && "kind" in e
+          ? String((e as { kind: unknown }).kind)
+          : "";
       setClearError(
-        typeof e === "object" && e !== null && "message" in e
-          ? String((e as { message: unknown }).message)
-          : tr(getLocale(), "settings.clearFail"),
+        kind === "confirmationRequired"
+          ? tr(getLocale(), "settings.clearCancelled")
+          : typeof e === "object" && e !== null && "message" in e
+            ? String((e as { message: unknown }).message)
+            : tr(getLocale(), "settings.clearFail"),
       );
     } finally {
       setClearing(false);
@@ -937,58 +933,17 @@ export default function SettingsView({
             <p className="nex-danger-text">
               {t("settings.dangerText")}
             </p>
-            {!confirmingClear ? (
-              <M3Button variant="destructive" onClick={openClearConfirmation}>
-                {t("settings.clearBtn")}
-              </M3Button>
-            ) : (
-              <div className="nex-danger-confirm">
-                <label className="nex-settings-label" htmlFor="clear-confirm-input">
-                  {t("settings.clearConfirmLabel", { phrase: CLEAR_CONFIRMATION_PHRASE })}
-                </label>
-                <input
-                  id="clear-confirm-input"
-                  className="nex-input"
-                  type="text"
-                  value={clearPhrase}
-                  autoFocus
-                  disabled={clearing}
-                  aria-invalid={clearError ? true : undefined}
-                  aria-describedby={clearError ? "clear-confirm-error" : undefined}
-                  onChange={(event) => setClearPhrase(event.target.value)}
-                  onKeyDown={(event) => {
-                    // shortcut:settings.clear-confirm.
-                    if (event.key === "Enter") void handleClearData();
-                  }}
-                />
-                {clearError && (
-                  <p
-                    id="clear-confirm-error"
-                    className="nex-settings-error nex-fade-in"
-                    role="alert"
-                  >
-                    {clearError}
-                  </p>
-                )}
-                <div className="nex-provider-actions">
-                  <M3Button
-                    variant="quiet"
-                    disabled={clearing}
-                    onClick={cancelClearConfirmation}
-                  >
-                    {t("common.cancel")}
-                  </M3Button>
-                  <M3Button
-                    variant="destructive"
-                    filled
-                    loading={clearing}
-                    disabled={clearPhrase !== CLEAR_CONFIRMATION_PHRASE}
-                    onClick={() => void handleClearData()}
-                  >
-                    {clearing ? t("settings.clearing") : t("settings.clearAll")}
-                  </M3Button>
-                </div>
-              </div>
+            <M3Button
+              variant="destructive"
+              loading={clearing}
+              onClick={() => void handleClearData()}
+            >
+              {clearing ? t("settings.clearing") : t("settings.clearBtn")}
+            </M3Button>
+            {clearError && (
+              <p className="nex-settings-error nex-fade-in" role="alert">
+                {clearError}
+              </p>
             )}
           </div>
         </section>

@@ -36,8 +36,12 @@
 //!   exactly this apply — reversibility proof. Dirty, untracked, or ignored
 //!   files refuse with [`RefactorApplyError::UncleanFile`].
 //! - Explicit user confirm: `confirmed: false` refuses without touching the
-//!   filesystem ([`RefactorApplyError::Unconfirmed`]) — the same per-call
-//!   confirmation gate as the git writes, not a parallel mechanism.
+//!   filesystem ([`RefactorApplyError::Unconfirmed`]). That flag is
+//!   **renderer-attested, not a Rust-side user-presence proof** — any IPC
+//!   caller passes `confirmed: true` in one call, so this path is honest UX
+//!   but not the server-side confirmation gate (native dialog + operation
+//!   binding, `application/confirmations.rs`). Migrating it is an open audit
+//!   item.
 //! - Declaration-line check: the first removed line must trim-start to
 //!   `pub ` (a public-item declaration — the dead-code candidate shape), or
 //!   the apply refuses with [`RefactorApplyError::ContentMismatch`]. The

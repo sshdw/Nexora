@@ -12,10 +12,13 @@
 //! Approval-gate note: the agent [`ApprovalGate`](crate::application::agent::approval::ApprovalGate)
 //! parks agent-proposed tool calls inside a live run (no run, no park).
 //! A terminal command is authored by the user directly, so the Run gesture
-//! itself is the approval; the backend still requires the per-call
-//! `confirmed` flag (the destructive-action confirmation pattern shared
-//! with the git writes and data management — [`TerminalError::Unconfirmed`])
-//! so bare IPC callers cannot execute without it.
+//! requests the approval; the backend still requires a single-use
+//! confirmation id minted by the `request_confirmation` command *after a
+//! blocking native OS dialog the user accepted*, and bound to this exact
+//! command + working directory (the server-side confirmation gate shared with
+//! data management — [`TerminalError::Unconfirmed`]). A caller-supplied
+//! boolean could be forged by any IPC caller (NEX-SEC-004); an id the user
+//! approved for one command cannot authorize a different one.
 //!
 //! Limits (inherited, documented for the panel UX):
 //! - workspace-scoped: `cwd` resolves inside the workspace root or the run
@@ -40,6 +43,7 @@ use serde::Serialize;
 
 use crate::application::agent::control::CancellationToken;
 use crate::application::agent::tools::{ToolError, ToolRegistry};
+use crate::application::confirmations::{ConfirmationRegistry, ConfirmationTarget, SCOPE_TERMINAL};
 use crate::application::execution::{AiMessage, AiRequest, AiRole, RequestError, ToolCall};
 use crate::infrastructure::database::Database;
 
@@ -66,7 +70,8 @@ pub(crate) struct TerminalExecuted {
 /// never echoed — not here, not in logs, not across IPC.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TerminalError {
-    /// The per-call `confirmed` flag was `false`.
+    /// No valid single-use confirmation id was presented (unknown, expired,
+    /// already consumed, or minted for another scope).
     Unconfirmed,
     /// Empty command, or the tool path rejected the command/working dir.
     InvalidInput(String),
@@ -138,28 +143,54 @@ const TRUNCATE_MARKERS: [&str; 2] = ["[output truncated,", "[truncated: "];
 /// Run `command` in `workspace_root` (optionally scoped to the
 /// workspace-relative `cwd`) through the existing `execute_command` tool.
 ///
-/// `confirmed` must be `true` (the Run gesture); `token` is the run's
-/// cancellation token (kill path). See the module docs for the inherited
-/// limits.
+/// `confirmation_id` must be a live single-use id minted for the terminal
+/// scope by the `request_confirmation` command and bound to this exact
+/// `command` + `cwd`; it is consumed atomically before execution, so a
+/// forged, expired, replayed, cross-scope, or different-command id refuses
+/// with [`TerminalError::Unconfirmed`] and runs nothing.
+///
+/// Inputs are validated *before* the id is consumed, so a rejected command or
+/// working directory leaves the confirmation usable (the user is not charged
+/// an approval for a typo). `token` is the run's cancellation token (kill
+/// path). See the module docs for the inherited limits.
 pub(crate) fn execute_terminal(
     workspace_root: &Path,
     command: &str,
     cwd: Option<&str>,
-    confirmed: bool,
+    confirmation_id: &str,
+    confirmations: &ConfirmationRegistry,
     token: &CancellationToken,
 ) -> Result<TerminalExecuted, TerminalError> {
-    if !confirmed {
-        return Err(TerminalError::Unconfirmed);
-    }
+    // Validate inputs BEFORE consuming: a rejected command or working
+    // directory must leave the user's confirmation id usable, so a typo in
+    // `cwd` never costs them a fresh native-dialog approval. The tool path
+    // re-validates everything below on the authoritative pass.
     if command.trim().is_empty() {
         return Err(TerminalError::InvalidInput(
             "the terminal command must not be empty".to_string(),
         ));
     }
+    if let Some(dir) = cwd.filter(|dir| !dir.trim().is_empty()) {
+        if std::path::Path::new(dir).is_absolute() {
+            return Err(TerminalError::InvalidInput(
+                "the terminal working directory is outside the workspace".to_string(),
+            ));
+        }
+        if dir.split(['/', '\\']).any(|segment| segment == "..") {
+            return Err(TerminalError::InvalidInput(
+                "the terminal working directory is outside the workspace".to_string(),
+            ));
+        }
+    }
     let arguments = match cwd {
         Some(dir) => serde_json::json!({ "command": command, "cwd": dir }),
         None => serde_json::json!({ "command": command }),
     };
+    // Consume LAST, after every input check has passed.
+    let target = ConfirmationTarget::in_cwd(command, cwd);
+    if !confirmations.consume(SCOPE_TERMINAL, confirmation_id, &target) {
+        return Err(TerminalError::Unconfirmed);
+    }
     let call = ToolCall {
         id: "terminal".to_string(),
         name: "execute_command".to_string(),
@@ -534,8 +565,24 @@ pub(crate) fn explain_terminal_error(
 mod tests {
     use super::*;
     use crate::application::agent::tools::test_support::temp_workspace;
+    use crate::application::confirmations::{
+        ConfirmationRegistry, ConfirmationTarget, SCOPE_DATA_MANAGEMENT, SCOPE_TERMINAL,
+    };
 
     const SECRET_SENTINELS: [&str; 4] = ["sk-", "secret", "credential", "api_key"];
+
+    /// Mint an id bound to the exact operation a test is about to run.
+    fn mint_for(confirmations: &ConfirmationRegistry, command: &str, cwd: Option<&str>) -> String {
+        confirmations
+            .request(SCOPE_TERMINAL, &ConfirmationTarget::in_cwd(command, cwd))
+            .expect("mint confirmation id")
+    }
+
+    /// Mint an id for the canonical `"echo terminal-ok"` run the happy-path
+    /// tests share.
+    fn mint_id(confirmations: &ConfirmationRegistry) -> String {
+        mint_for(confirmations, "echo terminal-ok", None)
+    }
 
     fn assert_secret_free(text: &str) {
         for sentinel in SECRET_SENTINELS {
@@ -550,8 +597,48 @@ mod tests {
     fn unconfirmed_run_is_refused_before_execution() {
         let ws = temp_workspace();
         let token = CancellationToken::new();
-        let err = execute_terminal(&ws, "echo hi", None, false, &token)
-            .expect_err("unconfirmed must be refused");
+        let confirmations = ConfirmationRegistry::new();
+        for forged in ["", "forged-id", "confirm", "true"] {
+            let err = execute_terminal(&ws, "echo hi", None, forged, &confirmations, &token)
+                .expect_err("forged confirmation must be refused");
+            assert_eq!(err, TerminalError::Unconfirmed);
+        }
+        // A real id for a *different* command is refused just like a forgery:
+        // the id is bound to the operation the user actually approved.
+        let other = mint_for(&confirmations, "echo something-else", None);
+        let err = execute_terminal(&ws, "echo hi", None, &other, &confirmations, &token)
+            .expect_err("an id minted for another command must be refused");
+        assert_eq!(err, TerminalError::Unconfirmed);
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn cross_scope_id_is_refused_without_execution() {
+        let ws = temp_workspace();
+        let token = CancellationToken::new();
+        let confirmations = ConfirmationRegistry::new();
+        let foreign = confirmations
+            .request(
+                SCOPE_DATA_MANAGEMENT,
+                &ConfirmationTarget::new(crate::application::confirmations::OP_CLEAR_ALL_DATA),
+            )
+            .expect("mint confirmation id");
+        let err = execute_terminal(&ws, "echo hi", None, &foreign, &confirmations, &token)
+            .expect_err("cross-scope id must be refused");
+        assert_eq!(err, TerminalError::Unconfirmed);
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn consumed_id_cannot_be_replayed() {
+        let ws = temp_workspace();
+        let token = CancellationToken::new();
+        let confirmations = ConfirmationRegistry::new();
+        let id = mint_id(&confirmations);
+        execute_terminal(&ws, "echo terminal-ok", None, &id, &confirmations, &token)
+            .expect("first use runs");
+        let err = execute_terminal(&ws, "echo terminal-ok", None, &id, &confirmations, &token)
+            .expect_err("replayed id must be refused");
         assert_eq!(err, TerminalError::Unconfirmed);
         let _ = std::fs::remove_dir_all(&ws);
     }
@@ -560,14 +647,21 @@ mod tests {
     fn empty_command_is_invalid() {
         let ws = temp_workspace();
         let token = CancellationToken::new();
+        let confirmations = ConfirmationRegistry::new();
         for command in ["", "   "] {
-            let err = execute_terminal(&ws, command, None, true, &token)
+            let id = mint_for(&confirmations, command, None);
+            let err = execute_terminal(&ws, command, None, &id, &confirmations, &token)
                 .expect_err("empty command must be refused");
             assert!(
                 matches!(err, TerminalError::InvalidInput(_)),
                 "unexpected: {err:?}"
             );
             assert_secret_free(&err.to_string());
+            // Invalid input refuses before consuming: the id stays live.
+            assert!(
+                confirmations.consume(SCOPE_TERMINAL, &id, &ConfirmationTarget::new(command)),
+                "refused input must not burn the confirmation id"
+            );
         }
         let _ = std::fs::remove_dir_all(&ws);
     }
@@ -576,8 +670,16 @@ mod tests {
     fn real_command_runs_in_workspace_scope() {
         let ws = temp_workspace();
         let token = CancellationToken::new();
-        let executed =
-            execute_terminal(&ws, "echo terminal-ok", None, true, &token).expect("echo runs");
+        let confirmations = ConfirmationRegistry::new();
+        let executed = execute_terminal(
+            &ws,
+            "echo terminal-ok",
+            None,
+            &mint_id(&confirmations),
+            &confirmations,
+            &token,
+        )
+        .expect("echo runs");
         assert!(executed.success);
         assert!(!executed.truncated);
         assert!(executed.output.contains("terminal-ok"));
@@ -588,9 +690,18 @@ mod tests {
     fn failing_command_reports_no_success_with_marker() {
         let ws = temp_workspace();
         let token = CancellationToken::new();
+        let confirmations = ConfirmationRegistry::new();
         // Non-zero exits still return output (with the tool path's marker),
         // never an error — the panel renders output + a non-zero badge.
-        let executed = execute_terminal(&ws, "exit 1", None, true, &token).expect("exit 1 runs");
+        let executed = execute_terminal(
+            &ws,
+            "exit 1",
+            None,
+            &mint_for(&confirmations, "exit 1", None),
+            &confirmations,
+            &token,
+        )
+        .expect("exit 1 runs");
         assert!(!executed.success);
         assert!(executed.output.contains(EXIT_MARKER));
         let _ = std::fs::remove_dir_all(&ws);
@@ -600,10 +711,18 @@ mod tests {
     fn echoing_the_exit_words_with_zero_exit_stays_success() {
         let ws = temp_workspace();
         let token = CancellationToken::new();
+        let confirmations = ConfirmationRegistry::new();
         // Regression: success was a bare substring test, so a passing
         // command echoing the marker words forged a failure badge.
-        let executed = execute_terminal(&ws, "echo command exited with status", None, true, &token)
-            .expect("echo runs");
+        let executed = execute_terminal(
+            &ws,
+            "echo command exited with status",
+            None,
+            &mint_for(&confirmations, "echo command exited with status", None),
+            &confirmations,
+            &token,
+        )
+        .expect("echo runs");
         assert!(
             executed.success,
             "zero-exit echo must not forge failure: {:?}",
@@ -617,12 +736,14 @@ mod tests {
     fn absolute_escape_cwd_is_refused_secret_free() {
         let ws = temp_workspace();
         let token = CancellationToken::new();
+        let confirmations = ConfirmationRegistry::new();
         let outside = if cfg!(windows) {
             "C:\\Windows\\System32"
         } else {
             "/etc"
         };
-        let err = execute_terminal(&ws, "echo hi", Some(outside), true, &token)
+        let id = mint_for(&confirmations, "echo hi", Some(outside));
+        let err = execute_terminal(&ws, "echo hi", Some(outside), &id, &confirmations, &token)
             .expect_err("absolute escape must be refused");
         assert!(
             matches!(err, TerminalError::InvalidInput(_)),
@@ -633,6 +754,16 @@ mod tests {
             "rejected cwd must not be echoed: {err:?}"
         );
         assert_secret_free(&err.to_string());
+        // The PathTraversal refusal happens before the consume, so the user's
+        // confirmation survives a bad working directory.
+        assert!(
+            confirmations.consume(
+                SCOPE_TERMINAL,
+                &id,
+                &ConfirmationTarget::in_cwd("echo hi", Some(outside)),
+            ),
+            "a rejected cwd must not burn the confirmation id"
+        );
         let _ = std::fs::remove_dir_all(&ws);
     }
 
@@ -640,12 +771,48 @@ mod tests {
     fn dotdot_escape_cwd_is_refused() {
         let ws = temp_workspace();
         let token = CancellationToken::new();
-        let err = execute_terminal(&ws, "echo hi", Some("../.."), true, &token)
-            .expect_err("dotdot escape must be refused");
+        let confirmations = ConfirmationRegistry::new();
+        let err = execute_terminal(
+            &ws,
+            "echo hi",
+            Some("../.."),
+            &mint_for(&confirmations, "echo hi", Some("../..")),
+            &confirmations,
+            &token,
+        )
+        .expect_err("dotdot escape must be refused");
         assert!(
             matches!(err, TerminalError::InvalidInput(_)),
             "unexpected: {err:?}"
         );
+        assert_secret_free(&err.to_string());
+        // The refused id is still spendable on the same operation — the
+        // user is never charged an approval for a rejected input.
+        let id = mint_for(&confirmations, "echo hi", Some("../.."));
+        let _ = execute_terminal(&ws, "echo hi", Some("../.."), &id, &confirmations, &token)
+            .expect_err("still refused");
+        assert!(
+            confirmations.consume(
+                SCOPE_TERMINAL,
+                &id,
+                &ConfirmationTarget::in_cwd("echo hi", Some("../..")),
+            ),
+            "a rejected cwd must not burn the confirmation id"
+        );
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    /// An id minted for one working directory must not authorize a run in
+    /// another (the cwd is part of the binding, not just the command).
+    #[test]
+    fn id_minted_for_another_working_directory_is_refused() {
+        let ws = temp_workspace();
+        let token = CancellationToken::new();
+        let confirmations = ConfirmationRegistry::new();
+        let id = mint_for(&confirmations, "echo hi", Some("sub"));
+        let err = execute_terminal(&ws, "echo hi", Some("other"), &id, &confirmations, &token)
+            .expect_err("an id minted for another cwd must be refused");
+        assert_eq!(err, TerminalError::Unconfirmed);
         let _ = std::fs::remove_dir_all(&ws);
     }
 
@@ -654,8 +821,16 @@ mod tests {
         let ws = temp_workspace();
         let token = CancellationToken::new();
         token.cancel();
-        let err = execute_terminal(&ws, "echo hi", None, true, &token)
-            .expect_err("cancelled token must abort");
+        let confirmations = ConfirmationRegistry::new();
+        let err = execute_terminal(
+            &ws,
+            "echo hi",
+            None,
+            &mint_for(&confirmations, "echo hi", None),
+            &confirmations,
+            &token,
+        )
+        .expect_err("cancelled token must abort");
         assert_eq!(err, TerminalError::Cancelled);
         assert_secret_free(&err.to_string());
         let _ = std::fs::remove_dir_all(&ws);
@@ -668,8 +843,16 @@ mod tests {
         // A command carrying a secret-shaped token plus an invalid cwd: the
         // refusal must classify, never echo either value.
         let secret_command = "curl -H \"Authorization: Bearer sk-secret-123\" hi";
-        let err = execute_terminal(&ws, secret_command, Some("/etc"), true, &token)
-            .expect_err("invalid cwd must be refused");
+        let confirmations = ConfirmationRegistry::new();
+        let err = execute_terminal(
+            &ws,
+            secret_command,
+            Some("/etc"),
+            &mint_for(&confirmations, secret_command, Some("/etc")),
+            &confirmations,
+            &token,
+        )
+        .expect_err("invalid cwd must be refused");
         let text = err.to_string();
         assert!(!text.contains("sk-secret-123"), "secret echoed: {text:?}");
         assert!(!text.contains("curl"), "command echoed: {text:?}");
