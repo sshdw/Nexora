@@ -241,9 +241,10 @@ const STATIC_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
   { group: "advanced", title: "Agent preset", keywords: ["preset", "agent preset", "defaults"] },
 ];
 
-/** The exact phrase the backend's `clear_application_data` command requires
- * before it performs any destructive write (application::data_management::
- * CONFIRMATION — FR-013 AC-5). The user must type it explicitly. */
+/** The phrase the user must type before the Clear-All-Data button arms
+ * (FR-013 AC-5). A local UX gate only: the backend no longer takes a phrase —
+ * the wrapper mints a single-use server-side confirmation id after this
+ * local check passes (NEX-SEC-004). Never translated (see strings.ts). */
 const CLEAR_CONFIRMATION_PHRASE = "confirm";
 
 export interface SettingsViewProps {
@@ -578,7 +579,7 @@ export default function SettingsView({
     try {
       // The backend refuses to run unless the phrase matches exactly and
       // clears everything atomically — a failure leaves all data intact.
-      await clearApplicationData(CLEAR_CONFIRMATION_PHRASE);
+      await clearApplicationData();
       // The cleared settings included the provider/model selection.
       await store.reload();
       onDataCleared();

@@ -9,9 +9,9 @@
 //!     never passed through this catalog.
 //!   - `mockBackend.ts` (DEV-ONLY visual-QA mock, dead-code-eliminated in
 //!     production) — left in English on purpose.
-//!   - The clear-data confirmation phrase `"confirm"`: a backend contract
-//!     (`clear_application_data` requires the exact phrase) — never
-//!     translated, only the surrounding label template is cataloged.
+//!   - The clear-data typed phrase `"confirm"`: a local UX gate only (the
+//!     backend mints single-use confirmation ids server-side — NEX-SEC-004) —
+//!     never translated, only the surrounding label template is cataloged.
 //!   - Number/date formatting beyond fixed words: `Intl` keeps using
 //!     `navigator.language` (format.ts) and the existing compact helpers;
 //!     only fixed words ("Just now", "Yesterday", "n/a") are cataloged.

@@ -228,14 +228,32 @@ export function deleteSetting(key: string): Promise<void> {
 
 // ---- Data management (FR-013) ------------------------------------------
 
+// Server-side destructive-action confirmations (NEX-SEC-004): the backend
+// mints an unguessable single-use id per confirm click (`request_confirmation`)
+// and the destructive command consumes it exactly once. A bare IPC caller
+// cannot forge one, so the old caller-supplied phrase/boolean gates are gone.
+
+/** Scope a minted confirmation id is bound to. Ids never cross scopes. */
+export type ConfirmationScope = "terminal" | "data_management";
+
+/** Mint one single-use confirmation id for `scope` via
+ * `request_confirmation`. `summary` is audit context only (a command excerpt
+ * or operation name, length-capped server-side, never echoed) — it grants
+ * nothing by itself. */
+export function requestConfirmation(scope: ConfirmationScope, summary: string): Promise<string> {
+  return invoke<string>("request_confirmation", { scope, summary });
+}
+
 /** Clear ALL local application data (conversations, messages, attachments,
  * prompts, provider metadata, settings) via the existing Phase 9
- * `clear_application_data` command. The backend refuses to run unless
- * `confirmation` equals its exact confirmation phrase, so the explicit-
- * confirmation behavior is preserved unchanged. Keyring credentials are not
- * touched (they never lived in SQLite). */
-export function clearApplicationData(confirmation: string): Promise<void> {
-  return invoke<void>("clear_application_data", { confirmation });
+ * `clear_application_data` command. The wrapper mints a single-use
+ * server-side confirmation id first (the caller shows its own explicit
+ * confirm UX before calling); the backend refuses to run without consuming
+ * a live id. Keyring credentials are not touched (they never lived in
+ * SQLite). */
+export async function clearApplicationData(): Promise<void> {
+  const confirmationId = await requestConfirmation("data_management", "clear all application data");
+  return invoke<void>("clear_application_data", { confirmationId });
 }
 
 // ---- Search (FR-006, FR-009) -------------------------------------------
@@ -267,12 +285,6 @@ export function search(query: string): Promise<SearchResults> {
 
 // ---- Prompt Library (FR-007) ---------------------------------------------
 
-/** The confirmation phrase the backend's destructive data-management commands
- * require. The Prompt Library supplies it internally after the user confirms a
- * single-prompt deletion in `window.confirm`, so prompt deletion stays a simple
- * native confirm — no per-operation phrase typing (unlike Clear All data). */
-const PROMPT_DELETE_CONFIRMATION: string = "confirm";
-
 /** List every saved prompt via `list_prompts`. The backend returns rows in
  * creation order; the Prompt Library screen sorts by `updated_at` locally. */
 export function listPrompts(): Promise<Prompt[]> {
@@ -290,13 +302,15 @@ export function updatePrompt(id: number, title: string, content: string): Promis
   return invoke<void>("update_prompt", { id, title, content });
 }
 
-/** Permanently delete one prompt via `delete_prompt_permanently`. The backend
- * requires its confirmation phrase; the frontend supplies it after the user
- * confirms in `window.confirm`, so no phrase typing is surfaced (FR-007). */
-export function deletePrompt(id: number): Promise<void> {
+/** Permanently delete one prompt via `delete_prompt_permanently`. The wrapper
+ * mints a single-use server-side confirmation id first; the caller owns the
+ * confirm UX (`window.confirm` in the Prompt Library), so no phrase typing
+ * is surfaced (FR-007). */
+export async function deletePrompt(id: number): Promise<void> {
+  const confirmationId = await requestConfirmation("data_management", `delete prompt ${id}`);
   return invoke<void>("delete_prompt_permanently", {
     id,
-    confirmation: PROMPT_DELETE_CONFIRMATION,
+    confirmationId,
   });
 }
 
@@ -1268,8 +1282,8 @@ export interface GeneratedCommitMessage {
 // combined output with `truncated`/`success` display flags;
 // `terminal_kill` cancels the active run's token (the executor kills the
 // child). Single session: at most one run is active. Payloads stay
-// snake_case; command args are camelCase (`command`, `cwd`, `confirmed`),
-// like every other command.
+// snake_case; command args are camelCase (`command`, `cwd`,
+// `confirmationId`), like every other command.
 
 /** Combined output of one finished terminal run (`terminal_run`).
  * `success` is false when the tool path rendered its non-zero-exit
@@ -1285,15 +1299,19 @@ export interface TerminalRunResult {
 
 /** Run one workspace command via `terminal_run`. The call blocks until the
  * tool path returns (completion, timeout kill, or stop kill). The wrapper
- * always passes the explicit per-call confirmation the backend requires
- * for writes — clicking Run IS the approval (user-authored commands need
- * no agent park). `cwd` is workspace-relative (`null` = workspace root);
- * absolute escape is refused backend-side. */
-export function terminalRun(command: string, cwd: string | null): Promise<TerminalRunResult> {
+ * mints a single-use server-side confirmation id first — clicking Run IS
+ * the approval (user-authored commands need no agent park). `cwd` is
+ * workspace-relative (`null` = workspace root); absolute escape is refused
+ * backend-side. */
+export async function terminalRun(command: string, cwd: string | null): Promise<TerminalRunResult> {
+  const confirmationId = await requestConfirmation(
+    "terminal",
+    cwd === null ? command : `${command} (${cwd})`,
+  );
   return invoke<TerminalRunResult>("terminal_run", {
     command,
     cwd,
-    confirmed: true,
+    confirmationId,
   });
 }
 

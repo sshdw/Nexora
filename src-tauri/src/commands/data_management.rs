@@ -1,13 +1,15 @@
 //! Tauri commands over the existing [`DataManagementService`]
-//! (Phase 10.2 вЂ” Tauri Command Layer; Phase 9 вЂ” Data Management).
+//! (Phase 10.2 — Tauri Command Layer; Phase 9 — Data Management).
 //!
-//! Every destructive operation requires the caller to supply the explicit
-//! confirmation phrase (FR-013; AC-5). The command forwards the supplied
-//! `confirmation` verbatim to the existing service, which refuses to run
-//! without the exact [`CONFIRMATION`](crate::application::data_management::CONFIRMATION)
-//! phrase вЂ” the explicit-confirmation requirement is therefore preserved
-//! unchanged. No crashes, cascade deletions, or FTS reindexing happen here:
-//! they are delegated to the existing service and database.
+//! Every destructive operation requires a live single-use confirmation id
+//! minted for the data-management scope by the `request_confirmation` command
+//! (FR-013; AC-5; NEX-SEC-004). The command forwards the supplied
+//! `confirmation_id` verbatim to the existing service, which consumes it
+//! atomically and refuses to run on a forged, expired, reused, or
+//! cross-scope id — the server-side confirmation requirement is therefore
+//! enforced backend-side, not on a caller-controlled constant. No crashes,
+//! cascade deletions, or FTS reindexing happen here: they are delegated to
+//! the existing service and database.
 
 // Tauri command handlers must take ownership of their deserialized
 // arguments: serde cannot borrow into the wire payload, so passing by
@@ -16,44 +18,51 @@
 
 use tauri::State;
 
+use crate::application::confirmations::ManagedConfirmations;
 use crate::application::data_management::DataManagementService;
 use crate::infrastructure::database::Database;
 
 use super::error::CommandError;
 
 /// Permanently delete one conversation (and the messages/attachments that
-/// cascade from it). Requires explicit `confirmation`.
+/// cascade from it). Requires a live `confirmation_id` minted for the
+/// data-management scope.
 #[tauri::command]
 pub(crate) fn delete_conversation_permanently(
     id: i64,
-    confirmation: String,
+    confirmation_id: String,
     db: State<'_, Database>,
+    confirmations: State<'_, ManagedConfirmations>,
 ) -> Result<(), CommandError> {
     DataManagementService::new(db.inner())
-        .delete_conversation(id, &confirmation)
+        .delete_conversation(id, &confirmation_id, &confirmations)
         .map_err(Into::into)
 }
 
-/// Permanently delete one prompt. Requires explicit `confirmation`.
+/// Permanently delete one prompt. Requires a live `confirmation_id` minted
+/// for the data-management scope.
 #[tauri::command]
 pub(crate) fn delete_prompt_permanently(
     id: i64,
-    confirmation: String,
+    confirmation_id: String,
     db: State<'_, Database>,
+    confirmations: State<'_, ManagedConfirmations>,
 ) -> Result<(), CommandError> {
     DataManagementService::new(db.inner())
-        .delete_prompt(id, &confirmation)
+        .delete_prompt(id, &confirmation_id, &confirmations)
         .map_err(Into::into)
 }
 
 /// Clear all local application data (conversations, messages, attachments,
-/// prompts, provider metadata, settings). Requires explicit `confirmation`.
+/// prompts, provider metadata, settings). Requires a live `confirmation_id`
+/// minted for the data-management scope.
 #[tauri::command]
 pub(crate) fn clear_application_data(
-    confirmation: String,
+    confirmation_id: String,
     db: State<'_, Database>,
+    confirmations: State<'_, ManagedConfirmations>,
 ) -> Result<(), CommandError> {
     DataManagementService::new(db.inner())
-        .clear(&confirmation)
+        .clear(&confirmation_id, &confirmations)
         .map_err(Into::into)
 }

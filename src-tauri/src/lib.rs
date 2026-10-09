@@ -102,6 +102,7 @@ pub fn run() {
             commands::compat::get_compat_config,
             commands::compat::set_compat_config,
             commands::compat::compat_status,
+            commands::confirmations::request_confirmation,
             commands::search::search,
             commands::import_export::export_conversation,
             commands::import_export::export_conversation_to_file,
@@ -214,6 +215,12 @@ pub fn run() {
             // `spawn_blocking`.
             app.manage(std::sync::Arc::new(
                 application::terminal::TerminalRegistry::new(),
+            ));
+            // Hold the server-side confirmation registry as managed state
+            // (NEX-SEC-004): an `Arc` so the mint command and the consuming
+            // destructive commands share the pending single-use ids.
+            app.manage(std::sync::Arc::new(
+                application::confirmations::ConfirmationRegistry::new(),
             ));
             // Confirm the shared connection is reachable through managed state
             // and record the applied schema version; startup fails loudly if it

@@ -23,8 +23,11 @@
 //! Approval-gate note: the agent `ApprovalGate` parks live agent tool calls
 //! and cannot apply to direct IPC commands (no run, no park, no autonomy
 //! mode). The panel's Run press is the approval (user-authored commands),
-//! and the backend still requires the per-call `confirmed` flag — the same
-//! gate shape as the git writes, not a parallel mechanism.
+//! and the backend still requires a single-use confirmation id minted by the
+//! `request_confirmation` command and consumed once per run — the
+//! server-side gate shape shared with data management, not a parallel
+//! mechanism. A caller-supplied boolean could be forged by any IPC caller
+//! (NEX-SEC-004); a minted id cannot.
 
 // Tauri command handlers must take ownership of their deserialized
 // arguments: serde cannot borrow into the wire payload, so passing by
@@ -36,6 +39,7 @@ use std::sync::Arc;
 
 use tauri::{AppHandle, Manager, State};
 
+use crate::application::confirmations::ManagedConfirmations;
 use crate::application::terminal::{ErrorExplanation, TerminalExecuted, TerminalRegistry};
 use crate::application::workspace::resolve_workspace_root;
 use crate::infrastructure::database::Database;
@@ -63,41 +67,46 @@ pub(crate) struct TerminalRunResponse {
 /// `execute_command` tool path and return its combined output.
 ///
 /// `command` must be non-empty; `cwd` (when set) is workspace-relative and
-/// workspace-confined by the tool path itself. `confirmed` must be `true`
-/// (the panel's Run press); at most one run is active at a time. The call
-/// blocks on the runtime's blocking pool until the tool path returns
-/// (completion, timeout kill, or stop kill).
+/// workspace-confined by the tool path itself. `confirmation_id` must be a
+/// live single-use id minted for the terminal scope by the
+/// `request_confirmation` command (the frontend mints it from the Run
+/// press); at most one run is active at a time. The call blocks on the
+/// runtime's blocking pool until the tool path returns (completion, timeout
+/// kill, or stop kill).
 ///
 /// # Errors
 ///
-/// Classified [`CommandError`]s for unconfirmed runs
-/// (`ConfirmationRequired`), invalid input (empty command, bad/escaping
-/// working dir), an already-active run, execution/timeout failures, or a
-/// stop. Secret-free by construction: the command text is never echoed.
+/// Classified [`CommandError`]s for refused confirmations
+/// (`ConfirmationRequired`: unknown, expired, already-consumed, or
+/// cross-scope ids — nothing executes), invalid input (empty command,
+/// bad/escaping working dir), an already-active run, execution/timeout
+/// failures, or a stop. Secret-free by construction: the command text is
+/// never echoed.
 #[tauri::command]
 pub(crate) async fn terminal_run(
     command: String,
     cwd: Option<String>,
-    confirmed: bool,
+    confirmation_id: String,
     app: AppHandle,
     db: State<'_, Database>,
     registry: State<'_, ManagedTerminal>,
+    confirmations: State<'_, ManagedConfirmations>,
 ) -> Result<TerminalRunResponse, CommandError> {
     let fallback = default_root(&app)?;
     let root = resolve_workspace_root(db.inner(), &fallback);
-    // Cheap pre-claim validation: a bare-IPC unconfirmed/empty call must
-    // be refused before it can briefly hold the single session. The
-    // authoritative checks stay inside `execute_terminal`.
-    if !confirmed {
-        return Err(CommandError::new(
-            ErrorKind::ConfirmationRequired,
-            "explicit confirmation is required before a terminal command can run",
-        ));
-    }
+    // Cheap pre-claim validation: a bare-IPC empty call must be refused
+    // before it can briefly hold the single session or burn a confirmation
+    // id. The authoritative checks stay inside `execute_terminal`.
     if command.trim().is_empty() {
         return Err(CommandError::new(
             ErrorKind::InvalidInput,
             "the terminal command must not be empty",
+        ));
+    }
+    if confirmation_id.trim().is_empty() {
+        return Err(CommandError::new(
+            ErrorKind::ConfirmationRequired,
+            "explicit confirmation is required before a terminal command can run",
         ));
     }
     let (run_id, token) = registry.begin().ok_or_else(|| {
@@ -107,12 +116,14 @@ pub(crate) async fn terminal_run(
         )
     })?;
     let registry_arc = Arc::clone(registry.inner());
+    let confirmations_arc = Arc::clone(confirmations.inner());
     let outcome = tauri::async_runtime::spawn_blocking(move || {
         crate::application::terminal::execute_terminal(
             &root,
             command.as_str(),
             cwd.as_deref(),
-            confirmed,
+            confirmation_id.as_str(),
+            &confirmations_arc,
             &token,
         )
     })
@@ -322,6 +333,31 @@ mod tests {
         assert!(
             SERVICE.contains("\"execute_command\""),
             "the terminal service must reuse the execute_command tool"
+        );
+    }
+
+    /// Regression pin for NEX-SEC-004: the old caller-supplied gate shape
+    /// must be gone — `terminal_run` takes a minted `confirmation_id`, never
+    /// a boolean, on both the command and the service side. A bare-IPC call
+    /// with the old shape then fails deserialization before anything can
+    /// execute. Needles are built with `concat!` so this test's own source
+    /// never matches them verbatim.
+    #[test]
+    fn terminal_run_no_longer_accepts_a_caller_supplied_boolean() {
+        const SOURCE: &str = include_str!("terminal.rs");
+        const SERVICE: &str = include_str!("../application/terminal.rs");
+        let needle = concat!("confirmed", ": bool");
+        assert!(
+            !SOURCE.contains(needle),
+            "commands/terminal.rs must not take a caller-supplied boolean, found {needle:?}"
+        );
+        assert!(
+            !SERVICE.contains(needle),
+            "application/terminal.rs must not take a caller-supplied boolean, found {needle:?}"
+        );
+        assert!(
+            SOURCE.contains("confirmation_id"),
+            "terminal_run must take a minted confirmation id"
         );
     }
 

@@ -12,6 +12,7 @@ use serde::Serialize;
 
 use crate::application::attachments::AttachmentError;
 use crate::application::compat::CompatError;
+use crate::application::confirmations::ConfirmationError;
 use crate::application::conversations::ConversationError;
 use crate::application::data_management::DataManagementError;
 use crate::application::dep_inventory::DepInventoryError;
@@ -46,8 +47,8 @@ pub(crate) enum ErrorKind {
     /// AI request execution failed (unknown/unavailable provider, missing
     /// credentials, provider failure, ...).
     Request,
-    /// A destructive operation was invoked without the required explicit
-    /// confirmation phrase.
+    /// A destructive operation was invoked without a valid server-side
+    /// confirmation.
     ConfirmationRequired,
     /// A document could not be serialized or deserialized.
     Serialization,
@@ -499,6 +500,17 @@ impl From<ImportError> for CommandError {
                 format!("the import document is invalid: {reason}"),
             ),
             ImportError::Database(inner) => Self::from(inner),
+        }
+    }
+}
+
+impl From<ConfirmationError> for CommandError {
+    fn from(err: ConfirmationError) -> Self {
+        match err {
+            // The scope value itself is never echoed: it is caller-supplied.
+            ConfirmationError::InvalidScope => {
+                Self::new(ErrorKind::InvalidInput, "the confirmation scope is invalid")
+            }
         }
     }
 }

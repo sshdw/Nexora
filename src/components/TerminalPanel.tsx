@@ -11,8 +11,8 @@
 //!
 //! Approval UX: commands are typed by the user directly, so the Run press
 //! IS the approval (no agent park exists for user-authored commands); the
-//! wrapper always passes the backend's per-call confirmation, like the git
-//! writes. `cd <relative-path>` is intercepted client-side (each backend
+//! wrapper mints a single-use server-side confirmation id per run
+//! (NEX-SEC-004), like the data-management wrappers. `cd <relative-path>` is intercepted client-side (each backend
 //! run spawns a fresh shell, so `cd` could never persist there) and only
 //! changes the in-memory working directory shown in the indicator.
 //! Interactive-TUI programs (`vim`, `ssh`, …) are unsupported — stdin is
