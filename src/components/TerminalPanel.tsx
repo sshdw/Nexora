@@ -48,6 +48,8 @@ import { useStrings } from "../lib/useLocale";
 
 /** One scrollback entry: the command plus its outcome. `pending` marks the
  * in-flight run (Stop targets it); `stopped` marks a stop-killed run;
+ * `cancelled` marks a run refused at the native confirmation prompt (the
+ * command never executed — distinct from stopped and from failed);
  * `error` carries a backend rejection (shown in the body, never lost). */
 interface TerminalBlock {
   id: number;
@@ -58,6 +60,7 @@ interface TerminalBlock {
   truncated: boolean;
   pending: boolean;
   stopped: boolean;
+  cancelled: boolean;
   error: string | null;
 }
 
@@ -245,6 +248,7 @@ export default function TerminalPanel({ onClose, request = null }: TerminalPanel
           truncated: false,
           pending: true,
           stopped: false,
+          cancelled: false,
           error: null,
         },
       ]);
@@ -281,15 +285,17 @@ export default function TerminalPanel({ onClose, request = null }: TerminalPanel
         } else if (isConfirmationCancelled(e)) {
           // Cancelled at the native confirmation prompt (NEX-SEC-004): no id
           // was minted and the command never ran. Reported honestly as a
-          // cancelled run — never as a failed command — so the scrollback
-          // does not imply the shell tried and errored.
+          // cancelled run — never as a failed command, and never with the
+          // exit-ok badge: `cancelled` renders its own badge below while the
+          // body keeps the explanatory text.
           setBlocks((prev) =>
             prev.map((block) =>
               block.id === blockId
                 ? {
                     ...block,
                     pending: false,
-                    success: true,
+                    success: false,
+                    cancelled: true,
                     error: tr(getLocale(), "term.runCancelled"),
                   }
                 : block,
@@ -509,20 +515,24 @@ export default function TerminalPanel({ onClose, request = null }: TerminalPanel
                       "nex-tag nex-tag-mono nex-term-exit" +
                       (block.pending
                         ? " nex-term-exit-running"
-                        : block.stopped
+                        : block.cancelled
                           ? " nex-term-exit-stopped"
-                          : block.success
-                            ? " nex-term-exit-ok"
-                            : " nex-term-exit-fail")
+                          : block.stopped
+                            ? " nex-term-exit-stopped"
+                            : block.success
+                              ? " nex-term-exit-ok"
+                              : " nex-term-exit-fail")
                     }
                   >
                     {block.pending
                       ? t("term.exitRunning")
-                      : block.stopped
-                        ? t("term.exitStopped")
-                        : block.success
-                          ? t("term.exitOk")
-                          : t("term.exitFail")}
+                      : block.cancelled
+                        ? t("term.exitCancelled")
+                        : block.stopped
+                          ? t("term.exitStopped")
+                          : block.success
+                            ? t("term.exitOk")
+                            : t("term.exitFail")}
                   </span>
                   {block.truncated && !block.pending && (
                     <span className="nex-tag nex-tag-mono nex-term-exit nex-term-exit-truncated">

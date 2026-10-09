@@ -550,21 +550,6 @@ impl<'a> ConversationService<'a> {
         Ok(())
     }
 
-    /// Delete `conversation_id` (FR-002, FR-013).
-    ///
-    /// Hard delete through the repository: dependent `messages` (and, in the
-    /// full schema, `attachments`) are removed by the database's foreign keys
-    /// (DATABASE.md §9). Deleting a conversation that does not exist is a
-    /// no-op, matching the repository's existing delete semantics.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ConversationError::Database`] if the delete fails.
-    pub(crate) fn delete(&self, id: i64) -> Result<()> {
-        self.conversations.delete(id)?;
-        Ok(())
-    }
-
     /// List every conversation (FR-002, FR-005).
     ///
     /// Rows are returned in the repository's persisted order. This is a thin
@@ -1389,31 +1374,6 @@ mod tests {
         let conversation = read_conversation(&db, id);
         assert_eq!(conversation.status, STATUS_ACTIVE);
         assert_eq!(conversation.title, "Restore Me");
-    }
-
-    #[test]
-    fn delete_removes_conversation_and_cascades_its_messages() {
-        let db = test_db();
-        let service = ConversationService::new(&db);
-        let id = service.create("Doomed").expect("conversation created");
-        MessageRepository::new(&db)
-            .create(id, ROLE_USER, "hello", None, None)
-            .expect("user message persisted");
-
-        service.delete(id).expect("delete succeeds");
-
-        // Hard delete: the conversation and its messages are gone.
-        assert!(ConversationRepository::new(&db)
-            .read(id)
-            .expect("read")
-            .is_none());
-        assert!(
-            MessageRepository::new(&db)
-                .list_by_conversation(id)
-                .expect("list messages")
-                .is_empty(),
-            "messages cascade-delete with the conversation"
-        );
     }
 
     #[test]

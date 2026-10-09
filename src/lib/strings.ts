@@ -152,10 +152,8 @@ const en = {
   "list.actionRestore": "Restore conversation",
   "list.actionArchive": "Archive conversation",
   "list.actionDelete": "Delete conversation",
-  "list.deleteTitle": "Delete conversation?",
-  "list.deleteBody":
-    "“{title}” and all of its messages will be permanently deleted. This cannot be undone.",
-  "list.deleteConfirm": "Delete",
+  "list.deleteCancelled":
+    "Cancelled at the system confirmation prompt — the conversation was not deleted.",
 
   // ---- tabs ------------------------------------------------------------------
   "tabs.region": "Conversation tabs",
@@ -818,6 +816,7 @@ const en = {
   "term.blockAria": "Terminal output",
   "term.exitRunning": "running",
   "term.exitStopped": "stopped",
+  "term.exitCancelled": "cancelled",
   "term.exitOk": "exit 0",
   "term.exitFail": "non-zero exit",
   "term.truncatedTag": "truncated",
@@ -1633,10 +1632,8 @@ const ru: Record<StringKey, string> = {
   "list.actionRestore": "Восстановить разговор",
   "list.actionArchive": "Архивировать разговор",
   "list.actionDelete": "Удалить разговор",
-  "list.deleteTitle": "Удалить разговор?",
-  "list.deleteBody":
-    "«{title}» и все его сообщения будут удалены навсегда. Это действие необратимо.",
-  "list.deleteConfirm": "Удалить",
+  "list.deleteCancelled":
+    "Отменено в системном диалоге подтверждения — разговор не удалён.",
 
   "tabs.region": "Вкладки разговоров",
   "tabs.list": "Открытые разговоры",
@@ -2285,6 +2282,7 @@ const ru: Record<StringKey, string> = {
   "term.blockAria": "Вывод терминала",
   "term.exitRunning": "выполняется",
   "term.exitStopped": "остановлен",
+  "term.exitCancelled": "отменено",
   "term.exitOk": "выход 0",
   "term.exitFail": "ненулевой выход",
   "term.truncatedTag": "обрезан",

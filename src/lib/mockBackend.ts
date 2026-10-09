@@ -249,7 +249,10 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
       row.status = "active";
       return null;
     }
-    case "delete_conversation": {
+    case "delete_conversation_permanently": {
+      if (typeof args.confirmationId !== "string" || args.confirmationId.length === 0) {
+        fail("Mock backend: a confirmation id is required.");
+      }
       const id = Number(args.id);
       const index = conversations.findIndex((c) => c.id === id);
       if (index >= 0) conversations.splice(index, 1);

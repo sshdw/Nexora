@@ -71,11 +71,6 @@ export function restoreConversation(id: number): Promise<void> {
   return invoke<void>("restore_conversation", { id });
 }
 
-/** Delete a conversation and cascade its messages/attachments (FR-002). */
-export function deleteConversation(id: number): Promise<void> {
-  return invoke<void>("delete_conversation", { id });
-}
-
 // ---- Providers -------------------------------------------------------
 // Provider metadata (non-sensitive) and supported-provider/model definitions.
 
@@ -358,10 +353,14 @@ export async function deletePrompt(id: number): Promise<void> {
   });
 }
 
-/** Permanently delete one conversation via `delete_conversation_permanently`
- * (the data-management path, as distinct from the softer
- * {@link deleteConversation} above). Binds the confirmation to this exact row
- * so an id approved for another conversation cannot delete it. */
+/** Permanently delete one conversation and the messages/attachments that
+ * cascade from it, via `delete_conversation_permanently` (FR-002).
+ *
+ * The native OS confirmation dialog this raises IS the confirmation — the
+ * caller does NOT show its own confirm dialog, and the id it mints is bound
+ * to this exact row, so an id the user approved for another conversation (or
+ * for clear-all) is refused. Cancelling at the native dialog rejects and
+ * deletes nothing. */
 export async function deleteConversationPermanently(id: number): Promise<void> {
   const confirmationId = await requestConfirmation(
     "data_management",

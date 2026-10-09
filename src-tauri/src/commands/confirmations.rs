@@ -22,15 +22,20 @@
 //!
 //! # Coverage (partial — read before claiming full coverage)
 //!
-//! Rust-verified today: `terminal_run`,
-//! `delete_conversation_permanently`, `delete_prompt_permanently`,
-//! `clear_application_data`.
+//! Rust-verified today: `terminal_run`, `clear_application_data`,
+//! `delete_conversation_permanently` (the only conversation-delete command —
+//! the ungated `delete_conversation` sibling was removed, so the live sidebar
+//! path mints through the native prompt first), and
+//! `delete_prompt_permanently` (the only prompt-delete command — the ungated
+//! `delete_prompt` sibling was removed, so the live library path mints
+//! through the native prompt first).
 //!
-//! Still renderer-attested (`confirmed: bool`, no Rust-side proof):
-//! `git_stage` / `git_unstage` / `git_commit` / `git_push`, `refactor_apply`,
-//! `privacy_wipe`, `create_issue_for_finding`, and the write-to-disk export
-//! paths including `export_conversation_to_file`. See open audit items #137
-//! (SEC-005) and the remaining boolean gates.
+//! Still renderer-attested (`confirmed: bool`, or no gate at all for the
+//! write-to-disk exports — no Rust-side proof): `git_stage` / `git_unstage` /
+//! `git_commit` / `git_push`, `refactor_apply`, `privacy_wipe`,
+//! `create_issue_for_finding`, and the export paths (`export_conversation`,
+//! `export_conversation_to_file`, `export_setup`, `export_setup_to_file`).
+//! See open audit items #137 (SEC-005) and the remaining boolean gates.
 
 // Tauri command handlers must take ownership of their deserialized
 // arguments: serde cannot borrow into the wire payload, so passing by
@@ -142,6 +147,7 @@ mod tests {
     fn frontend_mints_with_the_shared_operation_identities() {
         for literal in [
             crate::application::confirmations::OP_DELETE_PROMPT,
+            crate::application::confirmations::OP_DELETE_CONVERSATION,
             crate::application::confirmations::OP_CLEAR_ALL_DATA,
         ] {
             assert!(
@@ -209,6 +215,7 @@ mod tests {
             ("version_control.rs", "confirmed: bool"),
             ("dep_refactor.rs", "confirmed: bool"),
             ("privacy.rs", "confirmed: bool"),
+            ("release.rs", "confirmed: bool"),
         ] {
             let source = read_command(path);
             assert!(
@@ -217,6 +224,29 @@ mod tests {
                  caller-supplied boolean; move it into the verified set instead"
             );
         }
+        // The write-to-disk exports are renderer-attested with NO gate at all
+        // (raw caller-chosen path, open item #137 / SEC-005): pin that they
+        // stay gateless until migrated, so adding any confirmation shape here
+        // forces a docs + verified-set update instead of passing silently.
+        let exports = read_command("import_export.rs");
+        for command in [
+            "export_conversation_to_file",
+            "export_setup_to_file",
+            "export_setup",
+        ] {
+            assert!(
+                exports.contains(command),
+                "import_export.rs must still expose {command}"
+            );
+        }
+        assert!(
+            !exports.contains("confirmation_id"),
+            "the export paths must not gain a minted id without joining the verified set"
+        );
+        assert!(
+            !exports.contains("confirmed: bool"),
+            "the export paths must not gain a caller boolean without joining the attested list"
+        );
     }
 
     /// Read a sibling command module's source for the static wiring checks.
@@ -225,6 +255,8 @@ mod tests {
             "version_control.rs" => include_str!("version_control.rs"),
             "dep_refactor.rs" => include_str!("dep_refactor.rs"),
             "privacy.rs" => include_str!("privacy.rs"),
+            "release.rs" => include_str!("release.rs"),
+            "import_export.rs" => include_str!("import_export.rs"),
             other => panic!("unlisted command module: {other}"),
         }
     }

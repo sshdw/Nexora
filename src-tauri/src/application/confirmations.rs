@@ -431,19 +431,25 @@ pub(crate) fn prompt_body(scope: &str, target: &ConfirmationTarget<'_>) -> Strin
 // to the exact operation, consumed atomically once):
 //
 // - `terminal_run`
-// - `delete_conversation_permanently`
-// - `delete_prompt_permanently`
+// - `delete_conversation_permanently` — the ONLY conversation-delete command:
+//   the ungated `delete_conversation` sibling was removed, so the live sidebar
+//   path (`useConversations.remove`) mints through the native prompt first.
+// - `delete_prompt_permanently` — the ONLY prompt-delete command: the ungated
+//   `delete_prompt` sibling was removed, so the live library path
+//   (`usePrompts.remove`) mints through the native prompt first.
 // - `clear_application_data`
 //
 // Still renderer-attested: these destructive paths take a caller-supplied
-// `confirmed: bool` (or an equivalent caller-controlled value) and therefore
-// have **no** Rust-side user-presence proof — any IPC caller passes them:
+// `confirmed: bool` (or, for the write-to-disk exports, no gate at all) and
+// therefore have **no** Rust-side user-presence proof — any IPC caller passes
+// them:
 //
 // - `git_stage`, `git_unstage`, `git_commit`, `git_push`
 // - `refactor_apply`
 // - `privacy_wipe`
 // - `create_issue_for_finding`
-// - `export_conversation_to_file` (and the other write-to-disk export paths)
+// - `export_conversation_to_file` (and the other write-to-disk export paths:
+//   `export_conversation`, `export_setup`, `export_setup_to_file`)
 //
 // Tracked as open audit items — #137 (SEC-005, export-to-file confirmation)
 // and the remaining boolean gates listed above. Do not describe the
