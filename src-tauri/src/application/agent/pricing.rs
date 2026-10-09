@@ -86,15 +86,19 @@ pub(crate) fn cost_for_usage(usage: TokenUsage) -> u64 {
 ///
 /// Shape rules (smoke-gated shortlists, 2026-09-12):
 /// - OpenRouter/xKiro free tier: a `:free` suffix (`...:free`).
-/// - `OpenCode Zen` free tier: a `-free` infix/suffix (`...-free`), which covers
+/// - `OpenCode Zen` free tier: a `-free` suffix (`...-free`), which covers
 ///   the Zen free IDs (`ling-3.0-flash-fin-free`, `nemotron-3-ultra-free`,
 ///   `nemotron-3.5-lightning-free`, `mimo-v2.5-free`).
+///
+/// The match is suffix-exact: a model ID merely containing `-free`
+/// mid-string (e.g. `my-free-model`) is a paid ID and bills at the policy
+/// rate (NEX-AGENT-013).
 ///
 /// Anything else — including paid-looking IDs and unmarked IDs such as
 /// `big-pickle` — bills at the policy rate.
 #[must_use]
 pub(crate) fn is_free_model(model: &str) -> bool {
-    model.ends_with(":free") || model.contains("-free")
+    model.ends_with(":free") || model.ends_with("-free")
 }
 
 /// Compute the billed cost for `input_tokens` / `output_tokens` for `model`,
@@ -268,6 +272,34 @@ mod tests {
                 POLICY_DEFAULT_INPUT_MICRO_PER_1M + POLICY_DEFAULT_OUTPUT_MICRO_PER_1M,
                 "{model} must bill the policy rate"
             );
+        }
+    }
+
+    #[test]
+    fn free_suffix_match_is_exact_not_substring() {
+        // NEX-AGENT-013: IDs merely containing "-free" mid-string are paid.
+        for model in [
+            "my-free-model",
+            "x-free-tier",
+            "acme-free-tier-pro",
+            "free-spirit",
+            "prefix:free-tier",
+        ] {
+            assert!(!is_free_model(model), "{model} must not be free-shaped");
+            assert!(
+                cost_for_model_usage(
+                    model,
+                    TokenUsage {
+                        input_tokens: 1_000,
+                        output_tokens: 1_000,
+                    }
+                ) > 0,
+                "{model} must bill nonzero"
+            );
+        }
+        // True suffixes stay free.
+        for model in ["mimo-v2.5-free", "qwen/qwen3.5-plus:free"] {
+            assert!(is_free_model(model), "{model} must be free-shaped");
         }
     }
 
