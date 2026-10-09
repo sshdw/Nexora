@@ -22,12 +22,14 @@
 //!
 //! Approval-gate note: the agent `ApprovalGate` parks live agent tool calls
 //! and cannot apply to direct IPC commands (no run, no park, no autonomy
-//! mode). The panel's Run press is the approval (user-authored commands),
-//! and the backend still requires a single-use confirmation id minted by the
-//! `request_confirmation` command and consumed once per run — the
+//! mode). The panel's Run press *requests* the approval; the backend then
+//! requires a single-use confirmation id minted by `request_confirmation`
+//! **after a blocking native OS dialog the user accepted**, bound to that
+//! exact command and working directory, consumed once per run — the
 //! server-side gate shape shared with data management, not a parallel
 //! mechanism. A caller-supplied boolean could be forged by any IPC caller
-//! (NEX-SEC-004); a minted id cannot.
+//! (NEX-SEC-004); an id the user approved for one command cannot authorize a
+//! different one.
 
 // Tauri command handlers must take ownership of their deserialized
 // arguments: serde cannot borrow into the wire payload, so passing by
@@ -69,19 +71,21 @@ pub(crate) struct TerminalRunResponse {
 /// `command` must be non-empty; `cwd` (when set) is workspace-relative and
 /// workspace-confined by the tool path itself. `confirmation_id` must be a
 /// live single-use id minted for the terminal scope by the
-/// `request_confirmation` command (the frontend mints it from the Run
-/// press); at most one run is active at a time. The call blocks on the
-/// runtime's blocking pool until the tool path returns (completion, timeout
-/// kill, or stop kill).
+/// `request_confirmation` command — which only mints once the user accepts
+/// the native OS confirmation prompt — and bound to this exact command and
+/// working directory; at most one run is active at a time. The call blocks on
+/// the runtime's blocking pool until the tool path returns (completion,
+/// timeout kill, or stop kill).
 ///
 /// # Errors
 ///
 /// Classified [`CommandError`]s for refused confirmations
-/// (`ConfirmationRequired`: unknown, expired, already-consumed, or
-/// cross-scope ids — nothing executes), invalid input (empty command,
-/// bad/escaping working dir), an already-active run, execution/timeout
-/// failures, or a stop. Secret-free by construction: the command text is
-/// never echoed.
+/// (`ConfirmationRequired`: unknown, expired, already-consumed, cross-scope,
+/// or different-operation ids — nothing executes), invalid input (empty
+/// command, bad/escaping working dir; the id is *not* consumed for these, so
+/// the user keeps their approval), an already-active run,
+/// execution/timeout failures, or a stop. Secret-free by construction: the
+/// command text is never echoed.
 #[tauri::command]
 pub(crate) async fn terminal_run(
     command: String,

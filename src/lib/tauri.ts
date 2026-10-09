@@ -229,30 +229,69 @@ export function deleteSetting(key: string): Promise<void> {
 // ---- Data management (FR-013) ------------------------------------------
 
 // Server-side destructive-action confirmations (NEX-SEC-004): the backend
-// mints an unguessable single-use id per confirm click (`request_confirmation`)
-// and the destructive command consumes it exactly once. A bare IPC caller
-// cannot forge one, so the old caller-supplied phrase/boolean gates are gone.
+// raises a BLOCKING NATIVE OS CONFIRMATION DIALOG and only mints a
+// single-use id once the user accepts, then the destructive command consumes
+// that id exactly once. A bare IPC caller can therefore no longer obtain an
+// id unattended, and the id is bound to the exact operation it was minted
+// for — the old caller-supplied phrase/boolean gates are gone.
+//
+// Consequence for callers: there is NO in-app confirm step for these paths.
+// The native dialog is the single, honest confirmation. Rejections mean the
+// user cancelled at the native dialog and NOTHING ran.
 
 /** Scope a minted confirmation id is bound to. Ids never cross scopes. */
 export type ConfirmationScope = "terminal" | "data_management";
 
-/** Mint one single-use confirmation id for `scope` via
- * `request_confirmation`. `summary` is audit context only (a command excerpt
- * or operation name, length-capped server-side, never echoed) — it grants
- * nothing by itself. */
-export function requestConfirmation(scope: ConfirmationScope, summary: string): Promise<string> {
-  return invoke<string>("request_confirmation", { scope, summary });
+/** Operation identities for the row-scoped / clear-all data-management
+ * paths. These literals must match the Rust `OP_*` constants
+ * (`application/confirmations.rs`) exactly — the backend binds the id to them
+ * and recomputes that binding on consume, so a drift refuses every call. A
+ * source check in `commands/confirmations.rs` pins them. */
+const OP_DELETE_PROMPT = "delete_prompt";
+const OP_DELETE_CONVERSATION = "delete_conversation";
+const OP_CLEAR_ALL_DATA = "clear_application_data";
+
+/** Request one single-use confirmation id for `operation` via
+ * `request_confirmation`.
+ *
+ * This shows a native OS confirmation dialog and only resolves once the user
+ * accepts; it REJECTS (with `kind: "confirmationRequired"`) on cancel, and
+ * nothing is minted or executed in that case. The operation identity is what
+ * the user is shown and what the id is bound to — never a free-form summary
+ * the renderer could decouple from what actually runs.
+ *
+ * @param scope Confirmation scope the id is bound to.
+ * @param operation Operation identity (command text, or an `OP_*` literal).
+ * @param target Optional extra binding: workspace-relative `cwd` for terminal
+ * runs and the affected row id for row-scoped deletes.
+ */
+export function requestConfirmation(
+  scope: ConfirmationScope,
+  operation: string,
+  target?: { cwd?: string | null; targetId?: number | null },
+): Promise<string> {
+  return invoke<string>("request_confirmation", {
+    scope,
+    operation,
+    cwd: target?.cwd ?? null,
+    targetId: target?.targetId ?? null,
+  });
 }
 
 /** Clear ALL local application data (conversations, messages, attachments,
  * prompts, provider metadata, settings) via the existing Phase 9
- * `clear_application_data` command. The wrapper mints a single-use
- * server-side confirmation id first (the caller shows its own explicit
- * confirm UX before calling); the backend refuses to run without consuming
- * a live id. Keyring credentials are not touched (they never lived in
- * SQLite). */
+ * `clear_application_data` command.
+ *
+ * The native OS confirmation dialog this raises IS the confirmation — there is
+ * no separate in-app confirm step, and the id it mints is bound to clear-all
+ * specifically, so an id the user approved for a single-row delete cannot be
+ * spent here. Cancelling at the dialog rejects and deletes nothing.
+ * Keyring credentials are not touched (they never lived in SQLite). */
 export async function clearApplicationData(): Promise<void> {
-  const confirmationId = await requestConfirmation("data_management", "clear all application data");
+  const confirmationId = await requestConfirmation(
+    "data_management",
+    OP_CLEAR_ALL_DATA,
+  );
   return invoke<void>("clear_application_data", { confirmationId });
 }
 
@@ -302,13 +341,34 @@ export function updatePrompt(id: number, title: string, content: string): Promis
   return invoke<void>("update_prompt", { id, title, content });
 }
 
-/** Permanently delete one prompt via `delete_prompt_permanently`. The wrapper
- * mints a single-use server-side confirmation id first; the caller owns the
- * confirm UX (`window.confirm` in the Prompt Library), so no phrase typing
- * is surfaced (FR-007). */
+/** Permanently delete one prompt via `delete_prompt_permanently`.
+ *
+ * The native OS confirmation dialog this raises IS the confirmation — the
+ * caller does NOT show its own confirm dialog, and the id it mints is bound
+ * to this exact row, so an id the user approved for another prompt (or for
+ * clear-all) is refused. Cancelling at the native dialog rejects and deletes
+ * nothing (FR-007). */
 export async function deletePrompt(id: number): Promise<void> {
-  const confirmationId = await requestConfirmation("data_management", `delete prompt ${id}`);
+  const confirmationId = await requestConfirmation("data_management", OP_DELETE_PROMPT, {
+    targetId: id,
+  });
   return invoke<void>("delete_prompt_permanently", {
+    id,
+    confirmationId,
+  });
+}
+
+/** Permanently delete one conversation via `delete_conversation_permanently`
+ * (the data-management path, as distinct from the softer
+ * {@link deleteConversation} above). Binds the confirmation to this exact row
+ * so an id approved for another conversation cannot delete it. */
+export async function deleteConversationPermanently(id: number): Promise<void> {
+  const confirmationId = await requestConfirmation(
+    "data_management",
+    OP_DELETE_CONVERSATION,
+    { targetId: id },
+  );
+  return invoke<void>("delete_conversation_permanently", {
     id,
     confirmationId,
   });
@@ -1298,16 +1358,20 @@ export interface TerminalRunResult {
 }
 
 /** Run one workspace command via `terminal_run`. The call blocks until the
- * tool path returns (completion, timeout kill, or stop kill). The wrapper
- * mints a single-use server-side confirmation id first — clicking Run IS
- * the approval (user-authored commands need no agent park). `cwd` is
- * workspace-relative (`null` = workspace root); absolute escape is refused
- * backend-side. */
+ * tool path returns (completion, timeout kill, or stop kill).
+ *
+ * Clicking Run *requests* the approval; the backend then raises a blocking
+ * NATIVE OS confirmation dialog showing this exact command and working
+ * directory, and mints a single-use id only if the user accepts. The id is
+ * bound to this command + cwd, so it cannot authorize a different run.
+ * Cancelling at the native dialog rejects and runs nothing — the panel shows
+ * the message and no output block is marked failed.
+ *
+ * `cwd` is workspace-relative (`null` = workspace root); absolute escape is
+ * refused backend-side, and a refused `cwd` does not consume the id.
+ */
 export async function terminalRun(command: string, cwd: string | null): Promise<TerminalRunResult> {
-  const confirmationId = await requestConfirmation(
-    "terminal",
-    cwd === null ? command : `${command} (${cwd})`,
-  );
+  const confirmationId = await requestConfirmation("terminal", command, { cwd });
   return invoke<TerminalRunResult>("terminal_run", {
     command,
     cwd,

@@ -3,13 +3,16 @@
 //!
 //! Every destructive operation requires a live single-use confirmation id
 //! minted for the data-management scope by the `request_confirmation` command
-//! (FR-013; AC-5; NEX-SEC-004). The command forwards the supplied
+//! (FR-013; AC-5; NEX-SEC-004). That command shows a **blocking native OS
+//! dialog** and mints only after the user accepts, so the id carries a
+//! Rust-side user-presence proof. The command forwards the supplied
 //! `confirmation_id` verbatim to the existing service, which consumes it
-//! atomically and refuses to run on a forged, expired, reused, or
-//! cross-scope id — the server-side confirmation requirement is therefore
-//! enforced backend-side, not on a caller-controlled constant. No crashes,
-//! cascade deletions, or FTS reindexing happen here: they are delegated to
-//! the existing service and database.
+//! atomically, checks it is bound to the exact operation being performed, and
+//! refuses to run on a forged, expired, reused, cross-scope, or
+//! different-operation id — the server-side confirmation requirement is
+//! therefore enforced backend-side, not on a caller-controlled constant. No
+//! crashes, cascade deletions, or FTS reindexing happen here: they are
+//! delegated to the existing service and database.
 
 // Tauri command handlers must take ownership of their deserialized
 // arguments: serde cannot borrow into the wire payload, so passing by

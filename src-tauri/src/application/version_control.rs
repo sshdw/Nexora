@@ -18,15 +18,16 @@
 //!   validation, workspace-prefix check, symlink-ancestor backstop,
 //!   fixed-vocabulary [`VersionControlError`]).
 //! - Every write requires an explicit per-call `confirmed` flag and refuses
-//!   with [`VersionControlError::Unconfirmed`] without it. Gate-reuse note:
-//!   the agent [`ApprovalGate`](crate::application::agent::approval::ApprovalGate)
-//!   governs in-flight agent tool calls (it parks a live run until a user
-//!   resolves it); a direct IPC command has no run, no park, and no autonomy
-//!   mode to consult, so the gate object cannot apply. Direct IPC therefore
-//!   reuses the established destructive-action pattern instead — the explicit
-//!   confirmation gate from data management (`confirmed: true` per call,
-//!   surfacing as [`CommandError`](crate::commands::error::CommandError)
-//!   `ConfirmationRequired`) — rather than inventing a parallel mechanism.
+//!   with [`VersionControlError::Unconfirmed`] without it. **This flag is
+//!   renderer-attested, NOT a Rust-side user-presence proof**: any IPC caller
+//!   passes `confirmed: true` in a single call. It is honest UX (the panel
+//!   requires an explicit confirm press) but it is not the server-side
+//!   confirmation gate, which mints a single-use id only after the user
+//!   accepts a blocking native OS dialog — see
+//!   [`ConfirmationRegistry`](crate::application::confirmations::ConfirmationRegistry)
+//!   for the coverage split. Migration of these writes to the mint-and-consume
+//!   flow is an open audit item; until then, do not describe the git write
+//!   paths as server-verified.
 //! - Push is never forced: the push path builds a plain
 //!   `refs/heads/<branch>:refs/heads/<branch>` refspec with no `+` prefix and
 //!   no `--force` flag exists anywhere in this module (a test asserts the

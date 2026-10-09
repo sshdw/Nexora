@@ -12,10 +12,16 @@
 //! Command-shape decision (one feature area, TWO commands): `release_status`
 //! is the cheap local readiness aggregation (manifest parity, migration
 //! facts, snapshot presence, `gh` probe — read-only, network-free, no new
-//! tables); `create_issue_for_finding` files one caller-confirmed issue
+//! tables); `create_issue_for_finding` files one caller-attested issue
 //! through the user's own `gh` CLI (the CLI owns auth — no credential
 //! material ever crosses IPC; only the confirmed title/location/detail/source
 //! strings travel, and only title/body strings reach the subprocess as argv).
+//! Its `confirmed: bool` is **renderer-attested, not Rust-verified** — unlike
+//! the terminal and data-management paths, which mint a single-use id only
+//! after the user accepts a blocking native OS dialog. Do not treat this
+//! command as covered by the server-side confirmation gate; see
+//! `application/confirmations.rs` for the coverage split and the open audit
+//! items (#137 / SEC-005 and the remaining boolean gates).
 //! The update signal stays on the existing `update_check` command (it needs
 //! the network); the panel calls both.
 
@@ -59,12 +65,15 @@ pub(crate) fn release_status(
         .map_err(CommandError::from)
 }
 
-/// File one caller-confirmed issue through the user's `gh` CLI (`gh issue
-/// create` with `cwd` = workspace root). The confirm dialog owns the
-/// confirmation UX; the backend still requires the per-call `confirmed` flag
-/// (the destructive-action confirmation pattern shared with the terminal and
-/// the refactor apply) so bare IPC callers cannot file. Only the confirmed
-/// strings travel; auth stays in the CLI.
+/// File one caller-attested issue through the user's `gh` CLI (`gh issue
+/// create` with `cwd` = workspace root). The in-app confirm dialog owns the
+/// confirmation UX and the backend requires the per-call `confirmed` flag, but
+/// that flag is **renderer-attested**: a bare IPC caller passes
+/// `confirmed: true` in one call, so — unlike the terminal and data-management
+/// paths, which mint a single-use id only after the user accepts a blocking
+/// native OS dialog — there is no Rust-side user-presence proof here. Tracked
+/// as an open audit item; see `application/confirmations.rs` for the coverage
+/// split. Only the confirmed strings travel; auth stays in the CLI.
 ///
 /// Like the GitHub list commands, the blocking subprocess round trip runs on
 /// the runtime's dedicated blocking pool via

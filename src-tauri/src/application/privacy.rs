@@ -17,7 +17,11 @@
 //!   panel copies/downloads it exactly like the diagnostics bundle).
 //! - [`wipe`] deletes every ledger row behind an explicit `confirmed` flag
 //!   (the `refactor_apply` precedent: unconfirmed calls refuse instead of
-//!   deleting).
+//!   deleting). That flag is **renderer-attested, not a Rust-side
+//!   user-presence proof** — any IPC caller passes `confirmed: true` in one
+//!   call. Migrating it to the mint-and-consume flow (native dialog +
+//!   operation binding, `application/confirmations.rs`) is an open audit
+//!   item; do not describe this path as server-verified until then.
 //!
 //! There is NO network upload of telemetry anywhere: no POST of stats
 //! exists on this path (or anywhere else in the backend — the only POSTs

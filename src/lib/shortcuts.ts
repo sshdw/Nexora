@@ -371,14 +371,6 @@ export const SHORTCUTS: readonly ShortcutEntry[] = [
     description: "Commit spend limit",
     source: "SettingsView.tsx:737-738 (spend onKeyDown)",
   },
-  {
-    id: "settings.clear-confirm",
-    keys: ["Enter"],
-    group: "Inline editing",
-    scope: "Clear-data confirm field",
-    description: "Confirm clear data",
-    source: "SettingsView.tsx:926-927 (clear confirm onKeyDown)",
-  },
   // Search.
   {
     id: "settings.search-jump",

@@ -10,7 +10,6 @@
 
 import { useEffect, useState } from "react";
 
-import ConfirmDialog from "./ConfirmDialog";
 import M3Button from "./M3Button";
 import M3IconButton from "./M3IconButton";
 import M3Toolbar from "./M3Toolbar";
@@ -60,9 +59,6 @@ export default function PromptLibraryView({
   // below runs once per requested id and cannot re-open the editor on unrelated
   // re-renders (list reloads, typing, Cancel, etc.).
   const [openedInitial, setOpenedInitial] = useState<number | null>(null);
-  // 0.3.0: deletion confirms in the Nexora dialog system (was
-  // window.confirm) — same explicit-confirm behavior, in-app chrome.
-  const [pendingDelete, setPendingDelete] = useState<Prompt | null>(null);
   const { locale, t } = useStrings();
 
   useEffect(() => {
@@ -96,13 +92,20 @@ export default function PromptLibraryView({
     }
   };
 
-  const handleDelete = (prompt: Prompt) => {
-    setPendingDelete(prompt);
-  };
+  // NEX-SEC-004: there is NO in-app confirm dialog here. `deletePrompt`
+  // raises a blocking NATIVE OS confirmation prompt showing the exact row,
+  // and mints a single-use id bound to that row only if the user accepts.
+  //
+  // A cancel at that prompt is reported honestly and distinctly: the backend
+  // rejects with `confirmationRequired`, which is rendered below as a calm
+  // status line (not the error panel), the library stays on screen, and
+  // nothing was deleted. Derived from `store.error` rather than from a local
+  // flag set in the click handler, so it cannot go stale against the store's
+  // own async state; the next operation clears it with the error.
+  const deleteCancelled = store.error?.kind === "confirmationRequired";
 
-  const confirmDelete = () => {
-    if (pendingDelete) void store.remove(pendingDelete.id);
-    setPendingDelete(null);
+  const handleDelete = (prompt: Prompt) => {
+    void store.remove(prompt.id);
   };
 
   const handleUse = (prompt: Prompt) => {
@@ -154,6 +157,15 @@ export default function PromptLibraryView({
       </M3Toolbar>
 
       <div className="nex-prompt-library-body">
+        {deleteCancelled && (
+          // Honest report of a cancel at the native system prompt: nothing was
+          // deleted, the list is untouched, and the prompt clears on the next
+          // operation. Deliberately a status line, not the error panel — the
+          // user chose to cancel, so the library stays on screen.
+          <p className="nex-prompt-status nex-fade-in" role="status">
+            {t("prompts.deleteCancelled")}
+          </p>
+        )}
         {store.loading ? (
           // Skeleton rows: the shared loading primitive from components.css
           // (same treatment as the sidebar's loading list), announced politely.
@@ -166,7 +178,7 @@ export default function PromptLibraryView({
               <div key={index} className="nex-skeleton-row" />
             ))}
           </div>
-        ) : store.error && editor === null ? (
+        ) : store.error && !deleteCancelled && editor === null ? (
           <div className="nex-prompt-error nex-fade-in" role="alert">
             <span className="nex-prompt-error-text">{store.error.message}</span>
             <M3Button
@@ -261,17 +273,6 @@ export default function PromptLibraryView({
           </ul>
         )}
       </div>
-
-      {pendingDelete && (
-        <ConfirmDialog
-          title={t("prompts.deleteTitle")}
-          body={t("prompts.deleteBody", { title: pendingDelete.title })}
-          confirmLabel={t("prompts.deleteConfirm")}
-          danger
-          onConfirm={confirmDelete}
-          onCancel={() => setPendingDelete(null)}
-        />
-      )}
 
       {editor && (
         <PromptEditor

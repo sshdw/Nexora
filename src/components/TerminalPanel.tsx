@@ -110,6 +110,17 @@ function toMessage(error: unknown): string {
   return String(error);
 }
 
+/** True when the backend refused because the user cancelled at the native OS
+ * confirmation prompt (`request_confirmation` mints nothing, so the command
+ * never ran). Distinct from a genuine run failure: nothing executed. */
+function isConfirmationCancelled(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as CommandError).kind === "confirmationRequired"
+  );
+}
+
 export interface TerminalPanelProps {
   onClose: () => void;
   /** Palette-raised action (clear / focus-input). The token identifies the
@@ -265,6 +276,23 @@ export default function TerminalPanel({ onClose, request = null }: TerminalPanel
           setBlocks((prev) =>
             prev.map((block) =>
               block.id === blockId ? { ...block, pending: false, stopped: true } : block,
+            ),
+          );
+        } else if (isConfirmationCancelled(e)) {
+          // Cancelled at the native confirmation prompt (NEX-SEC-004): no id
+          // was minted and the command never ran. Reported honestly as a
+          // cancelled run — never as a failed command — so the scrollback
+          // does not imply the shell tried and errored.
+          setBlocks((prev) =>
+            prev.map((block) =>
+              block.id === blockId
+                ? {
+                    ...block,
+                    pending: false,
+                    success: true,
+                    error: tr(getLocale(), "term.runCancelled"),
+                  }
+                : block,
             ),
           );
         } else {

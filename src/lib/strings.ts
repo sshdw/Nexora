@@ -364,11 +364,10 @@ const en = {
   "settings.dangerText":
     "Permanently deletes every conversation, message, attachment and prompt stored on this device, along with provider metadata and application settings. Provider credentials in the operating system keyring are not affected. This cannot be undone.",
   "settings.clearBtn": "Clear all data…",
-  "settings.clearConfirmLabel": "Type “{phrase}” to confirm",
-  "settings.clearMismatch": "Type \"{phrase}\" to confirm.",
   "settings.clearFail": "Unable to clear application data.",
+  "settings.clearCancelled":
+    "Cancelled at the system confirmation prompt — no data was deleted.",
   "settings.clearing": "Clearing…",
-  "settings.clearAll": "Clear all data",
   "settings.advancedHint":
     "Power keys for the 2.0 rollout and routing internals. Defaults apply when a key is unset; clearing a key restores its default. Nothing here is required for everyday use.",
   "settings.advancedLoadFail": "Unable to load advanced settings.",
@@ -551,7 +550,7 @@ const en = {
   "shortcuts.scopePromptTitle": "Prompt title field",
   "shortcuts.scopeCustomModel": "Custom model id field",
   "shortcuts.scopeSpend": "Spend-limit field",
-  "shortcuts.scopeClearConfirm": "Clear-data confirm field",
+  
   "shortcuts.scopeSettingsSearch": "Settings search field (matches present)",
   "shortcuts.scopeSettingsSearchEsc": "Settings search field",
   "shortcuts.scopeSegmented": "Focused segmented group (automatic activation)",
@@ -586,7 +585,7 @@ const en = {
   "shortcuts.desc.prompt.save": "Save prompt",
   "shortcuts.desc.settings.custom-model-commit": "Commit custom model id",
   "shortcuts.desc.settings.spend-commit": "Commit spend limit",
-  "shortcuts.desc.settings.clear-confirm": "Confirm clear data",
+  
   "shortcuts.desc.settings.search-jump": "Jump to best matching group",
   "shortcuts.desc.settings.search-clear": "Clear search",
   "shortcuts.desc.segmented.move": "Move and select option",
@@ -622,9 +621,8 @@ const en = {
   "prompts.toolsAria": "Tools for {title}",
   "prompts.editAria": "Edit {title}",
   "prompts.deleteAria": "Delete {title}",
-  "prompts.deleteTitle": "Delete prompt?",
-  "prompts.deleteBody": "“{title}” will be permanently deleted. This cannot be undone.",
-  "prompts.deleteConfirm": "Delete",
+  "prompts.deleteCancelled":
+    "Cancelled at the system confirmation prompt — the prompt was not deleted.",
   "prompts.editorNew": "New prompt",
   "prompts.editorEdit": "Edit prompt",
   "prompts.titleLabel": "Title",
@@ -839,6 +837,8 @@ const en = {
   "term.cdRoot": "cd cannot leave the workspace root",
   "term.wsFallback": "(workspace)",
   "term.needProviderExplain": "Select a provider and model first (Settings), then explain.",
+  "term.runCancelled":
+    "Cancelled at the system confirmation prompt — the command was not run.",
 
   // ---- tasks (task manager + autonomous mode) ---------------------------------
   "task.group": "Tasks",
@@ -1420,7 +1420,6 @@ const SHORTCUT_DESC_KEY: Record<string, StringKey> = {
   "prompt.save": "shortcuts.desc.prompt.save",
   "settings.custom-model-commit": "shortcuts.desc.settings.custom-model-commit",
   "settings.spend-commit": "shortcuts.desc.settings.spend-commit",
-  "settings.clear-confirm": "shortcuts.desc.settings.clear-confirm",
   "settings.search-jump": "shortcuts.desc.settings.search-jump",
   "settings.search-clear": "shortcuts.desc.settings.search-clear",
   "segmented.move": "shortcuts.desc.segmented.move",
@@ -1464,7 +1463,7 @@ const SHORTCUT_SCOPE_KEY: Record<string, StringKey> = {
   "Prompt title field": "shortcuts.scopePromptTitle",
   "Custom model id field": "shortcuts.scopeCustomModel",
   "Spend-limit field": "shortcuts.scopeSpend",
-  "Clear-data confirm field": "shortcuts.scopeClearConfirm",
+  
   "Settings search field (matches present)": "shortcuts.scopeSettingsSearch",
   "Settings search field": "shortcuts.scopeSettingsSearchEsc",
   "Focused segmented group (automatic activation)": "shortcuts.scopeSegmented",
@@ -1840,11 +1839,10 @@ const ru: Record<StringKey, string> = {
   "settings.dangerText":
     "Навсегда удаляет каждый разговор, сообщение, вложение и промпт на этом устройстве, а также метаданные провайдеров и настройки приложения. Учётные данные провайдеров в хранилище ОС не затрагиваются. Это действие необратимо.",
   "settings.clearBtn": "Удалить все данные…",
-  "settings.clearConfirmLabel": "Введите «{phrase}» для подтверждения",
-  "settings.clearMismatch": "Введите «{phrase}» для подтверждения.",
   "settings.clearFail": "Не удалось удалить данные приложения.",
+  "settings.clearCancelled":
+    "Отменено в системном диалоге подтверждения — данные не удалены.",
   "settings.clearing": "Удаление…",
-  "settings.clearAll": "Удалить все данные",
   "settings.advancedHint":
     "Мощные ключи для раскатки 2.0 и внутренностей роутинга. Пока ключ не задан, действуют значения по умолчанию; очистка ключа возвращает значение по умолчанию. Для повседневного использования здесь ничего не нужно.",
   "settings.advancedLoadFail": "Не удалось загрузить продвинутые настройки.",
@@ -2023,7 +2021,7 @@ const ru: Record<StringKey, string> = {
   "shortcuts.scopePromptTitle": "Поле названия промпта",
   "shortcuts.scopeCustomModel": "Поле своего ID модели",
   "shortcuts.scopeSpend": "Поле лимита трат",
-  "shortcuts.scopeClearConfirm": "Поле подтверждения удаления",
+  
   "shortcuts.scopeSettingsSearch": "Поле поиска настроек (есть совпадения)",
   "shortcuts.scopeSettingsSearchEsc": "Поле поиска настроек",
   "shortcuts.scopeSegmented": "Сфокусированная сегмент-группа (автоактивация)",
@@ -2058,7 +2056,7 @@ const ru: Record<StringKey, string> = {
   "shortcuts.desc.prompt.save": "Сохранить промпт",
   "shortcuts.desc.settings.custom-model-commit": "Применить свой ID модели",
   "shortcuts.desc.settings.spend-commit": "Применить лимит трат",
-  "shortcuts.desc.settings.clear-confirm": "Подтвердить удаление данных",
+  
   "shortcuts.desc.settings.search-jump": "Перейти к лучшей совпавшей группе",
   "shortcuts.desc.settings.search-clear": "Очистить поиск",
   "shortcuts.desc.segmented.move": "Переместить и выбрать опцию",
@@ -2092,9 +2090,8 @@ const ru: Record<StringKey, string> = {
   "prompts.toolsAria": "Инструменты для «{title}»",
   "prompts.editAria": "Редактировать «{title}»",
   "prompts.deleteAria": "Удалить «{title}»",
-  "prompts.deleteTitle": "Удалить промпт?",
-  "prompts.deleteBody": "«{title}» будет удалён навсегда. Это действие необратимо.",
-  "prompts.deleteConfirm": "Удалить",
+  "prompts.deleteCancelled":
+    "Отменено в системном диалоге подтверждения — промпт не удалён.",
   "prompts.editorNew": "Новый промпт",
   "prompts.editorEdit": "Редактировать промпт",
   "prompts.titleLabel": "Название",
@@ -2307,6 +2304,8 @@ const ru: Record<StringKey, string> = {
   "term.cdRoot": "cd не может выйти за корень воркспейса",
   "term.wsFallback": "(воркспейс)",
   "term.needProviderExplain": "Сначала выберите провайдера и модель (настройки), затем объясняйте.",
+  "term.runCancelled":
+    "Отменено в системном диалоге подтверждения — команда не запущена.",
 
   "task.group": "Задачи",
   "task.title": "Задачи",

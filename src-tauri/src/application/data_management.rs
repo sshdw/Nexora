@@ -24,15 +24,20 @@
 //!
 //! Every operation is destructive and requires a live single-use confirmation
 //! id minted for the data-management scope by the `request_confirmation`
-//! command before it executes. Each method therefore requires the caller to
-//! supply such an id plus the server-side
-//! [`ConfirmationRegistry`](crate::application::confirmations::ConfirmationRegistry);
-//! without a valid unconsumed unexpired id the operation returns
-//! [`DataManagementError::ConfirmationRequired`] and performs **no** write.
-//! A caller-controlled constant (the previous `"confirm"` phrase) is not a
-//! user-presence proof — any IPC caller could pass it — so the trust anchor
-//! lives server-side: ids are unguessable, bound to this scope, consumed
-//! atomically on first use, and short-lived.
+//! command before it executes. That command shows a **blocking native OS
+//! dialog** and mints only after the user accepts, so the id carries a
+//! Rust-side user-presence proof rather than a caller-supplied value. Each
+//! method additionally requires the id to be *bound to the exact operation* it
+//! performs (see [`ConfirmationTarget`]): an id the user approved for one row
+//! delete cannot be spent on another row or on clear-all.
+//!
+//! Without a valid unconsumed unexpired correctly-bound id the operation
+//! returns [`DataManagementError::ConfirmationRequired`] and performs **no**
+//! write. A caller-controlled constant (the previous `"confirm"` phrase) is
+//! not a user-presence proof — any IPC caller could pass it — so the trust
+//! anchor lives server-side: ids can only come from an accepted prompt, are
+//! bound to this scope and operation, consumed atomically on first use, and
+//! short-lived.
 //!
 //! # Atomicity (AC-8)
 //!
@@ -52,7 +57,10 @@
 //! value, so formatting a [`DataManagementError`] never logs a credential
 //! (ARCHITECTURE.md §9, §11).
 
-use crate::application::confirmations::{ConfirmationRegistry, SCOPE_DATA_MANAGEMENT};
+use crate::application::confirmations::{
+    ConfirmationRegistry, ConfirmationTarget, OP_CLEAR_ALL_DATA, OP_DELETE_CONVERSATION,
+    OP_DELETE_PROMPT, SCOPE_DATA_MANAGEMENT,
+};
 use crate::infrastructure::database::{Database, DatabaseError};
 use crate::infrastructure::repository::conversations::ConversationRepository;
 use crate::infrastructure::repository::prompts::PromptRepository;
@@ -91,15 +99,19 @@ impl<'a> DataManagementService<'a> {
     }
 
     /// Require `confirmation_id` to be a live single-use id minted for the
-    /// data-management scope, consuming it atomically.
+    /// data-management scope **and bound to this exact operation**, consuming
+    /// it atomically.
     ///
-    /// Returns [`DataManagementError::ConfirmationRequired`] otherwise (and
-    /// performs no write).
+    /// The binding is what stops an id the user approved for a cheap
+    /// row-scoped delete from being spent on a different row or on
+    /// clear-all. Returns [`DataManagementError::ConfirmationRequired`]
+    /// otherwise (and performs no write).
     fn require_confirmation(
         confirmations: &ConfirmationRegistry,
         confirmation_id: &str,
+        target: &ConfirmationTarget<'_>,
     ) -> Result<()> {
-        if confirmations.consume(SCOPE_DATA_MANAGEMENT, confirmation_id) {
+        if confirmations.consume(SCOPE_DATA_MANAGEMENT, confirmation_id, target) {
             Ok(())
         } else {
             Err(DataManagementError::ConfirmationRequired)
@@ -118,14 +130,19 @@ impl<'a> DataManagementService<'a> {
     ///
     /// Returns [`DataManagementError::ConfirmationRequired`] if
     /// `confirmation_id` is not a live id minted for the data-management
-    /// scope, or [`DataManagementError::Database`] if the delete fails (AC-8).
+    /// scope and bound to this exact `id`, or
+    /// [`DataManagementError::Database`] if the delete fails (AC-8).
     pub(crate) fn delete_conversation(
         &self,
         id: i64,
         confirmation_id: &str,
         confirmations: &ConfirmationRegistry,
     ) -> Result<()> {
-        Self::require_confirmation(confirmations, confirmation_id)?;
+        Self::require_confirmation(
+            confirmations,
+            confirmation_id,
+            &ConfirmationTarget::for_target(OP_DELETE_CONVERSATION, id),
+        )?;
         self.conversations.delete(id)?;
         Ok(())
     }
@@ -140,14 +157,19 @@ impl<'a> DataManagementService<'a> {
     ///
     /// Returns [`DataManagementError::ConfirmationRequired`] if
     /// `confirmation_id` is not a live id minted for the data-management
-    /// scope, or [`DataManagementError::Database`] if the delete fails (AC-8).
+    /// scope and bound to this exact `id`, or
+    /// [`DataManagementError::Database`] if the delete fails (AC-8).
     pub(crate) fn delete_prompt(
         &self,
         id: i64,
         confirmation_id: &str,
         confirmations: &ConfirmationRegistry,
     ) -> Result<()> {
-        Self::require_confirmation(confirmations, confirmation_id)?;
+        Self::require_confirmation(
+            confirmations,
+            confirmation_id,
+            &ConfirmationTarget::for_target(OP_DELETE_PROMPT, id),
+        )?;
         self.prompts.delete(id)?;
         Ok(())
     }
@@ -167,14 +189,19 @@ impl<'a> DataManagementService<'a> {
     ///
     /// Returns [`DataManagementError::ConfirmationRequired`] if
     /// `confirmation_id` is not a live id minted for the data-management
-    /// scope, or [`DataManagementError::Database`] if any step of the clear
-    /// fails (AC-8).
+    /// scope and bound to [`OP_CLEAR_ALL_DATA`] (an id the user approved for a
+    /// single-row delete is refused here), or
+    /// [`DataManagementError::Database`] if any step of the clear fails (AC-8).
     pub(crate) fn clear(
         &self,
         confirmation_id: &str,
         confirmations: &ConfirmationRegistry,
     ) -> Result<()> {
-        Self::require_confirmation(confirmations, confirmation_id)?;
+        Self::require_confirmation(
+            confirmations,
+            confirmation_id,
+            &ConfirmationTarget::new(OP_CLEAR_ALL_DATA),
+        )?;
         // `conversations` is cleared first; the ON DELETE CASCADE foreign keys
         // remove its messages and attachments, and the FTS triggers remove them
         // from search. The standalone tables follow.
@@ -380,11 +407,30 @@ mod tests {
         .expect("count rows")
     }
 
-    /// Mint one live single-use id for the data-management scope.
-    fn mint_id(confirmations: &ConfirmationRegistry) -> String {
+    /// Mint one live single-use id for the data-management scope, bound to the
+    /// exact operation the caller is about to perform.
+    fn mint_for(confirmations: &ConfirmationRegistry, target: &ConfirmationTarget<'_>) -> String {
         confirmations
-            .request(SCOPE_DATA_MANAGEMENT, "test")
+            .request(SCOPE_DATA_MANAGEMENT, target)
             .expect("mint confirmation id")
+    }
+
+    fn mint_delete_conversation(confirmations: &ConfirmationRegistry, id: i64) -> String {
+        mint_for(
+            confirmations,
+            &ConfirmationTarget::for_target(OP_DELETE_CONVERSATION, id),
+        )
+    }
+
+    fn mint_delete_prompt(confirmations: &ConfirmationRegistry, id: i64) -> String {
+        mint_for(
+            confirmations,
+            &ConfirmationTarget::for_target(OP_DELETE_PROMPT, id),
+        )
+    }
+
+    fn mint_clear(confirmations: &ConfirmationRegistry) -> String {
+        mint_for(confirmations, &ConfirmationTarget::new(OP_CLEAR_ALL_DATA))
     }
 
     #[test]
@@ -415,7 +461,7 @@ mod tests {
         let service = DataManagementService::new(&db);
         let confirmations = ConfirmationRegistry::new();
 
-        let id = mint_id(&confirmations);
+        let id = mint_delete_conversation(&confirmations, first);
         service
             .delete_conversation(first, &id, &confirmations)
             .expect("first use deletes");
@@ -435,13 +481,59 @@ mod tests {
         let service = DataManagementService::new(&db);
         let confirmations = ConfirmationRegistry::new();
         let foreign = confirmations
-            .request(SCOPE_TERMINAL, "echo hi")
+            .request(SCOPE_TERMINAL, &ConfirmationTarget::new("echo hi"))
             .expect("mint confirmation id");
 
         let err = service
             .delete_conversation(id, &foreign, &confirmations)
             .expect_err("cross-scope id must be refused");
         assert!(matches!(err, DataManagementError::ConfirmationRequired));
+        assert_eq!(count(&db, "conversations"), 1);
+    }
+
+    /// NEX-SEC-004: the id is bound to the exact operation. An id the user
+    /// approved for one row must not delete a different row, and an id
+    /// approved for a row delete must not clear everything.
+    #[test]
+    fn id_minted_for_another_row_or_operation_is_refused() {
+        let db = test_db();
+        let first = create_conversation(&db, "First");
+        let second = create_conversation(&db, "Second");
+        let prompt = create_prompt(&db, "Plan", "content");
+        let service = DataManagementService::new(&db);
+        let confirmations = ConfirmationRegistry::new();
+
+        let wrong_row = mint_delete_conversation(&confirmations, first);
+        let err = service
+            .delete_conversation(second, &wrong_row, &confirmations)
+            .expect_err("an id minted for another row must be refused");
+        assert!(matches!(err, DataManagementError::ConfirmationRequired));
+        assert_eq!(count(&db, "conversations"), 2);
+
+        let row_delete = mint_delete_conversation(&confirmations, second);
+        let err = service
+            .clear(&row_delete, &confirmations)
+            .expect_err("a row-delete id must not authorize clear-all");
+        assert!(matches!(err, DataManagementError::ConfirmationRequired));
+        assert_eq!(count(&db, "conversations"), 2);
+
+        let prompt_id = mint_delete_prompt(&confirmations, prompt);
+        let err = service
+            .delete_conversation(second, &prompt_id, &confirmations)
+            .expect_err("a prompt-delete id must not delete a conversation");
+        assert!(matches!(err, DataManagementError::ConfirmationRequired));
+        assert_eq!(count(&db, "conversations"), 2);
+        assert_eq!(count(&db, "prompts"), 1);
+
+        // The correctly-bound id still works afterwards: the refusals above
+        // consumed only the ids they were presented with.
+        service
+            .delete_conversation(
+                second,
+                &mint_delete_conversation(&confirmations, second),
+                &confirmations,
+            )
+            .expect("the matching id still deletes");
         assert_eq!(count(&db, "conversations"), 1);
     }
 
@@ -503,7 +595,11 @@ mod tests {
         let confirmations = ConfirmationRegistry::new();
 
         service
-            .delete_conversation(id, &mint_id(&confirmations), &confirmations)
+            .delete_conversation(
+                id,
+                &mint_delete_conversation(&confirmations, id),
+                &confirmations,
+            )
             .expect("delete succeeds");
 
         // AC-1 / AC-9: the conversation and its dependent rows are gone, with
@@ -536,7 +632,11 @@ mod tests {
         let confirmations = ConfirmationRegistry::new();
 
         service
-            .delete_conversation(42, &mint_id(&confirmations), &confirmations)
+            .delete_conversation(
+                42,
+                &mint_delete_conversation(&confirmations, 42),
+                &confirmations,
+            )
             .expect("no-op delete succeeds");
     }
 
@@ -549,7 +649,7 @@ mod tests {
         let confirmations = ConfirmationRegistry::new();
 
         service
-            .delete_prompt(id, &mint_id(&confirmations), &confirmations)
+            .delete_prompt(id, &mint_delete_prompt(&confirmations, id), &confirmations)
             .expect("delete succeeds");
 
         // AC-3: the prompt is gone from the library.
@@ -572,7 +672,7 @@ mod tests {
         let confirmations = ConfirmationRegistry::new();
 
         service
-            .delete_prompt(99, &mint_id(&confirmations), &confirmations)
+            .delete_prompt(99, &mint_delete_prompt(&confirmations, 99), &confirmations)
             .expect("no-op delete succeeds");
     }
 
@@ -589,7 +689,7 @@ mod tests {
         let confirmations = ConfirmationRegistry::new();
 
         service
-            .clear(&mint_id(&confirmations), &confirmations)
+            .clear(&mint_clear(&confirmations), &confirmations)
             .expect("clear succeeds");
 
         // AC-4 / AC-9: every application-data table is empty, including the
@@ -626,17 +726,25 @@ mod tests {
         let service = DataManagementService::new(&db);
         let confirmations = ConfirmationRegistry::new();
         service
-            .delete_conversation(conv, &mint_id(&confirmations), &confirmations)
+            .delete_conversation(
+                conv,
+                &mint_delete_conversation(&confirmations, conv),
+                &confirmations,
+            )
             .expect("delete conversation");
         service
-            .delete_prompt(prompt, &mint_id(&confirmations), &confirmations)
+            .delete_prompt(
+                prompt,
+                &mint_delete_prompt(&confirmations, prompt),
+                &confirmations,
+            )
             .expect("delete prompt");
 
         // A fresh service and search over the same database read an empty
         // library / search.
         let reopened = DataManagementService::new(&db);
         reopened
-            .clear(&mint_id(&confirmations), &confirmations)
+            .clear(&mint_clear(&confirmations), &confirmations)
             .expect("clear no-op succeeds");
         let search = LocalSearchService::new(&db);
         let results = search.search("old").expect("search");
