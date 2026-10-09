@@ -829,11 +829,17 @@ impl<'a> AgentRunner<'a> {
 
             dispatch::check_cancellation(control, self.event_sender.as_ref())?;
 
+            // Task 4.3: every turn bills — reported usage, or the
+            // conservative message-size estimate when the provider omits it
+            // (NEX-AGENT-002) — whether or not a recorder is attached
+            // (NEX-AGENT-015).
+            let usage = response
+                .usage
+                .unwrap_or_else(|| budget::estimate_usage(&messages, &response.content));
             budget::check_spend_guard(
                 &run_budget,
                 model,
-                response.usage,
-                record.is_some(),
+                Some(usage),
                 spent_micro_usd,
                 self.event_sender.as_ref(),
                 audit,

@@ -4,8 +4,10 @@ use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 use crate::application::agent::control::{AgentRunEvent, RunControl};
-use crate::application::execution::TokenUsage;
+use crate::application::execution::{AiMessage, TokenUsage};
 
+use super::assembly;
+use super::compaction;
 use super::dispatch::emit;
 use super::errors::AgentError;
 use super::governance::{audit, AuditEvent, AuditLog, RunBudget};
@@ -105,9 +107,32 @@ pub(crate) fn honor_allowance(
     }
 }
 
+/// Conservative fallback billing for one turn when the provider omits
+/// `usage` (NEX-AGENT-002).
+///
+/// The input side is the message-size estimate of the history actually sent
+/// ([`assembly::messages_size_tokens`]); the output side is the
+/// length-based estimate of the returned content
+/// ([`compaction::estimate_tokens`]). Both estimators already inflate by
+/// their safety margin, and each side is clamped to at least one token so a
+/// billed turn is never silently $0 at the policy rate. Known-free model IDs
+/// still bill $0 downstream in [`RunBudget::cost_for`].
+#[must_use]
+pub(crate) fn estimate_usage(messages: &[AiMessage], response_content: &str) -> TokenUsage {
+    TokenUsage {
+        input_tokens: assembly::messages_size_tokens(messages).max(1),
+        output_tokens: compaction::estimate_tokens(response_content).max(1),
+    }
+}
+
 /// Accumulate one turn's billed cost and trip the spend guard (Task 4.3).
 ///
-/// Usage absent is counted as $0 (count-as-known). Known-free model IDs
+/// Every reported (or estimated, see [`estimate_usage`]) usage is
+/// accumulated into `spent_micro_usd`, whether or not a run record is
+/// attached (NEX-AGENT-015: unrecorded runs are guarded, not just recorded
+/// ones) and whether or not a limit is set (the counter feeds the persisted
+/// `spent_micro_usd` column when a recorder is attached). The limit trip
+/// itself fires only when a cap is configured. Known-free model IDs
 /// bill $0 regardless of usage. The cap and the cost source come from the
 /// [`RunBudget`] (opaque cost hook when attached, policy rate otherwise);
 /// the trip is appended to the optional run-scoped [`AuditLog`] best-effort.
@@ -115,40 +140,38 @@ pub(crate) fn check_spend_guard(
     budget: &RunBudget,
     model: &str,
     usage: Option<TokenUsage>,
-    record_present: bool,
     spent_micro_usd: &mut u64,
     sender: Option<&Sender<AgentRunEvent>>,
     audit_log: Option<&AuditLog>,
 ) -> Result<(), AgentError> {
-    if let Some(usage) = usage {
-        if budget.spend_limit_micro_usd().is_some() || record_present {
-            let cost = budget.cost_for(model, usage);
-            *spent_micro_usd = spent_micro_usd.saturating_add(cost);
-            if let Some(limit) = budget.spend_limit_micro_usd() {
-                if *spent_micro_usd > limit {
-                    observe_transition(RunState::Running, RunState::SpendLimitExceeded);
-                    audit(
-                        audit_log,
-                        RunState::Running,
-                        RunState::SpendLimitExceeded,
-                        AuditEvent::SpendTripped {
-                            spent_micro: *spent_micro_usd,
-                            limit_micro: limit,
-                        },
-                    );
-                    emit(
-                        sender,
-                        AgentRunEvent::SpendLimitExceeded {
-                            spent_micro: *spent_micro_usd,
-                            limit_micro: limit,
-                        },
-                    );
-                    return Err(AgentError::SpendLimitExceeded {
-                        spent_micro: *spent_micro_usd,
-                        limit_micro: limit,
-                    });
-                }
-            }
+    let Some(usage) = usage else {
+        return Ok(());
+    };
+    let cost = budget.cost_for(model, usage);
+    *spent_micro_usd = spent_micro_usd.saturating_add(cost);
+    if let Some(limit) = budget.spend_limit_micro_usd() {
+        if *spent_micro_usd > limit {
+            observe_transition(RunState::Running, RunState::SpendLimitExceeded);
+            audit(
+                audit_log,
+                RunState::Running,
+                RunState::SpendLimitExceeded,
+                AuditEvent::SpendTripped {
+                    spent_micro: *spent_micro_usd,
+                    limit_micro: limit,
+                },
+            );
+            emit(
+                sender,
+                AgentRunEvent::SpendLimitExceeded {
+                    spent_micro: *spent_micro_usd,
+                    limit_micro: limit,
+                },
+            );
+            return Err(AgentError::SpendLimitExceeded {
+                spent_micro: *spent_micro_usd,
+                limit_micro: limit,
+            });
         }
     }
     Ok(())
@@ -581,28 +604,75 @@ mod tests {
     }
 
     #[test]
-    fn spend_guard_usage_none_adds_zero() {
+    fn spend_guard_usage_none_bills_conservative_estimate_and_trips() {
         let ws = temp_workspace();
-        // First turn: usage None (cost 0), second: cheap 1M, limit 500k -> second trips
-        // Actually first None adds 0, spent 0, second 1M >500k trips
-        let fake = FakeExecutor::new(vec![
-            Ok(AiResponse {
-                content: String::new(),
-                model: "m".to_string(),
-                tool_calls: vec![call_tool("a", "list_directory", serde_json::json!({}))],
-                usage: None,
-            }),
-            Ok(usage_tool_response("b", 200_000, 0)),
-            Ok(text_response("never")),
-        ]);
-        let runner = AgentRunner::new(&fake, &ws).with_spend_limit(500_000);
+        // NEX-AGENT-002: a provider omitting `usage` must not accumulate $0.
+        // The guard falls back to the message-size estimate, so even this
+        // unrecorded run (NEX-AGENT-015: no recorder attached) trips a tiny
+        // limit on the very first turn.
+        let fake = FakeExecutor::new(vec![Ok(AiResponse {
+            content: "done".to_string(),
+            model: "m".to_string(),
+            tool_calls: Vec::new(),
+            usage: None,
+        })]);
+        let runner = AgentRunner::new(&fake, &ws).with_spend_limit(1);
         let err = runner
             .run("openai", "m", "cred", "q")
-            .expect_err("trips on second");
-        assert!(matches!(err, AgentError::SpendLimitExceeded { .. }));
-        // Only 2 turns ran (first None + second that tripped)
-        assert_eq!(fake.requests.borrow().len(), 2);
+            .expect_err("estimate must trip a tiny limit");
+        match err {
+            AgentError::SpendLimitExceeded {
+                spent_micro,
+                limit_micro,
+            } => {
+                assert!(spent_micro > 0, "estimate must bill nonzero");
+                assert_eq!(limit_micro, 1);
+            }
+            other => panic!("expected SpendLimitExceeded, got {other:?}"),
+        }
+        // The trip fires before any further turn runs.
+        assert_eq!(fake.requests.borrow().len(), 1);
         let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn spend_guard_estimate_accumulates_across_none_usage_turns() {
+        use crate::application::agent::governance::RunBudget;
+
+        // Direct guard-level decoupling check (NEX-AGENT-015): accumulation
+        // no longer depends on a record being present.
+        let budget = RunBudget::new(10, None);
+        let mut spent = 0u64;
+        let estimate = TokenUsage {
+            input_tokens: 1_000,
+            output_tokens: 500,
+        };
+        super::check_spend_guard(&budget, "m", Some(estimate), &mut spent, None, None)
+            .expect("no limit, no trip");
+        assert!(spent > 0, "estimated usage must accumulate, got {spent}");
+        // Absent usage with no estimate to bill stays a no-op.
+        super::check_spend_guard(&budget, "m", None, &mut spent, None, None)
+            .expect("none stays a no-op");
+    }
+
+    #[test]
+    fn estimate_usage_covers_history_and_content() {
+        use crate::application::execution::{AiMessage, AiRole};
+
+        let messages = vec![AiMessage {
+            role: AiRole::User,
+            content: "hello, please summarize this workspace".to_string(),
+            attachments: Vec::new(),
+            tool_calls: Vec::new(),
+            tool_result: None,
+        }];
+        let estimate = super::estimate_usage(&messages, "a reasonably long model answer");
+        assert!(estimate.input_tokens > 0, "history must bill input");
+        assert!(estimate.output_tokens > 0, "content must bill output");
+        // Empty history and empty content still bill the 1-token floor each.
+        let floored = super::estimate_usage(&[], "");
+        assert_eq!(floored.input_tokens, 1);
+        assert_eq!(floored.output_tokens, 1);
     }
 
     #[test]
