@@ -452,9 +452,12 @@ pub(crate) fn prompt_body(scope: &str, target: &ConfirmationTarget<'_>) -> Strin
 //   `export_conversation`, `export_setup`, `export_setup_to_file`)
 //
 // Tracked as open audit items — #137 (SEC-005, export-to-file confirmation)
-// and the remaining boolean gates listed above. Do not describe the
-// confirmation gate as covering those paths until they are migrated to the
-// same mint-and-consume flow.
+// and the remaining boolean gates listed above. Other destructive commands
+// without any gate (`delete_task`, `remove_attachment`, `delete_setting`,
+// `remove_provider`, `delete_debt_item`, `remove_permission_rule`) are outside
+// this confirmation gate's scope and are tracked separately. Do not describe
+// the confirmation gate as covering those paths until they are migrated to
+// the same mint-and-consume flow.
 
 #[cfg(test)]
 mod tests {
