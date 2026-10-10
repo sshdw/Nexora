@@ -22,6 +22,10 @@
 //! [`contains_secret`] backs the import gate: key-like material in an import
 //! document is denied with a secret-free error (openai.rs secret-hygiene
 //! style — the predicate returns only `bool`, so a secret can never echo).
+//!
+//! [`redact_secrets`] is the single canonical secret scrubber (NEX-SEC-003):
+//! the CI log panel and agent step persistence both route persisted text
+//! through it, so there is exactly one pattern set to maintain.
 
 use super::permissions::is_known_tool;
 
@@ -256,6 +260,183 @@ fn has_prefixed_token(lowered: &str, prefix: &str, min_len: usize) -> bool {
         rest = after;
     }
     false
+}
+
+// ---------------------------------------------------------------------------
+// Secret redaction (NEX-SEC-003; shared by the CI log panel and agent step
+// persistence)
+// ---------------------------------------------------------------------------
+
+/// Token prefixes scrubbed from persisted text (prefix kept, value
+/// replaced). Distinctive provider prefixes (`ghp_`, `AKIA`, ...) never
+/// appear in prose, so short values still redact; the short generic prefix
+/// `sk-` collides with ordinary words (`risk-free`, `task-setup`), so it
+/// needs a long value run (see [`SHORT_PREFIX_MIN_VALUE`]).
+const SECRET_PREFIXES: [&str; 13] = [
+    "ghp_",
+    "gho_",
+    "ghu_",
+    "ghs_",
+    "ghr_",
+    "github_pat_",
+    "sk-",
+    "sk-ant-",
+    "sk-proj-",
+    "xoxb-",
+    "xoxp-",
+    "xoxa-",
+    "AKIA",
+];
+
+/// Minimum secret-value length for the short generic prefixes (`sk-`) and
+/// the auth schemes (`Bearer `, `Basic `, any ASCII case): real keys and
+/// tokens run far longer, while prose fragments (`-free`, `of good news`,
+/// `training`) stay short. Distinctive provider prefixes keep the 4-char
+/// minimum below.
+const SHORT_PREFIX_MIN_VALUE: usize = 16;
+
+/// Minimum secret-value length for the distinctive provider prefixes
+/// (`ghp_`, `AKIA`, ...): long enough to skip stray punctuation, short
+/// enough for real (truncated) keys.
+const DISTINCT_PREFIX_MIN_VALUE: usize = 4;
+
+/// Replacement marker for a redacted secret value or PEM block. Fixed
+/// vocabulary by construction, so redacted output can never echo a secret
+/// into `SQLite`, IPC, or a log line.
+const REDACTED_MARKER: &str = "[redacted]";
+
+/// Scrub probable secret values from text about to be persisted or
+/// displayed: known token prefixes keep their prefix with the value
+/// replaced, `Bearer <value>` / `Basic <value>` (any ASCII case) keep the
+/// scheme with the value replaced, and PEM private-key blocks
+/// (`-----BEGIN ... -----` through the `-----END ... -----` line) collapse
+/// to one marker line. Returns the scrubbed text and whether anything was
+/// replaced (callers surface the flag as a truncation-style warning).
+/// Short runs stay intact so ordinary prose is never mangled: `risk-free` /
+/// `task-setup` survive (their `sk-` value is 4 chars, not 16+), and `the
+/// bearer of good news` survives (its `Bearer ` value is 2 chars, not 16+).
+#[must_use]
+pub(crate) fn redact_secrets(text: &str) -> (String, bool) {
+    fn is_token_byte(byte: u8) -> bool {
+        byte.is_ascii_alphanumeric()
+            || matches!(byte, b'_' | b'-' | b'~' | b'+' | b'/' | b'.' | b'=')
+    }
+    let (blocked, block_hit) = redact_pem_blocks(text);
+    let text = &blocked;
+    let bytes = text.as_bytes();
+    let mut scrubbed = String::with_capacity(text.len());
+    let mut index = 0;
+    let mut hit = block_hit;
+    // `index` starts at 0 and advances by ASCII runs or whole chars, so it
+    // is always a char boundary and the slicing below is safe.
+    while index < bytes.len() {
+        if index + 7 <= bytes.len() && bytes[index..index + 7].eq_ignore_ascii_case(b"bearer ") {
+            scrubbed.push_str(&text[index..index + 7]);
+            index += 7;
+            let value_start = index;
+            while index < bytes.len() && is_token_byte(bytes[index]) {
+                index += 1;
+            }
+            if index - value_start >= SHORT_PREFIX_MIN_VALUE {
+                scrubbed.push_str(REDACTED_MARKER);
+                hit = true;
+            } else {
+                scrubbed.push_str(&text[value_start..index]);
+            }
+            continue;
+        }
+        if index + 6 <= bytes.len() && bytes[index..index + 6].eq_ignore_ascii_case(b"basic ") {
+            scrubbed.push_str(&text[index..index + 6]);
+            index += 6;
+            let value_start = index;
+            while index < bytes.len() && is_token_byte(bytes[index]) {
+                index += 1;
+            }
+            if index - value_start >= SHORT_PREFIX_MIN_VALUE {
+                scrubbed.push_str(REDACTED_MARKER);
+                hit = true;
+            } else {
+                scrubbed.push_str(&text[value_start..index]);
+            }
+            continue;
+        }
+        let mut prefix_len = 0;
+        let mut prefix_is_short = false;
+        for prefix in SECRET_PREFIXES {
+            if text[index..].starts_with(prefix) {
+                prefix_len = prefix.len();
+                // `sk-` also matches `sk-ant-...` / `sk-proj-...` (it sorts
+                // first), which is intended: all three take the long minimum.
+                prefix_is_short = prefix == "sk-";
+                break;
+            }
+        }
+        if prefix_len == 0 {
+            match text[index..].chars().next() {
+                Some(ch) => {
+                    scrubbed.push(ch);
+                    index += ch.len_utf8();
+                }
+                None => break,
+            }
+            continue;
+        }
+        scrubbed.push_str(&text[index..index + prefix_len]);
+        index += prefix_len;
+        let value_start = index;
+        while index < bytes.len() && is_token_byte(bytes[index]) {
+            index += 1;
+        }
+        let minimum = if prefix_is_short {
+            SHORT_PREFIX_MIN_VALUE
+        } else {
+            DISTINCT_PREFIX_MIN_VALUE
+        };
+        if index - value_start >= minimum {
+            scrubbed.push_str(REDACTED_MARKER);
+            hit = true;
+        } else {
+            scrubbed.push_str(&text[value_start..index]);
+        }
+    }
+    (scrubbed, hit)
+}
+
+/// Collapse PEM private-key blocks to a single marker line, fail-closed: a
+/// `-----BEGIN ...-----` marker redacts through the line carrying the next
+/// `-----END ...-----` marker, or through the end of the text when no
+/// footer follows (a dangling header means key material follows, so the
+/// tail is not safe to keep). Matching is ASCII case-insensitive; byte
+/// offsets come from ASCII-only needles, so they are always char
+/// boundaries.
+fn redact_pem_blocks(text: &str) -> (String, bool) {
+    fn find_ascii_ci(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
+        if needle.is_empty() || from >= haystack.len() {
+            return None;
+        }
+        haystack[from..]
+            .windows(needle.len())
+            .position(|window| window.eq_ignore_ascii_case(needle))
+            .map(|pos| from + pos)
+    }
+    let bytes = text.as_bytes();
+    let mut scrubbed = String::with_capacity(text.len());
+    let mut cursor = 0;
+    let mut hit = false;
+    while let Some(begin) = find_ascii_ci(bytes, b"-----begin", cursor) {
+        let end = find_ascii_ci(bytes, b"-----end", begin + 9).map_or(text.len(), |end| {
+            text[end..]
+                .find('\n')
+                .map_or(text.len(), |offset| end + offset)
+        });
+        scrubbed.push_str(&text[cursor..begin]);
+        scrubbed.push_str("-----BEGIN ");
+        scrubbed.push_str(REDACTED_MARKER);
+        hit = true;
+        cursor = end;
+    }
+    scrubbed.push_str(&text[cursor..]);
+    (scrubbed, hit)
 }
 
 #[cfg(test)]
@@ -495,5 +676,87 @@ mod tests {
                 "scan rendering must stay fixed-vocabulary, found {sentinel:?}"
             );
         }
+    }
+
+    #[test]
+    fn redaction_scrubs_key_shapes_and_auth_schemes() {
+        const PLANTED_GH: &str = "ghp_plantedvalue0123456789";
+        const PLANTED_BEARER: &str = "supersecretbearer01";
+        const PLANTED_BASIC: &str = "YWRtaW46c3VjcmV0cGFzczEyMw";
+        const PLANTED_SK: &str = "sk-ant-plantedvalue99";
+        let text = format!(
+            "token {PLANTED_GH} failed\nAuthorization: Bearer {PLANTED_BEARER}\n\
+             Authorization: Basic {PLANTED_BASIC}\nkey {PLANTED_SK} here\nplain prose stays"
+        );
+        let (scrubbed, hit) = redact_secrets(&text);
+        assert!(hit);
+        for planted in [PLANTED_GH, PLANTED_BEARER, PLANTED_BASIC, PLANTED_SK] {
+            assert!(
+                !scrubbed.contains(planted),
+                "planted value must not survive: {planted:?}"
+            );
+        }
+        assert!(scrubbed.contains("[redacted]"));
+        assert!(scrubbed.contains("plain prose stays"));
+    }
+
+    #[test]
+    fn redaction_leaves_prose_alone_but_scrubs_real_keys() {
+        // Ordinary prose colliding with the short generic prefixes and the
+        // auth schemes must survive verbatim with no redaction flag.
+        for prose in [
+            "deploy risk-free task-setup done",
+            "the bearer of good news arrived",
+            "Bearer of good news",
+            "basic training materials",
+            "sk-",
+            "sk-abc",
+        ] {
+            let (scrubbed, hit) = redact_secrets(prose);
+            assert!(!hit, "{prose:?} must not redact");
+            assert_eq!(scrubbed, prose, "{prose:?} must survive verbatim");
+        }
+        // Real-looking values still redact: a long `sk-` run, long Bearer
+        // and Basic tokens.
+        let (scrubbed, hit) = redact_secrets("key sk-abcdefghijklmnop1234 failed");
+        assert!(hit);
+        assert!(!scrubbed.contains("sk-abcdefghijklmnop1234"));
+        assert!(scrubbed.contains("sk-[redacted]"));
+        let (scrubbed, hit) = redact_secrets("Authorization: Bearer supersecretbearer01");
+        assert!(hit);
+        assert!(!scrubbed.contains("supersecretbearer01"));
+        assert!(scrubbed.contains("Bearer [redacted]"));
+        let (scrubbed, hit) = redact_secrets("Authorization: Basic YWRtaW46c3VjcmV0cGFzczEyMw");
+        assert!(hit);
+        assert!(!scrubbed.contains("YWRtaW46c3VjcmV0cGFzczEyMw"));
+        assert!(scrubbed.contains("Basic [redacted]"));
+        // Distinctive provider prefixes keep the short minimum.
+        let (scrubbed, hit) = redact_secrets("token ghp_plantedvalue0123456789 leaked");
+        assert!(hit);
+        assert!(!scrubbed.contains("ghp_plantedvalue0123456789"));
+    }
+
+    #[test]
+    fn redaction_collapses_pem_private_key_blocks() {
+        let key = "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA7bq3super5ecr3tk3y\n-----END RSA PRIVATE KEY-----";
+        let text = format!("config dump:\n{key}\nmore output");
+        let (scrubbed, hit) = redact_secrets(&text);
+        assert!(hit);
+        assert!(
+            !scrubbed.contains("MIIEpAIBAAKCAQEA7bq3super5ecr3tk3y"),
+            "key body must not survive: {scrubbed:?}"
+        );
+        assert!(
+            !scrubbed.contains("END RSA PRIVATE KEY"),
+            "key footer must not survive: {scrubbed:?}"
+        );
+        assert!(scrubbed.contains("more output"), "tail survives");
+        assert!(scrubbed.contains("config dump:"), "head survives");
+        // A dangling header (no footer) redacts fail-closed through the end.
+        let (scrubbed, hit) =
+            redact_secrets("prefix\n-----BEGIN PRIVATE KEY-----\nMIIEpAIBAAKCAQEA7bq3");
+        assert!(hit);
+        assert!(!scrubbed.contains("MIIEpAIBAAKCAQEA7bq3"));
+        assert!(scrubbed.contains("prefix"));
     }
 }

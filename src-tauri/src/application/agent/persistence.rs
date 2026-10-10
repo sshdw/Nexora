@@ -20,10 +20,13 @@
 //!   auto-execute a mutating tool behaves exactly like a supervised one.
 //! - **Steps:** append-only `agent_steps` rows with monotonically increasing
 //!   `seq` starting at 1, one per model turn (after the provider returns),
-//!   per dispatched tool call (raw arguments, observation, and
+//!   per dispatched tool call (redacted arguments, bounded observation, and
 //!   `succeeded` / `failed` / `cancelled` outcome), and per parked approval
 //!   decision (`succeeded` when approved, `denied` when denied, `cancelled`
-//!   when cancellation ended the wait).
+//!   when cancellation ended the wait). Arguments and observations are
+//!   secret-scrubbed and length-bounded before insert (NEX-SEC-003), so raw
+//!   tool I/O — env output, file reads, possible key material — never lands
+//!   in plaintext `SQLite`.
 //! - **Finalize:** on every exit path the run row is finalized — `Ok`
 //!   content → `completed` + `final_content`; [`AgentError::Cancelled`] →
 //!   `cancelled`; [`AgentError::BudgetExhausted`] → `budget_exhausted`;
@@ -45,10 +48,48 @@ use std::sync::mpsc::Sender;
 
 use crate::application::agent::approval::AutonomyMode;
 use crate::application::agent::control::AgentRunEvent;
+use crate::application::agent::injection::redact_secrets;
 use crate::application::agent::runner::AgentError;
 use crate::application::execution::ToolCall;
 use crate::infrastructure::database::{Database, DatabaseError};
 use crate::infrastructure::repository::agent_runs::AgentRunRepository;
+
+/// Maximum persisted step-text size in chars (NEX-SEC-003): tool arguments
+/// and observations are unbounded (a `write_file` call carries the whole
+/// file, `execute_command` the whole stdout), while `agent_steps` is a
+/// plaintext transcript, not an artifact store. The cap sits above the tool
+/// layer's shaped-output ceiling (every observation passes through
+/// `truncate_output`: 20KB kept plus a short spill notice), so shaped
+/// observations — spill notices included — persist byte-identical and only
+/// genuinely oversized text is cut. Text past the cap is cut with an honest
+/// `[truncated N of M chars]` marker so readers can tell a bound hit from
+/// complete output.
+pub(crate) const MAX_PERSISTED_STEP_TEXT_CHARS: usize = 32_768;
+
+/// Scrub probable secrets ([`redact_secrets`]) then enforce
+/// [`MAX_PERSISTED_STEP_TEXT_CHARS`] on one `arguments` / `observation`
+/// payload before it reaches `SQLite` or the `StepRecorded` stream
+/// (NEX-SEC-003). Pure and total: short benign text round-trips
+/// byte-identical, so transcript fidelity only changes where a secret
+/// pattern or the length cap fires.
+fn sanitize_persisted_text(text: &str) -> String {
+    let (scrubbed, _) = redact_secrets(text);
+    bound_persisted_text(&scrubbed)
+}
+
+/// Cut `text` to [`MAX_PERSISTED_STEP_TEXT_CHARS`] chars with an honest
+/// marker naming the omitted and total counts, so a bound hit is
+/// distinguishable from complete output. Char-based (never splits UTF-8);
+/// text at or under the cap returns unchanged.
+fn bound_persisted_text(text: &str) -> String {
+    let total = text.chars().count();
+    if total <= MAX_PERSISTED_STEP_TEXT_CHARS {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(MAX_PERSISTED_STEP_TEXT_CHARS).collect();
+    let omitted = total - MAX_PERSISTED_STEP_TEXT_CHARS;
+    format!("{kept}\n[truncated {omitted} of {total} chars]")
+}
 
 /// Autonomy mode recorded for a run when no [`ApprovalGate`] is attached
 /// (Task 4.2): the most conservative rung of the HD-3 ladder, since a run
@@ -202,6 +243,13 @@ impl<'a> RunRecorder<'a> {
 
     /// Append one `agent_steps` row (DATABASE.md §7.9).
     ///
+    /// NEX-SEC-003: `arguments` and `observation` are secret-scrubbed
+    /// ([`redact_secrets`]) and length-bounded before insert, so the row —
+    /// and the `StepRecorded` event below, which carries the same sanitized
+    /// payloads — can never smuggle key material into `SQLite`, IPC, or the
+    /// logs. (No payload is ever logged on this path: failures report only
+    /// `run_id`/`seq` plus the secret-free [`DatabaseError`].)
+    ///
     /// Reports whether persistence succeeded (`Ok(())`) or failed
     /// (`Err`), so the caller can keep its `seq` / step counters consistent.
     /// Failures are logged here — best-effort: they never panic and are
@@ -222,13 +270,15 @@ impl<'a> RunRecorder<'a> {
         decided_by: Option<&str>,
     ) -> Result<(), DatabaseError> {
         let repo = AgentRunRepository::new(self.db);
+        let arguments = arguments.map(sanitize_persisted_text);
+        let observation = observation.map(sanitize_persisted_text);
         let result = repo.append_step(
             run_id,
             seq,
             kind,
             tool_name,
-            arguments,
-            observation,
+            arguments.as_deref(),
+            observation.as_deref(),
             status,
             duration_ms,
             rule_id,
@@ -253,8 +303,8 @@ impl<'a> RunRecorder<'a> {
                         seq,
                         kind: kind.to_string(),
                         tool_name: tool_name.map(str::to_string),
-                        arguments: arguments.map(str::to_string),
-                        observation: observation.map(str::to_string),
+                        arguments,
+                        observation,
                         status: status.map(str::to_string),
                         duration_ms,
                     });
@@ -407,8 +457,11 @@ impl<'a> ActiveRunRecord<'a> {
     }
 
     /// Record one `tool_call` step for a dispatched call (DATABASE.md
-    /// §7.9). `arguments` is the raw JSON exactly as provider-supplied,
-    /// `status` one of `succeeded` / `failed` / `cancelled`.
+    /// §7.9). `arguments` is the provider-supplied JSON and `observation`
+    /// the tool output; both are secret-scrubbed and length-bounded by
+    /// [`sanitize_persisted_text`] before insert (NEX-SEC-003), so what the
+    /// loop saw and what `SQLite` keeps differ exactly where redaction or the
+    /// cap fired. `status` one of `succeeded` / `failed` / `cancelled`.
     pub(crate) fn tool_call(
         &mut self,
         call: &ToolCall,
@@ -892,6 +945,118 @@ mod tests {
         assert_ne!(
             (exhausted_status, exhausted_text),
             (overflow_status, overflow_text)
+        );
+    }
+
+    /// NEX-SEC-003: a step recorded over secret-bearing tool I/O must
+    /// persist scrubbed text — the `sk-...` sentinel in both the call
+    /// arguments and the observation never reaches `SQLite`, and the live
+    /// `StepRecorded` event carries the same sanitized payloads (no secret
+    /// crosses IPC either).
+    #[test]
+    fn tool_call_steps_persist_redacted_not_raw() {
+        const SENTINEL_ARGS: &str = "sk-ant-persisted-args-sentinel-0123456789";
+        const SENTINEL_OBS: &str = "sk-ant-persisted-obs-sentinel-9876543210";
+        const SENTINEL_BEARER: &str = "persistedbearertoken01";
+        let db = in_memory_database();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut record =
+            ActiveRunRecord::start(RunRecorder::new(&db).with_events(&tx), "m", "supervised");
+        let run_id = record.run_id.expect("run row persisted at start");
+
+        let call = ToolCall {
+            id: "c1".to_string(),
+            name: "read_file".to_string(),
+            arguments: format!(r#"{{"path": "keys.txt", "key": "{SENTINEL_ARGS}"}}"#),
+            thought_signature: None,
+        };
+        let observation =
+            format!("file body with {SENTINEL_OBS}\nAuthorization: Bearer {SENTINEL_BEARER}");
+        record.tool_call(&call, &observation, "succeeded", Some(5));
+
+        let runs = AgentRunRepository::new(&db);
+        let steps = runs.list_steps(run_id).expect("list steps");
+        assert_eq!(steps.len(), 1);
+        let stored_args = steps[0].arguments.as_deref().unwrap_or("");
+        let stored_obs = steps[0].observation.as_deref().unwrap_or("");
+        for sentinel in [SENTINEL_ARGS, SENTINEL_OBS, SENTINEL_BEARER] {
+            assert!(
+                !stored_args.contains(sentinel) && !stored_obs.contains(sentinel),
+                "sentinel must not persist: {sentinel:?}"
+            );
+        }
+        assert!(stored_obs.contains("[redacted]"));
+        // The live event carries the same sanitized payloads, not the raw I/O.
+        match rx.try_recv().expect("step emits") {
+            AgentRunEvent::StepRecorded {
+                arguments,
+                observation,
+                ..
+            } => {
+                assert_eq!(arguments.as_deref(), Some(stored_args));
+                assert_eq!(observation.as_deref(), Some(stored_obs));
+            }
+            other => panic!("expected StepRecorded, got: {other:?}"),
+        }
+    }
+
+    /// NEX-SEC-003: an oversized observation is cut at
+    /// [`MAX_PERSISTED_STEP_TEXT_CHARS`] with an honest marker naming the
+    /// omitted and total counts.
+    #[test]
+    fn oversized_observation_truncates_with_honest_marker() {
+        let db = in_memory_database();
+        let mut record = ActiveRunRecord::start(RunRecorder::new(&db), "m", "supervised");
+        let run_id = record.run_id.expect("run row persisted at start");
+
+        let total = MAX_PERSISTED_STEP_TEXT_CHARS + 1_000;
+        let observation = "o".repeat(total);
+        let call = ToolCall {
+            id: "c1".to_string(),
+            name: "execute_command".to_string(),
+            arguments: r#"{"command": "env"}"#.to_string(),
+            thought_signature: None,
+        };
+        record.tool_call(&call, &observation, "succeeded", None);
+
+        let runs = AgentRunRepository::new(&db);
+        let steps = runs.list_steps(run_id).expect("list steps");
+        let stored = steps[0].observation.as_deref().expect("observation stored");
+        let marker = format!("[truncated 1000 of {total} chars]");
+        assert!(
+            stored.ends_with(&marker),
+            "honest marker required, got tail: {:?}",
+            stored.chars().rev().take(60).collect::<String>()
+        );
+        let kept: String = stored.chars().take(MAX_PERSISTED_STEP_TEXT_CHARS).collect();
+        assert_eq!(kept, observation[..MAX_PERSISTED_STEP_TEXT_CHARS]);
+    }
+
+    /// NEX-SEC-003 negative control: short benign step text round-trips
+    /// byte-identical — redaction and the bound only fire where they must.
+    #[test]
+    fn benign_step_text_survives_persistence_verbatim() {
+        let db = in_memory_database();
+        let mut record = ActiveRunRecord::start(RunRecorder::new(&db), "m", "supervised");
+        let run_id = record.run_id.expect("run row persisted at start");
+
+        let call = ToolCall {
+            id: "c1".to_string(),
+            name: "read_file".to_string(),
+            arguments: r#"{"path": "notes.txt"}"#.to_string(),
+            thought_signature: None,
+        };
+        record.tool_call(&call, "deploy risk-free task-setup done", "succeeded", None);
+
+        let runs = AgentRunRepository::new(&db);
+        let steps = runs.list_steps(run_id).expect("list steps");
+        assert_eq!(
+            steps[0].arguments.as_deref(),
+            Some(r#"{"path": "notes.txt"}"#)
+        );
+        assert_eq!(
+            steps[0].observation.as_deref(),
+            Some("deploy risk-free task-setup done")
         );
     }
 }
