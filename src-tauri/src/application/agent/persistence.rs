@@ -1000,6 +1000,52 @@ mod tests {
         }
     }
 
+    /// NEX-SEC-003: an `env`-dump observation carries no token-prefix /
+    /// scheme / PEM shape, only `FIELD=value` lines — the assignment pass
+    /// must still keep the values out of the stored row and the live event.
+    #[test]
+    fn tool_call_steps_persist_env_dump_redacted_not_raw() {
+        const SENTINEL_AWS: &str = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+        const SENTINEL_PASS: &str = "hunter2-hunter2";
+        let db = in_memory_database();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut record =
+            ActiveRunRecord::start(RunRecorder::new(&db).with_events(&tx), "m", "supervised");
+        let run_id = record.run_id.expect("run row persisted at start");
+
+        let call = ToolCall {
+            id: "c1".to_string(),
+            name: "execute_command".to_string(),
+            arguments: r#"{"command": "env"}"#.to_string(),
+            thought_signature: None,
+        };
+        let observation = format!(
+            "PATH=/usr/bin:/bin\nAWS_SECRET_ACCESS_KEY={SENTINEL_AWS}\n\
+             config {{\"password\": \"{SENTINEL_PASS}\"}}\nHOME=/root"
+        );
+        record.tool_call(&call, &observation, "succeeded", Some(5));
+
+        let runs = AgentRunRepository::new(&db);
+        let steps = runs.list_steps(run_id).expect("list steps");
+        assert_eq!(steps.len(), 1);
+        let stored_obs = steps[0].observation.as_deref().unwrap_or("");
+        for sentinel in [SENTINEL_AWS, SENTINEL_PASS] {
+            assert!(
+                !stored_obs.contains(sentinel),
+                "assigned value must not persist: {sentinel:?}"
+            );
+        }
+        assert!(stored_obs.contains("[redacted]"));
+        assert!(stored_obs.contains("HOME=/root"), "benign lines survive");
+        // The live event carries the same sanitized payload, not the raw I/O.
+        match rx.try_recv().expect("step emits") {
+            AgentRunEvent::StepRecorded { observation, .. } => {
+                assert_eq!(observation.as_deref(), Some(stored_obs));
+            }
+            other => panic!("expected StepRecorded, got: {other:?}"),
+        }
+    }
+
     /// NEX-SEC-003: an oversized observation is cut at
     /// [`MAX_PERSISTED_STEP_TEXT_CHARS`] with an honest marker naming the
     /// omitted and total counts.

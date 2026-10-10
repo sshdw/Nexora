@@ -268,11 +268,13 @@ fn has_prefixed_token(lowered: &str, prefix: &str, min_len: usize) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Token prefixes scrubbed from persisted text (prefix kept, value
-/// replaced). Distinctive provider prefixes (`ghp_`, `AKIA`, ...) never
-/// appear in prose, so short values still redact; the short generic prefix
-/// `sk-` collides with ordinary words (`risk-free`, `task-setup`), so it
-/// needs a long value run (see [`SHORT_PREFIX_MIN_VALUE`]).
-const SECRET_PREFIXES: [&str; 13] = [
+/// replaced; matched ASCII case-insensitively, so `GHP_...` and `XoxB-...`
+/// redact like their lowercase shapes). Distinctive provider prefixes
+/// (`ghp_`, `AKIA`, ...) never appear in prose, so short values still
+/// redact; the short generic prefix `sk-` collides with ordinary words
+/// (`risk-free`, `task-setup`), so it needs a long value run (see
+/// [`SHORT_PREFIX_MIN_VALUE`]).
+const SECRET_PREFIXES: [&str; 16] = [
     "ghp_",
     "gho_",
     "ghu_",
@@ -285,6 +287,9 @@ const SECRET_PREFIXES: [&str; 13] = [
     "xoxb-",
     "xoxp-",
     "xoxa-",
+    "xoxo-",
+    "xoxs-",
+    "xoxr-",
     "AKIA",
 ];
 
@@ -308,13 +313,16 @@ const REDACTED_MARKER: &str = "[redacted]";
 /// Scrub probable secret values from text about to be persisted or
 /// displayed: known token prefixes keep their prefix with the value
 /// replaced, `Bearer <value>` / `Basic <value>` (any ASCII case) keep the
-/// scheme with the value replaced, and PEM private-key blocks
+/// scheme with the value replaced, `field: value` / `field=value`
+/// assignments for secret-like field names (`password`, `api_key`, ...)
+/// keep the field with the value replaced, and PEM private-key blocks
 /// (`-----BEGIN ... -----` through the `-----END ... -----` line) collapse
 /// to one marker line. Returns the scrubbed text and whether anything was
 /// replaced (callers surface the flag as a truncation-style warning).
 /// Short runs stay intact so ordinary prose is never mangled: `risk-free` /
-/// `task-setup` survive (their `sk-` value is 4 chars, not 16+), and `the
-/// bearer of good news` survives (its `Bearer ` value is 2 chars, not 16+).
+/// `task-setup` survive (their `sk-` value is 4 chars, not 16+), `the
+/// bearer of good news` survives (its `Bearer ` value is 2 chars, not 16+),
+/// and `password: wrong` survives (its assigned value is 5 chars, not 8+).
 #[must_use]
 pub(crate) fn redact_secrets(text: &str) -> (String, bool) {
     fn is_token_byte(byte: u8) -> bool {
@@ -363,7 +371,13 @@ pub(crate) fn redact_secrets(text: &str) -> (String, bool) {
         let mut prefix_len = 0;
         let mut prefix_is_short = false;
         for prefix in SECRET_PREFIXES {
-            if text[index..].starts_with(prefix) {
+            // ASCII case-insensitive (`GHP_...`, `XoxB-...` redact like
+            // their lowercase shapes), same `eq_ignore_ascii_case` style as
+            // the schemes above. Byte comparison needs no char boundary;
+            // every slice below still lands on one (see the `index` note).
+            if index + prefix.len() <= bytes.len()
+                && bytes[index..index + prefix.len()].eq_ignore_ascii_case(prefix.as_bytes())
+            {
                 prefix_len = prefix.len();
                 // `sk-` also matches `sk-ant-...` / `sk-proj-...` (it sorts
                 // first), which is intended: all three take the long minimum.
@@ -398,6 +412,111 @@ pub(crate) fn redact_secrets(text: &str) -> (String, bool) {
         } else {
             scrubbed.push_str(&text[value_start..index]);
         }
+    }
+    let (scrubbed, assignment_hit) = redact_assignment_values(&scrubbed);
+    (scrubbed, hit || assignment_hit)
+}
+
+/// Field names whose assigned value is secret-like: an `env` dump or a
+/// JSON blob (`AWS_SECRET_ACCESS_KEY=wJalr...`,
+/// `"password": "hunter2-hunter2"`) carries no token-prefix / scheme / PEM
+/// shape, so the prefix pass above persists it verbatim. Lowercase; matched
+/// ASCII case-insensitively. Bare `key` is deliberately excluded: it
+/// collides with prose (`key insights for the quarter`), while the listed
+/// names only appear beside a real value.
+const ASSIGNMENT_FIELDS: &[&str] = &[
+    "aws_secret_access_key",
+    "api_key",
+    "apikey",
+    "passwd",
+    "password",
+    "secret",
+    "token",
+];
+
+/// Minimum assigned-value length for the [`ASSIGNMENT_FIELDS`] pass: real
+/// dumped values run far longer, while prose (`password: wrong`) stays
+/// short.
+const ASSIGNMENT_MIN_VALUE: usize = 8;
+
+/// Scrub `field: value` / `field=value` assignments for
+/// [`ASSIGNMENT_FIELDS`] (ASCII case-insensitive on the field name): the
+/// field text is kept and the following non-whitespace run is replaced with
+/// the marker, but only when that run is at least [`ASSIGNMENT_MIN_VALUE`]
+/// bytes long so prose (`password: wrong`) survives verbatim. Pure and
+/// secret-free: the field name is fixed vocabulary from the pinned list and
+/// the value never echoes. Byte offsets come from ASCII-only matching, so
+/// every slice lands on a char boundary.
+fn redact_assignment_values(text: &str) -> (String, bool) {
+    fn is_assignment_gap(byte: u8) -> bool {
+        matches!(byte, b' ' | b'\t' | b'\r' | b'\n')
+    }
+    // ASCII-only fold: byte offsets stay aligned with `text`.
+    let lowered = text.to_ascii_lowercase();
+    let bytes = text.as_bytes();
+    let low_bytes = lowered.as_bytes();
+    let mut scrubbed = String::with_capacity(text.len());
+    let mut index = 0;
+    let mut hit = false;
+    // `index` advances past ASCII matches or ASCII whitespace only, so it is
+    // always a char boundary and the slicing below is safe.
+    while index < bytes.len() {
+        let mut field_len = 0;
+        for field in ASSIGNMENT_FIELDS {
+            if field.len() > field_len
+                && index + field.len() <= low_bytes.len()
+                && low_bytes[index..index + field.len()] == *field.as_bytes()
+            {
+                field_len = field.len();
+            }
+        }
+        if field_len == 0 {
+            match text[index..].chars().next() {
+                Some(ch) => {
+                    scrubbed.push(ch);
+                    index += ch.len_utf8();
+                }
+                None => break,
+            }
+            continue;
+        }
+        let mut cursor = index + field_len;
+        while cursor < bytes.len() && is_assignment_gap(bytes[cursor]) {
+            cursor += 1;
+        }
+        // A quoted field name (`"password": ...` in JSON): step over the
+        // closing quote before the separator. Only one quote is consumed,
+        // and a missing separator still falls through to the bare-field
+        // branch below, so prose (`secret "super" story`) is untouched.
+        if cursor < bytes.len() && matches!(bytes[cursor], b'"' | b'\'') {
+            cursor += 1;
+            while cursor < bytes.len() && is_assignment_gap(bytes[cursor]) {
+                cursor += 1;
+            }
+        }
+        if cursor >= bytes.len() || !matches!(bytes[cursor], b':' | b'=') {
+            // A bare field mention, not an assignment (`nothing secret
+            // here`): keep it and resume after the name.
+            scrubbed.push_str(&text[index..index + field_len]);
+            index += field_len;
+            continue;
+        }
+        cursor += 1;
+        while cursor < bytes.len() && is_assignment_gap(bytes[cursor]) {
+            cursor += 1;
+        }
+        let value_start = cursor;
+        while cursor < bytes.len() && !is_assignment_gap(bytes[cursor]) {
+            cursor += 1;
+        }
+        if cursor - value_start >= ASSIGNMENT_MIN_VALUE {
+            scrubbed.push_str(&text[index..value_start]);
+            scrubbed.push_str(REDACTED_MARKER);
+            hit = true;
+        } else {
+            scrubbed.push_str(&text[index..cursor]);
+        }
+        index = cursor;
     }
     (scrubbed, hit)
 }
@@ -684,13 +803,28 @@ mod tests {
         const PLANTED_BEARER: &str = "supersecretbearer01";
         const PLANTED_BASIC: &str = "YWRtaW46c3VjcmV0cGFzczEyMw";
         const PLANTED_SK: &str = "sk-ant-plantedvalue99";
+        const PLANTED_XOXO: &str = "xoxo-plantedvalue0123";
+        const PLANTED_XOXS: &str = "xoxs-plantedvalue0123";
+        const PLANTED_XOXR: &str = "xoxr-plantedvalue0123";
+        const PLANTED_UPPER: &str = "PLANTEDVALUE0123456789";
         let text = format!(
             "token {PLANTED_GH} failed\nAuthorization: Bearer {PLANTED_BEARER}\n\
-             Authorization: Basic {PLANTED_BASIC}\nkey {PLANTED_SK} here\nplain prose stays"
+             Authorization: Basic {PLANTED_BASIC}\nkey {PLANTED_SK} here\n\
+             slack {PLANTED_XOXO} and {PLANTED_XOXS} and {PLANTED_XOXR}\n\
+             shouty GHP_{PLANTED_UPPER} XOXB-{PLANTED_UPPER}\nplain prose stays"
         );
         let (scrubbed, hit) = redact_secrets(&text);
         assert!(hit);
-        for planted in [PLANTED_GH, PLANTED_BEARER, PLANTED_BASIC, PLANTED_SK] {
+        for planted in [
+            PLANTED_GH,
+            PLANTED_BEARER,
+            PLANTED_BASIC,
+            PLANTED_SK,
+            PLANTED_XOXO,
+            PLANTED_XOXS,
+            PLANTED_XOXR,
+            PLANTED_UPPER,
+        ] {
             assert!(
                 !scrubbed.contains(planted),
                 "planted value must not survive: {planted:?}"
@@ -698,6 +832,47 @@ mod tests {
         }
         assert!(scrubbed.contains("[redacted]"));
         assert!(scrubbed.contains("plain prose stays"));
+    }
+
+    #[test]
+    fn redaction_scrubs_secret_assignment_values_but_keeps_prose() {
+        // The audit's failure scenario: an `env` dump carries no
+        // token-prefix / scheme / PEM shape, only `FIELD=value` lines.
+        const PLANTED_AWS: &str = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+        const PLANTED_JSON: &str = "hunter2-hunter2";
+        const PLANTED_TOKEN: &str = "tokval0123456789abcdef";
+        let text = format!(
+            "PATH=/usr/bin:/bin\nAWS_SECRET_ACCESS_KEY={PLANTED_AWS}\nHOME=/root\n\
+             config {{\"password\": \"{PLANTED_JSON}\", \"user\": \"root\"}}\n\
+             login token={PLANTED_TOKEN} done"
+        );
+        let (scrubbed, hit) = redact_secrets(&text);
+        assert!(hit);
+        for planted in [PLANTED_AWS, PLANTED_JSON, PLANTED_TOKEN] {
+            assert!(
+                !scrubbed.contains(planted),
+                "assigned value must not survive: {planted:?}"
+            );
+        }
+        assert!(scrubbed.contains("PATH=/usr/bin:/bin"), "head survives");
+        assert!(scrubbed.contains("HOME=/root"), "tail survives");
+        assert!(scrubbed.contains("\"user\":"), "short fields survive");
+        // Case-insensitive field names redact too.
+        let (scrubbed, hit) = redact_secrets("Password: hunter2-hunter2-hunter2");
+        assert!(hit);
+        assert!(!scrubbed.contains("hunter2-hunter2-hunter2"));
+        // Short assigned values are prose, not secrets: no flag, verbatim.
+        for prose in [
+            "password: wrong",
+            "token: abc",
+            "nothing secret here",
+            "key insights for the quarter",
+            "the \"secret\" agent arrived",
+        ] {
+            let (scrubbed, hit) = redact_secrets(prose);
+            assert!(!hit, "{prose:?} must not redact");
+            assert_eq!(scrubbed, prose, "{prose:?} must survive verbatim");
+        }
     }
 
     #[test]
