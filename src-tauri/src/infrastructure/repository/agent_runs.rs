@@ -282,8 +282,13 @@ impl AgentRunRepository<'_> {
     /// Append one step record to a run (DATABASE.md §7.9).
     ///
     /// Persists the caller-supplied `run_id`, `seq`, `kind`, `tool_name`,
-    /// `arguments` (raw JSON exactly as provider-supplied), `observation`,
-    /// `status`, and `duration_ms`. The schema defaults assign
+    /// `arguments`, `observation`, `status`, and `duration_ms` verbatim —
+    /// reads return the stored text as-is. Secret-scrubbing and the length
+    /// bound are the caller's job: the production caller
+    /// ([`crate::application::agent::persistence`] `RunRecorder::insert_step`)
+    /// sanitizes both fields (NEX-SEC-003) before reaching this insert, so
+    /// direct repository writes (tests, future callers) must sanitize first
+    /// when the text is tool-controlled. The schema defaults assign
     /// `started_at = unixepoch()`; the surrogate `id` is assigned by the
     /// schema. Callers own the step ordering: `seq` must be monotonically
     /// increasing per run, and the schema's `UNIQUE(run_id, seq)` rejects
