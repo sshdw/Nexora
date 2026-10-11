@@ -346,12 +346,17 @@ function ApprovalTimeoutNotice({
       </p>
     );
   }
+  // Above 60s the clock ticks every 30s, so M:SS seconds would imply a
+  // precision the countdown lacks — show minute-ceiled copy instead and
+  // reserve M:SS for the under-60s 1s-tick branch.
+  const expiry =
+    remaining > 60
+      ? t("agent.approvalExpiresInMin", { n: Math.ceil(remaining / 60) })
+      : t("agent.approvalExpiresIn", { time: formatCountdown(remaining, locale) });
   return (
     <p className="nex-agent-approval-timeout">
       {t("agent.approvalTimeoutNotice")}{" "}
-      <span className="nex-tag nex-tag-mono">
-        {t("agent.approvalExpiresIn", { time: formatCountdown(remaining, locale) })}
-      </span>
+      <span className="nex-tag nex-tag-mono">{expiry}</span>
     </p>
   );
 }
@@ -377,7 +382,8 @@ export default function AgentRunSteps({
 
   // Live clock for the approval countdown. A 1s tick runs only under the
   // final 60s; a minutes-scale park (default 600s) ticks every 30s, and
-  // prefers-reduced-motion takes a single static snapshot (no interval).
+  // prefers-reduced-motion schedules a single one-shot timeout to expiry
+  // (state flip only, zero motion — no interval).
   const reduceMotion =
     typeof window !== "undefined" &&
     typeof window.matchMedia === "function" &&
@@ -398,6 +404,16 @@ export default function AgentRunSteps({
     const id = window.setInterval(() => setNow(Date.now() / 1000), intervalMs);
     return () => window.clearInterval(id);
   }, [pendingDeadline, pendingId, reduceMotion, underMinute]);
+  // Reduced-motion one-shot: no interval, no motion — a single state flip
+  // scheduled exactly at expiry so approvalElapsed can still turn over on
+  // its own. Cleanup on unmount/run-change mirrors the interval above; if
+  // time still remains after the flip fires, the effect re-arms itself.
+  useEffect(() => {
+    if (!pendingDeadline || !reduceMotion) return;
+    if (remaining === null || remaining <= 0) return;
+    const id = window.setTimeout(() => setNow(Date.now() / 1000), remaining * 1000);
+    return () => window.clearTimeout(id);
+  }, [pendingDeadline, pendingId, reduceMotion, remaining]);
   // Client-math expiry: the window elapsed with no server confirmation. The
   // buttons go away (never live past the self-declared expiry) and the
   // notice says so honestly — "was cancelled" appears only below, once the
