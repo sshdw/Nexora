@@ -122,8 +122,7 @@ AI providers are external services accessed only through the backend
 
 The backend is five layers. Dependency direction is strictly downward:
 commands → application → domain → infrastructure, with AI providers external
-behind the executor boundary. Nothing below the commands layer knows about
-Tauri; nothing above the infrastructure layer touches SQLite or the network
+behind the executor boundary. Nothing below the commands layer handles Tauri IPC (commands, AppHandle, managed-state wiring); the sole exception is the provider transport's use of `tauri::async_runtime::spawn`; nothing above the infrastructure layer touches SQLite or the network
 directly.
 
 Commands / IPC Layer (`src-tauri/src/commands/`)
@@ -137,7 +136,7 @@ argument validation and error mapping at the boundary (secret-free,
 classified `CommandError`)
 
 cloning managed state (`Database`, `AgentRunRegistry`, `TaskRegistry`,
-`TerminalRegistry`) into `spawn_blocking` / spawned threads
+`TerminalRegistry`, `ConfirmationRegistry`) into `spawn_blocking` / spawned threads
 
 streaming run and task events back to the frontend (`agent-run-event`
 frames, task events)
@@ -169,7 +168,7 @@ Houses the agent subsystem (`application/agent/`): the deterministic ReAct
 `runner`, the `service` run bridge (dedicated threads, `AgentRunRegistry`,
 conversation linkage), the `tasks` manager and bounded plan → act →
 verify → report loop (`TaskRegistry`), the three-tier approval gate
-(`approval`), autonomy modes and presets (`service::AutonomyMode`),
+(`approval`), autonomy modes and presets (`agent::approval::AutonomyMode`, parsed/wired via `service::parse_autonomy_mode`/`resolve_autonomy_mode`),
 permission evaluation (`permissions`), spend/budget enforcement and views
 (`budget`, `spend`), governance checkpoints and audit log (`governance`,
 `control`, `lifecycle`), roles and pipeline stages (`roles`, `pipeline`),

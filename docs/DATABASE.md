@@ -347,7 +347,7 @@ v14 adds the nullable `agent_steps.input_tokens` / `output_tokens` columns as pl
 | status | Tool call outcome | TEXT | YES | NULL | `status IN ('succeeded', 'failed', 'denied', 'cancelled')` | None | No | Agent roadmap (Task 4.2). |
 | started_at | Step start timestamp | INTEGER | NO | Current Unix timestamp | `started_at > 0` | None | No | Implementation Decision. |
 | duration_ms | Step duration in milliseconds | INTEGER | YES | NULL | `duration_ms >= 0` | None | No | D12. |
-| rule_id | Permission rule that decided this step (v7) | INTEGER | YES | NULL | `rule_id IS NULL OR rule_id > 0` | permission_rules.id SET NULL | No | M1-core provenance. `NULL` for pre-v7 rows and non-gated steps. |
+| rule_id | Permission rule that decided this step (v7) | INTEGER | YES | NULL | None | permission_rules.id SET NULL | No | M1-core provenance. `NULL` for pre-v7 rows and non-gated steps. |
 | group_key | Approval-group key batching related decisions (v7) | TEXT | YES | NULL | `group_key IS NULL OR length(group_key) <= 256` | None | No | M1-core provenance. |
 | decided_by | Who/what decided this step (v7) | TEXT | YES | NULL | `decided_by IS NULL OR decided_by IN ('user', 'rule', 'system')` | None | No | M1-core provenance. |
 | input_tokens | Provider-reported input tokens for the turn (v14) | INTEGER | YES | NULL | `input_tokens IS NULL OR input_tokens >= 0` | None | No | NEX-AGENT-005. `NULL` when the provider omitted usage. Saturating `u64 → i64` clamp on write. |
