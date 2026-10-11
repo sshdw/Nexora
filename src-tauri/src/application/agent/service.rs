@@ -175,13 +175,7 @@ impl AgentStepListItem {
     /// Project one persisted row onto its bounded list shape.
     fn from_row(step: &AgentStep) -> Self {
         let (preview, total_bytes, truncated) =
-            step.observation
-                .as_deref()
-                .map_or((None, None, false), |sanitized| {
-                    let (preview, total_bytes, truncated) =
-                        super::persistence::step_preview(sanitized);
-                    (Some(preview), Some(total_bytes), truncated)
-                });
+            super::persistence::step_preview_opt(step.observation.as_deref());
         Self {
             id: step.id,
             run_id: step.run_id,

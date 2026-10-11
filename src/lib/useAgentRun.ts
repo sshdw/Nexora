@@ -121,6 +121,13 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
   const activeConversationRef = useRef<number | null>(null);
   // Known run_ids for the active conversation, for live filtering.
   const knownRunIdsRef = useRef<Set<number>>(new Set());
+  // Latest rendered runs, for snapshot reads BEFORE state updaters (expand
+  // needs the step's fetch key without assigning inside an updater — the
+  // updater must stay pure so a StrictMode double-invoke is harmless).
+  const runsRef = useRef<AgentRunView[]>([]);
+  useEffect(() => {
+    runsRef.current = runs;
+  }, [runs]);
 
   const reload = useCallback(async (): Promise<void> => {
     if (conversationId === null) {
@@ -194,7 +201,10 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
               steps: run.steps.map((step) =>
                 step.seq !== seq
                   ? step
-                  : { ...step, observation_full: null, observation_error: null },
+                  // Also clear a stale in-flight flag: an expand resolve that
+                  // lands after this collapse must not resurrect the dropped
+                  // full text (its write is guarded on this flag).
+                  : { ...step, observation_full: null, observation_error: null, observation_loading: false },
               ),
             },
       ),
@@ -203,28 +213,11 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
 
   const expandStep = useCallback(async (runId: number, seq: number): Promise<void> => {
     const requestedConv = activeConversationRef.current;
-    // Read the fetch key through the updater (same precedent as the
-    // `knownRunIdsRef` mutation inside the step-append updater below): the
-    // assignment is idempotent, so a double-invoked updater is harmless.
-    let stepId: number | null = null;
-    setRuns((prev) => {
-      const run = prev.find((r) => r.run_id === runId);
-      const step = run?.steps.find((s) => s.seq === seq);
-      stepId = step?.step_id ?? null;
-      if (step === undefined || step.observation_full !== null || step.observation_loading) {
-        return prev;
-      }
-      return prev.map((r) =>
-        r.run_id !== runId
-          ? r
-          : {
-              ...r,
-              steps: r.steps.map((s) =>
-                s.seq !== seq ? s : { ...s, observation_loading: true, observation_error: null },
-              ),
-            },
-      );
-    });
+    // Fetch key resolved from the latest snapshot BEFORE any updater runs:
+    // no assignment inside the updater below, so it stays a pure function
+    // of `prev` and a StrictMode double-invoke returns the same state.
+    const snap = runsRef.current.find((r) => r.run_id === runId)?.steps.find((s) => s.seq === seq);
+    const stepId = snap?.step_id ?? null;
     if (stepId === null || stepId === 0) {
       setRuns((prev) =>
         prev.map((run) =>
@@ -242,9 +235,32 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
       );
       return;
     }
+    if (snap === undefined || snap.observation_full !== null || snap.observation_loading) return;
+    // Optimistic loading flag, set after the key resolve. The per-item
+    // condition keeps the updater pure: steps that already hold the full
+    // text (or are already loading) pass through untouched.
+    setRuns((prev) =>
+      prev.map((r) =>
+        r.run_id !== runId
+          ? r
+          : {
+              ...r,
+              steps: r.steps.map((s) =>
+                s.seq !== seq || s.observation_full !== null || s.observation_loading
+                  ? s
+                  : { ...s, observation_loading: true, observation_error: null },
+              ),
+            },
+      ),
+    );
     try {
       const full = await getAgentStepObservation(stepId);
       if (activeConversationRef.current !== requestedConv) return;
+      // Guarded write: only a step still showing loading takes the full
+      // text. A collapse in flight clears the flag (and drops the text), so
+      // a late resolve must not resurrect it. Overlapping expands cannot
+      // stack — a second expand returns early on the loading flag above —
+      // so no generation counter is needed.
       setRuns((prev) =>
         prev.map((run) =>
           run.run_id !== runId
@@ -252,7 +268,7 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
             : {
                 ...run,
                 steps: run.steps.map((step) =>
-                  step.seq !== seq
+                  step.seq !== seq || !step.observation_loading
                     ? step
                     : {
                         ...step,

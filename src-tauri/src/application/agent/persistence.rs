@@ -111,22 +111,38 @@ pub(crate) const MAX_STEP_PREVIEW_CHARS: usize = 2_000;
 /// returns unchanged with `truncated = false`, so short steps are
 /// byte-identical across the stream, the row, and the on-demand fetch.
 /// Longer text keeps the first [`MAX_STEP_PREVIEW_CHARS`] chars (char-based,
-/// never splits UTF-8) plus an honest `[truncated N of M chars]` marker in
-/// the exact vocabulary of [`bound_persisted_text`], so a preview cut reads
-/// the same as a persist-cap cut.
+/// never splits UTF-8 — the kept prefix is collected from `chars`, so it
+/// always ends on a char boundary) plus an honest
+/// `[truncated N of M bytes]` marker where both counts are bytes, matching
+/// the byte unit of `total_bytes` (and of the UI's full-output button), so
+/// the two numbers on one step can never disagree on multibyte output.
 pub(crate) fn step_preview(sanitized: &str) -> (String, u64, bool) {
     let total_bytes = sanitized.len() as u64;
-    let total_chars = sanitized.chars().count();
-    if total_chars <= MAX_STEP_PREVIEW_CHARS {
+    if sanitized.chars().count() <= MAX_STEP_PREVIEW_CHARS {
         return (sanitized.to_string(), total_bytes, false);
     }
     let kept: String = sanitized.chars().take(MAX_STEP_PREVIEW_CHARS).collect();
-    let omitted = total_chars - MAX_STEP_PREVIEW_CHARS;
+    let kept_bytes = kept.len() as u64;
+    let omitted = total_bytes - kept_bytes;
     (
-        format!("{kept}\n[truncated {omitted} of {total_chars} chars]"),
+        format!("{kept}\n[truncated {omitted} of {total_bytes} bytes]"),
         total_bytes,
         true,
     )
+}
+
+/// Bounded-preview projection of an optional sanitized observation
+/// (NEX-PERF-003): `None` maps to `(None, None, false)`, `Some` text maps
+/// through [`step_preview`]. Shared by the live `StepRecorded` emission in
+/// [`ActiveRunRecord::insert_step`] and the read-time
+/// [`super::service::AgentStepListItem::from_row`] projection, so the two
+/// paths cannot drift apart. Pure: no behavior change beyond the shared
+/// derivation.
+pub(crate) fn step_preview_opt(sanitized: Option<&str>) -> (Option<String>, Option<u64>, bool) {
+    sanitized.map_or((None, None, false), |text| {
+        let (preview, total_bytes, truncated) = step_preview(text);
+        (Some(preview), Some(total_bytes), truncated)
+    })
 }
 
 /// Autonomy mode recorded for a run when no [`ApprovalGate`] is attached
@@ -348,12 +364,7 @@ impl<'a> RunRecorder<'a> {
             Ok(step_id) => {
                 if let Some(events) = self.events {
                     let (preview, total_bytes, truncated) =
-                        observation
-                            .as_deref()
-                            .map_or((None, None, false), |sanitized| {
-                                let (preview, total_bytes, truncated) = step_preview(sanitized);
-                                (Some(preview), Some(total_bytes), truncated)
-                            });
+                        step_preview_opt(observation.as_deref());
                     let _ = events.send(AgentRunEvent::StepRecorded {
                         step_id: *step_id,
                         run_id,
@@ -1225,7 +1236,7 @@ mod tests {
                     "preview stays near the bound, got {} chars",
                     preview.chars().count()
                 );
-                let marker = format!("[truncated 1000 of {total_chars} chars]");
+                let marker = format!("[truncated 1000 of {total_chars} bytes]");
                 assert!(
                     preview.ends_with(&marker),
                     "honest marker in the persist-cap vocabulary, got tail: {:?}",
@@ -1312,8 +1323,8 @@ mod tests {
         }
     }
 
-    /// NEX-PERF-003: `step_preview` never splits UTF-8 and keeps the marker
-    /// vocabulary identical to the persist-cap cut.
+    /// NEX-PERF-003: `step_preview` never splits UTF-8 and reports the marker
+    /// in bytes — the same unit as `observation_len` and the UI button.
     #[test]
     fn step_preview_keeps_char_boundaries_and_marker_vocabulary() {
         let text = "é".repeat(MAX_STEP_PREVIEW_CHARS + 10);
@@ -1324,12 +1335,14 @@ mod tests {
             preview.starts_with(&"é".repeat(MAX_STEP_PREVIEW_CHARS)),
             "cut lands on a char boundary"
         );
+        // "é" is 2 bytes: 2000 kept chars = 4000 kept bytes, 10 omitted
+        // chars = 20 omitted bytes, 4020 total bytes.
+        let total = text.len() as u64;
+        let omitted = total - "é".repeat(MAX_STEP_PREVIEW_CHARS).len() as u64;
         assert!(
-            preview.ends_with(&format!(
-                "[truncated 10 of {} chars]",
-                MAX_STEP_PREVIEW_CHARS + 10
-            )),
-            "same vocabulary as the persist-cap marker"
+            preview.ends_with(&format!("[truncated {omitted} of {total} bytes]")),
+            "byte-unit marker, got tail: {:?}",
+            preview.chars().rev().take(60).collect::<String>()
         );
         // Short text round-trips byte-identical.
         let (same, len, cut) = step_preview("plain");

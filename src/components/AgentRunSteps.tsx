@@ -76,6 +76,17 @@ function kindLabel(step: AgentStepView, locale: Locale = getLocale()): string {
   return step.kind;
 }
 
+/** RU noun declension for a count (байт/байта/байтов): same one/few/many
+ * rule as `pluralForm` in strings.ts, as a tiny call-site triple since the
+ * `agent.showFull` template carries the count inline with `{unit}`. */
+function ruPlural(n: number, forms: [string, string, string]): string {
+  const mod10 = Math.abs(n) % 10;
+  const mod100 = Math.abs(n) % 100;
+  if (mod10 === 1 && mod100 !== 11) return forms[0];
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return forms[1];
+  return forms[2];
+}
+
 function parseToolArgs(json: string | null): Record<string, unknown> | null {
   if (!json) return null;
   try {
@@ -260,7 +271,15 @@ function StepSection({
             >
               {step.observation_loading
                 ? t("agent.loadingFull")
-                : t("agent.showFull", { bytes: step.observation_len ?? 0 })}
+                : t("agent.showFull", {
+                    bytes: step.observation_len ?? 0,
+                    unit:
+                      locale === "ru"
+                        ? ruPlural(step.observation_len ?? 0, ["байт", "байта", "байтов"])
+                        : (step.observation_len ?? 0) === 1
+                          ? "byte"
+                          : "bytes",
+                  })}
             </M3Button>
           )}
           {step.observation_error && !expanded && !step.observation_loading && (
