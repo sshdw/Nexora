@@ -54,6 +54,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::application::agent::injection::redact_secrets;
 use crate::infrastructure::providers::credentials::CredentialStore;
 
 /// Keyring entry holding the optional GitHub personal-access token, inside
@@ -827,115 +828,6 @@ fn tail_log(text: &str) -> (String, bool) {
     } else {
         (joined, start > 0)
     }
-}
-
-/// Token prefixes scrubbed from log excerpts (prefix kept, value replaced).
-/// Distinctive provider prefixes (`ghp_`, `AKIA`, ...) never appear in
-/// prose, so short values still redact; the short generic prefixes (`sk-`,
-/// `Bearer `) collide with ordinary words (`risk-free`, `the bearer of good
-/// news`), so they need a long value run (see [`SHORT_PREFIX_MIN_VALUE`]).
-const SECRET_PREFIXES: [&str; 13] = [
-    "ghp_",
-    "gho_",
-    "ghu_",
-    "ghs_",
-    "ghr_",
-    "github_pat_",
-    "sk-",
-    "sk-ant-",
-    "sk-proj-",
-    "xoxb-",
-    "xoxp-",
-    "xoxa-",
-    "AKIA",
-];
-
-/// Minimum secret-value length for the short generic prefixes (`sk-`,
-/// `Bearer ` in any ASCII case): real keys and tokens run far longer, while
-/// prose fragments (`-free`, `of good news`) stay short. Distinctive
-/// provider prefixes keep the 4-char minimum below.
-const SHORT_PREFIX_MIN_VALUE: usize = 16;
-
-/// Minimum secret-value length for the distinctive provider prefixes
-/// (`ghp_`, `AKIA`, ...): long enough to skip stray punctuation, short
-/// enough for real (truncated) keys.
-const DISTINCT_PREFIX_MIN_VALUE: usize = 4;
-
-/// Scrub probable secret values from a log excerpt: known token prefixes
-/// keep their prefix with the value replaced, and `Bearer <value>` (any
-/// ASCII case) keeps the scheme with the value replaced. Returns the
-/// scrubbed text and whether anything was replaced (the panel warns when
-/// true). Short runs stay intact so ordinary prose is never mangled:
-/// `risk-free` / `task-setup` survive (their `sk-` value is 4 chars, not
-/// 16+), and `the bearer of good news` survives (its `Bearer ` value is 2
-/// chars, not 16+).
-fn redact_secrets(text: &str) -> (String, bool) {
-    fn is_token_byte(byte: u8) -> bool {
-        byte.is_ascii_alphanumeric()
-            || matches!(byte, b'_' | b'-' | b'~' | b'+' | b'/' | b'.' | b'=')
-    }
-    let bytes = text.as_bytes();
-    let mut scrubbed = String::with_capacity(text.len());
-    let mut index = 0;
-    let mut hit = false;
-    // `index` starts at 0 and advances by ASCII runs or whole chars, so it
-    // is always a char boundary and the slicing below is safe.
-    while index < bytes.len() {
-        if index + 7 <= bytes.len() && bytes[index..index + 7].eq_ignore_ascii_case(b"bearer ") {
-            scrubbed.push_str(&text[index..index + 7]);
-            index += 7;
-            let value_start = index;
-            while index < bytes.len() && is_token_byte(bytes[index]) {
-                index += 1;
-            }
-            if index - value_start >= SHORT_PREFIX_MIN_VALUE {
-                scrubbed.push_str("[redacted]");
-                hit = true;
-            } else {
-                scrubbed.push_str(&text[value_start..index]);
-            }
-            continue;
-        }
-        let mut prefix_len = 0;
-        let mut prefix_is_short = false;
-        for prefix in SECRET_PREFIXES {
-            if text[index..].starts_with(prefix) {
-                prefix_len = prefix.len();
-                // `sk-` also matches `sk-ant-...` / `sk-proj-...` (it sorts
-                // first), which is intended: all three take the long minimum.
-                prefix_is_short = prefix == "sk-";
-                break;
-            }
-        }
-        if prefix_len == 0 {
-            match text[index..].chars().next() {
-                Some(ch) => {
-                    scrubbed.push(ch);
-                    index += ch.len_utf8();
-                }
-                None => break,
-            }
-            continue;
-        }
-        scrubbed.push_str(&text[index..index + prefix_len]);
-        index += prefix_len;
-        let value_start = index;
-        while index < bytes.len() && is_token_byte(bytes[index]) {
-            index += 1;
-        }
-        let minimum = if prefix_is_short {
-            SHORT_PREFIX_MIN_VALUE
-        } else {
-            DISTINCT_PREFIX_MIN_VALUE
-        };
-        if index - value_start >= minimum {
-            scrubbed.push_str("[redacted]");
-            hit = true;
-        } else {
-            scrubbed.push_str(&text[value_start..index]);
-        }
-    }
-    (scrubbed, hit)
 }
 
 /// Outcome of one per-job text-log download.
