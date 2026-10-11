@@ -1,0 +1,68 @@
+name: release
+
+# Tag-triggered release: builds the Windows bundle via tauri-action and
+# attaches it to a DRAFT GitHub Release. Drafts never publish by accident;
+# the owner reviews the draft and publishes manually. CI never creates tags.
+#
+# OVERLAP NOTE (for the owner to reconcile): build.yml (from the local-only
+# branch task/ci-artifact-builds) ALSO fires on `push: tags: ['v*']`, so a
+# tag push runs BOTH workflows: build.yml builds linux-arm64 (self-hosted
+# OCI runner) + windows (windows-latest) and uploads artifacts, while this
+# workflow builds windows-latest via tauri-action and drafts the release.
+# Job names (`publish-release` vs `windows` / `linux-arm64`), concurrency
+# groups (`release-` vs `build-`), and files (`release.yml` vs `build.yml`)
+# do not collide, and this workflow never touches the self-hosted runner —
+# but a tag push currently pays for two Windows bundle builds. To remove the
+# duplication, drop `tags: ["v*"]` from build.yml's push trigger (keeping its
+# main + workflow_run triggers) and let this workflow own tag releases — or,
+# equivalently, rewire this file to `on: release: types: [published]`.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish-release:
+    name: publish release
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Rust (pinned by src-tauri/rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri->target
+          shared-key: windows-release-cargo
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build bundle and draft release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Nexora ${{ github.ref_name }}'
+          releaseBody: 'See CHANGELOG.md for the release notes.'
+          releaseDraft: true
+          prerelease: false

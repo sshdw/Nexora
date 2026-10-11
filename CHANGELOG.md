@@ -34,6 +34,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pass-through for chat / fail-closed for agent), and the pricing-estimates
   disclaimer. Docs-only; no behavior change.
 
+## [2.0.0] - 2026-10-11
+
+### Added
+
+- **Agent — run lifecycle state machine + I/O contracts (#70)**: explicit
+  run states with a pinned transition table and backend I/O contracts
+  (observe-only wiring, no behavior change).
+- **Agent — spend budgets + approval gates + audit trail (#71)**: per-run
+  budgets, approval gating, and an append-only audit log.
+- **Agent — six roles + staged execution pipeline (#72)**: pinned
+  role/tool bindings with a plan→act→review staged pipeline.
+- **Agent — run snapshots + rollback + checkpoints (#73)**: in-memory run
+  snapshots with rollback to a prior snapshot and checkpoint rewind.
+- **Agent — injection hardening + import/export security (#74)**.
+- **Agent — self-audit gate (#75)**: read-only run verifier.
+- **Agent — run inspector (#76)**: read-only view of runs.
+- **Agent — smart context assembly (#77)**.
+- **Agent — cost dashboard backend (#78)**.
+- **Agent — `.nexora/` project directory foundation (#79)**.
+- **Agent — workspace routing profiles (#80)**.
+- **Agent — feature flags + resolve adoption (#82)** (closes #81).
+- **Agent — VSCode settings + MCP import, setup export (#83)**.
+- **Providers — live Gemini window verification (#85)**: Gemini windows
+  verified live; lite clamp raised to 1M.
+- **UI — full-M3E design tokens (#86)**, **M3E component library (#87)**,
+  **M3E app shell (#88)**, **M3E chat overhaul (#89)**,
+  **tabs + split + zen (#90)**.
+- **Git — read-only status/log/diff + panel (#91)**.
+- **Git — stage/commit/push + AI message (#92)**.
+- **UI — Ctrl+K command palette (#93)**.
+- **UI — slim settings + search (#94)**.
+- **UI — hotkeys reference + registry (#95)**.
+- **UI — activity feed + health view (#96)**.
+- **UI — terminal panel (#98)**.
+- **AI — error intelligence for failed commands (#99)**.
+- **Git — timeline + explain diff + risk signals (#100)**.
+- **UI — simplified onboarding (#101)**.
+- **UI — EN+RU strings + switch (#102)**.
+- **Agent — task manager + autonomous mode (#103)**.
+
+### Changed
+
+- **Docs — context windows + capability fallback policy (#84)**: new
+  `docs/CONTEXT-WINDOWS.md` documenting the enforced conservative windows,
+  proactive compaction, section budgets, capability gating with no
+  cross-provider fallback, and compat fallback rules. Docs-only.
+
+### Fixed
+
+- **UI — a11y audit fixes (#97)**.
+
 ## [1.5.0] - 2026-09-26
 
 ### Added
@@ -303,6 +354,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > Note: tag `v0.3.0` exists remotely from the MVP era but carries no changelog entry; superseded by 1.0.0.
 
+[2.0.0]: https://github.com/sshdw/Nexora/releases/tag/v2.0.0
 [1.5.0]: https://github.com/sshdw/Nexora/releases/tag/v1.5.0
 [1.3.3]: https://github.com/sshdw/Nexora/releases/tag/v1.3.3
 [1.3.2]: https://github.com/sshdw/Nexora/releases/tag/v1.3.2
