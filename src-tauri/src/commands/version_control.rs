@@ -607,6 +607,18 @@ mod tests {
     fn git_writes_complete_through_the_async_boundary() {
         let dir = boundary::temp_repo_dir();
         let repo = git2::Repository::init(&dir).expect("init scratch repo");
+        // Repo-local identity so `git_commit` (which reads the local
+        // config via `repo.signature()`) succeeds without any global git
+        // config, as on CI runners.
+        {
+            let mut config = repo.config().expect("open scratch config");
+            config
+                .set_str("user.name", "Nexora Test")
+                .expect("set scratch name");
+            config
+                .set_str("user.email", "test@nexora.local")
+                .expect("set scratch email");
+        }
         drop(repo);
         std::fs::write(dir.join("note.txt"), "hello\n").expect("seed untracked");
 
