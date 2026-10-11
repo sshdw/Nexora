@@ -16,19 +16,30 @@ import {
   type AgentStep,
   type GovernanceEventPayload,
   type StepEventFrame,
+  getAgentStepObservation,
   listAgentRuns,
   listAgentSteps,
 } from "./tauri";
 
-/** One step as rendered in the accordion (persisted shape + live append). */
+/** One step as rendered in the accordion (persisted shape + live append).
+ * NEX-PERF-003: `observation` is the bounded preview (or the full text when
+ * short); the full text of a truncated step loads on demand into
+ * `observation_full` and is dropped again on collapse, so the render tree
+ * stays bounded no matter how long the run is. */
 export interface AgentStepView {
   id: number; // 0 for live-only before rehydration; real id after reload
+  step_id: number; // agent_steps.id — the on-demand full-text fetch key (0 for legacy live-only frames)
   run_id: number;
   seq: number;
   kind: string;
   tool_name: string | null;
   arguments: string | null;
   observation: string | null;
+  observation_len: number | null;
+  observation_truncated: boolean;
+  observation_full: string | null;
+  observation_loading: boolean;
+  observation_error: string | null;
   status: string | null;
   started_at: number | null;
   duration_ms: number | null;
@@ -50,12 +61,18 @@ export interface AgentRunView {
 function toStepView(step: AgentStep): AgentStepView {
   return {
     id: step.id,
+    step_id: step.id,
     run_id: step.run_id,
     seq: step.seq,
     kind: step.kind,
     tool_name: step.tool_name,
     arguments: step.arguments,
     observation: step.observation,
+    observation_len: step.observation_len,
+    observation_truncated: step.observation_truncated,
+    observation_full: null,
+    observation_loading: false,
+    observation_error: null,
     status: step.status,
     started_at: step.started_at,
     duration_ms: step.duration_ms,
@@ -65,12 +82,18 @@ function toStepView(step: AgentStep): AgentStepView {
 function toStepViewFromFrame(runId: number, frame: StepEventFrame): AgentStepView {
   return {
     id: 0,
+    step_id: frame.step_id,
     run_id: runId,
     seq: frame.seq,
     kind: frame.kind,
     tool_name: frame.tool_name,
     arguments: frame.arguments,
     observation: frame.observation,
+    observation_len: frame.observation_len,
+    observation_truncated: frame.observation_truncated,
+    observation_full: null,
+    observation_loading: false,
+    observation_error: null,
     status: frame.status,
     started_at: null,
     duration_ms: frame.duration_ms,
@@ -82,6 +105,12 @@ export interface AgentRunStore {
   loading: boolean;
   error: string | null;
   reload: () => Promise<void>;
+  /** Fetch the full observation text of one truncated step (NEX-PERF-003
+   * on-demand expand). Sets the step's loading flag, fills
+   * `observation_full` on success or `observation_error` on failure. */
+  expandStep: (runId: number, seq: number) => Promise<void>;
+  /** Drop a step's fetched full text, back to the bounded preview. */
+  collapseStep: (runId: number, seq: number) => void;
 }
 
 export function useAgentRun(conversationId: number | null): AgentRunStore {
@@ -154,6 +183,109 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
       if (activeConversationRef.current === requestedId) setLoading(false);
     }
   }, [conversationId]);
+
+  const collapseStep = useCallback((runId: number, seq: number): void => {
+    setRuns((prev) =>
+      prev.map((run) =>
+        run.run_id !== runId
+          ? run
+          : {
+              ...run,
+              steps: run.steps.map((step) =>
+                step.seq !== seq
+                  ? step
+                  : { ...step, observation_full: null, observation_error: null },
+              ),
+            },
+      ),
+    );
+  }, []);
+
+  const expandStep = useCallback(async (runId: number, seq: number): Promise<void> => {
+    const requestedConv = activeConversationRef.current;
+    // Read the fetch key through the updater (same precedent as the
+    // `knownRunIdsRef` mutation inside the step-append updater below): the
+    // assignment is idempotent, so a double-invoked updater is harmless.
+    let stepId: number | null = null;
+    setRuns((prev) => {
+      const run = prev.find((r) => r.run_id === runId);
+      const step = run?.steps.find((s) => s.seq === seq);
+      stepId = step?.step_id ?? null;
+      if (step === undefined || step.observation_full !== null || step.observation_loading) {
+        return prev;
+      }
+      return prev.map((r) =>
+        r.run_id !== runId
+          ? r
+          : {
+              ...r,
+              steps: r.steps.map((s) =>
+                s.seq !== seq ? s : { ...s, observation_loading: true, observation_error: null },
+              ),
+            },
+      );
+    });
+    if (stepId === null || stepId === 0) {
+      setRuns((prev) =>
+        prev.map((run) =>
+          run.run_id !== runId
+            ? run
+            : {
+                ...run,
+                steps: run.steps.map((step) =>
+                  step.seq !== seq
+                    ? step
+                    : { ...step, observation_loading: false },
+                ),
+              },
+        ),
+      );
+      return;
+    }
+    try {
+      const full = await getAgentStepObservation(stepId);
+      if (activeConversationRef.current !== requestedConv) return;
+      setRuns((prev) =>
+        prev.map((run) =>
+          run.run_id !== runId
+            ? run
+            : {
+                ...run,
+                steps: run.steps.map((step) =>
+                  step.seq !== seq
+                    ? step
+                    : {
+                        ...step,
+                        observation_full: full,
+                        observation_loading: false,
+                        observation_error: null,
+                      },
+                ),
+              },
+        ),
+      );
+    } catch (e) {
+      if (activeConversationRef.current !== requestedConv) return;
+      setRuns((prev) =>
+        prev.map((run) =>
+          run.run_id !== runId
+            ? run
+            : {
+                ...run,
+                steps: run.steps.map((step) =>
+                  step.seq !== seq
+                    ? step
+                    : {
+                        ...step,
+                        observation_loading: false,
+                        observation_error: e instanceof Error ? e.message : String(e),
+                      },
+                ),
+              },
+        ),
+      );
+    }
+  }, []);
 
   useEffect(() => {
     activeConversationRef.current = conversationId;
@@ -386,5 +518,5 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
     };
   }, [reload]);
 
-  return { runs, loading, error, reload };
+  return { runs, loading, error, reload, expandStep, collapseStep };
 }

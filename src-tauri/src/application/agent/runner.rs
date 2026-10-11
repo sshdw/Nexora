@@ -84,6 +84,7 @@ use crate::application::agent::roles::AgentRole;
 use crate::application::agent::tools::ToolRegistry;
 use crate::application::execution::{
     AiMessage, AiRequest, AiRole, ExecutorError, ModelConfig, ProviderExecutor, TokenUsage,
+    ToolDefinition,
 };
 
 use super::budget;
@@ -494,14 +495,14 @@ impl<'a> AgentRunner<'a> {
             let request = AiRequest {
                 provider: scope.provider.to_string(),
                 model: scope.model.to_string(),
-                messages: vec![AiMessage {
+                messages: Arc::new(vec![AiMessage {
                     role: AiRole::User,
                     content: compaction::summary_prompt_for_slice(&filtered),
                     attachments: Vec::new(),
                     tool_calls: Vec::new(),
                     tool_result: None,
-                }],
-                tools: Vec::new(),
+                }]),
+                tools: Arc::new(Vec::new()),
                 model_config: self.model_config.clone(),
                 request_timeout: Some(self.request_timeout),
             };
@@ -575,7 +576,8 @@ impl<'a> AgentRunner<'a> {
         mut record: Option<&mut ActiveRunRecord<'_>>,
         spent_micro_usd: &mut u64,
     ) -> Result<String, AgentError> {
-        let tools = ToolRegistry::definitions_for_preset(self.preset);
+        let tools: Arc<Vec<ToolDefinition>> =
+            Arc::new(ToolRegistry::definitions_for_preset(self.preset));
         // A control never cancelled the plan: when the runner has no attached
         // control it dispatches tools through a never-firing token so the
         // undisputed Task 3.1 behaviour is preserved exactly.
@@ -718,11 +720,21 @@ impl<'a> AgentRunner<'a> {
                 }
             }
 
+            // NEX-PERF-003: per-turn assembly shares the buffers instead of
+            // deep-cloning them. The loop's `Vec` moves into an `Arc` (no
+            // element clone — `Arc::from(Vec)` reuses the allocation) for
+            // the synchronous provider call, which only ever observes
+            // `&AiRequest` and therefore cannot retain a share; the loop
+            // reclaims sole ownership right after, before any
+            // `return`/`continue` below can observe the taken buffer. The
+            // `unwrap_or_clone` fallback keeps correctness (at the cost of
+            // one clone) if an executor ever retained a share.
+            let shared: Arc<Vec<AiMessage>> = Arc::from(std::mem::take(&mut messages));
             let request = AiRequest {
                 provider: provider.to_string(),
                 model: model.to_string(),
-                messages: messages.clone(),
-                tools: tools.clone(),
+                messages: Arc::clone(&shared),
+                tools: Arc::clone(&tools),
                 model_config: self.model_config.clone(),
                 request_timeout: Some(self.request_timeout),
             };
@@ -734,7 +746,13 @@ impl<'a> AgentRunner<'a> {
             // without recording a model turn or dispatching any tool call вЂ”
             // an abandoned call must never dispatch.
             let token: &CancellationToken = control.map_or(&idle_token, RunControl::token);
-            let response = match self.executor.execute(&request, credential, token) {
+            let outcome = self.executor.execute(&request, credential, token);
+            // The provider call is done: release the request's shares and
+            // take the history back before matching on the outcome (whose
+            // arms `return`/`continue`).
+            drop(request);
+            messages = Arc::unwrap_or_clone(shared);
+            let mut response = match outcome {
                 Ok(response) => response,
                 Err(ExecutorError::Cancelled) => {
                     observe_transition(RunState::Running, RunState::Cancelled);
@@ -864,13 +882,25 @@ impl<'a> AgentRunner<'a> {
             // The model's own turn вЂ” narration plus every returned tool call вЂ”
             // is appended unconditionally so the model always sees what it
             // called; the individual observations follow as Tool messages.
+            // NEX-PERF-003: both payloads move out of the owned response
+            // (`take` is `O(1)`). The calls cannot move straight into the
+            // message — `dispatch_tool_calls` must also borrow them while it
+            // holds `&mut messages` — so the pushed message carries a
+            // placeholder that is filled back on every exit path below,
+            // before the next turn can observe the history. The pairing the
+            // model sees is therefore identical, with no per-turn clone of
+            // this turn's calls (which can be large: `write_file` arguments
+            // carry the whole file).
+            let content = std::mem::take(&mut response.content);
+            let tool_calls = std::mem::take(&mut response.tool_calls);
             messages.push(AiMessage {
                 role: AiRole::Assistant,
-                content: response.content,
+                content,
                 attachments: Vec::new(),
-                tool_calls: response.tool_calls.clone(),
+                tool_calls: Vec::new(),
                 tool_result: None,
             });
+            let assistant_idx = messages.len() - 1;
 
             // AC-6: dispatch every returned call through the per-tool-call
             // pipeline (permission rules, approval gate, execution and
@@ -887,7 +917,13 @@ impl<'a> AgentRunner<'a> {
                 role: self.role,
                 injection_enabled: self.run_flags.injection,
             };
-            dispatch::dispatch_tool_calls(&ctx, &response.tool_calls, &mut messages, &mut record)?;
+            let dispatch_outcome =
+                dispatch::dispatch_tool_calls(&ctx, &tool_calls, &mut messages, &mut record);
+            // Restore the call pairing before any observer (next turn,
+            // compaction, or test capture) can see the placeholder; then
+            // propagate the dispatch outcome exactly as before.
+            messages[assistant_idx].tool_calls = tool_calls;
+            dispatch_outcome?;
         }
     }
 }
@@ -953,7 +989,7 @@ mod tests {
 
         let first = &fake.requests.borrow()[0];
         let expected = ToolRegistry::definitions_for_preset(RunPreset::Document);
-        assert_eq!(first.tools, expected);
+        assert_eq!(first.tools.as_slice(), expected.as_slice());
         assert!(
             !first.tools.iter().any(|t| t.name == "execute_command"),
             "document schema must not offer the shell"
@@ -969,14 +1005,14 @@ mod tests {
         let plain = AiRequest {
             provider: "openai".to_string(),
             model: "m".to_string(),
-            messages: vec![AiMessage {
+            messages: Arc::new(vec![AiMessage {
                 role: AiRole::User,
                 content: "just chat".to_string(),
                 attachments: Vec::new(),
                 tool_calls: Vec::new(),
                 tool_result: None,
-            }],
-            tools: Vec::new(),
+            }]),
+            tools: Arc::new(Vec::new()),
             model_config: None,
             request_timeout: None,
         };
@@ -1642,7 +1678,8 @@ mod tests {
                 assert!(opening[0].content.contains("act"));
             } else {
                 assert_eq!(
-                    opening, &legacy,
+                    opening.as_slice(),
+                    legacy.as_slice(),
                     "assembly off reproduces the legacy build byte-for-byte"
                 );
             }

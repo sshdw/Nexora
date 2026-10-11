@@ -23,6 +23,8 @@ export interface AgentRunStepsProps {
   onContinue: (extraSteps: number) => void;
   onPause?: () => void;
   onResume?: () => void;
+  onExpandStep?: (seq: number) => void;
+  onCollapseStep?: (seq: number) => void;
 }
 
 function statusClass(status: string): string {
@@ -188,12 +190,24 @@ export function DiffView({ observation }: { observation: string | null }) {
   );
 }
 
-function StepSection({ step, defaultOpen }: { step: AgentStepView; defaultOpen: boolean }) {
+function StepSection({
+  step,
+  defaultOpen,
+  onExpand,
+  onCollapse,
+}: {
+  step: AgentStepView;
+  defaultOpen: boolean;
+  onExpand: () => void;
+  onCollapse: () => void;
+}) {
   const { locale, t } = useStrings();
   const [open, setOpen] = useState<boolean>(defaultOpen);
-  const isLong = (step.observation?.length ?? 0) > 2000;
-  const observation = step.observation ?? "";
-  const displayObservation = isLong && !open ? observation.slice(0, 2000) + "…" : observation;
+  // NEX-PERF-003: `observation` is the bounded preview; the full text loads
+  // explicitly into `observation_full` (dropped again on collapse), so the
+  // render tree stays bounded no matter how long the run is.
+  const expanded = step.observation_full !== null;
+  const displayObservation = step.observation_full ?? step.observation ?? "";
   const isTerminal = step.kind === "tool_call" && step.tool_name === "execute_command";
   const isDiff = step.kind === "tool_call" && step.tool_name === "write_file";
 
@@ -237,13 +251,33 @@ function StepSection({ step, defaultOpen }: { step: AgentStepView; defaultOpen: 
               )}
             </>
           )}
-          {isLong && (
-            <M3Button variant="quiet" size="sm" onClick={() => setOpen((v) => !v)}>
-              {open ? t("agent.showLess") : t("agent.showMore")}
+          {step.observation_truncated && !expanded && (
+            <M3Button
+              variant="quiet"
+              size="sm"
+              onClick={onExpand}
+              disabled={step.observation_loading}
+            >
+              {step.observation_loading
+                ? t("agent.loadingFull")
+                : t("agent.showFull", { bytes: step.observation_len ?? 0 })}
             </M3Button>
           )}
-          {/* For terminal/diff views that already handled observation, still show args if needed? */}
-          {isTerminal && step.arguments && isLong && null}
+          {step.observation_error && !expanded && !step.observation_loading && (
+            <div className="nex-agent-approval-actions">
+              <span className="nex-agent-run-error" role="alert">
+                {t("agent.fullLoadError")}
+              </span>
+              <M3Button variant="quiet" size="sm" onClick={onExpand}>
+                {t("common.retry")}
+              </M3Button>
+            </div>
+          )}
+          {expanded && (
+            <M3Button variant="quiet" size="sm" onClick={onCollapse}>
+              {t("agent.showLess")}
+            </M3Button>
+          )}
         </div>
       )}
     </div>
@@ -310,6 +344,8 @@ export default function AgentRunSteps({
   onContinue,
   onPause,
   onResume,
+  onExpandStep,
+  onCollapseStep,
 }: AgentRunStepsProps) {
   const { locale, t } = useStrings();
   const sorted = [...run.steps].sort((a, b) => a.seq - b.seq);
@@ -452,7 +488,15 @@ export default function AgentRunSteps({
           {sorted.map((step, idx) => {
             const isLast = idx === sorted.length - 1;
             const defaultOpen = isActive ? isLast : false;
-            return <StepSection key={`${run.run_id}-${step.seq}`} step={step} defaultOpen={defaultOpen} />;
+            return (
+              <StepSection
+                key={`${run.run_id}-${step.seq}`}
+                step={step}
+                defaultOpen={defaultOpen}
+                onExpand={() => onExpandStep?.(step.seq)}
+                onCollapse={() => onCollapseStep?.(step.seq)}
+              />
+            );
           })}
         </div>
       )}

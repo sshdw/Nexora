@@ -174,7 +174,19 @@ pub(crate) enum AgentRunEvent {
     /// failed insert emits nothing and its `seq` is reused by the retry).
     /// Emitted on the run thread, so governance and step events on the same
     /// channel are totally ordered by emission.
+    ///
+    /// NEX-PERF-003: `observation` is a *bounded preview* of the sanitized
+    /// stored text (see `persistence::MAX_STEP_PREVIEW_CHARS`), never the
+    /// full output — a 200-turn run must not retain megabytes over IPC and
+    /// in the render tree. `observation_len` is the byte-exact total of the
+    /// full sanitized text (`None` exactly when `observation` is `None`);
+    /// `observation_truncated` tells the UI whether the preview was cut.
+    /// The full text stays reachable on demand through
+    /// `get_agent_step_observation(step_id)`; `step_id` is the
+    /// `agent_steps.id` surrogate key that command takes.
     StepRecorded {
+        /// Surrogate key of the persisted `agent_steps` row (`id`).
+        step_id: i64,
         /// The run this step belongs to.
         run_id: i64,
         /// 1-based sequence within the run, identical to `agent_steps.seq`.
@@ -185,8 +197,15 @@ pub(crate) enum AgentRunEvent {
         tool_name: Option<String>,
         /// Raw JSON arguments exactly as provider-supplied.
         arguments: Option<String>,
-        /// Model-turn content / tool output / denial or approval text.
+        /// Bounded preview of the model-turn content / tool output / denial
+        /// or approval text (sanitized, exactly as stored up to the cut).
         observation: Option<String>,
+        /// Byte-exact length of the full sanitized observation text;
+        /// `None` exactly when `observation` is `None`.
+        observation_len: Option<u64>,
+        /// Whether the preview was cut (`true` exactly when the stored text
+        /// exceeds the preview bound).
+        observation_truncated: bool,
         /// `'succeeded' | 'failed' | 'denied' | 'cancelled'` (tool/approval
         /// only).
         status: Option<String>,

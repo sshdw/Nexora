@@ -550,7 +550,12 @@ export interface AgentRun {
   limit_micro_usd: number | null;
 }
 
-/** One `agent_steps` row as persisted (DATABASE.md §7.9). */
+/** One `agent_steps` row as served for rehydration (DATABASE.md §7.9).
+ * NEX-PERF-003: `observation` is a *bounded preview* of the stored text
+ * (never the full output) so rehydration stays bounded; `observation_len`
+ * is the byte-exact total of the full sanitized text and
+ * `observation_truncated` reports whether the preview was cut. The full
+ * text of any step is one `getAgentStepObservation(stepId)` call away. */
 export interface AgentStep {
   id: number;
   run_id: number;
@@ -559,6 +564,8 @@ export interface AgentStep {
   tool_name: string | null;
   arguments: string | null;
   observation: string | null;
+  observation_len: number | null;
+  observation_truncated: boolean;
   status: string | null;
   started_at: number;
   duration_ms: number | null;
@@ -567,13 +574,17 @@ export interface AgentStep {
   decided_by: string | null;
 }
 
-/** Step payload of a `RunFrame::Step` frame (Task 5.1). */
+/** Step payload of a `RunFrame::Step` frame (Task 5.1; NEX-PERF-003 — the
+ * frame carries the same bounded preview shape as rehydration). */
 export interface StepEventFrame {
+  step_id: number;
   seq: number;
   kind: string;
   tool_name: string | null;
   arguments: string | null;
   observation: string | null;
+  observation_len: number | null;
+  observation_truncated: boolean;
   status: string | null;
   duration_ms: number | null;
 }
@@ -660,9 +671,18 @@ export function listAgentRuns(conversationId: number): Promise<AgentRun[]> {
   });
 }
 
-/** List the steps of one run (rehydration, Task 5.1). */
+/** List the steps of one run (rehydration, Task 5.1). Each item carries a
+ * bounded observation preview plus its byte-exact total (NEX-PERF-003);
+ * expand via `getAgentStepObservation`. */
 export function listAgentSteps(runId: number): Promise<AgentStep[]> {
   return invoke<AgentStep[]>("list_agent_steps", { runId });
+}
+
+/** Fetch the full sanitized observation text of one step by its
+ * `agent_steps.id` (NEX-PERF-003 on-demand expand). Unknown ids reject with
+ * a secret-free not-found error. */
+export function getAgentStepObservation(stepId: number): Promise<string> {
+  return invoke<string>("get_agent_step_observation", { stepId });
 }
 
 // ---- Run inspector (WS-D.1, read-only) ----------------------------------

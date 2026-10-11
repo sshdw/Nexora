@@ -11,6 +11,7 @@ import { useEffect, useState } from "react";
 
 import {
   conversationContextStats,
+  getAgentStepObservation,
   listAgentRuns,
   listAgentSteps,
   type AgentStep,
@@ -97,11 +98,21 @@ export default function ContextPanel({ conversationId }: { conversationId: numbe
             if (step.kind !== "tool_call" || step.tool_name !== "write_file") continue;
             if (!step.observation) continue;
             const path = parseWritePath(step.arguments) ?? tr(getLocale(), "ctx.runStepFallback", { run: run.id, seq: step.seq });
+            // NEX-PERF-003: list items carry bounded previews; the file view
+            // needs the full diff, fetched on demand per write_file step
+            // (best-effort — a failed fetch still renders the preview, whose
+            // marker says honestly that it was cut).
+            let observation = step.observation;
+            try {
+              observation = await getAgentStepObservation(step.id);
+            } catch {
+              // Keep the preview fallback.
+            }
             const prev = byPath.get(path);
             if (!prev || step.seq >= prev.seq) {
               byPath.set(path, {
                 path,
-                observation: step.observation,
+                observation,
                 runId: run.id,
                 seq: step.seq,
               });

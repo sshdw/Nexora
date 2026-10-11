@@ -889,7 +889,7 @@ mod tests {
         AiRequest {
             provider: PROVIDER_NAME.to_string(),
             model: "gemini-3.6-flash".to_string(),
-            messages: vec![
+            messages: std::sync::Arc::new(vec![
                 AiMessage {
                     role: AiRole::System,
                     content: "You are a helpful assistant.".to_string(),
@@ -911,8 +911,8 @@ mod tests {
                     tool_calls: Vec::new(),
                     tool_result: None,
                 },
-            ],
-            tools: Vec::new(),
+            ]),
+            tools: std::sync::Arc::new(Vec::new()),
             model_config: None,
             request_timeout: None,
         }
@@ -975,7 +975,7 @@ mod tests {
         let request = AiRequest {
             provider: PROVIDER_NAME.to_string(),
             model: "gemini-3.6-flash".to_string(),
-            messages: vec![
+            messages: std::sync::Arc::new(vec![
                 AiMessage {
                     role: AiRole::System,
                     content: "First rule.".to_string(),
@@ -990,8 +990,8 @@ mod tests {
                     tool_calls: Vec::new(),
                     tool_result: None,
                 },
-            ],
-            tools: Vec::new(),
+            ]),
+            tools: std::sync::Arc::new(Vec::new()),
             model_config: None,
             request_timeout: None,
         };
@@ -1019,14 +1019,14 @@ mod tests {
         let request = AiRequest {
             provider: PROVIDER_NAME.to_string(),
             model: "gemini-3.6-flash".to_string(),
-            messages: vec![AiMessage {
+            messages: std::sync::Arc::new(vec![AiMessage {
                 role: AiRole::User,
                 content: "Hello".to_string(),
                 attachments: Vec::new(),
                 tool_calls: Vec::new(),
                 tool_result: None,
-            }],
-            tools: Vec::new(),
+            }]),
+            tools: std::sync::Arc::new(Vec::new()),
             model_config: None,
             request_timeout: None,
         };
@@ -1442,26 +1442,28 @@ mod tests {
     #[test]
     fn binary_attachments_serialize_as_gemini_inline_data_parts() {
         let mut request = sample_request();
-        request.messages.push(AiMessage {
-            role: AiRole::User,
-            content: "What is in these files?".to_string(),
-            attachments: vec![
-                AiAttachment {
-                    file_name: "chart.png".to_string(),
-                    file_size_bytes: Some(4),
-                    mime_type: Some("image/png".to_string()),
-                    payload: AiAttachmentPayload::Base64("cG5nIQ==".to_string()),
-                },
-                AiAttachment {
-                    file_name: "paper.pdf".to_string(),
-                    file_size_bytes: Some(5),
-                    mime_type: Some("application/pdf".to_string()),
-                    payload: AiAttachmentPayload::Base64("JVBERi0=".to_string()),
-                },
-            ],
-            tool_calls: Vec::new(),
-            tool_result: None,
-        });
+        std::sync::Arc::get_mut(&mut request.messages)
+            .expect("test builds the sole owner")
+            .push(AiMessage {
+                role: AiRole::User,
+                content: "What is in these files?".to_string(),
+                attachments: vec![
+                    AiAttachment {
+                        file_name: "chart.png".to_string(),
+                        file_size_bytes: Some(4),
+                        mime_type: Some("image/png".to_string()),
+                        payload: AiAttachmentPayload::Base64("cG5nIQ==".to_string()),
+                    },
+                    AiAttachment {
+                        file_name: "paper.pdf".to_string(),
+                        file_size_bytes: Some(5),
+                        mime_type: Some("application/pdf".to_string()),
+                        payload: AiAttachmentPayload::Base64("JVBERi0=".to_string()),
+                    },
+                ],
+                tool_calls: Vec::new(),
+                tool_result: None,
+            });
         let json = serde_json::to_string(&generate_content_request(&request)).expect("serialize");
 
         // A text part plus one `inlineData` part per binary attachment,
@@ -1477,18 +1479,20 @@ mod tests {
     #[test]
     fn text_attachments_are_inlined_into_the_turn_text() {
         let mut request = sample_request();
-        request.messages.push(AiMessage {
-            role: AiRole::User,
-            content: "Summarize".to_string(),
-            attachments: vec![AiAttachment {
-                file_name: "notes.txt".to_string(),
-                file_size_bytes: Some(5),
-                mime_type: Some("text/plain".to_string()),
-                payload: AiAttachmentPayload::Text("revenue rose 12 percent".to_string()),
-            }],
-            tool_calls: Vec::new(),
-            tool_result: None,
-        });
+        std::sync::Arc::get_mut(&mut request.messages)
+            .expect("test builds the sole owner")
+            .push(AiMessage {
+                role: AiRole::User,
+                content: "Summarize".to_string(),
+                attachments: vec![AiAttachment {
+                    file_name: "notes.txt".to_string(),
+                    file_size_bytes: Some(5),
+                    mime_type: Some("text/plain".to_string()),
+                    payload: AiAttachmentPayload::Text("revenue rose 12 percent".to_string()),
+                }],
+                tool_calls: Vec::new(),
+                tool_result: None,
+            });
         let body = generate_content_request(&request);
         let user = body
             .contents
@@ -1508,14 +1512,14 @@ mod tests {
         let request = AiRequest {
             provider: PROVIDER_NAME.to_string(),
             model: "gemini-3.6-flash".to_string(),
-            messages: vec![AiMessage {
+            messages: std::sync::Arc::new(vec![AiMessage {
                 role: AiRole::User,
                 content: "Use the tool".to_string(),
                 attachments: Vec::new(),
                 tool_calls: Vec::new(),
                 tool_result: None,
-            }],
-            tools: vec![crate::application::execution::ToolDefinition {
+            }]),
+            tools: std::sync::Arc::new(vec![crate::application::execution::ToolDefinition {
                 name: "get_weather".to_string(),
                 description: "Get the weather for a location".to_string(),
                 parameters: serde_json::json!({
@@ -1525,7 +1529,7 @@ mod tests {
                     },
                     "required": ["location"]
                 }),
-            }],
+            }]),
             model_config: None,
             request_timeout: None,
         };
@@ -1553,14 +1557,14 @@ mod tests {
         let request = AiRequest {
             provider: PROVIDER_NAME.to_string(),
             model: "gemini-3.6-flash".to_string(),
-            messages: vec![AiMessage {
+            messages: std::sync::Arc::new(vec![AiMessage {
                 role: AiRole::User,
                 content: "Hello".to_string(),
                 attachments: Vec::new(),
                 tool_calls: Vec::new(),
                 tool_result: None,
-            }],
-            tools: Vec::new(),
+            }]),
+            tools: std::sync::Arc::new(Vec::new()),
             model_config: None,
             request_timeout: None,
         };
@@ -1821,7 +1825,7 @@ mod tests {
         let request = AiRequest {
             provider: PROVIDER_NAME.to_string(),
             model: "gemini-3.6-flash".to_string(),
-            messages: vec![
+            messages: std::sync::Arc::new(vec![
                 AiMessage {
                     role: AiRole::System,
                     content: "You are an agent.".to_string(),
@@ -1867,8 +1871,8 @@ mod tests {
                         content: "a.txt\nb.txt".to_string(),
                     }),
                 },
-            ],
-            tools: Vec::new(),
+            ]),
+            tools: std::sync::Arc::new(Vec::new()),
             model_config: None,
             request_timeout: None,
         };
@@ -2118,14 +2122,14 @@ mod tests {
         AiRequest {
             provider: PROVIDER_NAME.to_string(),
             model: "gemini-3.6-flash".to_string(),
-            messages: vec![AiMessage {
+            messages: std::sync::Arc::new(vec![AiMessage {
                 role: AiRole::User,
                 content: "Run the tests".to_string(),
                 attachments: Vec::new(),
                 tool_calls: Vec::new(),
                 tool_result: None,
-            }],
-            tools,
+            }]),
+            tools: std::sync::Arc::new(tools),
             model_config: None,
             request_timeout: None,
         }

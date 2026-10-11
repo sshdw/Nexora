@@ -94,9 +94,15 @@ pub(crate) enum RunFrame {
 }
 
 /// Step payload of a [`RunFrame::Step`] frame: exactly the persisted
-/// `agent_steps` columns (minus the `run_id`, which the frame carries).
+/// `agent_steps` columns (minus the `run_id`, which the frame carries) —
+/// except `observation`, which is a *bounded preview* of the stored text
+/// (NEX-PERF-003), never the full output. The full sanitized text stays
+/// reachable on demand through `get_agent_step_observation(step_id)`.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct StepEventFrame {
+    /// Surrogate key of the persisted `agent_steps` row (`id`) — the
+    /// on-demand full-text fetch key.
+    pub step_id: i64,
     /// 1-based sequence, identical to `agent_steps.seq`.
     pub seq: i64,
     /// `'model_turn' | 'tool_call' | 'approval'`.
@@ -105,12 +111,95 @@ pub(crate) struct StepEventFrame {
     pub tool_name: Option<String>,
     /// Raw JSON arguments exactly as provider-supplied.
     pub arguments: Option<String>,
-    /// Model-turn content / tool output / denial or approval text.
+    /// Bounded preview of the model-turn content / tool output / denial or
+    /// approval text (sanitized, exactly as stored up to the cut).
     pub observation: Option<String>,
+    /// Byte-exact length of the full sanitized observation text;
+    /// `None` exactly when `observation` is `None`.
+    pub observation_len: Option<u64>,
+    /// Whether the preview was cut (`true` exactly when the stored text
+    /// exceeds the preview bound).
+    pub observation_truncated: bool,
     /// `'succeeded' | 'failed' | 'denied' | 'cancelled'` (tool/approval only).
     pub status: Option<String>,
     /// Step duration in milliseconds, when known.
     pub duration_ms: Option<i64>,
+}
+
+/// One `agent_steps` row as served to the UI (NEX-PERF-003): the full
+/// persisted metadata plus a *bounded preview* of the observation — never
+/// the full output. The preview is derived by the same
+/// [`super::persistence::step_preview`] the live `StepRecorded` frames use,
+/// so rehydration and the live stream agree byte-for-byte. The full
+/// sanitized text stays reachable on demand through
+/// [`get_step_observation_for`]. No migration: the preview is derived at
+/// read time, never stored.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct AgentStepListItem {
+    /// Surrogate primary key (`id`) — the on-demand full-text fetch key.
+    pub id: i64,
+    /// Owning run (`run_id`).
+    pub run_id: i64,
+    /// 1-based step sequence within the run (`seq`).
+    pub seq: i64,
+    /// Step kind (`kind`).
+    pub kind: String,
+    /// Tool name (`tool_name`), `None` for `model_turn` steps.
+    pub tool_name: Option<String>,
+    /// Raw JSON arguments exactly as provider-supplied (`arguments`).
+    pub arguments: Option<String>,
+    /// Bounded preview of the tool output / denial text / approval decision
+    /// (`observation`, sanitized as stored up to the cut).
+    pub observation: Option<String>,
+    /// Byte-exact length of the full sanitized observation text;
+    /// `None` exactly when `observation` is `None`.
+    pub observation_len: Option<u64>,
+    /// Whether the preview was cut (`true` exactly when the stored text
+    /// exceeds the preview bound).
+    pub observation_truncated: bool,
+    /// Tool call outcome (`status`).
+    pub status: Option<String>,
+    /// Step start timestamp (`started_at`).
+    pub started_at: i64,
+    /// Step duration in milliseconds (`duration_ms`).
+    pub duration_ms: Option<i64>,
+    /// Authoring permission rule (`rule_id`, M1-core).
+    pub rule_id: Option<i64>,
+    /// Session-sticky group key (`group_key`, M1-core).
+    pub group_key: Option<String>,
+    /// Who decided the step (`decided_by`, M1-core).
+    pub decided_by: Option<String>,
+}
+
+impl AgentStepListItem {
+    /// Project one persisted row onto its bounded list shape.
+    fn from_row(step: &AgentStep) -> Self {
+        let (preview, total_bytes, truncated) =
+            step.observation
+                .as_deref()
+                .map_or((None, None, false), |sanitized| {
+                    let (preview, total_bytes, truncated) =
+                        super::persistence::step_preview(sanitized);
+                    (Some(preview), Some(total_bytes), truncated)
+                });
+        Self {
+            id: step.id,
+            run_id: step.run_id,
+            seq: step.seq,
+            kind: step.kind.clone(),
+            tool_name: step.tool_name.clone(),
+            arguments: step.arguments.clone(),
+            observation: preview,
+            observation_len: total_bytes,
+            observation_truncated: truncated,
+            status: step.status.clone(),
+            started_at: step.started_at,
+            duration_ms: step.duration_ms,
+            rule_id: step.rule_id,
+            group_key: step.group_key.clone(),
+            decided_by: step.decided_by.clone(),
+        }
+    }
 }
 
 /// Terminal payload of a [`RunFrame::Finished`] frame. The status/error
@@ -138,22 +227,28 @@ impl RunFrame {
     pub(crate) fn with_event(run_id: i64, event: AgentRunEvent) -> Self {
         match event {
             AgentRunEvent::StepRecorded {
+                step_id,
                 run_id: event_run_id,
                 seq,
                 kind,
                 tool_name,
                 arguments,
                 observation,
+                observation_len,
+                observation_truncated,
                 status,
                 duration_ms,
             } => Self::Step {
                 run_id: event_run_id,
                 event: StepEventFrame {
+                    step_id,
                     seq,
                     kind,
                     tool_name,
                     arguments,
                     observation,
+                    observation_len,
+                    observation_truncated,
                     status,
                     duration_ms,
                 },
@@ -759,14 +854,44 @@ pub(crate) fn list_runs_for_conversation(
 
 /// List the steps of one run, `seq` ascending (gap-free per CF-01).
 ///
+/// NEX-PERF-003: the returned items carry a *bounded preview* of each
+/// observation plus its byte-exact total — never the full output — so
+/// rehydration stays bounded no matter how many turns a run took. The full
+/// sanitized text of any step stays reachable through
+/// [`get_step_observation_for`]. Callers that need full text for the model
+/// (action memory) read the repository directly and are unaffected.
+///
 /// # Errors
 ///
 /// Propagates [`crate::infrastructure::database::DatabaseError`].
 pub(crate) fn list_steps_for_run(
     db: &Database,
     run_id: i64,
-) -> Result<Vec<AgentStep>, crate::infrastructure::database::DatabaseError> {
-    AgentRunRepository::new(db).list_steps(run_id)
+) -> Result<Vec<AgentStepListItem>, crate::infrastructure::database::DatabaseError> {
+    Ok(AgentRunRepository::new(db)
+        .list_steps(run_id)?
+        .iter()
+        .map(AgentStepListItem::from_row)
+        .collect())
+}
+
+/// Read the full sanitized `observation` of one `agent_steps` row by its
+/// surrogate `id` (NEX-PERF-003 on-demand fetch behind the
+/// `get_agent_step_observation` command).
+///
+/// Returns `Ok(None)` when no step with `step_id` exists (the command maps
+/// this to an honest secret-free not-found error). The text is exactly what
+/// the recorder stored — sanitized at insert — so this never re-exposes
+/// pre-redaction content.
+///
+/// # Errors
+///
+/// Propagates [`crate::infrastructure::database::DatabaseError`].
+pub(crate) fn get_step_observation_for(
+    db: &Database,
+    step_id: i64,
+) -> Result<Option<String>, crate::infrastructure::database::DatabaseError> {
+    AgentRunRepository::new(db).read_step_observation(step_id)
 }
 
 #[cfg(test)]
@@ -1919,8 +2044,8 @@ mod tests {
 
     /// Entry-point proof for the new tools: a run whose scripted provider
     /// returns `edit_file` then `search_files` calls completes, the edit
-    /// lands on disk, and the (spilled) search observation is visible via
-    /// `list_steps_for_run`.
+    /// lands on disk, the spilled search observation lists as a bounded
+    /// preview, and its full text is reachable via the on-demand fetch.
     #[test]
     fn new_tools_run_end_to_end_with_spilled_observation() {
         use std::fmt::Write as _;
@@ -2006,7 +2131,21 @@ mod tests {
         assert_eq!(tool_steps[0].status.as_deref(), Some("succeeded"));
         assert_eq!(tool_steps[1].tool_name.as_deref(), Some("search_files"));
         assert_eq!(tool_steps[1].status.as_deref(), Some("succeeded"));
-        let search_observation = tool_steps[1].observation.clone().unwrap_or_default();
+        // NEX-PERF-003: the list item carries a bounded preview, never the
+        // full output; the spill notice lives in the full text behind the
+        // on-demand fetch (`get_step_observation_for`).
+        let search_item = tool_steps[1];
+        assert!(
+            search_item.observation_truncated,
+            "large search observation must list as a truncated preview"
+        );
+        assert!(
+            search_item.observation_len.unwrap_or(0) > 20 * 1024,
+            "total names the full shaped bytes"
+        );
+        let search_observation = get_step_observation_for(&db, search_item.id)
+            .expect("full-text fetch succeeds")
+            .expect("step exists");
         assert!(
             search_observation.contains("[truncated: "),
             "large search observation must carry the spill notice"
@@ -2145,6 +2284,133 @@ mod tests {
         assert!(
             SOURCE.contains(".with_run_flags("),
             "spawn_run must apply the resolved feature flags to the runner"
+        );
+    }
+
+    /// NEX-PERF-003: rehydration lists bounded previews (never full outputs)
+    /// with byte-exact totals, and the full sanitized text of any listed
+    /// step is reachable through the on-demand fetch by the listed id.
+    #[test]
+    fn list_steps_preview_bounded_and_full_text_fetchable_by_id() {
+        let (db, workspace, rx, host) = setup("preview-list");
+        let registry = Arc::new(AgentRunRegistry::default());
+        let conversation_id = ConversationService::new(&db)
+            .create("conv")
+            .expect("conversation");
+
+        // A 10KB file: the real `read_file` tool returns it whole, so the
+        // stored observation exceeds the preview bound end to end.
+        std::fs::write(workspace.join("big.txt"), "v".repeat(10_000)).expect("seed big");
+        let run_id = start_run(
+            &db,
+            Arc::clone(&registry),
+            Arc::clone(&host) as Arc<dyn AgentRunHost>,
+            Arc::new(ScriptedExecutor::new(vec![
+                Ok(AiResponse {
+                    content: String::new(),
+                    model: "test-model".to_string(),
+                    tool_calls: vec![ToolCall {
+                        id: "big-1".to_string(),
+                        name: "read_file".to_string(),
+                        arguments: r#"{"path": "big.txt"}"#.to_string(),
+                        thought_signature: None,
+                    }],
+                    usage: None,
+                }),
+                Ok(text_response("done")),
+            ])),
+            workspace,
+            request(conversation_id, "read big"),
+            crate::application::agent::approval::AutonomyMode::FullAutonomous,
+            RunPreset::Coding,
+        )
+        .expect("start");
+        let frames = collect_frames(&rx);
+        assert!(matches!(frames.last().unwrap(), RunFrame::Finished { .. }));
+
+        let items = list_steps_for_run(&db, run_id).expect("list");
+        assert!(!items.is_empty(), "steps must list");
+        for item in &items {
+            if let Some(preview) = item.observation.as_deref() {
+                assert!(
+                    preview.chars().count()
+                        <= super::super::persistence::MAX_STEP_PREVIEW_CHARS + 64,
+                    "list preview must stay bounded (seq {})",
+                    item.seq
+                );
+            }
+        }
+        // The tool step lists truncated with a byte-exact total, and the
+        // fetch behind its id recovers the full stored bytes.
+        let tool_item = items
+            .iter()
+            .find(|item| item.kind == "tool_call")
+            .expect("tool step lists");
+        assert!(
+            tool_item.observation_truncated,
+            "10KB observation must list truncated"
+        );
+        assert_eq!(tool_item.observation_len, Some(10_000));
+        assert_eq!(
+            get_step_observation_for(&db, tool_item.id)
+                .expect("fetch succeeds")
+                .as_deref(),
+            Some("v".repeat(10_000).as_str()),
+            "fetch recovers the exact stored bytes"
+        );
+        // The step frame for the same run carries the same bounded shape:
+        // preview + byte-exact total + fetch key.
+        let step_frames: Vec<_> = frames
+            .iter()
+            .filter_map(|frame| match frame {
+                RunFrame::Step { event, .. } => Some(event),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(step_frames.len(), items.len(), "one frame per listed step");
+        for (frame, item) in step_frames.iter().zip(items.iter()) {
+            assert_eq!(frame.step_id, item.id);
+            assert_eq!(frame.observation, item.observation);
+            assert_eq!(frame.observation_len, item.observation_len);
+            assert_eq!(frame.observation_truncated, item.observation_truncated);
+        }
+        let _ = std::fs::remove_dir_all(temp_workspace("preview-list"));
+    }
+
+    /// NEX-PERF-003: the on-demand fetch returns the exact stored text for a
+    /// known step id and an honest `None` for an unknown one (the command
+    /// maps `None` to a secret-free not-found error carrying only the id).
+    #[test]
+    fn step_observation_fetch_round_trips_and_unknown_id_is_none() {
+        use crate::infrastructure::repository::agent_runs::AgentRunRepository;
+        let db = crate::infrastructure::database::in_memory_database();
+        let repo = AgentRunRepository::new(&db);
+        let run_id = repo.create_run(None, "m", "supervised").expect("run");
+        let step_id = repo
+            .append_step(
+                run_id,
+                1,
+                "tool_call",
+                Some("read_file"),
+                Some("{}"),
+                Some("full stored observation"),
+                Some("succeeded"),
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("step");
+        assert_eq!(
+            get_step_observation_for(&db, step_id)
+                .expect("fetch succeeds")
+                .as_deref(),
+            Some("full stored observation")
+        );
+        assert_eq!(
+            get_step_observation_for(&db, step_id + 10_000).expect("fetch succeeds"),
+            None,
+            "unknown step id must read as None, never an error or a guess"
         );
     }
 }

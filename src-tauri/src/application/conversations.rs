@@ -249,13 +249,13 @@ impl<'a> ConversationService<'a> {
         let request = AiRequest {
             provider: provider.to_string(),
             model: model.to_string(),
-            messages: self.ai_history(
+            messages: std::sync::Arc::new(self.ai_history(
                 conversation_id,
                 provider,
                 user_message_id,
                 &current_attachments,
-            )?,
-            tools: Vec::new(),
+            )?),
+            tools: std::sync::Arc::new(Vec::new()),
             // Bound the single blocking POST so a stalled provider surfaces
             // the existing network/timeout error instead of hanging the send.
             // This reuses the agent runner's default (120s); the agent path

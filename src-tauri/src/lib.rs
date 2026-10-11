@@ -135,6 +135,7 @@ pub fn run() {
             commands::agent::resume_agent_run,
             commands::agent::list_agent_runs,
             commands::agent::list_agent_steps,
+            commands::agent::get_agent_step_observation,
             commands::agent::inspect_run,
             commands::agent::spend_dashboard,
             commands::agent::activity_feed,

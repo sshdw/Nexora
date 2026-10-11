@@ -76,7 +76,7 @@ export default function ConversationView({
     remove,
     refresh: refreshAttachments,
   } = useAttachments(conversationId);
-  const { runs, reload: reloadAgent } = useAgentRun(conversationId);
+  const { runs, reload: reloadAgent, expandStep, collapseStep } = useAgentRun(conversationId);
   const [agentMode, setAgentMode] = useState<boolean>(false);
   const [viewMode, setViewMode] = useState<"chat" | "context">("chat");
   const [autonomyMode, setAutonomyMode] = useState<AutonomyMode>("semi_autonomous");
@@ -326,6 +326,8 @@ export default function ConversationView({
                   onContinue={() => void handleAgentContinue(item.run.run_id)}
                   onPause={() => void handleAgentPause(item.run.run_id)}
                   onResume={() => void handleAgentResume(item.run.run_id)}
+                  onExpandStep={(seq) => void expandStep(item.run.run_id, seq)}
+                  onCollapseStep={(seq) => collapseStep(item.run.run_id, seq)}
                 />
               );
             }

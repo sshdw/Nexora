@@ -159,6 +159,8 @@ interface MockAgentStep {
   tool_name: string | null;
   arguments: string | null;
   observation: string | null;
+  observation_len: number | null;
+  observation_truncated: boolean;
   status: string | null;
   started_at: number;
   duration_ms: number | null;
@@ -166,6 +168,13 @@ interface MockAgentStep {
 const agentRuns: MockAgentRun[] = [];
 const agentSteps = new Map<number, MockAgentStep[]>();
 let mockNextStepId = 1;
+
+/** DEV-ONLY byte-length mirror of the backend preview contract
+ * (NEX-PERF-003): mock observations are short, so every mock step lists
+ * untruncated with its exact byte total. */
+function mockObsLen(observation: string | null): number | null {
+  return observation === null ? null : new TextEncoder().encode(observation).length;
+}
 
 type ActiveMockRun = {
   status: string;
@@ -551,21 +560,28 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
       const appendStep = (kind: string, tool_name: string | null, argsStr: string | null, observation: string | null, status: string | null, duration_ms: number | null) => {
         const steps = agentSteps.get(runId)!;
         const seq = steps.length + 1;
+        const stepId = mockNextStepId++;
+        // DEV-ONLY mirror of the backend preview contract (NEX-PERF-003):
+        // the frame and the listing carry the preview; the full text is
+        // served by the `get_agent_step_observation` case below.
+        const observation_len = observation === null ? null : new TextEncoder().encode(observation).length;
         const step: MockAgentStep = {
-          id: mockNextStepId++,
+          id: stepId,
           run_id: runId,
           seq,
           kind,
           tool_name,
           arguments: argsStr,
           observation,
+          observation_len,
+          observation_truncated: false,
           status,
           started_at: now(),
           duration_ms,
         };
         steps.push(step);
         run.total_steps = steps.length;
-        emitAgentEvent({ type: "step", run_id: runId, event: { seq, kind, tool_name, arguments: argsStr, observation, status, duration_ms } });
+        emitAgentEvent({ type: "step", run_id: runId, event: { step_id: stepId, seq, kind, tool_name, arguments: argsStr, observation, observation_len, observation_truncated: false, status, duration_ms } });
       };
 
       const finishRun = (status: string, finalContent: string | null, error: string | null) => {
@@ -660,8 +676,9 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
         // record cancelled approval step
         const steps = agentSteps.get(runId)!;
         const seq = steps.length + 1;
-        steps.push({ id: mockNextStepId++, run_id: runId, seq, kind: "approval", tool_name: active.pendingApproval.name, arguments: active.pendingApproval.arguments, observation: "cancelled by the user", status: "cancelled", started_at: now(), duration_ms: null });
-        emitAgentEvent({ type: "step", run_id: runId, event: { seq, kind: "approval", tool_name: active.pendingApproval.name, arguments: active.pendingApproval.arguments, observation: "cancelled by the user", status: "cancelled", duration_ms: null } });
+        const sid = mockNextStepId++;
+        steps.push({ id: sid, run_id: runId, seq, kind: "approval", tool_name: active.pendingApproval.name, arguments: active.pendingApproval.arguments, observation: "cancelled by the user", observation_len: mockObsLen("cancelled by the user"), observation_truncated: false, status: "cancelled", started_at: now(), duration_ms: null });
+        emitAgentEvent({ type: "step", run_id: runId, event: { step_id: sid, seq, kind: "approval", tool_name: active.pendingApproval.name, arguments: active.pendingApproval.arguments, observation: "cancelled by the user", observation_len: mockObsLen("cancelled by the user"), observation_truncated: false, status: "cancelled", duration_ms: null } });
         active.pendingApproval = null;
         emitAgentEvent({ type: "governance", run_id: runId, event: { type: "cancelled" } });
       } else {
@@ -691,8 +708,10 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
       emitAgentEvent({ type: "governance", run_id: runId, event: { type: "approval_resolved", call_id: callId, approved } });
       const steps = agentSteps.get(runId)!;
       const seq = steps.length + 1;
-      steps.push({ id: mockNextStepId++, run_id: runId, seq, kind: "approval", tool_name: pending.name, arguments: pending.arguments, observation: approved ? "approved" : "denied", status: approved ? "succeeded" : "denied", started_at: now(), duration_ms: null });
-      emitAgentEvent({ type: "step", run_id: runId, event: { seq, kind: "approval", tool_name: pending.name, arguments: pending.arguments, observation: approved ? "approved" : "denied", status: approved ? "succeeded" : "denied", duration_ms: null } });
+      const approvalText = approved ? "approved" : "denied";
+      const sid = mockNextStepId++;
+      steps.push({ id: sid, run_id: runId, seq, kind: "approval", tool_name: pending.name, arguments: pending.arguments, observation: approvalText, observation_len: mockObsLen(approvalText), observation_truncated: false, status: approved ? "succeeded" : "denied", started_at: now(), duration_ms: null });
+      emitAgentEvent({ type: "step", run_id: runId, event: { step_id: sid, seq, kind: "approval", tool_name: pending.name, arguments: pending.arguments, observation: approvalText, observation_len: mockObsLen(approvalText), observation_truncated: false, status: approved ? "succeeded" : "denied", duration_ms: null } });
       const run = agentRuns.find((r) => r.id === runId);
       const convId = run?.conversation_id ?? 0;
       const content = messages.find((m) => m.conversation_id === convId && m.role === "user")?.content ?? "request";
@@ -701,14 +720,17 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
           if (!activeRuns.has(runId)) return;
           const seq2 = (agentSteps.get(runId)!.length) + 1;
           const diff = "--- a/output.txt\n+++ b/output.txt\n@@ -0,0 +1,2 @@\n+hello world\n+second line\n";
-          agentSteps.get(runId)!.push({ id: mockNextStepId++, run_id: runId, seq: seq2, kind: "tool_call", tool_name: "write_file", arguments: pending.arguments, observation: diff, status: "succeeded", started_at: now(), duration_ms: 12 });
-          emitAgentEvent({ type: "step", run_id: runId, event: { seq: seq2, kind: "tool_call", tool_name: "write_file", arguments: pending.arguments, observation: diff, status: "succeeded", duration_ms: 12 } });
+          const sid2 = mockNextStepId++;
+          agentSteps.get(runId)!.push({ id: sid2, run_id: runId, seq: seq2, kind: "tool_call", tool_name: "write_file", arguments: pending.arguments, observation: diff, observation_len: mockObsLen(diff), observation_truncated: false, status: "succeeded", started_at: now(), duration_ms: 12 });
+          emitAgentEvent({ type: "step", run_id: runId, event: { step_id: sid2, seq: seq2, kind: "tool_call", tool_name: "write_file", arguments: pending.arguments, observation: diff, observation_len: mockObsLen(diff), observation_truncated: false, status: "succeeded", duration_ms: 12 } });
         }, 400) as unknown as number);
         active.timers.push(window.setTimeout(() => {
           if (!activeRuns.has(runId)) return;
           const seq3 = (agentSteps.get(runId)!.length) + 1;
-          agentSteps.get(runId)!.push({ id: mockNextStepId++, run_id: runId, seq: seq3, kind: "model_turn", tool_name: null, arguments: null, observation: `Mock agent reply to “${content}”.`, status: null, started_at: now(), duration_ms: 80 });
-          emitAgentEvent({ type: "step", run_id: runId, event: { seq: seq3, kind: "model_turn", tool_name: null, arguments: null, observation: `Mock agent reply to “${content}”.`, status: null, duration_ms: 80 } });
+          const reply = `Mock agent reply to “${content}”.`;
+          const sid3 = mockNextStepId++;
+          agentSteps.get(runId)!.push({ id: sid3, run_id: runId, seq: seq3, kind: "model_turn", tool_name: null, arguments: null, observation: reply, observation_len: mockObsLen(reply), observation_truncated: false, status: null, started_at: now(), duration_ms: 80 });
+          emitAgentEvent({ type: "step", run_id: runId, event: { step_id: sid3, seq: seq3, kind: "model_turn", tool_name: null, arguments: null, observation: reply, observation_len: mockObsLen(reply), observation_truncated: false, status: null, duration_ms: 80 } });
           if (run) { run.status = "completed"; run.finished_at = now(); run.final_content = `Mock agent reply to “${content}”.`; }
           activeRuns.delete(runId);
           messages.push({ id: nextMessageId++, conversation_id: convId, role: "assistant", content: `Mock agent reply to “${content}”.`, provider_id: 1, model_name: run?.model ?? "test", created_at: now() });
@@ -719,8 +741,9 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
         active.timers.push(window.setTimeout(() => {
           if (!activeRuns.has(runId)) return;
           const seq2 = (agentSteps.get(runId)!.length) + 1;
-          agentSteps.get(runId)!.push({ id: mockNextStepId++, run_id: runId, seq: seq2, kind: "model_turn", tool_name: null, arguments: null, observation: `Request denied.`, status: null, started_at: now(), duration_ms: 80 });
-          emitAgentEvent({ type: "step", run_id: runId, event: { seq: seq2, kind: "model_turn", tool_name: null, arguments: null, observation: `Request denied.`, status: null, duration_ms: 80 } });
+          const sid2 = mockNextStepId++;
+          agentSteps.get(runId)!.push({ id: sid2, run_id: runId, seq: seq2, kind: "model_turn", tool_name: null, arguments: null, observation: `Request denied.`, observation_len: mockObsLen(`Request denied.`), observation_truncated: false, status: null, started_at: now(), duration_ms: 80 });
+          emitAgentEvent({ type: "step", run_id: runId, event: { step_id: sid2, seq: seq2, kind: "model_turn", tool_name: null, arguments: null, observation: `Request denied.`, observation_len: mockObsLen(`Request denied.`), observation_truncated: false, status: null, duration_ms: 80 } });
           if (run) { run.status = "completed"; run.finished_at = now(); run.final_content = `Request denied.`; }
           activeRuns.delete(runId);
           emitAgentEvent({ type: "finished", run_id: runId, event: { conversation_id: convId, status: "completed", final_content: `Request denied.`, error: null } });
@@ -744,8 +767,9 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
           if (!activeRuns.has(runId)) return;
           const steps = agentSteps.get(runId)!;
           const seq = steps.length + 1;
-          steps.push({ id: mockNextStepId++, run_id: runId, seq, kind: "model_turn", tool_name: null, arguments: null, observation: "Continued after budget.", status: null, started_at: now(), duration_ms: 80 });
-          emitAgentEvent({ type: "step", run_id: runId, event: { seq, kind: "model_turn", tool_name: null, arguments: null, observation: "Continued after budget.", status: null, duration_ms: 80 } });
+          const sid = mockNextStepId++;
+          steps.push({ id: sid, run_id: runId, seq, kind: "model_turn", tool_name: null, arguments: null, observation: "Continued after budget.", observation_len: mockObsLen("Continued after budget."), observation_truncated: false, status: null, started_at: now(), duration_ms: 80 });
+          emitAgentEvent({ type: "step", run_id: runId, event: { step_id: sid, seq, kind: "model_turn", tool_name: null, arguments: null, observation: "Continued after budget.", observation_len: mockObsLen("Continued after budget."), observation_truncated: false, status: null, duration_ms: 80 } });
           if (run) { run.status = "completed"; run.finished_at = now(); run.final_content = "Continued after budget."; }
           activeRuns.delete(runId);
           emitAgentEvent({ type: "finished", run_id: runId, event: { conversation_id: run?.conversation_id ?? 0, status: "completed", final_content: "Continued after budget.", error: null } });
@@ -843,6 +867,14 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
       const runId = Number(requireArg(args, "list_agent_steps", "runId"));
       const steps = agentSteps.get(runId) ?? [];
       return [...steps].sort((a, b) => a.seq - b.seq);
+    }
+    case "get_agent_step_observation": {
+      const stepId = Number(requireArg(args, "get_agent_step_observation", "stepId"));
+      for (const steps of agentSteps.values()) {
+        const found = steps.find((s) => s.id === stepId);
+        if (found) return found.observation ?? "";
+      }
+      throw { kind: "notFound", message: `no agent step with id ${stepId}` };
     }
     case "activity_feed": {
       // Read-only aggregate mirror of the backend `activity_feed` command:
