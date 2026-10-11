@@ -107,23 +107,44 @@ pub(crate) async fn update_check(app: AppHandle) -> Result<UpdateCheck, CommandE
 /// INTO`) under the app-data `backups` directory. The user presses the
 /// button explicitly — there is no silent or scheduled write; the response
 /// carries the file name (never the full path) plus size.
+///
+/// Runs on the runtime blocking pool like `send_message`: the snapshot
+/// copies the whole database file, so a synchronous command would run on
+/// the main thread and freeze the window (NEX-IPC-001).
 #[tauri::command]
-pub(crate) fn snapshot_database(
-    app: AppHandle,
-    db: State<'_, Database>,
-) -> Result<SnapshotInfo, CommandError> {
-    let backup_dir = app
-        .path()
-        .app_data_dir()
-        .map(|dir| dir.join(BACKUP_DIR_NAME))
-        .map_err(|err| {
-            log::error!("snapshot_database app-data dir failed: {err}");
-            CommandError::new(
+pub(crate) async fn snapshot_database(app: AppHandle) -> Result<SnapshotInfo, CommandError> {
+    // Owned handle so the app-data dir and managed state can be reached
+    // from the blocking thread (borrowed `State<'_, _>` cannot cross into
+    // `'static` work).
+    let handle = app.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let backup_dir = handle
+            .path()
+            .app_data_dir()
+            .map(|dir| dir.join(BACKUP_DIR_NAME))
+            .map_err(|err| {
+                log::error!("snapshot_database app-data dir failed: {err}");
+                CommandError::new(
+                    ErrorKind::Io,
+                    "the pre-update snapshot could not be written",
+                )
+            })?;
+        let db = handle.state::<Database>();
+        crate::application::system::snapshot_to(db.inner(), &backup_dir).map_err(CommandError::from)
+    })
+    .await;
+    match outcome {
+        Ok(result) => result,
+        Err(err) => {
+            // Only reachable if the blocking task panicked: report a safe,
+            // classified failure instead of leaving the promise dangling.
+            log::error!("snapshot_database blocking task failed: {err}");
+            Err(CommandError::new(
                 ErrorKind::Io,
                 "the pre-update snapshot could not be written",
-            )
-        })?;
-    crate::application::system::snapshot_to(db.inner(), &backup_dir).map_err(CommandError::from)
+            ))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -160,6 +181,59 @@ mod tests {
             "lock detail must never leak: {}",
             mapped.message
         );
+    }
+
+    /// Static wiring check: `snapshot_database` is declared `async` and
+    /// moves the whole-file copy onto the runtime blocking pool (NEX-IPC-001),
+    /// like `send_message`. `diagnostics_bundle` stays synchronous: one file
+    /// timestamp plus indexed counts, no bulk IO.
+    #[test]
+    fn snapshot_database_runs_on_the_blocking_pool() {
+        assert!(
+            SOURCE.contains("async fn snapshot_database("),
+            "snapshot_database must be an async command so it never runs on the main thread"
+        );
+        assert!(
+            SOURCE.contains("spawn_blocking"),
+            "snapshot_database must move the file copy onto the blocking pool"
+        );
+    }
+
+    /// Boundary smoke: the exact body the command moves onto the blocking
+    /// pool completes there — an in-memory database snapshots into a scratch
+    /// directory and the copy exists on disk with a matching name.
+    #[test]
+    fn snapshot_body_completes_through_the_async_boundary() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use crate::infrastructure::database::in_memory_database;
+
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let id = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let backup_dir = std::env::temp_dir().join(format!("nexora-snapshot-cmd-test-{id}"));
+        std::fs::create_dir_all(&backup_dir).expect("scratch backup dir creates");
+
+        let db = in_memory_database();
+        let info = tauri::async_runtime::block_on(async {
+            let db = db.clone();
+            let backup_dir = backup_dir.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                crate::application::system::snapshot_to(&db, &backup_dir)
+            })
+            .await
+            .expect("blocking task joins without panicking")
+        })
+        .expect("snapshot succeeds through the boundary");
+        assert!(
+            info.file_name.starts_with("nexora-backup-"),
+            "the snapshot carries the file name, got {:?}",
+            info.file_name
+        );
+        assert!(
+            backup_dir.join(&info.file_name).exists(),
+            "the snapshot copy exists on disk"
+        );
+        let _ = std::fs::remove_dir_all(&backup_dir);
     }
 
     /// Static wiring check: the system commands stay thin translation —
