@@ -31,10 +31,20 @@ pub(crate) struct ActiveAgentRun {
 /// of the in-flight run, plus the per-conversation claim set that enforces
 /// DP-4 synchronously (a second `start` for the same conversation is
 /// rejected even before the run thread registers its entry).
+///
+/// NEX-TASK-002: the registry additionally retains the run + forwarder
+/// thread [`JoinHandle`](std::thread::JoinHandle)s so orderly shutdown can
+/// cancel every active run and join its threads with a bounded deadline
+/// instead of dropping the handles. Handles are *not* removed by
+/// [`Self::release`]: the run thread calls `release` on its own exit path
+/// and must never take its own handle (shutdown would lose it). Finished
+/// handles are reaped (joined + removed) by [`Self::reap_finished`], called
+/// on every [`Self::track_threads`] and by the shutdown join.
 #[derive(Debug, Default)]
 pub(crate) struct AgentRunRegistry {
     runs: Mutex<HashMap<i64, ActiveAgentRun>>,
     claimed_conversations: Mutex<HashSet<i64>>,
+    threads: Mutex<HashMap<i64, Vec<std::thread::JoinHandle<()>>>>,
 }
 
 /// Outcome of a registry approval resolution.
@@ -79,6 +89,10 @@ impl AgentRunRegistry {
     /// conversation. Called by the run thread on every exit path, so a
     /// finished run is immediately reusable for a new run in the same
     /// conversation.
+    ///
+    /// NEX-TASK-002: the retained thread handles are deliberately *not*
+    /// removed here (see the struct docs); [`Self::reap_finished`] and
+    /// [`Self::join_threads_until`] own them.
     pub(crate) fn release(&self, run_id: i64) {
         let entry = self
             .runs
@@ -109,6 +123,118 @@ impl AgentRunRegistry {
             }
             None => false,
         }
+    }
+
+    /// Cancel a run by application shutdown (NEX-TASK-002). Wakes every
+    /// parked wait exactly like [`Self::cancel`], and additionally marks the
+    /// shutdown origin on the shared token so a parked approval records the
+    /// honest shutdown vocabulary instead of the user-cancel text.
+    ///
+    /// Returns `false` when the run is not active.
+    #[must_use]
+    pub(crate) fn shutdown_cancel(&self, run_id: i64) -> bool {
+        match self
+            .runs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&run_id)
+        {
+            Some(entry) => {
+                entry.control.shutdown();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Snapshot the ids of all currently active runs (orderly-shutdown
+    /// seam: cancel-then-join iterates a snapshot so per-run completion
+    /// during the sweep cannot disturb the iteration).
+    #[must_use]
+    pub(crate) fn active_run_ids(&self) -> Vec<i64> {
+        self.runs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keys()
+            .copied()
+            .collect()
+    }
+
+    /// Cancel every active run by application shutdown (NEX-TASK-002; see
+    /// [`Self::shutdown_cancel`]). Returns how many runs were cancelled.
+    pub(crate) fn shutdown_cancel_all(&self) -> usize {
+        self.active_run_ids()
+            .iter()
+            .filter(|run_id| self.shutdown_cancel(**run_id))
+            .count()
+    }
+
+    /// Retain the spawned thread handles for `run_id` (NEX-TASK-002): the
+    /// run thread plus the forwarder thread. Finished handles of *other*
+    /// runs are reaped first so the map stays bounded by the live set.
+    pub(crate) fn track_threads(&self, run_id: i64, handles: Vec<std::thread::JoinHandle<()>>) {
+        self.reap_finished();
+        self.threads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(run_id, handles);
+    }
+
+    /// Join and remove every already-finished retained handle (non-blocking).
+    /// Returns how many handles are still live.
+    pub(crate) fn reap_finished(&self) -> usize {
+        let mut threads = self
+            .threads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let finished: Vec<i64> = threads
+            .iter()
+            .filter_map(|(run_id, handles)| {
+                handles
+                    .iter()
+                    .all(std::thread::JoinHandle::is_finished)
+                    .then_some(*run_id)
+            })
+            .collect();
+        for run_id in finished {
+            if let Some(handles) = threads.remove(&run_id) {
+                for handle in handles {
+                    if handle.join().is_err() {
+                        // A panicked run thread: its registry entry was never
+                        // released and its row stays `running` — the startup
+                        // sweep (crash fallback) reconciles it. Never panic
+                        // the reaper for a dead thread.
+                        log::warn!("run {run_id}: retained thread panicked");
+                    }
+                }
+            }
+        }
+        threads.values().map(Vec::len).sum()
+    }
+
+    /// Join retained thread handles until none remain or `deadline` passes
+    /// (NEX-TASK-002 bounded quit: never hangs the shutdown path). Returns
+    /// how many handles are still unjoined past the deadline; the process
+    /// exit reclaims those threads.
+    pub(crate) fn join_threads_until(&self, deadline: std::time::Instant) -> usize {
+        loop {
+            let live = self.reap_finished();
+            if live == 0 || std::time::Instant::now() >= deadline {
+                return live;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    /// How many thread handles are currently retained (test seam).
+    #[must_use]
+    pub(crate) fn tracked_thread_count(&self) -> usize {
+        self.threads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .map(Vec::len)
+            .sum()
     }
 
     /// Resolve a parked approval. See [`ResolveOutcome`] for the outcomes.

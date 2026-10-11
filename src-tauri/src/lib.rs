@@ -241,6 +241,33 @@ pub fn run() {
 
             Ok(())
         })
+        .on_window_event(|window, event| {
+            // NEX-TASK-002 orderly shutdown: on window close, cancel every
+            // active run/task/terminal session and join the retained threads
+            // with a short bounded deadline — then the quit proceeds whether
+            // or not every thread unwound (never `prevent_close`, never hang
+            // the quit path). Each thread finalizes its own persisted rows on
+            // the cancel unwind, so an orderly quit leaves no `running` rows
+            // behind; the startup sweep stays the crash fallback.
+            if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+                let app = window.app_handle();
+                let summary = crate::application::agent::shutdown::shutdown_managed(
+                    &app.state::<std::sync::Arc<
+                        crate::application::agent::service::AgentRunRegistry,
+                    >>(),
+                    &app.state::<std::sync::Arc<crate::application::agent::tasks::TaskRegistry>>(),
+                    &app.state::<std::sync::Arc<crate::application::terminal::TerminalRegistry>>(),
+                );
+                log::info!(
+                    "orderly shutdown: {} run(s) + {} task(s) cancelled (terminal: {}), {} run + {} task handle(s) unjoined past the deadline",
+                    summary.runs_cancelled,
+                    summary.tasks_cancelled,
+                    summary.terminal_cancelled,
+                    summary.runs_unjoined,
+                    summary.tasks_unjoined,
+                );
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

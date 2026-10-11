@@ -271,9 +271,18 @@ pub(crate) struct ActiveTaskRun {
 /// Active-task registry: managed Tauri state mapping `task_id` to the
 /// handles of the in-flight autonomous loop. Mirrors the agent
 /// [`AgentRunRegistry`] contract: at most one active loop per task.
+///
+/// NEX-TASK-002: the registry additionally retains the loop thread
+/// [`JoinHandle`](std::thread::JoinHandle) so orderly shutdown can cancel
+/// every active loop and join its thread with a bounded deadline. Like the
+/// run registry, the handle is *not* removed by [`Self::release`] (the loop
+/// thread calls it on its own exit path); finished handles are reaped by
+/// [`Self::reap_finished`], called on every [`Self::track_thread`] and by
+/// the shutdown join.
 #[derive(Debug, Default)]
 pub(crate) struct TaskRegistry {
     runs: Mutex<HashMap<i64, Arc<ActiveTaskRun>>>,
+    threads: Mutex<HashMap<i64, std::thread::JoinHandle<()>>>,
 }
 
 impl TaskRegistry {
@@ -289,6 +298,10 @@ impl TaskRegistry {
     }
 
     /// Release a terminated loop (every exit path of the loop thread).
+    ///
+    /// NEX-TASK-002: the retained thread handle is deliberately *not*
+    /// removed here (see the struct docs); [`Self::reap_finished`] and
+    /// [`Self::join_threads_until`] own it.
     pub(crate) fn release(&self, task_id: i64) {
         self.runs
             .lock()
@@ -316,6 +329,88 @@ impl TaskRegistry {
         entry.cancel.store(true, Ordering::SeqCst);
         let run_id = *entry.run_id.lock().unwrap_or_else(PoisonError::into_inner);
         (true, run_id)
+    }
+
+    /// Snapshot the ids of all currently active loops (orderly-shutdown
+    /// seam; see [`AgentRunRegistry::active_run_ids`](super::registry::AgentRunRegistry::active_run_ids)).
+    #[must_use]
+    pub(crate) fn active_task_ids(&self) -> Vec<i64> {
+        self.runs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .keys()
+            .copied()
+            .collect()
+    }
+
+    /// Request shutdown cancellation of every active loop (NEX-TASK-002):
+    /// sets each loop's flag and snapshots its in-flight agent `run_id`
+    /// (if any) so the caller can shutdown-cancel it through the agent
+    /// registry's honest shutdown path. Returns one `(task_id, run_id)`
+    /// pair per loop that was active.
+    pub(crate) fn request_shutdown_cancel_all(&self) -> Vec<(i64, Option<i64>)> {
+        self.active_task_ids()
+            .iter()
+            .filter_map(|task_id| {
+                let (active, run_id) = self.request_cancel(*task_id);
+                active.then_some((*task_id, run_id))
+            })
+            .collect()
+    }
+
+    /// Retain the spawned loop-thread handle for `task_id` (NEX-TASK-002).
+    /// Finished handles of *other* tasks are reaped first so the map stays
+    /// bounded by the live set.
+    pub(crate) fn track_thread(&self, task_id: i64, handle: std::thread::JoinHandle<()>) {
+        self.reap_finished();
+        self.threads
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(task_id, handle);
+    }
+
+    /// Join and remove every already-finished retained handle (non-blocking).
+    /// Returns how many handles are still live.
+    pub(crate) fn reap_finished(&self) -> usize {
+        let mut threads = self.threads.lock().unwrap_or_else(PoisonError::into_inner);
+        let finished: Vec<i64> = threads
+            .iter()
+            .filter_map(|(task_id, handle)| handle.is_finished().then_some(*task_id))
+            .collect();
+        for task_id in finished {
+            if let Some(handle) = threads.remove(&task_id) {
+                if handle.join().is_err() {
+                    // A panicked loop thread: its registry entry was never
+                    // released and its row stays `running` — the startup
+                    // sweep (crash fallback) reconciles it. Never panic the
+                    // reaper for a dead thread.
+                    log::warn!("task {task_id}: retained thread panicked");
+                }
+            }
+        }
+        threads.len()
+    }
+
+    /// Join retained loop-thread handles until none remain or `deadline`
+    /// passes (NEX-TASK-002 bounded quit: never hangs the shutdown path).
+    /// Returns how many handles are still unjoined past the deadline.
+    pub(crate) fn join_threads_until(&self, deadline: Instant) -> usize {
+        loop {
+            let live = self.reap_finished();
+            if live == 0 || Instant::now() >= deadline {
+                return live;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// How many loop-thread handles are currently retained (test seam).
+    #[must_use]
+    pub(crate) fn tracked_thread_count(&self) -> usize {
+        self.threads
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
     }
 
     /// Whether cancellation was requested for `task_id` (false when no loop
@@ -888,7 +983,8 @@ pub(crate) fn spawn_task_run_with_deadline(
 
     let thread_db = db.clone();
     let release_registry = Arc::clone(&task_registry);
-    std::thread::Builder::new()
+    let track_registry = Arc::clone(&release_registry);
+    let handle = std::thread::Builder::new()
         .name(format!("agent-task-{task_id}"))
         .spawn(move || {
             run_task_loop_with_deadline(
@@ -913,6 +1009,8 @@ pub(crate) fn spawn_task_run_with_deadline(
                 message: "the task run could not be started".to_string(),
             }
         })?;
+    // NEX-TASK-002: retain the loop handle so orderly shutdown can join it.
+    track_registry.track_thread(task_id, handle);
     Ok(())
 }
 

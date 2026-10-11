@@ -93,6 +93,7 @@ pub mod roles;
 pub mod runner;
 pub mod self_audit;
 pub mod service;
+pub mod shutdown;
 pub mod snapshots;
 pub mod spend;
 #[cfg(test)]
