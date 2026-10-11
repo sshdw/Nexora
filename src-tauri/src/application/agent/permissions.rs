@@ -18,11 +18,21 @@
 //!    then `priority ASC`, `id ASC`. Equal-specificity + equal-priority ties
 //!    prefer Deny.
 //! 3. No match: fall back to the autonomy ladder (`ApprovalGate`).
-//! 4. Mode overrides (applied by the runner, not the store): `Supervised`
-//!    ignores `Allow` rows; `FullAutonomous` still enforces `Deny`, treats
-//!    `Ask` as `Allow` — except for `execute_command`, whose `Ask` never
-//!    collapses and always parks (NEX-SEC-001 shell deny-floor). Unknown
-//!    tools never reach the store (dispatch rejects them).
+//! 4. Mode overrides (applied by dispatch, not the store — NEX-AGENT-012):
+//!    `Allow` authorizes execution only where the ladder already
+//!    auto-executes (a stored rule never upgrades autonomy: where the ladder
+//!    parks, the call parks and the eventual approval step records the
+//!    considered rule via `user_with_rule`); `Ask` always parks for an
+//!    explicit decision in every mode; `Deny` always denies. The shell
+//!    (`execute_command`) never auto-executes via a rule (NEX-SEC-001
+//!    deny-floor). Unknown tools never reach the store (dispatch rejects
+//!    them).
+//!
+//! Group persistence (NEX-AGENT-023): a group-scope approval records a
+//! session-sticky verdict only. Persisting an `allow` rule additionally
+//! requires [`confirm_group_scope`] — the caller must echo the exact pending
+//! group scope back, proving the whitelisted scope was shown, and the shell
+//! never persists.
 
 use rusqlite::params;
 use serde::Serialize;
@@ -449,6 +459,124 @@ pub(crate) fn delete_rule(db: &Database, id: i64) -> Result<bool, DatabaseError>
     Ok(removed > 0)
 }
 
+// ---------------------------------------------------------------------------
+// Group-scope persistence with explicit scope confirmation (NEX-AGENT-023)
+// ---------------------------------------------------------------------------
+
+/// A group scope the user explicitly confirmed for persistent whitelisting:
+/// the exact pending group key, decomposed into the rule columns to persist.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ConfirmedGroupScope {
+    /// Rule `preset` derived from the group key (`coding`/`document`).
+    pub preset: String,
+    /// Rule `tool_pattern` (the pending call's tool; never the shell).
+    pub tool_name: String,
+    /// Rule `path_pattern` (`*` or the group directory).
+    pub path_pattern: String,
+    /// The exact confirmed scope (equals the pending group key).
+    pub group_key: String,
+}
+
+/// Why a group-scope confirmation was rejected. Carries only fixed
+/// vocabulary plus the server-derived expected scope (already exposed on
+/// every `ApprovalRequested` event) — never caller input, never secrets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum GroupScopeError {
+    /// The pending call carries no group key (nothing to whitelist).
+    NoPendingGroup,
+    /// The confirmation echo differs from the pending group key.
+    ScopeMismatch {
+        /// The exact scope the confirmation must echo.
+        expected: String,
+    },
+    /// Shell groups never persist (NEX-SEC-001 deny-floor, defence in depth
+    /// alongside the insert guard).
+    ShellNeverPersists,
+}
+
+/// Extract the rule `preset` from a `preset:tool:path` group key (T5: group
+/// keys are preset-scoped, so a document run's group approval persists a
+/// document-scoped rule). Unknown shapes fall back to `"coding"`, the
+/// pre-T5 behavior.
+#[must_use]
+pub(crate) fn group_preset(group_key: Option<&str>) -> &str {
+    match group_key.and_then(|key| key.split(':').next()) {
+        Some("document") => "document",
+        _ => "coding",
+    }
+}
+
+/// Extract the rule `path_pattern` from a `preset:tool:path` group key.
+/// `*` path groups persist as `*` (match-any); otherwise the parent dir.
+#[must_use]
+pub(crate) fn group_path_pattern(group_key: Option<&str>) -> Option<String> {
+    let key = group_key?;
+    let mut parts = key.splitn(3, ':');
+    let _preset = parts.next()?;
+    let _tool = parts.next()?;
+    let path = parts.next()?;
+    if path == "*" || path.is_empty() {
+        Some("*".to_string())
+    } else {
+        Some(path.to_string())
+    }
+}
+
+/// Confirm a group scope for persistent whitelisting (NEX-AGENT-023).
+///
+/// The caller must echo the pending call's exact group key (`confirmed`):
+/// a generic "approve group" intent is not enough to whitelist a scope —
+/// only an explicit confirmation naming the scope persists. The echo proves
+/// the whitelisted scope was shown to the user. Mismatches fail closed with
+/// the expected scope (the park stays intact; the caller resolves nothing).
+pub(crate) fn confirm_group_scope(
+    pending_tool: &str,
+    pending_group_key: Option<&str>,
+    confirmed: &str,
+) -> Result<ConfirmedGroupScope, GroupScopeError> {
+    let group = pending_group_key.ok_or(GroupScopeError::NoPendingGroup)?;
+    if confirmed != group {
+        return Err(GroupScopeError::ScopeMismatch {
+            expected: group.to_string(),
+        });
+    }
+    if pending_tool == "execute_command" || pending_tool == "*" {
+        return Err(GroupScopeError::ShellNeverPersists);
+    }
+    let Some(path_pattern) = group_path_pattern(Some(group)) else {
+        return Err(GroupScopeError::ScopeMismatch {
+            expected: group.to_string(),
+        });
+    };
+    Ok(ConfirmedGroupScope {
+        preset: group_preset(Some(group)).to_string(),
+        tool_name: pending_tool.to_string(),
+        path_pattern,
+        group_key: group.to_string(),
+    })
+}
+
+/// Best-effort insert of a confirmed group-allow rule (`effect='allow'`,
+/// `priority=200`). Returns `true` when the row persisted. Failures (e.g. a
+/// duplicate row) report `false`: the session-sticky verdict already governs
+/// this run. Shell scopes never persist (defence in depth alongside
+/// [`confirm_group_scope`]).
+#[must_use]
+pub(crate) fn insert_group_allow_rule(db: &Database, scope: &ConfirmedGroupScope) -> bool {
+    if scope.tool_name == "execute_command" || scope.tool_name == "*" {
+        return false;
+    }
+    insert_rule(
+        db,
+        &scope.preset,
+        &scope.tool_name,
+        Some(scope.path_pattern.as_str()),
+        RuleEffect::Allow,
+        200,
+    )
+    .is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -846,5 +974,144 @@ mod tests {
         assert!(store
             .decide("coding", "read_file", Some("public/x"), RiskClass::ReadOnly)
             .is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // NEX-AGENT-023: explicit scope confirmation for group persistence
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn group_scope_confirm_requires_exact_echo() {
+        // Exact echo of the pending group key confirms the scope.
+        let confirmed = confirm_group_scope(
+            "write_file",
+            Some("coding:write_file:docs"),
+            "coding:write_file:docs",
+        )
+        .expect("exact echo confirms");
+        assert_eq!(
+            confirmed,
+            ConfirmedGroupScope {
+                preset: "coding".to_string(),
+                tool_name: "write_file".to_string(),
+                path_pattern: "docs".to_string(),
+                group_key: "coding:write_file:docs".to_string(),
+            }
+        );
+        // A bare "approve group" intent (or any non-matching string) never
+        // confirms: the mismatch names the expected scope and persists
+        // nothing.
+        let err = confirm_group_scope("write_file", Some("coding:write_file:docs"), "group")
+            .expect_err("generic group intent must not confirm");
+        assert_eq!(
+            err,
+            GroupScopeError::ScopeMismatch {
+                expected: "coding:write_file:docs".to_string(),
+            }
+        );
+        let err = confirm_group_scope(
+            "write_file",
+            Some("coding:write_file:docs"),
+            "coding:write_file:other",
+        )
+        .expect_err("wrong scope must not confirm");
+        assert_eq!(
+            err,
+            GroupScopeError::ScopeMismatch {
+                expected: "coding:write_file:docs".to_string(),
+            }
+        );
+        // No pending group: nothing to whitelist.
+        assert_eq!(
+            confirm_group_scope("write_file", None, "coding:write_file:docs"),
+            Err(GroupScopeError::NoPendingGroup)
+        );
+    }
+
+    #[test]
+    fn group_scope_confirm_derives_preset_and_path() {
+        // Document group keys persist document-scoped rules; `*` path groups
+        // persist match-any rules; unknown shapes keep the coding fallback.
+        let confirmed = confirm_group_scope(
+            "write_file",
+            Some("document:write_file:docs"),
+            "document:write_file:docs",
+        )
+        .expect("document scope confirms");
+        assert_eq!(confirmed.preset, "document");
+        assert_eq!(confirmed.path_pattern, "docs");
+        let confirmed = confirm_group_scope(
+            "write_file",
+            Some("coding:write_file:*"),
+            "coding:write_file:*",
+        )
+        .expect("wildcard path confirms");
+        assert_eq!(confirmed.preset, "coding");
+        assert_eq!(confirmed.path_pattern, "*");
+        assert_eq!(group_preset(Some("bogus")), "coding");
+        assert_eq!(group_preset(None), "coding");
+    }
+
+    #[test]
+    fn group_scope_confirm_never_whitelists_shell() {
+        // Shell groups never persist, even with an exact echo (NEX-SEC-001
+        // deny-floor, defence in depth alongside the insert guard).
+        assert_eq!(
+            confirm_group_scope(
+                "execute_command",
+                Some("coding:execute_command:*"),
+                "coding:execute_command:*",
+            ),
+            Err(GroupScopeError::ShellNeverPersists)
+        );
+        let db = crate::infrastructure::database::in_memory_database();
+        let blocked = ConfirmedGroupScope {
+            preset: "coding".to_string(),
+            tool_name: "execute_command".to_string(),
+            path_pattern: "*".to_string(),
+            group_key: "coding:execute_command:*".to_string(),
+        };
+        assert!(
+            !insert_group_allow_rule(&db, &blocked),
+            "shell scope must never persist via the group path"
+        );
+        // The v7 seed ask row for the shell survives untouched, but no
+        // shell-allow row may exist after a blocked insert.
+        let rules = crate::application::agent::permissions::list_rules(&db).expect("list rules");
+        assert!(
+            rules
+                .iter()
+                .all(|rule| !(rule.tool_pattern == "execute_command"
+                    && rule.effect == RuleEffect::Allow)),
+            "no shell-allow row may exist after a blocked insert, got {rules:?}"
+        );
+    }
+
+    #[test]
+    fn confirmed_group_scope_persists_allow_rule() {
+        // A confirmed non-shell scope persists an `allow` rule at
+        // `priority=200` that the store then matches.
+        let db = crate::infrastructure::database::in_memory_database();
+        let confirmed = confirm_group_scope(
+            "write_file",
+            Some("coding:write_file:docs"),
+            "coding:write_file:docs",
+        )
+        .expect("confirm");
+        assert!(insert_group_allow_rule(&db, &confirmed));
+        let rules = list_rules(&db).expect("list rules");
+        let persisted = rules
+            .iter()
+            .find(|rule| rule.tool_pattern == "write_file")
+            .expect("write_file rule persisted via confirmed group scope");
+        assert_eq!(persisted.effect, RuleEffect::Allow);
+        assert_eq!(persisted.priority, 200);
+        assert_eq!(persisted.preset, "coding");
+        assert_eq!(persisted.path_pattern.as_deref(), Some("docs"));
+        let store = PermissionStore::load(&db);
+        assert!(matches!(
+            store.decide("coding", "write_file", Some("docs"), RiskClass::Mutating),
+            Some(PermissionOutcome::Allow { .. })
+        ));
     }
 }
