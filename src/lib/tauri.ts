@@ -381,7 +381,7 @@ export async function deleteConversationPermanently(id: number): Promise<void> {
  * `export_conversation_to_file`. Read-only against the database; the
  * document preserves persisted message order (FR-010). */
 export function exportConversationToFile(id: number, path: string): Promise<void> {
-  return invoke<void>("export_conversation_to_file", { id, path });
+  return invoke<void>("export_conversation_to_file", { conversationId: id, path });
 }
 
 /** Import one conversation from an exported JSON document string via
