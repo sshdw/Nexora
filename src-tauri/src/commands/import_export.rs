@@ -375,6 +375,49 @@ mod tests {
         assert_eq!(history[0].content, "hello from the boundary");
     }
 
+    /// Arg-contract pin (#185): the `tauri.ts`
+    /// `exportConversationToFile` wrapper must invoke
+    /// `export_conversation_to_file` with exactly the Rust command's
+    /// parameters in camelCase (`conversation_id` -> `conversationId`,
+    /// plus `path`). Sending `{ id, path }` compiles fine but fails at
+    /// runtime with a missing-`conversationId` error, so this source
+    /// check keeps the wrapper and the signature in sync.
+    #[test]
+    fn export_conversation_to_file_invoke_args_match_rust_params() {
+        const TAURI_TS: &str = include_str!("../../../src/lib/tauri.ts");
+        let needle = "\"export_conversation_to_file\"";
+        let at = TAURI_TS
+            .find(needle)
+            .expect("invoke(\"export_conversation_to_file\") must exist in src/lib/tauri.ts");
+        let after = &TAURI_TS[at + needle.len()..];
+        let open = after
+            .find('{')
+            .expect("the export_conversation_to_file invoke must pass an argument object");
+        let inner = &after[open + 1..];
+        let close = inner
+            .find('}')
+            .expect("the export_conversation_to_file argument object must close");
+        let mut got: Vec<String> = inner[..close]
+            .split(',')
+            .map(|segment| {
+                let segment = segment.trim();
+                match segment.find(':') {
+                    Some(idx) => segment[..idx].trim().to_string(),
+                    None => segment.to_string(),
+                }
+            })
+            .filter(|key| !key.is_empty())
+            .collect();
+        got.sort_unstable();
+        let mut want = vec!["conversationId".to_string(), "path".to_string()];
+        want.sort_unstable();
+        assert_eq!(
+            got, want,
+            "invoke(\"export_conversation_to_file\") argument keys must exactly match \
+             the Rust command parameters (camelCase)"
+        );
+    }
+
     /// Boundary smoke: `export_conversation_to_file` writes a re-importable
     /// document through the async boundary.
     #[test]
