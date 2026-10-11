@@ -160,6 +160,12 @@ describe("useAgentRun", () => {
       conversationId: 1,
     });
     expect(mockInvoke).toHaveBeenCalledWith("list_agent_steps", { runId: 7 });
+    // Channel contract: production subscribes to "agent-run-event"
+    // (useAgentRun.ts:321); guards a silent channel rename.
+    expect(mockListen).toHaveBeenCalledWith(
+      "agent-run-event",
+      expect.any(Function),
+    );
   });
 
   it("merges live step frames sorted by seq and ignores duplicate seq", async () => {
@@ -184,7 +190,7 @@ describe("useAgentRun", () => {
     expect(result.current.runs[0].steps).toHaveLength(2);
   });
 
-  it("ignores finished frames from other conversations (no cross-conversation bleed)", async () => {
+  it("ignores finished frames from other conversations (finished-frame scope only)", async () => {
     routeInvoke({ 1: [runRow()] }, { 7: [] });
 
     const { result } = renderHook(() => useAgentRun(1));
@@ -227,6 +233,31 @@ describe("useAgentRun", () => {
     await waitFor(() => expect(reloadCalls()).toBeGreaterThan(baseline));
     expect(result.current.runs).toHaveLength(1);
     expect(result.current.runs[0].run_id).toBe(7);
+  });
+
+  it("pins foreign step-frame behavior: unknown run_id opens a placeholder under the active conversation", async () => {
+    routeInvoke({ 1: [runRow()] }, { 7: [] });
+
+    const { result } = renderHook(() => useAgentRun(1));
+    await waitFor(() => expect(result.current.runs).toHaveLength(1));
+
+    // StepEventFrame carries no conversation_id (tauri.ts:581-592), so the
+    // hook cannot filter foreign step frames by conversation and admits them
+    // into a placeholder run under the active id (useAgentRun.ts:396-410).
+    // Admitted tradeoff with a small leak window: the next finished frame or
+    // reload reconciles with persisted truth. This test pins the current
+    // behavior — the real fix needs conversation_id in StepEventFrame
+    // (backend scope, out of scope here). See issue #189.
+    act(() => {
+      emitAgentEvent({ type: "step", run_id: 999, event: stepFrame({ seq: 1 }) });
+    });
+    expect(result.current.runs).toHaveLength(2);
+    const placeholder = result.current.runs.find((r) => r.run_id === 999);
+    expect(placeholder).toMatchObject({
+      conversation_id: 1,
+      status: "running",
+    });
+    expect(placeholder?.steps.map((s) => s.seq)).toEqual([1]);
   });
 
   it("drops a stale reload that resolves after a conversation switch", async () => {
@@ -288,5 +319,49 @@ describe("useAgentRun", () => {
       result.current.collapseStep(7, 1);
     });
     expect(result.current.runs[0].steps[0].observation_full).toBeNull();
+  });
+
+  it("collapse before a late expand resolve does not resurrect the full text", async () => {
+    let resolveObs: ((value: string) => void) | null = null;
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "list_agent_runs") return Promise.resolve([runRow()]);
+      if (cmd === "list_agent_steps") {
+        return Promise.resolve([
+          stepRow({ observation: "preview", observation_truncated: true }),
+        ]);
+      }
+      if (cmd === "get_agent_step_observation") {
+        return new Promise<string>((resolve) => {
+          resolveObs = resolve;
+        });
+      }
+      return Promise.reject(new Error(`unexpected invoke: ${cmd}`));
+    });
+
+    const { result } = renderHook(() => useAgentRun(1));
+    await waitFor(() => expect(result.current.runs[0]?.steps).toHaveLength(1));
+
+    // Start the expand (sets the loading flag), then collapse before the
+    // fetch resolves. Deterministic deferred — no timers, no sleeps.
+    let expandPromise: Promise<void> | undefined;
+    act(() => {
+      expandPromise = result.current.expandStep(7, 1);
+    });
+    expect(result.current.runs[0].steps[0].observation_loading).toBe(true);
+    act(() => {
+      result.current.collapseStep(7, 1);
+    });
+    expect(result.current.runs[0].steps[0].observation_loading).toBe(false);
+    expect(result.current.runs[0].steps[0].observation_full).toBeNull();
+
+    // Late resolve must not resurrect the dropped text: the write is guarded
+    // on the loading flag cleared by collapseStep (useAgentRun.ts:203-207,
+    // 264-282).
+    await act(async () => {
+      resolveObs?.("FULL OBSERVATION TEXT");
+      await expandPromise;
+    });
+    expect(result.current.runs[0].steps[0].observation_full).toBeNull();
+    expect(result.current.runs[0].steps[0].observation_loading).toBe(false);
   });
 });

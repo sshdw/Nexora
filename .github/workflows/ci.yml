@@ -110,6 +110,9 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: npm test
+        run: npm test
+
       - name: npx tsc --noEmit
         run: npx tsc --noEmit
 
