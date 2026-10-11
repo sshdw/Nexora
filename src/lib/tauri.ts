@@ -572,6 +572,8 @@ export interface AgentStep {
   rule_id: number | null;
   group_key: string | null;
   decided_by: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
 }
 
 /** Step payload of a `RunFrame::Step` frame (Task 5.1; NEX-PERF-003 — the

@@ -80,6 +80,8 @@ function stepRow(overrides: Partial<AgentStep> = {}): AgentStep {
     rule_id: null,
     group_key: null,
     decided_by: null,
+    input_tokens: null,
+    output_tokens: null,
     ...overrides,
   };
 }

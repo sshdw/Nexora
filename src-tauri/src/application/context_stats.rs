@@ -498,6 +498,93 @@ mod tests {
         );
     }
 
+    /// Exact-membership pins for every model list the window test below
+    /// iterates (NEX-AGENT-010 follow-up, #179): each assertion restates its
+    /// const in full, so a silent unintended addition fails here even though
+    /// the per-model window loops would pass trivially. Split out so the
+    /// window test stays under the `too_many_lines` lint.
+    fn assert_supported_model_lists_pinned() {
+        assert_eq!(
+            openai::SUPPORTED_MODELS,
+            &["gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-sol"]
+        );
+        assert_eq!(
+            anthropic::SUPPORTED_MODELS,
+            &[
+                "claude-sonnet-5",
+                "claude-haiku-4-5-20251001",
+                "claude-opus-4-8",
+            ]
+        );
+        assert_eq!(
+            gemini::SUPPORTED_MODELS,
+            &[
+                "gemini-3.6-flash",
+                "gemini-3.1-flash-lite",
+                "gemini-3.1-pro-preview",
+                "gemini-flash-lite-latest",
+                "gemini-pro-latest",
+                "gemini-3.5-flash",
+                "gemini-3.5-flash-lite",
+            ]
+        );
+        assert_eq!(
+            gemini::GEMINI_LITE_MODELS,
+            &[
+                "gemini-3.1-flash-lite",
+                "gemini-flash-lite-latest",
+                "gemini-3.5-flash",
+                "gemini-3.5-flash-lite",
+            ]
+        );
+        assert_eq!(
+            openai::XKIRO_MODELS,
+            &[
+                "deepseek/deepseek-v4-flash",
+                "qwen/qwen3.5-omni-plus:free",
+                "minimax/minimax-m3:free",
+                "minimax/minimax-m2.7:free",
+                "qwen/qwen3.5-plus:free",
+                "qwen/qwen3.6-plus:free",
+                "qwen/qwen3.7-plus:free",
+                "deepseek/deepseek-v4-pro",
+            ]
+        );
+        assert_eq!(
+            openai::OPENROUTER_MODELS,
+            &[
+                "inclusionai/ling-3.0-flash-fin:free",
+                "nvidia/nemotron-3.5-lightning:free",
+                "nvidia/nemotron-3-super-120b-a12b:free",
+                "cohere/north-mini-code:free",
+                "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+                "inclusionai/ling-3.0-flash-sante:free",
+                "inclusionai/ling-3.0-flash-vl:free",
+                "liquid/lfm-2.5-2.6b:free",
+            ]
+        );
+        assert_eq!(
+            openai::NVIDIA_MODELS,
+            &[
+                "nvidia/nemotron-3-super-120b-a12b",
+                "nvidia/nemotron-3-ultra-550b-a55b",
+                "meta/llama-3.2-11b-vision-instruct",
+                "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+                "openai/gpt-oss-20b",
+            ]
+        );
+        assert_eq!(
+            openai::OPENCODE_ZEN_MODELS,
+            &[
+                "ling-3.0-flash-fin-free",
+                "nemotron-3-ultra-free",
+                "nemotron-3.5-lightning-free",
+                "big-pickle",
+                "mimo-v2.5-free",
+            ]
+        );
+    }
+
     #[test]
     fn supported_model_ids_pin_to_provider_windows() {
         // NEX-AGENT-010: every ID in the provider `SUPPORTED_MODELS` lists
@@ -506,6 +593,12 @@ mod tests {
         // from the lists themselves, so the window table cannot drift from
         // the supported-model surface by construction. The model arm owns
         // the value even when the provider is unknown/missing.
+        //
+        // #179: exact-membership pins — a silent unintended addition to any
+        // list below fails in `assert_supported_model_lists_pinned` (not just
+        // in the window loops, which would pass trivially). A deliberate
+        // addition updates both the const and its pin together.
+        assert_supported_model_lists_pinned();
         for model in openai::SUPPORTED_MODELS {
             assert_eq!(
                 context_limit_for(Some("openai"), Some(model)),
