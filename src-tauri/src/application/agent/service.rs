@@ -2393,6 +2393,8 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
+                None,
             )
             .expect("step");
         assert_eq!(

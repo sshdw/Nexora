@@ -52,7 +52,7 @@ use crate::application::agent::approval::AutonomyMode;
 use crate::application::agent::control::AgentRunEvent;
 use crate::application::agent::injection::redact_secrets;
 use crate::application::agent::runner::AgentError;
-use crate::application::execution::ToolCall;
+use crate::application::execution::{TokenUsage, ToolCall};
 use crate::infrastructure::database::{Database, DatabaseError};
 use crate::infrastructure::repository::agent_runs::AgentRunRepository;
 
@@ -328,6 +328,7 @@ impl<'a> RunRecorder<'a> {
         rule_id: Option<i64>,
         group_key: Option<&str>,
         decided_by: Option<&str>,
+        usage: Option<TokenUsage>,
     ) -> Result<i64, DatabaseError> {
         let repo = AgentRunRepository::new(self.db);
         let arguments = arguments.map(sanitize_persisted_text);
@@ -344,6 +345,8 @@ impl<'a> RunRecorder<'a> {
             rule_id,
             group_key,
             decided_by,
+            usage.map(|u| u.input_tokens),
+            usage.map(|u| u.output_tokens),
         );
         match &result {
             Err(err) => log::warn!(
@@ -491,6 +494,9 @@ struct PendingStep<'a> {
     status: Option<&'a str>,
     duration_ms: Option<i64>,
     provenance: StepProvenance<'a>,
+    /// Provider-reported turn usage (`response.usage`); `None` for
+    /// non-model steps and for turns whose provider omitted it.
+    usage: Option<TokenUsage>,
 }
 
 /// Per-run recording state owned by one `AgentRunner::run` invocation
@@ -524,8 +530,15 @@ impl<'a> ActiveRunRecord<'a> {
 
     /// Record one `model_turn` step: the provider returned. `observation`
     /// carries the model's own narration / final text; `duration_ms` the
-    /// provider round-trip duration (DATABASE.md §7.9).
-    pub(crate) fn model_turn(&mut self, observation: &str, duration_ms: Option<i64>) {
+    /// provider round-trip duration; `usage` the provider-reported turn
+    /// usage (`None` when the provider omitted it — persisted as NULL, an
+    /// honest unknown, never an estimate) (DATABASE.md §7.9).
+    pub(crate) fn model_turn(
+        &mut self,
+        observation: &str,
+        duration_ms: Option<i64>,
+        usage: Option<TokenUsage>,
+    ) {
         self.append(&PendingStep {
             kind: "model_turn",
             tool_name: None,
@@ -534,6 +547,7 @@ impl<'a> ActiveRunRecord<'a> {
             status: None,
             duration_ms,
             provenance: StepProvenance::anonymous(),
+            usage,
         });
     }
 
@@ -576,6 +590,7 @@ impl<'a> ActiveRunRecord<'a> {
             status: Some(status),
             duration_ms,
             provenance,
+            usage: None,
         });
     }
 
@@ -620,6 +635,7 @@ impl<'a> ActiveRunRecord<'a> {
             status: Some(status),
             duration_ms: None,
             provenance,
+            usage: None,
         });
     }
 
@@ -635,6 +651,7 @@ impl<'a> ActiveRunRecord<'a> {
             status: Some("denied"),
             duration_ms: None,
             provenance: StepProvenance::user(Some(group_key)),
+            usage: None,
         });
     }
 
@@ -649,6 +666,7 @@ impl<'a> ActiveRunRecord<'a> {
             status: Some("cancelled"),
             duration_ms: None,
             provenance: StepProvenance::system(),
+            usage: None,
         });
     }
 
@@ -670,6 +688,7 @@ impl<'a> ActiveRunRecord<'a> {
             status: Some("cancelled"),
             duration_ms: None,
             provenance: StepProvenance::system(),
+            usage: None,
         });
     }
 
@@ -697,6 +716,7 @@ impl<'a> ActiveRunRecord<'a> {
                 step.provenance.rule_id,
                 step.provenance.group_key,
                 step.provenance.decided_by,
+                step.usage,
             )
             .is_ok()
         {
@@ -765,7 +785,7 @@ mod tests {
             .expect("occupy seq 1");
         }
 
-        record.model_turn("turn one", None);
+        record.model_turn("turn one", None, None);
 
         // The failure was swallowed (best-effort: no panic, no propagation
         // into the run), but neither counter advanced.
@@ -786,8 +806,8 @@ mod tests {
             .expect("clear seq 1");
         }
 
-        record.model_turn("turn one (persisted)", None);
-        record.model_turn("turn two", None);
+        record.model_turn("turn one (persisted)", None, None);
+        record.model_turn("turn two", None, None);
 
         assert_eq!(record.next_seq, 3, "successful steps advance the seq");
         assert_eq!(record.recorded_steps, 2);
@@ -820,7 +840,7 @@ mod tests {
             ActiveRunRecord::start(RunRecorder::new(&db).with_events(&tx), "m", "supervised");
         let run_id = record.run_id.expect("run row persisted at start");
 
-        record.model_turn("thinking", Some(120));
+        record.model_turn("thinking", Some(120), None);
         let call = ToolCall {
             id: "c1".to_string(),
             name: "read_file".to_string(),
@@ -905,7 +925,7 @@ mod tests {
             )
             .expect("occupy seq 1");
         }
-        record.model_turn("dropped", None);
+        record.model_turn("dropped", None, None);
         assert!(rx.try_recv().is_err(), "a failed insert must emit no event");
 
         // Clear the obstacle; the retry reuses seq 1 and emits it once.
@@ -917,7 +937,7 @@ mod tests {
             )
             .expect("clear seq 1");
         }
-        record.model_turn("persisted", None);
+        record.model_turn("persisted", None, None);
         match rx.try_recv().expect("retry emits") {
             AgentRunEvent::StepRecorded { seq, .. } => assert_eq!(seq, 1),
             other => panic!("expected StepRecorded, got: {other:?}"),
@@ -989,7 +1009,7 @@ mod tests {
             "m",
             "semi_autonomous",
         );
-        record.model_turn("turn", None);
+        record.model_turn("turn", None, None);
 
         assert_eq!(record.run_id, Some(pre_created), "adopted id is kept");
         assert_eq!(
@@ -1002,6 +1022,35 @@ mod tests {
         let steps = runs.list_steps(pre_created).expect("steps");
         assert_eq!(steps.len(), 1, "steps land under the adopted run id");
         assert_eq!(steps[0].seq, 1);
+    }
+
+    /// NEX-AGENT-005: a `model_turn` recorded with provider-reported usage
+    /// persists it on the step row; a turn without usage persists NULLs
+    /// (honest unknown), so the meter can tell reported from absent.
+    #[test]
+    fn model_turn_persists_reported_usage_and_nulls_absent_usage() {
+        let db = in_memory_database();
+        let mut record = ActiveRunRecord::start(RunRecorder::new(&db), "m", "supervised");
+        let run_id = record.run_id.expect("run row persisted at start");
+
+        record.model_turn(
+            "reported",
+            None,
+            Some(TokenUsage {
+                input_tokens: 120,
+                output_tokens: 34,
+            }),
+        );
+        record.model_turn("unreported", None, None);
+
+        let steps = AgentRunRepository::new(&db)
+            .list_steps(run_id)
+            .expect("list steps");
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].input_tokens, Some(120));
+        assert_eq!(steps[0].output_tokens, Some(34));
+        assert_eq!(steps[1].input_tokens, None);
+        assert_eq!(steps[1].output_tokens, None);
     }
 
     /// `terminal_outcome` collision pin: `ContextExhausted` (terminal
@@ -1255,7 +1304,7 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let mut record =
             ActiveRunRecord::start(RunRecorder::new(&db).with_events(&tx), "m", "supervised");
-        record.model_turn("thinking out loud", Some(7));
+        record.model_turn("thinking out loud", Some(7), None);
         match rx.try_recv().expect("step emits") {
             AgentRunEvent::StepRecorded {
                 observation,
