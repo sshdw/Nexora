@@ -212,14 +212,14 @@ mod tests {
         let request = AiRequest {
             provider: PROVIDER_NAME.to_string(),
             model: "gpt-5.6-terra".to_string(),
-            messages: vec![AiMessage {
+            messages: std::sync::Arc::new(vec![AiMessage {
                 role: AiRole::User,
                 content: "Hello".to_string(),
                 attachments: Vec::new(),
                 tool_calls: Vec::new(),
                 tool_result: None,
-            }],
-            tools: Vec::new(),
+            }]),
+            tools: std::sync::Arc::new(Vec::new()),
             model_config: None,
             request_timeout: None,
         };
@@ -262,14 +262,14 @@ mod tests {
         let request = AiRequest {
             provider: PROVIDER_NAME.to_string(),
             model: "gpt-5.6-terra".to_string(),
-            messages: vec![AiMessage {
+            messages: std::sync::Arc::new(vec![AiMessage {
                 role: AiRole::User,
                 content: "Hello".to_string(),
                 attachments: Vec::new(),
                 tool_calls: Vec::new(),
                 tool_result: None,
-            }],
-            tools: Vec::new(),
+            }]),
+            tools: std::sync::Arc::new(Vec::new()),
             model_config: None,
             request_timeout: None,
         };

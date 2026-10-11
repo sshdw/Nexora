@@ -103,6 +103,16 @@ pub(crate) struct AiToolResult {
 /// content to send (FR-003). Provider-specific formatting is the
 /// responsibility of a [`ProviderExecutor`] implementation.
 ///
+/// `messages` and `tools` are reference-counted (NEX-PERF-003): the agent
+/// run loop rebuilds this request every model turn, and deep-cloning the
+/// whole history plus the tool schema per turn is `O(turns² × history)`.
+/// Sharing the buffers with `Arc` makes per-turn assembly `O(1)` — the loop
+/// moves its owned `Vec` into an `Arc` for the synchronous provider call
+/// and reclaims sole ownership before the next mutation. `Arc<Vec<…>>`
+/// (rather than `Arc<[…]>`) is what lets the loop move the buffer back out
+/// without cloning. Cloning the request itself (e.g. test captures) is
+/// equally cheap: only the counters move.
+///
 /// `Eq` is intentionally not derived: [`ModelConfig`] carries an `f32`
 /// temperature, so only `PartialEq` holds.
 #[derive(Debug, Clone, PartialEq)]
@@ -111,10 +121,12 @@ pub(crate) struct AiRequest {
     pub provider: String,
     /// Model identifier requested for this request (FR-004 model selection).
     pub model: String,
-    /// Conversation content to send, in chronological order.
-    pub messages: Vec<AiMessage>,
+    /// Conversation content to send, in chronological order (shared, never
+    /// deep-cloned per turn — see the struct docs).
+    pub messages: Arc<Vec<AiMessage>>,
     /// Tools available to the model for this request. Empty means text-only.
-    pub tools: Vec<ToolDefinition>,
+    /// Shared for the same reason as `messages` (fixed for the whole run).
+    pub tools: Arc<Vec<ToolDefinition>>,
     /// Per-request model selection overrides (temperature / output-token cap).
     /// `None` keeps the historical wire shape: no `temperature` or
     /// `max_tokens` member is sent. Executors serialize the overrides only
@@ -1627,8 +1639,8 @@ mod tests {
         let request = AiRequest {
             provider: "openai".to_string(),
             model: "m".to_string(),
-            messages: Vec::new(),
-            tools: Vec::new(),
+            messages: Arc::new(Vec::new()),
+            tools: Arc::new(Vec::new()),
             model_config: None,
             request_timeout: None,
         };
@@ -1648,6 +1660,44 @@ mod tests {
             .expect("stream default succeeds");
         assert_eq!(out.content, "hello");
         assert_eq!(seen.borrow().as_slice(), ["hello"]);
+    }
+
+    /// NEX-PERF-003: `AiRequest` shares its message/tool buffers instead of
+    /// deep-cloning them per turn. Cloning a request (what the run loop and
+    /// the test executors do every turn) must alias the same allocations —
+    /// `Arc::ptr_eq` on both buffers — so per-turn assembly is `O(1)`.
+    #[test]
+    fn ai_request_clone_shares_message_and_tool_buffers() {
+        let messages = Arc::new(vec![AiMessage {
+            role: AiRole::User,
+            content: "hello".to_string(),
+            attachments: Vec::new(),
+            tool_calls: Vec::new(),
+            tool_result: None,
+        }]);
+        let tools = Arc::new(vec![ToolDefinition {
+            name: "read_file".to_string(),
+            description: "read".to_string(),
+            parameters: serde_json::json!({}),
+        }]);
+        let first = AiRequest {
+            provider: "openai".to_string(),
+            model: "m".to_string(),
+            messages: Arc::clone(&messages),
+            tools: Arc::clone(&tools),
+            model_config: None,
+            request_timeout: None,
+        };
+        let second = first.clone();
+        assert!(
+            Arc::ptr_eq(&first.messages, &second.messages),
+            "request clones must share the message buffer"
+        );
+        assert!(
+            Arc::ptr_eq(&first.tools, &second.tools),
+            "request clones must share the tool buffer"
+        );
+        assert_eq!(first, second, "shared requests still compare by value");
     }
 
     fn tool_test_info(name: &str, supports_tools: bool) -> ModelInfo {

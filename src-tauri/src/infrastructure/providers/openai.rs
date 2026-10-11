@@ -1144,7 +1144,7 @@ mod tests {
         AiRequest {
             provider: PROVIDER_NAME.to_string(),
             model: "gpt-5.6-terra".to_string(),
-            messages: vec![
+            messages: std::sync::Arc::new(vec![
                 AiMessage {
                     role: AiRole::System,
                     content: "You are a helpful assistant.".to_string(),
@@ -1166,8 +1166,8 @@ mod tests {
                     tool_calls: Vec::new(),
                     tool_result: None,
                 },
-            ],
-            tools: Vec::new(),
+            ]),
+            tools: std::sync::Arc::new(Vec::new()),
             model_config: None,
             request_timeout: None,
         }
@@ -1246,14 +1246,14 @@ mod tests {
         let request = AiRequest {
             provider: PROVIDER_NAME.to_string(),
             model: "gpt-5.6-sol".to_string(),
-            messages: vec![AiMessage {
+            messages: std::sync::Arc::new(vec![AiMessage {
                 role: AiRole::User,
                 content: "ping".to_string(),
                 attachments: Vec::new(),
                 tool_calls: Vec::new(),
                 tool_result: None,
-            }],
-            tools: Vec::new(),
+            }]),
+            tools: std::sync::Arc::new(Vec::new()),
             model_config: None,
             request_timeout: None,
         };
@@ -1380,18 +1380,20 @@ mod tests {
     #[test]
     fn binary_attachments_serialize_as_openai_image_parts() {
         let mut request = sample_request();
-        request.messages.push(AiMessage {
-            role: AiRole::User,
-            content: "What is in this image?".to_string(),
-            attachments: vec![AiAttachment {
-                file_name: "chart.png".to_string(),
-                file_size_bytes: Some(4),
-                mime_type: Some("image/png".to_string()),
-                payload: AiAttachmentPayload::Base64("cG5nIQ==".to_string()),
-            }],
-            tool_calls: Vec::new(),
-            tool_result: None,
-        });
+        std::sync::Arc::get_mut(&mut request.messages)
+            .expect("test builds the sole owner")
+            .push(AiMessage {
+                role: AiRole::User,
+                content: "What is in this image?".to_string(),
+                attachments: vec![AiAttachment {
+                    file_name: "chart.png".to_string(),
+                    file_size_bytes: Some(4),
+                    mime_type: Some("image/png".to_string()),
+                    payload: AiAttachmentPayload::Base64("cG5nIQ==".to_string()),
+                }],
+                tool_calls: Vec::new(),
+                tool_result: None,
+            });
         let json =
             serde_json::to_string(&chat_completion_request(&request, true)).expect("serialize");
 
@@ -1406,18 +1408,20 @@ mod tests {
     #[test]
     fn text_attachments_are_inlined_into_the_turn_text() {
         let mut request = sample_request();
-        request.messages.push(AiMessage {
-            role: AiRole::User,
-            content: "Summarize".to_string(),
-            attachments: vec![AiAttachment {
-                file_name: "notes.txt".to_string(),
-                file_size_bytes: Some(5),
-                mime_type: Some("text/plain".to_string()),
-                payload: AiAttachmentPayload::Text("revenue rose 12 percent".to_string()),
-            }],
-            tool_calls: Vec::new(),
-            tool_result: None,
-        });
+        std::sync::Arc::get_mut(&mut request.messages)
+            .expect("test builds the sole owner")
+            .push(AiMessage {
+                role: AiRole::User,
+                content: "Summarize".to_string(),
+                attachments: vec![AiAttachment {
+                    file_name: "notes.txt".to_string(),
+                    file_size_bytes: Some(5),
+                    mime_type: Some("text/plain".to_string()),
+                    payload: AiAttachmentPayload::Text("revenue rose 12 percent".to_string()),
+                }],
+                tool_calls: Vec::new(),
+                tool_result: None,
+            });
         let body = chat_completion_request(&request, true);
         let user = body
             .messages
@@ -1672,14 +1676,14 @@ mod tests {
         let request = AiRequest {
             provider: PROVIDER_NAME.to_string(),
             model: "gpt-5.6-terra".to_string(),
-            messages: vec![AiMessage {
+            messages: std::sync::Arc::new(vec![AiMessage {
                 role: AiRole::User,
                 content: "Use the tool".to_string(),
                 attachments: Vec::new(),
                 tool_calls: Vec::new(),
                 tool_result: None,
-            }],
-            tools: vec![crate::application::execution::ToolDefinition {
+            }]),
+            tools: std::sync::Arc::new(vec![crate::application::execution::ToolDefinition {
                 name: "get_weather".to_string(),
                 description: "Get the weather for a location".to_string(),
                 parameters: serde_json::json!({
@@ -1689,7 +1693,7 @@ mod tests {
                     },
                     "required": ["location"]
                 }),
-            }],
+            }]),
             model_config: None,
             request_timeout: None,
         };
@@ -1717,14 +1721,14 @@ mod tests {
         let request = AiRequest {
             provider: PROVIDER_NAME.to_string(),
             model: "gpt-5.6-terra".to_string(),
-            messages: vec![AiMessage {
+            messages: std::sync::Arc::new(vec![AiMessage {
                 role: AiRole::User,
                 content: "Hello".to_string(),
                 attachments: Vec::new(),
                 tool_calls: Vec::new(),
                 tool_result: None,
-            }],
-            tools: Vec::new(),
+            }]),
+            tools: std::sync::Arc::new(Vec::new()),
             model_config: None,
             request_timeout: None,
         };
@@ -1840,7 +1844,7 @@ mod tests {
         let request = AiRequest {
             provider: PROVIDER_NAME.to_string(),
             model: "gpt-5.6-terra".to_string(),
-            messages: vec![
+            messages: std::sync::Arc::new(vec![
                 AiMessage {
                     role: AiRole::User,
                     content: "List files".to_string(),
@@ -1871,8 +1875,8 @@ mod tests {
                         content: "a.txt".to_string(),
                     }),
                 },
-            ],
-            tools: Vec::new(),
+            ]),
+            tools: std::sync::Arc::new(Vec::new()),
             model_config: None,
             request_timeout: None,
         };
@@ -2731,18 +2735,18 @@ mod tests {
         let request = AiRequest {
             provider: COMPAT_NAME.to_string(),
             model: "custom-model".to_string(),
-            messages: vec![AiMessage {
+            messages: std::sync::Arc::new(vec![AiMessage {
                 role: AiRole::User,
                 content: "Use the tool".to_string(),
                 attachments: Vec::new(),
                 tool_calls: Vec::new(),
                 tool_result: None,
-            }],
-            tools: vec![crate::application::execution::ToolDefinition {
+            }]),
+            tools: std::sync::Arc::new(vec![crate::application::execution::ToolDefinition {
                 name: "get_weather".to_string(),
                 description: "Get the weather".to_string(),
                 parameters: serde_json::json!({"type": "object"}),
-            }],
+            }]),
             model_config: None,
             request_timeout: None,
         };
@@ -2765,14 +2769,14 @@ mod tests {
         let request = AiRequest {
             provider: PROVIDER_NAME.to_string(),
             model: "gpt-5.6-terra".to_string(),
-            messages: vec![AiMessage {
+            messages: std::sync::Arc::new(vec![AiMessage {
                 role: AiRole::User,
                 content: "hi".to_string(),
                 attachments: Vec::new(),
                 tool_calls: Vec::new(),
                 tool_result: None,
-            }],
-            tools: vec![
+            }]),
+            tools: std::sync::Arc::new(vec![
                 crate::application::execution::ToolDefinition {
                     name: "good".to_string(),
                     description: "fine".to_string(),
@@ -2788,7 +2792,7 @@ mod tests {
                     description: "array schema".to_string(),
                     parameters: serde_json::json!([{"type": "string"}]),
                 },
-            ],
+            ]),
             model_config: None,
             request_timeout: None,
         };

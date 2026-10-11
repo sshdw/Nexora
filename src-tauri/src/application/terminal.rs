@@ -541,14 +541,14 @@ pub(crate) fn explain_terminal_error(
     let request = AiRequest {
         provider: provider.to_string(),
         model: model.to_string(),
-        messages: vec![AiMessage {
+        messages: std::sync::Arc::new(vec![AiMessage {
             role: AiRole::User,
             content: prompt,
             attachments: Vec::new(),
             tool_calls: Vec::new(),
             tool_result: None,
-        }],
-        tools: Vec::new(),
+        }]),
+        tools: std::sync::Arc::new(Vec::new()),
         model_config: None,
         request_timeout: Some(DEFAULT_REQUEST_TIMEOUT),
     };

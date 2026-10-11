@@ -11,6 +11,7 @@ import { useEffect, useState } from "react";
 
 import {
   conversationContextStats,
+  getAgentStepObservation,
   listAgentRuns,
   listAgentSteps,
   type AgentStep,
@@ -85,7 +86,13 @@ export default function ContextPanel({ conversationId }: { conversationId: numbe
         setStats(data);
         const runs = await listAgentRuns(conversationId);
         if (cancelled) return;
-        const byPath = new Map<string, ChangedFile>();
+        // First pass over previews only: elect the winning step per path
+        // (max seq, same rule as before) so the full-text fetch below hits
+        // ONLY winners instead of every write_file step sequentially.
+        const winners = new Map<
+          string,
+          { path: string; preview: string; runId: number; seq: number; stepId: number }
+        >();
         for (const run of runs) {
           let steps: AgentStep[] = [];
           try {
@@ -97,19 +104,42 @@ export default function ContextPanel({ conversationId }: { conversationId: numbe
             if (step.kind !== "tool_call" || step.tool_name !== "write_file") continue;
             if (!step.observation) continue;
             const path = parseWritePath(step.arguments) ?? tr(getLocale(), "ctx.runStepFallback", { run: run.id, seq: step.seq });
-            const prev = byPath.get(path);
+            const prev = winners.get(path);
             if (!prev || step.seq >= prev.seq) {
-              byPath.set(path, {
+              winners.set(path, {
                 path,
-                observation: step.observation,
+                preview: step.observation,
                 runId: run.id,
                 seq: step.seq,
+                stepId: step.id,
               });
             }
           }
         }
         if (cancelled) return;
-        setFiles([...byPath.values()].sort((a, b) => a.path.localeCompare(b.path)));
+        // NEX-PERF-003: list items carry bounded previews; the file view
+        // needs the full diff, fetched on demand per winning write_file step
+        // (best-effort — a failed fetch still renders the preview, whose
+        // marker says honestly that it was cut).
+        const files = await Promise.all(
+          [...winners.values()].map(async (win) => {
+            let observation = win.preview;
+            try {
+              const full = await getAgentStepObservation(win.stepId);
+              if (cancelled) return { ...win, observation: win.preview };
+              observation = full;
+            } catch {
+              // Keep the preview fallback.
+            }
+            return { ...win, observation };
+          }),
+        );
+        if (cancelled) return;
+        setFiles(
+          files
+            .map(({ path, observation, runId, seq }) => ({ path, observation, runId, seq }))
+            .sort((a, b) => a.path.localeCompare(b.path)),
+        );
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
       } finally {

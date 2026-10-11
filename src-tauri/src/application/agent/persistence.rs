@@ -93,6 +93,58 @@ fn bound_persisted_text(text: &str) -> String {
     format!("{kept}\n[truncated {omitted} of {total} chars]")
 }
 
+/// Maximum live-streamed step-text size in chars (NEX-PERF-003): a
+/// `StepRecorded` frame carries only a *preview* of the sanitized stored
+/// text, so a long run stays bounded over IPC and in the render tree no
+/// matter how many turns it takes. The cap sits far below the persist cap
+/// (32K chars) and matches the UI's long-text threshold, so short steps —
+/// the common case — stream byte-identical to what is stored and only
+/// genuinely large outputs travel as preview + on-demand full text. The
+/// preview is always derived from the *sanitized* text (post
+/// [`sanitize_persisted_text`]), never pre-redaction.
+pub(crate) const MAX_STEP_PREVIEW_CHARS: usize = 2_000;
+
+/// Derive the live-streamed `(preview, total_bytes, truncated)` triple from
+/// one *sanitized* observation (NEX-PERF-003). `total_bytes` is the
+/// byte-exact length of the full sanitized text; `truncated` reports whether
+/// the preview was cut. Text at or under [`MAX_STEP_PREVIEW_CHARS`] chars
+/// returns unchanged with `truncated = false`, so short steps are
+/// byte-identical across the stream, the row, and the on-demand fetch.
+/// Longer text keeps the first [`MAX_STEP_PREVIEW_CHARS`] chars (char-based,
+/// never splits UTF-8 — the kept prefix is collected from `chars`, so it
+/// always ends on a char boundary) plus an honest
+/// `[truncated N of M bytes]` marker where both counts are bytes, matching
+/// the byte unit of `total_bytes` (and of the UI's full-output button), so
+/// the two numbers on one step can never disagree on multibyte output.
+pub(crate) fn step_preview(sanitized: &str) -> (String, u64, bool) {
+    let total_bytes = sanitized.len() as u64;
+    if sanitized.chars().count() <= MAX_STEP_PREVIEW_CHARS {
+        return (sanitized.to_string(), total_bytes, false);
+    }
+    let kept: String = sanitized.chars().take(MAX_STEP_PREVIEW_CHARS).collect();
+    let kept_bytes = kept.len() as u64;
+    let omitted = total_bytes - kept_bytes;
+    (
+        format!("{kept}\n[truncated {omitted} of {total_bytes} bytes]"),
+        total_bytes,
+        true,
+    )
+}
+
+/// Bounded-preview projection of an optional sanitized observation
+/// (NEX-PERF-003): `None` maps to `(None, None, false)`, `Some` text maps
+/// through [`step_preview`]. Shared by the live `StepRecorded` emission in
+/// [`ActiveRunRecord::insert_step`] and the read-time
+/// [`super::service::AgentStepListItem::from_row`] projection, so the two
+/// paths cannot drift apart. Pure: no behavior change beyond the shared
+/// derivation.
+pub(crate) fn step_preview_opt(sanitized: Option<&str>) -> (Option<String>, Option<u64>, bool) {
+    sanitized.map_or((None, None, false), |text| {
+        let (preview, total_bytes, truncated) = step_preview(text);
+        (Some(preview), Some(total_bytes), truncated)
+    })
+}
+
 /// Autonomy mode recorded for a run when no [`ApprovalGate`] is attached
 /// (Task 4.2): the most conservative rung of the HD-3 ladder, since a run
 /// without a gate can never auto-execute a mutating tool through the ladder.
@@ -252,10 +304,16 @@ impl<'a> RunRecorder<'a> {
     /// logs. (No payload is ever logged on this path: failures report only
     /// `run_id`/`seq` plus the secret-free [`DatabaseError`].)
     ///
-    /// Reports whether persistence succeeded (`Ok(())`) or failed
-    /// (`Err`), so the caller can keep its `seq` / step counters consistent.
-    /// Failures are logged here — best-effort: they never panic and are
-    /// never propagated into the agent run itself (CF-01).
+    /// NEX-PERF-003: the emitted event carries a *bounded preview* of the
+    /// sanitized observation ([`step_preview`]) plus its byte-exact total —
+    /// never the full output — while the row keeps the full sanitized text
+    /// for the on-demand fetch.
+    ///
+    /// Reports the new row's `agent_steps.id` (`Ok`) or the failure (`Err`),
+    /// so the caller can keep its `seq` / step counters consistent and the
+    /// event can name the row for the on-demand fetch. Failures are logged
+    /// here — best-effort: they never panic and are never propagated into
+    /// the agent run itself (CF-01).
     #[allow(clippy::too_many_arguments)]
     fn insert_step(
         self,
@@ -270,7 +328,7 @@ impl<'a> RunRecorder<'a> {
         rule_id: Option<i64>,
         group_key: Option<&str>,
         decided_by: Option<&str>,
-    ) -> Result<(), DatabaseError> {
+    ) -> Result<i64, DatabaseError> {
         let repo = AgentRunRepository::new(self.db);
         let arguments = arguments.map(sanitize_persisted_text);
         let observation = observation.map(sanitize_persisted_text);
@@ -298,22 +356,32 @@ impl<'a> RunRecorder<'a> {
             // by the runner), so governance and step events on the same
             // channel stay totally ordered by emission. Best-effort: a
             // disconnected receiver never blocks or fails the run.
-            Ok(_) => {
+            //
+            // NEX-PERF-003: the event carries the row id (for the on-demand
+            // full-text fetch) and a bounded preview of the sanitized
+            // observation plus its byte-exact total — derived from the same
+            // sanitized text that was stored, never pre-redaction.
+            Ok(step_id) => {
                 if let Some(events) = self.events {
+                    let (preview, total_bytes, truncated) =
+                        step_preview_opt(observation.as_deref());
                     let _ = events.send(AgentRunEvent::StepRecorded {
+                        step_id: *step_id,
                         run_id,
                         seq,
                         kind: kind.to_string(),
                         tool_name: tool_name.map(str::to_string),
                         arguments,
-                        observation,
+                        observation: preview,
+                        observation_len: total_bytes,
+                        observation_truncated: truncated,
                         status: status.map(str::to_string),
                         duration_ms,
                     });
                 }
             }
         }
-        result.map(|_| ())
+        result
     }
 
     /// Finalize the `agent_runs` row at run termination (DATABASE.md §7.8).
@@ -1109,6 +1177,178 @@ mod tests {
         );
         let kept: String = stored.chars().take(MAX_PERSISTED_STEP_TEXT_CHARS).collect();
         assert_eq!(kept, observation[..MAX_PERSISTED_STEP_TEXT_CHARS]);
+    }
+
+    /// NEX-PERF-003: a large observation streams as a bounded preview with a
+    /// byte-exact total and an honest marker — while the row keeps the full
+    /// sanitized text and the event names the row for the on-demand fetch.
+    #[test]
+    fn step_recorded_carries_preview_plus_byte_exact_length() {
+        let db = in_memory_database();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut record =
+            ActiveRunRecord::start(RunRecorder::new(&db).with_events(&tx), "m", "supervised");
+        let run_id = record.run_id.expect("run row persisted at start");
+
+        let total_chars = MAX_STEP_PREVIEW_CHARS + 1_000;
+        let observation = "o".repeat(total_chars);
+        let call = ToolCall {
+            id: "c1".to_string(),
+            name: "execute_command".to_string(),
+            arguments: r#"{"command": "env"}"#.to_string(),
+            thought_signature: None,
+        };
+        record.tool_call(&call, &observation, "succeeded", None);
+
+        // The row keeps the full sanitized text (short of the 32K persist
+        // cap, so byte-identical here).
+        let runs = AgentRunRepository::new(&db);
+        let steps = runs.list_steps(run_id).expect("list steps");
+        assert_eq!(steps.len(), 1);
+        let stored = steps[0].observation.as_deref().expect("stored");
+        assert_eq!(stored, observation);
+
+        // The live event carries the row id, a bounded preview, the
+        // byte-exact total, and the truncation flag — never the full text.
+        match rx.try_recv().expect("step emits") {
+            AgentRunEvent::StepRecorded {
+                step_id,
+                run_id: event_run_id,
+                seq,
+                observation: preview,
+                observation_len,
+                observation_truncated,
+                ..
+            } => {
+                assert_eq!(step_id, steps[0].id, "event names the stored row");
+                assert_eq!(event_run_id, run_id);
+                assert_eq!(seq, 1);
+                let preview = preview.expect("preview present");
+                assert_eq!(
+                    observation_len,
+                    Some(stored.len() as u64),
+                    "total is byte-exact"
+                );
+                assert!(observation_truncated);
+                assert!(preview.len() < stored.len(), "preview must bound the frame");
+                assert!(
+                    preview.chars().count() <= MAX_STEP_PREVIEW_CHARS + 64,
+                    "preview stays near the bound, got {} chars",
+                    preview.chars().count()
+                );
+                let marker = format!("[truncated 1000 of {total_chars} bytes]");
+                assert!(
+                    preview.ends_with(&marker),
+                    "honest marker in the persist-cap vocabulary, got tail: {:?}",
+                    preview.chars().rev().take(60).collect::<String>()
+                );
+            }
+            other => panic!("expected StepRecorded, got: {other:?}"),
+        }
+    }
+
+    /// NEX-PERF-003: short step text streams byte-identical (preview == full,
+    /// not truncated, total == bytes) — the common case is untouched.
+    #[test]
+    fn short_observation_streams_verbatim_with_exact_length() {
+        let db = in_memory_database();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut record =
+            ActiveRunRecord::start(RunRecorder::new(&db).with_events(&tx), "m", "supervised");
+        record.model_turn("thinking out loud", Some(7));
+        match rx.try_recv().expect("step emits") {
+            AgentRunEvent::StepRecorded {
+                observation,
+                observation_len,
+                observation_truncated,
+                ..
+            } => {
+                assert_eq!(observation.as_deref(), Some("thinking out loud"));
+                assert_eq!(observation_len, Some("thinking out loud".len() as u64));
+                assert!(!observation_truncated);
+            }
+            other => panic!("expected StepRecorded, got: {other:?}"),
+        }
+    }
+
+    /// NEX-PERF-003 + NEX-SEC-003: the preview is derived from the
+    /// *sanitized* text — a redacted observation previews the redaction,
+    /// and the total counts the sanitized bytes, so no secret crosses IPC
+    /// even in preview form.
+    #[test]
+    fn preview_is_derived_from_sanitized_text_never_raw() {
+        const SENTINEL: &str = "sk-ant-preview-sentinel-0123456789abcdef";
+        let db = in_memory_database();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut record =
+            ActiveRunRecord::start(RunRecorder::new(&db).with_events(&tx), "m", "supervised");
+        let run_id = record.run_id.expect("run row persisted at start");
+
+        let call = ToolCall {
+            id: "c1".to_string(),
+            name: "read_file".to_string(),
+            arguments: r#"{"path": "keys.txt"}"#.to_string(),
+            thought_signature: None,
+        };
+        // Long enough to force a preview cut, with the sentinel past the cut
+        // so a pre-redaction preview would leak it.
+        let observation = format!("{}{SENTINEL}", "p".repeat(MAX_STEP_PREVIEW_CHARS));
+        record.tool_call(&call, &observation, "succeeded", None);
+
+        let runs = AgentRunRepository::new(&db);
+        let stored = runs.list_steps(run_id).expect("steps")[0]
+            .observation
+            .clone()
+            .expect("stored");
+        assert!(!stored.contains(SENTINEL), "stored text is sanitized first");
+        match rx.try_recv().expect("step emits") {
+            AgentRunEvent::StepRecorded {
+                observation,
+                observation_len,
+                ..
+            } => {
+                let preview = observation.expect("preview present");
+                assert!(
+                    !preview.contains(SENTINEL),
+                    "preview must not leak pre-redaction text"
+                );
+                assert_eq!(observation_len, Some(stored.len() as u64));
+                assert!(
+                    stored.starts_with(&preview[..preview.len().min(stored.len())])
+                        || preview.len() <= stored.len() + 64,
+                    "preview derives from the stored text"
+                );
+            }
+            other => panic!("expected StepRecorded, got: {other:?}"),
+        }
+    }
+
+    /// NEX-PERF-003: `step_preview` never splits UTF-8 and reports the marker
+    /// in bytes — the same unit as `observation_len` and the UI button.
+    #[test]
+    fn step_preview_keeps_char_boundaries_and_marker_vocabulary() {
+        let text = "é".repeat(MAX_STEP_PREVIEW_CHARS + 10);
+        let (preview, total_bytes, truncated) = step_preview(&text);
+        assert!(truncated);
+        assert_eq!(total_bytes, text.len() as u64, "bytes, not chars");
+        assert!(
+            preview.starts_with(&"é".repeat(MAX_STEP_PREVIEW_CHARS)),
+            "cut lands on a char boundary"
+        );
+        // "é" is 2 bytes: 2000 kept chars = 4000 kept bytes, 10 omitted
+        // chars = 20 omitted bytes, 4020 total bytes.
+        let total = text.len() as u64;
+        let omitted = total - "é".repeat(MAX_STEP_PREVIEW_CHARS).len() as u64;
+        assert!(
+            preview.ends_with(&format!("[truncated {omitted} of {total} bytes]")),
+            "byte-unit marker, got tail: {:?}",
+            preview.chars().rev().take(60).collect::<String>()
+        );
+        // Short text round-trips byte-identical.
+        let (same, len, cut) = step_preview("plain");
+        assert_eq!(same, "plain");
+        assert_eq!(len, 5);
+        assert!(!cut);
     }
 
     /// NEX-SEC-003 negative control: short benign step text round-trips

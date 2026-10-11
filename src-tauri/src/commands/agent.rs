@@ -45,7 +45,7 @@ use crate::application::agent::spend::SpendDashboard;
 use crate::application::conversations::ConversationService;
 use crate::application::execution::{ExecutorRegistry, RequestError, RequestExecutionService};
 use crate::infrastructure::database::Database;
-use crate::infrastructure::repository::agent_runs::{AgentRun, AgentStep};
+use crate::infrastructure::repository::agent_runs::AgentRun;
 
 use super::error::{CommandError, ErrorKind};
 
@@ -483,12 +483,45 @@ pub(crate) fn list_agent_runs(
 }
 
 /// Rehydration: the steps of one run, `seq` ASC.
+///
+/// NEX-PERF-003: each item carries a *bounded preview* of its observation
+/// plus the byte-exact total — never the full output — so rehydration stays
+/// bounded no matter how long the run is. The full sanitized text of any
+/// step is one [`get_agent_step_observation`] call away.
 #[tauri::command]
 pub(crate) fn list_agent_steps(
     run_id: i64,
     db: State<'_, Database>,
-) -> Result<Vec<AgentStep>, CommandError> {
+) -> Result<Vec<service::AgentStepListItem>, CommandError> {
     service::list_steps_for_run(db.inner(), run_id).map_err(Into::into)
+}
+
+/// On-demand full step text (NEX-PERF-003): the complete sanitized
+/// `observation` of one `agent_steps` row by its surrogate `id`.
+///
+/// Step frames and step-list items carry only bounded previews; this is the
+/// command that recovers the full text when the user explicitly expands a
+/// step. Thin translation only: the application layer reads the row and this
+/// command maps the missing-row case onto an honest secret-free not-found
+/// error carrying only the id (mirroring the `inspect_run` not-found shape).
+///
+/// # Errors
+///
+/// Returns a classified [`CommandError`] for unknown step ids (`NotFound`)
+/// or persistence failures (`Database`, via the shared mapping). The error
+/// text carries only the id — never step content, SQL, or credentials.
+#[tauri::command]
+pub(crate) fn get_agent_step_observation(
+    step_id: i64,
+    db: State<'_, Database>,
+) -> Result<String, CommandError> {
+    match service::get_step_observation_for(db.inner(), step_id).map_err(CommandError::from)? {
+        Some(text) => Ok(text),
+        None => Err(CommandError::new(
+            ErrorKind::NotFound,
+            format!("no agent step with id {step_id}"),
+        )),
+    }
 }
 
 /// Read-only run inspector (WS-D.1): aggregate one run's persisted row and
@@ -1044,7 +1077,7 @@ mod tests {
     /// no missing key.
     #[test]
     fn agent_command_arg_keys_match_rust_params() {
-        const AGENT_COMMANDS: [(&str, &[&str]); 15] = [
+        const AGENT_COMMANDS: [(&str, &[&str]); 16] = [
             (
                 "start_agent_run",
                 &["conversationId", "content", "provider", "model"],
@@ -1057,6 +1090,7 @@ mod tests {
             ("extend_agent_run", &["runId", "extraSteps"]),
             ("list_agent_runs", &["conversationId"]),
             ("list_agent_steps", &["runId"]),
+            ("get_agent_step_observation", &["stepId"]),
             ("inspect_run", &["runId"]),
             ("spend_dashboard", &["runId"]),
             ("activity_feed", &["limit"]),

@@ -367,6 +367,27 @@ impl AgentRunRepository<'_> {
         Ok(updated)
     }
 
+    /// Read the full sanitized `observation` of one `agent_steps` row by its
+    /// surrogate `id` (NEX-PERF-003 on-demand fetch behind
+    /// `get_agent_step_observation`).
+    ///
+    /// Returns `Ok(None)` when no step with `id` exists. The text is exactly
+    /// what [`append_step`](Self::append_step) stored (sanitized + bounded
+    /// at insert), so this never re-exposes pre-redaction content.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DatabaseError`] if the read fails.
+    pub(crate) fn read_step_observation(&self, step_id: i64) -> Result<Option<String>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare("SELECT observation FROM agent_steps WHERE id = ?1")?;
+        let mut rows = stmt.query([step_id])?;
+        match rows.next()? {
+            Some(row) => Ok(row.get(0)?),
+            None => Ok(None),
+        }
+    }
+
     /// List the recorded steps of one run ordered by `seq` (DATABASE.md
     /// §7.9, §8).
     ///
