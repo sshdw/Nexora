@@ -4,7 +4,9 @@ use std::path::Path;
 use std::sync::mpsc::Sender;
 use std::time::Instant;
 
-use crate::application::agent::approval::{ApprovalDecision, ApprovalGate, AutonomyMode};
+#[cfg(test)]
+use crate::application::agent::approval::AutonomyMode;
+use crate::application::agent::approval::{ApprovalDecision, ApprovalGate, RiskClass};
 use crate::application::agent::control::{AgentRunEvent, CancellationToken, RunControl};
 use crate::application::agent::governance::{audit, AuditEvent, AuditLog, GateOutcome};
 use crate::application::agent::injection;
@@ -221,6 +223,7 @@ fn dispatch_one(
                 record,
                 &call_group_key,
                 call_group_size,
+                None,
             )? {
                 return Ok(());
             }
@@ -241,21 +244,58 @@ fn dispatch_one(
     if handle_sticky_group_decision(ctx, call, messages, record, &call_group_key) {
         return Ok(());
     }
-    if handle_permission_store_decision(ctx, call, messages, record, request_path.as_deref()) {
-        return Ok(());
-    }
-    if !park_for_approval(
-        ctx,
-        call,
-        messages,
-        record,
-        &call_group_key,
-        call_group_size,
-    )? {
-        return Ok(());
+    match handle_permission_store_decision(ctx, call, messages, record, request_path.as_deref()) {
+        StoreAction::Done => return Ok(()),
+        action => {
+            if !dispatch_store_action(
+                ctx,
+                call,
+                messages,
+                record,
+                &call_group_key,
+                call_group_size,
+                action,
+            )? {
+                return Ok(());
+            }
+        }
     }
     execute_tool_call(ctx, call, messages, record, &call_group_key);
     Ok(())
+}
+
+/// Continue dispatch after the permission store (NEX-AGENT-012): park
+/// unconditionally for an `Ask` rule, or run the approval ladder otherwise.
+/// Returns `Ok(true)` when the call may proceed, `Ok(false)` when it becomes
+/// a denial observation, and `Err(Cancelled)` when cancellation ended a park.
+fn dispatch_store_action(
+    ctx: &DispatchCtx<'_>,
+    call: &ToolCall,
+    messages: &mut Vec<AiMessage>,
+    record: &mut Option<&mut ActiveRunRecord<'_>>,
+    group_key: &str,
+    group_size: usize,
+    action: StoreAction,
+) -> Result<bool, AgentError> {
+    match action {
+        StoreAction::Done => Ok(true),
+        StoreAction::ParkForAsk { rule_id } => {
+            // An `Ask` rule records explicit "ask me" consent for this
+            // pattern, so it parks unconditionally — even where the ladder
+            // would auto-execute. The eventual approval step names the
+            // asking rule (honest surfacing).
+            park_call(ctx, call, messages, record, group_key, group_size, rule_id)
+        }
+        StoreAction::Continue { considered_rule } => park_for_approval(
+            ctx,
+            call,
+            messages,
+            record,
+            group_key,
+            group_size,
+            considered_rule,
+        ),
+    }
 }
 
 fn handle_sticky_group_decision(
@@ -302,13 +342,30 @@ fn handle_sticky_group_decision(
     false
 }
 
+/// What the permission store decided for one tool call (NEX-AGENT-012: a
+/// stored rule never upgrades autonomy on its own).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StoreAction {
+    /// The store fully handled the call (denied, executed via an
+    /// authorizing `Allow`, or fail-closed with no gate to ask).
+    Done,
+    /// An `Ask` rule matched: park unconditionally for an explicit decision,
+    /// naming the asking rule on the eventual approval step.
+    ParkForAsk { rule_id: Option<i64> },
+    /// Fall through to the approval ladder. `considered_rule` names an
+    /// `Allow` rule that matched but did not authorize execution, so the
+    /// eventual park honestly records which rule caused it (`None` when no
+    /// rule was considered).
+    Continue { considered_rule: Option<i64> },
+}
+
 fn handle_permission_store_decision(
     ctx: &DispatchCtx<'_>,
     call: &ToolCall,
     messages: &mut Vec<AiMessage>,
     record: &mut Option<&mut ActiveRunRecord<'_>>,
     request_path: Option<&str>,
-) -> bool {
+) -> StoreAction {
     // M1-core: persistent rules before the gate. Unknown tools skip the store.
     if permissions::is_known_tool(&call.name) {
         if let Some(store) = ctx.permission_store {
@@ -316,11 +373,8 @@ fn handle_permission_store_decision(
                 ctx.preset.as_str(),
                 &call.name,
                 request_path,
-                crate::application::agent::approval::RiskClass::classify(&call.name),
+                RiskClass::classify(&call.name),
             ) {
-                let mode = ctx
-                    .approval_gate
-                    .map_or(AutonomyMode::Supervised, ApprovalGate::mode);
                 match outcome {
                     PermissionOutcome::Deny { rule_id, .. } => {
                         if let Some(rec) = record.as_mut() {
@@ -331,10 +385,23 @@ fn handle_permission_store_decision(
                             );
                         }
                         messages.push(denied_tool_message(call));
-                        return true;
+                        return StoreAction::Done;
                     }
                     PermissionOutcome::Allow { rule_id } => {
-                        if !matches!(mode, AutonomyMode::Supervised) {
+                        // NEX-AGENT-012: a stored `Allow` never upgrades
+                        // autonomy. It authorizes execution only where the
+                        // ladder already auto-executes — and never for the
+                        // shell (NEX-SEC-001 deny-floor: even a legacy shell
+                        // `allow` row must not pass). Elsewhere the call
+                        // falls through to the ladder park below, honestly
+                        // naming the considered rule.
+                        let ladder_auto = ctx
+                            .approval_gate
+                            .as_ref()
+                            .is_some_and(|gate| !gate.needs_approval(call));
+                        let shell =
+                            matches!(RiskClass::classify(&call.name), RiskClass::DangerousShell);
+                        if ladder_auto && !shell {
                             let dispatch_started = Instant::now();
                             let outcome = ToolRegistry::execute_with_cancellation(
                                 call,
@@ -354,44 +421,45 @@ fn handle_permission_store_decision(
                                     StepProvenance::rule(rule_id),
                                 );
                             }
-                            return true;
+                            return StoreAction::Done;
                         }
+                        log::debug!(
+                            "permission store: allow rule {} matched for '{}' but does not authorize execution in this mode; parking for consent",
+                            rule_id.unwrap_or(-1),
+                            call.name
+                        );
+                        return StoreAction::Continue {
+                            considered_rule: rule_id,
+                        };
                     }
                     PermissionOutcome::Ask { rule_id } => {
-                        // NEX-SEC-001 shell deny-floor: an `Ask` rule for
-                        // `execute_command` never collapses to execute, in
-                        // any mode. Fall through to the ladder below, which
-                        // always parks the shell for an explicit decision.
-                        if matches!(mode, AutonomyMode::FullAutonomous)
-                            && call.name != "execute_command"
-                        {
-                            let dispatch_started = Instant::now();
-                            let outcome = ToolRegistry::execute_with_cancellation(
-                                call,
-                                ctx.workspace_root,
-                                ctx.token,
-                            );
-                            let dispatch_ms = i64::try_from(dispatch_started.elapsed().as_millis())
-                                .unwrap_or(i64::MAX);
-                            let (observation, tool_status) = classify_outcome(outcome, ctx.token);
-                            messages.push(observation_message(ctx, call, &observation));
+                        // NEX-AGENT-012: an `Ask` rule records explicit "ask
+                        // me" consent for this pattern, so it always parks —
+                        // in every mode, including `FullAutonomous` (the
+                        // NEX-SEC-001 deny-floor principle: a mode must not
+                        // silently upgrade a recorded ask into execute).
+                        // Without a gate nobody can approve, so fail closed
+                        // with the frozen denial observation.
+                        if ctx.approval_gate.is_none() {
+                            messages.push(denied_tool_message(call));
                             if let Some(rec) = record.as_mut() {
-                                rec.tool_call_with_provenance(
+                                rec.approval_with_provenance(
                                     call,
-                                    &observation,
-                                    tool_status,
-                                    Some(dispatch_ms),
+                                    false,
                                     StepProvenance::rule(rule_id),
                                 );
                             }
-                            return true;
+                            return StoreAction::Done;
                         }
+                        return StoreAction::ParkForAsk { rule_id };
                     }
                 }
             }
         }
     }
-    false
+    StoreAction::Continue {
+        considered_rule: None,
+    }
 }
 
 fn park_for_approval(
@@ -401,14 +469,25 @@ fn park_for_approval(
     record: &mut Option<&mut ActiveRunRecord<'_>>,
     group_key: &str,
     group_size: usize,
+    considered_rule: Option<i64>,
 ) -> Result<bool, AgentError> {
     // Task 4.1: approval gate evaluated at the per-tool-call
     // boundary, before dispatch. Auto paths execute exactly as
     // before; denied calls become a controlled observation and the
-    // loop continues; cancellation while parked aborts.
+    // loop continues; cancellation while parked aborts. `considered_rule`
+    // names a permission rule that matched but did not authorize execution
+    // (NEX-AGENT-012 honest surfacing on the eventual approval step).
     if let Some(gate) = ctx.approval_gate {
         if gate.needs_approval(call) {
-            return park_call(ctx, call, messages, record, group_key, group_size);
+            return park_call(
+                ctx,
+                call,
+                messages,
+                record,
+                group_key,
+                group_size,
+                considered_rule,
+            );
         }
     }
     Ok(true)
@@ -433,6 +512,7 @@ fn park_call(
     record: &mut Option<&mut ActiveRunRecord<'_>>,
     group_key: &str,
     group_size: usize,
+    considered_rule: Option<i64>,
 ) -> Result<bool, AgentError> {
     if let Some(gate) = ctx.approval_gate {
         // INVARIANT: once ApprovalRequested is emitted, a pending entry for that call_id exists,
@@ -486,9 +566,16 @@ fn park_call(
             return Err(AgentError::Cancelled);
         };
         let approved = matches!(decision, ApprovalDecision::Approved);
-        // Task 4.2: record the parked approval decision (D12).
+        // Task 4.2: record the parked approval decision (D12). A rule that
+        // matched but did not authorize execution stays named on the step
+        // (NEX-AGENT-012 honest surfacing: the user decided, the rule caused
+        // the park).
         if let Some(rec) = record.as_mut() {
-            rec.approval_with_provenance(call, approved, StepProvenance::user(Some(group_key)));
+            rec.approval_with_provenance(
+                call,
+                approved,
+                StepProvenance::user_with_rule(Some(group_key), considered_rule),
+            );
         }
         super::lifecycle::observe_transition(
             super::lifecycle::RunState::AwaitingApproval,
@@ -1530,7 +1617,7 @@ mod tests {
     fn supervised_ignores_allow_rules() {
         let db = in_memory_database();
         let ws = temp_workspace();
-        crate::application::agent::permissions::insert_rule(
+        let allow_id = crate::application::agent::permissions::insert_rule(
             &db,
             "coding",
             "write_file",
@@ -1579,7 +1666,8 @@ mod tests {
         assert_eq!(answer, "ok");
         driver.join().expect("driver joins");
         assert_eq!(fs::read_to_string(ws.join("supervised.txt")).unwrap(), "1");
-        // Parked approval carries user provenance, not rule.
+        // The park resolves by user decision, but the ledger honestly names
+        // the considered allow rule (NEX-AGENT-012 surfacing).
         let runs = AgentRunRepository::new(&db);
         let run = &runs.list_runs_by_started_at_desc().expect("list")[0];
         let steps = runs.list_steps(run.id).expect("steps");
@@ -1588,7 +1676,7 @@ mod tests {
             .find(|s| s.kind == "approval")
             .expect("approval step");
         assert_eq!(approval.decided_by.as_deref(), Some("user"));
-        assert_eq!(approval.rule_id, None);
+        assert_eq!(approval.rule_id, Some(allow_id));
         let _ = fs::remove_dir_all(&ws);
     }
 
@@ -1664,13 +1752,17 @@ mod tests {
     }
 
     #[test]
-    fn allow_rule_skips_park_with_rule_provenance() {
+    fn allow_rule_where_ladder_auto_executes_keeps_rule_provenance() {
+        // NEX-AGENT-012: an `Allow` rule authorizes execution exactly where
+        // the ladder already auto-executes (here: a read under
+        // `SemiAutonomous`) — no park, rule provenance on the tool step.
         let db = in_memory_database();
         let ws = temp_workspace();
+        fs::write(ws.join("allowed.txt"), "seeded").expect("seed");
         let allow_id = crate::application::agent::permissions::insert_rule(
             &db,
             "coding",
-            "write_file",
+            "read_file",
             None,
             RuleEffect::Allow,
             10,
@@ -1683,9 +1775,9 @@ mod tests {
                 content: String::new(),
                 model: "m".to_string(),
                 tool_calls: vec![approval_call(
-                    "w1",
-                    "write_file",
-                    serde_json::json!({"path": "allowed.txt", "content": "ok"}),
+                    "r1",
+                    "read_file",
+                    serde_json::json!({"path": "allowed.txt"}),
                 )],
                 usage: None,
             }),
@@ -1698,7 +1790,6 @@ mod tests {
             .with_event_sender(tx);
         let answer = runner.run("openai", "m", "cred", "q").expect("completes");
         assert_eq!(answer, "done");
-        assert_eq!(fs::read_to_string(ws.join("allowed.txt")).unwrap(), "ok");
         // No park: no ApprovalRequested event.
         let mut saw_approval = false;
         while let Ok(ev) = rx.try_recv() {
@@ -1716,6 +1807,152 @@ mod tests {
             .expect("tool step");
         assert_eq!(tool.rule_id, Some(allow_id));
         assert_eq!(tool.decided_by.as_deref(), Some("rule"));
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn allow_rule_does_not_bypass_ladder_park() {
+        // NEX-AGENT-012 acceptance: a stored `Allow` outside `Supervised`
+        // still parks for consent where the ladder parks (here: a mutating
+        // write under `SemiAutonomous`). The rule silently upgrading autonomy
+        // is the finding; the approval step names the considered rule.
+        let db = in_memory_database();
+        let ws = temp_workspace();
+        let allow_id = crate::application::agent::permissions::insert_rule(
+            &db,
+            "coding",
+            "write_file",
+            None,
+            RuleEffect::Allow,
+            10,
+        )
+        .expect("insert allow");
+        let store = PermissionStore::load(&db);
+        let gate = ApprovalGate::new(AutonomyMode::SemiAutonomous);
+        let gate_for_driver = gate.clone();
+        let (tx, rx) = channel();
+        let fake = FakeExecutor::new(vec![
+            Ok(AiResponse {
+                content: String::new(),
+                model: "m".to_string(),
+                tool_calls: vec![approval_call(
+                    "w1",
+                    "write_file",
+                    serde_json::json!({"path": "consented.txt", "content": "ok"}),
+                )],
+                usage: None,
+            }),
+            Ok(text_response("done")),
+        ]);
+        let runner = AgentRunner::new(&fake, &ws)
+            .with_approval_gate(gate)
+            .with_permission_store(store)
+            .with_run_recorder(RunRecorder::new(&db))
+            .with_event_sender(tx);
+        let driver = thread::spawn(move || {
+            let ev = rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("ApprovalRequested");
+            assert!(
+                matches!(ev, AgentRunEvent::ApprovalRequested { ref call_id, .. } if call_id == "w1"),
+                "Allow + SemiAutonomous mutating call still parks, got {ev:?}"
+            );
+            assert!(gate_for_driver.respond("w1", ApprovalDecision::Approved));
+            rx.recv_timeout(Duration::from_secs(5))
+                .expect("ApprovalResolved");
+            rx.recv_timeout(Duration::from_secs(5)).expect("Completed")
+        });
+        let answer = runner.run("openai", "m", "cred", "q").expect("completes");
+        assert_eq!(answer, "done");
+        driver.join().expect("driver joins");
+        assert_eq!(fs::read_to_string(ws.join("consented.txt")).unwrap(), "ok");
+        // Honest surfacing: the user decided, the allow rule caused the park.
+        let runs = AgentRunRepository::new(&db);
+        let run = &runs.list_runs_by_started_at_desc().expect("list")[0];
+        let steps = runs.list_steps(run.id).expect("steps");
+        let approval = steps
+            .iter()
+            .find(|s| s.kind == "approval")
+            .expect("approval step");
+        assert_eq!(approval.status.as_deref(), Some("succeeded"));
+        assert_eq!(approval.decided_by.as_deref(), Some("user"));
+        assert_eq!(approval.rule_id, Some(allow_id));
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn allow_rule_never_authorizes_shell() {
+        // NEX-SEC-001 deny-floor via NEX-AGENT-012: even a legacy stored
+        // `allow` row for the shell must not execute it — `FullAutonomous` +
+        // coding preset parks the shell for an explicit decision.
+        let db = in_memory_database();
+        let ws = temp_workspace();
+        let allow_id = crate::application::agent::permissions::insert_rule(
+            &db,
+            "coding",
+            "execute_command",
+            None,
+            RuleEffect::Allow,
+            10,
+        )
+        .expect("insert legacy shell allow");
+        let store = PermissionStore::load(&db);
+        let gate = ApprovalGate::new(AutonomyMode::FullAutonomous);
+        let gate_for_driver = gate.clone();
+        let (tx, rx) = channel();
+        let fake = FakeExecutor::new(vec![
+            Ok(AiResponse {
+                content: String::new(),
+                model: "m".to_string(),
+                tool_calls: vec![approval_call(
+                    "s1",
+                    "execute_command",
+                    serde_json::json!({"command": "echo hi"}),
+                )],
+                usage: None,
+            }),
+            Ok(text_response("recovered")),
+        ]);
+        let runner = AgentRunner::new(&fake, &ws)
+            .with_approval_gate(gate)
+            .with_permission_store(store)
+            .with_run_recorder(RunRecorder::new(&db))
+            .with_event_sender(tx);
+        let driver = thread::spawn(move || {
+            let ev = rx.recv_timeout(Duration::from_secs(5)).expect("requested");
+            assert!(
+                matches!(ev, AgentRunEvent::ApprovalRequested { ref name, .. } if name=="execute_command"),
+                "shell Allow must park even in FullAutonomous, got {ev:?}"
+            );
+            gate_for_driver.respond("s1", ApprovalDecision::Denied);
+            let ev2 = rx.recv_timeout(Duration::from_secs(5)).expect("resolved");
+            assert!(matches!(
+                ev2,
+                AgentRunEvent::ApprovalResolved {
+                    approved: false,
+                    ..
+                }
+            ));
+            rx.recv_timeout(Duration::from_secs(5)).expect("completed")
+        });
+        let answer = runner.run("openai", "m", "cred", "q").expect("completes");
+        assert_eq!(answer, "recovered");
+        driver.join().expect("driver");
+        // Honest surfacing on the denial step.
+        let runs = AgentRunRepository::new(&db);
+        let run = &runs.list_runs_by_started_at_desc().expect("list")[0];
+        let steps = runs.list_steps(run.id).expect("steps");
+        let approval = steps
+            .iter()
+            .find(|s| s.kind == "approval")
+            .expect("approval step");
+        assert_eq!(approval.status.as_deref(), Some("denied"));
+        assert_eq!(approval.decided_by.as_deref(), Some("user"));
+        assert_eq!(approval.rule_id, Some(allow_id));
+        assert!(
+            !steps.iter().any(|s| s.kind == "tool_call"),
+            "denied shell is never dispatched, got {steps:?}"
+        );
         let _ = fs::remove_dir_all(&ws);
     }
 
@@ -1896,9 +2133,10 @@ mod tests {
     }
 
     #[test]
-    fn ask_rule_on_search_files_auto_runs_under_full_autonomous() {
-        // FullAutonomous treats Ask as Allow (mode override pinned for the
-        // newly covered tool): no park, rule provenance on the tool step.
+    fn ask_rule_parks_under_full_autonomous() {
+        // NEX-AGENT-012 acceptance: `FullAutonomous` no longer treats `Ask`
+        // as `Allow` — the recorded "ask me" parks for an explicit decision,
+        // naming the asking rule on the approval step.
         let db = in_memory_database();
         let ws = temp_workspace();
         fs::write(ws.join("hay.txt"), "needle in haystack\n").expect("seed");
@@ -1912,6 +2150,8 @@ mod tests {
         )
         .expect("insert ask");
         let store = PermissionStore::load(&db);
+        let gate = ApprovalGate::new(AutonomyMode::FullAutonomous);
+        let gate_clone = gate.clone();
         let (tx, rx) = channel();
         let fake = FakeExecutor::new(vec![
             Ok(AiResponse {
@@ -1924,32 +2164,124 @@ mod tests {
                 )],
                 usage: None,
             }),
-            Ok(text_response("done")),
+            Ok(text_response("recovered")),
         ]);
         let runner = AgentRunner::new(&fake, &ws)
-            .with_approval_gate(ApprovalGate::new(AutonomyMode::FullAutonomous))
+            .with_approval_gate(gate_clone)
             .with_permission_store(store)
             .with_run_recorder(RunRecorder::new(&db))
             .with_event_sender(tx);
+        let gate_for_driver = gate.clone();
+        let driver = thread::spawn(move || {
+            let ev = rx.recv_timeout(Duration::from_secs(5)).expect("requested");
+            assert!(
+                matches!(ev, AgentRunEvent::ApprovalRequested { ref name, .. } if name=="search_files"),
+                "Ask + FullAutonomous must park, got {ev:?}"
+            );
+            gate_for_driver.respond("s1", ApprovalDecision::Denied);
+            let ev2 = rx.recv_timeout(Duration::from_secs(5)).expect("resolved");
+            assert!(matches!(
+                ev2,
+                AgentRunEvent::ApprovalResolved {
+                    approved: false,
+                    ..
+                }
+            ));
+            rx.recv_timeout(Duration::from_secs(5)).expect("completed")
+        });
         let answer = runner.run("openai", "m", "cred", "q").expect("completes");
-        assert_eq!(answer, "done");
-        let mut saw_approval = false;
-        while let Ok(ev) = rx.try_recv() {
-            if matches!(ev, AgentRunEvent::ApprovalRequested { .. }) {
-                saw_approval = true;
-            }
-        }
-        assert!(!saw_approval, "Ask + FullAutonomous must not park");
+        assert_eq!(answer, "recovered");
+        driver.join().expect("driver");
         let runs = AgentRunRepository::new(&db);
         let run = &runs.list_runs_by_started_at_desc().expect("list")[0];
         let steps = runs.list_steps(run.id).expect("steps");
-        let tool = steps
+        let approval = steps
             .iter()
-            .find(|s| s.kind == "tool_call")
-            .expect("tool step");
-        assert_eq!(tool.rule_id, Some(ask_id));
-        assert_eq!(tool.decided_by.as_deref(), Some("rule"));
+            .find(|s| s.kind == "approval")
+            .expect("approval step");
+        assert_eq!(approval.status.as_deref(), Some("denied"));
+        assert_eq!(approval.decided_by.as_deref(), Some("user"));
+        assert_eq!(approval.rule_id, Some(ask_id));
+        assert!(
+            !steps.iter().any(|s| s.kind == "tool_call"),
+            "denied ask is never dispatched"
+        );
         let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn ask_rule_parks_in_every_mode_for_ladder_auto_tools() {
+        // NEX-AGENT-012 rule x mode table for a non-shell `Ask`: even where
+        // the ladder auto-executes (reads under Semi/Full), the recorded ask
+        // parks. Each mode run denies and recovers.
+        for mode in [
+            AutonomyMode::Supervised,
+            AutonomyMode::SemiAutonomous,
+            AutonomyMode::FullAutonomous,
+        ] {
+            let db = in_memory_database();
+            let ws = temp_workspace();
+            fs::write(ws.join("probe.txt"), "seeded").expect("seed probe");
+            let ask_id = crate::application::agent::permissions::insert_rule(
+                &db,
+                "coding",
+                "read_file",
+                None,
+                RuleEffect::Ask,
+                10,
+            )
+            .expect("insert ask");
+            let store = PermissionStore::load(&db);
+            let gate = ApprovalGate::new(mode);
+            let gate_clone = gate.clone();
+            let (tx, rx) = channel();
+            let fake = FakeExecutor::new(vec![
+                Ok(AiResponse {
+                    content: String::new(),
+                    model: "m".to_string(),
+                    tool_calls: vec![approval_call(
+                        "r1",
+                        "read_file",
+                        serde_json::json!({"path": "probe.txt"}),
+                    )],
+                    usage: None,
+                }),
+                Ok(text_response("recovered")),
+            ]);
+            let runner = AgentRunner::new(&fake, &ws)
+                .with_approval_gate(gate_clone)
+                .with_permission_store(store)
+                .with_run_recorder(RunRecorder::new(&db))
+                .with_event_sender(tx);
+            let gate_for_driver = gate.clone();
+            let driver = thread::spawn(move || {
+                let ev = rx.recv_timeout(Duration::from_secs(5)).expect("requested");
+                assert!(
+                    matches!(ev, AgentRunEvent::ApprovalRequested { .. }),
+                    "mode={mode:?}: non-shell Ask must park, got {ev:?}"
+                );
+                gate_for_driver.respond("r1", ApprovalDecision::Denied);
+                rx.recv_timeout(Duration::from_secs(5)).expect("resolved");
+                rx.recv_timeout(Duration::from_secs(5)).expect("completed")
+            });
+            let answer = runner.run("openai", "m", "cred", "q").expect("completes");
+            assert_eq!(answer, "recovered");
+            driver.join().expect("driver");
+            let runs = AgentRunRepository::new(&db);
+            let run = &runs.list_runs_by_started_at_desc().expect("list")[0];
+            let steps = runs.list_steps(run.id).expect("steps");
+            let approval = steps
+                .iter()
+                .find(|s| s.kind == "approval")
+                .expect("approval step");
+            assert_eq!(approval.rule_id, Some(ask_id), "mode={mode:?}");
+            assert_eq!(
+                approval.decided_by.as_deref(),
+                Some("user"),
+                "mode={mode:?}"
+            );
+            let _ = fs::remove_dir_all(&ws);
+        }
     }
 
     #[test]
@@ -2255,9 +2587,9 @@ mod tests {
     fn shell_ask_rule_parks_in_every_mode() {
         // NEX-SEC-001 rule x mode table: an Ask rule for execute_command
         // never collapses to execute — it parks in Supervised,
-        // SemiAutonomous, AND FullAutonomous. (Non-shell Ask still
-        // collapses in FullAutonomous; pinned by
-        // `ask_rule_on_search_files_auto_runs_under_full_autonomous`.)
+        // SemiAutonomous, AND FullAutonomous. (Non-shell Ask parks in every
+        // mode too since NEX-AGENT-012; pinned by
+        // `ask_rule_parks_in_every_mode_for_ladder_auto_tools`.)
         for mode in [
             AutonomyMode::Supervised,
             AutonomyMode::SemiAutonomous,

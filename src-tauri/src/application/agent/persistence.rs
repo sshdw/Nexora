@@ -379,6 +379,19 @@ impl<'a> StepProvenance<'a> {
         }
     }
 
+    /// A parked user resolution where a permission rule matched but did not
+    /// authorize execution on its own (NEX-AGENT-012 honest surfacing): the
+    /// user decides (`decided_by='user'`), while `rule_id` names the
+    /// considered rule so the ledger shows which rule caused the park.
+    #[must_use]
+    pub(crate) const fn user_with_rule(group_key: Option<&'a str>, rule_id: Option<i64>) -> Self {
+        Self {
+            rule_id,
+            group_key,
+            decided_by: Some("user"),
+        }
+    }
+
     /// A permission-rule verdict.
     #[must_use]
     pub(crate) const fn rule(rule_id: Option<i64>) -> Self {

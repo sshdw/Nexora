@@ -153,6 +153,25 @@ impl AgentRunRegistry {
         }
     }
 
+    /// Read-only peek at a pending approval's `(tool_name, group_key)` without
+    /// resolving it (NEX-AGENT-023 scope confirmation): the confirm echo is
+    /// validated against this snapshot *before* the park is consumed, so a
+    /// mismatch fails closed with the park intact. Returns `None` when the
+    /// run is not active or has no such pending approval.
+    #[must_use]
+    pub(crate) fn pending_scope_info(
+        &self,
+        run_id: i64,
+        call_id: &str,
+    ) -> Option<(String, Option<String>)> {
+        let runs = self
+            .runs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entry = runs.get(&run_id)?;
+        entry.gate.pending_info(call_id)
+    }
+
     /// Grant additional iterations to a budget-parked (or running) run.
     /// Returns `false` when the run is not active.
     #[must_use]
@@ -350,6 +369,47 @@ mod tests {
         assert_eq!(
             reg.resolve(101, "parked-1", true),
             ResolveOutcome::NoPendingApproval
+        );
+    }
+
+    #[test]
+    fn pending_scope_info_peeks_without_consuming() {
+        // NEX-AGENT-023: the scope-confirmation peek observes the pending
+        // tool/group metadata without resolving the park.
+        let gate = crate::application::agent::approval::ApprovalGate::new(
+            crate::application::agent::approval::AutonomyMode::Supervised,
+        );
+        let control = crate::application::agent::control::RunControl::new();
+        let reg = AgentRunRegistry::default();
+        reg.register(
+            77,
+            ActiveAgentRun {
+                conversation_id: 1,
+                control,
+                gate: gate.clone(),
+            },
+        );
+        assert_eq!(reg.pending_scope_info(9999, "nope"), None);
+        assert_eq!(reg.pending_scope_info(77, "nope"), None);
+        let call = crate::application::execution::ToolCall {
+            id: "scoped-1".to_string(),
+            name: "write_file".to_string(),
+            arguments: "{}".to_string(),
+            thought_signature: None,
+        };
+        gate.prepare_pending_with_group(&call, Some("coding:write_file:docs".to_string()));
+        assert_eq!(
+            reg.pending_scope_info(77, "scoped-1"),
+            Some((
+                "write_file".to_string(),
+                Some("coding:write_file:docs".to_string())
+            ))
+        );
+        // The park is untouched: the pending entry (with no decision yet)
+        // survives the peek.
+        assert!(
+            gate.has_pending_for("scoped-1"),
+            "peek must not consume the park"
         );
     }
 }

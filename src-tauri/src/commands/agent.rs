@@ -261,8 +261,15 @@ pub(crate) fn cancel_agent_run(
 /// Resolve a parked approval (5.1 minimum; 5.2 polishes the UX).
 ///
 /// M1-core `scope`: `None`/`"single"` resolves one call; `"group"` records
-/// the verdict as the session-sticky decision for the call's group and, for
-/// approved non-shell groups, persists an `allow` rule (`priority=200`).
+/// the verdict as the session-sticky decision for the call's group (run
+/// lifetime only — it persists nothing). Persisting an `allow` rule for the
+/// group additionally requires an explicit scope confirmation,
+/// `"group:confirm:<exact-group-key>"` (NEX-AGENT-023): the confirmation must
+/// echo the pending call's group key exactly — proving the whitelisted scope
+/// was shown — otherwise the command fails closed (the park stays intact)
+/// with an error naming the expected scope. Shell groups never persist (they
+/// always park in every mode, including `FullAutonomous` (NEX-SEC-001
+/// deny-floor)).
 #[tauri::command]
 pub(crate) fn resolve_agent_approval(
     run_id: i64,
@@ -272,16 +279,47 @@ pub(crate) fn resolve_agent_approval(
     registry: State<'_, ManagedRegistry>,
     db: State<'_, Database>,
 ) -> Result<(), CommandError> {
-    let scope_ref = scope.as_deref();
-    if let Some(value) = scope_ref {
-        if value != "single" && value != "group" {
-            return Err(CommandError::new(
-                ErrorKind::InvalidInput,
-                "scope must be 'single' or 'group'",
-            ));
+    let parsed = parse_resolve_scope(scope.as_deref())?;
+    // NEX-AGENT-023: validate the scope confirmation against a read-only
+    // peek BEFORE the park is consumed, so a mismatch fails closed with the
+    // park intact and persists nothing.
+    let confirmed = match &parsed {
+        ResolveScope::ConfirmGroup { scope: echo } => {
+            let pending = registry.pending_scope_info(run_id, &call_id);
+            let Some((tool_name, group_key)) = pending else {
+                return Err(CommandError::new(
+                    ErrorKind::NotFound,
+                    "the run has no pending approval for that call",
+                ));
+            };
+            match permissions::confirm_group_scope(&tool_name, group_key.as_deref(), echo) {
+                Ok(confirmed) => Some(confirmed),
+                Err(permissions::GroupScopeError::ScopeMismatch { expected }) => {
+                    return Err(scope_mismatch_error(&expected));
+                }
+                Err(permissions::GroupScopeError::NoPendingGroup) => {
+                    return Err(CommandError::new(
+                        ErrorKind::InvalidInput,
+                        "the pending approval has no group scope to persist",
+                    ));
+                }
+                Err(permissions::GroupScopeError::ShellNeverPersists) => {
+                    return Err(CommandError::new(
+                        ErrorKind::InvalidInput,
+                        "persistent allow is not available for shell commands",
+                    ));
+                }
+            }
         }
-    }
-    let (outcome, pending) = registry.resolve_with_scope(run_id, &call_id, approved, scope_ref);
+        ResolveScope::Single | ResolveScope::Group => None,
+    };
+    let sticky = !matches!(parsed, ResolveScope::Single);
+    let (outcome, _) = registry.resolve_with_scope(
+        run_id,
+        &call_id,
+        approved,
+        if sticky { Some("group") } else { None },
+    );
     match outcome {
         ResolveOutcome::RunNotActive => Err(CommandError::new(
             ErrorKind::NotFound,
@@ -292,21 +330,12 @@ pub(crate) fn resolve_agent_approval(
             "the run has no pending approval for that call",
         )),
         ResolveOutcome::Resolved => {
-            // M1-core persistent "never ask for this pattern": group-scope
-            // approvals for non-shell tools persist an allow rule. Shell
-            // groups never persist (they always park in every mode,
-            // including FullAutonomous (NEX-SEC-001 deny-floor)).
-            if scope_ref == Some("group") && approved {
-                if let Some((tool_name, group_key)) = pending {
-                    if tool_name != "execute_command" {
-                        let path_pattern = group_path_pattern(group_key.as_deref());
-                        let _ = insert_group_allow_rule(
-                            db.inner(),
-                            group_preset(group_key.as_deref()),
-                            &tool_name,
-                            path_pattern.as_deref(),
-                        );
-                    }
+            // Persistence only after explicit scope confirmation (validated
+            // above): best-effort insert, so a duplicate row never fails the
+            // resolution — the session-sticky verdict already governs this run.
+            if approved {
+                if let Some(scope) = confirmed {
+                    let _ = permissions::insert_group_allow_rule(db.inner(), &scope);
                 }
             }
             Ok(())
@@ -314,48 +343,48 @@ pub(crate) fn resolve_agent_approval(
     }
 }
 
-/// Extract the rule `preset` from a `preset:tool:path` group key (T5: group
-/// keys are preset-scoped, so a document run's group approval persists a
-/// document-scoped rule). Unknown shapes fall back to `"coding"`, the
-/// pre-T5 behavior.
-fn group_preset(group_key: Option<&str>) -> &str {
-    match group_key.and_then(|key| key.split(':').next()) {
-        Some("document") => "document",
-        _ => "coding",
-    }
+/// Parsed `scope` for [`resolve_agent_approval`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResolveScope<'a> {
+    /// One call only (default).
+    Single,
+    /// Session-sticky group verdict for this run (persists nothing).
+    Group,
+    /// Sticky verdict plus a persistent `allow` rule — only when `scope`
+    /// echoes the pending group key exactly (NEX-AGENT-023).
+    ConfirmGroup { scope: &'a str },
 }
 
-/// Extract the rule `path_pattern` from a `preset:tool:path` group key.
-/// `*` path groups persist as `*` (match-any); otherwise the parent dir.
-fn group_path_pattern(group_key: Option<&str>) -> Option<String> {
-    let key = group_key?;
-    let mut parts = key.splitn(3, ':');
-    let _preset = parts.next()?;
-    let _tool = parts.next()?;
-    let path = parts.next()?;
-    if path == "*" || path.is_empty() {
-        Some("*".to_string())
-    } else {
-        Some(path.to_string())
-    }
+/// `InvalidInput` for a scope-confirmation mismatch (NEX-AGENT-023): names
+/// the server-derived expected scope so the UI can show exactly what needs
+/// confirming. Secret-free by construction: the expected scope is
+/// `preset:tool:dir` vocabulary already exposed on every `ApprovalRequested`
+/// event (caller input is never echoed back).
+fn scope_mismatch_error(expected: &str) -> CommandError {
+    CommandError::new(
+        ErrorKind::InvalidInput,
+        format!(
+            "scope confirmation does not match the pending approval group; expected '{expected}'"
+        ),
+    )
 }
 
-/// Best-effort insert of the group-allow rule (`effect='allow'`,
-/// `priority=200`). Failures (e.g. duplicate) are ignored: the session-sticky
-/// verdict already governs this run. Shell tools never persist (defense in
-/// depth alongside the caller's guard): shell groups always park in every
-/// mode, including `FullAutonomous` (NEX-SEC-001 deny-floor).
-fn insert_group_allow_rule(
-    db: &Database,
-    preset: &str,
-    tool_name: &str,
-    path_pattern: Option<&str>,
-) -> bool {
-    if tool_name == "execute_command" || tool_name == "*" {
-        return false;
+/// Parse the `scope` argument: `None`/`"single"`, `"group"`, or
+/// `"group:confirm:<exact-group-key>"`. Anything else is `InvalidInput`.
+/// Secret-free fixed vocabulary (caller input is never echoed back; a
+/// confirmation mismatch reports the server-derived expected scope).
+fn parse_resolve_scope(scope: Option<&str>) -> Result<ResolveScope<'_>, CommandError> {
+    match scope {
+        None | Some("single") => Ok(ResolveScope::Single),
+        Some("group") => Ok(ResolveScope::Group),
+        Some(rest) => match rest.strip_prefix("group:confirm:") {
+            Some(echo) if !echo.is_empty() => Ok(ResolveScope::ConfirmGroup { scope: echo }),
+            _ => Err(CommandError::new(
+                ErrorKind::InvalidInput,
+                "scope must be 'single', 'group', or 'group:confirm:<scope>'",
+            )),
+        },
     }
-    let pattern = path_pattern.unwrap_or("*");
-    permissions::insert_rule(db, preset, tool_name, Some(pattern), RuleEffect::Allow, 200).is_ok()
 }
 
 /// Grant `extra_steps` further iterations to a budget-parked (or running)
@@ -1099,10 +1128,19 @@ mod tests {
         // Non-shell allow validates.
         validate_new_rule("coding", "write_file", Some("*"), "allow")
             .expect("non-shell allow valid");
-        // Group path never persists shell-allow rows (the v7 seed is an
+        // Group scope-confirmation never whitelists the shell either
+        // (NEX-AGENT-023 + NEX-SEC-001 deny-floor): exact echo still refused,
+        // and the insert guard holds as defence in depth (the v7 seed is an
         // ask row for the shell, which must survive untouched).
+        assert_eq!(
+            permissions::confirm_group_scope(
+                "execute_command",
+                Some("coding:execute_command:*"),
+                "coding:execute_command:*",
+            ),
+            Err(permissions::GroupScopeError::ShellNeverPersists)
+        );
         let db = crate::infrastructure::database::in_memory_database();
-        insert_group_allow_rule(&db, "coding", "execute_command", Some("*"));
         let rules = permissions::list_rules(&db).expect("list rules");
         assert!(
             rules
@@ -1111,12 +1149,18 @@ mod tests {
                     && rule.effect == RuleEffect::Allow)),
             "no shell-allow row may persist via the group path, got {rules:?}"
         );
-        insert_group_allow_rule(&db, "coding", "write_file", Some("*"));
+        let confirmed = permissions::confirm_group_scope(
+            "write_file",
+            Some("coding:write_file:*"),
+            "coding:write_file:*",
+        )
+        .expect("non-shell scope confirms");
+        assert!(permissions::insert_group_allow_rule(&db, &confirmed));
         let rules = permissions::list_rules(&db).expect("list rules");
         let persisted = rules
             .iter()
             .find(|rule| rule.tool_pattern == "write_file")
-            .expect("write_file rule persisted via group path");
+            .expect("write_file rule persisted via confirmed group scope");
         assert_eq!(persisted.effect, RuleEffect::Allow);
         assert_eq!(persisted.priority, 200);
     }
@@ -1128,10 +1172,59 @@ mod tests {
             SOURCE.contains("resolve_with_scope("),
             "resolve_agent_approval must route group scope through the registry"
         );
+        // NEX-AGENT-023: bare group scope records the sticky verdict only;
+        // persistence additionally requires the exact-echo confirmation.
+        assert!(
+            SOURCE.contains("pending_scope_info("),
+            "scope confirmation must peek the pending group before resolving"
+        );
+        assert!(
+            SOURCE.contains("confirm_group_scope("),
+            "group-scope persistence requires explicit scope confirmation"
+        );
         assert!(
             SOURCE.contains("insert_group_allow_rule("),
-            "group-scope approvals must offer the persistent group-allow path"
+            "confirmed group scopes persist via the application-layer group-allow path"
         );
+    }
+
+    #[test]
+    fn parse_resolve_scope_accepts_only_single_group_and_confirm() {
+        // `None`/`"single"` resolve one call; `"group"` is sticky-only.
+        assert_eq!(
+            parse_resolve_scope(None).expect("none parses"),
+            ResolveScope::Single
+        );
+        assert_eq!(
+            parse_resolve_scope(Some("single")).expect("single parses"),
+            ResolveScope::Single
+        );
+        assert_eq!(
+            parse_resolve_scope(Some("group")).expect("group parses"),
+            ResolveScope::Group
+        );
+        // Confirmation carries the exact scope to whitelist.
+        assert_eq!(
+            parse_resolve_scope(Some("group:confirm:coding:write_file:docs"))
+                .expect("confirm parses"),
+            ResolveScope::ConfirmGroup {
+                scope: "coding:write_file:docs"
+            }
+        );
+        // Anything else is InvalidInput — a bare "approve group" intent never
+        // parses as a confirmation, so it can never persist a rule.
+        for bad in [
+            "",
+            "all",
+            "GROUP",
+            "group:confirm:",
+            "group:confirm",
+            "group:*",
+        ] {
+            let err = parse_resolve_scope(Some(bad)).expect_err("must reject {bad}");
+            assert_eq!(err.kind, ErrorKind::InvalidInput);
+            assert!(safe_message(&err));
+        }
     }
 
     #[test]
@@ -1153,30 +1246,17 @@ mod tests {
     }
 
     #[test]
-    fn group_preset_routes_rule_scope_from_group_key() {
-        // Group keys are preset-scoped (`preset:tool:path`), so a document
-        // run's group approval persists a document-scoped rule; unknown
-        // shapes keep the pre-T5 coding fallback.
-        assert_eq!(group_preset(Some("document:write_file:docs")), "document");
-        assert_eq!(group_preset(Some("coding:write_file:docs")), "coding");
-        assert_eq!(group_preset(Some("coding:write_file:*")), "coding");
-        assert_eq!(group_preset(None), "coding");
-        assert_eq!(group_preset(Some("bogus")), "coding");
-        assert_eq!(group_preset(Some("")), "coding");
-
-        let db = crate::infrastructure::database::in_memory_database();
-        assert!(insert_group_allow_rule(
-            &db,
-            group_preset(Some("document:write_file:docs")),
-            "write_file",
-            Some("docs"),
-        ));
-        let rules = permissions::list_rules(&db).expect("list rules");
-        let persisted = rules
-            .iter()
-            .find(|rule| rule.tool_pattern == "write_file")
-            .expect("write_file rule persisted via group path");
-        assert_eq!(persisted.preset, "document");
-        assert_eq!(persisted.effect, RuleEffect::Allow);
+    fn group_scope_mismatch_error_names_expected_scope() {
+        // NEX-AGENT-023 honest surfacing: a failed confirmation tells the
+        // caller the exact scope to confirm (server-derived, secret-free),
+        // so the UI can show it instead of silently whitelisting.
+        let err = scope_mismatch_error("coding:write_file:docs");
+        assert_eq!(err.kind, ErrorKind::InvalidInput);
+        assert!(
+            err.message.contains("coding:write_file:docs"),
+            "mismatch must name the expected scope, got: {}",
+            err.message
+        );
+        assert!(safe_message(&err));
     }
 }
