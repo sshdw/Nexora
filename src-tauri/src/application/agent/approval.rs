@@ -418,6 +418,11 @@ impl ApprovalGate {
             let now = Instant::now();
             if now >= deadline {
                 state.pending = None;
+                // Shutdown may have landed after the loop-top `is_cancelled`
+                // check (NEX-TASK-002): name the shutdown, never a timeout.
+                if self.is_shutdown() {
+                    return Err(ParkEnd::Shutdown);
+                }
                 return Err(ParkEnd::TimedOut);
             }
             // Wait with timeout to poll external cancellation, capped by the
@@ -927,5 +932,38 @@ mod tests {
         let decision = handle.join().expect("join");
         assert_eq!(decision, ApprovalDecision::Denied);
         assert!(!gate.has_any_pending());
+    }
+
+    #[test]
+    fn expired_deadline_with_shutdown_flag_names_shutdown_not_timeout() {
+        // NEX-TASK-002 race pin (#181): when the shutdown origin is set, an
+        // already-expired deadline must end as Shutdown, never TimedOut —
+        // through both the loop-top cancel check and the deadline-expiry
+        // branch. Zero timeout = expired at park entry; single-threaded, so
+        // no scheduling dependence. Outcome asserts only, never `elapsed`.
+        let token = CancellationToken::new();
+        token.shutdown();
+        let gate =
+            ApprovalGate::with_token(AutonomyMode::Supervised, token).with_timeout(Duration::ZERO);
+        let call = tool_call("shutdown-expired", "write_file");
+        assert_eq!(gate.park_until_resolved(&call), Err(ParkEnd::Shutdown));
+        assert!(
+            !gate.has_any_pending(),
+            "shutdown expiry clears pending like every other park end"
+        );
+        // Non-shutdown paths are unchanged: plain expiry is still a timeout.
+        let plain = ApprovalGate::new(AutonomyMode::Supervised).with_timeout(Duration::ZERO);
+        let call = tool_call("plain-expired", "write_file");
+        assert_eq!(plain.park_until_resolved(&call), Err(ParkEnd::TimedOut));
+        // A user cancel (no shutdown origin) is still a cancel, not a timeout.
+        let cancelled_token = CancellationToken::new();
+        cancelled_token.cancel();
+        let cancelled = ApprovalGate::with_token(AutonomyMode::Supervised, cancelled_token)
+            .with_timeout(Duration::ZERO);
+        let call = tool_call("cancelled-expired", "write_file");
+        assert_eq!(
+            cancelled.park_until_resolved(&call),
+            Err(ParkEnd::Cancelled)
+        );
     }
 }
