@@ -21,6 +21,10 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v2.0.0)'
+        required: true
 
 permissions:
   contents: write
@@ -61,7 +65,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_name }}
+          tagName: ${{ inputs.tag || github.ref_name }}
           releaseName: 'Nexora ${{ github.ref_name }}'
           releaseBody: 'See CHANGELOG.md for the release notes.'
           releaseDraft: true
