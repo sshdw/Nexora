@@ -595,7 +595,7 @@ CREATE INDEX idx_task_locks_expires
     // TRIGGER); no row data is touched.
     (
         12,
-        r"DROP TRIGGER conversations_touch_updated_at;
+        r"DROP TRIGGER IF EXISTS conversations_touch_updated_at;
 
 CREATE TRIGGER conversations_touch_updated_at
 AFTER UPDATE OF title, status ON conversations
@@ -605,7 +605,7 @@ BEGIN
         WHERE id = old.id;
 END;
 
-DROP TRIGGER prompts_touch_updated_at;
+DROP TRIGGER IF EXISTS prompts_touch_updated_at;
 
 CREATE TRIGGER prompts_touch_updated_at
 AFTER UPDATE OF title, content ON prompts
