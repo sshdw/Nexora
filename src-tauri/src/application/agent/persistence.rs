@@ -506,6 +506,7 @@ pub(crate) struct ActiveRunRecord<'a> {
     recorder: RunRecorder<'a>,
     run_id: Option<i64>,
     next_seq: i64,
+    /// Test-only accounting hook, never a persistence input.
     recorded_steps: i64,
 }
 

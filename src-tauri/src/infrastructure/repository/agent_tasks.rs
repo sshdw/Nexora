@@ -1152,10 +1152,13 @@ mod tests {
     }
 
     #[test]
-    fn foreign_run_id_is_rejected() {
+    fn missing_run_id_is_rejected() {
         // NEX-DB-004: `agent_tasks.run_id` (and `agent_task_steps.run_id`)
         // reference `agent_runs(id)` — a link to a run that does not exist
         // is rejected, while a link to a real run is accepted.
+        // Cross-conversation run links (an existing run from another
+        // conversation) are intentionally out of scope: legal by design
+        // under the ON DELETE SET NULL doctrine, untested here.
         use crate::infrastructure::repository::agent_runs::AgentRunRepository;
         let db = in_memory_database();
         let tasks = repo(&db);
