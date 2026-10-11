@@ -405,6 +405,8 @@ mod tests {
             rule_id: None,
             group_key: None,
             decided_by: None,
+            input_tokens: None,
+            output_tokens: None,
         }
     }
 
@@ -423,6 +425,8 @@ mod tests {
             rule_id: None,
             group_key: None,
             decided_by: None,
+            input_tokens: None,
+            output_tokens: None,
         }
     }
 
@@ -695,6 +699,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
         )
         .expect("model turn");
         repo.append_step(
@@ -705,6 +711,8 @@ mod tests {
             None,
             None,
             Some("succeeded"),
+            None,
+            None,
             None,
             None,
             None,

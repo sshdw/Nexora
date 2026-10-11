@@ -107,6 +107,22 @@ pub(crate) const SUPPORTED_MODELS: &[&str] = &[
     "gemini-3.5-flash-lite",
 ];
 
+/// The [`SUPPORTED_MODELS`] subset on the live-verified lite window.
+///
+/// Live-verified 2026-10-03 via the zero-token `GET
+/// /v1beta/models/{modelId}` metadata endpoint: every ID here reports
+/// `inputTokenLimit = 1048576`. Kept as an explicit subset (rather than
+/// re-derived by callers) so the context-window table in
+/// `application::context_stats` resolves the verified clamp without
+/// restating IDs — a strict subset of [`SUPPORTED_MODELS`] by construction
+/// (see the `gemini_lite_subset_of_supported` test).
+pub(crate) const GEMINI_LITE_MODELS: &[&str] = &[
+    "gemini-3.1-flash-lite",
+    "gemini-flash-lite-latest",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+];
+
 /// Estimated cost rates per 1M tokens, micro-USD (`(model, input, output)`).
 ///
 /// Hardcoded estimates in abstract micro-USD units (1 USD = `1_000_000`
@@ -950,6 +966,16 @@ mod tests {
             assert!(
                 SUPPORTED_MODELS.contains(&model),
                 "tools 200 ID {model} must stay listed"
+            );
+        }
+    }
+
+    #[test]
+    fn gemini_lite_subset_of_supported() {
+        for model in GEMINI_LITE_MODELS {
+            assert!(
+                SUPPORTED_MODELS.contains(model),
+                "lite ID {model} must stay a subset of SUPPORTED_MODELS"
             );
         }
     }

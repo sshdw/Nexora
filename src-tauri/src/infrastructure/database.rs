@@ -20,8 +20,11 @@
 //! widened status CHECK (v5, Task 4.3), and the per-folder
 //! `conversations.workspace_root` column (v6), the persistent permission
 //! rules table `permission_rules` plus the `agent_steps` provenance columns
-//! (v7, M1-core), and the task-manager tables `agent_tasks` /
-//! `agent_task_steps` (v8, task manager + autonomous mode).
+//! (v7, M1-core), the task-manager tables `agent_tasks` /
+//! `agent_task_steps` (v8, task manager + autonomous mode), the monotonic
+//! `updated_at` touch triggers (v12, NEX-DB-001/003), the cross-column
+//! lifecycle invariants (v13, NEX-DB-002/004/006), and the per-turn
+//! `agent_steps` token-usage columns (v14, NEX-AGENT-005).
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -133,6 +136,20 @@ impl From<rusqlite::Error> for DatabaseError {
 ///   repository-side `updated_at` writes on `conversations` / `agent_tasks`
 ///   use the same expression. The cross-column CHECKs are kept — they still
 ///   reject genuinely inverted timestamps at insert time.
+/// - v13: cross-column lifecycle invariants (NEX-DB-002/004/006) via four
+///   validated table rebuilds — the `messages` / `attachments` composite link
+///   (with repair of pre-existing cross-conversation rows to the draft
+///   state), the `agent_tasks` progress CHECK (with clamping), and the
+///   `agent_runs` terminal-status / timestamp-ordering CHECKs (with minimal
+///   honest repairs), plus `total_steps` normalization to the child-row
+///   count.
+/// - v14: per-turn token-usage columns on `agent_steps` (NEX-AGENT-005):
+///   NULL-able `input_tokens` / `output_tokens` (`CHECK >= 0`), populated
+///   from the provider-reported `response.usage` by the runner and read by
+///   `application::context_stats`. A plain `ALTER TABLE ... ADD COLUMN`
+///   (no rebuild: no FK/UNIQUE involved); pre-existing rows read as NULL
+///   (honest unknown — the meter renders "n/a" for those turns, never a
+///   fabricated zero).
 pub(crate) const MIGRATIONS: &[(i64, &str)] = &[
     // v1 — base tables and functional indexes (DATABASE.md §7, §8).
     (
@@ -803,6 +820,21 @@ CREATE INDEX idx_agent_runs_conversation ON agent_runs (conversation_id);
 CREATE INDEX idx_agent_runs_started ON agent_runs (started_at);
 ",
     ),
+    // v14 — per-turn token usage on `agent_steps` (NEX-AGENT-005). Two
+    // NULL-able integer columns carrying the provider-reported turn usage
+    // (`response.usage` in the runner; `NULL` when the provider omitted it).
+    // Plain ALTERs: no FK, UNIQUE, or PK is involved, so no rebuild and no
+    // FK toggle is needed. The CHECKs admit NULL (pre-existing rows and
+    // usage-less turns) and reject negatives; every write path clamps
+    // through `u64 -> i64` saturating at `i64::MAX`, far above real usage.
+    (
+        14,
+        r"ALTER TABLE agent_steps ADD COLUMN input_tokens INTEGER
+    CHECK (input_tokens IS NULL OR input_tokens >= 0);
+ALTER TABLE agent_steps ADD COLUMN output_tokens INTEGER
+    CHECK (output_tokens IS NULL OR output_tokens >= 0);
+",
+    ),
 ];
 
 /// Open the `SQLite` database at `path`, apply connection pragmas, and run any
@@ -1095,7 +1127,7 @@ mod tests {
 
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
         );
     }
 
@@ -1105,7 +1137,7 @@ mod tests {
 
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
         );
 
         let applied_at: i64 = conn
@@ -1120,7 +1152,7 @@ mod tests {
         let version_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .expect("count schema_version rows");
-        assert_eq!(version_count, 13, "one row per applied migration");
+        assert_eq!(version_count, 14, "one row per applied migration");
     }
 
     #[test]
@@ -1145,14 +1177,14 @@ mod tests {
         let mut conn = in_memory_migrated();
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
         );
 
         migrate(&mut conn).expect("a second migration run must succeed");
 
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
         );
         // The no-op run created or dropped nothing.
         assert!(schema_object_exists(&conn, "conversations", "table"));
@@ -1258,7 +1290,7 @@ mod tests {
         );
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
         );
     }
 
@@ -1871,7 +1903,7 @@ mod tests {
         // Schema version covers every known migration (v5 plus later ones)
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
         );
         // Row preserved, new columns NULL for pre-v5 rows
         let (status, spent, limit): (String, Option<i64>, Option<i64>) = conn
@@ -1964,7 +1996,7 @@ mod tests {
         migrate(&mut conn).expect("migrate to v6");
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
         );
         // Seeded row survives with a NULL workspace root.
         let root: Option<String> = conn
@@ -2042,7 +2074,7 @@ mod tests {
         migrate(&mut conn).expect("migrate to v7");
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
         );
         // Old rows intact with NULL provenance.
         let (kind, rule_id, group_key, decided_by): (
@@ -2221,38 +2253,27 @@ mod tests {
             .create_run(Some(conv_a), "m", "supervised")
             .expect("run");
         for seq in 1..=2 {
-            runs.append_step(
-                run_ok,
-                seq,
-                "model_turn",
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
+            // v12-era writes carry no usage columns: seed with raw SQL
+            // (mirroring the v5/v7 tests) — the repo's `append_step`
+            // targets the current (v14) shape.
+            let conn = db.lock().expect("lock connection");
+            conn.execute(
+                "INSERT INTO agent_steps (run_id, seq, kind) VALUES (?1, ?2, 'model_turn')",
+                params![run_ok, seq],
             )
             .expect("step");
         }
         runs.finalize_run(run_ok, "completed", Some("done"), None, None, None)
             .expect("finalize");
         let run_active = runs.create_run(None, "m", "supervised").expect("run");
-        runs.append_step(
-            run_active,
-            1,
-            "model_turn",
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .expect("step");
+        {
+            let conn = db.lock().expect("lock connection");
+            conn.execute(
+                "INSERT INTO agent_steps (run_id, seq, kind) VALUES (?1, 1, 'model_turn')",
+                [run_active],
+            )
+            .expect("step");
+        }
         let run_null: i64 = {
             let conn = db.lock().expect("lock connection");
             conn.execute(
@@ -2282,7 +2303,7 @@ mod tests {
         let conn = db.lock().expect("lock connection");
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
         );
         let fk_on: i64 = conn
             .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
@@ -2387,6 +2408,94 @@ mod tests {
             )
             .is_err(),
             "finished_at < started_at must be rejected"
+        );
+    }
+
+    /// Build a v13-only in-memory database (all migrations through the
+    /// cross-column invariants), mirroring `v12_database`: the v5/v7/v13
+    /// rebuilds need the same `foreign_keys` toggle `migrate` applies.
+    fn v13_database() -> Connection {
+        let mut conn = Connection::open_in_memory().expect("open in-memory");
+        configure(&conn).expect("configure");
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY CHECK (version > 0), applied_at INTEGER NOT NULL CHECK (applied_at > 0));",
+        )
+        .expect("create schema_version");
+        for &(version, sql) in MIGRATIONS.iter().filter(|(v, _)| *v <= 13) {
+            if version == 5 || version == 7 || version == 13 {
+                conn.execute_batch("PRAGMA foreign_keys=OFF;")
+                    .expect("fk off");
+                let result = apply_migration(&mut conn, version, sql);
+                conn.execute_batch("PRAGMA foreign_keys=ON;")
+                    .expect("fk on");
+                result.expect("apply rebuild migration");
+            } else {
+                apply_migration(&mut conn, version, sql).expect("apply migration");
+            }
+        }
+        conn
+    }
+
+    #[test]
+    fn v14_adds_step_token_columns_preserving_rows() {
+        // NEX-AGENT-005 acceptance: a usage-less step seeded on v13 keeps
+        // its values through the v14 ALTERs and reads back NULL usage
+        // (honest unknown); the new columns then accept reported usage and
+        // reject negatives.
+        let conn = v13_database();
+        let db = Database::new(conn);
+        let runs = AgentRunRepository::new(&db);
+        let run_id = runs.create_run(None, "m", "supervised").expect("run");
+        // The pre-v14 row is written the v13-era way (no usage columns);
+        // the repo's `append_step` targets the current (v14) shape.
+        {
+            let conn = db.lock().expect("lock connection");
+            conn.execute(
+                "INSERT INTO agent_steps (run_id, seq, kind) VALUES (?1, 1, 'model_turn')",
+                [run_id],
+            )
+            .expect("pre-v14 step");
+        }
+        {
+            let mut guard = db.lock().expect("lock connection");
+            migrate(&mut guard).expect("migrate to v14");
+        }
+        let conn = db.lock().expect("lock connection");
+        assert_eq!(
+            schema_version_rows(&conn),
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+        );
+        // Pre-existing row survives with NULL usage (honest unknown).
+        let (input, output): (Option<i64>, Option<i64>) = conn
+            .query_row(
+                "SELECT input_tokens, output_tokens FROM agent_steps WHERE run_id = ?1",
+                [run_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read preserved step");
+        assert_eq!(input, None, "pre-v14 input_tokens is NULL");
+        assert_eq!(output, None, "pre-v14 output_tokens is NULL");
+        // New columns accept reported usage and reject negatives.
+        conn.execute(
+            "UPDATE agent_steps SET input_tokens = 12, output_tokens = 34 WHERE run_id = ?1",
+            [run_id],
+        )
+        .expect("usage write succeeds");
+        assert!(
+            conn.execute(
+                "UPDATE agent_steps SET input_tokens = -1 WHERE run_id = ?1",
+                [run_id],
+            )
+            .is_err(),
+            "negative input_tokens must be rejected"
+        );
+        assert!(
+            conn.execute(
+                "UPDATE agent_steps SET output_tokens = -1 WHERE run_id = ?1",
+                [run_id],
+            )
+            .is_err(),
+            "negative output_tokens must be rejected"
         );
     }
 }

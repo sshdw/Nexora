@@ -105,6 +105,13 @@ pub(crate) struct AgentStep {
     /// Who decided the step (`decided_by`: `'user'` / `'rule'` / `'system'`,
     /// M1-core), `None` for pre-v7 rows.
     pub decided_by: Option<String>,
+    /// Provider-reported input (prompt) tokens for this turn (`input_tokens`,
+    /// NEX-AGENT-005), `None` for pre-v14 rows and for turns whose provider
+    /// omitted usage (honest unknown — never a fabricated zero).
+    pub input_tokens: Option<u64>,
+    /// Provider-reported output (completion) tokens for this turn
+    /// (`output_tokens`, NEX-AGENT-005), `None` under the same conditions.
+    pub output_tokens: Option<u64>,
 }
 
 /// Repository for the `agent_runs` and `agent_steps` tables.
@@ -281,7 +288,9 @@ impl AgentRunRepository<'_> {
     /// Append one step record to a run (DATABASE.md §7.9).
     ///
     /// Persists the caller-supplied `run_id`, `seq`, `kind`, `tool_name`,
-    /// `arguments`, `observation`, `status`, and `duration_ms` verbatim —
+    /// `arguments`, `observation`, `status`, `duration_ms`, provenance, and
+    /// per-turn token usage (`input_tokens` / `output_tokens`, `None` when
+    /// the provider omitted usage) verbatim —
     /// reads return the stored text as-is. Secret-scrubbing and the length
     /// bound are the caller's job: the production caller
     /// ([`crate::application::agent::persistence`] `RunRecorder::insert_step`)
@@ -318,13 +327,19 @@ impl AgentRunRepository<'_> {
         rule_id: Option<i64>,
         group_key: Option<&str>,
         decided_by: Option<&str>,
+        input_tokens: Option<u64>,
+        output_tokens: Option<u64>,
     ) -> Result<i64> {
         let conn = self.conn()?;
+        // Usage is stored as INTEGER; the domain uses u64 while SQLite uses
+        // i64 — saturate at `i64::MAX`, far above any real turn usage.
+        let input_i64 = input_tokens.map(|v| i64::try_from(v).unwrap_or(i64::MAX));
+        let output_i64 = output_tokens.map(|v| i64::try_from(v).unwrap_or(i64::MAX));
         conn.execute(
             "INSERT INTO agent_steps \
                  (run_id, seq, kind, tool_name, arguments, observation, status, duration_ms, \
-                  rule_id, group_key, decided_by) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                  rule_id, group_key, decided_by, input_tokens, output_tokens) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 run_id,
                 seq,
@@ -336,7 +351,9 @@ impl AgentRunRepository<'_> {
                 duration_ms,
                 rule_id,
                 group_key,
-                decided_by
+                decided_by,
+                input_i64,
+                output_i64
             ],
         )?;
         Ok(conn.last_insert_rowid())
@@ -398,9 +415,12 @@ impl AgentRunRepository<'_> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, run_id, seq, kind, tool_name, arguments, observation, status, \
-             started_at, duration_ms, rule_id, group_key, decided_by FROM agent_steps WHERE run_id = ?1 ORDER BY seq",
+             started_at, duration_ms, rule_id, group_key, decided_by, input_tokens, output_tokens \
+             FROM agent_steps WHERE run_id = ?1 ORDER BY seq",
         )?;
         let rows = stmt.query_map([run_id], |row| {
+            let input_i64: Option<i64> = row.get(13)?;
+            let output_i64: Option<i64> = row.get(14)?;
             Ok(AgentStep {
                 id: row.get(0)?,
                 run_id: row.get(1)?,
@@ -415,6 +435,8 @@ impl AgentRunRepository<'_> {
                 rule_id: row.get(10)?,
                 group_key: row.get(11)?,
                 decided_by: row.get(12)?,
+                input_tokens: input_i64.map(|v| u64::try_from(v).unwrap_or(0)),
+                output_tokens: output_i64.map(|v| u64::try_from(v).unwrap_or(0)),
             })
         })?;
         let mut steps = Vec::new();
@@ -473,6 +495,8 @@ mod tests {
             None,
             status,
             duration_ms,
+            None,
+            None,
             None,
             None,
             None,
@@ -538,6 +562,8 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
+                None,
             )
             .expect("step 1");
         let step2 = runs
@@ -550,6 +576,8 @@ mod tests {
                 Some("wrote 5 bytes"),
                 Some("succeeded"),
                 Some(12),
+                None,
+                None,
                 None,
                 None,
                 None,
@@ -571,6 +599,56 @@ mod tests {
     }
 
     #[test]
+    fn usage_columns_round_trip_per_step_and_default_to_none() {
+        let db = in_memory_database();
+        let runs = repo(&db);
+
+        let run_id = runs.create_run(None, "m", "supervised").expect("run");
+        runs.append_step(
+            run_id,
+            1,
+            "model_turn",
+            None,
+            None,
+            Some("thinking"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(120),
+            Some(34),
+        )
+        .expect("usage step");
+        runs.append_step(
+            run_id,
+            2,
+            "model_turn",
+            None,
+            None,
+            Some("more"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("usage-less step");
+
+        let steps = runs.list_steps(run_id).expect("list steps");
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].input_tokens, Some(120));
+        assert_eq!(steps[0].output_tokens, Some(34));
+        assert_eq!(
+            steps[1].input_tokens, None,
+            "a turn whose provider omitted usage reads back unknown"
+        );
+        assert_eq!(steps[1].output_tokens, None);
+    }
+
+    #[test]
     fn duplicate_seq_within_a_run_is_rejected() {
         let db = in_memory_database();
         let runs = repo(&db);
@@ -588,6 +666,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
         )
         .expect("first step");
         let duplicate = runs.append_step(
@@ -595,6 +675,8 @@ mod tests {
             1,
             "tool_call",
             Some("read_file"),
+            None,
+            None,
             None,
             None,
             None,
@@ -627,12 +709,16 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
         )
         .expect("step 1");
         runs.append_step(
             run_id,
             2,
             "model_turn",
+            None,
+            None,
             None,
             None,
             None,
@@ -669,6 +755,8 @@ mod tests {
             run_id,
             1,
             "model_turn",
+            None,
+            None,
             None,
             None,
             None,

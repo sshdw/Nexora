@@ -1708,6 +1708,8 @@ fn e2e_restart_sweep_and_rehydration() {
             None,
             None,
             None,
+            None,
+            None,
         )
         .expect("step1");
         repo.append_step(
@@ -1719,6 +1721,8 @@ fn e2e_restart_sweep_and_rehydration() {
             Some("file body"),
             Some("succeeded"),
             Some(5),
+            None,
+            None,
             None,
             None,
             None,

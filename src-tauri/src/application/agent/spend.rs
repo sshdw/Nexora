@@ -361,6 +361,8 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
+                None,
             )
             .expect("seed step");
         }
@@ -379,6 +381,8 @@ mod tests {
                 second,
                 seq,
                 "model_turn",
+                None,
+                None,
                 None,
                 None,
                 None,

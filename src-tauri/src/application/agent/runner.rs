@@ -838,11 +838,12 @@ impl<'a> AgentRunner<'a> {
             governor.observe(response.usage);
 
             // Task 4.2: record the completed model turn (D12) with its
-            // provider round-trip duration.
+            // provider round-trip duration and provider-reported usage
+            // (NEX-AGENT-005: `None` persists as NULL — honest unknown).
             if let Some(rec) = record.as_mut() {
                 let duration_ms =
                     i64::try_from(turn_started.elapsed().as_millis()).unwrap_or(i64::MAX);
-                rec.model_turn(&response.content, Some(duration_ms));
+                rec.model_turn(&response.content, Some(duration_ms), response.usage);
             }
 
             dispatch::check_cancellation(control, self.event_sender.as_ref())?;

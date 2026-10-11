@@ -1,18 +1,23 @@
 //! Conversation context stats: read-only per-conversation token/cost
 //! breakdown (stats + diff render only; no agent behavior change).
 //!
-//! No new persistence: token usage is not stored per message (see
-//! `application::execution::TokenUsage`, which is in-memory only and only
-//! aggregated as `agent_runs.spent_micro_usd`). This service therefore reports
-//! token sums as `0` with `has_token_data = false` ("n/a" in the UI) instead
-//! of silently estimating. Cost is computed through the existing
+//! Per-turn token usage is persisted on `agent_steps` (`input_tokens` /
+//! `output_tokens`, v14, NEX-AGENT-005) from the provider-reported
+//! `response.usage`; turns whose provider omitted usage read back NULL and
+//! are excluded from the sums with `has_token_data` set only when at least
+//! one turn reported. Cost is computed through the existing
 //! `agent::pricing` policy so the math stays in one place.
+//!
+//! Context windows resolve through [`context_limit_for`], whose per-model
+//! arm is derived from the provider `SUPPORTED_MODELS` lists (NEX-AGENT-010)
+//! rather than a restated ID table, so the two cannot drift.
 
 use serde::Serialize;
 
 use crate::application::agent::pricing;
 use crate::application::conversations::{ConversationError, Result};
 use crate::infrastructure::database::Database;
+use crate::infrastructure::providers::{anthropic, gemini, openai};
 use crate::infrastructure::repository::agent_runs::AgentRunRepository;
 use crate::infrastructure::repository::conversations::ConversationRepository;
 use crate::infrastructure::repository::messages::MessageRepository;
@@ -71,35 +76,42 @@ pub(crate) fn context_limit_for(provider: Option<&str>, model: Option<&str>) -> 
     }
 }
 
-/// Per-model window for every ID in the current `SUPPORTED_MODELS` lists
-/// (`infrastructure::providers::{openai,anthropic,gemini}`).
+/// Per-model window derived from the provider `SUPPORTED_MODELS` lists
+/// (`infrastructure::providers::{openai,anthropic,gemini}`), so the window
+/// table cannot drift from the supported-model surface (NEX-AGENT-010).
 ///
-/// Each ID maps to its provider's conservative window constant above —
-/// pinning the value per model (so a future verified bump touches one arm)
-/// without inventing numbers from the research-only catalog. Returns `None`
-/// for unlisted IDs so [`context_limit_for`] falls through to the provider
-/// fallback.
+/// Each listed ID maps to its provider's conservative window constant above —
+/// pinning the value per provider (so a future verified bump touches one
+/// arm) without inventing numbers from the research-only catalog. The
+/// OpenAI-compatible shortlists (`xkiro`, `openrouter`, `nvidia`,
+/// `opencode_zen`) ride the shared OpenAI-compatible executor, so they
+/// resolve to the conservative `OpenAI` window; the user-configured
+/// `openai_compat` endpoint carries no shortlist and falls through to the
+/// provider fallback below. Returns `None` for unlisted IDs (honest
+/// unknown — never a guessed window) so [`context_limit_for`] falls through
+/// to the provider fallback.
 #[must_use]
 fn model_context_limit(model: &str) -> Option<u64> {
-    match model {
-        // `openai::SUPPORTED_MODELS`.
-        "gpt-5.6-terra" | "gpt-5.6-luna" | "gpt-5.6-sol" => Some(OPENAI_CONTEXT_LIMIT),
-        // `anthropic::SUPPORTED_MODELS`.
-        "claude-sonnet-5" | "claude-haiku-4-5-20251001" | "claude-opus-4-8" => {
-            Some(ANTHROPIC_CONTEXT_LIMIT)
-        }
-        // `gemini::SUPPORTED_MODELS` (non-lite, verified window).
-        "gemini-3.6-flash" | "gemini-3.1-pro-preview" | "gemini-pro-latest" => {
+    if openai::SUPPORTED_MODELS.contains(&model)
+        || openai::XKIRO_MODELS.contains(&model)
+        || openai::OPENROUTER_MODELS.contains(&model)
+        || openai::NVIDIA_MODELS.contains(&model)
+        || openai::OPENCODE_ZEN_MODELS.contains(&model)
+    {
+        Some(OPENAI_CONTEXT_LIMIT)
+    } else if anthropic::SUPPORTED_MODELS.contains(&model) {
+        Some(ANTHROPIC_CONTEXT_LIMIT)
+    } else if gemini::SUPPORTED_MODELS.contains(&model) {
+        // Live-verified 2026-10-03 (metadata endpoint, zero-token):
+        // every lite ID reports `inputTokenLimit = 1048576`, so the lite
+        // subset resolves to the verified [`GEMINI_LITE_CONTEXT_LIMIT`].
+        if gemini::GEMINI_LITE_MODELS.contains(&model) {
+            Some(GEMINI_LITE_CONTEXT_LIMIT)
+        } else {
             Some(GEMINI_CONTEXT_LIMIT)
         }
-        // Live-verified 2026-10-03 (metadata endpoint, zero-token):
-        // every ID here reports `inputTokenLimit = 1048576`, so the arm
-        // resolves to the verified [`GEMINI_LITE_CONTEXT_LIMIT`].
-        "gemini-3.1-flash-lite"
-        | "gemini-flash-lite-latest"
-        | "gemini-3.5-flash"
-        | "gemini-3.5-flash-lite" => Some(GEMINI_LITE_CONTEXT_LIMIT),
-        _ => None,
+    } else {
+        None
     }
 }
 
@@ -119,11 +131,12 @@ pub(crate) struct ConversationContextStats {
     pub model: Option<String>,
     /// Documented context window for the resolved provider/model.
     pub context_limit: u64,
-    /// Total tokens (always `0` until per-turn usage is persisted).
+    /// Total persisted usage tokens (`input + output`) across the
+    /// conversation's runs (`0` when no turn reported usage).
     pub total_tokens: u64,
-    /// Input tokens (always `0`; see `has_token_data`).
+    /// Persisted input tokens across the conversation's runs.
     pub input_tokens: u64,
-    /// Output tokens (always `0`; see `has_token_data`).
+    /// Persisted output tokens across the conversation's runs.
     pub output_tokens: u64,
     /// Reasoning tokens (always `0`; no persisted source).
     pub reasoning_tokens: u64,
@@ -131,8 +144,8 @@ pub(crate) struct ConversationContextStats {
     pub cache_read_tokens: u64,
     /// Cache-write tokens (always `0`; no persisted source).
     pub cache_write_tokens: u64,
-    /// Whether any persisted token usage exists (always `false`: no
-    /// `token_usage` table/columns exist, so the UI must render "n/a").
+    /// Whether any persisted step carries provider-reported usage
+    /// (`false` — "n/a" in the UI — when no turn reported any).
     pub has_token_data: bool,
     /// Billed cost in micro-USD via `pricing` for the summed usage.
     pub total_cost_micro_usd: u64,
@@ -159,10 +172,14 @@ pub(crate) struct ConversationContextStats {
 /// Compute read-only context stats for `conversation_id`.
 ///
 /// Counts come from persisted `messages`; provider/model from the newest
-/// assistant message carrying attribution; tool/other step counts from the
-/// conversation's persisted agent runs. Token sums are `0` with
-/// `has_token_data = false` because no per-turn usage is persisted (never
-/// estimated silently). Cost goes through `pricing::cost_micro_for_model`.
+/// assistant message carrying attribution; tool/other step counts and token
+/// sums from the conversation's persisted agent runs. Token sums cover only
+/// turns whose provider reported usage (`agent_steps.input_tokens` /
+/// `output_tokens` non-NULL); usage-less turns contribute nothing and
+/// `has_token_data` is `false` when no turn reported any (never estimated
+/// silently). Cost goes through `pricing::cost_micro_for_model` for the
+/// resolved model, so per-conversation cost falls out of the persisted
+/// usage through the existing policy table.
 ///
 /// # Errors
 ///
@@ -216,9 +233,32 @@ pub(crate) fn conversation_context_stats(
 
     let context_limit = context_limit_for(provider.as_deref(), model.as_deref());
 
-    // No persisted per-turn TokenUsage exists: report zeros with the n/a flag.
-    let (input_tokens, output_tokens) = (0_u64, 0_u64);
-    let total_tokens = 0_u64;
+    let runs = AgentRunRepository::new(db).list_runs_by_conversation(conversation_id)?;
+    let steps_repo = AgentRunRepository::new(db);
+    let mut tool_call_count: u64 = 0;
+    let mut other_step_count: u64 = 0;
+    // Per-turn usage summed across the conversation's runs. A step counts
+    // only when the provider reported usage for that turn (both columns
+    // non-NULL — they are always written together); usage-less turns are
+    // skipped honestly rather than counted as zero-usage evidence.
+    let mut input_tokens: u64 = 0;
+    let mut output_tokens: u64 = 0;
+    let mut has_token_data = false;
+    for run in &runs {
+        for step in steps_repo.list_steps(run.id)? {
+            if step.kind == "tool_call" {
+                tool_call_count = tool_call_count.saturating_add(1);
+            } else {
+                other_step_count = other_step_count.saturating_add(1);
+            }
+            if let (Some(input), Some(output)) = (step.input_tokens, step.output_tokens) {
+                has_token_data = true;
+                input_tokens = input_tokens.saturating_add(input);
+                output_tokens = output_tokens.saturating_add(output);
+            }
+        }
+    }
+    let total_tokens = input_tokens.saturating_add(output_tokens);
     let total_cost_micro_usd =
         pricing::cost_micro_for_model(model.as_deref().unwrap_or(""), input_tokens, output_tokens);
     let usage_percent = if context_limit == 0 {
@@ -230,20 +270,6 @@ pub(crate) fn conversation_context_stats(
         let limit_f = f64::from(u32::try_from(context_limit).unwrap_or(u32::MAX));
         (total_f / limit_f) * 100.0
     };
-
-    let runs = AgentRunRepository::new(db).list_runs_by_conversation(conversation_id)?;
-    let steps_repo = AgentRunRepository::new(db);
-    let mut tool_call_count: u64 = 0;
-    let mut other_step_count: u64 = 0;
-    for run in &runs {
-        for step in steps_repo.list_steps(run.id)? {
-            if step.kind == "tool_call" {
-                tool_call_count = tool_call_count.saturating_add(1);
-            } else {
-                other_step_count = other_step_count.saturating_add(1);
-            }
-        }
-    }
 
     Ok(ConversationContextStats {
         conversation_id,
@@ -258,7 +284,7 @@ pub(crate) fn conversation_context_stats(
         reasoning_tokens: 0,
         cache_read_tokens: 0,
         cache_write_tokens: 0,
-        has_token_data: false,
+        has_token_data,
         total_cost_micro_usd,
         usage_percent,
         message_count: user_count.saturating_add(assistant_count),
@@ -396,6 +422,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
         )
         .expect("model step");
         runs.append_step(
@@ -410,6 +438,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
         )
         .expect("tool step");
         runs.append_step(
@@ -420,6 +450,8 @@ mod tests {
             None,
             Some("approved"),
             Some("succeeded"),
+            None,
+            None,
             None,
             None,
             None,
@@ -468,10 +500,13 @@ mod tests {
 
     #[test]
     fn supported_model_ids_pin_to_provider_windows() {
-        // Every ID in the three `SUPPORTED_MODELS` lists resolves to its
-        // provider's conservative window — including when the provider is
-        // unknown/missing, so the model arm (not the fallback) owns the value.
-        for model in ["gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-sol"] {
+        // NEX-AGENT-010: every ID in the provider `SUPPORTED_MODELS` lists
+        // (+ the OpenAI-compatible shortlists, which ride the shared
+        // executor) resolves to its provider's conservative window — read
+        // from the lists themselves, so the window table cannot drift from
+        // the supported-model surface by construction. The model arm owns
+        // the value even when the provider is unknown/missing.
+        for model in openai::SUPPORTED_MODELS {
             assert_eq!(
                 context_limit_for(Some("openai"), Some(model)),
                 OPENAI_CONTEXT_LIMIT,
@@ -484,11 +519,7 @@ mod tests {
             );
             assert_eq!(model_context_limit(model), Some(OPENAI_CONTEXT_LIMIT));
         }
-        for model in [
-            "claude-sonnet-5",
-            "claude-haiku-4-5-20251001",
-            "claude-opus-4-8",
-        ] {
+        for model in anthropic::SUPPORTED_MODELS {
             assert_eq!(
                 context_limit_for(Some("anthropic"), Some(model)),
                 ANTHROPIC_CONTEXT_LIMIT,
@@ -501,44 +532,41 @@ mod tests {
             );
             assert_eq!(model_context_limit(model), Some(ANTHROPIC_CONTEXT_LIMIT));
         }
-        for model in [
-            "gemini-3.6-flash",
-            "gemini-3.1-pro-preview",
-            "gemini-pro-latest",
-        ] {
+        for model in gemini::SUPPORTED_MODELS {
+            let expected = if gemini::GEMINI_LITE_MODELS.contains(model) {
+                GEMINI_LITE_CONTEXT_LIMIT
+            } else {
+                GEMINI_CONTEXT_LIMIT
+            };
             assert_eq!(
                 context_limit_for(Some("gemini"), Some(model)),
-                GEMINI_CONTEXT_LIMIT,
+                expected,
                 "gemini model {model}"
             );
             assert_eq!(
                 context_limit_for(None, Some(model)),
-                GEMINI_CONTEXT_LIMIT,
+                expected,
                 "gemini model {model} without provider"
             );
-            assert_eq!(model_context_limit(model), Some(GEMINI_CONTEXT_LIMIT));
+            assert_eq!(model_context_limit(model), Some(expected));
         }
-        for model in [
-            "gemini-3.1-flash-lite",
-            "gemini-flash-lite-latest",
-            "gemini-3.5-flash",
-            "gemini-3.5-flash-lite",
-        ] {
+        for model in openai::XKIRO_MODELS
+            .iter()
+            .chain(openai::OPENROUTER_MODELS)
+            .chain(openai::NVIDIA_MODELS)
+            .chain(openai::OPENCODE_ZEN_MODELS)
+        {
             assert_eq!(
-                context_limit_for(Some("gemini"), Some(model)),
-                GEMINI_LITE_CONTEXT_LIMIT,
-                "gemini lite model {model}"
+                model_context_limit(model),
+                Some(OPENAI_CONTEXT_LIMIT),
+                "compat model {model} rides the OpenAI-compatible path"
             );
-            assert_eq!(
-                context_limit_for(None, Some(model)),
-                GEMINI_LITE_CONTEXT_LIMIT,
-                "gemini lite model {model} without provider"
-            );
-            assert_eq!(model_context_limit(model), Some(GEMINI_LITE_CONTEXT_LIMIT));
         }
-        // Unlisted IDs keep the old behavior: provider fallback, then the
-        // `gemini`-substring rule, then the default.
+        // Unlisted IDs keep the old behavior: honest unknown from the model
+        // arm, then the provider fallback, the `gemini`-substring rule, and
+        // the default.
         assert_eq!(model_context_limit("gpt-5.6-future"), None);
+        assert_eq!(model_context_limit("something-else"), None);
         assert_eq!(
             context_limit_for(Some("openai"), Some("gpt-5.6-future")),
             OPENAI_CONTEXT_LIMIT
@@ -551,6 +579,203 @@ mod tests {
             context_limit_for(Some("unknown"), Some("something-else")),
             DEFAULT_CONTEXT_LIMIT
         );
+    }
+
+    #[test]
+    fn persisted_usage_drives_totals_percent_and_cost() {
+        // NEX-AGENT-005 acceptance: persist a run with per-turn usage and
+        // the meter reports real totals, a positive usage percent, and the
+        // policy-table cost for the resolved model.
+        let db = in_memory_database();
+        let provider_id = ProviderRepository::new(&db)
+            .create("openai", "OpenAI")
+            .expect("create provider");
+        let id = seed_conversation(&db, "Metered session");
+        MessageRepository::new(&db)
+            .create(
+                id,
+                "assistant",
+                "working on it",
+                Some(provider_id),
+                Some("gpt-5.6-terra"),
+            )
+            .expect("assistant message");
+        let runs = AgentRunRepository::new(&db);
+        let run_id = runs
+            .create_run(Some(id), "gpt-5.6-terra", "supervised")
+            .expect("create run");
+        runs.append_step(
+            run_id,
+            1,
+            "model_turn",
+            None,
+            None,
+            Some("thinking"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(1_000),
+            Some(500),
+        )
+        .expect("usage step");
+        runs.append_step(
+            run_id,
+            2,
+            "tool_call",
+            Some("read_file"),
+            Some("{}"),
+            Some("body"),
+            Some("succeeded"),
+            Some(5),
+            None,
+            None,
+            None,
+            Some(2_000),
+            Some(250),
+        )
+        .expect("second usage step");
+
+        let stats = conversation_context_stats(&db, id).expect("stats");
+
+        assert!(stats.has_token_data, "reported usage must be flagged");
+        assert_eq!(stats.input_tokens, 3_000);
+        assert_eq!(stats.output_tokens, 750);
+        assert_eq!(stats.total_tokens, 3_750);
+        assert!(
+            stats.usage_percent > 0.0,
+            "usage percent must be positive, got {}",
+            stats.usage_percent
+        );
+        assert_eq!(
+            stats.total_cost_micro_usd,
+            cost_micro_for_model("gpt-5.6-terra", 3_000, 750),
+            "per-conversation cost falls out of the persisted usage"
+        );
+        assert!(stats.total_cost_micro_usd > 0);
+    }
+
+    #[test]
+    fn usage_less_turns_stay_honest_unknown() {
+        // Turns whose provider omitted usage contribute nothing: the sums
+        // cover only reported turns, and a conversation with no reported
+        // turn at all keeps the n/a flag with zero totals.
+        let db = in_memory_database();
+        let id = seed_conversation(&db, "Mixed session");
+        let runs = AgentRunRepository::new(&db);
+        let run_id = runs
+            .create_run(Some(id), "m", "supervised")
+            .expect("create run");
+        runs.append_step(
+            run_id,
+            1,
+            "model_turn",
+            None,
+            None,
+            Some("reported"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(100),
+            Some(50),
+        )
+        .expect("usage step");
+        runs.append_step(
+            run_id,
+            2,
+            "model_turn",
+            None,
+            None,
+            Some("unreported"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("usage-less step");
+
+        let stats = conversation_context_stats(&db, id).expect("stats");
+        assert!(stats.has_token_data);
+        assert_eq!(stats.input_tokens, 100);
+        assert_eq!(stats.output_tokens, 50);
+        assert_eq!(stats.total_tokens, 150);
+
+        let bare = seed_conversation(&db, "Bare session");
+        let bare_run = runs
+            .create_run(Some(bare), "m", "supervised")
+            .expect("create run");
+        runs.append_step(
+            bare_run,
+            1,
+            "model_turn",
+            None,
+            None,
+            Some("unreported"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("usage-less step");
+        let bare_stats = conversation_context_stats(&db, bare).expect("stats");
+        assert!(
+            !bare_stats.has_token_data,
+            "no reported turn must stay n/a, never a fabricated zero"
+        );
+        assert_eq!(bare_stats.total_tokens, 0);
+        assert_eq!(bare_stats.total_cost_micro_usd, 0);
+        assert!(bare_stats.usage_percent.abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn unknown_model_is_honest_unknown() {
+        // NEX-AGENT-010: a model in no `SUPPORTED_MODELS` list resolves to
+        // no per-model window (the provider fallback / default owns the
+        // limit), and usage attribution still works off whatever is
+        // persisted.
+        assert_eq!(model_context_limit("not-a-real-model"), None);
+        assert_eq!(
+            context_limit_for(Some("unknown-provider"), Some("not-a-real-model")),
+            DEFAULT_CONTEXT_LIMIT
+        );
+
+        let db = in_memory_database();
+        let id = seed_conversation(&db, "Unknown model session");
+        let runs = AgentRunRepository::new(&db);
+        let run_id = runs
+            .create_run(Some(id), "not-a-real-model", "supervised")
+            .expect("create run");
+        runs.append_step(
+            run_id,
+            1,
+            "model_turn",
+            None,
+            None,
+            Some("thinking"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(128),
+            Some(64),
+        )
+        .expect("usage step");
+
+        let stats = conversation_context_stats(&db, id).expect("stats");
+        assert_eq!(stats.context_limit, DEFAULT_CONTEXT_LIMIT);
+        assert!(stats.has_token_data);
+        assert_eq!(stats.total_tokens, 192);
+        assert!(stats.usage_percent > 0.0);
     }
 
     #[test]
