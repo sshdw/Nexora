@@ -141,12 +141,12 @@ pub(crate) fn validate_workspace_root(raw: &str) -> Result<PathBuf, WorkspaceErr
 /// (case-insensitive, either separator).
 ///
 /// Windows: `%SystemRoot%` on any drive (`C:\Windows`, `D:\Windows`, ...),
-/// plus `C:\Program Files`, `C:\Program Files (x86)`, `C:\ProgramData`,
-/// `C:\Users`, `C:\Windows.old`, and `C:\$Recycle.Bin`. Unix: `/etc`, `/usr`,
-/// `/bin`, `/sbin`, `/boot`, `/dev`, `/proc`, `/sys`, `/System`, `/Library`.
-/// The active list is selected with `cfg(windows)`; this widens the previous
-/// `C:\Windows`-only guard so the agent cannot be scoped into a system
-/// directory on another drive or a Unix system tree.
+/// plus `Program Files`, `Program Files (x86)`, `ProgramData`, `Users`,
+/// `Windows.old`, and `$Recycle.Bin` on any drive (`D:\Program Files`,
+/// ...), and the same Unix trees as before. The active list is selected
+/// with `cfg(windows)`; the any-drive rule closes the `D:/`-style gap where
+/// only `C:`-rooted entries were blocked while `%SystemRoot%` already
+/// matched every drive.
 pub(crate) fn is_system_path(path: &Path) -> bool {
     is_system_path_inner(path, true)
 }
@@ -174,22 +174,7 @@ fn is_system_path_inner(path: &Path, include_users_tree: bool) -> bool {
                 return true;
             }
         }
-        for entry in [
-            r"c:\program files",
-            r"c:\program files (x86)",
-            r"c:\programdata",
-            r"c:\users",
-            r"c:\windows.old",
-            r"c:\$recycle.bin",
-        ] {
-            if !include_users_tree && entry == r"c:\users" {
-                continue;
-            }
-            if normalized == entry || normalized.starts_with(&format!("{entry}\\")) {
-                return true;
-            }
-        }
-        false
+        windows_drive_relative_hit(&normalized, include_users_tree)
     }
     #[cfg(not(windows))]
     {
@@ -212,6 +197,43 @@ fn is_system_path_inner(path: &Path, include_users_tree: bool) -> bool {
         }
         false
     }
+}
+
+/// Whether the drive-relative remainder of a normalized Windows guard path
+/// names a protected system location on its drive (NEX-SEC-009).
+///
+/// The input is the [`normalize_guard_path`] form (lowercase, backslashes,
+/// no verbatim prefix, no trailing separator). A leading `<letter>:` drive
+/// designator is stripped when present, so `D:\Program Files` matches exactly
+/// like `C:\Program Files`; paths without a drive designator compare whole.
+/// Kept `cfg`-independent so the any-drive rule is unit-testable on every
+/// platform; the `cfg(windows)` branch above is its only production caller.
+#[cfg(any(windows, test))]
+fn windows_drive_relative_hit(normalized: &str, include_users_tree: bool) -> bool {
+    let remainder = if normalized.len() >= 2
+        && normalized.as_bytes()[1] == b':'
+        && normalized.as_bytes()[0].is_ascii_alphabetic()
+    {
+        &normalized[2..]
+    } else {
+        normalized
+    };
+    for entry in [
+        r"\program files",
+        r"\program files (x86)",
+        r"\programdata",
+        r"\users",
+        r"\windows.old",
+        r"\$recycle.bin",
+    ] {
+        if !include_users_tree && entry == r"\users" {
+            continue;
+        }
+        if remainder == entry || remainder.starts_with(&format!("{entry}\\")) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Whether `path` is a UNC network path (`\\server\share`, either separator).
@@ -668,6 +690,14 @@ mod tests {
         assert!(is_system_path(Path::new("C:/Windows")));
         assert!(is_system_path(Path::new(r"c:\PROGRAM FILES\app")));
         assert!(is_system_path(Path::new(r"C:\Users\alice")));
+        // NEX-SEC-009: the same entries on non-`C:` drives.
+        assert!(is_system_path(Path::new(r"D:\Program Files")));
+        assert!(is_system_path(Path::new(r"E:\Program Files (x86)\app")));
+        assert!(is_system_path(Path::new(r"F:\ProgramData\pkg")));
+        assert!(is_system_path(Path::new(r"D:\Users\bob")));
+        assert!(is_system_path(Path::new(r"D:\Windows.old")));
+        assert!(is_system_path(Path::new(r"G:\$Recycle.Bin\file")));
+        assert!(!is_system_file_path(Path::new(r"D:\Users\bob")));
         assert!(!is_system_path(Path::new(r"C:\dev\proj")));
         assert!(!is_system_path(Path::new(r"D:\data")));
         // End-to-end through the guard on Windows, where C:\Windows exists.
@@ -734,6 +764,55 @@ mod tests {
                 "invalid workspace root: a drive root is not allowed"
             );
         }
+    }
+
+    #[test]
+    fn drive_relative_system_entries_are_blocked_on_any_drive() {
+        // NEX-SEC-009: the `Program Files` / `ProgramData` / `Users` /
+        // `Windows.old` / `$Recycle.Bin` entries used to match `C:` only, so
+        // `D:\Program Files` slipped through while `D:\Windows` was already
+        // blocked. The drive-relative helper runs on every platform, so this
+        // pins the any-drive rule where the `cfg(windows)` guard tests cannot.
+        for drive in ["c:", "d:", "e:"] {
+            for entry in [
+                r"\program files",
+                r"\program files (x86)",
+                r"\programdata",
+                r"\users",
+                r"\windows.old",
+                r"\$recycle.bin",
+            ] {
+                let path = format!("{drive}{entry}");
+                assert!(
+                    windows_drive_relative_hit(&path, true),
+                    "{path} blocked with the users tree included"
+                );
+                assert!(
+                    windows_drive_relative_hit(&format!("{path}\\child"), true),
+                    "{path} child blocked"
+                );
+                // The file-attachment guard excludes the users tree on every
+                // drive, exactly like it did for `C:` before.
+                assert_eq!(
+                    windows_drive_relative_hit(&path, false),
+                    entry != r"\users",
+                    "{path} users-tree exclusion applies only to the users entry"
+                );
+            }
+            // Non-system locations on the same drives stay allowed.
+            for allowed in [r"\dev\proj", r"\data", r"\tools"] {
+                assert!(
+                    !windows_drive_relative_hit(&format!("{drive}{allowed}"), true),
+                    "{drive}{allowed} must stay allowed"
+                );
+            }
+        }
+        // Forward-slash input normalizes through the shared guard form first.
+        let normalized = normalize_guard_path(Path::new("D:/Program Files/app"));
+        assert!(windows_drive_relative_hit(&normalized, true));
+        // A bare drive remainder with no entry never matches.
+        assert!(!windows_drive_relative_hit("", true));
+        assert!(!windows_drive_relative_hit("\\", true));
     }
 
     #[test]

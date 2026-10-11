@@ -15,6 +15,11 @@
 //! Migrating them is the open audit item #137 (SEC-005); see
 //! `application/confirmations.rs` for the full coverage split. Do not describe
 //! the export paths as server-verified until then.
+//!
+//! NEX-SEC-005 backstop (same item): an existing destination is never
+//! overwritten — the export services refuse it (`destination already exists`)
+//! and the write itself is atomic `create_new`, so a caller-chosen path can
+//! only create a fresh `.json` document, never clobber one.
 
 // Tauri command handlers must take ownership of their deserialized
 // arguments: serde cannot borrow into the wire payload, so passing by

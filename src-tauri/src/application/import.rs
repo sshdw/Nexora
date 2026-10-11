@@ -190,10 +190,7 @@ impl ImportDocument {
         )?;
         ensure_valid(
             conversation.status == "active" || conversation.status == "archived",
-            format!(
-                "conversation 'status' must be 'active' or 'archived', found '{}'",
-                conversation.status
-            ),
+            "conversation 'status' must be 'active' or 'archived'",
         )?;
         ensure_valid(
             conversation.created_at > 0,
@@ -232,18 +229,13 @@ fn validate_message(message: &ImportMessage, index: usize, conversation_id: i64)
     ensure_valid(
         message.conversation_id == conversation_id,
         format!(
-            "{} must equal the conversation id {conversation_id}, found {}",
-            field("conversation_id"),
-            message.conversation_id
+            "{} must equal the conversation id",
+            field("conversation_id")
         ),
     )?;
     ensure_valid(
         message.role == "user" || message.role == "assistant",
-        format!(
-            "{} role must be 'user' or 'assistant', found '{}'",
-            field("role"),
-            message.role
-        ),
+        format!("{} role must be 'user' or 'assistant'", field("role")),
     )?;
     ensure_valid(
         !message.content.is_empty(),
@@ -253,7 +245,7 @@ fn validate_message(message: &ImportMessage, index: usize, conversation_id: i64)
         ensure_valid(
             provider_id > 0,
             format!(
-                "{} provider_id must be positive or null, found {provider_id}",
+                "{} provider_id must be positive or null",
                 field("provider_id")
             ),
         )?;
@@ -298,10 +290,14 @@ fn parse_document(json: &str) -> Result<ImportDocument> {
 
 /// Distinguish malformed JSON from well-formed JSON with invalid structure.
 /// JSON syntax/EOF errors are [`ImportError::InvalidJson`]; missing or
-/// wrongly-typed fields are [`ImportError::InvalidData`].
+/// wrongly-typed fields are [`ImportError::InvalidData`] with fixed
+/// vocabulary (NEX-SEC-011: the `serde_json` detail can quote document
+/// content, so it is never carried into the reason).
 fn classify_error(err: serde_json::Error) -> ImportError {
     match err.classify() {
-        serde_json::error::Category::Data => ImportError::InvalidData(err.to_string()),
+        serde_json::error::Category::Data => ImportError::InvalidData(
+            "import document has an invalid field type or structure".to_string(),
+        ),
         _ => ImportError::InvalidJson(err),
     }
 }
@@ -444,9 +440,13 @@ pub(crate) enum ImportError {
 impl std::fmt::Display for ImportError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::InvalidJson(err) => write!(f, "invalid JSON: {err}"),
-            Self::UnsupportedFormat { format } => {
-                write!(f, "unsupported import format '{format}'")
+            // NEX-SEC-011: fixed vocabulary only — the `serde_json` detail
+            // and the document's `format` value can quote document content,
+            // so neither is rendered here (the typed variants still carry
+            // them for programmatic matching in tests).
+            Self::InvalidJson(_) => write!(f, "invalid JSON document"),
+            Self::UnsupportedFormat { .. } => {
+                write!(f, "unsupported import format")
             }
             Self::UnsupportedVersion { version } => {
                 write!(f, "unsupported import version {version}")
@@ -1627,6 +1627,148 @@ mod tests {
             ImportError::InvalidData(reason) if reason.contains("conversation_id")
         ));
         assert_eq!(conversation_count(&db), 0);
+    }
+
+    #[test]
+    fn validation_reasons_never_echo_document_values() {
+        // NEX-SEC-011: validation reasons carry structural labels only. A
+        // hostile (but not key-like, so past the secrets gate) status, role,
+        // or relationship value must not survive in the reason text, and the
+        // serde-typed failures must render fixed vocabulary too.
+        let db = test_db();
+        let service = ImportService::new(&db);
+        let hostile = "archived'; DROP TABLE conversations; --";
+        let mut bad_status = conversation(1);
+        bad_status["status"] = serde_json::json!(hostile);
+        let err = service
+            .import(&doc(
+                bad_status,
+                vec![message(1, 1, "user", "hi", None, None, 1)],
+            ))
+            .expect_err("bad status");
+        match err {
+            ImportError::InvalidData(reason) => {
+                assert!(
+                    !reason.contains(hostile),
+                    "status value must not echo, got {reason:?}"
+                );
+                assert_eq!(
+                    reason,
+                    "conversation 'status' must be 'active' or 'archived'"
+                );
+            }
+            other => panic!("expected InvalidData, got {other:?}"),
+        }
+
+        let hostile_role = "admin'; DROP TABLE messages; --";
+        let err = service
+            .import(&doc(
+                conversation(1),
+                vec![message(1, 1, hostile_role, "hi", None, None, 1)],
+            ))
+            .expect_err("bad role");
+        match err {
+            ImportError::InvalidData(reason) => {
+                assert!(
+                    !reason.contains(hostile_role),
+                    "role value must not echo, got {reason:?}"
+                );
+                assert!(
+                    reason.contains("messages[0].role"),
+                    "the structural label stays, got {reason:?}"
+                );
+            }
+            other => panic!("expected InvalidData, got {other:?}"),
+        }
+
+        // Wrongly-typed fields (serde `Data` errors, which quote content)
+        // map to fixed vocabulary.
+        let mistyped = serde_json::json!({
+            "format": "nexora-conversation",
+            "version": 1,
+            "conversation": conversation(1),
+            "messages": [],
+        })
+        .to_string()
+        .replace("\"version\":1", "\"version\":\"one\"");
+        let err = service.import(&mistyped).expect_err("mistyped version");
+        match err {
+            ImportError::InvalidData(reason) => {
+                assert!(!reason.contains("one"), "got {reason:?}");
+                assert_eq!(
+                    reason,
+                    "import document has an invalid field type or structure"
+                );
+            }
+            other => panic!("expected InvalidData, got {other:?}"),
+        }
+
+        // Display paths stay fixed-vocabulary too: neither the serde detail
+        // nor the document's format value renders.
+        let rendered = format!(
+            "{}",
+            ImportError::UnsupportedFormat {
+                format: hostile.to_string(),
+            }
+        );
+        assert!(!rendered.contains(hostile), "got {rendered:?}");
+        let rendered = format!(
+            "{}",
+            ImportError::InvalidJson(
+                serde_json::from_str::<serde_json::Value>("{oops").expect_err("malformed")
+            )
+        );
+        assert!(!rendered.contains("oops"), "got {rendered:?}");
+        assert_eq!(conversation_count(&db), 0, "denied documents write nothing");
+    }
+
+    #[test]
+    fn frontend_file_read_capability_carries_an_explicit_scope() {
+        // NEX-SEC-012: `fs:allow-read-text-file` must never be granted bare
+        // (unrestricted frontend reads). The capability pins an explicit
+        // `$HOME` scope for the read command plus a matching global
+        // `fs:scope` backstop, so user-picked imports/attachments outside the
+        // home tree are denied instead of silently readable.
+        const CAPABILITY: &str = include_str!("../../capabilities/default.json");
+        let document: serde_json::Value =
+            serde_json::from_str(CAPABILITY).expect("capability is valid JSON");
+        let permissions = document
+            .get("permissions")
+            .and_then(serde_json::Value::as_array)
+            .expect("permissions array present");
+        assert!(
+            !permissions
+                .iter()
+                .any(|entry| entry == "fs:allow-read-text-file"),
+            "the bare unscoped read-text-file permission must be gone"
+        );
+        let scopes: Vec<&serde_json::Value> = permissions
+            .iter()
+            .filter(|entry| entry.get("identifier") == Some(&serde_json::json!("fs:scope")))
+            .collect();
+        assert_eq!(scopes.len(), 1, "exactly one global fs:scope entry");
+        for identifier in ["fs:allow-read-text-file", "fs:scope"] {
+            let entry = permissions
+                .iter()
+                .find(|entry| entry.get("identifier") == Some(&serde_json::json!(identifier)))
+                .unwrap_or_else(|| panic!("{identifier} entry present"));
+            let allow = entry
+                .get("allow")
+                .and_then(serde_json::Value::as_array)
+                .unwrap_or_else(|| panic!("{identifier} carries an allow list"));
+            assert!(!allow.is_empty(), "{identifier} scope must not be empty");
+            assert!(
+                allow
+                    .iter()
+                    .any(|rule| rule.get("path") == Some(&serde_json::json!("$HOME/**/*"))),
+                "{identifier} scope must pin the home tree, got {allow:?}"
+            );
+            let rendered = serde_json::to_string(entry).expect("serialize entry");
+            assert!(
+                !rendered.contains('*') || rendered.contains("$HOME"),
+                "{identifier} globs must stay inside the home tree, got {rendered:?}"
+            );
+        }
     }
 
     #[test]
