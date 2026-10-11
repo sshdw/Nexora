@@ -375,19 +375,25 @@ pub(crate) fn group_key(preset: &str, tool_name: &str, path: Option<&str>) -> St
     key
 }
 
+/// The six native tool names: the single source of truth for tool-name
+/// membership. The injection mimicry anchor
+/// ([`scan_observation`](super::injection::scan_observation)) checks this
+/// list, never a second hardcoded copy, so the anchor cannot drift from the
+/// registry.
+pub(crate) const KNOWN_TOOL_NAMES: &[&str] = &[
+    "read_file",
+    "list_directory",
+    "write_file",
+    "execute_command",
+    "edit_file",
+    "search_files",
+];
+
 /// Whether a tool name is one of the six native tools (unknown tools never
 /// reach the store).
 #[must_use]
 pub(crate) fn is_known_tool(name: &str) -> bool {
-    matches!(
-        name,
-        "read_file"
-            | "list_directory"
-            | "write_file"
-            | "execute_command"
-            | "edit_file"
-            | "search_files"
-    )
+    KNOWN_TOOL_NAMES.contains(&name)
 }
 
 // ---------------------------------------------------------------------------
