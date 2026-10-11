@@ -2,7 +2,7 @@
 
 ## 1. Purpose
 
-This document defines the complete SQLite database architecture for the Nexora MVP. The database is the single source of truth for all local persistent state, responsible for storing conversations, messages, prompts, attachments, provider metadata, and application settings. It enables offline-first operation, local full-text search, and data portability as required by SRS.md.
+This document defines the complete SQLite database architecture for the Nexora MVP. The database is the single source of truth for all local persistent state, responsible for storing conversations, messages, prompts, attachments, provider metadata, application settings, agent runs and steps, permission rules, agent tasks, usage counts, debt items, and task locks. It enables offline-first operation, local full-text search, and data portability as required by SRS.md.
 
 **Reference:** ARCHITECTURE.md, Section 8 (Database Layer).
 
@@ -44,8 +44,8 @@ All multi-statement operations use explicit transactions.
 **Rationale:** Guarantees atomicity. A conversation cannot be partially created, and an import cannot result in a half-populated database.
 
 ### JSON Usage
-JSON is not used in any column.  
-**Rationale:** All MVP requirements are satisfied with a strictly relational schema. Introducing JSON for provider configuration (as considered in the previous draft) was unnecessary; provider-specific non-sensitive data does not require schema-flexible storage in the MVP.
+JSON is not used as queryable structure in any column.
+**Rationale:** All MVP requirements are satisfied with a strictly relational schema. The sole exception is opaque payload text: `agent_steps.arguments` stores the raw provider-supplied JSON arguments verbatim (v4), and `agent_tasks.report` / `agent_task_steps.result` store free-form text. These columns are never parsed by SQL (no `json1` functions, no JSON indexes); provider-specific non-sensitive data does not require schema-flexible storage in the MVP.
 
 ### FTS5 Usage
 FTS5 virtual tables are used for full-text search.  
@@ -55,7 +55,7 @@ FTS5 virtual tables are used for full-text search.
 
 ## 4. Schema Versioning
 
-Schema changes are tracked in the `schema_version` table. Each migration inserts exactly one new row containing a monotonically increasing version number and an application timestamp. Version numbers are unique and strictly increasing. The current schema version is determined by the maximum version number present (`MAX(version)`), which therefore always represents the current schema version.
+Schema changes are tracked in the `schema_version` table. Each migration inserts exactly one new row containing a monotonically increasing version number and an application timestamp. Version numbers are unique and strictly increasing. The current schema version is determined by the maximum version number present (`MAX(version)`), which therefore always represents the current schema version. The current schema version is **v14**.
 
 **Rationale:** This provides an unambiguous, ordered migration path and prevents the application from running against an unrecognized schema version.
 
@@ -68,6 +68,22 @@ Migrations follow a forward-only, incremental philosophy. Each migration is atom
 v5 introduces a validated rebuild pattern for `agent_runs`: when a `CHECK` widening cannot be expressed with `ALTER TABLE ADD COLUMN`, the migration rebuilds the table (`CREATE TABLE agent_runs_new` -> copy -> `DROP TABLE agent_runs` -> `RENAME`) with `PRAGMA foreign_keys=OFF` applied before the transaction and restored to `ON` after (SQLite cannot toggle `foreign_keys` inside a transaction). This pattern is limited to v5; all other migrations remain byte-identical plain transactions.
 
 v6 adds the `conversations.workspace_root` column as a plain additive `ALTER TABLE ADD COLUMN` transaction: forward-only, with no table rebuild, no foreign key, and no backfill, so pre-picker rows keep `NULL`.
+
+v7 adds the `permission_rules` table (ordered, revocable tool-permission rules plus a seeded `coding`/`execute_command`/`ask` row) and rebuilds `agent_steps` to gain the provenance columns `rule_id` (`REFERENCES permission_rules(id) ON DELETE SET NULL`), `group_key`, and `decided_by` (existing rows keep `NULL`).
+
+v8 adds the task-manager tables `agent_tasks` and `agent_task_steps` (new tables only, no rebuild).
+
+v9 adds the local-only `usage_ledger` counts table (no text content column by construction).
+
+v10 adds the `debt_items` backlog table.
+
+v11 adds the `task_locks` kanban edit-lock table (`task_id` PK, expiring tokens).
+
+v12 replaces the v3 `updated_at` touch triggers with monotonic bodies (`max(unixepoch(), created_at)`), so rows with future `created_at` no longer fail their next update against the `updated_at >= created_at` CHECK. Drop + recreate; no row data touched.
+
+v13 adds cross-column invariants via four table rebuilds (the v5/v7 precedent): `messages` gains `UNIQUE (conversation_id, id)`; `attachments` gains a composite `FOREIGN KEY (conversation_id, message_id) REFERENCES messages (conversation_id, id) ON DELETE CASCADE` (pre-existing cross-conversation rows repaired to draft `message_id = NULL`); `agent_tasks` gains `CHECK (current_step <= total_steps)` (over-advanced rows clamped); `agent_runs` gains `CHECK (status = 'running' OR finished_at IS NOT NULL)` and `CHECK (finished_at IS NULL OR finished_at >= started_at)` (terminal rows without finish time stamped with `started_at`; `total_steps` normalized to the child-row count).
+
+v14 adds the nullable `agent_steps.input_tokens` / `output_tokens` columns as plain additive `ALTER TABLE ADD COLUMN` transactions (no rebuild, no FK toggle); `NULL` for pre-existing rows and usage-less turns.
 
 ---
 
@@ -83,7 +99,13 @@ v6 adds the `conversations.workspace_root` column as a plain additive `ALTER TAB
 | **AppSetting** | Application | Updated throughout use | Standalone |
 | **SchemaVersion** | Application | Inserted during migrations | Standalone |
 | **AgentRun** | Application | Created at agent run start, finalized at run termination | 1:N AgentStep; N:1 Conversation (optional) |
-| **AgentStep** | AgentRun | Appended during the run, immutable after insertion | N:1 AgentRun |
+| **AgentStep** | AgentRun | Appended during the run, immutable after insertion | N:1 AgentRun; N:1 PermissionRule (optional, nullable) |
+| **PermissionRule** | User | Created, deleted | Referenced by AgentStep (optional, nullable) |
+| **AgentTask** | User | Created, updated, deleted; executed via bounded run loop | 1:N AgentTaskStep; N:1 Conversation (optional); N:1 AgentRun (optional, latest step run) |
+| **AgentTaskStep** | AgentTask | Created with task plan, updated during execution | N:1 AgentTask; N:1 AgentRun (optional, own step run) |
+| **UsageLedgerRow** | Application | Incremented per event-day, pruned past 90 days | Standalone (counts only, no content) |
+| **DebtItem** | User / Audit import | Created, triaged, deleted | Standalone |
+| **TaskLock** | Application | Acquired, heartbeated, released/expired | 1:1 AgentTask |
 
 ---
 
@@ -138,6 +160,8 @@ v6 adds the `conversations.workspace_root` column as a plain additive `ALTER TAB
 | model_name | Specific model used | TEXT | YES | NULL | `length(model_name) <= 200` | None | No | FR-004. Implementation Decision: records the selected model in persisted history. |
 | created_at | Creation timestamp | INTEGER | NO | Current Unix timestamp | `created_at > 0` | None | No | Implementation Decision. Preserves strict chronological order within a conversation per FR-005. |
 
+**v13 invariant:** `UNIQUE (conversation_id, id)` so the attachment link can reference the `(conversation, message)` pair (see §7.4 composite FK). Rows are otherwise identical to v1.
+
 **Note on failed requests:** Failed assistant responses are not persisted as messages. FR-003 requires that failed requests display an error in the UI; this is handled at the application layer. Persisting failed state would require either nullable `content` or an additional status column, both of which introduce unnecessary complexity beyond the MVP requirements.
 
 ---
@@ -189,6 +213,8 @@ v6 adds the `conversations.workspace_root` column as a plain additive `ALTER TAB
 | file_path | Absolute filesystem path | TEXT | NO | None | `length(file_path) > 0` | None | No | FR-008 |
 | file_size_bytes | File size | INTEGER | YES | NULL | `file_size_bytes >= 0` | None | No | Implementation Decision. Required for FR-008 validation of supported file limits. |
 | mime_type | Media type | TEXT | YES | NULL | `length(mime_type) <= 127` | None | No | Implementation Decision. Required for FR-008 validation of supported file types. |
+
+**v13 invariant:** alongside the single-column FKs, a composite `FOREIGN KEY (conversation_id, message_id) REFERENCES messages (conversation_id, id) ON DELETE CASCADE` guarantees an attachment can only link a message of its own conversation. The single-column conversation FK still guards draft rows (`message_id IS NULL` skips the composite FK under SQLite NULL semantics). Pre-existing cross-conversation rows are repaired to draft (`message_id = NULL`) during the v13 rebuild.
 
 ---
 
@@ -289,6 +315,8 @@ v6 adds the `conversations.workspace_root` column as a plain additive `ALTER TAB
 | spent_micro_usd | Total spend at finalize in micro-USD | INTEGER | YES | NULL | `spent_micro_usd IS NULL OR spent_micro_usd >= 0` | None | No | Task 4.3. Policy default pricing; stored only when persisted. |
 | limit_micro_usd | Per-run spend limit in micro-USD | INTEGER | YES | NULL | `limit_micro_usd IS NULL OR limit_micro_usd >= 0` | None | No | Task 4.3. NULL = no limit (opt-in). |
 
+**v13 invariants:** `CHECK (status = 'running' OR finished_at IS NOT NULL)` (a terminal status requires a finish time) and `CHECK (finished_at IS NULL OR finished_at >= started_at)`. Pre-existing terminal rows with `finished_at IS NULL` are stamped with `started_at` during the rebuild, and `total_steps` is normalized to the child-row count.
+
 **Implementation Note:** `conversation_id` is stored as NULL until the Task 5.1 IPC layer begins passing the owning conversation to the runner (D50). The column and its CASCADE exist from this migration so the privacy doctrine holds from day one.
 
 ---
@@ -319,6 +347,172 @@ v6 adds the `conversations.workspace_root` column as a plain additive `ALTER TAB
 | status | Tool call outcome | TEXT | YES | NULL | `status IN ('succeeded', 'failed', 'denied', 'cancelled')` | None | No | Agent roadmap (Task 4.2). |
 | started_at | Step start timestamp | INTEGER | NO | Current Unix timestamp | `started_at > 0` | None | No | Implementation Decision. |
 | duration_ms | Step duration in milliseconds | INTEGER | YES | NULL | `duration_ms >= 0` | None | No | D12. |
+| rule_id | Permission rule that decided this step (v7) | INTEGER | YES | NULL | `rule_id IS NULL OR rule_id > 0` | permission_rules.id SET NULL | No | M1-core provenance. `NULL` for pre-v7 rows and non-gated steps. |
+| group_key | Approval-group key batching related decisions (v7) | TEXT | YES | NULL | `group_key IS NULL OR length(group_key) <= 256` | None | No | M1-core provenance. |
+| decided_by | Who/what decided this step (v7) | TEXT | YES | NULL | `decided_by IS NULL OR decided_by IN ('user', 'rule', 'system')` | None | No | M1-core provenance. |
+| input_tokens | Provider-reported input tokens for the turn (v14) | INTEGER | YES | NULL | `input_tokens IS NULL OR input_tokens >= 0` | None | No | NEX-AGENT-005. `NULL` when the provider omitted usage. Saturating `u64 → i64` clamp on write. |
+| output_tokens | Provider-reported output tokens for the turn (v14) | INTEGER | YES | NULL | `output_tokens IS NULL OR output_tokens >= 0` | None | No | NEX-AGENT-005. `NULL` when the provider omitted usage. |
+
+---
+
+### 7.10 permission_rules
+
+**Purpose:** Ordered, revocable tool-permission rules (v7, M1-core): each row allows, gates (`ask`), or denies tool calls matching a preset + tool pattern + optional path pattern.
+**Related FR:** None (agent roadmap, M1-core)
+
+**CRUD:**
+- **Create:** `INSERT` by user (or the v7 seed row: `coding` / `execute_command` / `*` / `ask` / priority 50).
+- **Read:** `SELECT` all ordered by priority for rule evaluation.
+- **Update:** None in MVP (delete + re-add).
+- **Delete:** `DELETE` by `id`. `SET NULL` on `agent_steps.rule_id`.
+
+**Deletion Behavior:** Hard delete. User-owned. `ON DELETE SET NULL` on `agent_steps.rule_id` — step history survives rule removal with provenance cleared.
+**Rationale:** Rules are policy, steps are history; deleting policy must not destroy the audit trail.
+
+| Field | Purpose | Type | Nullable | Default | CHECK | FK | UNIQUE | Traceability |
+|-------|---------|------|----------|---------|-------|-----|--------|--------------|
+| id | Surrogate primary key | INTEGER | NO | SQLite INTEGER PRIMARY KEY | `id > 0` | None | PK | Implementation Decision. |
+| preset | Rule scope preset | TEXT | NO | None | `preset IN ('coding', 'document', '*')` | None | No (with tool_pattern, path_pattern) | M1-core. `UNIQUE(preset, tool_pattern, path_pattern)`. |
+| tool_pattern | Tool name pattern | TEXT | NO | None | `length(tool_pattern) > 0 AND length(tool_pattern) <= 64` | None | No (with preset, path_pattern) | M1-core. |
+| path_pattern | Optional path scope | TEXT | YES | NULL | `path_pattern IS NULL OR (length(path_pattern) > 0 AND length(path_pattern) <= 1024)` | None | No (with preset, tool_pattern) | M1-core. |
+| effect | Rule outcome | TEXT | NO | None | `effect IN ('allow', 'ask', 'deny')` | None | No | M1-core. |
+| priority | Evaluation order (lower first) | INTEGER | NO | 100 | `priority >= 0` | None | No | M1-core. |
+| created_at | Creation timestamp | INTEGER | NO | Current Unix timestamp | `created_at > 0` | None | No | Implementation Decision. |
+
+---
+
+### 7.11 agent_tasks
+
+**Purpose:** User-defined task lists with agent-executable steps (v8, task manager + autonomous mode): one row per task, driven by the bounded plan → act → verify → report loop.
+**Related FR:** None (agent roadmap, task manager)
+
+**CRUD:**
+- **Create:** `INSERT` with `status = 'pending'`.
+- **Read:** `SELECT` by `id`; `SELECT` by `status` ordered by `updated_at`.
+- **Update:** `UPDATE` of title/description/status/progress/report/run link; `updated_at` maintained by explicit repository writes (no trigger).
+- **Delete:** `DELETE` by `id`. Cascades to agent_task_steps and task_locks.
+
+**Deletion Behavior:** Hard delete. User-owned. `ON DELETE CASCADE` to `agent_task_steps` and `task_locks`; also cascade-deleted when its conversation is removed (optional link, D50 privacy doctrine).
+**Rationale:** A task and its steps/lock form a single unit of deletion; a conversation and its task history form a single unit of privacy.
+
+| Field | Purpose | Type | Nullable | Default | CHECK | FK | UNIQUE | Traceability |
+|-------|---------|------|----------|---------|-------|-----|--------|--------------|
+| id | Surrogate primary key | INTEGER | NO | SQLite INTEGER PRIMARY KEY | `id > 0` | None | PK | Implementation Decision. |
+| title | Task title | TEXT | NO | None | `length(title) > 0 AND length(title) <= 200` | None | No | Task manager. |
+| description | Task detail | TEXT | YES | NULL | `description IS NULL OR length(description) <= 4000` | None | No | Task manager. |
+| status | Task state | TEXT | NO | `'pending'` | `status IN ('pending', 'running', 'completed', 'failed', 'cancelled')` | None | No | Task manager. |
+| conversation_id | Backing conversation | INTEGER | YES | NULL | `conversation_id IS NULL OR conversation_id > 0` | conversations.id CASCADE | No | Task manager; D50. |
+| provider | Provider for the task loop | TEXT | YES | NULL | `provider IS NULL OR (length(provider) > 0 AND length(provider) <= 100)` | None | No | Task manager. |
+| model | Model for the task loop | TEXT | YES | NULL | `model IS NULL OR (length(model) > 0 AND length(model) <= 200)` | None | No | Task manager. |
+| max_steps | Step budget (capped) | INTEGER | NO | 25 | `max_steps >= 1 AND max_steps <= 25` | None | No | Task manager. Bounded autonomy. |
+| current_step | Progress cursor | INTEGER | NO | 0 | `current_step >= 0` | None | No | Task manager. v13: `CHECK (current_step <= total_steps)`. |
+| total_steps | Planned step count | INTEGER | NO | 0 | `total_steps >= 0` | None | No | Task manager. |
+| report | Final verify/report text | TEXT | YES | NULL | None | None | No | Task manager. |
+| run_id | Latest step's agent run | INTEGER | YES | NULL | `run_id IS NULL OR run_id > 0` | agent_runs.id SET NULL | No | Task manager. History survives run deletion. |
+| created_at | Creation timestamp | INTEGER | NO | Current Unix timestamp | `created_at > 0` | None | No | Implementation Decision. |
+| updated_at | Last modification timestamp | INTEGER | NO | Current Unix timestamp | `updated_at >= created_at` | None | No | Implementation Decision. |
+
+---
+
+### 7.12 agent_task_steps
+
+**Purpose:** Agent-executable steps of a task (v8): one row per planned step, each optionally linked to its own agent run.
+**Related FR:** None (agent roadmap, task manager)
+
+**CRUD:**
+- **Create:** `INSERT` (append) in step order.
+- **Read:** `SELECT` by `task_id` ordered by `seq`.
+- **Update:** `UPDATE` of status/result/run link/finish time during execution.
+- **Delete:** Only via `ON DELETE CASCADE` from agent_tasks.
+
+**Deletion Behavior:** Never deleted directly. `ON DELETE CASCADE` from agent_tasks.
+**Rationale:** Step rows exist only while their task exists.
+
+| Field | Purpose | Type | Nullable | Default | CHECK | FK | UNIQUE | Traceability |
+|-------|---------|------|----------|---------|-------|-----|--------|--------------|
+| id | Surrogate primary key | INTEGER | NO | SQLite INTEGER PRIMARY KEY | `id > 0` | None | PK | Implementation Decision. |
+| task_id | Owning task | INTEGER | NO | None | `task_id > 0` | agent_tasks.id CASCADE | No (with seq) | Task manager. `UNIQUE(task_id, seq)`. |
+| seq | 1-based step sequence within the task | INTEGER | NO | None | `seq >= 1` | None | No (with task_id) | Task manager. |
+| title | Step title | TEXT | NO | None | `length(title) > 0 AND length(title) <= 500` | None | No | Task manager. |
+| status | Step state | TEXT | NO | `'pending'` | `status IN ('pending', 'running', 'completed', 'failed', 'skipped', 'cancelled')` | None | No | Task manager. |
+| result | Step outcome text | TEXT | YES | NULL | None | None | No | Task manager. |
+| run_id | This step's agent run | INTEGER | YES | NULL | `run_id IS NULL OR run_id > 0` | agent_runs.id SET NULL | No | Task manager. History survives run deletion. |
+| started_at | Step start timestamp | INTEGER | NO | Current Unix timestamp | `started_at > 0` | None | No | Implementation Decision. |
+| finished_at | Step finish timestamp | INTEGER | YES | NULL | `finished_at IS NULL OR finished_at > 0` | None | No | Task manager. |
+
+---
+
+### 7.13 usage_ledger
+
+**Purpose:** Local-only usage counts for the privacy center (v9): per-event-kind, per-day counters. Counts only — there is deliberately no text content column, so titles, prompts, message bodies, URLs, and error text can never be recorded here (enforced by the schema itself).
+**Related FR:** None (privacy center)
+
+**CRUD:**
+- **Create/Update:** Upsert (`kind`, `day`) incrementing `count`.
+- **Read:** `SELECT` by `day` range for `privacy_status` / `privacy_export`.
+- **Delete:** Rows older than 90 days pruned by the recording path; full clear via user-confirmed `privacy_wipe` only.
+
+**Deletion Behavior:** Pruned by age; wiped only on explicit user confirmation. No cascade.
+**Rationale:** Nothing on this path ever leaves the machine.
+
+| Field | Purpose | Type | Nullable | Default | CHECK | FK | UNIQUE | Traceability |
+|-------|---------|------|----------|---------|-------|-----|--------|--------------|
+| kind | Event kind | TEXT | NO | None | `kind IN ('agent_run', 'message', 'github_read', 'update_check')` | None | PK (with day) | Privacy center. Fixed vocabulary. |
+| day | Day bucket | INTEGER | NO | None | `day > 0` | None | PK (with kind) | Privacy center. |
+| count | Event count | INTEGER | NO | None | `count >= 0` | None | No | Privacy center. |
+
+---
+
+### 7.14 debt_items
+
+**Purpose:** Technical-debt backlog (v10): one row per tracked debt item, manually added (`source='manual'`) or imported from the read-only repo-audit scanners (`source='audit'`).
+**Related FR:** None (debt backlog)
+
+**CRUD:**
+- **Create:** `INSERT` manually or via audit import (`INSERT OR IGNORE` on `audit_key`).
+- **Read:** `SELECT` by `status` ordered by `updated_at`.
+- **Update:** `UPDATE` of status; `updated_at` refreshed explicitly on every status write (no trigger).
+- **Delete:** `DELETE` by `id`.
+
+**Deletion Behavior:** Hard delete. User-owned. No cascade.
+**Rationale:** Backlog rows are standalone triage state.
+
+| Field | Purpose | Type | Nullable | Default | CHECK | FK | UNIQUE | Traceability |
+|-------|---------|------|----------|---------|-------|-----|--------|--------------|
+| id | Surrogate primary key | INTEGER | NO | SQLite INTEGER PRIMARY KEY | `id > 0` | None | PK | Implementation Decision. |
+| title | Debt title | TEXT | NO | None | `length(title) > 0 AND length(title) <= 200` | None | No | Debt backlog. |
+| source | Row origin | TEXT | NO | None | `source IN ('audit', 'manual')` | None | No | Debt backlog. |
+| severity | Severity | TEXT | NO | `'info'` | `severity IN ('info', 'warning')` | None | No | Debt backlog. Reuses the audit vocabulary. |
+| status | Triage state | TEXT | NO | `'open'` | `status IN ('open', 'accepted', 'fixed', 'wontfix')` | None | No | Debt backlog. |
+| location | Code location | TEXT | YES | NULL | `location IS NULL OR (length(location) > 0 AND length(location) <= 1024)` | None | No | Debt backlog. |
+| note | Triage note | TEXT | YES | NULL | `note IS NULL OR length(note) <= 4000` | None | No | Debt backlog. |
+| audit_key | Import identity | TEXT | YES | NULL | `audit_key IS NULL OR length(audit_key) <= 2048` | None | Yes | Debt backlog. `NULL` for manual rows (never collide — SQLite treats NULL UNIQUE members as distinct). |
+| created_at | Creation timestamp | INTEGER | NO | Current Unix timestamp | `created_at > 0` | None | No | Implementation Decision. |
+| updated_at | Last modification timestamp | INTEGER | NO | Current Unix timestamp | `updated_at >= created_at` | None | No | Implementation Decision. |
+
+---
+
+### 7.15 task_locks
+
+**Purpose:** Kanban edit locks (v11): at most one lock row per task. `holder` is a short surface label, `token` is the opaque proof a mutating command must present, and `expires_at` is the mandatory deadline — a lock can never be eternal; an expired row is stealable by the next acquirer.
+**Related FR:** None (kanban + locks)
+
+**CRUD:**
+- **Create:** `INSERT` on acquire (`task_id` PK ⇒ at most one lock per task).
+- **Read:** `SELECT` by `task_id`; `SELECT` by `expires_at` for expiry.
+- **Update:** `UPDATE` of token/expiry on heartbeat.
+- **Delete:** `DELETE` on release/steal; `CASCADE` from task deletion.
+
+**Deletion Behavior:** Hard delete on release. `ON DELETE CASCADE` from agent_tasks.
+**Rationale:** A lock exists only while its task exists.
+
+| Field | Purpose | Type | Nullable | Default | CHECK | FK | UNIQUE | Traceability |
+|-------|---------|------|----------|---------|-------|-----|--------|--------------|
+| task_id | Locked task (PK) | INTEGER | NO | None | `task_id > 0` | agent_tasks.id CASCADE | PK | Kanban + locks. |
+| holder | Surface label | TEXT | NO | None | `length(holder) > 0 AND length(holder) <= 64` | None | No | Kanban + locks. |
+| token | Opaque mutation proof | TEXT | NO | None | `length(token) > 0 AND length(token) <= 128` | None | Yes | Kanban + locks. |
+| acquired_at | Acquisition timestamp | INTEGER | NO | None | `acquired_at > 0` | None | No | Kanban + locks. |
+| expires_at | Mandatory deadline | INTEGER | NO | None | `expires_at > acquired_at` | None | No | Kanban + locks. |
 
 ---
 
@@ -334,6 +528,14 @@ v6 adds the `conversations.workspace_root` column as a plain additive `ALTER TAB
 | `run_id`, `seq` | agent_steps | `SELECT * FROM agent_steps WHERE run_id = ? ORDER BY seq` | Ordered step retrieval for a run. | Agent roadmap (Task 4.2). |
 | `conversation_id` | agent_runs | `SELECT * FROM agent_runs WHERE conversation_id = ? ORDER BY started_at DESC` | List the agent runs of one conversation (M5). | Agent roadmap (Task 4.2). |
 | `started_at` | agent_runs | `SELECT * FROM agent_runs ORDER BY started_at DESC` | Run history listing by recency. | Agent roadmap (Task 4.2). |
+| `conversation_id`, `message_id` | attachments | `SELECT * FROM attachments WHERE conversation_id = ? AND message_id = ?` | Same-conversation link lookup backing the v13 composite FK. | NEX-DB-002 (v13). |
+| `status`, `updated_at` | agent_tasks | `SELECT * FROM agent_tasks WHERE status = ? ORDER BY updated_at DESC` | Task listing by triage state and recency. | Task manager (v8). |
+| `task_id`, `seq` | agent_task_steps | `SELECT * FROM agent_task_steps WHERE task_id = ? ORDER BY seq` | Ordered step retrieval for a task. | Task manager (v8). |
+| `day` | usage_ledger | `SELECT * FROM usage_ledger WHERE day BETWEEN ? AND ?` | Privacy-center range reads over day buckets. | Privacy center (v9). |
+| `status`, `updated_at` | debt_items | `SELECT * FROM debt_items WHERE status = ? ORDER BY updated_at DESC` | Backlog listing by triage state and recency. | Debt backlog (v10). |
+| `expires_at` | task_locks | `SELECT * FROM task_locks WHERE expires_at <= ?` | Expiry scans for stealable locks. | Kanban + locks (v11). |
+
+UNIQUE/PK-backed implicit indexes (SQLite `sqlite_autoindex_*`, not created explicitly): `providers.name`, `messages(conversation_id, id)` (v13), `agent_steps(run_id, seq)`, `permission_rules(preset, tool_pattern, path_pattern)` (v7), `agent_task_steps(task_id, seq)` (v8), `usage_ledger(kind, day)` PK (v9), `debt_items.audit_key` (v10), `task_locks.token` (v11).
 
 ---
 
@@ -347,6 +549,13 @@ v6 adds the `conversations.workspace_root` column as a plain additive `ALTER TAB
 | attachments | message_id | messages | id | CASCADE | When a message is deleted, its linked attachments are removed. Draft attachments (`message_id IS NULL`) are unaffected by message deletion, but are removed via `conversation_id` CASCADE when the conversation is deleted. |
 | agent_runs | conversation_id | conversations | id | CASCADE | Optional link: a run may not yet be tied to a conversation (NULL until Task 5.1). Removing a conversation atomically removes its agent runs (Nexora privacy doctrine, D50). |
 | agent_steps | run_id | agent_runs | id | CASCADE | Step records are part of the run (D12). Removing a run atomically removes its steps. |
+| agent_steps | rule_id | permission_rules | id | SET NULL | Optional provenance (v7): rule removal clears the decision link but preserves step history. |
+| agent_tasks | conversation_id | conversations | id | CASCADE | Optional link (v8): removing a conversation atomically removes its tasks (D50). |
+| agent_tasks | run_id | agent_runs | id | SET NULL | Latest-step run link (v8): run deletion clears the link but preserves the task. |
+| agent_task_steps | task_id | agent_tasks | id | CASCADE | Step rows are part of the task (v8). |
+| agent_task_steps | run_id | agent_runs | id | SET NULL | Own-step run link (v8): run deletion clears the link but preserves the step. |
+| task_locks | task_id | agent_tasks | id | CASCADE | A lock exists only while its task exists (v11). |
+| attachments | (conversation_id, message_id) | messages | (conversation_id, id) | CASCADE | Composite same-conversation guard (v13): an attachment can only link a message of its own conversation. Coexists with the single-column FKs; draft rows (`message_id IS NULL`) skip it under SQLite NULL semantics. |
 
 ---
 
@@ -378,6 +587,7 @@ v6 adds the `conversations.workspace_root` column as a plain additive `ALTER TAB
 - **Tables:** `conversations`, `prompts`.
 - **Fields:** For `conversations`, the trigger executes only when `title` or `status` changes. For `prompts`, the trigger executes only when `title` or `content` changes.
 - **Rationale:** Ensures timestamp accuracy without requiring application-layer logic to manually set the field on every update. Not applied to `messages` (immutable) or `attachments` (only `message_id` is updated once at send time, which does not represent a semantic modification requiring timestamp tracking).
+- **v12 monotonicity (NEX-DB-001/003):** the trigger bodies stamp `max(unixepoch(), created_at)` instead of bare `unixepoch()`, so rows with a future `created_at` (within-skew import, backward clock movement) no longer fail their next update against the `updated_at >= created_at` CHECK. Drop + recreate; no row data touched.
 
 ---
 
@@ -399,11 +609,11 @@ v6 adds the `conversations.workspace_root` column as a plain additive `ALTER TAB
 
 ## 13. DATA INTEGRITY
 
-**CHECK Constraints:** Enum-like columns use `CHECK` to prevent invalid values at the database level: `conversations.status`, `messages.role`.
+**CHECK Constraints:** Enum-like columns use `CHECK` to prevent invalid values at the database level: `conversations.status`, `messages.role`, `agent_runs.status`/`mode`, `agent_steps.kind`/`status`/`decided_by`, `permission_rules.preset`/`effect`, `agent_tasks.status`, `agent_task_steps.status`, `usage_ledger.kind`, `debt_items.source`/`severity`/`status`, plus numeric bounds (length caps, non-negative counters, `max_steps` 1–25, `expires_at > acquired_at`, token counts ≥ 0) and the v13 cross-column invariants (`agent_tasks.current_step <= total_steps`; terminal `agent_runs` require `finished_at`; `finished_at >= started_at`).
 
-**UNIQUE Constraints:** `providers.name` prevents duplicate provider configurations. `app_settings.key` is the primary key, preventing duplicate settings.
+**UNIQUE Constraints:** `providers.name` prevents duplicate provider configurations. `app_settings.key` is the primary key, preventing duplicate settings. `agent_steps(run_id, seq)` and `agent_task_steps(task_id, seq)` enforce step ordering integrity. `permission_rules(preset, tool_pattern, path_pattern)` prevents duplicate rules. `debt_items.audit_key` deduplicates audit imports. `task_locks.token` keeps mutation proofs unguessable-per-row. `messages(conversation_id, id)` (v13) anchors the attachment composite FK.
 
-**Referential Integrity:** Foreign keys ensure that every message belongs to a valid conversation, every attachment belongs to a valid conversation, and every message provider reference is valid or `NULL`.
+**Referential Integrity:** Foreign keys ensure that every message belongs to a valid conversation, every attachment belongs to a valid conversation, and every message provider reference is valid or `NULL`. Agent history follows the same discipline: steps belong to a run, tasks optionally belong to a conversation, task steps belong to a task, locks belong to a task, and run links from tasks clear (`SET NULL`) instead of destroying task history.
 
 **Hard Delete:** All user-managed entities use hard delete per FR-013. `CASCADE` ensures no orphaned data. No soft delete is implemented; SRS explicitly requires that users can permanently delete data.
 
@@ -417,6 +627,10 @@ v6 adds the `conversations.workspace_root` column as a plain additive `ALTER TAB
 - Application settings
 - Provider non-sensitive metadata (`name`, `display_name`)
 - Attachment metadata (file paths, names, sizes, types)
+- Agent run/step history (`agent_runs`, `agent_steps`, including spend caps, token counts, and rule provenance — never credentials, never reasoning signatures)
+- Permission rules, agent tasks and task steps, kanban task locks
+- Local-only usage counts (`usage_ledger`: fixed kinds + day buckets + counters, no content)
+- Debt backlog items
 
 **Never Stored in SQLite:**
 - API keys

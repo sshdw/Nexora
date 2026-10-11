@@ -62,12 +62,13 @@ The product shall:
 - Support document-assisted AI interactions.
 - Provide configurable application behavior.
 - Operate without requiring cloud services for core functionality.
+- Provide user-initiated agent runs: a bounded tool-use loop with an autonomy ladder (`supervised` / `semi_autonomous` / `full_autonomous`), permission rules with approval gates, spend limits, and pause / resume / cancel — plus bounded task lists driven plan → act → verify → report. Scope and safety details live in the AGENT-*-DESIGN docs; every run is started explicitly by the user and stays inside budgets and approvals.
 
 ---
 
 # 4. Non-Goals
 
-The product shall not include:
+The product shall not include (agent runs above are shipped and therefore NOT listed here; what stays out is unattended automation — no schedulers, no background daemons):
 
 - Cloud synchronization
 - Multi-user collaboration
@@ -79,8 +80,7 @@ The product shall not include:
 - Project management
 - Real-time collaboration
 - Embedded software development environment
-- Autonomous agents
-- Background automation pipelines
+- Unattended background automation pipelines (scheduled / daemon-driven work with no user present; user-initiated agent runs and task loops are shipped — see Goals)
 
 ---
 
@@ -412,6 +412,7 @@ The application shall:
 - Preserve AI interaction history.
 - Report AI request failures.
 - Allow retry of failed requests where applicable.
+- Provide user-initiated agent runs with tool use, autonomy modes, permission rules, approval gates, spend limits, and run/step/task history (per the AGENT-*-DESIGN docs).
 
 ---
 
@@ -519,7 +520,7 @@ The MVP shall not include any functionality listed under "Out of Scope" or "Futu
 
 # 15. Out of Scope
 
-The following capabilities are explicitly excluded:
+The following capabilities are explicitly excluded (note: user-initiated autonomous agent runs and task loops previously listed here are SHIPPED — see Goals and the AGENT-*-DESIGN docs — and are therefore removed from this list):
 
 - Cloud synchronization
 - User accounts
@@ -528,8 +529,7 @@ The following capabilities are explicitly excluded:
 - Mobile application
 - Web application
 - Plugin marketplace
-- Automation pipelines
-- Autonomous agents
+- Unattended automation pipelines (scheduled / daemon-driven; user-initiated agent runs are shipped)
 - Voice interaction
 - Real-time collaboration
 - Background synchronization
@@ -550,8 +550,8 @@ The following capabilities may be considered for future releases but are not par
 - Web application
 - Plugin ecosystem
 - Voice interaction
-- AI automation workflows
-- Background task execution
+- Unattended AI automation workflows (scheduled / daemon-driven; user-initiated task loops are shipped)
+- Unattended background task execution (scheduled / daemon-driven)
 - Advanced search capabilities
 - Expanded document support
 - Additional export formats

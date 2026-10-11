@@ -68,7 +68,15 @@ User
 
 
 
-React UI
+React UI (TypeScript, `src/`)
+
+
+
+↓ (Tauri IPC — typed `invoke` commands / streamed events)
+
+
+
+Commands Layer (`src-tauri/src/commands/` — the IPC boundary)
 
 
 
@@ -76,7 +84,7 @@ React UI
 
 
 
-Application Layer
+Application Layer (`src-tauri/src/application/` — use cases, agent subsystem)
 
 
 
@@ -84,7 +92,7 @@ Application Layer
 
 
 
-Rust Backend
+Domain Layer (`src-tauri/src/domain/`)
 
 
 
@@ -92,7 +100,7 @@ Rust Backend
 
 
 
-SQLite
+Infrastructure Layer (`src-tauri/src/infrastructure/` — SQLite, repositories, provider executors)
 
 
 
@@ -100,45 +108,52 @@ SQLite
 
 
 
-Local Storage
+SQLite / Local Storage / OS services (keyring, fs, dialogs)
 
 
 
-AI providers are external services accessed only through the backend.
+AI providers are external services accessed only through the backend
+(`infrastructure/providers/` executors behind the provider-independent
+`application/execution.rs` boundary).
 
 
 
 5\. Application Layers
 
-Presentation Layer
+The backend is five layers. Dependency direction is strictly downward:
+commands → application → domain → infrastructure, with AI providers external
+behind the executor boundary. Nothing below the commands layer knows about
+Tauri; nothing above the infrastructure layer touches SQLite or the network
+directly.
 
-
-
-Responsible for:
-
-
-
-user interface
-
-navigation
-
-rendering
-
-input handling
-
-
-
-Contains no business logic.
-
-
-
-Application Layer
-
-
+Commands / IPC Layer (`src-tauri/src/commands/`)
 
 Responsible for:
 
+the Tauri IPC boundary (`#[tauri::command]` handlers registered in
+`lib.rs::run` via `invoke_handler`)
 
+argument validation and error mapping at the boundary (secret-free,
+classified `CommandError`)
+
+cloning managed state (`Database`, `AgentRunRegistry`, `TaskRegistry`,
+`TerminalRegistry`) into `spawn_blocking` / spawned threads
+
+streaming run and task events back to the frontend (`agent-run-event`
+frames, task events)
+
+Contains no business logic: every handler delegates to the application
+layer. Representative surfaces: `commands/agent.rs` (start / cancel /
+pause / resume / extend / set-mode / resolve-approval / runs / steps /
+inspect / spend-dashboard / activity-feed / permission rules),
+`commands/tasks.rs` (create / list / update / delete / start / stop /
+locks / move), plus the conversation, prompt, attachment, provider,
+settings, workspace, import/export, privacy, debt, terminal, git, and
+system surfaces registered alongside them in `lib.rs`.
+
+Application Layer (`src-tauri/src/application/`)
+
+Responsible for:
 
 application state
 
@@ -150,13 +165,24 @@ validation
 
 request orchestration
 
-Domain Layer
+Houses the agent subsystem (`application/agent/`): the deterministic ReAct
+`runner`, the `service` run bridge (dedicated threads, `AgentRunRegistry`,
+conversation linkage), the `tasks` manager and bounded plan → act →
+verify → report loop (`TaskRegistry`), the three-tier approval gate
+(`approval`), autonomy modes and presets (`service::AutonomyMode`),
+permission evaluation (`permissions`), spend/budget enforcement and views
+(`budget`, `spend`), governance checkpoints and audit log (`governance`,
+`control`, `lifecycle`), roles and pipeline stages (`roles`, `pipeline`),
+context assembly and compaction (`assembly`, `compaction`), run-scoped
+snapshots (`snapshots`), injection hardening (`injection`), self-audit
+(`self_audit`), the read-only inspector (`inspect`), activity summaries
+(`activity`), persistence recording (`persistence`), and the native
+workspace tools (`tools/`). The provider-independent execution boundary
+(`application/execution.rs`) also lives here (see §7).
 
-
+Domain Layer (`src-tauri/src/domain/`)
 
 Responsible for:
-
-
 
 business rules
 
@@ -166,33 +192,59 @@ use cases
 
 application logic
 
-
-
 Independent from UI.
 
-
-
-Infrastructure Layer
-
-
+Infrastructure Layer (`src-tauri/src/infrastructure/`)
 
 Responsible for:
 
+database (`database.rs`: `MIGRATIONS` v1–v14, WAL + FK + busy-timeout
+pragmas; `Database` managed state)
 
+repositories (`repository/`: per-table query discipline, explicit
+`updated_at` writes)
 
-database
+AI provider executors (`providers/`: protocol implementations behind the
+`application/execution.rs` boundary)
 
 filesystem
-
-AI providers
 
 operating system integration
 
 configuration
 
+logging (`logging.rs`, initialized first in `lib.rs::run`)
+
+Providers (external)
+
+Responsible for:
+
+provider selection
+
+request execution
+
+response normalization
+
+timeout handling
+
+retry policy
+
+error propagation
+
+Covered in detail in §7; the application never depends on
+provider-specific behavior.
+
 6\. Data Flow
 
-User Action
+User Action (React UI, `src/`)
+
+
+
+↓ (Tauri `invoke` with typed args)
+
+
+
+Commands Layer (validate, map errors, acquire managed state)
 
 
 
@@ -200,7 +252,7 @@ User Action
 
 
 
-Validation
+Application Logic (use case / agent subsystem: runner, approvals, budgets)
 
 
 
@@ -208,7 +260,7 @@ Validation
 
 
 
-Application Logic
+Persistence / AI Request (repositories / provider executors)
 
 
 
@@ -216,15 +268,7 @@ Application Logic
 
 
 
-Persistence / AI Request
-
-
-
-↓
-
-
-
-Result
+Result (+ streamed `agent-run-event` / task-event frames for long-running work)
 
 
 
@@ -233,6 +277,9 @@ Result
 
 
 UI Update
+
+Presentation (React UI) holds no business logic: user interface,
+navigation, rendering, input handling.
 
 7\. AI Provider Layer
 
