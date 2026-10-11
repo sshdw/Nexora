@@ -111,12 +111,18 @@ impl AgentRunRegistry {
     /// Returns `false` when the run is not active.
     #[must_use]
     pub(crate) fn cancel(&self, run_id: i64) -> bool {
-        match self
+        // Same shape as `shutdown_cancel` below: clone the entry, drop the
+        // runs-map guard, then signal outside the critical section so the
+        // map is never held across `notify_all` (`RunControl::cancel` is one
+        // atomic store plus a wake — the same no-mutex shape as `shutdown`,
+        // so the narrowing is zero-risk symmetry, not a behavior change).
+        let entry = self
             .runs
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&run_id)
-        {
+            .cloned();
+        match entry {
             Some(entry) => {
                 entry.control.cancel();
                 true
@@ -133,12 +139,16 @@ impl AgentRunRegistry {
     /// Returns `false` when the run is not active.
     #[must_use]
     pub(crate) fn shutdown_cancel(&self, run_id: i64) -> bool {
-        match self
+        // Scope the map lock to the lookup: clone the entry, then drop
+        // the guard before the control wake so the map is never held
+        // across `notify_all`.
+        let entry = self
             .runs
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&run_id)
-        {
+            .cloned();
+        match entry {
             Some(entry) => {
                 entry.control.shutdown();
                 true
@@ -536,6 +546,55 @@ mod tests {
         assert!(
             gate.has_pending_for("scoped-1"),
             "peek must not consume the park"
+        );
+    }
+
+    #[test]
+    fn shutdown_cancel_marks_shutdown_origin() {
+        // #181 behavior-preservation pin: `shutdown_cancel` marks the
+        // shutdown origin on the shared token, unlike plain `cancel` which
+        // leaves the origin clear. Scope note: the narrowed lock scope
+        // itself (lookup-clone-drop-then-signal) is not observable from
+        // these outcome asserts — it is covered by inspection — so this
+        // test pins only the observable origin behavior. Outcome asserts
+        // only, never `elapsed`.
+        let reg = AgentRunRegistry::default();
+        assert!(!reg.shutdown_cancel(9999));
+        let gate = crate::application::agent::approval::ApprovalGate::new(
+            crate::application::agent::approval::AutonomyMode::Supervised,
+        );
+        let control = crate::application::agent::control::RunControl::new();
+        reg.register(
+            42,
+            ActiveAgentRun {
+                conversation_id: 1,
+                control: control.clone(),
+                gate: gate.clone(),
+            },
+        );
+        assert!(reg.shutdown_cancel(42));
+        assert!(control.is_cancelled());
+        assert!(
+            control.token().is_shutdown(),
+            "shutdown_cancel must mark the shutdown origin"
+        );
+        // Idempotent while the run stays registered.
+        assert!(reg.shutdown_cancel(42));
+        // Plain cancel marks cancelled but never the shutdown origin.
+        let control2 = crate::application::agent::control::RunControl::new();
+        reg.register(
+            43,
+            ActiveAgentRun {
+                conversation_id: 2,
+                control: control2.clone(),
+                gate,
+            },
+        );
+        assert!(reg.cancel(43));
+        assert!(control2.is_cancelled());
+        assert!(
+            !control2.token().is_shutdown(),
+            "plain cancel must not mark the shutdown origin"
         );
     }
 }

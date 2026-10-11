@@ -418,6 +418,11 @@ impl ApprovalGate {
             let now = Instant::now();
             if now >= deadline {
                 state.pending = None;
+                // Shutdown may have landed after the loop-top `is_cancelled`
+                // check (NEX-TASK-002): name the shutdown, never a timeout.
+                if self.is_shutdown() {
+                    return Err(ParkEnd::Shutdown);
+                }
                 return Err(ParkEnd::TimedOut);
             }
             // Wait with timeout to poll external cancellation, capped by the
@@ -927,5 +932,75 @@ mod tests {
         let decision = handle.join().expect("join");
         assert_eq!(decision, ApprovalDecision::Denied);
         assert!(!gate.has_any_pending());
+    }
+
+    #[test]
+    fn expired_deadline_with_shutdown_flag_names_shutdown_not_timeout() {
+        // NEX-TASK-002 characterization pin (#181): the shutdown origin is
+        // pre-set here, so `token.shutdown()` also sets `cancelled` and the
+        // loop-top `is_cancelled` check fires before the deadline-expiry
+        // branch (`if self.is_shutdown()` inside the `now >= deadline`
+        // arm) ever executes. This test therefore pins the loop-top path,
+        // NOT the expiry branch — it passes identically pre-fix. The exact
+        // expiry-vs-shutdown interleaving inside the expiry branch itself is
+        // covered by inspection (the added `is_shutdown` check reads
+        // directly off the shared token with no scheduling dependence).
+        // Zero timeout = expired at park entry; single-threaded, so no
+        // scheduling dependence. Outcome asserts only, never `elapsed`.
+        let token = CancellationToken::new();
+        token.shutdown();
+        let gate =
+            ApprovalGate::with_token(AutonomyMode::Supervised, token).with_timeout(Duration::ZERO);
+        let call = tool_call("shutdown-expired", "write_file");
+        assert_eq!(gate.park_until_resolved(&call), Err(ParkEnd::Shutdown));
+        assert!(
+            !gate.has_any_pending(),
+            "shutdown expiry clears pending like every other park end"
+        );
+        // Non-shutdown paths are unchanged: plain expiry is still a timeout.
+        let plain = ApprovalGate::new(AutonomyMode::Supervised).with_timeout(Duration::ZERO);
+        let call = tool_call("plain-expired", "write_file");
+        assert_eq!(plain.park_until_resolved(&call), Err(ParkEnd::TimedOut));
+        // A user cancel (no shutdown origin) is still a cancel, not a timeout.
+        let cancelled_token = CancellationToken::new();
+        cancelled_token.cancel();
+        let cancelled = ApprovalGate::with_token(AutonomyMode::Supervised, cancelled_token)
+            .with_timeout(Duration::ZERO);
+        let call = tool_call("cancelled-expired", "write_file");
+        assert_eq!(
+            cancelled.park_until_resolved(&call),
+            Err(ParkEnd::Cancelled)
+        );
+    }
+
+    #[test]
+    fn shutdown_during_parked_loop_names_shutdown_not_timeout() {
+        // NEX-TASK-002 loop-traversal pin (#181): this test exercises the
+        // park loop itself under shutdown, which the characterization pin
+        // above does not. The parked thread enters `park_until_resolved`
+        // with a generous (far-future) deadline and blocks in the
+        // wait-timeout loop; the test thread then signals shutdown on the
+        // shared token once the park is observed. The loop's next
+        // `is_cancelled` re-check observes the shutdown origin and the wait
+        // ends as `Shutdown` — outcome assert only, never `elapsed`.
+        // Which part remains inspection-covered: the exact
+        // expiry-vs-shutdown interleaving *inside* the `now >= deadline`
+        // branch (shutdown landing between the loop-top check and the
+        // expiry check) cannot be scheduled deterministically from a test,
+        // so that two-line `is_shutdown` read is verified by inspection.
+        let token = CancellationToken::new();
+        let gate = ApprovalGate::with_token(AutonomyMode::Supervised, token.clone())
+            .with_timeout(Duration::from_mins(10));
+        let call = tool_call("shutdown-during-park", "write_file");
+        let gate2 = gate.clone();
+        let handle = thread::spawn(move || gate2.park_until_resolved(&call));
+        wait_until_parked(&gate, "shutdown-during-park");
+        token.shutdown();
+        let res = handle.join().expect("parked thread terminates on shutdown");
+        assert_eq!(res, Err(ParkEnd::Shutdown));
+        assert!(
+            !gate.has_any_pending(),
+            "shutdown during park clears pending like every other park end"
+        );
     }
 }
