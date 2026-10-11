@@ -5,7 +5,7 @@
 //! state to the UI. The backend owns sorting (updated_at DESC); this hook
 //! preserves the order received.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
   type CommandError,
@@ -121,19 +121,36 @@ export function useConversations(): ConversationsStore {
     reload();
   }, [reload]);
 
-  return {
-    conversations,
-    loading,
-    error,
-    creating,
-    working,
-    reload,
-    create,
-    rename,
-    archive,
-    restore,
-    remove,
-  };
+  // Memoized store identity (NEX-FE-002 audit): whole-object consumers
+  // (effect deps, memoized props) otherwise see a new reference every render.
+  return useMemo(
+    () => ({
+      conversations,
+      loading,
+      error,
+      creating,
+      working,
+      reload,
+      create,
+      rename,
+      archive,
+      restore,
+      remove,
+    }),
+    [
+      conversations,
+      loading,
+      error,
+      creating,
+      working,
+      reload,
+      create,
+      rename,
+      archive,
+      restore,
+      remove,
+    ],
+  );
 }
 
 function toCommandError(error: unknown): CommandError {

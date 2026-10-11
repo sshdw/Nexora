@@ -6,6 +6,7 @@ import { clearApplicationData, getSetting, setSetting } from "../lib/tauri";
 import { getLocale, settingsSearchTitle, tp, tr, type Locale, type StringKey } from "../lib/strings";
 import { useStrings } from "../lib/useLocale";
 import type { AppearanceStore } from "../lib/useAppearance";
+import type { AutonomyStore } from "../lib/useAutonomy";
 import { isCustomModelId, type ProvidersStore } from "../lib/useProviders";
 import type { SpendLimitStore } from "../lib/useSpendLimit";
 import M3Button from "./M3Button";
@@ -67,10 +68,9 @@ const SECTION_TITLES: Record<SettingsSectionId, StringKey> = {
   advanced: "settings.sectionAdvanced",
 };
 
-/** The agent-autonomy default persisted for new runs (Task 5.2, DP-AUTONOMY).
- * The same key the conversation header persists (ConversationView owns the
- * live-switch of running agents; this control persists the default). */
-const AUTONOMY_KEY = "agent.autonomy";
+/** The agent-autonomy default persisted for new runs (Task 5.2, DP-AUTONOMY)
+ * lives in the `autonomy` store prop (single source shared with the
+ * conversation header — NEX-FE-003); this panel only renders the selector. */
 const AUTONOMY_MODES: readonly AutonomyMode[] = [
   "supervised",
   "semi_autonomous",
@@ -82,13 +82,7 @@ const AUTONOMY_LABELS: Record<AutonomyMode, StringKey> = {
   full_autonomous: "settings.autonomyFull",
 };
 
-function isAutonomyMode(value: string | null): value is AutonomyMode {
-  return (
-    value === "supervised" ||
-    value === "semi_autonomous" ||
-    value === "full_autonomous"
-  );
-}
+
 
 /** Feature flags exposed as toggles (application/flags.rs:89-110 FLAGS).
  * Descriptions and enforcement marks mirror the backend module docs:
@@ -264,6 +258,9 @@ export interface SettingsViewProps {
   workspaceLoading: boolean;
   /** Per-run spend guard store lifted in App (single source). */
   spendLimit: SpendLimitStore;
+  /** Agent-autonomy default store lifted in App (single source shared with
+   * the conversation header — NEX-FE-003). */
+  autonomy: AutonomyStore;
   /** Refresh conversation-dependent UI after all local data is cleared. */
   onDataCleared: () => void;
   /** Section to show on open (palette deep links); defaults to appearance. */
@@ -285,6 +282,7 @@ export default function SettingsView({
   workspaceRoot,
   workspaceLoading,
   spendLimit,
+  autonomy,
   onDataCleared,
   initialSection = "appearance",
   onOpenImport,
@@ -306,9 +304,6 @@ export default function SettingsView({
   // and clears on the next attempt.
   const [clearError, setClearError] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
-  // Agent-group state: persisted autonomy default for new runs.
-  const [autonomy, setAutonomy] = useState<AutonomyMode>("semi_autonomous");
-  const [autonomyError, setAutonomyError] = useState<string | null>(null);
   // Workspace-group state: recent folders (read-only here).
   const [recentFolders, setRecentFolders] = useState<string[] | null>(null);
   // Advanced-group state: power-key values loaded once on mount.
@@ -318,16 +313,17 @@ export default function SettingsView({
   const [flagsSaving, setFlagsSaving] = useState<string | null>(null);
   const [flagsError, setFlagsError] = useState<string | null>(null);
 
-  // Power-key values (autonomy default, recent folders, flags, routing
-  // profiles, MCP servers, agent preset) load on mount and re-sync whenever
-  // the panel regains visibility: ConversationView can persist autonomy
-  // while Settings is open, which would otherwise leave this copy stale.
+  // Power-key values (recent folders, flags, routing profiles, MCP
+  // servers, agent preset) load once on mount. The old focus/visibility
+  // re-sync existed only because ConversationView could persist autonomy
+  // while Settings was open — autonomy is now a shared store (NEX-FE-003),
+  // and Settings is the sole writer of every other key loaded here, so
+  // this copy can never go stale.
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
       try {
         const results = await Promise.all([
-          getSetting(AUTONOMY_KEY),
           getSetting(RECENT_KEY),
           getSetting(ROUTING_CHAT_KEY),
           getSetting(ROUTING_AGENT_KEY),
@@ -336,8 +332,7 @@ export default function SettingsView({
           ...FLAG_DEFS.map((flag) => getSetting(`flags.${flag.name}`)),
         ]);
         if (cancelled) return;
-        const [autonomyRaw, recentRaw, chatRaw, agentRaw, mcpRaw, presetRaw, ...flagRaws] = results;
-        if (isAutonomyMode(autonomyRaw)) setAutonomy(autonomyRaw);
+        const [recentRaw, chatRaw, agentRaw, mcpRaw, presetRaw, ...flagRaws] = results;
         setRecentFolders(parseRecentList(recentRaw));
         setAdvancedValues({
           [ROUTING_CHAT_KEY]: chatRaw,
@@ -358,15 +353,8 @@ export default function SettingsView({
       }
     };
     void load();
-    const resync = () => {
-      if (document.visibilityState === "visible") void load();
-    };
-    window.addEventListener("focus", resync);
-    document.addEventListener("visibilitychange", resync);
     return () => {
       cancelled = true;
-      window.removeEventListener("focus", resync);
-      document.removeEventListener("visibilitychange", resync);
     };
   }, []);
 
@@ -508,24 +496,12 @@ export default function SettingsView({
     });
   };
 
+  // Single-source write (NEX-FE-003): the store optimistically updates and
+  // rolls back on failure, so the conversation header reflects the change
+  // (or its rollback) immediately. Live runs keep their gate here — the
+  // conversation header owns the live-switch (ConversationView).
   const handleAutonomyChange = async (mode: AutonomyMode) => {
-    const previous = autonomy;
-    setAutonomy(mode);
-    setAutonomyError(null);
-    try {
-      // Persist the default for new runs. Live runs keep their gate here —
-      // the conversation header owns the live-switch (ConversationView).
-      await setSetting(AUTONOMY_KEY, mode);
-    } catch (e) {
-      // Roll back the optimistic control: a rejected write must not leave
-      // the selector showing a mode that was never persisted.
-      setAutonomy(previous);
-      setAutonomyError(
-        typeof e === "object" && e !== null && "message" in e
-          ? String((e as { message: unknown }).message)
-          : tr(getLocale(), "settings.autonomySaveFail"),
-      );
-    }
+    await autonomy.setMode(mode);
   };
 
   const handleFlagToggle = async (name: string, next: boolean) => {
@@ -740,7 +716,7 @@ export default function SettingsView({
             </span>
             <M3SegmentedGroup
               labelledBy="autonomy-label"
-              value={autonomy}
+              value={autonomy.mode}
               onChange={(mode) => void handleAutonomyChange(mode)}
               options={AUTONOMY_MODES.map((mode) => ({
                 value: mode,
@@ -750,9 +726,9 @@ export default function SettingsView({
             <p className="nex-settings-hint">
               {t("settings.autonomyHint")}
             </p>
-            {autonomyError && (
+            {autonomy.error && (
               <p className="nex-settings-error nex-fade-in" role="alert">
-                {autonomyError}
+                {autonomy.error}
               </p>
             )}
           </div>

@@ -11,7 +11,7 @@
 //! (`roots_remove`) unregisters only — directories are never deleted. The
 //! backend owns validation; this hook preserves order.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 
 import {
@@ -183,5 +183,37 @@ export function useWorkspace(): WorkspaceStore {
     void reload();
   }, [reload]);
 
-  return { root, recent, roots, loading, saving, error, reload, pickFolder, selectRecent, addRoot, removeRoot, addRootFolder };
+  // Memoized store identity (NEX-FE-002 audit): App threads `workspace`
+  // through the palette-registry memo, so a fresh literal every render
+  // rebuilt the ~35-item registry on every keystroke render.
+  return useMemo(
+    () => ({
+      root,
+      recent,
+      roots,
+      loading,
+      saving,
+      error,
+      reload,
+      pickFolder,
+      selectRecent,
+      addRoot,
+      removeRoot,
+      addRootFolder,
+    }),
+    [
+      root,
+      recent,
+      roots,
+      loading,
+      saving,
+      error,
+      reload,
+      pickFolder,
+      selectRecent,
+      addRoot,
+      removeRoot,
+      addRootFolder,
+    ],
+  );
 }
