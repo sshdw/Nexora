@@ -321,6 +321,9 @@ const SECRET_SUBSTRINGS: &[&str] = &[
     "xoxb-",
     "xoxp-",
     "xoxa-",
+    "xoxo-",
+    "xoxs-",
+    "xoxr-",
     "ghp_",
     "gho_",
     "ghu_",
@@ -560,8 +563,9 @@ const ASSIGNMENT_FIELDS: &[&str] = &[
 const ASSIGNMENT_MIN_VALUE: usize = 8;
 
 /// Scrub `field: value` / `field=value` assignments for
-/// [`ASSIGNMENT_FIELDS`] (ASCII case-insensitive on the field name): the
-/// field text is kept and the following non-whitespace run is replaced with
+/// [`ASSIGNMENT_FIELDS`] (ASCII case-insensitive on the field name;
+/// plural/suffixed names like `tokens:` or `secret_key=` redact like their
+/// bare forms): the field text is kept and the following non-whitespace run is replaced with
 /// the marker, but only when that run is at least [`ASSIGNMENT_MIN_VALUE`]
 /// bytes long so prose (`password: wrong`) survives verbatim. Pure and
 /// secret-free: the field name is fixed vocabulary from the pinned list and
@@ -601,6 +605,18 @@ fn redact_assignment_values(text: &str) -> (String, bool) {
             continue;
         }
         let mut cursor = index + field_len;
+        // #169: skip trailing word chars (plurals/suffixes: `tokens:`,
+        // `passwords=`, `secret_key=`) before the separator check, so the
+        // natural prose shapes redact like their bare-field forms. No left
+        // boundary is required (`mytoken=` keeps redacting via the inner
+        // `token` match — fail-safe direction); a bare mention still falls
+        // through to the verbatim branch below, so surrounding text is
+        // never corrupted.
+        while cursor < bytes.len()
+            && (bytes[cursor].is_ascii_alphanumeric() || matches!(bytes[cursor], b'_' | b'-'))
+        {
+            cursor += 1;
+        }
         while cursor < bytes.len() && is_assignment_gap(bytes[cursor]) {
             cursor += 1;
         }
@@ -913,6 +929,11 @@ mod tests {
             "token sk-live-sentinel-12345 inside",
             "key = sk-proj-abcdef123456",
             "xoxb-123456789012-token here",
+            "xoxp-123456789012-token here",
+            "xoxa-123456789012-token here",
+            "xoxo-123456789012-token here",
+            "xoxs-123456789012-token here",
+            "xoxr-123456789012-token here",
             "ghp_abcdefghijklmnopqrstuvwx",
             "AKIAIOSFODNN7EXAMPLE",
             "aws_secret_access_key = wJalrXUtnFEMI",
@@ -1030,6 +1051,62 @@ mod tests {
             "nothing secret here",
             "key insights for the quarter",
             "the \"secret\" agent arrived",
+        ] {
+            let (scrubbed, hit) = redact_secrets(prose);
+            assert!(!hit, "{prose:?} must not redact");
+            assert_eq!(scrubbed, prose, "{prose:?} must survive verbatim");
+        }
+    }
+
+    #[test]
+    fn redaction_scrubs_plural_and_suffixed_assignment_fields() {
+        // #169: the assignment scan must skip trailing word chars
+        // (plurals/suffixes) before the separator check, so the natural
+        // prose shapes redact exactly like their bare-field forms.
+        const PAIRS: [(&str, &str); 4] = [
+            ("tokens: abcdefghijklmnop", "token: abcdefghijklmnop"),
+            ("passwords=abcdefghijklmnop", "password=abcdefghijklmnop"),
+            ("mytoken=abcdefghijklmnop", "token=abcdefghijklmnop"),
+            ("secret_key=abcdefghijklmnop", "secret=abcdefghijklmnop"),
+        ];
+        for (suffixed, bare) in PAIRS {
+            let (scrubbed_suffix, hit_suffix) = redact_secrets(suffixed);
+            let (scrubbed_bare, hit_bare) = redact_secrets(bare);
+            assert!(hit_suffix, "{suffixed:?} must redact");
+            assert!(hit_bare, "{bare:?} must redact");
+            for (label, scrubbed) in [("suffixed", &scrubbed_suffix), ("bare", &scrubbed_bare)] {
+                assert!(
+                    !scrubbed.contains("abcdefghijklmnop"),
+                    "assigned value must not survive ({label}): {scrubbed:?}"
+                );
+                assert!(
+                    scrubbed.contains("[redacted]"),
+                    "marker must appear ({label}): {scrubbed:?}"
+                );
+            }
+            // Same marker shape: both keep `field<sep>` and replace the value.
+            assert_eq!(
+                scrubbed_suffix
+                    .replace("tokens:", "token:")
+                    .replace("passwords=", "password=")
+                    .replace("mytoken=", "token=")
+                    .replace("secret_key=", "secret="),
+                scrubbed_bare,
+                "{suffixed:?} must redact identically to {bare:?} up to the field suffix"
+            );
+        }
+        // Quoted plural field names redact too.
+        let (scrubbed, hit) = redact_secrets("config {\"tokens\": \"abcdefghijklmnop\"} end");
+        assert!(hit);
+        assert!(!scrubbed.contains("abcdefghijklmnop"));
+        // Words merely containing a field name never corrupt surrounding
+        // text: no separator + long value, so verbatim with no flag.
+        for prose in [
+            "the tokens are here",
+            "passwords must be strong",
+            "the tokenizer splits text",
+            "secrets of the trade",
+            "my token story",
         ] {
             let (scrubbed, hit) = redact_secrets(prose);
             assert!(!hit, "{prose:?} must not redact");
