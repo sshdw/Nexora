@@ -616,6 +616,193 @@ BEGIN
 END;
 ",
     ),
+    // v13 — cross-column invariants (NEX-DB-002/004/006). Four table rebuilds
+    // (the v5/v7 precedent: create new → copy → drop → rename, FKs toggled
+    // off outside the transaction by `migrate`):
+    // - `messages` gains `UNIQUE (conversation_id, id)` so the attachment
+    //   link can reference the (conversation, message) pair. Rows are
+    //   identical; the messages FTS triggers and the conversation index are
+    //   recreated (dropping the table drops its triggers/indexes; the FTS5
+    //   content tables are untouched, so no reindex is needed).
+    // - `attachments` gains a composite
+    //   `FOREIGN KEY (conversation_id, message_id) REFERENCES
+    //   messages (conversation_id, id) ON DELETE CASCADE` alongside the
+    //   existing single-column FKs (the single-column conversation FK still
+    //   guards draft rows, whose `message_id IS NULL` skips the composite
+    //   FK by SQLite NULL semantics). Pre-existing cross-conversation rows
+    //   (legal before this migration) are repaired to the draft state
+    //   (`message_id = NULL`): the file row survives under its conversation
+    //   instead of being destroyed or bricking the upgrade.
+    // - `agent_tasks` gains `CHECK (current_step <= total_steps)`.
+    //   Pre-existing over-advanced rows are clamped to `total_steps`.
+    // - `agent_runs` gains `CHECK (status = 'running' OR finished_at IS NOT
+    //   NULL)` (a terminal status requires a finish time) and
+    //   `CHECK (finished_at IS NULL OR finished_at >= started_at)`.
+    //   Pre-existing terminal rows with `finished_at IS NULL` are stamped
+    //   with `started_at` (a zero-duration run, the honest minimal repair),
+    //   and any `finished_at < started_at` is clamped up to `started_at`.
+    //   `total_steps` is normalized to the child-row count, matching the
+    //   `finalize_run` recompute discipline (D12: the counter counts the
+    //   recorded steps).
+    (
+        13,
+        r"CREATE TABLE messages_new (
+    id INTEGER PRIMARY KEY CHECK (id > 0),
+    conversation_id INTEGER NOT NULL
+        CHECK (conversation_id > 0)
+        REFERENCES conversations (id) ON DELETE CASCADE,
+    role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+    content TEXT NOT NULL CHECK (length(content) > 0),
+    provider_id INTEGER
+        CHECK (provider_id IS NULL OR provider_id > 0)
+        REFERENCES providers (id) ON DELETE SET NULL,
+    model_name TEXT CHECK (length(model_name) <= 200),
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()) CHECK (created_at > 0),
+    UNIQUE (conversation_id, id)
+);
+
+INSERT INTO messages_new
+    (id, conversation_id, role, content, provider_id, model_name, created_at)
+    SELECT id, conversation_id, role, content, provider_id, model_name, created_at
+    FROM messages;
+
+DROP TABLE messages;
+ALTER TABLE messages_new RENAME TO messages;
+
+CREATE INDEX idx_messages_conversation_created
+    ON messages (conversation_id, created_at);
+
+CREATE TRIGGER messages_fts_insert AFTER INSERT ON messages BEGIN
+    INSERT INTO messages_fts (rowid, content) VALUES (new.id, new.content);
+END;
+
+CREATE TRIGGER messages_fts_update AFTER UPDATE OF content ON messages BEGIN
+    DELETE FROM messages_fts WHERE rowid = old.id;
+    INSERT INTO messages_fts (rowid, content) VALUES (new.id, new.content);
+END;
+
+CREATE TRIGGER messages_fts_delete AFTER DELETE ON messages BEGIN
+    DELETE FROM messages_fts WHERE rowid = old.id;
+END;
+
+CREATE TABLE attachments_new (
+    id INTEGER PRIMARY KEY CHECK (id > 0),
+    conversation_id INTEGER NOT NULL
+        CHECK (conversation_id > 0)
+        REFERENCES conversations (id) ON DELETE CASCADE,
+    message_id INTEGER
+        CHECK (message_id IS NULL OR message_id > 0)
+        REFERENCES messages (id) ON DELETE CASCADE,
+    file_name TEXT NOT NULL
+        CHECK (length(file_name) > 0 AND length(file_name) <= 255),
+    file_path TEXT NOT NULL CHECK (length(file_path) > 0),
+    file_size_bytes INTEGER CHECK (file_size_bytes >= 0),
+    mime_type TEXT CHECK (length(mime_type) <= 127),
+    FOREIGN KEY (conversation_id, message_id)
+        REFERENCES messages (conversation_id, id) ON DELETE CASCADE
+);
+
+INSERT INTO attachments_new
+    (id, conversation_id, message_id, file_name, file_path, file_size_bytes, mime_type)
+    SELECT a.id, a.conversation_id,
+           CASE WHEN m.id IS NULL THEN NULL
+                WHEN m.conversation_id != a.conversation_id THEN NULL
+                ELSE a.message_id END,
+           a.file_name, a.file_path, a.file_size_bytes, a.mime_type
+    FROM attachments a LEFT JOIN messages m ON m.id = a.message_id;
+
+DROP TABLE attachments;
+ALTER TABLE attachments_new RENAME TO attachments;
+
+CREATE INDEX idx_attachments_conversation
+    ON attachments (conversation_id);
+
+CREATE INDEX idx_attachments_message
+    ON attachments (message_id);
+
+CREATE INDEX idx_attachments_conversation_message
+    ON attachments (conversation_id, message_id);
+
+CREATE TABLE agent_tasks_new (
+    id INTEGER PRIMARY KEY CHECK (id > 0),
+    title TEXT NOT NULL CHECK (length(title) > 0 AND length(title) <= 200),
+    description TEXT
+        CHECK (description IS NULL OR length(description) <= 4000),
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'running', 'completed', 'failed', 'cancelled')),
+    conversation_id INTEGER
+        CHECK (conversation_id IS NULL OR conversation_id > 0)
+        REFERENCES conversations (id) ON DELETE CASCADE,
+    provider TEXT
+        CHECK (provider IS NULL OR (length(provider) > 0 AND length(provider) <= 100)),
+    model TEXT
+        CHECK (model IS NULL OR (length(model) > 0 AND length(model) <= 200)),
+    max_steps INTEGER NOT NULL DEFAULT 25 CHECK (max_steps >= 1 AND max_steps <= 25),
+    current_step INTEGER NOT NULL DEFAULT 0 CHECK (current_step >= 0),
+    total_steps INTEGER NOT NULL DEFAULT 0 CHECK (total_steps >= 0),
+    report TEXT,
+    run_id INTEGER
+        CHECK (run_id IS NULL OR run_id > 0)
+        REFERENCES agent_runs (id) ON DELETE SET NULL,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()) CHECK (created_at > 0),
+    updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+        CHECK (updated_at >= created_at),
+    CHECK (current_step <= total_steps)
+);
+
+INSERT INTO agent_tasks_new
+    (id, title, description, status, conversation_id, provider, model,
+     max_steps, current_step, total_steps, report, run_id, created_at, updated_at)
+    SELECT id, title, description, status, conversation_id, provider, model,
+           max_steps, min(current_step, total_steps), total_steps, report, run_id,
+           created_at, updated_at
+    FROM agent_tasks;
+
+DROP TABLE agent_tasks;
+ALTER TABLE agent_tasks_new RENAME TO agent_tasks;
+
+CREATE INDEX idx_agent_tasks_status_updated
+    ON agent_tasks (status, updated_at);
+
+CREATE TABLE agent_runs_new (
+    id INTEGER PRIMARY KEY CHECK (id > 0),
+    conversation_id INTEGER
+        CHECK (conversation_id IS NULL OR conversation_id > 0)
+        REFERENCES conversations (id) ON DELETE CASCADE,
+    model TEXT NOT NULL CHECK (length(model) > 0),
+    mode TEXT NOT NULL
+        CHECK (mode IN ('supervised', 'semi_autonomous', 'full_autonomous')),
+    status TEXT NOT NULL DEFAULT 'running'
+        CHECK (status IN ('running', 'completed', 'cancelled', 'budget_exhausted', 'spend_limit_exceeded', 'error')),
+    started_at INTEGER NOT NULL DEFAULT (unixepoch()) CHECK (started_at > 0),
+    finished_at INTEGER CHECK (finished_at IS NULL OR finished_at > 0),
+    total_steps INTEGER NOT NULL DEFAULT 0 CHECK (total_steps >= 0),
+    final_content TEXT,
+    error TEXT,
+    spent_micro_usd INTEGER CHECK (spent_micro_usd IS NULL OR spent_micro_usd >= 0),
+    limit_micro_usd INTEGER CHECK (limit_micro_usd IS NULL OR limit_micro_usd >= 0),
+    CHECK (status = 'running' OR finished_at IS NOT NULL),
+    CHECK (finished_at IS NULL OR finished_at >= started_at)
+);
+
+INSERT INTO agent_runs_new
+    (id, conversation_id, model, mode, status, started_at, finished_at,
+     total_steps, final_content, error, spent_micro_usd, limit_micro_usd)
+    SELECT id, conversation_id, model, mode, status, started_at,
+           CASE WHEN finished_at IS NULL AND status != 'running' THEN started_at
+                WHEN finished_at IS NOT NULL AND finished_at < started_at THEN started_at
+                ELSE finished_at END,
+           (SELECT COUNT(*) FROM agent_steps s WHERE s.run_id = agent_runs.id),
+           final_content, error, spent_micro_usd, limit_micro_usd
+    FROM agent_runs;
+
+DROP TABLE agent_runs;
+ALTER TABLE agent_runs_new RENAME TO agent_runs;
+
+CREATE INDEX idx_agent_runs_conversation ON agent_runs (conversation_id);
+CREATE INDEX idx_agent_runs_started ON agent_runs (started_at);
+",
+    ),
 ];
 
 /// Open the `SQLite` database at `path`, apply connection pragmas, and run any
@@ -668,13 +855,16 @@ fn migrate(conn: &mut Connection) -> Result<(), DatabaseError> {
         if version <= current {
             continue;
         }
-        if version == 5 || version == 7 {
+        if version == 5 || version == 7 || version == 13 {
             // v5 rebuilds agent_runs, a parent of agent_steps; v7 rebuilds
             // agent_steps itself (adding provenance columns with a new FK to
-            // permission_rules). SQLite cannot hold the FK graph while
-            // dropping/recreating, and PRAGMA foreign_keys cannot be toggled
-            // inside the transaction that apply_migration opens. The toggle
-            // is therefore applied here, outside the tx.
+            // permission_rules); v13 rebuilds messages (parent of the
+            // attachment FKs), attachments, agent_tasks (parent of
+            // agent_task_steps and task_locks), and agent_runs (parent of
+            // agent_steps and the task run links). SQLite cannot hold the FK
+            // graph while dropping/recreating, and PRAGMA foreign_keys cannot
+            // be toggled inside the transaction that apply_migration opens.
+            // The toggle is therefore applied here, outside the tx.
             conn.execute_batch("PRAGMA foreign_keys=OFF;")?;
             let result = apply_migration(conn, version, sql);
             // Restore enforcement for all subsequent work.
@@ -792,6 +982,9 @@ pub(crate) fn in_memory_database() -> Database {
 mod tests {
     use super::*;
     use crate::application::search::LocalSearchService;
+    use crate::infrastructure::repository::agent_runs::AgentRunRepository;
+    use crate::infrastructure::repository::agent_tasks::AgentTaskRepository;
+    use crate::infrastructure::repository::attachments::AttachmentRepository;
     use crate::infrastructure::repository::conversations::ConversationRepository;
     use crate::infrastructure::repository::messages::MessageRepository;
     use crate::infrastructure::repository::prompts::PromptRepository;
@@ -867,6 +1060,7 @@ mod tests {
             "idx_agent_task_steps_task_seq",
             "idx_agent_tasks_status_updated",
             "idx_attachments_conversation",
+            "idx_attachments_conversation_message",
             "idx_attachments_message",
             "idx_conversations_status_updated",
             "idx_debt_items_status_updated",
@@ -901,7 +1095,7 @@ mod tests {
 
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
         );
     }
 
@@ -911,7 +1105,7 @@ mod tests {
 
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
         );
 
         let applied_at: i64 = conn
@@ -926,7 +1120,7 @@ mod tests {
         let version_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .expect("count schema_version rows");
-        assert_eq!(version_count, 12, "one row per applied migration");
+        assert_eq!(version_count, 13, "one row per applied migration");
     }
 
     #[test]
@@ -951,14 +1145,14 @@ mod tests {
         let mut conn = in_memory_migrated();
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
         );
 
         migrate(&mut conn).expect("a second migration run must succeed");
 
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
         );
         // The no-op run created or dropped nothing.
         assert!(schema_object_exists(&conn, "conversations", "table"));
@@ -1064,7 +1258,7 @@ mod tests {
         );
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
         );
     }
 
@@ -1677,7 +1871,7 @@ mod tests {
         // Schema version covers every known migration (v5 plus later ones)
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
         );
         // Row preserved, new columns NULL for pre-v5 rows
         let (status, spent, limit): (String, Option<i64>, Option<i64>) = conn
@@ -1704,9 +1898,11 @@ mod tests {
             .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
             .expect("fk pragma");
         assert_eq!(fk_on, 1, "FK must be ON after v5");
-        // New status is now accepted
+        // New status is now accepted (a terminal insert must stamp
+        // finished_at per the v13 lifecycle CHECK).
         conn.execute(
-            "INSERT INTO agent_runs (model, mode, status) VALUES ('m', 'supervised', 'spend_limit_exceeded')",
+            "INSERT INTO agent_runs (model, mode, status, finished_at) \
+             VALUES ('m', 'supervised', 'spend_limit_exceeded', (unixepoch()))",
             [],
         )
         .expect("new status accepted");
@@ -1768,7 +1964,7 @@ mod tests {
         migrate(&mut conn).expect("migrate to v6");
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
         );
         // Seeded row survives with a NULL workspace root.
         let root: Option<String> = conn
@@ -1846,7 +2042,7 @@ mod tests {
         migrate(&mut conn).expect("migrate to v7");
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
         );
         // Old rows intact with NULL provenance.
         let (kind, rule_id, group_key, decided_by): (
@@ -1933,5 +2129,264 @@ mod tests {
             .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
             .expect("fk pragma");
         assert_eq!(fk_on, 1, "FK must be ON after v7");
+    }
+
+    /// Build a v12-only in-memory database (all migrations through the
+    /// monotonic touch triggers), mirroring the v5/v6 test pattern: the v5
+    /// and v7 rebuilds need the same `foreign_keys` toggle `migrate` applies.
+    fn v12_database() -> Connection {
+        let mut conn = Connection::open_in_memory().expect("open in-memory");
+        configure(&conn).expect("configure");
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY CHECK (version > 0), applied_at INTEGER NOT NULL CHECK (applied_at > 0));",
+        )
+        .expect("create schema_version");
+        for &(version, sql) in MIGRATIONS.iter().filter(|(v, _)| *v <= 12) {
+            if version == 5 || version == 7 {
+                conn.execute_batch("PRAGMA foreign_keys=OFF;")
+                    .expect("fk off");
+                let result = apply_migration(&mut conn, version, sql);
+                conn.execute_batch("PRAGMA foreign_keys=ON;")
+                    .expect("fk on");
+                result.expect("apply rebuild migration");
+            } else {
+                apply_migration(&mut conn, version, sql).expect("apply migration");
+            }
+        }
+        conn
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn v13_preserves_legal_rows_repairs_impossible_ones_and_enforces_invariants() {
+        // NEX-DB-002/004/006 acceptance: pre-existing rows (including edge
+        // rows that stay legal, plus rows that were legal on v12 but violate
+        // the new cross-column invariants) survive the v13 rebuilds; the
+        // illegal ones are repaired, and the new invariants hold afterwards.
+        let conn = v12_database();
+        let db = Database::new(conn);
+        let conversations = ConversationRepository::new(&db);
+        let messages = MessageRepository::new(&db);
+        let attachments = AttachmentRepository::new(&db);
+        let tasks = AgentTaskRepository::new(&db);
+        let runs = AgentRunRepository::new(&db);
+
+        let conv_a = conversations.create("a", "active").expect("conv a");
+        let conv_b = conversations.create("b", "active").expect("conv b");
+        let msg_a = messages
+            .create(conv_a, "user", "v13 searchable alpha", None, None)
+            .expect("msg a");
+        let msg_b = messages
+            .create(conv_b, "user", "v13 searchable beta", None, None)
+            .expect("msg b");
+
+        // Legal edge rows: a linked attachment, a draft attachment, and a
+        // cross-conversation link (legal on v12, repaired to draft by v13).
+        let linked = attachments
+            .create(conv_a, "linked.txt", "/tmp/linked.txt", None, None)
+            .expect("linked attachment");
+        attachments
+            .update_message_id(linked, Some(msg_a))
+            .expect("link");
+        let draft = attachments
+            .create(conv_a, "draft.txt", "/tmp/draft.txt", None, None)
+            .expect("draft attachment");
+        let crossed = attachments
+            .create(conv_a, "crossed.txt", "/tmp/crossed.txt", None, None)
+            .expect("cross attachment");
+        attachments
+            .update_message_id(crossed, Some(msg_b))
+            .expect("v12 allows the cross-conversation link");
+
+        // Legal task plus an over-advanced one (legal on v12, clamped by v13).
+        let task_ok = tasks
+            .create_task("ok", None, Some(conv_a), None, None, 25)
+            .expect("task");
+        tasks.mark_task_running(task_ok, 3).expect("running");
+        tasks
+            .mark_task_progress(task_ok, 2, None)
+            .expect("progress");
+        let task_over = tasks
+            .create_task("over", None, None, None, None, 25)
+            .expect("task");
+        tasks.mark_task_running(task_over, 2).expect("running");
+        tasks
+            .mark_task_progress(task_over, 999, None)
+            .expect("v12 allows progress past the plan");
+
+        // Legal runs: a finalized run with two steps, a still-running run,
+        // a terminal row with `finished_at IS NULL` (legal on v12), and a
+        // terminal row with `finished_at < started_at` (legal on v12).
+        let run_ok = runs
+            .create_run(Some(conv_a), "m", "supervised")
+            .expect("run");
+        for seq in 1..=2 {
+            runs.append_step(
+                run_ok,
+                seq,
+                "model_turn",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("step");
+        }
+        runs.finalize_run(run_ok, "completed", Some("done"), None, None, None)
+            .expect("finalize");
+        let run_active = runs.create_run(None, "m", "supervised").expect("run");
+        runs.append_step(
+            run_active,
+            1,
+            "model_turn",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("step");
+        let run_null: i64 = {
+            let conn = db.lock().expect("lock connection");
+            conn.execute(
+                "INSERT INTO agent_runs (model, mode, status) VALUES ('m', 'supervised', 'completed')",
+                [],
+            )
+            .expect("v12 allows terminal status without finished_at");
+            conn.last_insert_rowid()
+        };
+        let run_back = runs.create_run(None, "m", "supervised").expect("run");
+        runs.finalize_run(run_back, "cancelled", None, None, None, None)
+            .expect("finalize");
+        {
+            let conn = db.lock().expect("lock connection");
+            conn.execute(
+                "UPDATE agent_runs SET finished_at = started_at - 1 WHERE id = ?1",
+                [run_back],
+            )
+            .expect("v12 allows finished_at < started_at");
+        }
+
+        // Migrate to v13 (and record the version).
+        {
+            let mut guard = db.lock().expect("lock connection");
+            migrate(&mut guard).expect("migrate to v13");
+        }
+        let conn = db.lock().expect("lock connection");
+        assert_eq!(
+            schema_version_rows(&conn),
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+        );
+        let fk_on: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .expect("fk pragma");
+        assert_eq!(fk_on, 1, "FK must be ON after v13");
+        drop(conn);
+
+        // Legal rows survive with their values intact.
+        let row = attachments.read(linked).expect("read").expect("exists");
+        assert_eq!(row.message_id, Some(msg_a), "legal link preserved");
+        let row = attachments.read(draft).expect("read").expect("exists");
+        assert_eq!(row.message_id, None, "draft preserved");
+        let row = attachments.read(crossed).expect("read").expect("exists");
+        assert_eq!(
+            row.message_id, None,
+            "cross-conversation link repaired to the draft state"
+        );
+        assert_eq!(row.conversation_id, conv_a, "owning conversation kept");
+        assert_eq!(row.file_name, "crossed.txt", "file metadata kept");
+
+        let row = tasks.read_task(task_ok).expect("read").expect("exists");
+        assert_eq!((row.current_step, row.total_steps), (2, 3));
+        let row = tasks.read_task(task_over).expect("read").expect("exists");
+        assert_eq!(
+            (row.current_step, row.total_steps),
+            (2, 2),
+            "over-advanced progress clamped to the plan"
+        );
+
+        let row = runs.read_run(run_ok).expect("read").expect("exists");
+        assert_eq!(row.status, "completed");
+        assert_eq!(row.total_steps, 2, "step count preserved");
+        assert!(
+            row.finished_at.expect("finished") >= row.started_at,
+            "ordering holds: {row:?}"
+        );
+        let row = runs.read_run(run_active).expect("read").expect("exists");
+        assert_eq!(row.status, "running");
+        assert_eq!(row.finished_at, None);
+        let row = runs.read_run(run_null).expect("read").expect("exists");
+        assert_eq!(
+            row.finished_at,
+            Some(row.started_at),
+            "terminal row without finished_at stamped at started_at"
+        );
+        let row = runs.read_run(run_back).expect("read").expect("exists");
+        assert_eq!(
+            row.finished_at,
+            Some(row.started_at),
+            "backward finished_at clamped up to started_at"
+        );
+
+        // The messages rebuild keeps FTS in sync (triggers recreated).
+        let search = LocalSearchService::new(&db);
+        let hits = search.search("alpha").expect("search");
+        assert!(
+            hits.message_matches
+                .iter()
+                .any(|m| m.conversation_id == conv_a),
+            "rebuilt messages table stays searchable"
+        );
+
+        // The new invariants are enforced after the migration.
+        let conn = db.lock().expect("lock connection");
+        assert!(
+            conn.execute(
+                "INSERT INTO attachments (conversation_id, message_id, file_name, file_path) \
+                 VALUES (?1, ?2, 'x.txt', '/tmp/x.txt')",
+                params![conv_a, msg_b],
+            )
+            .is_err(),
+            "cross-conversation attachment insert must be rejected"
+        );
+        assert!(
+            conn.execute(
+                "UPDATE agent_tasks SET current_step = 99 WHERE id = ?1",
+                [task_ok],
+            )
+            .is_err(),
+            "current_step past total_steps must be rejected"
+        );
+        assert!(
+            conn.execute(
+                "UPDATE agent_tasks SET current_step = -1 WHERE id = ?1",
+                [task_ok],
+            )
+            .is_err(),
+            "negative current_step must be rejected"
+        );
+        assert!(
+            conn.execute(
+                "INSERT INTO agent_runs (model, mode, status) VALUES ('m', 'supervised', 'completed')",
+                [],
+            )
+            .is_err(),
+            "terminal status without finished_at must be rejected"
+        );
+        assert!(
+            conn.execute(
+                "UPDATE agent_runs SET finished_at = started_at - 1 WHERE id = ?1",
+                [run_ok],
+            )
+            .is_err(),
+            "finished_at < started_at must be rejected"
+        );
     }
 }

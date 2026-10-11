@@ -1117,4 +1117,75 @@ mod tests {
             "updated_at must stay monotonic: {row:?}"
         );
     }
+
+    #[test]
+    fn task_counters_reject_impossible_progress() {
+        // NEX-DB-004: `CHECK (current_step <= total_steps)` plus the
+        // non-negative column CHECKs — progress past the plan and negative
+        // counters are impossible.
+        let db = in_memory_database();
+        let tasks = repo(&db);
+
+        let id = tasks
+            .create_task("t", None, None, None, None, 25)
+            .expect("task");
+        tasks.mark_task_running(id, 3).expect("running");
+
+        assert!(
+            tasks.mark_task_progress(id, 999, None).is_err(),
+            "current_step past total_steps must be rejected"
+        );
+        assert!(
+            tasks.mark_task_progress(id, -1, None).is_err(),
+            "negative current_step must be rejected"
+        );
+        assert!(
+            tasks.mark_task_running(id, -1).is_err(),
+            "negative total_steps must be rejected"
+        );
+
+        // The plan boundary itself stays legal.
+        tasks.mark_task_progress(id, 3, None).expect("boundary");
+        let row = tasks.read_task(id).expect("read").expect("exists");
+        assert_eq!(row.current_step, 3);
+        assert_eq!(row.total_steps, 3);
+    }
+
+    #[test]
+    fn foreign_run_id_is_rejected() {
+        // NEX-DB-004: `agent_tasks.run_id` (and `agent_task_steps.run_id`)
+        // reference `agent_runs(id)` — a link to a run that does not exist
+        // is rejected, while a link to a real run is accepted.
+        use crate::infrastructure::repository::agent_runs::AgentRunRepository;
+        let db = in_memory_database();
+        let tasks = repo(&db);
+        let runs = AgentRunRepository::new(&db);
+
+        let id = tasks
+            .create_task("t", None, None, None, None, 25)
+            .expect("task");
+        tasks.mark_task_running(id, 1).expect("running");
+        assert!(
+            tasks.mark_task_progress(id, 1, Some(999)).is_err(),
+            "a run link to a missing run must be rejected"
+        );
+
+        let run_id = runs.create_run(None, "m", "supervised").expect("run");
+        tasks
+            .mark_task_progress(id, 1, Some(run_id))
+            .expect("a run link to an existing run is accepted");
+        let row = tasks.read_task(id).expect("read").expect("exists");
+        assert_eq!(row.run_id, Some(run_id));
+
+        tasks.append_step(id, 1, "one").expect("step");
+        assert!(
+            tasks
+                .mark_step_finished(id, 1, "completed", Some("done"), Some(999))
+                .is_err(),
+            "a step run link to a missing run must be rejected"
+        );
+        tasks
+            .mark_step_finished(id, 1, "completed", Some("done"), Some(run_id))
+            .expect("a step run link to an existing run is accepted");
+    }
 }
