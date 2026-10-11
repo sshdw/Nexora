@@ -671,6 +671,26 @@ impl<'a> ActiveRunRecord<'a> {
     }
 
     /// Record one `approval` step whose parked wait was ended by the
+    /// NEX-TASK-002 application shutdown (DATABASE.md §7.9). The step keeps
+    /// the schema `cancelled` status (the run terminal is `cancelled`), but
+    /// the observation names the shutdown honestly: a quit is neither a
+    /// user denial nor a user cancel, so it must never reuse the
+    /// `"cancelled by the user"` vocabulary (same honesty rule as the
+    /// NEX-AGENT-004 timeout). `decided_by` stays `'system'`.
+    pub(crate) fn approval_shutdown_cancelled(&mut self, call: &ToolCall) {
+        self.append(&PendingStep {
+            kind: "approval",
+            tool_name: Some(&call.name),
+            arguments: Some(&call.arguments),
+            observation: Some("approval cancelled by application shutdown; run cancelled"),
+            status: Some("cancelled"),
+            duration_ms: None,
+            provenance: StepProvenance::system(),
+            usage: None,
+        });
+    }
+
+    /// Record one `approval` step whose parked wait was ended by the
     /// NEX-AGENT-004 park deadline (DATABASE.md §7.9). The step keeps the
     /// schema `cancelled` status (the run terminal is `cancelled`), but the
     /// observation names the timeout honestly: an expired deadline is

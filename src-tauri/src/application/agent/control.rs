@@ -37,9 +37,15 @@ use serde::Serialize;
 /// around every provider call, between tool dispatches, and inside the
 /// command-execution wait loop so a user cancellation reaches running tool
 /// processes promptly.
+///
+/// NEX-TASK-002: the flag additionally records a shutdown origin
+/// ([`Self::shutdown`]): a shutdown-cancel wakes every parked wait exactly
+/// like [`Self::cancel`], but parked approval waits observe the origin and
+/// record the honest shutdown vocabulary instead of the user-cancel text.
 #[derive(Debug, Clone)]
 pub(crate) struct CancellationToken {
     cancelled: Arc<AtomicBool>,
+    shutdown: Arc<AtomicBool>,
 }
 
 impl Default for CancellationToken {
@@ -53,6 +59,7 @@ impl CancellationToken {
     pub(crate) fn new() -> Self {
         Self {
             cancelled: Arc::new(AtomicBool::new(false)),
+            shutdown: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -61,10 +68,26 @@ impl CancellationToken {
         self.cancelled.store(true, Ordering::SeqCst);
     }
 
+    /// Mark the token cancelled *by application shutdown* (NEX-TASK-002).
+    /// Wakes every parked wait exactly like [`Self::cancel`]; parked
+    /// approval waits additionally observe this origin and record the
+    /// shutdown vocabulary (never the user-cancel text). Never blocks.
+    pub(crate) fn shutdown(&self) {
+        self.shutdown.store(true, Ordering::SeqCst);
+        self.cancel();
+    }
+
     /// Whether cancellation has been requested.
     #[must_use]
     pub(crate) fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::SeqCst)
+    }
+
+    /// Whether the cancellation came from application shutdown
+    /// ([`Self::shutdown`]) rather than a user cancel.
+    #[must_use]
+    pub(crate) fn is_shutdown(&self) -> bool {
+        self.shutdown.load(Ordering::SeqCst)
     }
 }
 
@@ -299,6 +322,16 @@ impl RunControl {
     /// aborts instead of deadlocking.
     pub(crate) fn cancel(&self) {
         self.token.cancel();
+        self.signal.notify_all();
+    }
+
+    /// Request cancellation by application shutdown (NEX-TASK-002). Wakes
+    /// every waiter exactly like [`Self::cancel`], and additionally marks
+    /// the shutdown origin on the shared token so parked approval waits
+    /// record the honest shutdown vocabulary instead of the user-cancel
+    /// text. Never blocks.
+    pub(crate) fn shutdown(&self) {
+        self.token.shutdown();
         self.signal.notify_all();
     }
 

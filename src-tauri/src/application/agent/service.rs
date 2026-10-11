@@ -710,7 +710,7 @@ fn spawn_run(
     let run_registry = Arc::clone(&registry);
     let run_host = Arc::clone(&host);
     let run_request = request;
-    std::thread::Builder::new()
+    let run_handle = std::thread::Builder::new()
         .name(format!("agent-run-{run_id}"))
         .spawn(move || {
             // The recorder borrows this thread's sender clone; the runner owns
@@ -807,7 +807,7 @@ fn spawn_run(
     // forwards the terminal frame from the finish channel, so `Finished` is
     // the last frame of every run.
     let forward_host = host;
-    std::thread::Builder::new()
+    let forward_handle = std::thread::Builder::new()
         .name(format!("agent-run-forwarder-{run_id}"))
         .spawn(move || {
             while let Ok(event) = rx.recv() {
@@ -820,13 +820,21 @@ fn spawn_run(
             while let Ok(event) = finish_rx.recv() {
                 forward_host.emit(&RunFrame::Finished { run_id, event });
             }
-        })
-        .map_err(|err| {
+        });
+    let forward_handle = match forward_handle {
+        Ok(handle) => handle,
+        Err(err) => {
             // No forwarder means no event stream: abort the run and clean up.
+            // The already-spawned run thread was cancelled and exits
+            // promptly — retain its handle so shutdown can still join it.
+            registry.track_threads(run_id, vec![run_handle]);
             let _ = registry.cancel(run_id);
             registry.release(run_id);
-            AgentRunError::ThreadSpawn(err.to_string())
-        })?;
+            return Err(AgentRunError::ThreadSpawn(err.to_string()));
+        }
+    };
+    // NEX-TASK-002: retain both handles so orderly shutdown can join them.
+    registry.track_threads(run_id, vec![run_handle, forward_handle]);
     Ok(())
 }
 

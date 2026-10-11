@@ -508,11 +508,13 @@ fn park_for_approval(
 /// Abort a parked call whose wait ended without a user decision
 /// (NEX-AGENT-004): record the honest step, transition
 /// `AwaitingApproval → Cancelled`, audit the edge, and emit the plain
-/// `Cancelled` event. [`ParkEnd::Cancelled`] names the user/system cancel;
+/// `Cancelled` event. [`ParkEnd::Cancelled`] names the user cancel;
 /// [`ParkEnd::TimedOut`] names the expired deadline (never the user-cancel
-/// vocabulary) while still aborting as `Cancelled` — the only honest schema
-/// terminal. The run thread then unwinds and releases the conversation
-/// claim, so a new run can start. Always returns [`AgentError::Cancelled`].
+/// vocabulary), and [`ParkEnd::Shutdown`] names the application shutdown
+/// (NEX-TASK-002, never the user-cancel vocabulary either) — all three
+/// still abort as `Cancelled`, the only honest schema terminal. The run
+/// thread then unwinds and releases the conversation claim, so a new run
+/// can start. Always returns [`AgentError::Cancelled`].
 fn abort_parked_call(
     ctx: &DispatchCtx<'_>,
     record: &mut Option<&mut ActiveRunRecord<'_>>,
@@ -550,6 +552,21 @@ fn abort_parked_call(
                 RunState::AwaitingApproval,
                 RunState::Cancelled,
                 AuditEvent::ApprovalTimedOut,
+            );
+        }
+        ParkEnd::Shutdown => {
+            // NEX-TASK-002: application shutdown ended the parked wait.
+            // The recorded step and audit edge name the shutdown: a quit is
+            // neither a user denial nor a user cancel.
+            if let Some(rec) = record.as_mut() {
+                rec.approval_shutdown_cancelled(call);
+            }
+            observe_transition(RunState::AwaitingApproval, RunState::Cancelled);
+            audit(
+                ctx.audit,
+                RunState::AwaitingApproval,
+                RunState::Cancelled,
+                AuditEvent::ApprovalShutdown,
             );
         }
     }

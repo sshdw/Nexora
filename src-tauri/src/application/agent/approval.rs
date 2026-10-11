@@ -79,13 +79,19 @@ pub(crate) enum ApprovalDecision {
 /// decision (NEX-AGENT-004). Kept distinct from [`ApprovalDecision`] on
 /// purpose: an expired deadline is neither a user denial nor a user cancel,
 /// so every consumer must name the timeout honestly instead of relabelling
-/// it as user action.
+/// it as user action. NEX-TASK-002 adds the same honesty for shutdown: a
+/// shutdown-cancel is neither a user denial nor a user cancel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ParkEnd {
     /// Cancellation was observed on the shared token.
     Cancelled,
     /// The park deadline elapsed with no decision and no cancellation.
     TimedOut,
+    /// Application shutdown was observed on the shared token
+    /// (NEX-TASK-002): the wait ends like [`Self::Cancelled`] (the run
+    /// still aborts as `Cancelled`, the only honest schema terminal) but
+    /// the recorded step names the shutdown, never the user-cancel text.
+    Shutdown,
 }
 
 /// Fixed-vocabulary rendering of a park deadline for timeout observations
@@ -240,6 +246,25 @@ impl ApprovalGate {
         self.lock_token().is_cancelled()
     }
 
+    /// Whether the shared token was cancelled by application shutdown
+    /// (NEX-TASK-002) rather than by a user cancel.
+    #[must_use]
+    pub(crate) fn is_shutdown(&self) -> bool {
+        self.lock_token().is_shutdown()
+    }
+
+    /// How a cancelled wait ended: [`ParkEnd::Shutdown`] when the shutdown
+    /// origin is set, [`ParkEnd::Cancelled`] otherwise. Every cancel
+    /// observation in [`Self::park_until_resolved`] funnels through here so
+    /// the origin can never be relabelled by accident.
+    fn cancel_end(&self) -> ParkEnd {
+        if self.is_shutdown() {
+            ParkEnd::Shutdown
+        } else {
+            ParkEnd::Cancelled
+        }
+    }
+
     /// Cancel the shared token and wake every waiter parked in
     /// `request_approval`. Never blocks.
     pub(crate) fn cancel(&self) {
@@ -325,9 +350,10 @@ impl ApprovalGate {
     /// [`Self::request_approval`], minus the ladder fast-path: the caller
     /// has already decided a park is required (a tripped injection scan),
     /// so an auto-approve mode must not swallow it. Returns
-    /// `Err(ParkEnd::Cancelled)` when cancellation aborted the wait and
-    /// `Err(ParkEnd::TimedOut)` when the deadline elapsed with no decision
-    /// (NEX-AGENT-004) — every park arm (Ask parks, ladder parks,
+    /// `Err(ParkEnd::Cancelled)` when a user cancellation aborted the wait,
+    /// `Err(ParkEnd::Shutdown)` when application shutdown aborted it
+    /// (NEX-TASK-002), and `Err(ParkEnd::TimedOut)` when the deadline elapsed
+    /// with no decision (NEX-AGENT-004) — every park arm (Ask parks, ladder parks,
     /// group-sticky parks, injection holds) funnels through this one wait,
     /// so the deadline covers them all.
     pub(crate) fn park_until_resolved(&self, call: &ToolCall) -> Result<ApprovalDecision, ParkEnd> {
@@ -367,7 +393,7 @@ impl ApprovalGate {
         loop {
             if self.is_cancelled() {
                 state.pending = None;
-                return Err(ParkEnd::Cancelled);
+                return Err(self.cancel_end());
             }
             if let Some(pending) = state.pending.as_ref() {
                 if pending.id == call.id {
@@ -383,7 +409,7 @@ impl ApprovalGate {
             } else {
                 // Pending cleared externally (e.g. cancellation).
                 if self.is_cancelled() {
-                    return Err(ParkEnd::Cancelled);
+                    return Err(self.cancel_end());
                 }
             }
             // Deadline check before sleeping: expiry clears the pending entry
