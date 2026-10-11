@@ -45,7 +45,9 @@
 //! failed finalize is logged. Every failure is reported through `log`.
 
 use std::sync::mpsc::Sender;
+use std::time::Duration;
 
+use crate::application::agent::approval::format_timeout;
 use crate::application::agent::approval::AutonomyMode;
 use crate::application::agent::control::AgentRunEvent;
 use crate::application::agent::injection::redact_secrets;
@@ -578,6 +580,27 @@ impl<'a> ActiveRunRecord<'a> {
             tool_name: Some(&call.name),
             arguments: Some(&call.arguments),
             observation: Some("cancelled by the user"),
+            status: Some("cancelled"),
+            duration_ms: None,
+            provenance: StepProvenance::system(),
+        });
+    }
+
+    /// Record one `approval` step whose parked wait was ended by the
+    /// NEX-AGENT-004 park deadline (DATABASE.md §7.9). The step keeps the
+    /// schema `cancelled` status (the run terminal is `cancelled`), but the
+    /// observation names the timeout honestly: an expired deadline is
+    /// neither a user denial nor a user cancel, so it must never reuse the
+    /// `"cancelled by the user"` vocabulary. `decided_by` stays `'system'`.
+    pub(crate) fn approval_timed_out(&mut self, call: &ToolCall, timeout: Duration) {
+        self.append(&PendingStep {
+            kind: "approval",
+            tool_name: Some(&call.name),
+            arguments: Some(&call.arguments),
+            observation: Some(&format!(
+                "approval timed out after {} without a decision; run cancelled",
+                format_timeout(timeout)
+            )),
             status: Some("cancelled"),
             duration_ms: None,
             provenance: StepProvenance::system(),

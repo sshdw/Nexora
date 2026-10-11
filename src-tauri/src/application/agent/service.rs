@@ -308,6 +308,42 @@ pub(crate) fn resolve_preset(db: &Database) -> RunPreset {
     }
 }
 
+/// Setting key backing the approval-park deadline
+/// (`agent.approval_timeout_secs`, NEX-AGENT-004).
+pub(crate) const APPROVAL_TIMEOUT_KEY: &str = "agent.approval_timeout_secs";
+
+/// Default approval-park deadline in seconds (10 minutes — mirrors
+/// [`super::approval::DEFAULT_APPROVAL_TIMEOUT`]; the `u64` form is what the
+/// settings store resolves).
+pub(crate) const DEFAULT_APPROVAL_TIMEOUT_SECS: u64 = 10 * 60;
+
+/// Bounds for a stored approval-park deadline in seconds: below one second
+/// the deadline is indistinguishable from "never park"; above a day it stops
+/// being a deadline. Out-of-domain values fall back to the default (the
+/// command gate in `commands/settings.rs` enforces the same domain, so the
+/// two agree exactly).
+pub(crate) const MIN_APPROVAL_TIMEOUT_SECS: u64 = 1;
+pub(crate) const MAX_APPROVAL_TIMEOUT_SECS: u64 = 24 * 60 * 60;
+
+/// Resolve the approval-park deadline from `app_settings`
+/// (`agent.approval_timeout_secs`), defaulting to
+/// [`DEFAULT_APPROVAL_TIMEOUT_SECS`] when unset, unparseable, or outside
+/// [`MIN_APPROVAL_TIMEOUT_SECS`]..=[`MAX_APPROVAL_TIMEOUT_SECS`] — mirroring
+/// [`resolve_spend_limit`]: an unreadable setting degrades to the default
+/// and never fails the run.
+#[must_use]
+pub(crate) fn resolve_approval_timeout(db: &Database) -> std::time::Duration {
+    let svc = SettingsService::new(db);
+    match svc.read(APPROVAL_TIMEOUT_KEY) {
+        Ok(Some(value)) => match value.as_str().trim().parse::<u64>() {
+            Ok(secs) if secs >= MIN_APPROVAL_TIMEOUT_SECS && secs <= MAX_APPROVAL_TIMEOUT_SECS => {
+                std::time::Duration::from_secs(secs)
+            }
+            _ => std::time::Duration::from_secs(DEFAULT_APPROVAL_TIMEOUT_SECS),
+        },
+        _ => std::time::Duration::from_secs(DEFAULT_APPROVAL_TIMEOUT_SECS),
+    }
+}
 /// Setting key backing the per-run spend guard (`agent.spend_limit_micro_usd`).
 pub(crate) const SPEND_LIMIT_KEY: &str = "agent.spend_limit_micro_usd";
 
@@ -511,6 +547,10 @@ fn start_run_claimed(
     // Create the linked run row (D50) through the recorder so the run id is
     // known synchronously; the spawned run adopts it (no second insert).
     let gate = ApprovalGate::new(mode);
+    // NEX-AGENT-004: every park on this run expires on the configured
+    // deadline, so an unanswered approval can never hold the conversation
+    // claim forever.
+    gate.set_timeout(resolve_approval_timeout(db));
     let control = RunControl::new();
     let mode_column = mode_to_column(mode);
     let Some(run_id) = RunRecorder::new(db)
@@ -1097,6 +1137,138 @@ mod tests {
         // No assistant message on a failed/cancelled run (doctrine).
         assert!(host.persisted.lock().expect("lock").is_empty());
         let _ = std::fs::remove_dir_all(temp_workspace("cancel"));
+    }
+
+    /// NEX-AGENT-004: an approval park with no `respond` expires on the
+    /// configured deadline — the run terminates `cancelled`, the registry
+    /// entry is released, and the conversation is unclaimed so a new run
+    /// can start. The 1s test deadline is a promptness bound, not a
+    /// wall-clock margin: the test asserts termination + outcome + cleanup,
+    /// never `elapsed`.
+    #[test]
+    fn unanswered_approval_park_expires_and_releases_the_conversation() {
+        let (db, workspace, rx, host) = setup("park-timeout");
+        crate::application::settings::SettingsService::new(&db)
+            .write(APPROVAL_TIMEOUT_KEY, Some("1"))
+            .expect("write timeout");
+        let registry = Arc::new(AgentRunRegistry::default());
+        let conversation_id = ConversationService::new(&db)
+            .create("conv")
+            .expect("conversation");
+
+        let run_id = start_run(
+            &db,
+            Arc::clone(&registry),
+            Arc::clone(&host) as Arc<dyn AgentRunHost>,
+            Arc::new(ScriptedExecutor::new(vec![
+                Ok(tool_response("w", "write_file")),
+                Ok(text_response("never reached")),
+            ])),
+            workspace,
+            request(conversation_id, "expire me"),
+            crate::application::agent::approval::AutonomyMode::SemiAutonomous,
+            RunPreset::Coding,
+        )
+        .expect("start");
+
+        // Wait for the approval park; the event carries the deadline so the
+        // UI can surface a countdown/notice.
+        loop {
+            let frame = rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("approval frame");
+            if let RunFrame::Governance {
+                event: AgentRunEvent::ApprovalRequested { timeout_secs, .. },
+                ..
+            } = frame
+            {
+                assert_eq!(timeout_secs, 1, "event carries the configured deadline");
+                break;
+            }
+        }
+
+        // No `respond`, no `cancel`: the deadline expires on its own and the
+        // run terminates `cancelled` with the claim released.
+        let frames = collect_frames(&rx);
+        let RunFrame::Finished { event, .. } = frames.last().expect("frames") else {
+            panic!("last frame must be Finished");
+        };
+        assert_eq!(event.status, "cancelled");
+        assert_eq!(event.final_content, None);
+        assert!(
+            !registry.is_active(run_id),
+            "registry entry released on the timeout exit path"
+        );
+        // No assistant message on a failed/cancelled run (doctrine).
+        assert!(host.persisted.lock().expect("lock").is_empty());
+
+        // The recorded approval step names the timeout honestly: status
+        // `cancelled` (the schema terminal), observation naming the expiry —
+        // never the user-cancel vocabulary.
+        let steps = list_steps_for_run(&db, run_id).expect("steps");
+        let approval = steps
+            .iter()
+            .find(|step| step.kind == "approval")
+            .expect("timeout records an approval step");
+        assert_eq!(approval.status.as_deref(), Some("cancelled"));
+        let observation = approval.observation.as_deref().unwrap_or_default();
+        assert!(
+            observation.contains("timed out"),
+            "timeout step must name the timeout, got: {observation}"
+        );
+        assert!(
+            !observation.contains("by the user"),
+            "timeout step must not claim a user cancel, got: {observation}"
+        );
+
+        // The conversation is unclaimed: a new run can start immediately.
+        let second = start_run(
+            &db,
+            Arc::clone(&registry),
+            Arc::clone(&host) as Arc<dyn AgentRunHost>,
+            Arc::new(ScriptedExecutor::new(vec![Ok(text_response("fresh"))])),
+            temp_workspace("park-timeout-second"),
+            request(conversation_id, "second"),
+            crate::application::agent::approval::AutonomyMode::SemiAutonomous,
+            RunPreset::Coding,
+        );
+        assert!(
+            second.is_ok(),
+            "conversation must accept a new run after timeout, got: {second:?}"
+        );
+        let second_id = second.expect("start");
+        assert!(registry.cancel(second_id), "cleanup: cancel the second run");
+        let _ = collect_frames(&rx);
+        let _ = std::fs::remove_dir_all(temp_workspace("park-timeout"));
+        let _ = std::fs::remove_dir_all(temp_workspace("park-timeout-second"));
+    }
+
+    /// `resolve_approval_timeout`: unset/unreadable degrades to the default;
+    /// in-domain values resolve; out-of-domain values fall back.
+    #[test]
+    fn resolve_approval_timeout_defaults_and_clamps() {
+        let db = crate::infrastructure::database::in_memory_database();
+        let svc = crate::application::settings::SettingsService::new(&db);
+        assert_eq!(
+            resolve_approval_timeout(&db),
+            Duration::from_secs(DEFAULT_APPROVAL_TIMEOUT_SECS)
+        );
+        svc.write(APPROVAL_TIMEOUT_KEY, Some("30")).expect("write");
+        assert_eq!(resolve_approval_timeout(&db), Duration::from_secs(30));
+        for invalid in ["0", "-5", "abc", "", "  ", "1.5", "86401", "99999999999"] {
+            svc.write(APPROVAL_TIMEOUT_KEY, Some(invalid))
+                .expect("write");
+            assert_eq!(
+                resolve_approval_timeout(&db),
+                Duration::from_secs(DEFAULT_APPROVAL_TIMEOUT_SECS),
+                "out-of-domain value must fall back: {invalid:?}"
+            );
+        }
+        svc.delete(APPROVAL_TIMEOUT_KEY).expect("delete");
+        assert_eq!(
+            resolve_approval_timeout(&db),
+            Duration::from_secs(DEFAULT_APPROVAL_TIMEOUT_SECS)
+        );
     }
 
     /// Budget park: exhaustion parks the run; `extend` continues it to

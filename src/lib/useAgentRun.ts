@@ -44,7 +44,7 @@ export interface AgentRunView {
   finished_at: number | null;
   error: string | null;
   steps: AgentStepView[];
-  pending_approval: { call_id: string; name: string; arguments: string } | null;
+  pending_approval: { call_id: string; name: string; arguments: string; timeout_secs: number; requested_at: number } | null;
 }
 
 function toStepView(step: AgentStep): AgentStepView {
@@ -276,6 +276,8 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
                       call_id: gov.call_id,
                       name: gov.name,
                       arguments: gov.arguments,
+                      timeout_secs: gov.timeout_secs ?? 0,
+                      requested_at: Date.now() / 1000,
                     },
                   };
                   return copy;
@@ -297,6 +299,8 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
                       call_id: gov.call_id,
                       name: gov.name,
                       arguments: gov.arguments,
+                      timeout_secs: gov.timeout_secs ?? 0,
+                      requested_at: Date.now() / 1000,
                     },
                   },
                 ];

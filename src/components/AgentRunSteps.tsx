@@ -8,7 +8,7 @@
 //! diff viewer for `write_file` (headers, hunks, +/- gutters, mono,
 //! collapsible). Chronological placement is owned by the thread view.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import type { AgentRunView, AgentStepView } from "../lib/useAgentRun";
 import { getLocale, tr, type Locale } from "../lib/strings";
@@ -250,6 +250,48 @@ function StepSection({ step, defaultOpen }: { step: AgentStepView; defaultOpen: 
   );
 }
 
+function formatCountdown(totalSecs: number): string {
+  const s = Math.max(0, Math.floor(totalSecs));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return m > 0 ? `${m}:${String(r).padStart(2, "0")}` : `${r}s`;
+}
+
+/** Deadline notice + live countdown for a pending approval (NEX-AGENT-004):
+ * an unanswered approval expires and cancels the run, so the park is never
+ * a silent hang. Hidden when the event carries no deadline (`timeout_secs`
+ * 0 from older emitters). */
+function ApprovalTimeoutNotice({
+  timeoutSecs,
+  requestedAt,
+}: {
+  timeoutSecs: number;
+  requestedAt: number;
+}) {
+  const { t } = useStrings();
+  const [now, setNow] = useState<number>(() => Date.now() / 1000);
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now() / 1000), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  const remaining = requestedAt + timeoutSecs - now;
+  if (remaining <= 0) {
+    return (
+      <p className="nex-agent-approval-timeout" role="status">
+        {t("agent.approvalExpired")}
+      </p>
+    );
+  }
+  return (
+    <p className="nex-agent-approval-timeout">
+      {t("agent.approvalTimeoutNotice")}{" "}
+      <span className="nex-tag nex-tag-mono">
+        {t("agent.approvalExpiresIn", { time: formatCountdown(remaining) })}
+      </span>
+    </p>
+  );
+}
+
 export default function AgentRunSteps({
   run,
   onResolveApproval,
@@ -338,6 +380,12 @@ export default function AgentRunSteps({
               {t("agent.deny")}
             </M3Button>
           </div>
+          {pending.timeout_secs > 0 && (
+            <ApprovalTimeoutNotice
+              timeoutSecs={pending.timeout_secs}
+              requestedAt={pending.requested_at}
+            />
+          )}
         </div>
       )}
 

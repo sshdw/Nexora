@@ -616,7 +616,7 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
         const callId = `call-${runId}-approval`;
         const writeArgs = JSON.stringify({ path: "output.txt", content: "hello world\nsecond line" });
         active.pendingApproval = { call_id: callId, name: "write_file", arguments: writeArgs };
-        emitAgentEvent({ type: "governance", run_id: runId, event: { type: "approval_requested", call_id: callId, name: "write_file", arguments: writeArgs } });
+        emitAgentEvent({ type: "governance", run_id: runId, event: { type: "approval_requested", call_id: callId, name: "write_file", arguments: writeArgs, timeout_secs: 600 } });
         // Auto-resolve after ~2s if not manually resolved
         const auto = window.setTimeout(() => {
           if (!activeRuns.has(runId) || !active.pendingApproval) return;

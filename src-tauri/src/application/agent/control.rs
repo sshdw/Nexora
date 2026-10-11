@@ -149,6 +149,12 @@ pub(crate) enum AgentRunEvent {
         /// Additive: existing fields are untouched.
         #[serde(default)]
         group_size: usize,
+        /// Park deadline in seconds at emission time (NEX-AGENT-004): the UI
+        /// surfaces this as a countdown/notice so an unanswered approval is
+        /// never a silent hang. Additive: defaults to `0` (unknown deadline,
+        /// no notice) for older emitters.
+        #[serde(default)]
+        timeout_secs: u64,
     },
     /// A parked approval was resolved (Task 4.1).
     ApprovalResolved {

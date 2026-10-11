@@ -75,6 +75,10 @@ const VALID_AUTONOMY: &[&str] = &["supervised", "semi_autonomous", "full_autonom
 ///   — exactly the domain `resolve_spend_limit`
 ///   (`application/agent/service.rs`) resolves, so the command gate and the
 ///   service agree exactly.
+/// - `agent.approval_timeout_secs` accepts a trimmed `u64` within
+///   `MIN_APPROVAL_TIMEOUT_SECS..=MAX_APPROVAL_TIMEOUT_SECS` — exactly the
+///   domain `resolve_approval_timeout` (`application/agent/service.rs`)
+///   resolves, so the command gate and the service agree exactly.
 /// - [`CHAT_PROFILE_KEY`] / [`AGENT_PROFILE_KEY`] accept a JSON array of
 ///   1..=16 `{provider, model}` entries where each provider is a supported
 ///   provider name and each model is listed for that provider or a valid
@@ -152,6 +156,21 @@ fn validate_setting(key: &str, value: Option<&str>) -> Result<(), CommandError> 
             // no-limit default and stays allowed (handled above).
             match value.trim().parse::<u64>() {
                 Ok(limit) if limit > 0 => Ok(()),
+                _ => Err(rejected(key, value)),
+            }
+        }
+        crate::application::agent::service::APPROVAL_TIMEOUT_KEY => {
+            // Mirror `resolve_approval_timeout` parsing exactly: a trimmed
+            // `u64` within `MIN_APPROVAL_TIMEOUT_SECS..=MAX_APPROVAL_TIMEOUT_SECS`.
+            // Clearing (`None`) restores the default deadline (handled above).
+            match value.trim().parse::<u64>() {
+                Ok(secs)
+                    if secs >= crate::application::agent::service::MIN_APPROVAL_TIMEOUT_SECS
+                        && secs
+                            <= crate::application::agent::service::MAX_APPROVAL_TIMEOUT_SECS =>
+                {
+                    Ok(())
+                }
                 _ => Err(rejected(key, value)),
             }
         }
@@ -757,6 +776,24 @@ mod tests {
         // Zero, negatives, and non-numeric values are rejected secret-free.
         for value in ["0", "-5", "abc", "", "  ", "1.5"] {
             assert_rejected(crate::application::agent::service::SPEND_LIMIT_KEY, value);
+        }
+    }
+
+    #[test]
+    fn approval_timeout_key_accepts_in_range_seconds_and_rejects_the_rest() {
+        // NEX-AGENT-004: the park deadline is a validated setting, and the
+        // gate domain matches `resolve_approval_timeout` exactly.
+        use crate::application::agent::service::{
+            APPROVAL_TIMEOUT_KEY, MAX_APPROVAL_TIMEOUT_SECS, MIN_APPROVAL_TIMEOUT_SECS,
+        };
+        for value in ["1", "60", "600", "86400"] {
+            assert_accepted(APPROVAL_TIMEOUT_KEY, value);
+        }
+        assert!(validate_setting(APPROVAL_TIMEOUT_KEY, None).is_ok());
+        assert_accepted(APPROVAL_TIMEOUT_KEY, &MIN_APPROVAL_TIMEOUT_SECS.to_string());
+        assert_accepted(APPROVAL_TIMEOUT_KEY, &MAX_APPROVAL_TIMEOUT_SECS.to_string());
+        for value in ["0", "-5", "abc", "", "  ", "1.5", "86401"] {
+            assert_rejected(APPROVAL_TIMEOUT_KEY, value);
         }
     }
 }

@@ -6,7 +6,7 @@ use std::time::Instant;
 
 #[cfg(test)]
 use crate::application::agent::approval::AutonomyMode;
-use crate::application::agent::approval::{ApprovalDecision, ApprovalGate, RiskClass};
+use crate::application::agent::approval::{ApprovalDecision, ApprovalGate, ParkEnd, RiskClass};
 use crate::application::agent::control::{AgentRunEvent, CancellationToken, RunControl};
 use crate::application::agent::governance::{audit, AuditEvent, AuditLog, GateOutcome};
 use crate::application::agent::injection;
@@ -538,32 +538,61 @@ fn park_call(
                 arguments: call.arguments.clone(),
                 group_key: Some(group_key.to_owned()),
                 group_size,
+                timeout_secs: gate.timeout().as_secs(),
             },
         );
         // The hold parks unconditionally: `park_until_resolved` reuses the
         // gate's pending/response machinery but skips the ladder fast-path,
         // which would otherwise auto-approve (and swallow) the hold in
         // auto-approve modes.
-        let Ok(decision) = gate.park_until_resolved(call) else {
-            // Task 4.2: cancellation ended the parked wait РІР‚вЂќ
-            // record the `cancelled` approval step (D12).
-            if let Some(rec) = record.as_mut() {
-                rec.approval_cancelled(call);
+        let decision = match gate.park_until_resolved(call) {
+            Ok(decision) => decision,
+            Err(ParkEnd::Cancelled) => {
+                // Task 4.2: cancellation ended the parked wait —
+                // record the `cancelled` approval step (D12).
+                if let Some(rec) = record.as_mut() {
+                    rec.approval_cancelled(call);
+                }
+                super::lifecycle::observe_transition(
+                    super::lifecycle::RunState::AwaitingApproval,
+                    super::lifecycle::RunState::Cancelled,
+                );
+                // WS-B.2: every park resolves to a recorded gate decision —
+                // cancellation included.
+                audit(
+                    ctx.audit,
+                    super::lifecycle::RunState::AwaitingApproval,
+                    super::lifecycle::RunState::Cancelled,
+                    AuditEvent::ApprovalCancelled,
+                );
+                emit(ctx.sender, AgentRunEvent::Cancelled);
+                return Err(AgentError::Cancelled);
             }
-            super::lifecycle::observe_transition(
-                super::lifecycle::RunState::AwaitingApproval,
-                super::lifecycle::RunState::Cancelled,
-            );
-            // WS-B.2: every park resolves to a recorded gate decision —
-            // cancellation included.
-            audit(
-                ctx.audit,
-                super::lifecycle::RunState::AwaitingApproval,
-                super::lifecycle::RunState::Cancelled,
-                AuditEvent::ApprovalCancelled,
-            );
-            emit(ctx.sender, AgentRunEvent::Cancelled);
-            return Err(AgentError::Cancelled);
+            Err(ParkEnd::TimedOut) => {
+                // NEX-AGENT-004: the park deadline elapsed with no decision.
+                // The run still aborts as `Cancelled` (the only honest
+                // schema terminal — no new run status is introduced), but
+                // the recorded step and audit edge name the timeout: an
+                // expired deadline is neither a user denial nor a user
+                // cancel. The run thread then unwinds and releases the
+                // conversation claim, so a new run can start.
+                let timeout = gate.timeout();
+                if let Some(rec) = record.as_mut() {
+                    rec.approval_timed_out(call, timeout);
+                }
+                super::lifecycle::observe_transition(
+                    super::lifecycle::RunState::AwaitingApproval,
+                    super::lifecycle::RunState::Cancelled,
+                );
+                audit(
+                    ctx.audit,
+                    super::lifecycle::RunState::AwaitingApproval,
+                    super::lifecycle::RunState::Cancelled,
+                    AuditEvent::ApprovalTimedOut,
+                );
+                emit(ctx.sender, AgentRunEvent::Cancelled);
+                return Err(AgentError::Cancelled);
+            }
         };
         let approved = matches!(decision, ApprovalDecision::Approved);
         // Task 4.2: record the parked approval decision (D12). A rule that

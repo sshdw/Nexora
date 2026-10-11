@@ -178,6 +178,11 @@ pub(crate) enum AuditEvent {
     },
     /// Cancellation ended the parked wait (`AwaitingApproval → Cancelled`).
     ApprovalCancelled,
+    /// The park deadline elapsed with no user decision
+    /// (`AwaitingApproval → Cancelled`, NEX-AGENT-004). A distinct edge from
+    /// [`Self::ApprovalCancelled`]: a timeout is neither a user denial nor a
+    /// user cancel, so the trail names it as a timeout.
+    ApprovalTimedOut,
     /// Step budget exhausted with a control attached; parked for extension
     /// (`Running → AwaitingBudget`).
     BudgetParked {
@@ -247,6 +252,7 @@ impl AuditEvent {
             Self::ApprovalParked => "approval_parked",
             Self::ApprovalResolved { .. } => "approval_resolved",
             Self::ApprovalCancelled => "approval_cancelled",
+            Self::ApprovalTimedOut => "approval_timed_out",
             Self::BudgetParked { .. } => "budget_parked",
             Self::BudgetResumed => "budget_resumed",
             Self::BudgetCancelled => "budget_cancelled",
@@ -326,6 +332,7 @@ impl AuditEntry {
             AuditEvent::StageEntered { stage } => (None, None, None, None, Some(stage)),
             AuditEvent::ApprovalParked
             | AuditEvent::ApprovalCancelled
+            | AuditEvent::ApprovalTimedOut
             | AuditEvent::BudgetResumed
             | AuditEvent::BudgetCancelled
             | AuditEvent::SnapshotCaptured
