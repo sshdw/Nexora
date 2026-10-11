@@ -341,8 +341,8 @@ mod tests {
                 ("m-other", "boom sk-secret-PLANTED-999"),
             ] {
                 conn.execute(
-                    "INSERT INTO agent_runs (model, mode, status, error) \
-                     VALUES (?1, 'supervised', 'error', ?2)",
+                    "INSERT INTO agent_runs (model, mode, status, error, finished_at) \
+                     VALUES (?1, 'supervised', 'error', ?2, (unixepoch()))",
                     rusqlite::params![model, error],
                 )
                 .expect("insert error run");

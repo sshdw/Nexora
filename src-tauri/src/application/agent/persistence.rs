@@ -323,7 +323,6 @@ impl<'a> RunRecorder<'a> {
         self,
         run_id: i64,
         status: &str,
-        total_steps: i64,
         final_content: Option<&str>,
         error: Option<&str>,
         spent_micro_usd: Option<u64>,
@@ -333,7 +332,6 @@ impl<'a> RunRecorder<'a> {
         if let Err(err) = repo.finalize_run(
             run_id,
             status,
-            total_steps,
             final_content,
             error,
             spent_micro_usd,
@@ -659,7 +657,6 @@ impl<'a> ActiveRunRecord<'a> {
         self.recorder.finalize_run(
             run_id,
             status,
-            self.recorded_steps,
             final_content.as_deref(),
             error.as_deref(),
             spent_opt,

@@ -140,7 +140,9 @@ impl AttachmentRepository<'_> {
     /// `message_id` is the only mutable field; `id`, `conversation_id`,
     /// `file_name`, `file_path`, `file_size_bytes`, and `mime_type` are never
     /// touched here. Passing [`None`] returns the row to the draft state; if
-    /// `id` does not exist, no row is changed.
+    /// `id` does not exist, no row is changed. The schema's composite
+    /// `(conversation_id, message_id)` foreign key requires the message to
+    /// belong to the attachment's own conversation (NEX-DB-002).
     ///
     /// # Errors
     ///
@@ -257,5 +259,106 @@ impl AttachmentRepository<'_> {
             attachments.push(row?);
         }
         Ok(attachments)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::infrastructure::database::in_memory_database;
+    use crate::infrastructure::repository::conversations::ConversationRepository;
+    use crate::infrastructure::repository::messages::MessageRepository;
+
+    fn repositories(
+        db: &Database,
+    ) -> (
+        AttachmentRepository<'_>,
+        ConversationRepository<'_>,
+        MessageRepository<'_>,
+    ) {
+        (
+            AttachmentRepository::new(db),
+            ConversationRepository::new(db),
+            MessageRepository::new(db),
+        )
+    }
+
+    #[test]
+    fn cross_conversation_message_link_is_rejected() {
+        // NEX-DB-002: the composite `(conversation_id, message_id)`
+        // FOREIGN KEY — an attachment of conversation A linked to a message
+        // of conversation B is impossible.
+        let db = in_memory_database();
+        let (attachments, conversations, messages) = repositories(&db);
+
+        let conv_a = conversations.create("a", "active").expect("conv a");
+        let conv_b = conversations.create("b", "active").expect("conv b");
+        let msg_a = messages
+            .create(conv_a, "user", "hello a", None, None)
+            .expect("msg a");
+        let msg_b = messages
+            .create(conv_b, "user", "hello b", None, None)
+            .expect("msg b");
+
+        let att = attachments
+            .create(conv_a, "f.txt", "/tmp/f.txt", None, None)
+            .expect("draft attachment");
+
+        assert!(
+            attachments.update_message_id(att, Some(msg_b)).is_err(),
+            "linking conversation A's attachment to conversation B's message \
+             must be rejected"
+        );
+        // The rejected write leaves the row untouched (still a draft).
+        let row = attachments.read(att).expect("read").expect("exists");
+        assert_eq!(row.message_id, None);
+
+        attachments
+            .update_message_id(att, Some(msg_a))
+            .expect("same-conversation link is accepted");
+        let row = attachments.read(att).expect("read").expect("exists");
+        assert_eq!(row.message_id, Some(msg_a));
+
+        // Unlinking back to the draft state stays legal.
+        attachments
+            .update_message_id(att, None)
+            .expect("unlink to draft is accepted");
+    }
+
+    #[test]
+    fn deleting_another_conversation_keeps_this_ones_attachments() {
+        // NEX-DB-002: because a cross-conversation link cannot exist,
+        // deleting conversation B can never cascade-delete an attachment
+        // displayed under conversation A.
+        let db = in_memory_database();
+        let (attachments, conversations, messages) = repositories(&db);
+
+        let conv_a = conversations.create("a", "active").expect("conv a");
+        let conv_b = conversations.create("b", "active").expect("conv b");
+        let msg_a = messages
+            .create(conv_a, "user", "hello a", None, None)
+            .expect("msg a");
+        let att = attachments
+            .create(conv_a, "f.txt", "/tmp/f.txt", None, None)
+            .expect("draft attachment");
+        attachments
+            .update_message_id(att, Some(msg_a))
+            .expect("link");
+
+        conversations
+            .delete(conv_b)
+            .expect("delete other conversation");
+        assert!(
+            attachments.read(att).expect("read").is_some(),
+            "deleting another conversation must not touch this one's attachments"
+        );
+
+        conversations
+            .delete(conv_a)
+            .expect("delete own conversation");
+        assert!(
+            attachments.read(att).expect("read").is_none(),
+            "deleting the owning conversation still cascades its attachments"
+        );
     }
 }

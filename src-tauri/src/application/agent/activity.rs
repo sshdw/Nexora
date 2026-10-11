@@ -144,7 +144,25 @@ mod tests {
         let id = repo
             .create_run(None, model, "supervised")
             .expect("seed run");
-        repo.finalize_run(id, status, steps, Some("done"), None, spent, spent_limit)
+        // `total_steps` is recomputed from the child rows at finalize, so
+        // seed the recorded steps the count claims.
+        for seq in 1..=steps {
+            repo.append_step(
+                id,
+                seq,
+                "model_turn",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("seed step");
+        }
+        repo.finalize_run(id, status, Some("done"), None, spent, spent_limit)
             .expect("finalize seed run");
         id
     }
@@ -209,7 +227,6 @@ mod tests {
         repo.finalize_run(
             id,
             "error",
-            1,
             Some("HOSTILE final content sk-secret"),
             Some("HOSTILE error text credential"),
             None,

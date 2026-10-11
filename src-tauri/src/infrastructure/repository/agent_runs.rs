@@ -161,11 +161,18 @@ impl AgentRunRepository<'_> {
 
     /// Finalize a run at termination (DATABASE.md §7.8).
     ///
-    /// Updates the terminal fields only — `status`, `finished_at` (set to the
-    /// current Unix timestamp), `total_steps`, `final_content`, and `error` —
-    /// exactly the fields the documented Update path allows. `final_content`
-    /// is supplied for terminal `completed` runs only and `error` (classified
-    /// text, never a secret) for terminal `error` runs only.
+    /// Updates the terminal fields only — `status`, `finished_at` (the
+    /// current Unix timestamp, floored at `started_at` so a backward clock
+    /// move can never violate the `finished_at >= started_at` CHECK),
+    /// `total_steps`, `final_content`, and `error` — exactly the fields the
+    /// documented Update path allows. `final_content` is supplied for
+    /// terminal `completed` runs only and `error` (classified text, never a
+    /// secret) for terminal `error` runs only.
+    ///
+    /// `total_steps` is recomputed from the child rows
+    /// (`COUNT(*) FROM agent_steps WHERE run_id = ?`), never trusted from
+    /// the caller (NEX-DB-006): the stored counter always agrees with the
+    /// recorded steps by construction.
     ///
     /// Finalizing a non-existent `id` is a no-op.
     ///
@@ -178,7 +185,6 @@ impl AgentRunRepository<'_> {
         &self,
         id: i64,
         status: &str,
-        total_steps: i64,
         final_content: Option<&str>,
         error: Option<&str>,
         spent_micro_usd: Option<u64>,
@@ -190,17 +196,10 @@ impl AgentRunRepository<'_> {
         let spent_i64 = spent_micro_usd.map(|v| i64::try_from(v).unwrap_or(i64::MAX));
         let limit_i64 = limit_micro_usd.map(|v| i64::try_from(v).unwrap_or(i64::MAX));
         conn.execute(
-            "UPDATE agent_runs SET status = ?2, finished_at = (unixepoch()), \
-             total_steps = ?3, final_content = ?4, error = ?5, spent_micro_usd = ?6, limit_micro_usd = ?7 WHERE id = ?1",
-            params![
-                id,
-                status,
-                total_steps,
-                final_content,
-                error,
-                spent_i64,
-                limit_i64
-            ],
+            "UPDATE agent_runs SET status = ?2, finished_at = max((unixepoch()), started_at), \
+             total_steps = (SELECT COUNT(*) FROM agent_steps WHERE run_id = ?1), \
+             final_content = ?3, error = ?4, spent_micro_usd = ?5, limit_micro_usd = ?6 WHERE id = ?1",
+            params![id, status, final_content, error, spent_i64, limit_i64],
         )?;
         Ok(())
     }
@@ -345,9 +344,13 @@ impl AgentRunRepository<'_> {
 
     /// Sweep orphaned `running` runs to `error` at startup (Task 5.2, DP-8).
     ///
-    /// `UPDATE agent_runs SET status='error', error=?1, finished_at=unixepoch()
-    /// WHERE status='running'` — only `running` rows are touched; all other
-    /// statuses and row counts are unchanged. Returns the number of rows swept.
+    /// `UPDATE agent_runs SET status='error', error=?1,
+    /// finished_at=max(unixepoch(), started_at) WHERE status='running'` —
+    /// only `running` rows are touched; all other statuses and row counts are
+    /// unchanged. `finished_at` is floored at `started_at` (a backward clock
+    /// move can never violate the ordering CHECK) and `total_steps` is
+    /// recomputed from the child rows, matching [`finalize_run`]. Returns
+    /// the number of rows swept.
     ///
     /// # Errors
     ///
@@ -355,7 +358,10 @@ impl AgentRunRepository<'_> {
     pub(crate) fn fail_orphaned_running_runs(&self, message: &str) -> Result<usize> {
         let conn = self.conn()?;
         let updated = conn.execute(
-            "UPDATE agent_runs SET status = 'error', error = ?1, finished_at = (unixepoch()) WHERE status = 'running'",
+            "UPDATE agent_runs SET status = 'error', error = ?1, \
+             finished_at = max((unixepoch()), started_at), \
+             total_steps = (SELECT COUNT(*) FROM agent_steps WHERE agent_steps.run_id = agent_runs.id) \
+             WHERE status = 'running'",
             params![message],
         )?;
         Ok(updated)
@@ -473,7 +479,12 @@ mod tests {
         assert_eq!(created.total_steps, 0);
         assert_eq!(created.finished_at, None);
 
-        runs.finalize_run(run_id, "completed", 3, Some("all done"), None, None, None)
+        for seq in 1..=3 {
+            append_checked(&runs, run_id, seq, "model_turn", None, None, None)
+                .expect("append step");
+        }
+
+        runs.finalize_run(run_id, "completed", Some("all done"), None, None, None)
             .expect("finalize run");
 
         let finalized = runs
@@ -683,7 +694,7 @@ mod tests {
 
         let run_id = runs.create_run(None, "m", "supervised").expect("run");
         assert!(
-            runs.finalize_run(run_id, "transcended", 1, None, None, None, None)
+            runs.finalize_run(run_id, "transcended", None, None, None, None)
                 .is_err(),
             "unknown run status must be rejected"
         );
@@ -758,7 +769,7 @@ mod tests {
             let id = runs.create_run(None, "m", "supervised").expect("create");
             // Move status to target (running stays running, others finalized)
             if status != "running" {
-                runs.finalize_run(id, status, 0, None, None, None, None)
+                runs.finalize_run(id, status, None, None, None, None)
                     .expect("finalize");
             }
             ids.push((id, status));
@@ -805,5 +816,147 @@ mod tests {
         assert_eq!(swept_again, 0, "second sweep should touch none");
         let row = runs.read_run(id).expect("read").expect("exists");
         assert_eq!(row.status, "error");
+    }
+
+    #[test]
+    fn finalize_recomputes_total_steps_from_child_rows() {
+        // NEX-DB-006: `finalize_run` takes no caller-supplied counter — the
+        // stored `total_steps` always equals the recorded child rows, so a
+        // disagreeing counter can never be persisted.
+        let db = in_memory_database();
+        let runs = repo(&db);
+
+        let run_id = runs.create_run(None, "m", "supervised").expect("run");
+        for seq in 1..=10 {
+            append_checked(&runs, run_id, seq, "model_turn", None, None, None)
+                .expect("append step");
+        }
+        runs.finalize_run(run_id, "completed", Some("done"), None, None, None)
+            .expect("finalize");
+        let finalized = runs.read_run(run_id).expect("read").expect("exists");
+        assert_eq!(
+            finalized.total_steps, 10,
+            "total_steps must equal the child-row count, not a caller value"
+        );
+
+        let empty_id = runs.create_run(None, "m", "supervised").expect("run");
+        runs.finalize_run(empty_id, "cancelled", None, None, None, None)
+            .expect("finalize");
+        let empty = runs.read_run(empty_id).expect("read").expect("exists");
+        assert_eq!(empty.total_steps, 0);
+    }
+
+    #[test]
+    fn terminal_status_without_finished_at_is_rejected() {
+        // NEX-DB-006: `CHECK (status = 'running' OR finished_at IS NOT
+        // NULL)` — a completed run with no finish time is impossible.
+        let db = in_memory_database();
+        let conn = db.lock().expect("lock connection");
+
+        for status in [
+            "completed",
+            "cancelled",
+            "budget_exhausted",
+            "spend_limit_exceeded",
+            "error",
+        ] {
+            assert!(
+                conn.execute(
+                    "INSERT INTO agent_runs (model, mode, status) VALUES ('m', 'supervised', ?1)",
+                    [status],
+                )
+                .is_err(),
+                "terminal status '{status}' with finished_at NULL must be rejected"
+            );
+        }
+
+        // A running row may exist without a finish time, but flipping it
+        // terminal without stamping one is rejected too.
+        conn.execute(
+            "INSERT INTO agent_runs (model, mode) VALUES ('m', 'supervised')",
+            [],
+        )
+        .expect("running baseline accepted");
+        let run_id = conn.last_insert_rowid();
+        assert!(
+            conn.execute(
+                "UPDATE agent_runs SET status = 'completed' WHERE id = ?1",
+                [run_id],
+            )
+            .is_err(),
+            "terminal status with finished_at NULL must be rejected"
+        );
+        // Stamping the finish time in the same write is the legal path.
+        conn.execute(
+            "UPDATE agent_runs SET status = 'completed', finished_at = started_at WHERE id = ?1",
+            [run_id],
+        )
+        .expect("terminal status with finished_at is accepted");
+    }
+
+    #[test]
+    fn finished_at_before_started_at_is_rejected() {
+        // NEX-DB-006: `CHECK (finished_at IS NULL OR finished_at >=
+        // started_at)` — a backward finish time is impossible.
+        let db = in_memory_database();
+        let runs = repo(&db);
+        let run_id = runs.create_run(None, "m", "supervised").expect("run");
+        runs.finalize_run(run_id, "completed", Some("done"), None, None, None)
+            .expect("finalize");
+
+        let conn = db.lock().expect("lock connection");
+        let started_at: i64 = conn
+            .query_row(
+                "SELECT started_at FROM agent_runs WHERE id = ?1",
+                [run_id],
+                |row| row.get(0),
+            )
+            .expect("read started_at");
+        assert!(
+            conn.execute(
+                "UPDATE agent_runs SET finished_at = ?1 WHERE id = ?2",
+                rusqlite::params![started_at - 1, run_id],
+            )
+            .is_err(),
+            "finished_at < started_at must be rejected"
+        );
+        // The equality boundary stays legal (zero-duration runs).
+        conn.execute(
+            "UPDATE agent_runs SET finished_at = ?1 WHERE id = ?2",
+            rusqlite::params![started_at, run_id],
+        )
+        .expect("finished_at == started_at is accepted");
+    }
+
+    #[test]
+    fn finalize_stays_monotonic_when_started_at_moves_to_the_future() {
+        // A backward wall-clock move between run start and termination must
+        // not fail finalization: `finished_at` is floored at `started_at`,
+        // keeping the ordering CHECK satisfiable.
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let db = in_memory_database();
+        let runs = repo(&db);
+        let run_id = runs.create_run(None, "m", "supervised").expect("run");
+        let future = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0))
+            + 100;
+        {
+            let conn = db.lock().expect("lock connection");
+            conn.execute(
+                "UPDATE agent_runs SET started_at = ?1 WHERE id = ?2",
+                rusqlite::params![future, run_id],
+            )
+            .expect("push started_at into the future");
+        }
+        runs.finalize_run(run_id, "completed", Some("done"), None, None, None)
+            .expect("finalize with future started_at succeeds");
+        let finalized = runs.read_run(run_id).expect("read").expect("exists");
+        assert_eq!(finalized.status, "completed");
+        let finished_at = finalized.finished_at.expect("finished_at stamped");
+        assert!(
+            finished_at >= finalized.started_at,
+            "finished_at must never precede started_at: {finalized:?}"
+        );
     }
 }

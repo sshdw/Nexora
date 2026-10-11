@@ -348,10 +348,25 @@ mod tests {
         let db = in_memory_database();
         let repo = AgentRunRepository::new(&db);
         let first = repo.create_run(None, "m", "supervised").expect("create");
+        for seq in 1..=4 {
+            repo.append_step(
+                first,
+                seq,
+                "model_turn",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("seed step");
+        }
         repo.finalize_run(
             first,
             "completed",
-            4,
             Some("done"),
             None,
             Some(500_000),
@@ -359,7 +374,23 @@ mod tests {
         )
         .expect("finalize");
         let second = repo.create_run(None, "m", "supervised").expect("create");
-        repo.finalize_run(second, "completed", 2, None, None, None, None)
+        for seq in 1..=2 {
+            repo.append_step(
+                second,
+                seq,
+                "model_turn",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("seed step");
+        }
+        repo.finalize_run(second, "completed", None, None, None, None)
             .expect("finalize");
 
         let dashboard = spend_dashboard_for_run(&db, first)

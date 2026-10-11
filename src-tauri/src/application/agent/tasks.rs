@@ -2213,15 +2213,7 @@ mod tests {
             .create_run(None, "m", "supervised")
             .expect("run");
         AgentRunRepository::new(&harness.db)
-            .finalize_run(
-                run_id,
-                "completed",
-                1,
-                Some("fresh result"),
-                None,
-                None,
-                None,
-            )
+            .finalize_run(run_id, "completed", Some("fresh result"), None, None, None)
             .expect("finalize");
         let config = harness.config(None);
         let ctx = LoopCtx {

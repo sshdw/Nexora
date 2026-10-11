@@ -714,7 +714,6 @@ mod tests {
         repo.finalize_run(
             run_id,
             "completed",
-            2,
             Some("done"),
             None,
             Some(750),
