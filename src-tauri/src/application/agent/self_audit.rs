@@ -219,7 +219,7 @@ fn count_parks(entries: &[super::governance::AuditEntry]) -> ParkCounts {
     for entry in entries {
         match entry.event {
             "approval_parked" => counts.approval_parked = counts.approval_parked.saturating_add(1),
-            "approval_resolved" | "approval_cancelled" => {
+            "approval_resolved" | "approval_cancelled" | "approval_timed_out" => {
                 counts.approval_resolved = counts.approval_resolved.saturating_add(1);
             }
             "budget_parked" => counts.budget_parked = counts.budget_parked.saturating_add(1),

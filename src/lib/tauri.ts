@@ -592,7 +592,7 @@ export type GovernanceEventPayload =
   | { type: "resumed" }
   | { type: "budget_exhausted"; max_steps: number }
   | { type: "spend_limit_exceeded"; spent_micro: number; limit_micro: number }
-  | { type: "approval_requested"; call_id: string; name: string; arguments: string; group_key: string | null; group_size: number }
+  | { type: "approval_requested"; call_id: string; name: string; arguments: string; group_key: string | null; group_size: number; timeout_secs: number }
   | { type: "approval_resolved"; call_id: string; approved: boolean }
   | { type: "cancelled" }
   | { type: "completed"; steps: number }

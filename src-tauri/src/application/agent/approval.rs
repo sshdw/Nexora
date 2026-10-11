@@ -12,10 +12,19 @@
 //! approval waits.
 
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::application::agent::control::CancellationToken;
 use crate::application::execution::ToolCall;
+
+/// Default approval-park deadline (NEX-AGENT-004): a parked run waits this
+/// long for a user decision before the park expires and the run is
+/// cancelled. Minutes-scale so a user who steps away briefly is unaffected,
+/// while a dropped event or a closed frontend can never lock the
+/// conversation forever. Overridable per gate via [`ApprovalGate::with_timeout`]
+/// and per deployment via the `agent.approval_timeout_secs` setting
+/// ([`super::service::APPROVAL_TIMEOUT_KEY`]).
+pub(crate) const DEFAULT_APPROVAL_TIMEOUT: Duration = Duration::from_mins(10);
 
 // ---------------------------------------------------------------------------
 // Risk classification and autonomy ladder
@@ -66,6 +75,34 @@ pub(crate) enum ApprovalDecision {
     Denied,
 }
 
+/// How a [`ApprovalGate::park_until_resolved`] wait ended without a user
+/// decision (NEX-AGENT-004). Kept distinct from [`ApprovalDecision`] on
+/// purpose: an expired deadline is neither a user denial nor a user cancel,
+/// so every consumer must name the timeout honestly instead of relabelling
+/// it as user action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ParkEnd {
+    /// Cancellation was observed on the shared token.
+    Cancelled,
+    /// The park deadline elapsed with no decision and no cancellation.
+    TimedOut,
+}
+
+/// Fixed-vocabulary rendering of a park deadline for timeout observations
+/// and notices (whole seconds, minutes above a minute, millis below a
+/// second so short test deadlines still read honestly).
+#[must_use]
+pub(crate) fn format_timeout(timeout: Duration) -> String {
+    let secs = timeout.as_secs();
+    if secs >= 60 {
+        format!("{}m{}s", secs / 60, secs % 60)
+    } else if secs >= 1 {
+        format!("{secs}s")
+    } else {
+        format!("{}ms", timeout.as_millis())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Gate state
 // ---------------------------------------------------------------------------
@@ -87,6 +124,10 @@ struct GateState {
     /// Session-sticky group decisions for this run (M1-core): further
     /// same-group parks auto-resolve identically without parking.
     group_decisions: std::collections::HashMap<String, ApprovalDecision>,
+    /// Park deadline for every [`ApprovalGate::park_until_resolved`] wait
+    /// (NEX-AGENT-004). Shared by all clones; set once per run from the
+    /// `agent.approval_timeout_secs` setting.
+    timeout: Duration,
 }
 
 // ---------------------------------------------------------------------------
@@ -113,6 +154,7 @@ impl ApprovalGate {
                 mode,
                 pending: None,
                 group_decisions: std::collections::HashMap::new(),
+                timeout: DEFAULT_APPROVAL_TIMEOUT,
             })),
             signal: Arc::new(Condvar::new()),
         }
@@ -128,9 +170,32 @@ impl ApprovalGate {
                 mode,
                 pending: None,
                 group_decisions: std::collections::HashMap::new(),
+                timeout: DEFAULT_APPROVAL_TIMEOUT,
             })),
             signal: Arc::new(Condvar::new()),
         }
+    }
+
+    /// Override the park deadline (NEX-AGENT-004). Prefer this in tests for
+    /// a short deadline; production uses
+    /// [`super::service::resolve_approval_timeout`] plus [`Self::set_timeout`].
+    #[must_use]
+    pub(crate) fn with_timeout(self, timeout: Duration) -> Self {
+        self.set_timeout(timeout);
+        self
+    }
+
+    /// Change the park deadline at runtime. Affects parks started after the
+    /// change; a park already waiting recomputes nothing (its deadline was
+    /// fixed at park entry). Shared by all clones.
+    pub(crate) fn set_timeout(&self, timeout: Duration) {
+        self.lock_state().timeout = timeout;
+    }
+
+    /// Current park deadline.
+    #[must_use]
+    pub(crate) fn timeout(&self) -> Duration {
+        self.lock_state().timeout
     }
 
     fn lock_state(&self) -> MutexGuard<'_, GateState> {
@@ -229,8 +294,8 @@ impl ApprovalGate {
 
     /// Decide for `call` per the autonomy ladder, or park until
     /// `respond(request_id, decision)` or cancellation. Returns
-    /// `Err(())` when cancellation aborted the wait (the runner maps this to
-    /// `AgentError::Cancelled`).
+    /// `Err(())` when cancellation aborted the wait or the park deadline
+    /// expired (the runner maps this to `AgentError::Cancelled`).
     pub(crate) fn request_approval(&self, call: &ToolCall) -> Result<ApprovalDecision, ()> {
         // Fast-path: auto-approved without ever creating a pending entry.
         if !self.needs_approval(call) {
@@ -250,18 +315,22 @@ impl ApprovalGate {
             return Ok(ApprovalDecision::Approved);
         }
 
-        self.park_until_resolved(call)
+        self.park_until_resolved(call).map_err(|_| ())
     }
 
-    /// Park unconditionally until `respond(request_id, decision)` or
-    /// cancellation (WS-C.2 injection hold).
+    /// Park unconditionally until `respond(request_id, decision)`,
+    /// cancellation, or the park deadline (WS-C.2 injection hold).
     ///
     /// The same pending/response/cancellation machinery as
     /// [`Self::request_approval`], minus the ladder fast-path: the caller
     /// has already decided a park is required (a tripped injection scan),
-    /// so an auto-approve mode must not swallow it. Returns `Err(())` when
-    /// cancellation aborted the wait.
-    pub(crate) fn park_until_resolved(&self, call: &ToolCall) -> Result<ApprovalDecision, ()> {
+    /// so an auto-approve mode must not swallow it. Returns
+    /// `Err(ParkEnd::Cancelled)` when cancellation aborted the wait and
+    /// `Err(ParkEnd::TimedOut)` when the deadline elapsed with no decision
+    /// (NEX-AGENT-004) — every park arm (Ask parks, ladder parks,
+    /// group-sticky parks, injection holds) funnels through this one wait,
+    /// so the deadline covers them all.
+    pub(crate) fn park_until_resolved(&self, call: &ToolCall) -> Result<ApprovalDecision, ParkEnd> {
         // Create pending entry, reusing an early-prepared one for the same
         // call id so an early decision (respond before park) is not clobbered.
         {
@@ -284,17 +353,21 @@ impl ApprovalGate {
             }
         }
 
-        // Park until a decision arrives or cancellation fires. Use a short
-        // timeout so a cancellation that only sets the shared token (without
-        // notifying *this* gate's condvar, e.g. via `RunControl::cancel`)
-        // still wakes promptly: the loop re-checks `is_cancelled` each
-        // timeout. This extends the Task 3.2 no-deadlock guarantee to
-        // approval waits even when only the token is shared.
+        // Park until a decision arrives, cancellation fires, or the deadline
+        // elapses. Use a short timeout so a cancellation that only sets the
+        // shared token (without notifying *this* gate's condvar, e.g. via
+        // `RunControl::cancel`) still wakes promptly: the loop re-checks
+        // `is_cancelled` each timeout. This extends the Task 3.2 no-deadlock
+        // guarantee to approval waits even when only the token is shared.
+        // The wait is additionally bounded by the park deadline fixed at
+        // entry (NEX-AGENT-004): an unanswered approval can never block the
+        // run thread — and hold the conversation claim — forever.
+        let deadline = Instant::now() + self.timeout();
         let mut state = self.lock_state();
         loop {
             if self.is_cancelled() {
                 state.pending = None;
-                return Err(());
+                return Err(ParkEnd::Cancelled);
             }
             if let Some(pending) = state.pending.as_ref() {
                 if pending.id == call.id {
@@ -310,13 +383,25 @@ impl ApprovalGate {
             } else {
                 // Pending cleared externally (e.g. cancellation).
                 if self.is_cancelled() {
-                    return Err(());
+                    return Err(ParkEnd::Cancelled);
                 }
             }
-            // Wait with timeout to poll external cancellation.
+            // Deadline check before sleeping: expiry clears the pending entry
+            // (a late `respond` for this id then resolves nothing) and ends
+            // the wait as a timeout, never as a user decision.
+            let now = Instant::now();
+            if now >= deadline {
+                state.pending = None;
+                return Err(ParkEnd::TimedOut);
+            }
+            // Wait with timeout to poll external cancellation, capped by the
+            // remaining deadline so expiry is observed promptly.
+            let wait = deadline
+                .saturating_duration_since(now)
+                .min(Duration::from_millis(20));
             let (next, _timeout) = self
                 .signal
-                .wait_timeout(state, Duration::from_millis(20))
+                .wait_timeout(state, wait)
                 .unwrap_or_else(PoisonError::into_inner);
             state = next;
         }
@@ -583,6 +668,52 @@ mod tests {
                 .expect("auto after cancel"),
             ApprovalDecision::Approved
         );
+    }
+
+    #[test]
+    fn park_deadline_expires_without_respond_and_clears_pending() {
+        // NEX-AGENT-004: an unanswered park must terminate on its own. The
+        // short deadline is a promptness bound, not a wall-clock margin —
+        // the test asserts termination + outcome + cleanup, never `elapsed`.
+        let gate =
+            ApprovalGate::new(AutonomyMode::Supervised).with_timeout(Duration::from_millis(100));
+        assert_eq!(gate.timeout(), Duration::from_millis(100));
+        let call = tool_call("expire", "write_file");
+        let gate2 = gate.clone();
+        let handle = thread::spawn(move || gate2.park_until_resolved(&call));
+        wait_until_parked(&gate, "expire");
+        let res = handle.join().expect("parked thread terminates on expiry");
+        assert_eq!(res, Err(ParkEnd::TimedOut));
+        assert!(
+            !gate.has_any_pending(),
+            "expired park clears pending so a late respond resolves nothing"
+        );
+        assert!(
+            !gate.respond("expire", ApprovalDecision::Approved),
+            "late respond after expiry must not resolve"
+        );
+        // A decision that arrives before the deadline still wins.
+        let gate = ApprovalGate::new(AutonomyMode::Supervised).with_timeout(Duration::from_mins(1));
+        let call = tool_call("early", "write_file");
+        let gate2 = gate.clone();
+        let handle = thread::spawn(move || gate2.park_until_resolved(&call));
+        wait_until_parked(&gate, "early");
+        assert!(gate.respond("early", ApprovalDecision::Denied));
+        assert_eq!(handle.join().expect("join"), Ok(ApprovalDecision::Denied));
+    }
+
+    #[test]
+    fn set_timeout_is_shared_by_clones_and_covers_forced_parks() {
+        // The deadline lives in the shared state: every clone — and the
+        // ladder-bypassing forced park — observes the same timeout.
+        let gate = ApprovalGate::new(AutonomyMode::FullAutonomous);
+        gate.set_timeout(Duration::from_millis(100));
+        assert_eq!(gate.clone().timeout(), Duration::from_millis(100));
+        let call = tool_call("forced-expire", "read_file");
+        let gate2 = gate.clone();
+        let handle = thread::spawn(move || gate2.park_until_resolved(&call));
+        wait_until_parked(&gate, "forced-expire");
+        assert_eq!(handle.join().expect("join"), Err(ParkEnd::TimedOut));
     }
 
     #[test]

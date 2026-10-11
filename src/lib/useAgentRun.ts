@@ -44,7 +44,7 @@ export interface AgentRunView {
   finished_at: number | null;
   error: string | null;
   steps: AgentStepView[];
-  pending_approval: { call_id: string; name: string; arguments: string } | null;
+  pending_approval: { call_id: string; name: string; arguments: string; timeout_secs: number; requested_at: number } | null;
 }
 
 function toStepView(step: AgentStep): AgentStepView {
@@ -276,6 +276,8 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
                       call_id: gov.call_id,
                       name: gov.name,
                       arguments: gov.arguments,
+                      timeout_secs: gov.timeout_secs ?? 0,
+                      requested_at: Date.now() / 1000,
                     },
                   };
                   return copy;
@@ -297,6 +299,8 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
                       call_id: gov.call_id,
                       name: gov.name,
                       arguments: gov.arguments,
+                      timeout_secs: gov.timeout_secs ?? 0,
+                      requested_at: Date.now() / 1000,
                     },
                   },
                 ];
@@ -328,11 +332,16 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
                 return copy;
               });
             } else if (gov.type === "cancelled") {
+              // The server emits a plain `cancelled` with no reason (a user
+              // cancel and an expired approval park look identical here), so
+              // the pending approval must clear: its buttons must not stay
+              // live past the run's end. Any "expired" wording from here on
+              // is the server-confirmed state, never client math.
               setRuns((prev) => {
                 const idx = prev.findIndex((r) => r.run_id === runId);
                 if (idx < 0) return prev;
                 const copy = [...prev];
-                copy[idx] = { ...copy[idx], status: "cancelled" };
+                copy[idx] = { ...copy[idx], status: "cancelled", pending_approval: null };
                 return copy;
               });
             } else if (gov.type === "paused") {

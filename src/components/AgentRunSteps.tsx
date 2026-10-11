@@ -8,7 +8,7 @@
 //! diff viewer for `write_file` (headers, hunks, +/- gutters, mono,
 //! collapsible). Chronological placement is owned by the thread view.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import type { AgentRunView, AgentStepView } from "../lib/useAgentRun";
 import { getLocale, tr, type Locale } from "../lib/strings";
@@ -250,6 +250,59 @@ function StepSection({ step, defaultOpen }: { step: AgentStepView; defaultOpen: 
   );
 }
 
+function formatCountdown(totalSecs: number, locale: Locale): string {
+  const s = Math.max(0, Math.floor(totalSecs));
+  if (s >= 3600) {
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const r = s % 60;
+    return `${h}:${String(m).padStart(2, "0")}:${String(r).padStart(2, "0")}`;
+  }
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  if (m > 0) return `${m}:${String(r).padStart(2, "0")}`;
+  // Sub-minute unit is localized (Latin `s` reads as a typo in Russian).
+  return locale === "ru" ? `${r} с` : `${r}s`;
+}
+
+/** Seconds left on a pending approval, clamped to `[0, timeoutSecs]`
+ * (NEX-AGENT-004): `requested_at` is client receipt time, so clock skew can
+ * otherwise push the countdown above the deadline it claims to track. */
+function remainingSecs(timeoutSecs: number, requestedAt: number, now: number): number {
+  return Math.min(timeoutSecs, Math.max(0, requestedAt + timeoutSecs - now));
+}
+
+/** Deadline notice + live countdown for a pending approval (NEX-AGENT-004):
+ * an unanswered approval expires and cancels the run, so the park is never
+ * a silent hang. Hidden when the event carries no deadline (`timeout_secs`
+ * 0 from older emitters). Purely presentational: the clock lives in the
+ * parent (which also gates the Approve/Deny buttons on it), so the buttons
+ * and the notice can never disagree. */
+function ApprovalTimeoutNotice({
+  remaining,
+  expired,
+}: {
+  remaining: number;
+  expired: boolean;
+}) {
+  const { locale, t } = useStrings();
+  if (expired) {
+    return (
+      <p className="nex-agent-approval-timeout nex-agent-approval-timeout-expired" role="status">
+        {t("agent.approvalElapsed")}
+      </p>
+    );
+  }
+  return (
+    <p className="nex-agent-approval-timeout">
+      {t("agent.approvalTimeoutNotice")}{" "}
+      <span className="nex-tag nex-tag-mono">
+        {t("agent.approvalExpiresIn", { time: formatCountdown(remaining, locale) })}
+      </span>
+    </p>
+  );
+}
+
 export default function AgentRunSteps({
   run,
   onResolveApproval,
@@ -264,6 +317,47 @@ export default function AgentRunSteps({
   const isPaused = run.status === "paused";
   const isActive = isRunning || isPaused;
   const pending = run.pending_approval;
+  const pendingDeadline = pending && pending.timeout_secs > 0 ? pending : null;
+  const pendingId = pending?.call_id ?? null;
+
+  // Live clock for the approval countdown. A 1s tick runs only under the
+  // final 60s; a minutes-scale park (default 600s) ticks every 30s, and
+  // prefers-reduced-motion takes a single static snapshot (no interval).
+  const reduceMotion =
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const [now, setNow] = useState<number>(() => Date.now() / 1000);
+  useEffect(() => {
+    setNow(Date.now() / 1000);
+  }, [pendingId]);
+  const remaining = pendingDeadline
+    ? remainingSecs(pendingDeadline.timeout_secs, pendingDeadline.requested_at, now)
+    : null;
+  // 1s tick only under the final 60s; coarser above. The boolean bucket flips
+  // the interval exactly once as the countdown crosses the minute mark.
+  const underMinute = remaining !== null && remaining <= 60;
+  useEffect(() => {
+    if (!pendingDeadline || reduceMotion) return;
+    const intervalMs = underMinute ? 1000 : 30000;
+    const id = window.setInterval(() => setNow(Date.now() / 1000), intervalMs);
+    return () => window.clearInterval(id);
+  }, [pendingDeadline, pendingId, reduceMotion, underMinute]);
+  // Client-math expiry: the window elapsed with no server confirmation. The
+  // buttons go away (never live past the self-declared expiry) and the
+  // notice says so honestly — "was cancelled" appears only below, once the
+  // server actually confirms `cancelled`.
+  const approvalElapsed = remaining !== null && remaining <= 0;
+  // Latch: once the window has observably elapsed, remember it so the
+  // server-confirmed note below can show after `cancelled` clears pending.
+  // Resets only on a newly parked approval, never on the cancel itself.
+  const [elapsedSeen, setElapsedSeen] = useState(false);
+  useEffect(() => {
+    if (approvalElapsed) setElapsedSeen(true);
+  }, [approvalElapsed]);
+  useEffect(() => {
+    if (pendingId !== null) setElapsedSeen(false);
+  }, [pendingId]);
 
   return (
     <section className="nex-agent-run" aria-label={t("agent.runAria", { id: run.run_id })}>
@@ -322,23 +416,33 @@ export default function AgentRunSteps({
             <strong>{pending.name}</strong> {t("agent.approvalSuffix")}
             <pre className="nex-agent-step-args nex-tag-mono">{pending.arguments}</pre>
           </div>
-          <div className="nex-agent-approval-actions">
-            <M3Button
-              variant="primary"
-              size="sm"
-              onClick={() => onResolveApproval(pending.call_id, true)}
-            >
-              {t("agent.approve")}
-            </M3Button>
-            <M3Button
-              variant="destructive"
-              size="sm"
-              onClick={() => onResolveApproval(pending.call_id, false)}
-            >
-              {t("agent.deny")}
-            </M3Button>
-          </div>
+          {!approvalElapsed && (
+            <div className="nex-agent-approval-actions">
+              <M3Button
+                variant="primary"
+                size="sm"
+                onClick={() => onResolveApproval(pending.call_id, true)}
+              >
+                {t("agent.approve")}
+              </M3Button>
+              <M3Button
+                variant="destructive"
+                size="sm"
+                onClick={() => onResolveApproval(pending.call_id, false)}
+              >
+                {t("agent.deny")}
+              </M3Button>
+            </div>
+          )}
+          {pendingDeadline && remaining !== null && (
+            <ApprovalTimeoutNotice remaining={remaining} expired={approvalElapsed} />
+          )}
         </div>
+      )}
+      {!pending && run.status === "cancelled" && elapsedSeen && (
+        <p className="nex-agent-approval-timeout nex-agent-approval-timeout-confirmed" role="status">
+          {t("agent.approvalExpired")}
+        </p>
       )}
 
       {sorted.length === 0 ? (

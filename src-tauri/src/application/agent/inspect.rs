@@ -185,14 +185,15 @@ fn persisted_state(status: &str) -> &'static str {
 
 /// Gate verdicts from the audit trail in append order: every recorded
 /// decision (`approved` / `denied`), plus `cancelled` for each
-/// approval-cancellation edge (a cancelled park records no decision — see
-/// `AuditEvent::for_gate` — so the edge itself is the verdict).
+/// approval-cancellation or approval-timeout edge (a cancelled or expired
+/// park records no decision — see `AuditEvent::for_gate` — so the edge
+/// itself is the verdict).
 fn gate_decisions_from_trail(entries: &[AuditEntry]) -> Vec<&'static str> {
     entries
         .iter()
         .filter_map(|entry| {
             entry.decision.or_else(|| {
-                if entry.event == "approval_cancelled" {
+                if entry.event == "approval_cancelled" || entry.event == "approval_timed_out" {
                     Some(super::governance::GateOutcome::Cancelled.as_str())
                 } else {
                     None
@@ -204,7 +205,8 @@ fn gate_decisions_from_trail(entries: &[AuditEntry]) -> Vec<&'static str> {
 
 /// Gate verdicts from persisted approval steps in `seq` order: the recorder
 /// writes `succeeded` for an approved call, `denied` for a denied one, and
-/// `cancelled` when cancellation ended the wait. Rule denials (M1-core
+/// `cancelled` when cancellation — or the NEX-AGENT-004 park deadline — ended
+/// the wait. Rule denials (M1-core
 /// `decided_by = 'rule'`) never park at the approval gate — the permission
 /// store resolves them before any park — so they must not surface as gate
 /// verdicts; only parked (user/system) resolutions do. Unknown statuses are
