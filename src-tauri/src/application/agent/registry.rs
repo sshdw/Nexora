@@ -111,12 +111,18 @@ impl AgentRunRegistry {
     /// Returns `false` when the run is not active.
     #[must_use]
     pub(crate) fn cancel(&self, run_id: i64) -> bool {
-        match self
+        // Same shape as `shutdown_cancel` below: clone the entry, drop the
+        // runs-map guard, then signal outside the critical section so the
+        // map is never held across `notify_all` (`RunControl::cancel` is one
+        // atomic store plus a wake — the same no-mutex shape as `shutdown`,
+        // so the narrowing is zero-risk symmetry, not a behavior change).
+        let entry = self
             .runs
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&run_id)
-        {
+            .cloned();
+        match entry {
             Some(entry) => {
                 entry.control.cancel();
                 true
@@ -133,9 +139,9 @@ impl AgentRunRegistry {
     /// Returns `false` when the run is not active.
     #[must_use]
     pub(crate) fn shutdown_cancel(&self, run_id: i64) -> bool {
-        // Scope the map lock to the lookup: clone the entry, drop the
-        // guard, then signal outside the critical section so the map is
-        // never held across the control wake (`notify_all`).
+        // Scope the map lock to the lookup: clone the entry, then drop
+        // the guard before the control wake so the map is never held
+        // across `notify_all`.
         let entry = self
             .runs
             .lock()
@@ -544,11 +550,14 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_cancel_marks_shutdown_origin_outside_map_guard() {
-        // #181 lock-scope pin: `shutdown_cancel` looks the entry up, drops
-        // the runs-map guard, then signals — and marks the shutdown origin,
-        // unlike plain `cancel` which leaves the origin clear. Outcome
-        // asserts only, never `elapsed`.
+    fn shutdown_cancel_marks_shutdown_origin() {
+        // #181 behavior-preservation pin: `shutdown_cancel` marks the
+        // shutdown origin on the shared token, unlike plain `cancel` which
+        // leaves the origin clear. Scope note: the narrowed lock scope
+        // itself (lookup-clone-drop-then-signal) is not observable from
+        // these outcome asserts — it is covered by inspection — so this
+        // test pins only the observable origin behavior. Outcome asserts
+        // only, never `elapsed`.
         let reg = AgentRunRegistry::default();
         assert!(!reg.shutdown_cancel(9999));
         let gate = crate::application::agent::approval::ApprovalGate::new(
