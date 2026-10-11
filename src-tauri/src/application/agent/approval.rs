@@ -24,7 +24,7 @@ use crate::application::execution::ToolCall;
 /// conversation forever. Overridable per gate via [`ApprovalGate::with_timeout`]
 /// and per deployment via the `agent.approval_timeout_secs` setting
 /// ([`super::service::APPROVAL_TIMEOUT_KEY`]).
-pub(crate) const DEFAULT_APPROVAL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+pub(crate) const DEFAULT_APPROVAL_TIMEOUT: Duration = Duration::from_mins(10);
 
 // ---------------------------------------------------------------------------
 // Risk classification and autonomy ladder
@@ -693,8 +693,7 @@ mod tests {
             "late respond after expiry must not resolve"
         );
         // A decision that arrives before the deadline still wins.
-        let gate =
-            ApprovalGate::new(AutonomyMode::Supervised).with_timeout(Duration::from_secs(60));
+        let gate = ApprovalGate::new(AutonomyMode::Supervised).with_timeout(Duration::from_mins(1));
         let call = tool_call("early", "write_file");
         let gate2 = gate.clone();
         let handle = thread::spawn(move || gate2.park_until_resolved(&call));

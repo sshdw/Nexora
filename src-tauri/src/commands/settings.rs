@@ -132,11 +132,7 @@ fn validate_setting(key: &str, value: Option<&str>) -> Result<(), CommandError> 
             }
         }
         SELECTED_MODEL_KEY => {
-            if supported_providers()
-                .iter()
-                .any(|p| p.models.iter().any(|m| m == value))
-                || is_valid_custom_model_id(value)
-            {
+            if is_valid_model_value(value) {
                 Ok(())
             } else {
                 Err(rejected(key, value))
@@ -150,38 +146,30 @@ fn validate_setting(key: &str, value: Option<&str>) -> Result<(), CommandError> 
             }
         }
         crate::application::agent::service::SPEND_LIMIT_KEY => {
-            // Mirror `resolve_spend_limit` parsing exactly: a trimmed `u64`
-            // greater than zero. Non-empty writes outside this domain are
-            // rejected before persistence; clearing (`None`) restores the
+            // Mirror `resolve_spend_limit` parsing exactly (see
+            // `is_valid_spend_limit`); clearing (`None`) restores the
             // no-limit default and stays allowed (handled above).
-            match value.trim().parse::<u64>() {
-                Ok(limit) if limit > 0 => Ok(()),
-                _ => Err(rejected(key, value)),
+            if is_valid_spend_limit(value) {
+                Ok(())
+            } else {
+                Err(rejected(key, value))
             }
         }
         crate::application::agent::service::APPROVAL_TIMEOUT_KEY => {
-            // Mirror `resolve_approval_timeout` parsing exactly: a trimmed
-            // `u64` within `MIN_APPROVAL_TIMEOUT_SECS..=MAX_APPROVAL_TIMEOUT_SECS`.
-            // Clearing (`None`) restores the default deadline (handled above).
-            match value.trim().parse::<u64>() {
-                Ok(secs)
-                    if secs >= crate::application::agent::service::MIN_APPROVAL_TIMEOUT_SECS
-                        && secs
-                            <= crate::application::agent::service::MAX_APPROVAL_TIMEOUT_SECS =>
-                {
-                    Ok(())
-                }
-                _ => Err(rejected(key, value)),
+            // Mirror `resolve_approval_timeout` parsing exactly (see
+            // `is_valid_approval_timeout`); clearing (`None`) restores the
+            // default deadline (handled above).
+            if is_valid_approval_timeout(value) {
+                Ok(())
+            } else {
+                Err(rejected(key, value))
             }
         }
         WORKSPACE_ROOT_KEY => {
-            if value.trim().is_empty()
-                || value.contains('\0')
-                || value.len() > WORKSPACE_ROOT_MAX_LEN
-            {
-                Err(rejected(key, value))
-            } else {
+            if is_valid_workspace_root(value) {
                 Ok(())
+            } else {
+                Err(rejected(key, value))
             }
         }
         WORKSPACE_RECENT_KEY => {
@@ -233,6 +221,52 @@ fn validate_setting(key: &str, value: Option<&str>) -> Result<(), CommandError> 
             ErrorKind::InvalidInput,
             format!("setting key '{key}' is not supported"),
         )),
+    }
+}
+
+/// Domain check for [`SELECTED_MODEL_KEY`]: a model identifier listed for a
+/// supported provider (union across providers; the writer orders model
+/// before provider when switching, so per-provider coupling is not assumed)
+/// or a custom model ID (1..=200 chars of `A-Za-z0-9._/:-+`, no `..`).
+fn is_valid_model_value(value: &str) -> bool {
+    supported_providers()
+        .iter()
+        .any(|p| p.models.iter().any(|m| m == value))
+        || is_valid_custom_model_id(value)
+}
+
+/// Syntactic check for [`WORKSPACE_ROOT_KEY`]: a non-empty path up to 1024
+/// chars with no null byte. Full filesystem guard (existence, `C:\Windows`,
+/// drive roots, canonicalization) lives in the workspace commands
+/// (`commands/workspace.rs::set_workspace_root` via
+/// `application/workspace.rs::validate_workspace_root`); this only keeps
+/// obvious junk out of the generic key/value path.
+fn is_valid_workspace_root(value: &str) -> bool {
+    !value.trim().is_empty() && !value.contains('\0') && value.len() <= WORKSPACE_ROOT_MAX_LEN
+}
+
+/// Domain check for `agent.spend_limit_micro_usd`: a trimmed `u64` greater
+/// than zero — exactly the domain `resolve_spend_limit`
+/// (`application/agent/service.rs`) resolves, so the command gate and the
+/// service agree exactly.
+fn is_valid_spend_limit(value: &str) -> bool {
+    match value.trim().parse::<u64>() {
+        Ok(limit) => limit > 0,
+        Err(_) => false,
+    }
+}
+
+/// Domain check for `agent.approval_timeout_secs`: a trimmed `u64` within
+/// `MIN_APPROVAL_TIMEOUT_SECS..=MAX_APPROVAL_TIMEOUT_SECS` — exactly the
+/// domain `resolve_approval_timeout` (`application/agent/service.rs`)
+/// resolves, so the command gate and the service agree exactly.
+fn is_valid_approval_timeout(value: &str) -> bool {
+    use crate::application::agent::service::{
+        MAX_APPROVAL_TIMEOUT_SECS, MIN_APPROVAL_TIMEOUT_SECS,
+    };
+    match value.trim().parse::<u64>() {
+        Ok(secs) => (MIN_APPROVAL_TIMEOUT_SECS..=MAX_APPROVAL_TIMEOUT_SECS).contains(&secs),
+        Err(_) => false,
     }
 }
 

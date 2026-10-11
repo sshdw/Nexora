@@ -336,7 +336,7 @@ pub(crate) fn resolve_approval_timeout(db: &Database) -> std::time::Duration {
     let svc = SettingsService::new(db);
     match svc.read(APPROVAL_TIMEOUT_KEY) {
         Ok(Some(value)) => match value.as_str().trim().parse::<u64>() {
-            Ok(secs) if secs >= MIN_APPROVAL_TIMEOUT_SECS && secs <= MAX_APPROVAL_TIMEOUT_SECS => {
+            Ok(secs) if (MIN_APPROVAL_TIMEOUT_SECS..=MAX_APPROVAL_TIMEOUT_SECS).contains(&secs) => {
                 std::time::Duration::from_secs(secs)
             }
             _ => std::time::Duration::from_secs(DEFAULT_APPROVAL_TIMEOUT_SECS),

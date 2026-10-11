@@ -898,6 +898,7 @@
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: var(--nex-sys-space-sm);
   padding: var(--nex-sys-space-sm);
   border-radius: var(--nex-sys-shape-small);
@@ -916,6 +917,23 @@
   display: inline-flex;
   gap: var(--nex-sys-space-xs);
   flex-shrink: 0;
+}
+
+/* Park-deadline notice (NEX-AGENT-004): a full-width second row inside the
+ * approval flex box (never a squeezed third column), with zeroed paragraph
+ * margins. The pending countdown stays quiet tertiary; the elapsed and the
+ * server-confirmed cancelled states reuse the existing secondary tone so
+ * expiry reads as distinct without any new loud color. */
+.nex-agent-approval-timeout {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-on-surface-tertiary);
+}
+
+.nex-agent-approval-timeout-expired,
+.nex-agent-approval-timeout-confirmed {
+  color: var(--nex-sys-color-on-surface-variant);
 }
 
 .nex-agent-empty {
