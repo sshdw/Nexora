@@ -43,6 +43,7 @@
 //! secret value (ARCHITECTURE.md §9, §11).
 
 use std::collections::{BTreeMap, HashSet};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -69,6 +70,29 @@ use crate::infrastructure::repository::Repository;
 /// sniff precedent for hostile input, scaled to a document budget — the full
 /// bounded input is secrets-scanned, so the scan cost stays bounded too.
 pub(crate) const MAX_IMPORT_JSON_BYTES: usize = 16 * 1024 * 1024;
+
+/// Allowed clock skew for imported timestamps (seconds). Imported
+/// `created_at` / `updated_at` values beyond `now + skew` are rejected:
+/// without an upper bound a future-dated import permanently bricks the
+/// conversation — every later write stamps `updated_at` with the (smaller)
+/// current time and violates the `updated_at >= created_at` CHECK
+/// (NEX-DB-001). The 300 s budget tolerates honest clock drift between the
+/// exporting and importing machines.
+pub(crate) const IMPORT_FUTURE_SKEW_SECS: i64 = 300;
+
+/// Current time as Unix seconds, matching the `unixepoch()` the schema
+/// defaults and touch triggers use.
+fn now_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0))
+}
+
+/// Upper bound for an honestly-produced imported timestamp: now plus the
+/// future-skew budget (`IMPORT_FUTURE_SKEW_SECS`), saturating on overflow.
+fn import_timestamp_upper_bound() -> i64 {
+    now_secs().saturating_add(IMPORT_FUTURE_SKEW_SECS)
+}
 
 /// Application-layer result shared by import operations, unifying
 /// validation and persistence failures.
@@ -179,6 +203,19 @@ impl ImportDocument {
             conversation.updated_at >= conversation.created_at,
             "conversation 'updated_at' must not be earlier than 'created_at'",
         )?;
+        // NEX-DB-001: no unbounded future timestamps. A future-dated import
+        // would brick the conversation (every later `updated_at` write stamps
+        // the smaller current time and violates the schema CHECK), so reject
+        // honestly-impossible timestamps with a secret-free error.
+        let upper_bound = import_timestamp_upper_bound();
+        ensure_valid(
+            conversation.created_at <= upper_bound,
+            "conversation 'created_at' must not be in the future",
+        )?;
+        ensure_valid(
+            conversation.updated_at <= upper_bound,
+            "conversation 'updated_at' must not be in the future",
+        )?;
 
         for (index, message) in self.messages.iter().enumerate() {
             validate_message(message, index, conversation.id)?;
@@ -234,6 +271,15 @@ fn validate_message(message: &ImportMessage, index: usize, conversation_id: i64)
         message.created_at > 0,
         format!(
             "{} created_at must be a positive integer",
+            field("created_at")
+        ),
+    )?;
+    // Same future bound as the conversation timestamps (NEX-DB-001):
+    // unbounded message timestamps carry the same bricking potential.
+    ensure_valid(
+        message.created_at <= import_timestamp_upper_bound(),
+        format!(
+            "{} created_at must not be in the future",
             field("created_at")
         ),
     )
@@ -1603,6 +1649,101 @@ mod tests {
         let err = service.import(&json).expect_err("missing field");
         assert!(matches!(err, ImportError::InvalidData(_)));
         assert_eq!(conversation_count(&db), 0);
+    }
+
+    /// A `conversation` record carrying explicit timestamps (unlike the
+    /// fixed-timestamp [`conversation`] helper), for the future-bound tests.
+    fn conversation_with_timestamps(
+        id: i64,
+        created_at: i64,
+        updated_at: i64,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "title": "Planning",
+            "status": "active",
+            "created_at": created_at,
+            "updated_at": updated_at,
+        })
+    }
+
+    #[test]
+    fn far_future_conversation_timestamps_are_rejected_without_writes() {
+        // NEX-DB-001: an import carrying timestamps beyond `now + skew`
+        // would brick the conversation (every later `updated_at` write stamps
+        // the smaller current time and violates the schema CHECK), so it is
+        // rejected up front with a secret-free error and no writes.
+        let db = test_db();
+        let service = ImportService::new(&db);
+        let id = 1;
+        let future = now_secs() + IMPORT_FUTURE_SKEW_SECS + 3600;
+        let json = doc(
+            conversation_with_timestamps(id, future, future),
+            vec![message(id, 1, "user", "hi", None, None, 1)],
+        );
+        let err = service
+            .import(&json)
+            .expect_err("future timestamps rejected");
+        assert!(
+            matches!(
+                err,
+                ImportError::InvalidData(ref reason) if reason.contains("future")
+            ),
+            "unexpected error: {err:?}"
+        );
+        assert_eq!(conversation_count(&db), 0);
+    }
+
+    #[test]
+    fn far_future_message_timestamp_is_rejected_without_writes() {
+        let db = test_db();
+        let service = ImportService::new(&db);
+        let id = 1;
+        let future = now_secs() + IMPORT_FUTURE_SKEW_SECS + 3600;
+        let json = doc(
+            conversation(id),
+            vec![message(id, 1, "user", "hi", None, None, future)],
+        );
+        let err = service.import(&json).expect_err("future message rejected");
+        assert!(
+            matches!(
+                err,
+                ImportError::InvalidData(ref reason) if reason.contains("future")
+            ),
+            "unexpected error: {err:?}"
+        );
+        assert_eq!(conversation_count(&db), 0);
+    }
+
+    #[test]
+    fn within_skew_future_import_stays_renamable_and_touchable() {
+        // NEX-DB-001 acceptance on the production schema: an import carrying
+        // honest near-future timestamps (inside the skew budget) must remain
+        // renamable (trigger path) and send-touchable (explicit-write path) —
+        // the monotonic `updated_at` writes keep the CHECK satisfiable.
+        let db = crate::infrastructure::database::in_memory_database();
+        let service = ImportService::new(&db);
+        let id = 1;
+        let near_future = now_secs() + 100;
+        let json = doc(
+            conversation_with_timestamps(id, near_future, near_future),
+            vec![message(id, 1, "user", "hi", None, None, near_future)],
+        );
+        let new_id = service.import(&json).expect("within-skew import succeeds");
+
+        ConversationRepository::new(&db)
+            .update(new_id, "Renamed", "active")
+            .expect("rename after near-future import succeeds");
+        ConversationRepository::new(&db)
+            .transaction(|tx| ConversationRepository::touch_updated_at(tx, new_id))
+            .expect("send touch after near-future import succeeds");
+
+        let imported = read_conversation(&db, new_id);
+        assert_eq!(imported.title, "Renamed");
+        assert!(
+            imported.updated_at >= imported.created_at,
+            "updated_at must stay monotonic: {imported:?}"
+        );
     }
 
     #[test]

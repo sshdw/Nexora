@@ -123,6 +123,16 @@ impl From<rusqlite::Error> for DatabaseError {
 ///   holder label, an opaque token, and a mandatory deadline
 ///   (`CHECK (expires_at > acquired_at)` — no eternal lock; steal-on-expiry
 ///   is enforced by the repository, never by the schema).
+/// - v12: monotonic `updated_at` touch triggers (NEX-DB-001/003): the v3
+///   `conversations_touch_updated_at` / `prompts_touch_updated_at` triggers
+///   wrote `updated_at = unixepoch()`, so any row whose `created_at` lies in
+///   the future (a within-skew import, an NTP/snapshot backward clock move)
+///   failed its next update against the `updated_at >= created_at` CHECK and
+///   bricked the row. The triggers now write
+///   `max(unixepoch(), created_at)`, keeping the CHECK satisfiable; the
+///   repository-side `updated_at` writes on `conversations` / `agent_tasks`
+///   use the same expression. The cross-column CHECKs are kept — they still
+///   reject genuinely inverted timestamps at insert time.
 pub(crate) const MIGRATIONS: &[(i64, &str)] = &[
     // v1 — base tables and functional indexes (DATABASE.md §7, §8).
     (
@@ -575,6 +585,37 @@ CREATE INDEX idx_task_locks_expires
     ON task_locks (expires_at);
 ",
     ),
+    // v12 — monotonic `updated_at` touch triggers (NEX-DB-001/003). Replaces
+    // the v3 triggers, which stamped `updated_at = unixepoch()`: any row with
+    // a future `created_at` (within-skew import, backward clock movement)
+    // then failed its next title/status/content update against the
+    // `updated_at >= created_at` CHECK. The new bodies stamp
+    // `max(unixepoch(), created_at)` so the write can never go below
+    // `created_at`. Drop + recreate (SQLite has no CREATE OR REPLACE
+    // TRIGGER); no row data is touched.
+    (
+        12,
+        r"DROP TRIGGER conversations_touch_updated_at;
+
+CREATE TRIGGER conversations_touch_updated_at
+AFTER UPDATE OF title, status ON conversations
+BEGIN
+    UPDATE conversations
+        SET updated_at = max((unixepoch()), created_at)
+        WHERE id = old.id;
+END;
+
+DROP TRIGGER prompts_touch_updated_at;
+
+CREATE TRIGGER prompts_touch_updated_at
+AFTER UPDATE OF title, content ON prompts
+BEGIN
+    UPDATE prompts
+        SET updated_at = max((unixepoch()), created_at)
+        WHERE id = old.id;
+END;
+",
+    ),
 ];
 
 /// Open the `SQLite` database at `path`, apply connection pragmas, and run any
@@ -687,6 +728,15 @@ fn now_millis() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(0))
+}
+
+/// Current time as Unix seconds, matching the `unixepoch()` the schema
+/// defaults and touch triggers use (test clock-shift scenarios only).
+#[cfg(test)]
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0))
 }
 
 /// Shared application-wide `SQLite` connection.
@@ -851,7 +901,7 @@ mod tests {
 
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         );
     }
 
@@ -861,7 +911,7 @@ mod tests {
 
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         );
 
         let applied_at: i64 = conn
@@ -876,7 +926,7 @@ mod tests {
         let version_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .expect("count schema_version rows");
-        assert_eq!(version_count, 11, "one row per applied migration");
+        assert_eq!(version_count, 12, "one row per applied migration");
     }
 
     #[test]
@@ -901,14 +951,14 @@ mod tests {
         let mut conn = in_memory_migrated();
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         );
 
         migrate(&mut conn).expect("a second migration run must succeed");
 
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         );
         // The no-op run created or dropped nothing.
         assert!(schema_object_exists(&conn, "conversations", "table"));
@@ -918,6 +968,80 @@ mod tests {
             "conversations_fts_insert",
             "trigger"
         ));
+    }
+
+    #[test]
+    fn v12_touch_triggers_write_monotonically() {
+        // NEX-DB-001/003: the v12 trigger bodies must stamp
+        // `max(unixepoch(), created_at)` so a row with a future `created_at`
+        // (within-skew import, backward clock move) survives its next update.
+        let conn = in_memory_migrated();
+        for trigger in ["conversations_touch_updated_at", "prompts_touch_updated_at"] {
+            let body: String = conn
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE name = ?1 AND type = 'trigger'",
+                    params![trigger],
+                    |row| row.get(0),
+                )
+                .expect("read trigger body");
+            assert!(
+                body.contains("max((unixepoch()), created_at)"),
+                "{trigger} must write monotonically, found: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn rename_after_created_at_moves_to_the_future_still_succeeds() {
+        // NEX-DB-003 acceptance for `conversations`: simulate a backward
+        // wall-clock movement (`created_at` pushed ahead of now), then rename
+        // through the repository. Before the fix the trigger's plain
+        // `unixepoch()` stamp violated the CHECK; now the write is monotonic.
+        let db = in_memory_database();
+        let repo = ConversationRepository::new(&db);
+        let id = repo.create("t", "active").expect("create conversation");
+        let future = now_secs() + 100;
+        {
+            let conn = db.lock().expect("lock connection");
+            conn.execute(
+                "UPDATE conversations SET created_at = ?1, updated_at = ?1 WHERE id = ?2",
+                params![future, id],
+            )
+            .expect("push created_at into the future");
+        }
+        repo.update(id, "renamed", "active")
+            .expect("rename with future created_at succeeds");
+        let row = repo.read(id).expect("read").expect("exists");
+        assert_eq!(row.title, "renamed");
+        assert!(
+            row.updated_at >= row.created_at,
+            "updated_at must stay monotonic: {row:?}"
+        );
+    }
+
+    #[test]
+    fn prompt_edit_after_created_at_moves_to_the_future_still_succeeds() {
+        // NEX-DB-003 acceptance for `prompts`: same backward-clock scenario
+        // through the prompts trigger.
+        let db = in_memory_database();
+        let repo = PromptRepository::new(&db);
+        let id = repo.create("t", "body").expect("create prompt");
+        let future = now_secs() + 100;
+        {
+            let conn = db.lock().expect("lock connection");
+            conn.execute(
+                "UPDATE prompts SET created_at = ?1, updated_at = ?1 WHERE id = ?2",
+                params![future, id],
+            )
+            .expect("push created_at into the future");
+        }
+        repo.update(id, "renamed", "new body")
+            .expect("prompt edit with future created_at succeeds");
+        let row = repo.read(id).expect("read").expect("exists");
+        assert!(
+            row.updated_at >= row.created_at,
+            "updated_at must stay monotonic: {row:?}"
+        );
     }
 
     #[test]
@@ -940,7 +1064,7 @@ mod tests {
         );
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         );
     }
 
@@ -1553,7 +1677,7 @@ mod tests {
         // Schema version covers every known migration (v5 plus later ones)
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         );
         // Row preserved, new columns NULL for pre-v5 rows
         let (status, spent, limit): (String, Option<i64>, Option<i64>) = conn
@@ -1644,7 +1768,7 @@ mod tests {
         migrate(&mut conn).expect("migrate to v6");
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         );
         // Seeded row survives with a NULL workspace root.
         let root: Option<String> = conn
@@ -1722,7 +1846,7 @@ mod tests {
         migrate(&mut conn).expect("migrate to v7");
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         );
         // Old rows intact with NULL provenance.
         let (kind, rule_id, group_key, decided_by): (
