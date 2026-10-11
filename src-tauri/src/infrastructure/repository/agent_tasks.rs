@@ -18,7 +18,9 @@
 //! - A task's mutable fields (`status`, `current_step`, `total_steps`,
 //!   `report`, `run_id`) are set by [`AgentTaskRepository::mark_task_*`]
 //!   during the autonomous loop; `updated_at` is refreshed explicitly on
-//!   every such write (no trigger: only these writes touch it).
+//!   every such write (no trigger: only these writes touch it). The refresh
+//!   is monotonic (`max(unixepoch(), created_at)`, NEX-DB-003) so a backward
+//!   clock move can never violate the `updated_at >= created_at` CHECK.
 //! - `agent_task_steps` rows are created once per task (one per `seq`) and
 //!   then only transitioned by [`AgentTaskRepository::mark_step_*`].
 //! - Deletion cascades are schema-enforced: deleting a task removes its
@@ -229,7 +231,7 @@ impl AgentTaskRepository<'_> {
     ) -> Result<()> {
         let conn = self.conn()?;
         conn.execute(
-            "UPDATE agent_tasks SET title = ?2, description = ?3, updated_at = (unixepoch()) WHERE id = ?1",
+            "UPDATE agent_tasks SET title = ?2, description = ?3, updated_at = max((unixepoch()), created_at) WHERE id = ?1",
             params![id, title, description],
         )?;
         Ok(())
@@ -245,7 +247,7 @@ impl AgentTaskRepository<'_> {
         let conn = self.conn()?;
         conn.execute(
             "UPDATE agent_tasks SET status = 'running', current_step = 0, total_steps = ?2, \
-              report = NULL, run_id = NULL, updated_at = (unixepoch()) WHERE id = ?1",
+              report = NULL, run_id = NULL, updated_at = max((unixepoch()), created_at) WHERE id = ?1",
             params![id, total_steps],
         )?;
         Ok(())
@@ -265,7 +267,7 @@ impl AgentTaskRepository<'_> {
     ) -> Result<()> {
         let conn = self.conn()?;
         conn.execute(
-            "UPDATE agent_tasks SET current_step = ?2, run_id = ?3, updated_at = (unixepoch()) WHERE id = ?1",
+            "UPDATE agent_tasks SET current_step = ?2, run_id = ?3, updated_at = max((unixepoch()), created_at) WHERE id = ?1",
             params![id, current_step, run_id],
         )?;
         Ok(())
@@ -281,7 +283,7 @@ impl AgentTaskRepository<'_> {
     pub(crate) fn finalize_task(&self, id: i64, status: &str, report: &str) -> Result<()> {
         let conn = self.conn()?;
         conn.execute(
-            "UPDATE agent_tasks SET status = ?2, report = ?3, updated_at = (unixepoch()) WHERE id = ?1",
+            "UPDATE agent_tasks SET status = ?2, report = ?3, updated_at = max((unixepoch()), created_at) WHERE id = ?1",
             params![id, status, report],
         )?;
         Ok(())
@@ -303,7 +305,7 @@ impl AgentTaskRepository<'_> {
     pub(crate) fn fail_orphaned_running_tasks(&self, reason: &str) -> Result<usize> {
         let conn = self.conn()?;
         let swept = conn.execute(
-            "UPDATE agent_tasks SET status = 'failed', report = ?1, updated_at = (unixepoch()) WHERE status = 'running'",
+            "UPDATE agent_tasks SET status = 'failed', report = ?1, updated_at = max((unixepoch()), created_at) WHERE status = 'running'",
             params![reason],
         )?;
         conn.execute(
@@ -441,7 +443,7 @@ impl AgentTaskRepository<'_> {
     pub(crate) fn set_task_status(&self, id: i64, status: &str) -> Result<()> {
         let conn = self.conn()?;
         conn.execute(
-            "UPDATE agent_tasks SET status = ?2, updated_at = (unixepoch()) WHERE id = ?1",
+            "UPDATE agent_tasks SET status = ?2, updated_at = max((unixepoch()), created_at) WHERE id = ?1",
             params![id, status],
         )?;
         Ok(())
@@ -1030,6 +1032,89 @@ mod tests {
         assert!(
             tasks.set_task_status(id, "transcended").is_err(),
             "unknown status must be rejected"
+        );
+    }
+
+    #[test]
+    fn task_writes_stay_monotonic_when_created_at_moves_to_the_future() {
+        // NEX-DB-003 acceptance for `agent_tasks`: simulate a backward
+        // wall-clock movement (`created_at` pushed ahead of now), then run
+        // every `updated_at`-writing path. Before the fix each plain
+        // `unixepoch()` stamp violated the CHECK; now all writes are
+        // monotonic and the CHECK stays satisfiable.
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let db = in_memory_database();
+        let tasks = repo(&db);
+        let id = tasks
+            .create_task("t", None, None, None, None, 25)
+            .expect("task");
+        let future = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0))
+            + 100;
+        {
+            let conn = db.lock().expect("lock connection");
+            conn.execute(
+                "UPDATE agent_tasks SET created_at = ?1, updated_at = ?1 WHERE id = ?2",
+                params![future, id],
+            )
+            .expect("push created_at into the future");
+        }
+        tasks
+            .update_task(id, "renamed", None)
+            .expect("update_task succeeds");
+        tasks
+            .mark_task_running(id, 3)
+            .expect("mark_task_running succeeds");
+        tasks
+            .mark_task_progress(id, 1, None)
+            .expect("mark_task_progress succeeds");
+        tasks
+            .finalize_task(id, "completed", "done")
+            .expect("finalize_task succeeds");
+        tasks
+            .set_task_status(id, "cancelled")
+            .expect("set_task_status succeeds");
+        let row = tasks.read_task(id).expect("read").expect("exists");
+        assert!(
+            row.updated_at >= row.created_at,
+            "updated_at must stay monotonic: {row:?}"
+        );
+    }
+
+    #[test]
+    fn orphan_sweep_stays_monotonic_when_created_at_moves_to_the_future() {
+        // The startup orphan sweep (`fail_orphaned_running_tasks`, NEX-TASK-001)
+        // writes `updated_at` too and must not trip the CHECK on
+        // future-dated rows either.
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let db = in_memory_database();
+        let tasks = repo(&db);
+        let id = tasks
+            .create_task("t", None, None, None, None, 25)
+            .expect("task");
+        tasks.mark_task_running(id, 2).expect("running");
+        let future = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0))
+            + 100;
+        {
+            let conn = db.lock().expect("lock connection");
+            conn.execute(
+                "UPDATE agent_tasks SET created_at = ?1, updated_at = ?1 WHERE id = ?2",
+                params![future, id],
+            )
+            .expect("push created_at into the future");
+        }
+        let swept = tasks
+            .fail_orphaned_running_tasks("interrupted")
+            .expect("sweep succeeds");
+        assert_eq!(swept, 1);
+        let row = tasks.read_task(id).expect("read").expect("exists");
+        assert_eq!(row.status, "failed");
+        assert!(
+            row.updated_at >= row.created_at,
+            "updated_at must stay monotonic: {row:?}"
         );
     }
 }

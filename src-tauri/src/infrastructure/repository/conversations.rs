@@ -120,12 +120,18 @@ impl ConversationRepository<'_> {
     /// §7.1, §12). Must be called inside the transaction supplied by
     /// [`Repository::transaction`].
     ///
+    /// The write is monotonic (`max(unixepoch(), created_at)`, NEX-DB-001/003):
+    /// a plain `unixepoch()` stamp would violate the
+    /// `updated_at >= created_at` CHECK on any row whose `created_at` lies in
+    /// the future (a within-skew import, a backward clock move), bricking the
+    /// conversation on every later rename/send.
+    ///
     /// # Errors
     ///
     /// Returns a [`DatabaseError`] if the update fails.
     pub(crate) fn touch_updated_at(tx: &Transaction<'_>, id: i64) -> Result<()> {
         tx.execute(
-            "UPDATE conversations SET updated_at = (unixepoch()) WHERE id = ?1",
+            "UPDATE conversations SET updated_at = max((unixepoch()), created_at) WHERE id = ?1",
             [id],
         )?;
         Ok(())
