@@ -22,9 +22,9 @@ export interface ConversationItemProps {
   busy?: boolean;
   onSelect: (id: number) => void;
   onExport: (id: number) => void;
-  onRename: (id: number, title: string) => Promise<void>;
-  onArchive: (id: number) => void;
-  onRestore: (id: number) => void;
+  onRename: (id: number, title: string) => Promise<boolean>;
+  onArchive: (id: number) => Promise<boolean>;
+  onRestore: (id: number) => Promise<boolean>;
   onDelete: (id: number) => void;
 }
 
@@ -159,7 +159,9 @@ export default function ConversationItem({
             <M3IconButton
               size="sm"
               label={t("list.actionRestore")}
-              onClick={() => onRestore(conversation.id)}
+              onClick={() => {
+                void onRestore(conversation.id);
+              }}
               disabled={busy}
             >
               <UnarchiveIcon />
@@ -169,11 +171,32 @@ export default function ConversationItem({
               size="sm"
               label={t("list.actionArchive")}
               onClick={() => {
-                onArchive(conversation.id);
-                showSnack(t("list.archived", { title: conversation.title }), {
-                  actionLabel: t("common.undo"),
-                  onAction: () => onRestore(conversation.id),
-                });
+                void (async () => {
+                  // Gate the success snackbar on the threaded result: a
+                  // failed archive lands in the store error (honest error
+                  // panel) and must never claim success with an Undo for a
+                  // row that was never archived.
+                  const ok = await onArchive(conversation.id);
+                  if (!ok) return;
+                  showSnack(t("list.archived", { title: conversation.title }), {
+                    actionLabel: t("common.undo"),
+                    onAction: () => {
+                      void (async () => {
+                        // Same gate for Undo: a failed restore is surfaced
+                        // honestly (failure notice) instead of silently
+                        // dismissing as if the row had been restored.
+                        const restored = await onRestore(conversation.id);
+                        if (!restored) {
+                          showSnack(
+                            t("list.restoreFailed", {
+                              title: conversation.title,
+                            }),
+                          );
+                        }
+                      })();
+                    },
+                  });
+                })();
               }}
               disabled={busy}
             >

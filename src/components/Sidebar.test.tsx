@@ -78,7 +78,7 @@ function navigationStub(): Navigation {
     onOpenRelease: vi.fn(),
     onSelectPrompt: vi.fn(),
     onImport: vi.fn(),
-    onRename: vi.fn(async () => {}),
+    onRename: vi.fn(async () => true),
     onArchive: vi.fn(),
     onRestore: vi.fn(),
     onDelete: vi.fn(),

@@ -12,9 +12,9 @@ export interface ConversationListProps {
   onSelect: (id: number) => void;
   onExport: (id: number) => void;
   onRetry: () => void;
-  onRename: (id: number, title: string) => Promise<void>;
-  onArchive: (id: number) => void;
-  onRestore: (id: number) => void;
+  onRename: (id: number, title: string) => Promise<boolean>;
+  onArchive: (id: number) => Promise<boolean>;
+  onRestore: (id: number) => Promise<boolean>;
   onDelete: (id: number) => void;
 }
 

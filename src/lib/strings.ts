@@ -154,6 +154,7 @@ const en = {
   "list.actionArchive": "Archive conversation",
   "list.actionDelete": "Delete conversation",
   "list.archived": "“{title}” archived.",
+  "list.restoreFailed": "Could not restore “{title}”.",
   "list.deleteCancelled":
     "Cancelled at the system confirmation prompt — the conversation was not deleted.",
 
@@ -1645,6 +1646,7 @@ const ru: Record<StringKey, string> = {
   "list.actionArchive": "Архивировать разговор",
   "list.actionDelete": "Удалить разговор",
   "list.archived": "«{title}» перенесён в архив.",
+  "list.restoreFailed": "Не удалось восстановить «{title}».",
   "list.deleteCancelled":
     "Отменено в системном диалоге подтверждения — разговор не удалён.",
 

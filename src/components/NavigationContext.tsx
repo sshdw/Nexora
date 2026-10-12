@@ -63,9 +63,9 @@ export interface Navigation {
   onSelectPrompt: (promptId: number) => void;
   /** Open the import-conversation flow (FR-011). */
   onImport: () => void;
-  onRename: (id: number, title: string) => Promise<void>;
-  onArchive: (id: number) => void;
-  onRestore: (id: number) => void;
+  onRename: (id: number, title: string) => Promise<boolean>;
+  onArchive: (id: number) => Promise<boolean>;
+  onRestore: (id: number) => Promise<boolean>;
   onDelete: (id: number) => void;
   /** Agent workspace folder store (1.3.0 folder picker + recent list). */
   workspace: WorkspaceStore;

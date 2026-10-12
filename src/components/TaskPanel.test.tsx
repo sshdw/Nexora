@@ -22,7 +22,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AgentTask, AgentTaskStep } from "../lib/tauri";
 import { LocaleProvider } from "../lib/useLocale";
-import { SnackbarProvider } from "./SnackbarHost";
+import { SnackbarProvider, UNDO_WINDOW_MS } from "./SnackbarHost";
 import TaskPanel from "./TaskPanel";
 
 const taskRow: AgentTask = {
@@ -141,7 +141,7 @@ describe("TaskPanel delete with bounded undo", () => {
     expect(screen.getByText("Write report")).toBeInTheDocument();
     expect(screen.queryByRole("status")).toBeNull();
     await act(async () => {
-      vi.advanceTimersByTime(8000);
+      vi.advanceTimersByTime(UNDO_WINDOW_MS);
     });
     expect(deletedIds).toEqual([]);
   });
@@ -154,10 +154,29 @@ describe("TaskPanel delete with bounded undo", () => {
       within(dialog).getByRole("button", { name: "Delete" }),
     );
     await act(async () => {
-      vi.advanceTimersByTime(8000);
+      vi.advanceTimersByTime(UNDO_WINDOW_MS);
     });
     // The mocked IPC resolves immediately; flush the commit microtasks,
     // then assert synchronously (no waitFor under fake timers).
+    await act(async () => {});
+    expect(mockInvoke).toHaveBeenCalledWith("delete_task", { taskId: 1 });
+    expect(deletedIds).toEqual([1]);
+  });
+
+  it("board view hides the pending-delete row until commit", async () => {
+    await openDeleteDialog();
+    const dialog = screen.getByRole("dialog");
+    vi.useFakeTimers();
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Delete" }),
+    );
+    // Confirming in the list then switching to the board within the window
+    // must not resurrect the row: the board filters the same pending id.
+    fireEvent.click(screen.getByRole("tab", { name: "Board" }));
+    expect(screen.queryByText("Write report")).toBeNull();
+    await act(async () => {
+      vi.advanceTimersByTime(UNDO_WINDOW_MS);
+    });
     await act(async () => {});
     expect(mockInvoke).toHaveBeenCalledWith("delete_task", { taskId: 1 });
     expect(deletedIds).toEqual([1]);
@@ -171,7 +190,7 @@ describe("TaskPanel delete with bounded undo", () => {
     expect(screen.queryByRole("status")).toBeNull();
     vi.useFakeTimers();
     await act(async () => {
-      vi.advanceTimersByTime(8000);
+      vi.advanceTimersByTime(UNDO_WINDOW_MS);
     });
     expect(deletedIds).toEqual([]);
   });

@@ -15,7 +15,7 @@
 //! animates on entry (instant render under reduced motion); all visuals ride
 //! the shared panel/tag primitives — zero new CSS, zero raw values.
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useTasks, type TaskView } from "../lib/useTasks";
 import type { AgentTask, AgentTaskStep } from "../lib/tauri";
@@ -121,6 +121,20 @@ export default function TaskPanel({ onClose, defaultProvider, defaultModel }: Ta
   const [pendingId, setPendingId] = useState<number | null>(null);
   const pendingRef = useRef<{ id: number; timer: number } | null>(null);
   const { showSnack, dismissSnack } = useSnackbar();
+
+  // Unmount contract: the pending-delete timer intentionally OUTLIVES the
+  // panel — commit-on-expiry is owned by the timeout closure (it calls
+  // `store.remove` directly), not by mounted state, so navigating away
+  // mid-window still commits instead of leaking a never-firing row. Only
+  // the ref is cleared (a remount must never double-commit through a stale
+  // handle); cancellation stays exclusively with the snackbar Undo
+  // (`cancelPendingDelete`), which owns the live timer while mounted.
+  useEffect(
+    () => () => {
+      pendingRef.current = null;
+    },
+    [],
+  );
 
   const openCreate = useCallback(() => {
     setEditingId(null);
@@ -297,7 +311,7 @@ export default function TaskPanel({ onClose, defaultProvider, defaultModel }: Ta
       </header>
 
       {view === "board" ? (
-        <KanbanBoard store={store} />
+        <KanbanBoard store={store} hiddenTaskId={pendingId} />
       ) : (
       <div className="nex-term-body">
         {store.error && (
