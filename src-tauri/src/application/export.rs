@@ -254,10 +254,21 @@ impl<'a> ExportService<'a> {
 /// under its own parent; otherwise it is removed best-effort and the write
 /// fails instead of succeeding outside the chosen directory.
 ///
+/// NEX-SEC-005: the file is created with `create_new` semantics — an
+/// existing destination is never truncated or overwritten (the pre-write
+/// [`validate_export_path`] check rejects it first; the atomic create is the
+/// backstop for a destination created in between).
+///
 /// Shared by the conversation file export and the setup file export (WS-E.2):
 /// both validate their destination through [`validate_export_path`] first.
 fn write_export_file(target: &PathBuf, bytes: &[u8]) -> Result<()> {
-    std::fs::write(target, bytes).map_err(ExportError::Io)?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(target)
+        .map_err(ExportError::Io)?;
+    std::io::Write::write_all(&mut file, bytes).map_err(ExportError::Io)?;
+    drop(file);
     if let Some(parent) = target.parent() {
         if let (Ok(canon_file), Ok(canon_parent)) = (target.canonicalize(), parent.canonicalize()) {
             if !canon_file.starts_with(&canon_parent) {
@@ -474,6 +485,16 @@ fn validate_export_path(path: &Path) -> Result<PathBuf> {
     if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink()) {
         return Err(ExportError::InvalidPath {
             reason: "path is a symbolic link",
+        });
+    }
+    // NEX-SEC-005: never overwrite. The export IPC takes a caller-chosen
+    // path with no confirmation gate, so clobbering an existing file would
+    // let any caller destroy a `.json` document outside an explicit user
+    // pick. Re-exports choose a fresh destination; the atomic `create_new`
+    // in [`write_export_file`] backstops a destination created in between.
+    if std::fs::symlink_metadata(path).is_ok() {
+        return Err(ExportError::InvalidPath {
+            reason: "destination already exists",
         });
     }
     Ok(path.to_path_buf())
@@ -857,6 +878,48 @@ mod tests {
             invalid_export_reason(Path::new("out\0.json")),
             "path contains a null byte"
         );
+    }
+
+    #[test]
+    fn export_never_overwrites_an_existing_destination() {
+        // NEX-SEC-005: the export IPC takes a caller-chosen path with no
+        // confirmation gate, so an existing `.json` document must be refused
+        // — never truncated — and its bytes must survive the denied export.
+        // Both file-export services share the validator, so both are pinned.
+        // The full production schema backs this test (the setup export reads
+        // `app_settings`, which the conversation-only `test_db` omits).
+        use crate::infrastructure::database::in_memory_database;
+        let db = in_memory_database();
+        let (conversation_id, ..) = seeded_conversation(&db);
+        let service = ExportService::new(&db);
+        let setup = SetupExportService::new(&db);
+
+        let path = std::env::temp_dir().join(format!(
+            "nexora_export_no_clobber_{}.json",
+            std::process::id()
+        ));
+        std::fs::write(&path, b"sentinel-bytes").expect("seed existing file");
+
+        assert_eq!(invalid_export_reason(&path), "destination already exists");
+        let err = service
+            .export_to_file(conversation_id, &path)
+            .expect_err("existing destination must be denied");
+        assert!(
+            matches!(err, ExportError::InvalidPath { .. }),
+            "expected InvalidPath, got {err:?}"
+        );
+        let err = setup
+            .export_setup_to_file(&path)
+            .expect_err("existing setup destination must be denied");
+        assert!(
+            matches!(err, ExportError::InvalidPath { .. }),
+            "expected InvalidPath, got {err:?}"
+        );
+        assert_eq!(
+            std::fs::read(&path).expect("existing file survives"),
+            b"sentinel-bytes"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

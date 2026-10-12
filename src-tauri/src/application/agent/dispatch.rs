@@ -57,8 +57,10 @@ pub(crate) struct DispatchCtx<'a> {
     /// shell ban). `None` keeps the exact pre-B.3 pipeline.
     pub role: Option<AgentRole>,
     /// The `injection` feature flag (WS-C.2 gate): enveloped observations
-    /// plus the marker-scan approval hold when `true` (current behavior);
-    /// raw observations with no scan when `false` (pre-2.0 dispatch).
+    /// when `true` (current behavior); raw observations when `false`
+    /// (pre-2.0 shape). The flag gates the envelope only — the marker-scan
+    /// approval hold below always applies (NEX-SEC-007), so disabling the
+    /// flag can never silently turn a tripped scan into an auto-approve.
     /// `true` by default, so runs constructed without flags behave exactly
     /// as before.
     pub injection_enabled: bool,
@@ -70,6 +72,17 @@ pub(crate) fn emit(sender: Option<&Sender<AgentRunEvent>>, event: AgentRunEvent)
         let _ = tx.send(event);
     }
 }
+
+/// Maximum tool calls dispatched from one model turn (NEX-SEC-008).
+///
+/// The step budget counts model turns, so one turn returning an unbounded
+/// batch could otherwise execute without bound. Calls past the cap are never
+/// executed: each becomes a fixed-vocabulary denial observation (secret-free:
+/// fixed text plus the cap only) and the loop continues, so every returned
+/// call is still observed exactly once (AC-6) while execution stays bounded.
+/// Far above legitimate batches (tests and practice use a handful), so
+/// in-budget runs behave exactly as before.
+pub(crate) const MAX_TOOL_CALLS_PER_TURN: usize = 16;
 
 /// Return `Err(AgentError::Cancelled)` when cancellation was observed.
 pub(crate) fn check_cancellation(
@@ -122,15 +135,19 @@ pub(crate) fn dispatch_tool_calls(
     // AC-6: never drop a call — every returned call is dispatched and
     // observed. Failures are rendered through `ToolError`'s Display
     // (`Error: ...`) so the model can recover on the next turn.
+    // NEX-SEC-008: bound the batch — only the first `MAX_TOOL_CALLS_PER_TURN`
+    // calls dispatch; the rest become fixed-vocabulary denial observations
+    // below, so execution per turn is capped while every call stays observed.
+    let (dispatchable, over_cap) = calls.split_at(calls.len().min(MAX_TOOL_CALLS_PER_TURN));
     let preset = ctx.preset.as_str();
-    let batch_groups: Vec<String> = calls
+    let batch_groups: Vec<String> = dispatchable
         .iter()
         .map(|call| {
             let path = permissions::extract_path(&call.name, &call.arguments);
             permissions::group_key(preset, &call.name, path.as_deref())
         })
         .collect();
-    for call in calls {
+    for call in dispatchable {
         // Trace-level flow marker: presence + length only, never value.
         log::trace!(
             "{}",
@@ -138,6 +155,27 @@ pub(crate) fn dispatch_tool_calls(
         );
         check_cancellation(ctx.control, ctx.sender)?;
         dispatch_one(ctx, call, messages, record, &batch_groups)?;
+    }
+    for call in over_cap {
+        // Over-cap calls never execute, park, or touch the store/ladder:
+        // a fixed-vocabulary denial observation (fixed text plus the cap —
+        // never the call content) keeps the AC-6 pairing while bounding the
+        // turn. Host-generated fixed vocabulary like the document shell ban,
+        // so it bypasses the untrusted envelope via `trusted_denial_message`.
+        let observation = format!(
+            "Error: tool batch exceeds the per-turn limit of {MAX_TOOL_CALLS_PER_TURN} calls; \
+             this call was not executed"
+        );
+        messages.push(trusted_denial_message(call, &observation));
+        if let Some(rec) = record.as_mut() {
+            rec.tool_call_with_provenance(
+                call,
+                &observation,
+                "denied",
+                None,
+                StepProvenance::system(),
+            );
+        }
     }
     Ok(())
 }
@@ -209,16 +247,18 @@ fn dispatch_one(
     // No new policy: the #65 ladder and its recorded decisions are reused
     // unchanged (`park_call`); without a gate there is nobody to approve,
     // so the call fails closed with the frozen denial observation.
-    // Gated by the `injection` flag: off reproduces the pre-2.0 dispatch
-    // (no scan, no hold).
+    // NEX-SEC-007: the hold is NOT gated by the `injection` flag. The flag
+    // switches enveloped vs raw observations only; the scan runs either way,
+    // so turning the flag off can never silently disable the hold into an
+    // auto-approve. The scan itself (#182 structural shapes) and the
+    // single-prompt path below are unchanged.
     // NEX-AGENT-006: when the hold below prompts and the user approves this
     // exact call, the ladder must not prompt a second time for the same call
     // (single prompt path). An explicit `Ask` rule still parks afterwards:
     // recorded "ask me" consent is a separate policy from the hold.
     let mut hold_approved = false;
-    if ctx.injection_enabled
-        && latest_tool_observation(messages)
-            .is_some_and(|observation| injection::scan_observation(observation).is_some())
+    if latest_tool_observation(messages)
+        .is_some_and(|observation| injection::scan_observation(observation).is_some())
     {
         if ctx.approval_gate.is_some() {
             if !park_call(
@@ -988,6 +1028,84 @@ mod tests {
             c_content.contains("\n1\n") && c_content.contains("untrusted tool output"),
             "read body enveloped: {c_content}"
         );
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn per_turn_tool_batch_is_bounded_and_every_call_stays_observed() {
+        // NEX-SEC-008: the step budget counts model turns, so one turn must
+        // not execute an unbounded batch. The first `MAX_TOOL_CALLS_PER_TURN`
+        // calls dispatch exactly as before; the rest become fixed-vocabulary
+        // denial observations (AC-6: every call still observed once).
+        let ws = temp_workspace();
+        let over = MAX_TOOL_CALLS_PER_TURN + 4;
+        let batch: Vec<crate::application::execution::ToolCall> = (0..over)
+            .map(|index| {
+                call_tool(
+                    &format!("cap-{index}"),
+                    "write_file",
+                    serde_json::json!({
+                        "path": format!("cap-{index}.txt"),
+                        "content": format!("{index}"),
+                    }),
+                )
+            })
+            .collect();
+        let fake = FakeExecutor::new(vec![
+            Ok(AiResponse {
+                content: String::new(),
+                model: "test-model".to_string(),
+                tool_calls: batch,
+                usage: None,
+            }),
+            Ok(text_response("did everything")),
+        ]);
+        let runner = AgentRunner::new(&fake, &ws);
+
+        let answer = runner.run("openai", "m", "cred", "go").expect("finish");
+        assert_eq!(answer, "did everything");
+
+        // Exactly the cap executed; the rest wrote nothing.
+        for index in 0..over {
+            let path = ws.join(format!("cap-{index}.txt"));
+            if index < MAX_TOOL_CALLS_PER_TURN {
+                assert_eq!(
+                    fs::read_to_string(&path).expect("capped-in call ran"),
+                    format!("{index}")
+                );
+            } else {
+                assert!(!path.exists(), "over-cap call cap-{index} must not execute");
+            }
+        }
+
+        // Every call observed exactly once, in order: successes then the
+        // fixed-vocabulary cap denials.
+        let history = &fake.requests.borrow()[1].messages;
+        assert_eq!(history.len(), 3 + over);
+        for (offset, message) in history[3..].iter().enumerate() {
+            let result = message.tool_result.as_ref().expect("tool result");
+            assert_eq!(result.call_id, format!("cap-{offset}"));
+            if offset < MAX_TOOL_CALLS_PER_TURN {
+                assert!(
+                    !result.content.contains("per-turn limit"),
+                    "capped-in call stays a normal observation: {}",
+                    result.content
+                );
+            } else {
+                assert!(
+                    result.content.contains("per-turn limit"),
+                    "over-cap call must carry the fixed denial, got: {}",
+                    result.content
+                );
+                assert!(
+                    result
+                        .content
+                        .contains(&MAX_TOOL_CALLS_PER_TURN.to_string()),
+                    "the denial names the cap, got: {}",
+                    result.content
+                );
+            }
+        }
         let _ = fs::remove_dir_all(&ws);
     }
 

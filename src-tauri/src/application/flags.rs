@@ -8,8 +8,10 @@
 //! capture / checkpoint / rollback | no snapshots (pre-2.0: no store) |
 //! | `self_audit` | WS-C.3 | [`record_report`](crate::application::agent::self_audit::record_report)
 //! outcome append | no outcome append (pass stays read-only) |
-//! | `injection` | WS-C.2 | untrusted-output envelopes plus the marker-scan
-//! approval hold | raw observations, no scan (pre-2.0 dispatch) |
+//! | `injection` | WS-C.2 | untrusted-output envelopes | raw observations
+//! (pre-2.0 shape); the marker-scan approval hold always applies either way
+//! (NEX-SEC-007: the flag must not silently disable the hold into an
+//! auto-approve) |
 //! | `assembly` | smart assembly | budgeted opening build plus the proactive
 //! compaction seed | legacy unbounded build (pre-2.0 prompts) |
 //!
@@ -100,7 +102,8 @@ pub(crate) const FLAGS: &[FlagDef] = &[
     FlagDef {
         name: "injection",
         default: true,
-        description: "untrusted-output envelopes and the marker-scan approval hold (WS-C.2)",
+        description:
+            "untrusted-output envelopes (WS-C.2; the marker-scan approval hold always applies)",
     },
     FlagDef {
         name: "assembly",

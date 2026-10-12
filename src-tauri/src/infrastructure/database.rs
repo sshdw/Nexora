@@ -44,7 +44,19 @@ pub(crate) enum DatabaseError {
         app_version: i64,
     },
     /// The shared connection lock was poisoned by a panicking holder.
+    /// Recoverable: [`Database::lock`] clears the poison and resets the
+    /// connection before returning this, so one panicking holder fails only
+    /// its observing call instead of bricking every later operation.
     Lock(String),
+    /// The `schema_version` bookkeeping rows are not the contiguous
+    /// `1..=MAX(version)` run the forward-only runner applies (NEX-DB-007):
+    /// a version was skipped or removed, so continuing would silently
+    /// mis-migrate. Fails loud at startup instead; carries only the first
+    /// missing version, never SQL or content.
+    SchemaGap {
+        /// First migration version missing from the bookkeeping table.
+        missing: i64,
+    },
 }
 
 impl std::fmt::Display for DatabaseError {
@@ -60,6 +72,11 @@ impl std::fmt::Display for DatabaseError {
                  application's known migrations ({app_version})"
             ),
             Self::Lock(msg) => write!(f, "database connection lock poisoned: {msg}"),
+            Self::SchemaGap { missing } => write!(
+                f,
+                "database schema is missing migration version {missing}: \
+                 the migration history is incomplete and startup cannot continue"
+            ),
         }
     }
 }
@@ -68,7 +85,7 @@ impl std::error::Error for DatabaseError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Sqlite(err) => Some(err),
-            Self::SchemaTooNew { .. } | Self::Lock(_) => None,
+            Self::SchemaTooNew { .. } | Self::Lock(_) | Self::SchemaGap { .. } => None,
         }
     }
 }
@@ -883,6 +900,23 @@ fn migrate(conn: &mut Connection) -> Result<(), DatabaseError> {
         });
     }
 
+    // NEX-DB-007: the runner applies every known version above `MAX(version)`,
+    // so a gap at or below it (a skipped or removed bookkeeping row) would
+    // otherwise mis-migrate silently — later migrations would apply on top of
+    // a schema that never received the missing one, with no recovery path.
+    // Detect the gap explicitly and fail loud/early with a typed error before
+    // anything is applied. The applied set must be exactly `1..=current`.
+    let applied: Vec<i64> = conn
+        .prepare("SELECT version FROM schema_version ORDER BY version")?
+        .query_map([], |row| row.get::<_, i64>(0))?
+        .collect::<std::result::Result<Vec<i64>, _>>()?;
+    for (index, version) in applied.iter().enumerate() {
+        let expected = i64::try_from(index).unwrap_or(i64::MAX) + 1;
+        if *version != expected {
+            return Err(DatabaseError::SchemaGap { missing: expected });
+        }
+    }
+
     for &(version, sql) in MIGRATIONS {
         if version <= current {
             continue;
@@ -992,10 +1026,31 @@ impl Database {
     /// Returns a guard providing exclusive access to the single connection.
     /// Holders must never write secrets (API keys, tokens, prompts, user
     /// messages) through the connection (ARCHITECTURE.md §12; DATABASE.md §14).
+    ///
+    /// NEX-SEC-006: a poisoned mutex (a previous holder panicked mid-access)
+    /// is handled gracefully instead of propagating the panic. The poison is
+    /// cleared and any transaction the panicking holder left open is rolled
+    /// back best-effort, so the connection returns to autocommit for later
+    /// holders; the observing call still fails with the typed
+    /// [`DatabaseError::Lock`] error (fixed text, never the panic payload),
+    /// so one panicking closure costs exactly one failed operation instead of
+    /// a process-wide outage.
     pub(crate) fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>, DatabaseError> {
-        self.conn
-            .lock()
-            .map_err(|err| DatabaseError::Lock(err.to_string()))
+        match self.conn.lock() {
+            Ok(guard) => Ok(guard),
+            Err(poisoned) => {
+                // Clear the poison (holding the guard alone does not reset
+                // it) and reset any transaction the panicking holder left
+                // open, so later holders proceed on a clean connection.
+                let guard = poisoned.into_inner();
+                let _ = guard.execute_batch("ROLLBACK;");
+                drop(guard);
+                self.conn.clear_poison();
+                Err(DatabaseError::Lock(
+                    "the database connection was interrupted; retry the operation".to_string(),
+                ))
+            }
+        }
     }
 }
 
@@ -1194,6 +1249,93 @@ mod tests {
             "conversations_fts_insert",
             "trigger"
         ));
+    }
+
+    #[test]
+    fn migration_gap_fails_loud_with_a_typed_error() {
+        // NEX-DB-007: the runner used to key on `MAX(version)`, so a skipped
+        // bookkeeping row (here v6) mis-migrated silently — later migrations
+        // applied on top of a schema that never received the missing one.
+        // Build a v7-shaped history with v6 missing, then migrate: the runner
+        // must refuse with `SchemaGap` before applying anything further.
+        let mut conn = Connection::open_in_memory().expect("open in-memory");
+        configure(&conn).expect("configure");
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY CHECK (version > 0), applied_at INTEGER NOT NULL CHECK (applied_at > 0));",
+        )
+        .expect("create schema_version");
+        for &(version, sql) in MIGRATIONS.iter().filter(|(v, _)| *v <= 5) {
+            if version == 5 {
+                conn.execute_batch("PRAGMA foreign_keys=OFF;")
+                    .expect("fk off");
+                let result = apply_migration(&mut conn, version, sql);
+                conn.execute_batch("PRAGMA foreign_keys=ON;")
+                    .expect("fk on");
+                result.expect("apply v5");
+            } else {
+                apply_migration(&mut conn, version, sql).expect("apply v1..v4");
+            }
+        }
+        // Skip v6, apply v7 (the rebuild helper, like the v7 test).
+        let (_, v7_sql) = MIGRATIONS
+            .iter()
+            .find(|(version, _)| *version == 7)
+            .expect("v7 exists");
+        conn.execute_batch("PRAGMA foreign_keys=OFF;")
+            .expect("fk off");
+        let v7 = apply_migration(&mut conn, 7, v7_sql);
+        conn.execute_batch("PRAGMA foreign_keys=ON;")
+            .expect("fk on");
+        v7.expect("apply v7");
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 7]);
+
+        let err = migrate(&mut conn).expect_err("a gapped history must fail");
+        assert!(
+            matches!(err, DatabaseError::SchemaGap { missing: 6 }),
+            "expected SchemaGap {{ missing: 6 }}, got {err:?}"
+        );
+        let rendered = format!("{err}");
+        assert!(
+            rendered.contains('6'),
+            "the gap error names the missing version, got {rendered:?}"
+        );
+        // Loud and early: nothing further was applied.
+        assert_eq!(schema_version_rows(&conn), vec![1, 2, 3, 4, 5, 7]);
+        assert!(
+            !schema_object_exists(&conn, "usage_ledger", "table"),
+            "no later migration may apply past a gap"
+        );
+    }
+
+    #[test]
+    fn poisoned_connection_lock_fails_typed_once_then_recovers() {
+        // NEX-SEC-006: a panicking holder must cost exactly one failed
+        // operation (a typed `Lock` error, never a propagated panic and never
+        // the panic payload), and later holders must proceed — no
+        // process-wide outage.
+        let db = in_memory_database();
+        let poisoned = db.clone();
+        let _ = std::panic::catch_unwind(move || {
+            let _guard = poisoned.lock().expect("lock for poisoning");
+            panic!("sentinel-poison-payload");
+        });
+        let err = db.lock().expect_err("the observing call must fail");
+        assert!(
+            matches!(err, DatabaseError::Lock(_)),
+            "expected a typed Lock error, got {err:?}"
+        );
+        let rendered = format!("{err}");
+        assert!(
+            !rendered.contains("sentinel-poison-payload"),
+            "the lock error must stay fixed-vocabulary, got {rendered:?}"
+        );
+        // Recovery: the next acquisition succeeds on a usable connection.
+        let recovered: i64 = db
+            .lock()
+            .expect("recovered lock")
+            .query_row("SELECT 1", [], |row| row.get(0))
+            .expect("connection usable after poison");
+        assert_eq!(recovered, 1);
     }
 
     #[test]

@@ -97,11 +97,18 @@ impl std::fmt::Display for CommandError {
 impl std::error::Error for CommandError {}
 
 /// Curated, secret-free message for an unclassified `SQLite` failure. The raw
-/// rusqlite detail is deliberately not surfaced to avoid leaking SQL or a
-/// stored value; the underlying failure is logged instead.
+/// rusqlite detail is deliberately neither surfaced (the frontend text below
+/// is fixed) nor logged (NEX-SEC-011: the raw detail can carry SQL text and
+/// bound values): the log records only the fixed failure tag.
 impl From<DatabaseError> for CommandError {
     fn from(err: DatabaseError) -> Self {
-        log::error!("command failed with database error: {err}");
+        let tag = match &err {
+            DatabaseError::Sqlite(_) => "sqlite",
+            DatabaseError::SchemaTooNew { .. } => "schema_too_new",
+            DatabaseError::Lock(_) => "lock",
+            DatabaseError::SchemaGap { .. } => "schema_gap",
+        };
+        log::error!("command failed with database error (kind: {tag})");
         Self::new(
             ErrorKind::Database,
             "a database operation failed; no data was changed".to_string(),
@@ -587,6 +594,42 @@ mod tests {
             assert!(
                 !err.message.to_lowercase().contains(sentinel),
                 "cancelled mapping must stay secret-free, found {sentinel:?}"
+            );
+        }
+    }
+
+    /// Raw `SQLite` failures stay secret-free across the command boundary
+    /// (NEX-SEC-011): the frontend text is fixed, and the failure carries no
+    /// SQL or stored value even when the rusqlite detail quotes both.
+    #[test]
+    fn database_error_mapping_is_secret_free_and_classified() {
+        const SENTINELS: [&str; 4] = ["sk-", "secret", "select", "credential"];
+        let raw = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(1),
+            Some("SELECT secret FROM users WHERE api_key='sk-live-sentinel-1'".to_string()),
+        );
+        let err = CommandError::from(crate::infrastructure::database::DatabaseError::Sqlite(raw));
+        assert_eq!(err.kind, ErrorKind::Database);
+        assert_eq!(
+            err.message,
+            "a database operation failed; no data was changed"
+        );
+        for sentinel in SENTINELS {
+            assert!(
+                !err.message.to_lowercase().contains(sentinel),
+                "database mapping must stay secret-free, found {sentinel:?}"
+            );
+        }
+        // The typed lock and gap errors map through the same fixed text.
+        for typed in [
+            crate::infrastructure::database::DatabaseError::Lock("boom".to_string()),
+            crate::infrastructure::database::DatabaseError::SchemaGap { missing: 6 },
+        ] {
+            let err = CommandError::from(typed);
+            assert_eq!(err.kind, ErrorKind::Database);
+            assert_eq!(
+                err.message,
+                "a database operation failed; no data was changed"
             );
         }
     }
