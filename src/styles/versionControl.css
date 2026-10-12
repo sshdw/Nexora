@@ -67,6 +67,16 @@
   color: var(--nex-sys-color-on-surface-tertiary);
 }
 
+/* ---- Panel sections (changed files, diff, commit, push, timeline):
+   semantic grouping wrappers only. Children stack as blocks;
+   separation comes from the parent body gap plus the title margin,
+   so the section itself carries no spacing of its own. ---- */
+.nex-vcs-section {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
 /* ---- Changed files: full-width row buttons (native keyboard parity),
    selected = pill tone + emphasized path, never color alone (the status
    tag carries the text label). ---- */
@@ -105,6 +115,23 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ---- Shared file-row container (VCS, issues, docs, debt, audit,
+   release panels): the <li> inside a .nex-vcs-file-list. No flex
+   shaping here — tag-flow rows (IssuesPanel runners/tools, Docs
+   migrations, Audit DepRow) keep their inline horizontal wrap, and
+   the VCS stage/unstage M3Button keeps its intrinsic width.
+   min-width: 0 alone guards long paths against sideways overflow. ---- */
+.nex-vcs-file-row {
+  min-width: 0;
+}
+
+/* Status + commit-hash tags ride inside flex rows (file buttons,
+   timeline rows) and must never shrink into illegibility. */
+.nex-vcs-file-status,
+.nex-vcs-commit-hash {
+  flex-shrink: 0;
 }
 
 /* ---- Diff containment: the shared .nex-agent-diff block sits inside a

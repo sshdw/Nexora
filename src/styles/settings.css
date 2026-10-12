@@ -41,6 +41,12 @@
   color: var(--nex-sys-color-on-surface-tertiary);
 }
 
+/* Header title wrapper: the h2 + subtitle stack as blocks; the
+   min-width guard keeps the band shrink-safe in the header row. */
+.nex-settings-heading-block {
+  min-width: 0;
+}
+
 .nex-settings-body {
   flex: 1 1 auto;
   min-height: 0;
@@ -174,6 +180,16 @@
   font-size: var(--nex-sys-type-size-body-small);
   font-weight: var(--nex-sys-type-weight-medium);
   color: var(--nex-sys-color-on-surface-variant);
+}
+
+/* Read-only value under a settings label (workspace root, routing
+   summaries, preset state): body read, full-contrast, wraps anywhere
+   so long paths never force sideways scroll. */
+.nex-settings-value {
+  margin: 0;
+  font-size: var(--nex-sys-type-size-body-medium);
+  color: var(--nex-sys-color-on-surface);
+  overflow-wrap: anywhere;
 }
 
 /* Field primitives (.nex-input / .nex-select / .nex-textarea) and

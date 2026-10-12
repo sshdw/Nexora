@@ -571,6 +571,15 @@
   background: var(--nex-sys-color-error);
 }
 
+/* Connected-state tag (provider credentials): success-container
+   fill with its container text tone. The dot + label still carry
+   the meaning together — color never rides alone. */
+.nex-tag.is-connected {
+  background: var(--nex-sys-color-success-container);
+  border-color: transparent;
+  color: var(--nex-sys-color-on-success-container);
+}
+
 /* ============================================================
    CHIPS (input chips — draft attachments, FR-008)
    Shell: elevated-container tone, small corners (OFFICIAL chip
