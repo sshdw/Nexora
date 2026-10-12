@@ -32,11 +32,6 @@ def ratio(a: str, b: str) -> float:
 def main() -> int:
     text = TOKENS.read_text()
 
-    # Scoped per theme block (dark :root defaults, light override,
-    dark_block = text.split(":root[data-theme")[0]
-    light_block = text.split(':root[data-theme="light"]')[1].split("}")[0]
-    hc_block = text.split(':root[data-theme="high-contrast"]')[1].split("color-scheme")[0]
-
     def block_defs(block: str) -> dict:
         return dict(re.findall(r"--(nex-sys-color-[a-z-]+):\s*(#[0-9a-fA-F]{6})", block))
 

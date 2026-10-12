@@ -43,9 +43,10 @@ export function useAppearance(): AppearanceStore {
   const [theme, setThemeState] = useState<Theme>("dark");
 
   // Load the persisted theme once at startup so the visual preference is
-  // restored before (or as) the first paint settles. A missing value, an
-  // invalid value, or a read failure all resolve to the OS-matched
-  // default (light when prefers-color-scheme matches, else dark). The
+  // restored before (or as) the first paint settles. A missing or
+  // invalid value resolves to the OS-matched default (light when
+  // prefers-color-scheme matches, else dark); a read failure keeps
+  // the dark default. The
   // resolved theme is always written as an explicit attribute (single
   // light source lives in `src/styles/tokens.css`), so store state and
   // the painted theme can never disagree.

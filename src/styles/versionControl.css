@@ -118,14 +118,12 @@
 }
 
 /* ---- Shared file-row container (VCS, issues, docs, debt, audit,
-   release panels): the <li> inside a .nex-vcs-file-list. Children
-   keep their current block stacking (column flow is identical to
-   the unstyled render); the rule documents the row composition and
-   guards long paths against sideways overflow. ---- */
+   release panels): the <li> inside a .nex-vcs-file-list. No flex
+   shaping here — tag-flow rows (IssuesPanel runners/tools, Docs
+   migrations, Audit DepRow) keep their inline horizontal wrap, and
+   the VCS stage/unstage M3Button keeps its intrinsic width.
+   min-width: 0 alone guards long paths against sideways overflow. ---- */
 .nex-vcs-file-row {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
   min-width: 0;
 }
 

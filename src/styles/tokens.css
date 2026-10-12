@@ -50,12 +50,16 @@
      high-contrast): :root[data-theme="dark"|"light"] — the
      [data-theme] attribute is canonical (applied by
      src/lib/useAppearance.ts and persistently stored). The
-     .nex-theme-dark / .nex-theme-light class hooks alone lose to
-     the dark :root defaults on specificity, so they require the
-     attribute alongside them to take effect.
-   - First paint uses the dark default until hydration resolves and
-     sets an explicit override (single light source: there is no
-     prefers-color-scheme mirror of the light block).
+     .nex-theme-dark / .nex-theme-light class hooks are
+     unsupported — the attribute is canonical.
+   - First paint is the dark default until hydration applies the
+     explicit override, so the visible sequence depends on stored
+     choice x OS theme: no-stored x OS-light flashes dark->light,
+     stored-light x OS-light flashes dark->light, stored-dark x
+     OS-light paints dark with no flash, and OS-dark never
+     flashes either way. Tauri IPC + hydration span many frames,
+     not one. Single light source: there is no
+     prefers-color-scheme mirror of the light block.
    - High contrast is explicit-only:
      :root[data-theme="high-contrast"] / .nex-theme-high-contrast
      (dark-based; light-HC deferred — see Remaining Issues).
@@ -474,7 +478,10 @@
 /* First-paint note: the light block above is the single light
    source — there is no prefers-color-scheme mirror. An unmarked
    :root paints the dark default until useAppearance hydrates and
-   sets the explicit data-theme override. */
+   sets the explicit data-theme override, so stored-light and
+   no-stored users on a light OS see a dark->light flash across
+   the Tauri IPC + hydration frames; stored-dark and OS-dark
+   users see no flash. */
 
 /* ============================================================
    HIGH-CONTRAST THEME — dark-based (WCAG AAA-leaning pairs;

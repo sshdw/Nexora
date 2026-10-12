@@ -122,8 +122,9 @@
   list-style: none;
 }
 
-/* One changed file: header tag + diff block stacked; min-width
-   keeps long diff lines contained instead of forcing scroll. */
+/* One changed file: header tag + diff block stacked; min-width: 0
+   lets the row shrink inside flex parents (diff-line containment
+   itself comes from DiffView pre-wrap in conversation.css). */
 .nex-context-file {
   display: flex;
   flex-direction: column;
