@@ -1,7 +1,7 @@
 //! Confirmation dialog (0.3.0 visual reset).
 //!
 //! Shared destructive/irreversible-action confirmation built on the
-//! ModalShell primitive, replacing the previous native window.confirm
+//! ModalShell primitive, replacing the previous native blocking confirm
 //! chrome so the whole flow stays inside Nexora's dialog system
 //! (same behavior: explicit confirm required, cancel path, focus
 //! management). The confirm action is the filled destructive style —

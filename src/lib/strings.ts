@@ -47,6 +47,7 @@ const en = {
   "common.backToConversations": "Back to conversations",
   "common.close": "Close",
   "common.cancel": "Cancel",
+  "common.undo": "Undo",
   "common.retry": "Try again",
   "common.loading": "Loading…",
   "common.done": "Done",
@@ -152,6 +153,7 @@ const en = {
   "list.actionRestore": "Restore conversation",
   "list.actionArchive": "Archive conversation",
   "list.actionDelete": "Delete conversation",
+  "list.archived": "“{title}” archived.",
   "list.deleteCancelled":
     "Cancelled at the system confirmation prompt — the conversation was not deleted.",
 
@@ -897,6 +899,7 @@ const en = {
   "task.deleteBody":
     "“{title}” and all of its steps will be permanently deleted. This cannot be undone.",
   "task.deleteConfirm": "Delete",
+  "task.deleted": "“{title}” deleted.",
 
   // ---- kanban board (same task rows grouped by status, lock-guarded moves)
   "kanban.list": "List",
@@ -1540,6 +1543,7 @@ const ru: Record<StringKey, string> = {
   "common.backToConversations": "К разговорам",
   "common.close": "Закрыть",
   "common.cancel": "Отмена",
+  "common.undo": "Отменить",
   "common.retry": "Повторить",
   "common.loading": "Загрузка…",
   "common.done": "Готово",
@@ -1640,6 +1644,7 @@ const ru: Record<StringKey, string> = {
   "list.actionRestore": "Восстановить разговор",
   "list.actionArchive": "Архивировать разговор",
   "list.actionDelete": "Удалить разговор",
+  "list.archived": "«{title}» перенесён в архив.",
   "list.deleteCancelled":
     "Отменено в системном диалоге подтверждения — разговор не удалён.",
 
@@ -2370,6 +2375,7 @@ const ru: Record<StringKey, string> = {
   "task.deleteBody":
     "«{title}» и все её шаги будут удалены навсегда. Это действие необратимо.",
   "task.deleteConfirm": "Удалить",
+  "task.deleted": "«{title}» удалена.",
 
   "kanban.list": "Список",
   "kanban.board": "Доска",

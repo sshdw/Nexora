@@ -6,6 +6,7 @@ import M3IconButton from "./M3IconButton";
 import M3RailItem from "./M3RailItem";
 import M3Toolbar from "./M3Toolbar";
 import { useStrings } from "../lib/useLocale";
+import { useSnackbar } from "./SnackbarHost";
 import {
   ArchiveIcon,
   ExportIcon,
@@ -48,6 +49,12 @@ export default function ConversationItem({
   // Prompt Library's delete flow; the old in-app ConfirmDialog step is gone
   // on purpose so approval cannot be shown twice and drift from what runs.
   const { locale, t } = useStrings();
+  const { showSnack } = useSnackbar();
+
+  // Archive is the reversible soft-delete (typed `archive_conversation` /
+  // `restore_conversation` round-trip): it runs immediately and the snackbar
+  // offers a bounded Undo window that restores. Permanent deletion stays on
+  // the native OS prompt (NEX-SEC-004) and is intentionally not undoable.
 
   const beginRename = () => {
     setDraftTitle(conversation.title);
@@ -161,7 +168,13 @@ export default function ConversationItem({
             <M3IconButton
               size="sm"
               label={t("list.actionArchive")}
-              onClick={() => onArchive(conversation.id)}
+              onClick={() => {
+                onArchive(conversation.id);
+                showSnack(t("list.archived", { title: conversation.title }), {
+                  actionLabel: t("common.undo"),
+                  onAction: () => onRestore(conversation.id),
+                });
+              }}
               disabled={busy}
             >
               <ArchiveIcon />
