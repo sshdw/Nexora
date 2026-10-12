@@ -35,7 +35,7 @@
 //! validation pass and a stale-id UX the shell does not have yet. Revisit
 //! once the shell owns an invalid-selection pattern.
 
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
 export interface ConversationTabsStore {
   /** Open tabs in open order (oldest first). */
@@ -176,18 +176,40 @@ export function useConversationTabs(): ConversationTabsStore {
     [openIds, activeId, splitId],
   );
 
-  return {
-    openIds,
-    activeId,
-    splitId,
-    open,
-    activate,
-    close,
-    openInSplit,
-    closeSplit,
-    next,
-    prev,
-    jumpTo,
-    prune,
-  };
+  // Memoized store identity (NEX-FE-002): every member is either state or
+  // a useCallback-stable function, so the returned object only changes when
+  // tab state actually changes. Without this, App's tab/split/zen keydown
+  // effect ([tabs] dep) tore down and re-added its listener — and the ~35-
+  // item palette registry rebuilt — on every App render (every composer
+  // keystroke re-renders App via the drafts map).
+  return useMemo(
+    () => ({
+      openIds,
+      activeId,
+      splitId,
+      open,
+      activate,
+      close,
+      openInSplit,
+      closeSplit,
+      next,
+      prev,
+      jumpTo,
+      prune,
+    }),
+    [
+      openIds,
+      activeId,
+      splitId,
+      open,
+      activate,
+      close,
+      openInSplit,
+      closeSplit,
+      next,
+      prev,
+      jumpTo,
+      prune,
+    ],
+  );
 }

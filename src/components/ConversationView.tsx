@@ -19,14 +19,13 @@ import {
   agentSetMode,
   cancelAgentRun,
   extendAgentRun,
-  getSetting,
   pauseAgentRun,
   resolveAgentApproval,
   resumeAgentRun,
-  setSetting,
   startAgentRun,
   type AutonomyMode,
 } from "../lib/tauri";
+import type { AutonomyStore } from "../lib/useAutonomy";
 import { useAgentRun } from "../lib/useAgentRun";
 import { useAttachments } from "../lib/useAttachments";
 import { useConversation } from "../lib/useConversation";
@@ -46,6 +45,10 @@ export interface ConversationViewProps {
   selectedProvider: string | null;
   /** Selected model for the selected provider, or null if none. */
   selectedModel: string | null;
+  /** Agent-autonomy default store lifted in App (single source, NEX-FE-003):
+   * the header selector reads and writes the same store as Settings, so a
+   * change in either surface reflects in the other immediately. */
+  autonomy: AutonomyStore;
   onOpenSettings: () => void;
   /** Called after a send resolves, so the sidebar can refresh ordering by
    * the backend's recency update (conversation becomes recently active). */
@@ -61,6 +64,7 @@ export default function ConversationView({
   conversationId,
   selectedProvider,
   selectedModel,
+  autonomy,
   onOpenSettings,
   onMessageSent,
   draft,
@@ -79,30 +83,9 @@ export default function ConversationView({
   const { runs, reload: reloadAgent, expandStep, collapseStep } = useAgentRun(conversationId);
   const [agentMode, setAgentMode] = useState<boolean>(false);
   const [viewMode, setViewMode] = useState<"chat" | "context">("chat");
-  const [autonomyMode, setAutonomyMode] = useState<AutonomyMode>("semi_autonomous");
   const [agentBusy, setAgentBusy] = useState<boolean>(false);
   const [agentError, setAgentError] = useState<string | null>(null);
   const threadRef = useRef<HTMLDivElement>(null);
-
-  // Load persisted autonomy default on mount and when conversation changes (global setting).
-  useEffect(() => {
-    let cancelled = false;
-    void getSetting("agent.autonomy")
-      .then((v) => {
-        if (cancelled) return;
-        if (v === "supervised" || v === "semi_autonomous" || v === "full_autonomous") {
-          setAutonomyMode(v);
-        } else {
-          setAutonomyMode("semi_autonomous");
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setAutonomyMode("semi_autonomous");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   // Insertion-motion bookkeeping (presentation only): the message ids shown
   // in the previous committed render, so genuinely inserted messages can be
@@ -189,11 +172,13 @@ export default function ConversationView({
 
   const handleAutonomyChange = useCallback(
     async (mode: AutonomyMode) => {
-      setAutonomyMode(mode);
-      try {
-        await setSetting("agent.autonomy", mode);
-      } catch (e) {
-        setAgentError(e instanceof Error ? e.message : String(e));
+      // Single-source write (NEX-FE-003): the store optimistically updates
+      // and rolls back on failure, so Settings reflects the change (or its
+      // rollback) immediately. A rejected persist surfaces here and skips
+      // the live-switch, as before.
+      const failure = await autonomy.setMode(mode);
+      if (failure !== null) {
+        setAgentError(failure);
         return;
       }
       // Live-switch any active run's gate (DP-AUTONOMY): parked approval stays.
@@ -207,7 +192,7 @@ export default function ConversationView({
         }
       }
     },
-    [runs],
+    [autonomy, runs],
   );
 
   const handleSubmit = async () => {
@@ -413,7 +398,7 @@ export default function ConversationView({
               <M3SegmentedGroup
                 label={t("conv.autonomyAria")}
                 semantics="radio"
-                value={autonomyMode}
+                value={autonomy.mode}
                 onChange={(mode) => void handleAutonomyChange(mode)}
                 options={[
                   { value: "supervised", label: t("conv.autonomySupervised") },

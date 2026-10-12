@@ -16,7 +16,7 @@
 //! is via the palette command + Settings entry, which open the flow
 //! without clearing the flag.
 
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
 /** localStorage flag marking the onboarding flow completed/dismissed. */
 const COMPLETED_KEY = "nexora.onboarding.completed";
@@ -70,5 +70,9 @@ export function useOnboarding(): OnboardingStore {
     setOpen(true);
   }, []);
 
-  return { completed, open, runId, dismiss, replay };
+  // Memoized store identity (NEX-FE-002 audit).
+  return useMemo(
+    () => ({ completed, open, runId, dismiss, replay }),
+    [completed, open, runId, dismiss, replay],
+  );
 }

@@ -1,22 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import CommandPalette from "./components/CommandPalette";
+import ConversationPane from "./components/ConversationPane";
 import ConversationTabs, { type TabEntry } from "./components/ConversationTabs";
-import ConversationView from "./components/ConversationView";
-import ActivityHealthPanel, {
-  type ActivityHealthTab,
-} from "./components/ActivityHealthPanel";
+import ActivityHealthPanel from "./components/ActivityHealthPanel";
 import AuditPanel from "./components/AuditPanel";
 import DebtPanel from "./components/DebtPanel";
 import DocsPanel from "./components/DocsPanel";
 import EmptyState from "./components/EmptyState";
 import ReleasePanel from "./components/ReleasePanel";
-import { ExportIcon } from "./components/icons";
 import { ExportModal, ImportModal } from "./components/ImportExportModals";
 import IssuesPanel from "./components/IssuesPanel";
 import M3Button from "./components/M3Button";
-import M3IconButton from "./components/M3IconButton";
-import M3Toolbar from "./components/M3Toolbar";
+import { NavigationProvider, type Navigation } from "./components/NavigationContext";
 import NexoraMark from "./components/NexoraMark";
 import OnboardingFlow from "./components/OnboardingFlow";
 import PromptLibraryView from "./components/PromptLibraryView";
@@ -26,15 +22,10 @@ import Sidebar from "./components/Sidebar";
 import TaskPanel from "./components/TaskPanel";
 import TerminalPanel from "./components/TerminalPanel";
 import VersionControlPanel from "./components/VersionControlPanel";
-import WorkspaceChip from "./components/WorkspaceChip";
-import type { Conversation } from "./lib/tauri";
 import {
   buildCommands,
   recordUse,
   type PaletteCommand,
-  type PaletteSettingsSection,
-  type PaletteTerminalRequest,
-  type PaletteVcsRequest,
 } from "./lib/commands";
 import {
   COMBO_ACTIVITY_OPEN,
@@ -58,112 +49,16 @@ import {
   matchesCombo,
 } from "./lib/shortcuts";
 import { useAppearance } from "./lib/useAppearance";
+import { useAutonomy } from "./lib/useAutonomy";
 import { LocaleProvider, useLocale, useStrings } from "./lib/useLocale";
 import { useConversations } from "./lib/useConversations";
 import { useConversationTabs } from "./lib/useConversationTabs";
 import { useImportExport } from "./lib/useImportExport";
 import { useOnboarding } from "./lib/useOnboarding";
+import { useOverlayRouter } from "./lib/useOverlayRouter";
 import { useProviders } from "./lib/useProviders";
 import { useSpendLimit } from "./lib/useSpendLimit";
 import { useWorkspace } from "./lib/useWorkspace";
-
-interface ConversationPaneProps {
-  conversation: Conversation;
-  selectedProvider: string | null;
-  selectedModel: string | null;
-  draft: string;
-  setDraft: (value: string) => void;
-  onOpenSettings: () => void;
-  onMessageSent: () => void;
-  onExport: (id: number) => void;
-  workspaceRoot: string | null;
-  workspaceLoading: boolean;
-  /** Secondary (split) pane: the header offers "Close split". */
-  secondary: boolean;
-  /** Primary pane: whether the "Split" opener is available. */
-  splitAvailable: boolean;
-  splitOpen: boolean;
-  onToggleSplit: () => void;
-}
-
-function ConversationPane({
-  conversation,
-  selectedProvider,
-  selectedModel,
-  draft,
-  setDraft,
-  onOpenSettings,
-  onMessageSent,
-  onExport,
-  workspaceRoot,
-  workspaceLoading,
-  secondary,
-  splitAvailable,
-  splitOpen,
-  onToggleSplit,
-}: ConversationPaneProps) {
-  const { t } = useStrings();
-  const isArchived = conversation.status === "archived";
-  return (
-    <section
-      className={"nex-pane" + (secondary ? " nex-pane--secondary" : "")}
-      aria-label={secondary ? t("app.splitPaneAria", { title: conversation.title }) : conversation.title}
-    >
-      <header className="nex-pane-header">
-        <h2 className="nex-main-title">
-          <span className="nex-main-title-text">{conversation.title}</span>
-          {isArchived && (
-            <span className="nex-main-title-badge">
-              {t("app.archivedBadge")}
-            </span>
-          )}
-        </h2>
-        <M3Toolbar
-          label={t("app.paneActions", { title: conversation.title })}
-          className="nex-main-header-actions"
-        >
-          <WorkspaceChip root={workspaceRoot} loading={workspaceLoading} />
-          <M3Button
-            variant="quiet"
-            size="sm"
-            onClick={onToggleSplit}
-            aria-pressed={splitOpen}
-            disabled={secondary ? false : !splitAvailable && !splitOpen}
-            title={
-              secondary
-                ? t("app.splitCloseTitle")
-                : t("app.splitOpenTitle")
-            }
-          >
-            {secondary ? t("app.splitClose") : t("app.split")}
-          </M3Button>
-          <M3IconButton
-            label={t("app.exportConversation")}
-            onClick={() => onExport(conversation.id)}
-          >
-            <ExportIcon />
-          </M3IconButton>
-        </M3Toolbar>
-      </header>
-      <div className="nex-pane-body">
-        {/* Keyed by conversation id: each pane owns independent hook state
-            (messages, attachments, agent runs, scroll position) so the two
-            panes can never clobber each other. Drafts are likewise keyed per
-            conversation in App (see `drafts`), never shared. */}
-        <ConversationView
-          key={conversation.id}
-          conversationId={conversation.id}
-          selectedProvider={selectedProvider}
-          selectedModel={selectedModel}
-          onOpenSettings={onOpenSettings}
-          onMessageSent={onMessageSent}
-          draft={draft}
-          setDraft={setDraft}
-        />
-      </div>
-    </section>
-  );
-}
 
 function AppShell() {
   const {
@@ -194,22 +89,16 @@ function AppShell() {
   // `selectedId` — open tab ids, the primary pane id, and the optional
   // secondary split-pane id (see useConversationTabs.ts).
   const tabs = useConversationTabs();
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  // Overlay router (NEX-FE-001): the eleven workspace-scoped destinations
+  // own their visibility + deep-link payloads here; `router.active` is the
+  // discriminated view of which overlay is on top.
+  const router = useOverlayRouter();
   // Per-conversation composer drafts, keyed by conversation id: each tab (and
   // each split pane) owns its draft, so typing in one pane never clobbers the
   // other and switching tabs preserves in-progress input (tab state survives
   // conversation switch). The Prompt Library stages into the active pane's
   // draft (FR-007).
   const [drafts, setDrafts] = useState<Record<number, string>>({});
-  const [libraryOpen, setLibraryOpen] = useState(false);
-  // Version Control screen (read-only git base): a workspace-scoped
-  // navigation destination like Settings/Library — a sidebar rail entry
-  // (not a header action: the header is per-conversation, VCS is per
-  // workspace) opening an overlay over the still-mounted panes.
-  const [vcsOpen, setVcsOpen] = useState(false);
-  // Prompt Library navigation state. When set from a search result (FR-009), the
-  // Prompt Library screen opens with that prompt's existing Edit modal.
-  const [promptToEditId, setPromptToEditId] = useState<number | null>(null);
   // Import/Export (FR-010, FR-011): the conversation being exported (opens the
   // export modal when set) and whether the import modal is shown.
   const io = useImportExport();
@@ -221,6 +110,10 @@ function AppShell() {
   // Per-run spend guard (micro-USD budget): Settings edits it, new agent runs
   // read it backend-side.
   const spendLimit = useSpendLimit();
+  // Agent-autonomy default (NEX-FE-003): single source shared by Settings
+  // and the conversation header, so either surface's change reflects in the
+  // other immediately (no mirrors, no focus-resync).
+  const autonomy = useAutonomy();
   // Zen reading mode: chromeless (sidebar + tab strip + pane headers hidden
   // via .nex-zen), Esc exits. Session-only, like tab state.
   const [zen, setZen] = useState(false);
@@ -239,67 +132,6 @@ function AppShell() {
   // A palette-chosen command runs after the palette unmounts (see the
   // deferred-run effect below), so focus moves land on live targets.
   const [pendingPaletteRun, setPendingPaletteRun] = useState<(() => void) | null>(null);
-  // Palette deep-link targets: the settings section to show and the VCS
-  // panel request to raise when those overlays open from the palette.
-  const [settingsSection, setSettingsSection] =
-    useState<PaletteSettingsSection>("appearance");
-  const [vcsRequest, setVcsRequest] = useState<{
-    token: number;
-    action: PaletteVcsRequest;
-  } | null>(null);
-  // Activity & Health screen (read-only feed + project snapshot): ONE overlay
-  // area with two tabs — a single rail entry opens it; palette/shortcuts
-  // deep-link the tab via the request token (same pattern as vcsRequest).
-  const [activityOpen, setActivityOpen] = useState(false);
-  const [activityTab, setActivityTab] = useState<ActivityHealthTab>("activity");
-  const [activityRequest, setActivityRequest] = useState<{
-    token: number;
-    tab: ActivityHealthTab;
-  } | null>(null);
-  // Workspace Terminal screen: a workspace-scoped navigation destination
-  // like Settings/Library/VCS/Activity — a sidebar rail entry (not a
-  // header action: the header is per-conversation, the terminal is per
-  // workspace) opening an overlay over the still-mounted panes. Palette
-  // deep-links (clear / focus-input) ride the same request-token pattern
-  // as vcsRequest.
-  const [terminalOpen, setTerminalOpen] = useState(false);
-  const [terminalRequest, setTerminalRequest] = useState<{
-    token: number;
-    action: PaletteTerminalRequest;
-  } | null>(null);
-  // Tasks screen: a workspace-scoped navigation destination like
-  // Settings/Library/VCS/Activity/Terminal — a sidebar rail entry opening
-  // an overlay over the still-mounted panes (palette + Ctrl+Shift+T open it
-  // too; no panel request token — the panel reloads from the backend).
-  const [tasksOpen, setTasksOpen] = useState(false);
-  // Code Audit screen: a workspace-scoped navigation destination like
-  // Settings/Library/VCS/Activity/Terminal/Tasks — a sidebar rail entry
-  // opening an overlay over the still-mounted panes (palette + Ctrl+Shift+U
-  // open it too; the panel scans manually on Run only, never on mount).
-  const [auditOpen, setAuditOpen] = useState(false);
-  // Debt backlog screen: a workspace-scoped navigation destination like
-  // Settings/Library/VCS/Activity/Terminal/Tasks/Audit — a sidebar rail
-  // entry opening an overlay over the still-mounted panes (palette opens it
-  // too; the panel lists from the backend on mount and imports manually).
-  const [debtOpen, setDebtOpen] = useState(false);
-  // Issues & PRs screen: a workspace-scoped navigation destination like
-  // Settings/Library/VCS/Activity/Terminal/Tasks/Audit — a sidebar rail
-  // entry opening an overlay over the still-mounted panes (palette +
-  // Ctrl+Shift+G open it too; the panel loads from the backend on mount
-  // and on every kind/state change, plus manual Refresh).
-  const [ghOpen, setGhOpen] = useState(false);
-  // Docs screen: a workspace-scoped navigation destination like
-  // Settings/Library/VCS/Activity/Terminal/Tasks/Audit/Debt/GH — a sidebar
-  // rail entry opening an overlay over the still-mounted panes (palette opens
-  // it too; the migration section loads its version spine from the backend
-  // on mount, everything else renders from code-backed registries).
-  const [docsOpen, setDocsOpen] = useState(false);
-  // Release screen: a workspace-scoped navigation destination like
-  // Settings/Library/VCS/Activity/Terminal/Tasks/Audit/Debt/GH/Docs — a
-  // sidebar rail entry opening an overlay over the still-mounted panes
-  // (palette opens it too; the panel loads from the backend on mount and on
-  // manual Refresh).
-  const [releaseOpen, setReleaseOpen] = useState(false);
   const mainRef = useRef<HTMLDivElement>(null);
 
   const draftFor = useCallback(
@@ -346,257 +178,52 @@ function AppShell() {
   const handleImported = async (newId: number) => {
     await reload();
     tabs.open(newId);
-    setLibraryOpen(false);
-    setSettingsOpen(false);
-    setVcsOpen(false);
-    setActivityOpen(false);
-    setTerminalOpen(false);
-    setTasksOpen(false);
-    setAuditOpen(false);
-    setDebtOpen(false);
-    setDocsOpen(false);
-    setGhOpen(false);
-    setReleaseOpen(false);
+    router.closeAll();
   };
 
   // Leading-edge guard for conversation creation: synchronous rapid clicks on
   // "New Conversation" all land before the button's disabled state re-renders,
   // so re-entrant calls are dropped here until the in-flight create resolves.
+  // Stabilized with useCallback (NEX-FE-002): the palette registry memo
+  // depends on this handler, so a fresh closure every render would rebuild
+  // the registry on every keystroke render.
   const creatingInFlight = useRef(false);
-  const handleNewConversation = async () => {
+  const handleNewConversation = useCallback(async () => {
     if (creatingInFlight.current) return;
     creatingInFlight.current = true;
     try {
       const id = await create();
       if (id !== null) {
         tabs.open(id);
-        setLibraryOpen(false);
-        setVcsOpen(false);
-        setActivityOpen(false);
-        setTerminalOpen(false);
-        setTasksOpen(false);
-        setAuditOpen(false);
-    setDebtOpen(false);
-    setDocsOpen(false);
-        setGhOpen(false);
-        setReleaseOpen(false);
-      }    } finally {
+        // Verbatim from the pre-router body: every overlay EXCEPT Settings
+        // closes (pre-existing asymmetry, preserved — new conversations stay
+        // behind an open Settings panel).
+        router.closeLibrary();
+        router.closeVcs();
+        router.closeActivity();
+        router.closeTerminal();
+        router.closeTasks();
+        router.closeAudit();
+        router.closeDebt();
+        router.closeDocs();
+        router.closeGh();
+        router.closeRelease();
+      }
+    } finally {
       creatingInFlight.current = false;
     }
-  };
+  }, [create, tabs, router]);
 
-  const handleSelect = (id: number) => {
-    tabs.open(id);
-    setLibraryOpen(false);
-    // Opening a conversation (including from a search result) leaves Settings.
-    setSettingsOpen(false);
-    setVcsOpen(false);
-    setActivityOpen(false);
-    setTerminalOpen(false);
-    setTasksOpen(false);
-    setAuditOpen(false);
-    setDebtOpen(false);
-    setDocsOpen(false);
-    setGhOpen(false);
-    setReleaseOpen(false);
-  };
-
-  const openSettings = useCallback((section?: PaletteSettingsSection) => {
-    setSettingsSection(section ?? "appearance");
-    setSettingsOpen(true);
-    setLibraryOpen(false);
-    setVcsOpen(false);
-    setActivityOpen(false);
-    setTerminalOpen(false);
-    setTasksOpen(false);
-    setAuditOpen(false);
-    setDebtOpen(false);
-    setDocsOpen(false);
-    setGhOpen(false);
-    setReleaseOpen(false);
-  }, []);
-  const openLibrary = useCallback(() => {
-    // A fresh entry to the library opens the list, not a previously staged edit.
-    setPromptToEditId(null);
-    setLibraryOpen(true);
-    setSettingsOpen(false);
-    setVcsOpen(false);
-    setActivityOpen(false);
-    setTerminalOpen(false);
-    setTasksOpen(false);
-    setAuditOpen(false);
-    setDebtOpen(false);
-    setDocsOpen(false);
-    setGhOpen(false);
-    setReleaseOpen(false);
-  }, []);
-  const closeLibrary = () => {
-    setLibraryOpen(false);
-    setPromptToEditId(null);
-  };
-  const openVcs = useCallback((request?: PaletteVcsRequest) => {
-    setVcsRequest(request ? { token: Date.now(), action: request } : null);
-    setVcsOpen(true);
-    setLibraryOpen(false);
-    setSettingsOpen(false);
-    setActivityOpen(false);
-    setTerminalOpen(false);
-    setTasksOpen(false);
-    setAuditOpen(false);
-    setDebtOpen(false);
-    setDocsOpen(false);
-    setGhOpen(false);
-    setReleaseOpen(false);
-  }, []);
-  const closeVcs = () => {
-    setVcsOpen(false);
-  };
-  const openTerminal = useCallback((request?: PaletteTerminalRequest) => {
-    setTerminalRequest(request ? { token: Date.now(), action: request } : null);
-    setTerminalOpen(true);
-    setLibraryOpen(false);
-    setSettingsOpen(false);
-    setVcsOpen(false);
-    setActivityOpen(false);
-    setTasksOpen(false);
-  }, []);
-  const closeTerminal = () => {
-    setTerminalOpen(false);
-  };
-  const openActivity = useCallback((tab: ActivityHealthTab = "activity") => {
-    // Deep links always retarget the tab (even when already open): the
-    // token identifies the request so re-renders never replay it.
-    setActivityTab(tab);
-    setActivityRequest({ token: Date.now(), tab });
-    setActivityOpen(true);
-    setLibraryOpen(false);
-    setSettingsOpen(false);
-    setVcsOpen(false);
-    setTerminalOpen(false);
-    setTasksOpen(false);
-    setAuditOpen(false);
-    setDebtOpen(false);
-    setDocsOpen(false);
-    setGhOpen(false);
-    setReleaseOpen(false);
-  }, []);
-  const closeActivity = () => {
-    setActivityOpen(false);
-  };
-  const openTasks = useCallback(() => {
-    setTasksOpen(true);
-    setLibraryOpen(false);
-    setSettingsOpen(false);
-    setVcsOpen(false);
-    setActivityOpen(false);
-    setTerminalOpen(false);
-    setAuditOpen(false);
-    setDebtOpen(false);
-    setDocsOpen(false);
-    setGhOpen(false);
-    setReleaseOpen(false);
-  }, []);
-  const closeTasks = () => {
-    setTasksOpen(false);
-  };
-  const openAudit = useCallback(() => {
-    setLibraryOpen(false);
-    setSettingsOpen(false);
-    setVcsOpen(false);
-    setActivityOpen(false);
-    setTerminalOpen(false);
-    setTasksOpen(false);
-    setGhOpen(false);
-    setReleaseOpen(false);
-    setDebtOpen(false);
-    setDocsOpen(false);
-    setAuditOpen(true);
-  }, []);
-  const closeAudit = () => {
-    setAuditOpen(false);
-    setGhOpen(false);
-  };
-  const openDebt = useCallback(() => {
-    setDebtOpen(true);
-    setDocsOpen(false);
-    setLibraryOpen(false);
-    setSettingsOpen(false);
-    setVcsOpen(false);
-    setActivityOpen(false);
-    setTerminalOpen(false);
-    setTasksOpen(false);
-    setAuditOpen(false);
-    setGhOpen(false);
-    setReleaseOpen(false);
-  }, []);
-  const closeDebt = () => {
-    setDebtOpen(false);
-  };
-  const openGh = useCallback(() => {
-    setLibraryOpen(false);
-    setSettingsOpen(false);
-    setVcsOpen(false);
-    setActivityOpen(false);
-    setTerminalOpen(false);
-    setTasksOpen(false);
-    setAuditOpen(false);
-    setDebtOpen(false);
-    setDocsOpen(false);
-    setReleaseOpen(false);
-    setGhOpen(true);
-  }, []);
-  const closeGh = () => {
-    setGhOpen(false);
-  };
-  const openDocs = useCallback(() => {
-    setDocsOpen(true);
-    setLibraryOpen(false);
-    setSettingsOpen(false);
-    setVcsOpen(false);
-    setActivityOpen(false);
-    setTerminalOpen(false);
-    setTasksOpen(false);
-    setAuditOpen(false);
-    setDebtOpen(false);
-    setGhOpen(false);
-    setReleaseOpen(false);
-  }, []);
-  const openRelease = useCallback(() => {
-    setReleaseOpen(true);
-    setLibraryOpen(false);
-    setSettingsOpen(false);
-    setVcsOpen(false);
-    setActivityOpen(false);
-    setTerminalOpen(false);
-    setTasksOpen(false);
-    setAuditOpen(false);
-    setDebtOpen(false);
-    setGhOpen(false);
-    setDocsOpen(false);
-  }, []);
-  const closeDocs = () => {
-    setDocsOpen(false);
-  };
-  const closeRelease = () => {
-    setReleaseOpen(false);
-  };
-
-  // Open a prompt found by search: show the Prompt Library and open the selected
-  // prompt (not merely the first prompt) in its existing Edit modal (FR-009).
-  const handleSelectPrompt = (promptId: number) => {
-    setSettingsOpen(false);
-    setLibraryOpen(true);
-    setPromptToEditId(promptId);
-    setVcsOpen(false);
-    setActivityOpen(false);
-    setTerminalOpen(false);
-    setTasksOpen(false);
-    setAuditOpen(false);
-    setDebtOpen(false);
-    setDocsOpen(false);
-    setGhOpen(false);
-    setReleaseOpen(false);
-  };
+  // Stabilized with useCallback (NEX-FE-002): consumed by the memoized
+  // navigation context value.
+  const handleSelect = useCallback(
+    (id: number) => {
+      tabs.open(id);
+      // Opening a conversation (including from a search result) leaves Settings.
+      router.closeAll();
+    },
+    [tabs, router],
+  );
 
   // FR-007 "Use": stage the prompt's content into the active pane's composer,
   // then return to the conversation so the staged text is visible.
@@ -604,9 +231,8 @@ function AppShell() {
     if (tabs.activeId !== null) {
       setDrafts((prev) => ({ ...prev, [tabs.activeId as number]: content }));
     }
-    setLibraryOpen(false);
+    router.closeLibrary();
   };
-
   // Split toggle (Alt+S, tab strip + pane headers): close the secondary pane
   // when open; otherwise split the most-recently opened other tab beside the
   // active one. Single-tab state cannot split (button disables).
@@ -630,48 +256,27 @@ function AppShell() {
     setLocale(locale === "en" ? "ru" : "en");
   }, [locale, setLocale]);
 
-  // Overlay-exit contract shared by tab mutations and palette commands:
-  // switching surface closes Settings/Library/VCS/Activity/Terminal/Tasks (same
-  // as clicking a tab or sidebar row — overlays never sit above a switched
-  // tab).
-  const closeOverlays = useCallback(() => {
-    setLibraryOpen(false);
-    setSettingsOpen(false);
-    setVcsOpen(false);
-    setActivityOpen(false);
-    setTerminalOpen(false);
-    setTasksOpen(false);
-    setAuditOpen(false);
-    setDebtOpen(false);
-    setDocsOpen(false);
-    setGhOpen(false);
-    setReleaseOpen(false);
-  }, []);
-
   // Focus the active pane's composer (palette "Focus message input"):
   // overlays close first, then focus lands after the re-render commits.
   const focusComposer = useCallback(() => {
-    setLibraryOpen(false);
-    setSettingsOpen(false);
-    setVcsOpen(false);
-    setActivityOpen(false);
-    setTerminalOpen(false);
-    setTasksOpen(false);
-    setAuditOpen(false);
-    setDebtOpen(false);
-    setDocsOpen(false);
-    setGhOpen(false);
-    setReleaseOpen(false);
+    router.closeAll();
     window.setTimeout(() => {
       document
         .querySelector<HTMLTextAreaElement>(".nex-composer-input")
         ?.focus();
     }, 0);
-  }, []);
+  }, [router]);
 
   const exportActiveConversation = useCallback(() => {
     if (tabs.activeId !== null) setExportTargetId(tabs.activeId);
   }, [tabs.activeId]);
+
+  // No-argument Settings opener for click targets (NEX-FE-001): button
+  // `onClick` handlers receive the native click event, which must never
+  // reach the parameterized router opener (it would become the section).
+  const openDefaultSettings = useCallback(() => {
+    router.openSettings();
+  }, [router]);
 
   // Entering zen keeps focus in content (the main landmark); leaving zen
   // returns focus to the active tab so keyboard users resume where they
@@ -711,7 +316,7 @@ function AppShell() {
       }
       // Tab mutations surface the conversation: same overlay-exit contract
       // as clicking a tab or sidebar row (Settings/Library/VCS never sit
-      // above a switched tab) — see closeOverlays above.
+      // above a switched tab) — see router.closeAll.
       // Global combos read their definitions from the SHORTCUTS registry
       // (lib/shortcuts.ts) — the matcher below is identical to the
       // previous inline key checks (same modifiers, same shift tolerance).
@@ -719,7 +324,7 @@ function AppShell() {
         // shortcut:tabs.next
         if (matchesCombo(event, COMBO_TAB_NEXT_TAB)) {
           event.preventDefault();
-          closeOverlays();
+          router.closeAll();
           if (event.shiftKey) tabs.prev();
           else tabs.next();
           return;
@@ -727,14 +332,14 @@ function AppShell() {
         // shortcut:tabs.next
         if (matchesCombo(event, COMBO_TAB_NEXT_PAGEDOWN)) {
           event.preventDefault();
-          closeOverlays();
+          router.closeAll();
           tabs.next();
           return;
         }
         // shortcut:tabs.prev
         if (matchesCombo(event, COMBO_TAB_PREV_PAGEDUP)) {
           event.preventDefault();
-          closeOverlays();
+          router.closeAll();
           tabs.prev();
           return;
         }
@@ -747,7 +352,7 @@ function AppShell() {
         // shortcut:tabs.close-active
         if (matchesCombo(event, COMBO_TAB_CLOSE)) {
           event.preventDefault();
-          closeOverlays();
+          router.closeAll();
           if (tabs.activeId !== null) tabs.close(tabs.activeId);
         } else if (matchesCombo(event, COMBO_SPLIT_TOGGLE)) {
           // shortcut:layout.split
@@ -763,7 +368,7 @@ function AppShell() {
           // the guard shape is documented as COMBO_TAB_JUMP_GUARD.
           if (event.key >= "1" && event.key <= "9") {
             event.preventDefault();
-            closeOverlays();
+            router.closeAll();
             const position =
               event.key === "9" ? tabs.openIds.length - 1 : Number(event.key) - 1;
             tabs.jumpTo(position);
@@ -773,7 +378,7 @@ function AppShell() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [zen, tabs, handleToggleSplit, toggleZen, closeOverlays]);
+  }, [zen, tabs, handleToggleSplit, toggleZen, router]);
 
   // Command-palette toggle (shortcut:palette.toggle — Ctrl+K, with Ctrl+P
   // as a collision-free alias: the existing Ctrl map owns only
@@ -834,12 +439,12 @@ function AppShell() {
       }
       if (document.querySelector('[role="dialog"]') !== null) return;
       event.preventDefault();
-      if (matchesCombo(event, COMBO_HEALTH_OPEN)) openActivity("health");
-      else openActivity("activity");
+      if (matchesCombo(event, COMBO_HEALTH_OPEN)) router.openActivity("health");
+      else router.openActivity("activity");
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [openActivity]);
+  }, [router]);
 
   // Terminal shortcut (shortcut:go.terminal — Ctrl+`): same guarded pattern
   // (opens from anywhere including typing targets — the combo inserts no
@@ -849,11 +454,11 @@ function AppShell() {
       if (!matchesCombo(event, COMBO_TERMINAL_OPEN)) return;
       if (document.querySelector('[role="dialog"]') !== null) return;
       event.preventDefault();
-      openTerminal();
+      router.openTerminal();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [openTerminal]);
+  }, [router]);
 
   // Tasks shortcut (shortcut:go.tasks — Ctrl+Shift+T): same guarded pattern
   // (opens from anywhere including typing targets — the combo inserts no
@@ -863,11 +468,11 @@ function AppShell() {
       if (!matchesCombo(event, COMBO_TASKS_OPEN)) return;
       if (document.querySelector('[role="dialog"]') !== null) return;
       event.preventDefault();
-      openTasks();
+      router.openTasks();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [openTasks]);
+  }, [router]);
 
   // Code Audit shortcut (shortcut:go.audit — Ctrl+Shift+U): same guarded
   // pattern (opens from anywhere including typing targets — the combo
@@ -877,11 +482,11 @@ function AppShell() {
       if (!matchesCombo(event, COMBO_AUDIT_OPEN)) return;
       if (document.querySelector('[role="dialog"]') !== null) return;
       event.preventDefault();
-      openAudit();
+      router.openAudit();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [openAudit]);
+  }, [router]);
 
   // Issues & PRs shortcut (shortcut:go.gh — Ctrl+Shift+G): same guarded
   // pattern (opens from anywhere including typing targets — the combo
@@ -891,28 +496,28 @@ function AppShell() {
       if (!matchesCombo(event, COMBO_GH_OPEN)) return;
       if (document.querySelector('[role="dialog"]') !== null) return;
       event.preventDefault();
-      openGh();
+      router.openGh();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [openGh]);
+  }, [router]);
 
   // Onboarding re-entry (palette "Replay onboarding walkthrough" + Settings
   // nav entry): overlays close first so the flow never stacks above another
-  // dialog (same overlay-exit contract as closeOverlays).
+  // dialog (same overlay-exit contract as router.closeAll).
   const replayOnboarding = useCallback(() => {
-    closeOverlays();
+    router.closeAll();
     setPaletteOpen(false);
     setShortcutsOpen(false);
     replayOnboardingFlow();
-  }, [closeOverlays, replayOnboardingFlow]);
+  }, [router, replayOnboardingFlow]);
 
   // Onboarding "Open Settings" exit: dismiss the flow, then deep-link the
   // credentials section (the most likely next setup action).
   const handleOnboardingOpenSettings = useCallback(() => {
     dismissOnboarding();
-    openSettings("credentials");
-  }, [dismissOnboarding, openSettings]);
+    router.openSettings("credentials");
+  }, [dismissOnboarding, router]);
 
   // First-run auto-show: fresh installs (no usable provider AND no
   // workspace root) see the flow once, only when no overlay or dialog is
@@ -923,17 +528,7 @@ function AppShell() {
     if (onboarding.completed || onboarding.open) return;
     if (providers.loading || workspace.loading) return;
     if (
-      settingsOpen ||
-      libraryOpen ||
-      vcsOpen ||
-      activityOpen ||
-      terminalOpen ||
-      tasksOpen ||
-      auditOpen ||
-      debtOpen ||
-      ghOpen ||
-      docsOpen ||
-      releaseOpen ||
+      router.hasOverlay ||
       paletteOpen ||
       shortcutsOpen
     ) {
@@ -949,17 +544,7 @@ function AppShell() {
     anyProviderAvailable,
     workspace.loading,
     workspace.root,
-    settingsOpen,
-    libraryOpen,
-    vcsOpen,
-    activityOpen,
-    terminalOpen,
-    tasksOpen,
-    auditOpen,
-    debtOpen,
-    ghOpen,
-    docsOpen,
-    releaseOpen,
+    router.hasOverlay,
     paletteOpen,
     shortcutsOpen,
   ]);
@@ -971,32 +556,32 @@ function AppShell() {
     () =>
       buildCommands(
         {
-          goConversations: closeOverlays,
-          openSettings,
-          openLibrary,
-          openVcs,
-          openActivity,
-          openTerminal,
-          openTasks,
-          openAudit,
-          openDebt,
-          openGh,
-          openDocs,
-          openRelease,
+          goConversations: router.closeAll,
+          openSettings: router.openSettings,
+          openLibrary: router.openLibrary,
+          openVcs: router.openVcs,
+          openActivity: router.openActivity,
+          openTerminal: router.openTerminal,
+          openTasks: router.openTasks,
+          openAudit: router.openAudit,
+          openDebt: router.openDebt,
+          openGh: router.openGh,
+          openDocs: router.openDocs,
+          openRelease: router.openRelease,
           newConversation: () => void handleNewConversation(),
           openImport: () => setImportOpen(true),
           exportActive: exportActiveConversation,
           focusComposer,
           tabNext: () => {
-            closeOverlays();
+            router.closeAll();
             tabs.next();
           },
           tabPrev: () => {
-            closeOverlays();
+            router.closeAll();
             tabs.prev();
           },
           tabCloseActive: () => {
-            closeOverlays();
+            router.closeAll();
             if (tabs.activeId !== null) tabs.close(tabs.activeId);
           },
           toggleSplit: handleToggleSplit,
@@ -1006,7 +591,7 @@ function AppShell() {
           addWorkspaceRoot: () => void workspace.addRootFolder(),
           replayOnboarding,
           jumpToTab: (index: number) => {
-            closeOverlays();
+            router.closeAll();
             tabs.jumpTo(index);
           },
           tabCount: () => tabs.openIds.length,
@@ -1014,18 +599,7 @@ function AppShell() {
         locale,
       ),
     [
-      closeOverlays,
-      openSettings,
-      openLibrary,
-      openVcs,
-      openActivity,
-      openTerminal,
-      openTasks,
-      openAudit,
-      openDebt,
-      openGh,
-      openDocs,
-      openRelease,
+      router,
       handleNewConversation,
       exportActiveConversation,
       focusComposer,
@@ -1076,18 +650,7 @@ function AppShell() {
   };
   // A prompt can only be staged when a conversation is open.
   const hasActiveConversation = activeConversation != null;
-  const showOverlays =
-    libraryOpen ||
-    settingsOpen ||
-    vcsOpen ||
-    activityOpen ||
-    terminalOpen ||
-    tasksOpen ||
-    auditOpen ||
-    debtOpen ||
-    ghOpen ||
-    docsOpen ||
-    releaseOpen;
+  const showOverlays = router.hasOverlay;
   // The split grid stays mounted in zen (the secondary pane hides via
   // .nex-zen CSS, same technique as the zen chrome rules) so both
   // ConversationView instances survive entering/exiting zen. Split
@@ -1126,9 +689,10 @@ function AppShell() {
           conversation={activeConversation}
           selectedProvider={providers.selectedProvider}
           selectedModel={providers.selectedModel}
+          autonomy={autonomy}
           draft={draftFor(activeConversation.id)}
           setDraft={setDraftFor(activeConversation.id)}
-          onOpenSettings={openSettings}
+          onOpenSettings={openDefaultSettings}
           onMessageSent={() => void reload()}
           onExport={setExportTargetId}
           workspaceRoot={workspace.root}
@@ -1142,9 +706,10 @@ function AppShell() {
           conversation={splitConversation}
           selectedProvider={providers.selectedProvider}
           selectedModel={providers.selectedModel}
+          autonomy={autonomy}
           draft={draftFor(splitConversation.id)}
           setDraft={setDraftFor(splitConversation.id)}
-          onOpenSettings={openSettings}
+          onOpenSettings={openDefaultSettings}
           onMessageSent={() => void reload()}
           onExport={setExportTargetId}
           workspaceRoot={workspace.root}
@@ -1160,9 +725,10 @@ function AppShell() {
         conversation={activeConversation}
         selectedProvider={providers.selectedProvider}
         selectedModel={providers.selectedModel}
+        autonomy={autonomy}
         draft={draftFor(activeConversation.id)}
         setDraft={setDraftFor(activeConversation.id)}
-        onOpenSettings={openSettings}
+        onOpenSettings={openDefaultSettings}
         onMessageSent={() => void reload()}
         onExport={setExportTargetId}
         workspaceRoot={workspace.root}
@@ -1174,51 +740,79 @@ function AppShell() {
       />
     );
 
+  // Navigation context value (NEX-FE-001): everything Sidebar took as ~30
+  // props. All openers are no-argument wrappers so rail click events never
+  // reach the parameterized router openers. Memoized so Sidebar only
+  // re-renders when navigation state actually changes.
+  const navigation: Navigation = useMemo(
+    () => ({
+      conversations,
+      loading,
+      error,
+      creating,
+      busy: working,
+      selectedId: tabs.activeId,
+      onSelect: handleSelect,
+      onExport: setExportTargetId,
+      onNewConversation: () => void handleNewConversation(),
+      onRetry: reload,
+      onOpenSettings: openDefaultSettings,
+      libraryActive: router.active === "library",
+      onOpenPromptLibrary: router.openLibrary,
+      vcsActive: router.active === "vcs",
+      onOpenVersionControl: () => router.openVcs(),
+      activityActive: router.active === "activity",
+      onOpenActivity: () => router.openActivity("activity"),
+      terminalActive: router.active === "terminal",
+      onOpenTerminal: () => router.openTerminal(),
+      tasksActive: router.active === "tasks",
+      onOpenTasks: router.openTasks,
+      auditActive: router.active === "audit",
+      onOpenAudit: router.openAudit,
+      debtActive: router.active === "debt",
+      onOpenDebt: router.openDebt,
+      ghActive: router.active === "gh",
+      onOpenGh: router.openGh,
+      docsActive: router.active === "docs",
+      onOpenDocs: router.openDocs,
+      releaseActive: router.active === "release",
+      onOpenRelease: router.openRelease,
+      onSelectPrompt: router.selectPrompt,
+      onImport: () => setImportOpen(true),
+      onRename: rename,
+      onArchive: (id: number) => void archive(id),
+      onRestore: (id: number) => void restore(id),
+      onDelete: (id: number) => void remove(id),
+      workspace,
+    }),
+    [
+      conversations,
+      loading,
+      error,
+      creating,
+      working,
+      tabs,
+      handleSelect,
+      handleNewConversation,
+      reload,
+      openDefaultSettings,
+      router,
+      rename,
+      archive,
+      restore,
+      remove,
+      workspace,
+    ],
+  );
+
   return (
     <div className={"nex-app" + (zen ? " nex-zen" : "")}>
       <a className="nex-skip-link" href="#nex-main-content">
         {t("app.skipLink")}
       </a>
-      <Sidebar
-        conversations={conversations}
-        loading={loading}
-        error={error}
-        creating={creating}
-        busy={working}
-        selectedId={tabs.activeId}
-        onSelect={handleSelect}
-        onExport={setExportTargetId}
-        onNewConversation={() => void handleNewConversation()}
-        onRetry={reload}
-        onOpenSettings={openSettings}
-        libraryActive={libraryOpen}
-        onOpenPromptLibrary={openLibrary}
-        vcsActive={vcsOpen}
-        onOpenVersionControl={openVcs}
-        activityActive={activityOpen}
-        onOpenActivity={() => openActivity("activity")}
-        terminalActive={terminalOpen}
-        onOpenTerminal={() => openTerminal()}
-        tasksActive={tasksOpen}
-        onOpenTasks={openTasks}
-        auditActive={auditOpen}
-        onOpenAudit={openAudit}
-        debtActive={debtOpen}
-        onOpenDebt={openDebt}
-        ghActive={ghOpen}
-        onOpenGh={openGh}
-        docsActive={docsOpen}
-        onOpenDocs={openDocs}
-        releaseActive={releaseOpen}
-        onOpenRelease={openRelease}
-        onSelectPrompt={handleSelectPrompt}
-        onImport={() => setImportOpen(true)}
-        onRename={rename}
-        onArchive={(id) => void archive(id)}
-        onRestore={(id) => void restore(id)}
-        onDelete={(id) => void remove(id)}
-        workspace={workspace}
-      />
+      <NavigationProvider value={navigation}>
+        <Sidebar />
+      </NavigationProvider>
       <div className="nex-main" id="nex-main-content" tabIndex={-1} ref={mainRef}>
         {!zen && !showOverlays && (
           <ConversationTabs
@@ -1227,17 +821,7 @@ function AppShell() {
             splitId={tabs.splitId}
             onActivate={(id) => {
               tabs.activate(id);
-              setLibraryOpen(false);
-              setSettingsOpen(false);
-              setVcsOpen(false);
-              setActivityOpen(false);
-              setTerminalOpen(false);
-              setTasksOpen(false);
-              setAuditOpen(false);
-    setDebtOpen(false);
-    setDocsOpen(false);
-              setGhOpen(false);
-              setReleaseOpen(false);
+              router.closeAll();
             }}
             onClose={tabs.close}
             onNewConversation={() => void handleNewConversation()}
@@ -1259,40 +843,40 @@ function AppShell() {
             <div className="nex-main-hidden" aria-hidden="true">
               {conversationContent}
             </div>
-            {libraryOpen ? (
+            {router.libraryOpen ? (
               <PromptLibraryView
-                onClose={closeLibrary}
+                onClose={router.closeLibrary}
                 hasActiveConversation={hasActiveConversation}
                 onUse={handleUsePrompt}
-                initialEditId={promptToEditId}
+                initialEditId={router.promptToEditId}
               />
-            ) : vcsOpen ? (
-              <VersionControlPanel onClose={closeVcs} request={vcsRequest} />
-            ) : activityOpen ? (
+            ) : router.vcsOpen ? (
+              <VersionControlPanel onClose={router.closeVcs} request={router.vcsRequest} />
+            ) : router.activityOpen ? (
               <ActivityHealthPanel
-                onClose={closeActivity}
-                initialTab={activityTab}
-                tabRequest={activityRequest}
+                onClose={router.closeActivity}
+                initialTab={router.activityTab}
+                tabRequest={router.activityRequest}
                 activeConversationId={tabs.activeId}
               />
-            ) : terminalOpen ? (
-              <TerminalPanel onClose={closeTerminal} request={terminalRequest} />
-            ) : tasksOpen ? (
+            ) : router.terminalOpen ? (
+              <TerminalPanel onClose={router.closeTerminal} request={router.terminalRequest} />
+            ) : router.tasksOpen ? (
               <TaskPanel
-                onClose={closeTasks}
+                onClose={router.closeTasks}
                 defaultProvider={providers.selectedProvider}
                 defaultModel={providers.selectedModel}
               />
-            ) : auditOpen ? (
-              <AuditPanel onClose={closeAudit} />
-            ) : debtOpen ? (
-              <DebtPanel onClose={closeDebt} />
-            ) : ghOpen ? (
-              <IssuesPanel onClose={closeGh} />
-            ) : docsOpen ? (
-              <DocsPanel onClose={closeDocs} />
-            ) : releaseOpen ? (
-              <ReleasePanel onClose={closeRelease} />
+            ) : router.auditOpen ? (
+              <AuditPanel onClose={router.closeAudit} />
+            ) : router.debtOpen ? (
+              <DebtPanel onClose={router.closeDebt} />
+            ) : router.ghOpen ? (
+              <IssuesPanel onClose={router.closeGh} />
+            ) : router.docsOpen ? (
+              <DocsPanel onClose={router.closeDocs} />
+            ) : router.releaseOpen ? (
+              <ReleasePanel onClose={router.closeRelease} />
             ) : (
               <SettingsView
                 store={providers}
@@ -1302,9 +886,10 @@ function AppShell() {
                 workspaceRoot={workspace.root}
                 workspaceLoading={workspace.loading}
                 spendLimit={spendLimit}
-                onClose={() => setSettingsOpen(false)}
+                autonomy={autonomy}
+                onClose={router.closeSettings}
                 onDataCleared={() => void reload()}
-                initialSection={settingsSection}
+                initialSection={router.settingsSection}
                 onOpenImport={() => setImportOpen(true)}
                 onExportActive={exportActiveConversation}
                 onReplayOnboarding={replayOnboarding}

@@ -1,5 +1,3 @@
-import type { CommandError, Conversation } from "../lib/tauri";
-import type { WorkspaceStore } from "../lib/useWorkspace";
 import ActivityHealthEntry from "./ActivityHealthEntry";
 import AuditEntry from "./AuditEntry";
 import ConversationList from "./ConversationList";
@@ -7,6 +5,7 @@ import DebtEntry from "./DebtEntry";
 import DocsEntry from "./DocsEntry";
 import IssuesEntry from "./IssuesEntry";
 import M3RailItem from "./M3RailItem";
+import { useNavigation } from "./NavigationContext";
 import NewConversationButton from "./NewConversationButton";
 import NexoraMark from "./NexoraMark";
 import PromptLibraryEntry from "./PromptLibraryEntry";
@@ -21,100 +20,50 @@ import WorkspaceRootsSwitcher from "./WorkspaceRootsSwitcher";
 import { ImportIcon } from "./icons";
 import { useStrings } from "../lib/useLocale";
 
-export interface SidebarProps {
-  conversations: Conversation[];
-  loading: boolean;
-  error: CommandError | null;
-  creating: boolean;
-  busy: boolean;
-  selectedId: number | null;
-  onSelect: (id: number) => void;
-  onExport: (id: number) => void;
-  onNewConversation: () => void;
-  onRetry: () => void;
-  onOpenSettings: () => void;
-  /** Whether the Prompt Library screen is currently shown. */
-  libraryActive: boolean;
-  onOpenPromptLibrary: () => void;
-  /** Whether the Version Control screen is currently shown. */
-  vcsActive: boolean;
-  onOpenVersionControl: () => void;
-  /** Whether the Activity & Health screen is currently shown. */
-  activityActive: boolean;
-  onOpenActivity: () => void;
-  /** Whether the Terminal screen is currently shown. */
-  terminalActive: boolean;
-  onOpenTerminal: () => void;
-  /** Whether the Tasks screen is currently shown. */
-  tasksActive: boolean;
-  onOpenTasks: () => void;
-  /** Whether the Code Audit screen is currently shown. */
-  auditActive: boolean;
-  onOpenAudit: () => void;
-  /** Whether the Debt backlog screen is currently shown. */
-  debtActive: boolean;
-  onOpenDebt: () => void;
-  /** Whether the Issues & PRs screen is currently shown. */
-  ghActive: boolean;
-  onOpenGh: () => void;
-  /** Whether the Docs screen is currently shown. */
-  docsActive: boolean;
-  onOpenDocs: () => void;
-  /** Whether the Release screen is currently shown. */
-  releaseActive: boolean;
-  onOpenRelease: () => void;
-  /** Open a prompt found by search in the Prompt Library editor. */
-  onSelectPrompt: (promptId: number) => void;
-  /** Open the import-conversation flow (FR-011). */
-  onImport: () => void;
-  onRename: (id: number, title: string) => Promise<void>;
-  onArchive: (id: number) => void;
-  onRestore: (id: number) => void;
-  onDelete: (id: number) => void;
-  /** Agent workspace folder store (1.3.0 folder picker + recent list). */
-  workspace: WorkspaceStore;
-}
-
-export default function Sidebar({
-  conversations,
-  loading,
-  error,
-  creating,
-  busy,
-  selectedId,
-  onSelect,
-  onExport,
-  onNewConversation,
-  onRetry,
-  onOpenSettings,
-  libraryActive,
-  onOpenPromptLibrary,
-  vcsActive,
-  onOpenVersionControl,
-  activityActive,
-  onOpenActivity,
-  terminalActive,
-  onOpenTerminal,
-  tasksActive,
-  onOpenTasks,
-  auditActive,
-  onOpenAudit,
-  debtActive,
-  onOpenDebt,
-  ghActive,
-  onOpenGh,
-  docsActive,
-  onOpenDocs,
-  releaseActive,
-  onOpenRelease,
-  onSelectPrompt,
-  onImport,
-  onRename,
-  onArchive,
-  onRestore,
-  onDelete,
-  workspace,
-}: SidebarProps) {
+// Navigation + conversation wiring comes from NavigationContext (NEX-FE-001),
+// so the shell renders a prop-less `<Sidebar />`. Field-for-field identical
+// rendering — pure prop-to-context move, no visual change.
+export default function Sidebar() {
+  const {
+    conversations,
+    loading,
+    error,
+    creating,
+    busy,
+    selectedId,
+    onSelect,
+    onExport,
+    onNewConversation,
+    onRetry,
+    onOpenSettings,
+    libraryActive,
+    onOpenPromptLibrary,
+    vcsActive,
+    onOpenVersionControl,
+    activityActive,
+    onOpenActivity,
+    terminalActive,
+    onOpenTerminal,
+    tasksActive,
+    onOpenTasks,
+    auditActive,
+    onOpenAudit,
+    debtActive,
+    onOpenDebt,
+    ghActive,
+    onOpenGh,
+    docsActive,
+    onOpenDocs,
+    releaseActive,
+    onOpenRelease,
+    onSelectPrompt,
+    onImport,
+    onRename,
+    onArchive,
+    onRestore,
+    onDelete,
+    workspace,
+  } = useNavigation();
   const { t } = useStrings();
   return (
     <aside className="nex-sidebar" aria-label="Nexora">
@@ -125,7 +74,7 @@ export default function Sidebar({
             Nexora
           </span>
         </div>
-        <NewConversationButton onClick={onNewConversation} disabled={creating}>
+        <NewConversationButton onClick={() => onNewConversation()} disabled={creating}>
           {t("nav.newConversation")}
         </NewConversationButton>
         <SearchBox
@@ -152,19 +101,23 @@ export default function Sidebar({
 
       {/* Bottom-anchored rail destinations (settings entry + workspace):
           .nex-sidebar-footer pins this group to the rail foot with
-          margin-top:auto, separated by a single hairline seam. */}
+          margin-top:auto, separated by a single hairline seam.
+          No-argument wrappers (NEX-FE-001): rail `onClick` handlers receive
+          the native click event, which must never reach navigation openers
+          (previously `openSettings(clickEvent)` set the settings section to
+          the event object and Settings opened with a blank body). */}
       <div className="nex-sidebar-footer">
-        <SettingsEntry onClick={onOpenSettings} />
-        <PromptLibraryEntry active={libraryActive} onClick={onOpenPromptLibrary} />
-        <VersionControlEntry active={vcsActive} onClick={onOpenVersionControl} />
-        <ActivityHealthEntry active={activityActive} onClick={onOpenActivity} />
-        <TerminalEntry active={terminalActive} onClick={onOpenTerminal} />
-        <TaskEntry active={tasksActive} onClick={onOpenTasks} />
-        <AuditEntry active={auditActive} onClick={onOpenAudit} />
-        <DebtEntry active={debtActive} onClick={onOpenDebt} />
-        <IssuesEntry active={ghActive} onClick={onOpenGh} />
-        <DocsEntry active={docsActive} onClick={onOpenDocs} />
-        <ReleaseEntry active={releaseActive} onClick={onOpenRelease} />
+        <SettingsEntry onClick={() => onOpenSettings()} />
+        <PromptLibraryEntry active={libraryActive} onClick={() => onOpenPromptLibrary()} />
+        <VersionControlEntry active={vcsActive} onClick={() => onOpenVersionControl()} />
+        <ActivityHealthEntry active={activityActive} onClick={() => onOpenActivity()} />
+        <TerminalEntry active={terminalActive} onClick={() => onOpenTerminal()} />
+        <TaskEntry active={tasksActive} onClick={() => onOpenTasks()} />
+        <AuditEntry active={auditActive} onClick={() => onOpenAudit()} />
+        <DebtEntry active={debtActive} onClick={() => onOpenDebt()} />
+        <IssuesEntry active={ghActive} onClick={() => onOpenGh()} />
+        <DocsEntry active={docsActive} onClick={() => onOpenDocs()} />
+        <ReleaseEntry active={releaseActive} onClick={() => onOpenRelease()} />
         <WorkspaceFolderButton store={workspace} />
         <WorkspaceRootsSwitcher store={workspace} />
         {workspace.error && (
@@ -175,11 +128,9 @@ export default function Sidebar({
         <M3RailItem
           label={t("nav.importConversation")}
           icon={<ImportIcon />}
-          onClick={onImport}
+          onClick={() => onImport()}
         />
       </div>
     </aside>
   );
 }
-
-

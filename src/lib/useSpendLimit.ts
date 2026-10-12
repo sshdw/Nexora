@@ -5,7 +5,7 @@
 //! a positive integer caps the spend of new agent runs. The backend owns
 //! parsing; this hook mirrors the stored value and validates input.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
   deleteSetting,
@@ -102,5 +102,10 @@ export function useSpendLimit(): SpendLimitStore {
     void reload();
   }, [reload]);
 
-  return { limitMicroUsd, loading, saving, error, reload, setLimit };
+  // Memoized store identity (NEX-FE-002 audit): App passes the store
+  // object as a prop, so a fresh literal every render re-rendered Settings.
+  return useMemo(
+    () => ({ limitMicroUsd, loading, saving, error, reload, setLimit }),
+    [limitMicroUsd, loading, saving, error, reload, setLimit],
+  );
 }

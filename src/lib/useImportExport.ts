@@ -9,7 +9,7 @@
 //! [`CommandError`] and never leaves a busy state behind. Fully local —
 //! no network access is involved.
 
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { readTextFile } from "@tauri-apps/plugin-fs";
@@ -116,7 +116,12 @@ export function useImportExport(): ImportExportStore {
     setImportedId(null);
   }, []);
 
-  return { busy, error, exportSucceeded, importedId, exportTo, importFrom, clearStatus };
+  // Memoized store identity (NEX-FE-002 audit): App passes the store
+  // object as a prop to the import/export modals.
+  return useMemo(
+    () => ({ busy, error, exportSucceeded, importedId, exportTo, importFrom, clearStatus }),
+    [busy, error, exportSucceeded, importedId, exportTo, importFrom, clearStatus],
+  );
 }
 
 /** File-system-safe default name derived from the conversation title. */

@@ -6,7 +6,7 @@
 //! any other stored or requested value is rejected and the OS-matched
 //! default applies — invalid values never reach persistence.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { getSetting, setSetting } from "./tauri";
 
@@ -86,5 +86,7 @@ export function useAppearance(): AppearanceStore {
     applyTheme(next);
   }, []);
 
-  return { theme, setTheme };
+  // Memoized store identity (NEX-FE-002 audit): App passes the store
+  // object as a prop, so a fresh literal every render re-rendered Settings.
+  return useMemo(() => ({ theme, setTheme }), [theme, setTheme]);
 }

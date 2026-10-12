@@ -8,7 +8,7 @@
 //! Credential values are handled transiently by the UI and passed straight to
 //! the OS keyring via the Tauri layer — never stored or returned here.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
   type CommandError,
@@ -219,28 +219,55 @@ const connect = useCallback(
     [configuredProviders, selectedProvider, reload],
   );
 
-  const providers: ProviderStatus[] = supported.map((definition) => ({
-    supported: definition,
-    configured: configuredProviders.some((provider) => provider.name === definition.name),
-    credentialed: credentialedNames.has(definition.name),
-    available:
-      credentialedNames.has(definition.name) &&
-      configuredProviders.some((provider) => provider.name === definition.name),
-  }));
+  // Memoized derivation (NEX-FE-002 audit): without this the `providers`
+  // array — and therefore the whole store — is a fresh reference every
+  // render, defeating the store memo below.
+  const providers: ProviderStatus[] = useMemo(
+    () =>
+      supported.map((definition) => ({
+        supported: definition,
+        configured: configuredProviders.some(
+          (provider) => provider.name === definition.name,
+        ),
+        credentialed: credentialedNames.has(definition.name),
+        available:
+          credentialedNames.has(definition.name) &&
+          configuredProviders.some(
+            (provider) => provider.name === definition.name,
+          ),
+      })),
+    [supported, configuredProviders, credentialedNames],
+  );
 
-  return {
-    providers,
-    selectedProvider,
-    selectedModel,
-    loading,
-    error,
-    working,
-    reload,
-    selectProvider,
-    selectModel,
-    connect,
-    disconnect,
-  };
+  // Memoized store identity (NEX-FE-002 audit).
+  return useMemo(
+    () => ({
+      providers,
+      selectedProvider,
+      selectedModel,
+      loading,
+      error,
+      working,
+      reload,
+      selectProvider,
+      selectModel,
+      connect,
+      disconnect,
+    }),
+    [
+      providers,
+      selectedProvider,
+      selectedModel,
+      loading,
+      error,
+      working,
+      reload,
+      selectProvider,
+      selectModel,
+      connect,
+      disconnect,
+    ],
+  );
 }
 
 function toCommandError(error: unknown): CommandError {
