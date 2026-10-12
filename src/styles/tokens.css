@@ -21,7 +21,7 @@
      surface-container-lowest, on-secondary/tertiary-container pairs,
      success on-color, warning roles, surface-tint) x3 themes.
    - Theme mechanism: :root (+ explicit [data-theme] / .nex-theme-*
-     override hooks) + prefers-color-scheme first-paint default +
+     override hooks) + dark first-paint default until hydration +
      high-contrast theme. See "THEME MECHANISM" below.
    - Shape scale completed to the OFFICIAL 10 steps (+32/+48).
    - Type: tracking tokens + desktop-clamped display band added.
@@ -51,10 +51,11 @@
      [data-theme] attribute is canonical (applied by
      src/lib/useAppearance.ts and persistently stored). The
      .nex-theme-dark / .nex-theme-light class hooks alone lose to
-     the prefers-color-scheme first-paint rule on specificity, so
-     they require the attribute alongside them to take effect.
-   - First paint before hydration follows the OS:
-     prefers-color-scheme: light maps an unmarked :root to light.
+     the dark :root defaults on specificity, so they require the
+     attribute alongside them to take effect.
+   - First paint uses the dark default until hydration resolves and
+     sets an explicit override (single light source: there is no
+     prefers-color-scheme mirror of the light block).
    - High contrast is explicit-only:
      :root[data-theme="high-contrast"] / .nex-theme-high-contrast
      (dark-based; light-HC deferred — see Remaining Issues).
@@ -132,12 +133,13 @@
   /* On-surface content ladder (NEXORA ADAPTATION extension of the
      OFFICIAL on-surface / on-surface-variant pair; brightened per
      the OFFICIAL expressive "brighter text" guidance, color.md §2).
-     AA note: tertiary/faint are non-essential metadata tones
-     (timestamps, placeholders, hints); see CONTRAST LEDGER. */
+     Every tier clears WCAG AA 4.5:1 as text on all text-bearing
+     surfaces of its theme (see CONTRAST LEDGER); the remaining
+     sub-4.5 tones (bright/dim rest surfaces) are non-text only. */
   --nex-sys-color-on-surface: #edeae7;
   --nex-sys-color-on-surface-variant: #a19d96;
-  --nex-sys-color-on-surface-tertiary: #847f78;
-  --nex-sys-color-on-surface-faint: #655f58;
+  --nex-sys-color-on-surface-tertiary: #a89d8c;
+  --nex-sys-color-on-surface-faint: #9f988c;
 
   /* Primary accent — punctuation only: primary button fill, focus
      rings, thin active indicator, small interactive icon states
@@ -248,7 +250,8 @@
        OFFICIAL 36/45 too large for a dense desktop workspace)
        label-small 11 · label-medium 12 · label-large 14 ·
        body-small 13 · body-medium 14 · body-large 15 ·
-       title-medium 17 · title-large 18 · headline-small 22
+       title-small 15 · title-medium 17 · title-large 18 ·
+       headline-small 22
      Tracking values verbatim from the OFFICIAL table
      (typography.md §1). Emphasized = same style one weight step
      up (OFFICIAL usage, web interpretation typography.md §2).
@@ -266,6 +269,7 @@
   --nex-sys-type-size-body-small: 13px;
   --nex-sys-type-size-body-medium: 14px;
   --nex-sys-type-size-body-large: 15px;
+  --nex-sys-type-size-title-small: 15px;
   --nex-sys-type-size-title-medium: 17px;
   --nex-sys-type-size-title-large: 18px;
   --nex-sys-type-size-headline-small: 22px;
@@ -317,6 +321,9 @@
   --nex-sys-shape-extra-large-increased: var(--nex-ref-shape-extra-large-increased);
   --nex-sys-shape-extra-extra-large: var(--nex-ref-shape-extra-extra-large);
   --nex-sys-shape-full: var(--nex-ref-shape-full);
+  /* Pill alias: the shorthand consumed by status pills, meters, and
+     progress fills resolves to the OFFICIAL full step. */
+  --nex-sys-shape-pill: var(--nex-ref-shape-full);
 
   /* Optical roundness reminder (OFFICIAL formula): inner radius =
      outer radius − padding. */
@@ -397,8 +404,8 @@
 
   --nex-sys-color-on-surface: #262420;
   --nex-sys-color-on-surface-variant: #5f5b54;
-  --nex-sys-color-on-surface-tertiary: #7d7871;
-  --nex-sys-color-on-surface-faint: #a19c94;
+  --nex-sys-color-on-surface-tertiary: #615c53;
+  --nex-sys-color-on-surface-faint: #665f55;
 
   --nex-sys-color-primary: #a9824a;
   --nex-sys-color-primary-hover: #97743f;
@@ -464,71 +471,10 @@
   color-scheme: light;
 }
 
-/* First-paint OS default: an unmarked :root (before useAppearance
-   hydrates and sets an explicit override) follows
-   prefers-color-scheme. Values mirror the light block above. */
-@media (prefers-color-scheme: light) {
-  :root:not([data-theme]) {
-    --nex-sys-color-surface: #f1efec;
-    --nex-sys-color-surface-dim: #e2e0da;
-    --nex-sys-color-surface-container-lowest: #fbfaf8;
-    --nex-sys-color-surface-container-low: #e9e7e2;
-    --nex-sys-color-surface-container: #f7f5f2;
-    --nex-sys-color-surface-container-high: #ffffff;
-    --nex-sys-color-surface-container-highest: #f3f1ed;
-    --nex-sys-color-surface-bright: #ffffff;
-    --nex-sys-color-surface-tint: #a9824a;
-    --nex-sys-color-on-surface: #262420;
-    --nex-sys-color-on-surface-variant: #5f5b54;
-    --nex-sys-color-on-surface-tertiary: #7d7871;
-    --nex-sys-color-on-surface-faint: #a19c94;
-    --nex-sys-color-primary: #a9824a;
-    --nex-sys-color-primary-hover: #97743f;
-    --nex-sys-color-primary-container: rgba(169, 130, 74, 0.12);
-    --nex-sys-color-on-primary: #1a1712;
-    --nex-sys-color-on-primary-container: #6b5326;
-    --nex-sys-color-secondary: var(--nex-ref-palette-sage-70);
-    --nex-sys-color-secondary-container: rgba(93, 125, 85, 0.12);
-    --nex-sys-color-on-secondary: #ffffff;
-    --nex-sys-color-on-secondary-container: #3c5a36;
-    --nex-sys-color-tertiary: #a9824a;
-    --nex-sys-color-tertiary-container: rgba(169, 130, 74, 0.12);
-    --nex-sys-color-on-tertiary: #1a1712;
-    --nex-sys-color-on-tertiary-container: #6b5326;
-    --nex-sys-color-error: var(--nex-ref-palette-brick-70);
-    --nex-sys-color-error-container: rgba(168, 80, 63, 0.1);
-    --nex-sys-color-error-outline: rgba(168, 80, 63, 0.32);
-    --nex-sys-color-on-error-container: #7c3a2c;
-    --nex-sys-color-success: var(--nex-ref-palette-sage-70);
-    --nex-sys-color-success-container: rgba(93, 125, 85, 0.12);
-    --nex-sys-color-on-success: #ffffff;
-    --nex-sys-color-on-success-container: #3c5a36;
-    --nex-sys-color-warning: var(--nex-ref-palette-ochre-70);
-    --nex-sys-color-warning-container: rgba(138, 90, 30, 0.12);
-    --nex-sys-color-on-warning: #ffffff;
-    --nex-sys-color-on-warning-container: #7a5416;
-    --nex-sys-color-outline: rgba(0, 0, 0, 0.14);
-    --nex-sys-color-outline-variant: rgba(0, 0, 0, 0.08);
-    --nex-sys-color-inverse-surface: #262420;
-    --nex-sys-color-inverse-on-surface: #f7f5f2;
-    --nex-sys-state-hover: rgba(0, 0, 0, 0.08);
-    --nex-sys-state-focus: rgba(0, 0, 0, 0.12);
-    --nex-sys-state-selected: rgba(0, 0, 0, 0.1);
-    --nex-sys-state-pressed: rgba(0, 0, 0, 0.12);
-    --nex-sys-state-dragged: rgba(0, 0, 0, 0.16);
-    --nex-sys-state-inverse-hover: rgba(247, 245, 242, 0.08);
-    --nex-sys-state-inverse-pressed: rgba(247, 245, 242, 0.12);
-    --nex-sys-scrollbar-thumb: rgba(0, 0, 0, 0.2);
-    --nex-sys-scrollbar-thumb-hover: rgba(0, 0, 0, 0.3);
-    --nex-sys-focus-ring-color: rgba(169, 130, 74, 0.7);
-    --nex-sys-focus-field-color: rgba(169, 130, 74, 0.45);
-    --nex-sys-elevation-level1: 0 4px 16px rgba(0, 0, 0, 0.1),
-      0 1px 3px rgba(0, 0, 0, 0.07);
-    --nex-sys-elevation-level2: 0 16px 40px rgba(0, 0, 0, 0.16);
-    --nex-sys-elevation-level3: 0 24px 56px rgba(0, 0, 0, 0.22);
-    color-scheme: light;
-  }
-}
+/* First-paint note: the light block above is the single light
+   source — there is no prefers-color-scheme mirror. An unmarked
+   :root paints the dark default until useAppearance hydrates and
+   sets the explicit data-theme override. */
 
 /* ============================================================
    HIGH-CONTRAST THEME — dark-based (WCAG AAA-leaning pairs;
@@ -615,19 +561,27 @@
 
 /* ============================================================
    CONTRAST LEDGER (state method — measured pairs, WCAG AA)
-   Computed at token-definition time (script in task notes):
-   - Dark: on-surface 15.6 · variant/high 5.5 · primary/on-primary
-     7.4 · error/high 4.98 · success/high 5.8 · on-success/sage-fill
-     6.2 · secondary/high 5.8 · tertiary-container/high 9.2 ·
-     warning/high 6.1 · on-warning/fill 7.1 — all ≥4.5 ✓
-   - Light: on-surface 13.5 · on-primary/fill 5.1 ·
+   Computed at token-definition time (script in task notes);
+   minima are over every text-bearing surface of the theme:
+   - Dark (lowest→highest): on-surface 11.03 · variant 4.89 ·
+     tertiary 4.95 · faint 4.62 — all ≥4.5 ✓ (variant/tertiary
+     read as one quiet band with a warm tint step; faint steps
+     down last)
+   - Light (lowest→dim): on-surface 11.74 · variant 5.11 ·
+     tertiary 5.03 · faint 4.77 — all ≥4.5 ✓
+   - High-contrast (all surfaces): on-surface 13.42 · variant
+     9.62 · tertiary 8.10 · faint 6.37 — all ≥4.5 ✓
+   - Dark bright (#3d3c46, topmost rest) is a non-text surface
+     with no text consumers: variant 4.02 / tertiary 4.07 /
+     faint 3.8 there. Keep text off it; the ladder above governs
+     every surface that carries text.
+   - Dark: primary/on-primary 7.4 · error/high 4.98 ·
+     success/high 5.8 · on-success/sage-fill 6.2 · secondary/high
+     5.8 · tertiary-container/high 9.2 · warning/high 6.1 ·
+     on-warning/fill 7.1 — all ≥4.5 ✓
+   - Light: on-surface/surface 14.2 · on-primary/fill 5.1 ·
      success/white 4.6 · warning/white 5.9 · secondary/white 4.6 ·
-     tertiary-container/surface 6.7 — all ≥4.5 ✓
-   - High-contrast: on-surface 18.5 · variant 12.4 · primary 11.4 ·
-     error 8.6 · outline 5.3 — all ≥4.5 ✓
-   - Known exceptions (non-essential metadata only — timestamps,
-     placeholders, hints; never sole carriers of state):
-     dark tertiary 3.4 / faint 2.4 · light tertiary 4.0 / faint 2.5.
-     These quiet tones predate 0.4.0 and are kept for ladder
-     legibility; the HC theme lifts every metadata tone ≥8.7.
+     on-tertiary-container/surface 6.7 — all ≥4.5 ✓
+   - High-contrast accents: on-surface 18.5 · variant 13.2 ·
+     primary 11.4 · error 8.6 · outline 5.3 — all ≥4.5 ✓
    ============================================================ */

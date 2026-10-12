@@ -52,6 +52,16 @@
   color: var(--nex-sys-color-on-surface-tertiary);
 }
 
+/* Breakdown + files sections: semantic grouping wrappers. Children
+   stack as blocks; separation comes from the section-title margin,
+   so the sections themselves carry no spacing of their own. */
+.nex-context-breakdown,
+.nex-context-files {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
 .nex-context-bar {
   display: flex;
   height: 8px;
@@ -110,6 +120,14 @@
   margin: 0;
   padding: 0;
   list-style: none;
+}
+
+/* One changed file: header tag + diff block stacked; min-width
+   keeps long diff lines contained instead of forcing scroll. */
+.nex-context-file {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
 
 .nex-context-file-header {
