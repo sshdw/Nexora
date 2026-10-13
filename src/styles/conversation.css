@@ -6,9 +6,10 @@
    components.css and are only positioned here. Consumes
    tokens.css/motion.css exclusively.
 
-   Selection language (0.3.0): selected rows carry a tone step
-   (surface-container-high) + emphasized title weight + the thin
-   accent pill marker. Hover is a tone layer, never a hue shift.
+   Selection language (0.3.0): selected rail rows carry a small
+   control radius, the accent wash + emphasized title weight, and
+   no hue shift on hover (brief §16 accent-as-punctuation; §18
+   pills only where geometry means status).
    ============================================================ */
 
 /* ---- Conversation list scroll container ---- */
@@ -60,12 +61,13 @@
 .nex-conversation-item:focus-visible {
   outline-offset: var(--nex-sys-focus-ring-offset-inset);
 }
-/* Selected: the M3RailItem active grammar drives visuals (pill + tone
-   step + emphasized label on the default-speed spring, components.css).
-   These rules only compose the title/time inside the rail label and let
-   the title inherit the rail's emphasized primary treatment. */
+/* Selected: the M3RailItem active grammar drives visuals (small-radius
+   row + accent wash + emphasized label on the default-speed spring,
+   components.css). These rules only compose the title/time inside the
+   rail label and let the title inherit the rail's emphasized primary
+   treatment. */
 .nex-m3-rail-item.nex-conversation-item {
-  border-radius: var(--nex-sys-shape-full);
+  border-radius: var(--nex-sys-shape-small);
 }
 .nex-conversation-item .nex-m3-rail-label {
   display: flex;
@@ -172,7 +174,7 @@
   min-height: 44px;
   padding: 8px var(--nex-sys-space-sm);
   border-radius: var(--nex-sys-shape-small);
-  background: var(--nex-sys-color-surface-container-high);
+  background: var(--nex-sys-color-surface-nested);
   border: 1px solid var(--nex-sys-focus-field-color);
   color: var(--nex-sys-color-on-surface);
   font-size: var(--nex-sys-type-size-body-medium);
@@ -225,14 +227,16 @@
   color: var(--nex-sys-color-error);
 }
 
-/* ---- Sidebar footer (Workspace nav, anchored) ---- */
+/* ---- Sidebar footer (Workspace nav, anchored). The foot seam is a
+   shell seam, which is one of the five border jobs the brief keeps
+   (brief §19) — the rest of the rail is tone only. ---- */
 .nex-sidebar-footer {
   margin-top: auto;
   display: flex;
   flex-direction: column;
   gap: var(--nex-sys-space-xxxs);
   padding: var(--nex-sys-space-xs) var(--nex-sys-space-xxs) var(--nex-sys-space-xxs);
-  border-top: 1px solid var(--nex-sys-color-outline-variant);
+  border-top: 1px solid var(--nex-sys-color-shell-seam);
 }
 
 /* ============================================================
@@ -687,9 +691,13 @@
 
 /* ============================================================
    Search results panel (conversation search, FR-006)
-   Floats over the sidebar below the input; the enter motion comes
-   from the shared .nex-pop-enter utility (components.css). Result
-   rows are plain actionable buttons inside labelled groups.
+   Floats over the sidebar below the input — a true floating layer,
+   so it paints the floating tier and takes the one shadow a float
+   is allowed; the hairline is a popover border job (brief §19),
+   medium radius for a meaningful container (§18). The enter
+   motion comes from the shared .nex-pop-enter utility
+   (components.css). Result rows are plain actionable buttons
+   inside labelled groups.
    ============================================================ */
 
 .nex-search-results {
@@ -700,7 +708,7 @@
   z-index: var(--nex-sys-z-popover);
   max-height: min(60vh, 340px);
   overflow-y: auto;
-  background: var(--nex-sys-color-surface-container-high);
+  background: var(--nex-sys-color-surface-floating);
   border: 1px solid var(--nex-sys-color-outline-variant);
   border-radius: var(--nex-sys-shape-medium);
   padding: var(--nex-sys-space-xs);

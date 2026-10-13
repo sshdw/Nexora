@@ -2,7 +2,9 @@
    Nexora Conversation Tabs + Split + Zen — M3E shell extension
    Docked tab strip (first row of .nex-main, above the per-pane
    conversation header), side-by-side split panes, and chromeless
-   zen reading mode. Tokens only (--nex-sys-*, --motion-*); the only raw
+   zen reading mode. Top-bar chrome paints the elevated tier above
+   the canvas; the split seam is the only border (brief §16/§19).
+   Tokens only (--nex-sys-*, --motion-*); the only raw
    values are 1px hairline borders, allowed per codebase precedent for
    seams/dividers. Motion is transform/opacity only; the global
    prefers-reduced-motion gate in motion.css collapses every
@@ -10,17 +12,18 @@
    ============================================================ */
 
 /* ---- Tab strip: docked persistent row (contract §Shell — docked
-   rows for persistent chrome). Calm surface-container tone with a
-   single hairline seam; the strip scrolls horizontally on
-   overflow so tabs never shrink below a tappable width. ---- */
+   rows for persistent chrome). The elevated tier above the canvas,
+   flat at rest — a single shell seam, never a shadow. The strip
+   scrolls horizontally on overflow so tabs never shrink below a
+   tappable width. ---- */
 .nex-tabstrip {
   display: flex;
   align-items: center;
   gap: var(--nex-sys-space-xs);
   min-height: var(--nex-sys-layout-header-height);
   padding: var(--nex-sys-space-xs) var(--nex-sys-space-sm);
-  background: var(--nex-sys-color-surface-container);
-  border-bottom: 1px solid var(--nex-sys-color-outline-variant);
+  background: var(--nex-sys-color-surface-elevated);
+  border-bottom: 1px solid var(--nex-sys-color-shell-seam);
   flex-shrink: 0;
 }
 
@@ -85,7 +88,7 @@
 }
 
 .nex-tab.is-active {
-  background: var(--nex-sys-color-primary-container);
+  background: var(--nex-sys-color-accent-indicator-surface);
   color: var(--nex-sys-color-on-surface);
 }
 
@@ -97,8 +100,10 @@
   right: var(--nex-sys-space-sm);
   height: var(--nex-sys-nav-indicator-height);
   max-height: var(--nex-sys-space-xxs);
+  /* A 2px-tall tick: the one place the full radius is geometry, not
+     decoration (brief §18/§16 thin-indicator punctuation). */
   border-radius: var(--nex-sys-shape-full);
-  background: var(--nex-sys-color-primary);
+  background: var(--nex-sys-color-accent-indicator);
 }
 
 .nex-tab-label {
@@ -137,7 +142,7 @@
   font-family: var(--nex-sys-type-family-mono);
   font-size: var(--nex-sys-type-size-label-small);
   color: var(--nex-sys-color-on-surface-variant);
-  border: 1px solid var(--nex-sys-color-outline-variant);
+  background: var(--nex-sys-color-surface-nested);
   border-radius: var(--nex-sys-shape-extra-small);
   padding: 0 var(--nex-sys-space-xxs);
 }
@@ -174,7 +179,7 @@
 }
 
 .nex-pane + .nex-pane {
-  border-left: 1px solid var(--nex-sys-color-outline-variant);
+  border-left: 1px solid var(--nex-sys-color-shell-seam);
 }
 
 .nex-pane-header {
@@ -183,8 +188,8 @@
   gap: var(--nex-sys-space-sm);
   min-height: var(--nex-sys-layout-header-height);
   padding: var(--nex-sys-space-xs) var(--nex-sys-space-md);
-  background: var(--nex-sys-color-surface-container);
-  border-bottom: 1px solid var(--nex-sys-color-outline-variant);
+  background: var(--nex-sys-color-surface-elevated);
+  border-bottom: 1px solid var(--nex-sys-color-shell-seam);
   flex-shrink: 0;
 }
 
@@ -221,7 +226,7 @@
 }
 
 .nex-app.nex-zen .nex-main {
-  background: var(--nex-sys-color-surface);
+  background: var(--nex-sys-color-surface-canvas);
 }
 
 /* ---- Zen-from-split: the split grid stays mounted and collapses to one
@@ -236,13 +241,16 @@
   display: none;
 }
 
+/* Floating zen exit: a fixed control on the dialog z-step, so it earns
+   the floating tier, a floating-tier radius (small — it is a control,
+   not a status), and the one shadow a floating layer is allowed. */
 .nex-zen-exit {
   position: fixed;
   top: var(--nex-sys-space-sm);
   right: var(--nex-sys-space-sm);
   z-index: var(--nex-sys-z-dialog);
-  background: var(--nex-sys-color-surface-container-high);
-  border: 1px solid var(--nex-sys-color-outline-variant);
-  border-radius: var(--nex-sys-shape-full);
+  background: var(--nex-sys-color-surface-floating);
+  border: 1px solid var(--nex-sys-color-shell-seam);
+  border-radius: var(--nex-sys-shape-small);
   box-shadow: var(--nex-sys-elevation-level1);
 }

@@ -10,6 +10,13 @@
    stylesheets position these primitives but never restyle their
    anatomy.
 
+   Surface discipline (brief §16/§18/§19): fields and panels sit on
+   the nested tier, dialogs/menus/popovers on the floating tier,
+   every one of them flat at rest — a shadow appears only on a
+   floating layer. Radii are small for controls and fields, medium
+   for meaningful containers; the full radius survives only where
+   the pill shape itself carries status.
+
    Labeling discipline (material-3-expressive skill):
    OFFICIAL          = value traceable to Google Material docs/source
    RECOMMENDATION    = chosen because Material does not prescribe it
@@ -315,6 +322,10 @@
    the sanctioned field focus pattern (NEXORA ADAPTATION
    equivalent of the OFFICIAL outlined field); state-layer hover;
    unified disabled convention. All controls share the 40px band.
+   Untouched by the shell surface contract: these fields live in
+   the feature panels (settings/tasks/library/docs/debt/audit/
+   palette), which are Phase E surfaces — the tiers start here in
+   the shell's own search field below.
    ============================================================ */
 
 .nex-input,
@@ -366,9 +377,16 @@
   cursor: default;
 }
 
-/* ---- Search field: full-corner container (OFFICIAL search-bar
-   shape mapping) on the elevated tone; accent hairline while
-   focused. Shared by the sidebar and the Prompt Library toolbar. */
+/* ---- Search field: the shell's own field — nested tier inside the
+   elevated nav rail, small control radius (an input is not a status,
+   so it loses the pill — brief §18), accent hairline while focused
+   (brief §16: focus is sanctioned accent). Shared with the Prompt
+   Library toolbar.
+
+   The hairline below is the §19 "input boundary when necessary" case,
+   not decoration: measured, the nested tier sits only 1.045:1 above the
+   rail in the dark theme — below the perceptual threshold — so the
+   field needs its own edge instead of leaning on tone alone. ---- */
 .nex-search {
   position: relative;
 }
@@ -386,9 +404,9 @@
   width: 100%;
   min-height: 40px;
   padding: 8px var(--nex-sys-space-md) 8px 36px;
-  border-radius: var(--nex-sys-shape-full);
-  background: var(--nex-sys-color-surface-container-high);
-  border: 1px solid transparent;
+  border-radius: var(--nex-sys-shape-small);
+  background: var(--nex-sys-color-surface-nested);
+  border: 1px solid var(--nex-sys-color-outline-variant);
   color: var(--nex-sys-color-on-surface);
   font-size: var(--nex-sys-type-size-body-medium);
   outline: none;
@@ -399,10 +417,14 @@
   color: var(--nex-sys-color-on-surface-tertiary);
 }
 .nex-search-input:hover {
-  background: var(--nex-sys-color-surface-container-highest);
+  /* One M3 role step above the nested tier — a tone step, not the
+     floating tier (the field is not a float). The boundary yields to
+     the tone while the pointer is over it. */
+  background: var(--nex-sys-color-surface-container-high);
+  border-color: var(--nex-sys-state-hover);
 }
 .nex-search-input:focus {
-  background: var(--nex-sys-color-surface-container-high);
+  background: var(--nex-sys-color-surface-nested);
   border-color: var(--nex-sys-focus-field-color);
   outline: none;
 }
@@ -509,7 +531,10 @@
   background: var(--nex-sys-state-selected);
 }
 /* Thin active indicator (OFFICIAL nav active-indicator concept,
-   thin-marker NEXORA ADAPTATION). Fades/scales in via fast effects. */
+   thin-marker NEXORA ADAPTATION). This 3×16px tick is the whole
+   accent allowance for an active row — the row itself only shifts
+   tone and label weight (brief §16, §5: "active state uses a small
+   local indicator + subtle surface shift"). */
 .nex-nav-entry.is-active::before {
   content: "";
   position: absolute;
@@ -519,7 +544,7 @@
   height: var(--nex-sys-nav-indicator-height);
   transform: translateY(-50%);
   border-radius: var(--nex-sys-shape-full);
-  background: var(--nex-sys-color-primary);
+  background: var(--nex-sys-color-accent-indicator);
 }
 .nex-nav-entry-icon {
   width: 18px;
@@ -536,6 +561,9 @@
    STATUS TAGS / METADATA PILLS (model chip, status chip)
    Compact non-interactive (or lightly interactive) metadata
    containers: pill radius, elevated tone, hairline seam.
+   Untouched by the shell surface contract — the tag is consumed
+   by 70+ sites across the feature panels (Phase E), so its tone
+   and border are a Phase E decision, not a shell one.
    ============================================================ */
 
 .nex-tag {
@@ -587,6 +615,8 @@
    convention; the remove affordance carries its own accessible
    name and a 28×28 target. Inner radius = outer (8) − padding (4)
    = extra-small (OFFICIAL optical formula).
+   Untouched by the shell surface contract — the chip belongs to
+   the composer, which is a Phase E surface.
    ============================================================ */
 
 .nex-chip {
@@ -654,9 +684,12 @@
 
 /* ============================================================
    DIALOG SYSTEM (modal decisions)
-   Scrim + elevated card on surface-container-high, OFFICIAL
-   extra-large dialog corners (28px), level-2 elevation, 24px
-   padding, headline-band title.
+   Scrim + a true floating layer: the floating tier, medium
+   rounding for a meaningful container (brief §18 — the old
+   28px extra-large corner was the most obvious "M3" tell), and
+   the level-2 shadow a floating layer is allowed (brief §19). The
+   hairline stays because §19 names dialogs as a border job and it
+   is the only edge high-contrast mode gets once shadows drop.
    Enter: scrim fade + card scale 0.9→1 on the OFFICIAL medium4 ·
    emphasized-decelerate pairing (skill motion.md §7).
    Exit (0.3.0): card scales back + fades on the OFFICIAL short4 ·
@@ -686,9 +719,9 @@
   width: 100%;
   max-width: 560px;
   max-height: 80vh;
-  background: var(--nex-sys-color-surface-container-high);
+  background: var(--nex-sys-color-surface-floating);
   border: 1px solid var(--nex-sys-color-outline-variant);
-  border-radius: var(--nex-sys-shape-extra-large);
+  border-radius: var(--nex-sys-shape-medium);
   box-shadow: var(--nex-sys-elevation-level2);
   display: flex;
   flex-direction: column;
@@ -905,8 +938,11 @@
 
 /* ============================================================
    SNACKBAR (transient post-action feedback, ≤1 action)
-   Inverse-surface roles; extra-small corners (OFFICIAL shape
-   mapping). Bottom-right placement is a desktop RECOMMENDATION.
+   A floating layer: inverse-surface roles, the level-1 shadow a
+   float is allowed, and the small control radius the shape
+   mapping now reserves for controls (the old 4px corner read as
+   a chip, not a control). Bottom-right placement is a desktop
+   RECOMMENDATION.
    Enter: slide-up + fade on the short4 anchor (skill motion.md
    §7); dismissal is instant (parent unmounts the region).
    ============================================================ */
@@ -921,7 +957,7 @@
   gap: var(--nex-sys-space-sm);
   max-width: min(420px, calc(100vw - var(--nex-sys-space-xl) * 2));
   padding: var(--nex-sys-space-sm) var(--nex-sys-space-md);
-  border-radius: var(--nex-sys-shape-extra-small);
+  border-radius: var(--nex-sys-shape-small);
   background: var(--nex-sys-color-inverse-surface);
   color: var(--nex-sys-color-inverse-on-surface);
   box-shadow: var(--nex-sys-elevation-level1);
@@ -1103,8 +1139,8 @@
   align-items: center;
   gap: var(--nex-sys-space-xs);
   padding: var(--nex-sys-space-xs);
-  border-radius: var(--nex-sys-shape-large);
-  background: var(--nex-sys-color-surface-container-high);
+  border-radius: var(--nex-sys-shape-medium);
+  background: var(--nex-sys-color-surface-floating);
   border: 1px solid var(--nex-sys-color-outline-variant);
   box-shadow: var(--nex-sys-elevation-level1);
 }
@@ -1261,9 +1297,13 @@
 }
 
 /* ---- Navigation-rail item (the sidebar pattern; OFFICIAL rail
-   grammar, contract §Shell): pill + tone step + emphasized label when
-   active, filled-active/outlined-inactive icon swap owned by the
-   component. The active pill settles on the default-speed spring — the
+   grammar, contract §Shell): small-radius row + quiet tone step +
+   emphasized label when active, filled-active/outlined-inactive icon
+   swap owned by the component. A navigation row is not a status, so
+   it takes the small control radius instead of the pill (brief §18);
+   the active state stays unmistakable via the accent wash and the
+   weight step, not via brightness (brief §5). The active pill
+   settles on the default-speed spring — the
    CSS bezier fallback per motion.md §4 (true rAF springs remain
    deferred; transitions re-target, so selection changes stay
    interruptible). Reduced motion: the global motion.css gate collapses
@@ -1279,7 +1319,7 @@
   min-height: calc(var(--nex-sys-space-2xl) + var(--nex-sys-space-xs));
   padding: var(--nex-sys-space-xs) var(--nex-sys-space-md);
   border: none;
-  border-radius: var(--nex-sys-shape-full);
+  border-radius: var(--nex-sys-shape-small);
   background: transparent;
   color: var(--nex-sys-color-on-surface-variant);
   font-size: var(--nex-sys-type-size-body-medium);
@@ -1303,7 +1343,7 @@
   cursor: default;
 }
 .nex-m3-rail-item.is-active {
-  background: var(--nex-sys-color-primary-container);
+  background: var(--nex-sys-color-accent-indicator-surface);
   color: var(--nex-sys-color-primary);
   font-weight: var(--nex-sys-type-weight-emphasized);
 }

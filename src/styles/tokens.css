@@ -134,6 +134,47 @@
      lifts elevated surfaces. Consumed at low alpha overlays. */
   --nex-sys-color-surface-tint: var(--nex-ref-palette-amber-60);
 
+  /* --------------------------------------------------------------
+     SHELL SURFACE HIERARCHY (brief §16 — the four names the shell
+     consumes; §19 — flat at rest, tone carries the hierarchy).
+
+     M3 container roles above stay the infrastructure (brief §24);
+     these are the semantic tier aliases on top of them, so every
+     tier the shell paints is still a surface the CONTRAST LEDGER
+     and scripts/check-contrast.py gate. The dark mapping lives in
+     the :root block above; light and high-contrast restate it
+     explicitly so each theme's hierarchy is auditable in place
+     rather than inherited through the cascade.
+
+     The constant across themes is direction, not raw luminance: the
+     canvas carries the content and its neighbours step away from
+     it. Dark runs canvas→floating deepest-to-lightest; light runs
+     canvas = paper, elevated = recessed chrome, nested/floating
+     raised back above it; high-contrast flattens the two chrome
+     tiers onto one value and lets borders carry the rest.
+
+       canvas    the reading plane — app frame + agent workspace
+       elevated  chrome beside/above the canvas — nav rail, tab
+                 strip, pane header
+       nested    a surface contained inside a plane — panels, list
+                 groups, fields
+       floating  true overlay layers only — menus, dialogs,
+                 popovers, snackbars. The only tier that carries
+                 shadow (brief §19 reserves shadows for float).
+
+     Do not add a fifth tier and do not restyle a tier per component;
+     a component that needs its own tone steps a role, not a tier.
+     -------------------------------------------------------------- */
+  --nex-sys-color-surface-canvas: var(--nex-sys-color-surface-container-lowest);
+  --nex-sys-color-surface-elevated: var(--nex-sys-color-surface-container-low);
+  --nex-sys-color-surface-nested: var(--nex-sys-color-surface-container);
+  --nex-sys-color-surface-floating: var(--nex-sys-color-surface-container-high);
+
+  /* Shell seam (brief §19): the one border job the shell keeps —
+     the rail/pane boundaries that a tone step alone under-specifies.
+     Never use it for per-row or decorative borders. */
+  --nex-sys-color-shell-seam: var(--nex-sys-color-outline-variant);
+
   /* On-surface content ladder (NEXORA ADAPTATION extension of the
      OFFICIAL on-surface / on-surface-variant pair; brightened per
      the OFFICIAL expressive "brighter text" guidance, color.md §2).
@@ -153,6 +194,24 @@
   --nex-sys-color-primary-container: rgba(201, 166, 107, 0.14);
   --nex-sys-color-on-primary: var(--nex-ref-ink-cocoa);
   --nex-sys-color-on-primary-container: var(--nex-ref-palette-amber-50);
+
+  /* --------------------------------------------------------------
+     ACCENT PUNCTUATION (brief §16 — "it should not color entire
+     panels"). The one restrained warm accent marks exactly four
+     things and nothing else:
+
+       1. active state          2. focus
+       3. important actions      4. thin indicators
+
+     These two tokens are the whole allowance for a bare accent
+     paint outside an action fill: `…-indicator` for the thin
+     marker (nav tick, tab marker), `…-indicator-surface` for the
+     low-alpha wash that lifts an active row. Anything wider than a
+     marker uses the primary role pair on a control, or nothing.
+     A resting surface, a panel, or a whole zone never takes them.
+     -------------------------------------------------------------- */
+  --nex-sys-color-accent-indicator: var(--nex-sys-color-primary);
+  --nex-sys-color-accent-indicator-surface: var(--nex-sys-color-primary-container);
 
   /* Secondary (OFFICIAL role intent: selected states, less-urgent
      actions) — sage family counterweight to the amber primary. */
@@ -301,19 +360,28 @@
   /* ==========================================================
      SYS TIER — SHAPE (applied)
      OFFICIAL 10-step scale (shape.md §1); the step→component
-     mapping is NEXORA ADAPTATION:
-       extra-small    4  snackbars, nested inner corners (optical formula)
-       small          8  fields, rows, chips, search, menus
-       medium        12  buttons, cards
-       large         16  panels, user turns, nav drawer
+     mapping is NEXORA ADAPTATION and follows brief §18:
+       medium        12  buttons, cards, meaningful containers
+                         (dialogs, menus, popovers)
+       large         16  user turns, large nested panels
        large-increased 20  composer shell (OFFICIAL step)
-       extra-large   28  dialogs, sheets (OFFICIAL mapping)
-       extra-large-increased 32  large sheets (OFFICIAL step)
-       extra-extra-large 48  reserved hero/empty-state (OFFICIAL step)
-       full           —  pills: send, indicators, switches, search bar
-     Zero-radius sharp corners banned (shape.md §5). Functional
-     controls are circle/pill/rounded-square only — no decorative
-     shapes in chrome (contract §Shape).
+       extra-small / small  4 / 8  controls, fields, rows, chips
+                              — "small rounding for
+                              controls/fields"
+       extra-large   28  reserved; NOT a default container corner
+       full           —  reserved for geometry that means status
+                         or a compact control: thin indicators,
+                         dots, status/metadata tags, the loading
+                         chip. Never a row, a button, a field, or
+                         a panel.
+     So: medium for meaningful containers, small for controls and
+     fields, full only where the pill shape itself carries the
+     meaning. "No pill-shaped everything", "no decorative blobs",
+     "no giant rounded cards nested inside giant rounded cards"
+     (brief §18) all resolve from that three-line rule.
+     Zero-radius sharp corners banned (shape.md §5).
+     Functional controls are circle/pill/rounded-square only — no
+     decorative shapes in chrome (contract §Shape).
      ========================================================== */
   --nex-sys-shape-none: var(--nex-ref-shape-none);
   --nex-sys-shape-extra-small: var(--nex-ref-shape-extra-small);
@@ -326,7 +394,9 @@
   --nex-sys-shape-extra-extra-large: var(--nex-ref-shape-extra-extra-large);
   --nex-sys-shape-full: var(--nex-ref-shape-full);
   /* Pill alias: the shorthand consumed by status pills, meters, and
-     progress fills resolves to the OFFICIAL full step. */
+     progress fills resolves to the OFFICIAL full step. Its use is
+     rationed by the shape mapping above — a pill is a status
+     geometry, not a default. */
   --nex-sys-shape-pill: var(--nex-ref-shape-full);
 
   /* Optical roundness reminder (OFFICIAL formula): inner radius =
@@ -356,15 +426,24 @@
   --nex-sys-layout-content-max: 680px;
 
   /* Thin active indicator — sanctioned thin-marker accent use
-     (skill §16 mapping). */
+     (skill §16 mapping). The one bare accent paint in the shell:
+     it is 3×16px, it sits on an active row, and it is the only
+     element allowed to be the full radius for this reason. */
   --nex-sys-nav-indicator-width: 3px;
   --nex-sys-nav-indicator-height: 16px;
 
   /* ==========================================================
      SYS TIER — ELEVATION
      Flat at rest everywhere; shadows mark true float only
-     (NEXORA ADAPTATION). Level0 = rest. High-contrast themes
-     drop shadows (borders carry separation) — see HC block.
+     (brief §19: "Shadows are reserved for actual floating
+     layers"). Level0 = rest and is the default for every shell
+     plane — app frame, nav rail, tab strip, pane header and
+     panel bodies all paint at rest. Level1+ is reserved for
+     surfaces on the `floating` tier: menus, dialogs, popovers,
+     tooltips, snackbars. If an at-rest surface needs separation,
+     give it a tone step (brief §16), not a shadow.
+     High-contrast themes drop shadows (borders carry
+     separation) — see HC block.
      ========================================================== */
   --nex-sys-elevation-level0: none;                               /* rest */
   --nex-sys-elevation-level1: 0 4px 16px rgba(0, 0, 0, 0.28),
@@ -405,6 +484,17 @@
   --nex-sys-color-surface-container-highest: #f3f1ed;
   --nex-sys-color-surface-bright: #ffffff;
   --nex-sys-color-surface-tint: #a9824a;
+
+  /* Shell surface hierarchy for the light theme (brief §16): canvas
+     is the paper the workspace is read on, elevated is the chrome
+     recessed away from it, and nested/floating lift back above.
+     Same role grammar as the dark block, restated here so the
+     light hierarchy is readable without following the cascade. */
+  --nex-sys-color-surface-canvas: var(--nex-sys-color-surface-container-lowest);
+  --nex-sys-color-surface-elevated: var(--nex-sys-color-surface-container-low);
+  --nex-sys-color-surface-nested: var(--nex-sys-color-surface-container);
+  --nex-sys-color-surface-floating: var(--nex-sys-color-surface-container-high);
+  --nex-sys-color-shell-seam: var(--nex-sys-color-outline-variant);
 
   --nex-sys-color-on-surface: #262420;
   --nex-sys-color-on-surface-variant: #5f5b54;
@@ -501,6 +591,16 @@
   --nex-sys-color-surface-container-high: #1e1d24;
   --nex-sys-color-surface-container-highest: #2a2933;
   --nex-sys-color-surface-bright: #2a2933;
+
+  /* Shell surface hierarchy for high contrast (brief §16): the two
+     chrome tiers land on the same value because this theme has no
+     shadow and no subtle tone steps to spend — the shell seam and
+     the component borders carry separation instead (brief §19). */
+  --nex-sys-color-surface-canvas: var(--nex-sys-color-surface-container-lowest);
+  --nex-sys-color-surface-elevated: var(--nex-sys-color-surface-container-low);
+  --nex-sys-color-surface-nested: var(--nex-sys-color-surface-container-high);
+  --nex-sys-color-surface-floating: var(--nex-sys-color-surface-container-highest);
+  --nex-sys-color-shell-seam: var(--nex-sys-color-outline);
 
   --nex-sys-color-on-surface: #faf7f1;
   --nex-sys-color-on-surface-variant: #d8d3c8;

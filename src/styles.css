@@ -1,9 +1,13 @@
 /* ============================================================
    Nexora Application Shell & Global Layout — 0.3.0 Expressive
-   Visual Reset. Fixed sidebar + main content; zones separated by
-   surface-tone steps (no border between shell planes). Consumes
-   0.3.0 tokens (tokens.css) exclusively; reusable primitives live
-   in components.css.
+   Visual Reset. Fixed sidebar + main content. Shell planes are
+   painted from the canvas→elevated→nested→floating tier tokens
+   (brief §16): the app frame and the agent workspace share the
+   canvas, the navigation rail steps away from it, and only true
+   overlays reach the floating tier. Borders survive only as the
+   shell seam (brief §19). Flat at rest — no shadow on any shell
+   plane. Consumes tokens.css exclusively; reusable primitives
+   live in components.css.
    ============================================================ */
 
 /* ---- App shell: fixed sidebar + main content ---- */
@@ -12,7 +16,7 @@
   grid-template-columns: var(--nex-sys-layout-sidebar-width) 1fr;
   width: 100vw;
   height: 100vh;
-  background: var(--nex-sys-color-surface);
+  background: var(--nex-sys-color-surface-canvas);
   color: var(--nex-sys-color-on-surface);
   font-family: var(--nex-sys-type-family);
   font-size: var(--nex-sys-type-size-body-medium);
@@ -23,21 +27,24 @@
 
 /* ---- Skip link: first Tab stop into the shell, held offscreen until
    keyboard focus (a11y acceptance: full keyboard operability, visible
-   focus). Primary-fill pill on the dialog z-step so it floats above both
-   shell planes. Reduced motion: the global gate collapses the slide to
-   an instant appearance. ---- */
+   focus). It is a floating layer (fixed, dialog z-step), so it earns
+   the floating tier, a floating-tier radius, and the one shadow it is
+   allowed: a small control, not a pill (brief §18/§19). Reduced
+   motion: the global gate collapses the slide to an instant
+   appearance. ---- */
 .nex-skip-link {
   position: fixed;
   top: var(--nex-sys-space-sm);
   left: var(--nex-sys-space-sm);
   z-index: var(--nex-sys-z-dialog);
   padding: var(--nex-sys-space-xs) var(--nex-sys-space-md);
-  border-radius: var(--nex-sys-shape-full);
+  border-radius: var(--nex-sys-shape-small);
   background: var(--nex-sys-color-primary);
   color: var(--nex-sys-color-on-primary);
   font-size: var(--nex-sys-type-size-label-large);
   font-weight: var(--nex-sys-type-weight-emphasized);
   text-decoration: none;
+  box-shadow: var(--nex-sys-elevation-level1);
   transform: translateY(calc(-100% - var(--nex-sys-space-sm)));
   transition: transform var(--nex-sys-motion-duration-fast)
     var(--nex-sys-motion-easing-standard);
@@ -46,15 +53,15 @@
   transform: translateY(0);
 }
 
-/* ---- Sidebar: expanded-rail navigation surface (one tone step
-   above the app backdrop; the seam is carried by tone, the
-   hairline marks only the shell boundary) ---- */
+/* ---- Sidebar: expanded-rail navigation surface (the elevated tier —
+   one tone step off the canvas so chrome recedes from the content the
+   rail points at; the hairline marks only the shell seam) ---- */
 .nex-sidebar {
   width: var(--nex-sys-layout-sidebar-width);
   min-width: var(--nex-sys-layout-sidebar-width);
   max-width: var(--nex-sys-layout-sidebar-width);
-  background: var(--nex-sys-color-surface-container-low);
-  border-right: 1px solid var(--nex-sys-color-outline-variant);
+  background: var(--nex-sys-color-surface-elevated);
+  border-right: 1px solid var(--nex-sys-color-shell-seam);
   display: flex;
   flex-direction: column;
   padding: var(--nex-sys-space-sm) var(--nex-sys-space-xs);
@@ -87,10 +94,13 @@
   color: var(--nex-sys-color-on-surface);
 }
 
-/* ---- Main content area ---- */
+/* ---- Main content area: the canvas itself. It shares the app
+   frame's tone on purpose — the agent workspace is one
+   continuous stage, and the surrounding chrome is what steps
+   away from it (brief §16). ---- */
 .nex-main {
   flex: 1 1 auto;
-  background: var(--nex-sys-color-surface-container);
+  background: var(--nex-sys-color-surface-canvas);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -98,15 +108,16 @@
 }
 
 /* Slim persistent desktop header (skill nexora-adaptation.md §2):
-   flat, no shadow; title truncates; trailing actions right. */
+   the elevated tier above the canvas, flat at rest — no shadow,
+   the seam hairline only. Title truncates; trailing actions right. */
 .nex-main-header {
   display: flex;
   align-items: center;
   gap: var(--nex-sys-space-sm);
   min-height: var(--nex-sys-layout-header-height);
   padding: var(--nex-sys-space-xs) var(--nex-sys-space-md);
-  background: var(--nex-sys-color-surface-container);
-  border-bottom: 1px solid var(--nex-sys-color-outline-variant);
+  background: var(--nex-sys-color-surface-elevated);
+  border-bottom: 1px solid var(--nex-sys-color-shell-seam);
 }
 
 .nex-main-title {
@@ -128,13 +139,17 @@
   white-space: nowrap;
 }
 
+/* Archived badge on the pane title: a compact status pill, which is
+   exactly where the full radius is still earned (brief §18). The
+   hairline goes — a badge is not a shell seam, and the tone step
+   already separates it from the header (brief §19). */
 .nex-main-title-badge {
   flex-shrink: 0;
   font-size: var(--nex-sys-type-size-label-medium);
   font-weight: var(--nex-sys-type-weight-medium);
   color: var(--nex-sys-color-on-surface-variant);
+  background: var(--nex-sys-color-surface-nested);
   padding: var(--nex-sys-space-xxxs) 10px;
-  border: 1px solid var(--nex-sys-color-outline);
   border-radius: var(--nex-sys-shape-full);
 }
 
@@ -174,7 +189,12 @@
 
 /* ---- Workspace roots switcher (multi-root registry): rail list of
    registered roots with set-active + remove, an add entry, and the honest
-   per-feature coverage note. Tokens only; paths are user data (raw text). ---- */
+   per-feature coverage note. Nested tier inside the rail; the rows
+   themselves stay flat — no per-row card (brief §19: borders are
+   structural, not decorative). The panel keeps one structural
+   boundary because it bounds a contained disclosure group and the
+   nested tone only measures 1.045:1 above the rail in dark.
+   Tokens only; paths are user data (raw text). ---- */
 .nex-roots {
   display: flex;
   flex-direction: column;
@@ -185,7 +205,8 @@
   flex-direction: column;
   gap: var(--nex-sys-space-xs);
   padding: var(--nex-sys-space-xs);
-  background: var(--nex-sys-color-surface-container-lowest);
+  background: var(--nex-sys-color-surface-nested);
+  border: 1px solid var(--nex-sys-color-shell-seam);
   border-radius: var(--nex-sys-shape-small);
 }
 .nex-roots-list {
@@ -201,7 +222,6 @@
   flex-direction: column;
   gap: var(--nex-sys-space-xxs);
   padding: var(--nex-sys-space-xs);
-  border: 1px solid var(--nex-sys-color-outline-variant);
   border-radius: var(--nex-sys-shape-small);
 }
 .nex-roots-path {
@@ -216,6 +236,8 @@
   gap: var(--nex-sys-space-xs);
   align-items: center;
 }
+/* Root-kind badge: a compact status pill — a full radius the geometry
+   earns (brief §18). */
 .nex-roots-badge {
   font-size: var(--nex-sys-type-size-label-small);
   font-weight: var(--nex-sys-type-weight-medium);
@@ -224,15 +246,31 @@
   border-radius: var(--nex-sys-shape-full);
   padding: 0 var(--nex-sys-space-xs);
 }
+/* Root actions: small-radius controls on the neutral text tier. The
+   accent is reserved for active/focus (brief §16), so at rest these
+   read as quiet text, not as four amber buttons. */
 .nex-roots-btn {
   font-size: var(--nex-sys-type-size-label-medium);
   font-weight: var(--nex-sys-type-weight-medium);
-  color: var(--nex-sys-color-primary);
+  color: var(--nex-sys-color-on-surface-variant);
   background: transparent;
-  border: 1px solid var(--nex-sys-color-outline-variant);
-  border-radius: var(--nex-sys-shape-full);
+  border: 1px solid transparent;
+  border-radius: var(--nex-sys-shape-small);
   padding: var(--nex-sys-space-xxs) var(--nex-sys-space-sm);
   cursor: pointer;
+  transition: background-color var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard),
+    color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard),
+    border-color var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard);
+}
+.nex-roots-btn:hover:not(:disabled) {
+  background: var(--nex-sys-state-hover);
+  border-color: var(--nex-sys-color-shell-seam);
+  color: var(--nex-sys-color-on-surface);
+}
+.nex-roots-btn:focus-visible {
+  outline-offset: var(--nex-sys-focus-ring-offset-inset);
 }
 .nex-roots-btn:disabled {
   opacity: var(--nex-sys-state-disabled-opacity);
@@ -240,6 +278,10 @@
 }
 .nex-roots-btn.is-danger {
   color: var(--nex-sys-color-error);
+}
+.nex-roots-btn.is-danger:hover:not(:disabled) {
+  background: var(--nex-sys-color-error-container);
+  border-color: transparent;
 }
 .nex-roots-btn.is-add {
   align-self: flex-start;
