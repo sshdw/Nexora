@@ -12,7 +12,11 @@ resolved before they can be gated — otherwise a tier alias is invisible
 to this script and aliasing one onto an ungated role (e.g. `floating`
 onto the excluded dark `bright`) would pass silently. Each alias is
 resolved per theme, asserted to land inside that theme's gated surface
-set, and then gated like any other surface. Exit 0 iff all pairs pass.
+set, asserted pairwise-distinct from the other three tiers (the 4.5:1
+gate alone cannot see a merge — two names on one hex still pass every
+text pair), and then gated like any other surface. A token that is not
+defined at all exits with a MISSING TOKEN line rather than a KeyError.
+Exit 0 iff all pairs and all assertions pass.
 """
 import re
 import sys
@@ -52,7 +56,11 @@ def resolve(defs: dict, name: str) -> tuple[str, str]:
         if name in seen:
             raise ValueError(f"circular token alias at {name}")
         seen.add(name)
-        value = defs[name]
+        # .get, not []: an undefined token is a gate failure with a
+        # readable line, not a KeyError traceback out of main().
+        value = defs.get(name)
+        if value is None:
+            sys.exit(f"MISSING TOKEN: {name}")
         if value.startswith("#"):
             return name, value
         name = value.removeprefix("var(--nex-sys-color-").removesuffix(")")
@@ -92,6 +100,7 @@ def main() -> int:
              "on-surface-tertiary", "on-surface-faint"]
     ok = True
     pairs = 0
+    distinct_checks = 0
 
     for name, vals, gated in (("dark", dark, dark_text),
                               ("light", light, light_text),
@@ -99,14 +108,38 @@ def main() -> int:
         # 1. Every shell tier alias must resolve into the gated set, so
         #    aliasing a tier onto an ungated rest surface fails loudly.
         surfaces = list(gated)
+        resolved: dict[str, str] = {}
         for alias in TIER_ALIASES:
             role, hexv = resolve(vals, alias)
             inside = role in gated
             if not inside:
                 ok = False
+            resolved[alias] = hexv
             print(f"{'PASS' if inside else 'FAIL'} {name:14s} tier {alias:16s} -> {role:26s}"
                   f" {hexv} {'(gated)' if inside else '(NOT GATED)'}")
             surfaces.append(alias)
+
+        # 1b. The four tiers must stay four DISTINCT tones. The 4.5:1
+        #     gate cannot catch a merge: aliasing `nested` onto `canvas`
+        #     leaves every text/surface pair passing while two names
+        #     paint one value, so the hierarchy silently collapses.
+        #     Compares the RESOLVED hexes, not the role names, so an
+        #     alias landing on a different role that happens to share
+        #     a hex fails too.
+        distinct_checks += 1
+        by_hex: dict[str, str] = {}
+        collisions: list[str] = []
+        for alias, hexv in resolved.items():
+            if hexv in by_hex:
+                collisions.append(f"{by_hex[hexv]}=={alias}")
+            else:
+                by_hex[hexv] = alias
+        if collisions:
+            ok = False
+        print(f"{'PASS' if not collisions else 'FAIL'} {name:14s} "
+              f"tiers distinct      "
+              f"{' '.join(resolved[a] for a in TIER_ALIASES)}"
+              f"{'  MERGED: ' + ', '.join(collisions) if collisions else ''}")
 
         # 2. Text tiers on every gated surface, resolved through aliases.
         for tier in tiers:
@@ -122,6 +155,8 @@ def main() -> int:
 
     print(f"PAIRS: {pairs}  ({len(TIER_ALIASES)} tier aliases x "
           f"{len(tiers)} text tiers x 3 themes resolved + gated)")
+    print(f"ALIASES: {len(TIER_ALIASES) * 3}   DISTINCT: {distinct_checks}  "
+          f"(the {len(TIER_ALIASES)} tiers pairwise-distinct in each of 3 themes)")
     print("RESULT:", "ALL PASS" if ok else "FAILURES PRESENT")
     return 0 if ok else 1
 

@@ -212,8 +212,8 @@
   gap: var(--nex-sys-space-xs);
   padding: var(--nex-sys-space-xs);
   background: var(--nex-sys-color-surface-nested);
-  border: 1px solid var(--nex-sys-color-shell-seam);
-  border-radius: var(--nex-sys-shape-small);
+  border: 1px solid var(--nex-sys-color-outline-variant);
+  border-radius: var(--nex-sys-shape-medium);
 }
 .nex-roots-list {
   list-style: none;
@@ -272,7 +272,6 @@
 }
 .nex-roots-btn:hover:not(:disabled) {
   background: var(--nex-sys-state-hover);
-  border-color: var(--nex-sys-color-shell-seam);
   color: var(--nex-sys-color-on-surface);
 }
 .nex-roots-btn:focus-visible {

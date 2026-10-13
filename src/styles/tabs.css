@@ -254,7 +254,7 @@
   right: var(--nex-sys-space-sm);
   z-index: var(--nex-sys-z-dialog);
   background: var(--nex-sys-color-surface-floating);
-  border: 1px solid var(--nex-sys-color-shell-seam);
+  border: 1px solid var(--nex-sys-color-outline-variant);
   border-radius: var(--nex-sys-shape-small);
   box-shadow: var(--nex-sys-elevation-level1);
 }

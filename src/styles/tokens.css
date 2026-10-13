@@ -150,8 +150,8 @@
      canvas carries the content and its neighbours step away from
      it. Dark runs canvas→floating deepest-to-lightest; light runs
      canvas = paper, elevated = recessed chrome, nested/floating
-     raised back above it; high-contrast flattens the two chrome
-     tiers onto one value and lets borders carry the rest.
+     raised back above it; high-contrast keeps all four steps but
+     strengthens each one and lets borders carry the rest.
 
        canvas    the reading plane — app frame + agent workspace
        elevated  chrome beside/above the canvas — nav rail, tab

@@ -417,14 +417,18 @@
   color: var(--nex-sys-color-on-surface-tertiary);
 }
 .nex-search-input:hover {
-  /* One M3 role step above the nested tier — a tone step, not the
-     floating tier (the field is not a float). The boundary yields to
-     the tone while the pointer is over it. */
+  /* One M3 role step above the nested tier — the floating tier, the
+     only tone the field deepens into. The boundary yields to the
+     tone while the pointer is over it. */
   background: var(--nex-sys-color-surface-container-high);
   border-color: var(--nex-sys-state-hover);
 }
 .nex-search-input:focus {
-  background: var(--nex-sys-color-surface-nested);
+  /* Focus deepens to the SAME step hover does, it does not snap the
+     fill back to the nested tier underneath the pointer (an earlier
+     build did, so moving the mouse onto a focused field visibly
+     reversed a full tier). The accent border is the focus signal. */
+  background: var(--nex-sys-color-surface-container-high);
   border-color: var(--nex-sys-focus-field-color);
   outline: none;
 }
@@ -962,7 +966,9 @@
   gap: var(--nex-sys-space-sm);
   max-width: min(420px, calc(100vw - var(--nex-sys-space-xl) * 2));
   padding: var(--nex-sys-space-sm) var(--nex-sys-space-md);
-  border-radius: var(--nex-sys-shape-small);
+  /* Medium, not small: the snackbar is a meaningful container (the
+     shape mapping's medium step), same as dialogs, menus, popovers. */
+  border-radius: var(--nex-sys-shape-medium);
   background: var(--nex-sys-color-inverse-surface);
   color: var(--nex-sys-color-inverse-on-surface);
   box-shadow: var(--nex-sys-elevation-level1);
@@ -1303,12 +1309,13 @@
 
 /* ---- Navigation-rail item (the sidebar pattern; OFFICIAL rail
    grammar, contract §Shell): small-radius row + quiet tone step +
-   emphasized label when active, filled-active/outlined-inactive icon
-   swap owned by the component. A navigation row is not a status, so
-   it takes the small control radius instead of the pill (brief §18);
-   the active state stays unmistakable via the accent wash and the
-   weight step, not via brightness (brief §5). The active pill
-   settles on the default-speed spring — the
+   medium label weight when active, filled-active/outlined-inactive
+   icon swap owned by the component. A navigation row is not a
+   status, so it takes the small control radius instead of the pill
+   (brief §18); the active state stays unmistakable via the thin
+   accent tick and the weight step, not via brightness or an accent
+   wash (brief §5) — the same grammar as .nex-nav-entry. The active
+   tone settles on the default-speed spring — the
    CSS bezier fallback per motion.md §4 (true rAF springs remain
    deferred; transitions re-target, so selection changes stay
    interruptible). Reduced motion: the global motion.css gate collapses
@@ -1316,6 +1323,7 @@
    primary per region is preserved: rail items are navigation, never
    competing CTAs. ---- */
 .nex-m3-rail-item {
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--nex-sys-space-sm);
@@ -1348,9 +1356,24 @@
   cursor: default;
 }
 .nex-m3-rail-item.is-active {
-  background: var(--nex-sys-color-accent-indicator-surface);
-  color: var(--nex-sys-color-primary);
-  font-weight: var(--nex-sys-type-weight-emphasized);
+  /* Same grammar as .nex-nav-entry.is-active: a neutral selected
+     wash + label weight, with the thin accent tick carrying the
+     active state. Two rail rows in one shell must not disagree on
+     what "active" looks like, and no row paints an accent wash. */
+  background: var(--nex-sys-state-selected);
+  color: var(--nex-sys-color-on-surface);
+  font-weight: var(--nex-sys-type-weight-medium);
+}
+.nex-m3-rail-item.is-active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: var(--nex-sys-nav-indicator-width);
+  height: var(--nex-sys-nav-indicator-height);
+  transform: translateY(-50%);
+  border-radius: var(--nex-sys-shape-full);
+  background: var(--nex-sys-color-accent-indicator);
 }
 .nex-m3-rail-item:focus-visible {
   outline-offset: var(--nex-sys-focus-ring-offset-inset);

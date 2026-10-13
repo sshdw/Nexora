@@ -7,9 +7,9 @@
    tokens.css/motion.css exclusively.
 
    Selection language (0.3.0): selected rail rows carry a small
-   control radius, the accent wash + emphasized title weight, and
-   no hue shift on hover (brief §16 accent-as-punctuation; §18
-   pills only where geometry means status).
+   control radius, a neutral selected wash + medium label weight and
+   the thin accent tick, and no hue shift on hover (brief §16
+   accent-as-punctuation; §18 pills only where geometry means status).
    ============================================================ */
 
 /* ---- Conversation list scroll container ---- */
@@ -62,10 +62,10 @@
   outline-offset: var(--nex-sys-focus-ring-offset-inset);
 }
 /* Selected: the M3RailItem active grammar drives visuals (small-radius
-   row + accent wash + emphasized label on the default-speed spring,
-   components.css). These rules only compose the title/time inside the
-   rail label and let the title inherit the rail's emphasized primary
-   treatment. */
+   row + neutral selected wash + medium label weight + the thin accent
+   tick, components.css), identical to .nex-nav-entry. These rules only
+   compose the title/time inside the rail label and let the title
+   inherit the rail's active treatment. */
 .nex-m3-rail-item.nex-conversation-item {
   border-radius: var(--nex-sys-shape-small);
 }
@@ -264,8 +264,12 @@
   background: var(--nex-sys-color-surface-canvas);
 }
 
-/* Mark container: elevated tone, large-increased corners — the
-   composition's single shape anchor. */
+/* Mark container: floating-tier tone, large corners — the
+   composition's single shape anchor. One radius across all three
+   empty-mark wraps (this one plus .nex-conversation-empty-mark-wrap
+   and .nex-prompt-empty .nex-empty-mark-wrap): the 56px variants
+   already sat on large, and a 64px square sitting on a different
+   step read as a stray corner rather than a second anchor. */
 .nex-empty-mark-wrap,
 .nex-placeholder-mark-wrap {
   display: flex;
@@ -274,7 +278,7 @@
   width: 64px;
   height: 64px;
   margin-bottom: var(--nex-sys-space-xs);
-  border-radius: var(--nex-sys-shape-large-increased);
+  border-radius: var(--nex-sys-shape-large);
   background: var(--nex-sys-color-surface-container-high);
   border: 1px solid var(--nex-sys-color-outline-variant);
 }
@@ -815,7 +819,10 @@
   align-items: center;
   gap: 6px;
   padding: 4px 8px;
-  border-radius: var(--nex-sys-shape-full);
+  /* Small, not full: this is a control in the composer, and the shape
+     mapping reserves the full step for geometry that means status —
+     "never a row, a button, a field, or a panel". */
+  border-radius: var(--nex-sys-shape-small);
   background: var(--nex-sys-color-surface-container-high);
   border: 1px solid var(--nex-sys-color-outline-variant);
   font-size: var(--nex-sys-type-size-label-medium);
@@ -827,9 +834,11 @@
   accent-color: var(--nex-sys-color-primary);
 }
 .nex-composer-agent-toggle:has(input:checked) {
+  /* Checked = container + label only. A third accent surface (an
+     accent border around an accent wash on an accent label) pushed
+     the checkbox to three accent surfaces at rest. */
   background: var(--nex-sys-color-primary-container);
   color: var(--nex-sys-color-primary);
-  border-color: var(--nex-sys-color-primary);
 }
 
 .nex-agent-run {
