@@ -1,6 +1,11 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+// Tailwind + shadcn entry: the black theme's var layer (#218).
+// Imported first so the Tailwind utilities exist for everything
+// the stack adds, while the M3E sheets below keep painting the
+// merged shell exactly as they do today.
+import "./index.css";
 import "./styles/tokens.css";
 import "./styles/motion.css";
 import "./styles/theme.css";
