@@ -170,6 +170,55 @@ export default function ConversationView({
     }
   }, []);
 
+  // Dispatchers handed to `AgentRunSteps` (#148/#153): the run id travels in
+  // the callback instead of being captured by a fresh inline arrow per run,
+  // so every run keeps the same prop identity across renders and the memoized
+  // row re-renders only when its own data changes. `threadItems` is
+  // deliberately NOT memoized here — it is rebuilt each render on purpose and
+  // #148 owns that decision.
+  const dispatchAgentApprove = useCallback(
+    (runId: number, callId: string, approved: boolean) => {
+      void handleAgentApprove(runId, callId, approved);
+    },
+    [handleAgentApprove],
+  );
+  const dispatchAgentCancel = useCallback(
+    (runId: number) => {
+      void handleAgentCancel(runId);
+    },
+    [handleAgentCancel],
+  );
+  const dispatchAgentContinue = useCallback(
+    (runId: number) => {
+      void handleAgentContinue(runId);
+    },
+    [handleAgentContinue],
+  );
+  const dispatchAgentPause = useCallback(
+    (runId: number) => {
+      void handleAgentPause(runId);
+    },
+    [handleAgentPause],
+  );
+  const dispatchAgentResume = useCallback(
+    (runId: number) => {
+      void handleAgentResume(runId);
+    },
+    [handleAgentResume],
+  );
+  const dispatchExpandStep = useCallback(
+    (runId: number, seq: number) => {
+      void expandStep(runId, seq);
+    },
+    [expandStep],
+  );
+  const dispatchCollapseStep = useCallback(
+    (runId: number, seq: number) => {
+      collapseStep(runId, seq);
+    },
+    [collapseStep],
+  );
+
   const handleAutonomyChange = useCallback(
     async (mode: AutonomyMode) => {
       // Single-source write (NEX-FE-003): the store optimistically updates
@@ -306,13 +355,13 @@ export default function ConversationView({
                 <AgentRunSteps
                   key={`run-${item.run.run_id}`}
                   run={item.run}
-                  onResolveApproval={(callId, approved) => void handleAgentApprove(item.run.run_id, callId, approved)}
-                  onCancel={() => void handleAgentCancel(item.run.run_id)}
-                  onContinue={() => void handleAgentContinue(item.run.run_id)}
-                  onPause={() => void handleAgentPause(item.run.run_id)}
-                  onResume={() => void handleAgentResume(item.run.run_id)}
-                  onExpandStep={(seq) => void expandStep(item.run.run_id, seq)}
-                  onCollapseStep={(seq) => collapseStep(item.run.run_id, seq)}
+                  onResolveApproval={dispatchAgentApprove}
+                  onCancel={dispatchAgentCancel}
+                  onContinue={dispatchAgentContinue}
+                  onPause={dispatchAgentPause}
+                  onResume={dispatchAgentResume}
+                  onExpandStep={dispatchExpandStep}
+                  onCollapseStep={dispatchCollapseStep}
                 />
               );
             }

@@ -1223,3 +1223,171 @@
   color: var(--nex-sys-color-on-surface-faint);
   font-style: italic;
 }
+
+/* ============================================================
+   Agent Activity Spine + run-state visuals (issue 153)
+
+   brief §7 (spine) · §13.9 (temporal fade) · §13.33 (tool group
+   folding) · §15 (motion + reduced motion) · §16 (accent as thin
+   indicator) · §18 (small rounding, never a pill) · §19 (structural,
+   not decorative)
+
+   Budget for this block: ONE hairline rail per run (the run's
+   timeline frame, mounted for every run whatever its state), ONE
+   connector segment per row, ONE travelling accent segment while the
+   run executes, ONE summary row for a folded finished run. No new
+   surface, no second panel, no per-row border standing in for the
+   rail (brief §19: borders are structural, not decorative).
+   ============================================================ */
+
+/* Timeline: the rail gutter is structural space, not a border. No
+   `display` here — `AgentRunSteps` toggles the `hidden` attribute to
+   fold, and an author `display` would defeat it. */
+.nex-agent-timeline {
+  position: relative;
+  padding-inline-start: var(--nex-sys-space-lg);
+}
+
+/* The rail itself: one continuous hairline, `--nex-sys-color-
+   outline-variant` at rest so it stays a boundary and not an accent.
+   Shell-seam is reserved for shell pane boundaries. */
+.nex-agent-spine {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: calc(var(--nex-sys-space-lg) / 2);
+  inline-size: 1px;
+  background: var(--nex-sys-color-outline-variant);
+  pointer-events: none;
+}
+
+/* The pulse: a short accent segment that travels the rail. Mounted
+   only while the run executes (the component decides) AND animated
+   only from the run-status class (defence in depth), so no state can
+   reach a moving segment by accident. Keyframes start and end at
+   opacity 0, so the loop has no visible seam. */
+.nex-agent-spine-pulse {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: 0;
+  inline-size: 1px;
+  block-size: 22%;
+  background: var(--nex-sys-color-accent-indicator);
+  opacity: 0;
+  will-change: transform, opacity;
+}
+.nex-agent-run-state-running:not(.nex-agent-run-parked) .nex-agent-spine-pulse {
+  animation: nex-agent-spine-flow var(--motion-loop-skeleton) var(--motion-easing-standard) infinite;
+}
+@keyframes nex-agent-spine-flow {
+  0% {
+    opacity: 0;
+    transform: translateY(-40%);
+  }
+  22% {
+    opacity: 1;
+  }
+  78% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(450%);
+  }
+}
+
+/* Reduced motion: the global motion.css gate would freeze the pulse
+   on its transparent last frame and leave a live run looking dead.
+   `animation: none` drops the name outright (the gate only forces
+   duration/iteration), so the segment survives as a static accent
+   mark: same information, zero motion (brief §15:885-887). */
+@media (prefers-reduced-motion: reduce) {
+  .nex-agent-run-state-running:not(.nex-agent-run-parked) .nex-agent-spine-pulse {
+    animation: none;
+    opacity: 1;
+    transform: translateY(150%);
+  }
+}
+
+/* Connector segment: one per row, joining the rail to the row. A
+   background on a positioned pseudo-element, never a border on the
+   row box (`overflow: hidden` would clip that anyway). */
+.nex-agent-step-slot {
+  position: relative;
+}
+.nex-agent-step-slot::before {
+  content: "";
+  position: absolute;
+  inset-block-start: calc(var(--nex-sys-space-md) + var(--nex-sys-space-xxxs));
+  inset-inline-start: calc(-1 * var(--nex-sys-space-lg));
+  inline-size: var(--nex-sys-space-lg);
+  block-size: 1px;
+  background: var(--nex-sys-color-outline-variant);
+  pointer-events: none;
+}
+/* The run's current row carries the accent — §16 "thin indicator",
+   never a filled surface. A failed row keeps the error tone
+   findable (§13.29) without borrowing the accent. */
+.nex-agent-step-slot-current::before {
+  background: var(--nex-sys-color-accent-indicator);
+}
+.nex-agent-step-slot-failed::before {
+  background: var(--nex-sys-color-error);
+}
+
+/* Temporal fade (brief §13.9): inactive rows step their ink DOWN the
+   on-surface ladder — on-surface → variant → tertiary — and stop
+   there. Deliberately NOT an opacity multiplier: on the step row's
+   own surface the tertiary tier already sits at 4.95:1 in dark
+   (4.62:1 for the faint metadata tier), so any opacity step would
+   push text the run did not write below the `on-surface-tertiary`
+   floor the ladder is required to respect, before the fade even
+   began. A ladder step holds AA in all three themes; an opacity
+   fade does not. The rule never touches a step's own tone, border
+   or radius, nor diff/terminal/status colour that carries meaning. */
+.nex-agent-step-age-1
+  :is(.nex-agent-step-header, .nex-agent-step-observation, .nex-agent-terminal-stdout) {
+  color: var(--nex-sys-color-on-surface-variant);
+}
+.nex-agent-step-age-1
+  :is(.nex-agent-step-seq, .nex-agent-step-tool, .nex-agent-step-duration, .nex-agent-step-chevron) {
+  color: var(--nex-sys-color-on-surface-tertiary);
+}
+.nex-agent-step-age-2
+  :is(
+    .nex-agent-step-header,
+    .nex-agent-step-observation,
+    .nex-agent-terminal-stdout,
+    .nex-agent-step-seq,
+    .nex-agent-step-tool,
+    .nex-agent-step-duration,
+    .nex-agent-step-chevron
+  ) {
+  color: var(--nex-sys-color-on-surface-tertiary);
+}
+
+/* Folded finished run (brief §13.33): one quiet disclosure carrying the
+   counts the rows stood for. Small rounding (a control, §18), no pill,
+   no border, no fill at rest — it must not compete with the approval
+   gate or the status pill above it. */
+.nex-agent-fold {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--nex-sys-space-xxs);
+  padding: var(--nex-sys-space-xxxs) var(--nex-sys-space-xs);
+  border: none;
+  border-radius: var(--nex-sys-shape-small);
+  background: transparent;
+  color: var(--nex-sys-color-on-surface-tertiary);
+  font-family: inherit;
+  font-size: var(--nex-sys-type-size-label-small);
+  text-align: start;
+  cursor: pointer;
+  transition: color var(--motion-duration-fast) var(--motion-easing-standard);
+}
+.nex-agent-fold:hover {
+  color: var(--nex-sys-color-on-surface-variant);
+}
+.nex-agent-fold-chevron {
+  color: var(--nex-sys-color-on-surface-faint);
+}

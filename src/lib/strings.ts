@@ -257,6 +257,13 @@ const en = {
   "agent.ariaHunk": "hunk header",
   "agent.ariaAddedHeader": "added file header",
   "agent.ariaRemovedHeader": "removed file header",
+  // Folded-run summary (brief §13.33). The template is shared by every
+  // bucket; the noun declension is supplied by the call site so RU gets
+  // one/few/many right without a nine-key catalog.
+  "agent.foldCalls": "{n} {unit}",
+  "agent.foldFiles": "{n} {unit}",
+  "agent.foldCommands": "{n} {unit}",
+  "agent.foldSearches": "{n} {unit}",
 
   // ---- context panel --------------------------------------------------------------
   "ctx.group": "Conversation context",
@@ -1745,6 +1752,10 @@ const ru: Record<StringKey, string> = {
   "agent.ariaHunk": "заголовок фрагмента",
   "agent.ariaAddedHeader": "заголовок добавленного файла",
   "agent.ariaRemovedHeader": "заголовок удалённого файла",
+  "agent.foldCalls": "{n} {unit}",
+  "agent.foldFiles": "{n} {unit}",
+  "agent.foldCommands": "{n} {unit}",
+  "agent.foldSearches": "{n} {unit}",
 
   "ctx.group": "Контекст разговора",
   "ctx.loading": "Загрузка контекста",

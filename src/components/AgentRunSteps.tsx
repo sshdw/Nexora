@@ -7,24 +7,52 @@
 //! `execute_command` (command line + stdout/stderr with distinct separator) and
 //! diff viewer for `write_file` (headers, hunks, +/- gutters, mono,
 //! collapsible). Chronological placement is owned by the thread view.
+//!
+//! #153 — Agent Activity Spine + run-state visuals (brief §7, §13.9, §13.33,
+//! §15, §16, §18, §19):
+//!   - ONE always-mounted hairline rail per run, with a per-row connector
+//!     tick. The rail is the structural boundary; the tick is a segment, not
+//!     a per-row border — nothing here rebuilds a spine out of row borders.
+//!   - The travelling accent pulse is a CSS animation keyed on the run-status
+//!     class on the section. Never a timer: every step frame replaces the
+//!     runs array and re-renders this whole subtree, so a JS pulse keyed on
+//!     step arrival would restart or retime on every frame.
+//!   - The pulse exists ONLY while the run is actually executing. Idle,
+//!     `paused`, every terminal, and a run parked on an approval carry the
+//!     same information with no motion at all, and the reduced-motion frame
+//!     is a static accent segment, not an empty rail (brief §15:885-887).
+//!   - Temporal fade (§13.9): inactive rows step their ink down the
+//!     on-surface ladder and stop at `on-surface-tertiary`. No opacity
+//!     multiplier — see the CSS note; the floor tier has no headroom for one.
+//!   - Tool group folding (§13.33): a finished, approval-free, error-free,
+//!     long sequence collapses into one counted summary row. Expanding
+//!     restores the SAME step objects in the SAME order with each row's own
+//!     open/closed state intact (rows are hidden, never unmounted).
+//!
+//! Callbacks arrive pre-bound to their run id and stable, so the memoized
+//! root re-renders only when this run's own data changes (#148).
 
-import { useEffect, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 
 import type { AgentRunView, AgentStepView } from "../lib/useAgentRun";
-import { getLocale, tr, type Locale } from "../lib/strings";
+import { getLocale, tr, type Locale, type StringKey } from "../lib/strings";
 import { useStrings } from "../lib/useLocale";
 import M3Button from "./M3Button";
 import M3Toolbar from "./M3Toolbar";
 
 export interface AgentRunStepsProps {
   run: AgentRunView;
-  onResolveApproval: (callId: string, approved: boolean) => void;
-  onCancel: () => void;
-  onContinue: (extraSteps: number) => void;
-  onPause?: () => void;
-  onResume?: () => void;
-  onExpandStep?: (seq: number) => void;
-  onCollapseStep?: (seq: number) => void;
+  /** Every callback carries its own `runId`: the parent owns the binding so
+   * the props stay referentially stable across renders. An inline arrow per
+   * row (one per run, rebuilt on every message frame) would defeat the memo
+   * below and re-render every run in the thread each time any run advances. */
+  onResolveApproval: (runId: number, callId: string, approved: boolean) => void;
+  onCancel: (runId: number) => void;
+  onContinue: (runId: number) => void;
+  onPause?: (runId: number) => void;
+  onResume?: (runId: number) => void;
+  onExpandStep?: (runId: number, seq: number) => void;
+  onCollapseStep?: (runId: number, seq: number) => void;
 }
 
 function statusClass(status: string): string {
@@ -69,6 +97,112 @@ function statusLabel(status: string, locale: Locale = getLocale()): string {
   }
 }
 
+/** Run status → the CSS class every run-state visual reads. Rendering
+ * vocabulary only, never a new state: each class below is keyed on a status
+ * string the backend already emits (`RunState::persisted_status` — the five
+ * terminals plus `running` — and the pre-spawn `queued`, which persists no
+ * row and so lands in the quiet bucket). Only `…-state-running` may animate
+ * (brief §7: a pulse means "executing right now", nothing else). */
+function runStateClass(status: string): string {
+  switch (status) {
+    case "running":
+      return "nex-agent-run-state-running";
+    case "paused":
+      return "nex-agent-run-state-paused";
+    case "completed":
+      return "nex-agent-run-state-completed";
+    case "cancelled":
+      return "nex-agent-run-state-cancelled";
+    case "budget_exhausted":
+      return "nex-agent-run-state-budget";
+    case "spend_limit_exceeded":
+      return "nex-agent-run-state-spend";
+    case "error":
+      return "nex-agent-run-state-error";
+    default:
+      return "nex-agent-run-state-quiet";
+  }
+}
+
+/** Mirrors `RunState::is_terminal` over the persisted vocabulary the UI
+ * receives. Never the only fold condition — see `foldableRun`. */
+function isTerminalStatus(status: string): boolean {
+  return (
+    status === "completed" ||
+    status === "cancelled" ||
+    status === "budget_exhausted" ||
+    status === "spend_limit_exceeded" ||
+    status === "error"
+  );
+}
+
+/** A row the user must always be able to find: an approval gate, a failed
+ * tool call, or a failed full-output fetch. These never fade (§13.9: "do not
+ * fade important final results, errors, approvals") and they block folding
+ * (§13.29: failure stays findable). */
+function isProtectedRow(step: AgentStepView): boolean {
+  return step.kind === "approval" || step.status === "failed" || step.observation_error !== null;
+}
+
+/** Temporal-fade bucket (§13.9). `age` counts rows back from the run's
+ * current row, so the newest row is always age 0 — a live run keeps its
+ * active row at full ink, and a finished run keeps its final result at full
+ * ink (it is "the important final result", not history). One row behind it
+ * is left alone too: two dimmed rows would read as a rendering fault rather
+ * than as age. */
+function fadeClass(age: number): string {
+  if (age <= 1) return "";
+  return age === 2 ? "nex-agent-step-age-1" : "nex-agent-step-age-2";
+}
+
+/** Smallest sequence worth folding. Under this a summary row would cost
+ * more than the two or three steps it replaces — folding has to be a density
+ * lever, not a tax on every finished run. */
+const FOLD_MIN_STEPS = 6;
+
+/** `tool_name` buckets for the fold summary (§13.33 `12 tool calls · 4 files ·
+ * 2 commands`). Files bucket the four filesystem tools, commands bucket
+ * `execute_command`, searches bucket `search_files` — the three buckets the
+ * brief names, kept separate because "searched" and "touched" are different
+ * facts about a run. The leading count is EVERY tool call, so the buckets are
+ * a breakdown of that total: a tool outside all three (`apply_patch`,
+ * `list_agents`, …) is still counted honestly in the total instead of
+ * vanishing. `model_turn` and `approval` rows are not tool calls and are
+ * counted in neither. */
+const FILE_TOOLS = new Set(["read_file", "write_file", "edit_file", "list_directory"]);
+
+interface FoldCounts {
+  calls: number;
+  files: number;
+  commands: number;
+  searches: number;
+}
+
+function foldCounts(steps: AgentStepView[]): FoldCounts {
+  const counts: FoldCounts = { calls: 0, files: 0, commands: 0, searches: 0 };
+  for (const step of steps) {
+    if (step.kind !== "tool_call") continue;
+    counts.calls += 1;
+    if (step.tool_name === "execute_command") counts.commands += 1;
+    else if (step.tool_name === "search_files") counts.searches += 1;
+    else if (step.tool_name !== null && FILE_TOOLS.has(step.tool_name)) counts.files += 1;
+  }
+  return counts;
+}
+
+/** §13.33 fold gate. Deliberately never a status string alone: the run must
+ * be finished AND nothing in it may still need the user's eye — no pending
+ * approval (the gate keeps its own Approve/Deny live), no failed row, no
+ * failed full-output fetch — and the sequence must be long enough for the
+ * summary to pay for itself and contain at least one tool call to count. */
+function foldableRun(run: AgentRunView, sorted: AgentStepView[]): boolean {
+  if (!isTerminalStatus(run.status)) return false;
+  if (run.pending_approval !== null) return false;
+  if (sorted.length < FOLD_MIN_STEPS) return false;
+  if (!sorted.some((step) => step.kind === "tool_call")) return false;
+  return !sorted.some(isProtectedRow);
+}
+
 function kindLabel(step: AgentStepView, locale: Locale = getLocale()): string {
   if (step.kind === "model_turn") return tr(locale, "agent.kindModelTurn");
   if (step.kind === "tool_call") return step.tool_name ?? tr(locale, "agent.kindToolCall");
@@ -85,6 +219,41 @@ function ruPlural(n: number, forms: [string, string, string]): string {
   if (mod10 === 1 && mod100 !== 11) return forms[0];
   if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return forms[1];
   return forms[2];
+}
+
+/** Nouns the fold summary counts. EN needs singular/plural, RU the full
+ * one/few/many triple — the same shape `ruPlural` already applies to the
+ * `agent.showFull` byte unit, kept at the call site so the catalog holds one
+ * `{n} {unit}` template per bucket instead of nine near-identical strings. */
+interface CountedNoun {
+  en: [string, string];
+  ru: [string, string, string];
+}
+
+const NOUN_TOOL_CALLS: CountedNoun = {
+  en: ["tool call", "tool calls"],
+  ru: ["вызов", "вызова", "вызовов"],
+};
+const NOUN_FILES: CountedNoun = {
+  en: ["file", "files"],
+  ru: ["файл", "файла", "файлов"],
+};
+const NOUN_COMMANDS: CountedNoun = {
+  en: ["command", "commands"],
+  ru: ["команда", "команды", "команд"],
+};
+const NOUN_SEARCHES: CountedNoun = {
+  en: ["search", "searches"],
+  ru: ["поиск", "поиска", "поисков"],
+};
+
+/** One counted noun phrase for the fold summary: `12 tool calls`, `4 файла`.
+ * The template (`{n} {unit}`) is localized in the catalog and interpolated by
+ * `tr`; the noun declines here — EN takes the singular at 1 and the plural
+ * otherwise, RU walks the one/few/many triple through `ruPlural` above. */
+function countedPhrase(locale: Locale, key: StringKey, n: number, noun: CountedNoun): string {
+  const unit = locale === "ru" ? ruPlural(n, noun.ru) : n === 1 ? noun.en[0] : noun.en[1];
+  return tr(locale, key, { n, unit });
 }
 
 function parseToolArgs(json: string | null): Record<string, unknown> | null {
@@ -201,16 +370,22 @@ export function DiffView({ observation }: { observation: string | null }) {
   );
 }
 
-function StepSection({
+const StepSection = memo(function StepSection({
   step,
   defaultOpen,
-  onExpand,
-  onCollapse,
+  fade,
+  runId,
+  onExpandStep,
+  onCollapseStep,
 }: {
   step: AgentStepView;
   defaultOpen: boolean;
-  onExpand: () => void;
-  onCollapse: () => void;
+  /** Temporal-fade bucket class ("" = current row), applied by the parent
+   * decision in `fadeClass` and read by CSS only. */
+  fade: string;
+  runId: number;
+  onExpandStep?: (runId: number, seq: number) => void;
+  onCollapseStep?: (runId: number, seq: number) => void;
 }) {
   const { locale, t } = useStrings();
   const [open, setOpen] = useState<boolean>(defaultOpen);
@@ -221,9 +396,18 @@ function StepSection({
   const displayObservation = step.observation_full ?? step.observation ?? "";
   const isTerminal = step.kind === "tool_call" && step.tool_name === "execute_command";
   const isDiff = step.kind === "tool_call" && step.tool_name === "write_file";
+  // Stable identities (not inline arrows) so the memo above survives a
+  // re-render driven by any other row's frame.
+  const seq = step.seq;
+  const handleExpand = useCallback(() => {
+    onExpandStep?.(runId, seq);
+  }, [onExpandStep, runId, seq]);
+  const handleCollapse = useCallback(() => {
+    onCollapseStep?.(runId, seq);
+  }, [onCollapseStep, runId, seq]);
 
   return (
-    <div className="nex-agent-step">
+    <div className={fade ? `nex-agent-step ${fade}` : "nex-agent-step"}>
       <button
         type="button"
         className="nex-agent-step-header"
@@ -266,7 +450,7 @@ function StepSection({
             <M3Button
               variant="quiet"
               size="sm"
-              onClick={onExpand}
+              onClick={handleExpand}
               disabled={step.observation_loading}
             >
               {step.observation_loading
@@ -287,13 +471,13 @@ function StepSection({
               <span className="nex-agent-run-error" role="alert">
                 {t("agent.fullLoadError")}
               </span>
-              <M3Button variant="quiet" size="sm" onClick={onExpand}>
+              <M3Button variant="quiet" size="sm" onClick={handleExpand}>
                 {t("common.retry")}
               </M3Button>
             </div>
           )}
           {expanded && (
-            <M3Button variant="quiet" size="sm" onClick={onCollapse}>
+            <M3Button variant="quiet" size="sm" onClick={handleCollapse}>
               {t("agent.showLess")}
             </M3Button>
           )}
@@ -301,7 +485,58 @@ function StepSection({
       )}
     </div>
   );
-}
+});
+
+/** The Activity Spine (brief §7). Mounted once per run and never
+ * conditionally on data: the rail itself is the run's timeline frame and
+ * stays put whether the run is live, parked or finished. `live` decides only
+ * whether the travelling accent segment is present, so "no pulse when not
+ * running" is structural as well as a CSS rule — and because the segment
+ * keeps the same element identity across step frames, the animation runs
+ * continuously instead of restarting on every arriving step. */
+const AgentSpine = memo(function AgentSpine({ live }: { live: boolean }) {
+  return (
+    <div className="nex-agent-spine" aria-hidden="true">
+      {live && <span className="nex-agent-spine-pulse" />}
+    </div>
+  );
+});
+
+/** The folded-run disclosure (§13.33). One button that changes state — the
+ * counts the hidden rows stood for, then the same control that brings them
+ * back. Zero-count buckets are dropped rather than printed as `0 searches`;
+ * the leading tool-call total is always shown, so the line can never read
+ * empty. */
+const StepFoldSummary = memo(function StepFoldSummary({
+  steps,
+  expanded,
+  onToggle,
+}: {
+  steps: AgentStepView[];
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const { locale } = useStrings();
+  const counts = foldCounts(steps);
+  const parts = [countedPhrase(locale, "agent.foldCalls", counts.calls, NOUN_TOOL_CALLS)];
+  if (counts.files > 0) {
+    parts.push(countedPhrase(locale, "agent.foldFiles", counts.files, NOUN_FILES));
+  }
+  if (counts.commands > 0) {
+    parts.push(countedPhrase(locale, "agent.foldCommands", counts.commands, NOUN_COMMANDS));
+  }
+  if (counts.searches > 0) {
+    parts.push(countedPhrase(locale, "agent.foldSearches", counts.searches, NOUN_SEARCHES));
+  }
+  return (
+    <button type="button" className="nex-agent-fold" aria-expanded={expanded} onClick={onToggle}>
+      <span className="nex-agent-fold-label">{parts.join(" · ")}</span>
+      <span className="nex-agent-fold-chevron" aria-hidden="true">
+        {expanded ? "▾" : "▸"}
+      </span>
+    </button>
+  );
+});
 
 function formatCountdown(totalSecs: number, locale: Locale): string {
   const s = Math.max(0, Math.floor(totalSecs));
@@ -361,7 +596,7 @@ function ApprovalTimeoutNotice({
   );
 }
 
-export default function AgentRunSteps({
+function AgentRunSteps({
   run,
   onResolveApproval,
   onCancel,
@@ -372,7 +607,7 @@ export default function AgentRunSteps({
   onCollapseStep,
 }: AgentRunStepsProps) {
   const { locale, t } = useStrings();
-  const sorted = [...run.steps].sort((a, b) => a.seq - b.seq);
+  const sorted = useMemo(() => [...run.steps].sort((a, b) => a.seq - b.seq), [run.steps]);
   const isRunning = run.status === "running";
   const isPaused = run.status === "paused";
   const isActive = isRunning || isPaused;
@@ -430,8 +665,32 @@ export default function AgentRunSteps({
     if (pendingId !== null) setElapsedSeen(false);
   }, [pendingId]);
 
+  // ---- #153: spine, fade, fold -------------------------------------------
+  // A parked run keeps the persisted `running` status, so `status` alone
+  // cannot tell "working" from "waiting for you" — the pending approval can,
+  // and a run that is waiting for a human must not look like it is burning
+  // cycles. The spine therefore pulses only for `running` with no approval
+  // outstanding; every other frame keeps the identical rail, connectors and
+  // status read with no motion at all.
+  const parked = pending !== null;
+  const spineLive = isRunning && !parked;
+  const foldable = foldableRun(run, sorted);
+  // One latch instead of a remount on the fold boundary: the rows stay
+  // mounted either way, so a row's own open/closed state survives the round
+  // trip and expanding restores the original objects in the original order.
+  const [foldExpanded, setFoldExpanded] = useState(false);
+  const folded = foldable && !foldExpanded;
+  const handleFoldToggle = useCallback(() => {
+    setFoldExpanded((v) => !v);
+  }, []);
+
   return (
-    <section className="nex-agent-run" aria-label={t("agent.runAria", { id: run.run_id })}>
+    <section
+      className={
+        "nex-agent-run " + runStateClass(run.status) + (parked ? " nex-agent-run-parked" : "")
+      }
+      aria-label={t("agent.runAria", { id: run.run_id })}
+    >
       <header className="nex-agent-run-header">
         <span className={statusClass(run.status)} role="status">
           {isRunning && <span className="nex-spinner nex-agent-spinner" aria-hidden="true" />}
@@ -449,22 +708,22 @@ export default function AgentRunSteps({
           className="nex-agent-run-actions"
         >
           {isRunning && onPause && (
-            <M3Button variant="quiet" size="sm" onClick={onPause}>
+            <M3Button variant="quiet" size="sm" onClick={() => onPause(run.run_id)}>
               {t("agent.pause")}
             </M3Button>
           )}
           {isPaused && onResume && (
-            <M3Button variant="secondary" size="sm" onClick={onResume}>
+            <M3Button variant="secondary" size="sm" onClick={() => onResume(run.run_id)}>
               {t("agent.resume")}
             </M3Button>
           )}
           {isActive && (
-            <M3Button variant="quiet" size="sm" onClick={onCancel}>
+            <M3Button variant="quiet" size="sm" onClick={() => onCancel(run.run_id)}>
               {t("agent.cancel")}
             </M3Button>
           )}
           {run.status === "budget_exhausted" && (
-            <M3Button variant="secondary" size="sm" onClick={() => onContinue(10)}>
+            <M3Button variant="secondary" size="sm" onClick={() => onContinue(run.run_id)}>
               {t("agent.continue")}
             </M3Button>
           )}
@@ -492,14 +751,14 @@ export default function AgentRunSteps({
               <M3Button
                 variant="primary"
                 size="sm"
-                onClick={() => onResolveApproval(pending.call_id, true)}
+                onClick={() => onResolveApproval(run.run_id, pending.call_id, true)}
               >
                 {t("agent.approve")}
               </M3Button>
               <M3Button
                 variant="destructive"
                 size="sm"
-                onClick={() => onResolveApproval(pending.call_id, false)}
+                onClick={() => onResolveApproval(run.run_id, pending.call_id, false)}
               >
                 {t("agent.deny")}
               </M3Button>
@@ -519,22 +778,43 @@ export default function AgentRunSteps({
       {sorted.length === 0 ? (
         <p className="nex-agent-empty">{isActive ? t("agent.waitingSteps") : t("agent.noSteps")}</p>
       ) : (
-        <div className="nex-agent-steps">
-          {sorted.map((step, idx) => {
-            const isLast = idx === sorted.length - 1;
-            const defaultOpen = isActive ? isLast : false;
-            return (
-              <StepSection
-                key={`${run.run_id}-${step.seq}`}
-                step={step}
-                defaultOpen={defaultOpen}
-                onExpand={() => onExpandStep?.(step.seq)}
-                onCollapse={() => onCollapseStep?.(step.seq)}
-              />
-            );
-          })}
-        </div>
+        <>
+          {/* `hidden` and never a `display` override here: the attribute keeps
+              every row mounted (so expanding restores the same objects, the
+              same order, and each row's own open state) while taking the
+              folded sequence out of sight and out of the a11y tree. */}
+          <div className="nex-agent-timeline" hidden={folded}>
+            <AgentSpine live={spineLive} />
+            <div className="nex-agent-steps">
+              {sorted.map((step, idx) => {
+                const isLast = idx === sorted.length - 1;
+                const protectedRow = isProtectedRow(step);
+                const slotClass =
+                  "nex-agent-step-slot" +
+                  (isLast && isActive && !protectedRow ? " nex-agent-step-slot-current" : "") +
+                  (step.status === "failed" ? " nex-agent-step-slot-failed" : "");
+                return (
+                  <div key={`${run.run_id}-${step.seq}`} className={slotClass}>
+                    <StepSection
+                      step={step}
+                      defaultOpen={isLast && isActive}
+                      fade={isLast || protectedRow ? "" : fadeClass(sorted.length - 1 - idx)}
+                      runId={run.run_id}
+                      onExpandStep={onExpandStep}
+                      onCollapseStep={onCollapseStep}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+          {foldable && (
+            <StepFoldSummary steps={sorted} expanded={!folded} onToggle={handleFoldToggle} />
+          )}
+        </>
       )}
     </section>
   );
 }
+
+export default memo(AgentRunSteps);
