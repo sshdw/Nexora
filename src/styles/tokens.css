@@ -691,4 +691,13 @@
      on-tertiary-container/surface 6.7 — all ≥4.5 ✓
    - High-contrast accents: on-surface 18.5 · variant 13.2 ·
      primary 11.4 · error 8.6 · outline 5.3 — all ≥4.5 ✓
+   - NON-TEXT tier steps (shell plane edges, no text on the pair):
+     dark canvas→elevated 1.109 · elevated→nested 1.045 ·
+     nested→floating 1.117 · light 1.185 / 1.136 / 1.088 ·
+     high-contrast 1.100 / 1.106 / 1.165. Tone alone does NOT
+     separate a nested fill from an elevated host in any theme
+     (dark is the weakest at 1.045:1), so component containers
+     that live on the elevated tier keep an outline-variant
+     hairline: 1.178 dark · 1.189 light · 2.413 high-contrast
+     against the host. Measured, not asserted.
    ============================================================ */

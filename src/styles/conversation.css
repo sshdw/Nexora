@@ -246,6 +246,10 @@
    composed rather than empty. Entrance: .nex-empty-enter.
    ============================================================ */
 
+/* The three empty states are the workspace stage itself, not panels
+   sitting on it: the canvas tier, the same plane .nex-main already
+   paints (brief §16 — the agent workspace is one continuous stage).
+   The mark inside each is what carries the tone step. */
 .nex-empty,
 .nex-main-placeholder,
 .nex-conversation-placeholder {
@@ -257,7 +261,7 @@
   gap: var(--nex-sys-space-sm);
   padding: var(--nex-sys-space-2xl);
   text-align: center;
-  background: var(--nex-sys-color-surface-container);
+  background: var(--nex-sys-color-surface-canvas);
 }
 
 /* Mark container: elevated tone, large-increased corners — the
@@ -367,6 +371,8 @@
    0.3.0: roles are distinguished by containment and alignment —
    user turns sit in an elevated tone container aligned to the
    end; assistant turns read on the bare canvas. No color blocks.
+   The workspace paints the canvas tier (see the empty states
+   above) so the thread and .nex-main behind it are one stage.
    ============================================================ */
 
 .nex-main-conversation {
@@ -374,7 +380,7 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: var(--nex-sys-color-surface-container);
+  background: var(--nex-sys-color-surface-canvas);
 }
 
 /* ---- History thread (scrollable, chronological from the backend) ----

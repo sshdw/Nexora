@@ -136,13 +136,17 @@
 }
 
 /* Split-pane marker: quiet mono count badge on tabs shown in the
-   secondary pane. */
+   secondary pane. Nested fill inside the elevated tab strip, kept on
+   an outline-variant hairline: the elevated→nested tone step is only
+   1.045:1 in dark, so the hairline carries the edge (1.178:1 dark /
+   1.189:1 light / 2.413:1 high-contrast against the host). */
 .nex-tab-split-mark {
   flex-shrink: 0;
   font-family: var(--nex-sys-type-family-mono);
   font-size: var(--nex-sys-type-size-label-small);
   color: var(--nex-sys-color-on-surface-variant);
   background: var(--nex-sys-color-surface-nested);
+  border: 1px solid var(--nex-sys-color-outline-variant);
   border-radius: var(--nex-sys-shape-extra-small);
   padding: 0 var(--nex-sys-space-xxs);
 }

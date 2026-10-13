@@ -449,6 +449,11 @@
    Full-pill container (OFFICIAL segmented shape mapping) with
    pill segments; selected segment carries the container tone +
    emphasized label (OFFICIAL selection grammar).
+   Documented as untouched by the shell surface contract, like
+   .nex-tag: the pill radius is the OFFICIAL segmented mapping,
+   and a segmented control is a mode switch — shape carries
+   selection here — so de-pilling it is a component decision,
+   not a shell one.
    ============================================================ */
 
 .nex-seg {
