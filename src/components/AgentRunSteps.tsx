@@ -34,6 +34,23 @@
 //!
 //! Callbacks arrive pre-bound to their run id and stable, so the memoized
 //! root re-renders only when this run's own data changes (#148).
+//!
+//! #154 — Contextual agent state language (brief §8, §12, §16):
+//!   - The generic "Running" pill is replaced by a label derived from real
+//!     events: a parked run reads "Waiting for approval" (the persisted status
+//!     is still `running`), a live run derives from the last persisted step
+//!     (`read_file`/`list_directory` → "Reading files", `write_file`/
+//!     `edit_file` → "Editing files", `execute_command` → "Running command",
+//!     `search_files` → "Searching workspace`, a `model_turn` → "Checking
+//!     result"), and every terminal keeps the persisted status vocabulary. No
+//!     invented "Planning"/"Understanding" — the core emits no such event.
+//!   - The model chip is one element changing state (brief §12): `● model ·
+//!     running`, `✓ model · Ns`, `◐ model · waiting`, `■ model · budget`.
+//!   - The mark transforms between states (brief §8): a per-state class on
+//!     `.nex-agent-run` feeds a `--nex-mark-scale-y` variable the existing
+//!     spine-pulse keyframes already read — a static scale change, not a new
+//!     animation and never a colour change. Reduced-motion reads the same
+//!     variable, so the frozen segment carries the same shape instantly.
 
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 
@@ -79,24 +96,119 @@ function statusClass(status: string): string {
   }
 }
 
-function statusLabel(status: string, locale: Locale = getLocale()): string {
-  switch (status) {
-    case "running":
-      return tr(locale, "agent.statusRunning");
+/** The live activity states the run header can show (brief §8). Every value
+ *  maps to a real event: `waiting` is a live `approval_requested` park, the six
+ *  working states derive from the last persisted step (`kind` + `tool_name`),
+ *  and anything unrecognised falls back to the honest `working`. There is
+ *  deliberately no `planning`/`understanding` string — the core emits no such
+ *  event, and brief §8 forbids inventing one. */
+type AgentActivityState =
+  | "working"
+  | "reading"
+  | "editing"
+  | "command"
+  | "searching"
+  | "checking"
+  | "waiting";
+
+/** The tool names that mean "the agent is gathering file content" — the
+ *  readers, kept separate from the writers because "reading" and "editing"
+ *  are different facts about a run (same split the fold summary makes). */
+const READ_TOOLS = new Set(["read_file", "list_directory"]);
+const WRITE_TOOLS = new Set(["write_file", "edit_file"]);
+
+/** Derive the live activity state from the run's real event data. Returns
+ *  `null` for every non-live frame (paused, the five terminals, the pre-spawn
+ *  `queued`): those have no travelling mark to transform and their labels
+ *  come from the persisted status vocabulary instead. The highest-`seq` step
+ *  is the event the run is responding to right now; `run.steps` arrives
+ *  seq-sorted from the hook, but the placeholder frames are not guaranteed to
+ *  be, so the max is taken defensively. */
+function liveActivity(run: AgentRunView): AgentActivityState | null {
+  if (run.pending_approval !== null) return "waiting";
+  if (run.status !== "running") return null;
+  let last: AgentStepView | null = null;
+  for (const step of run.steps) {
+    if (last === null || step.seq > last.seq) last = step;
+  }
+  if (last === null) return "working";
+  if (last.kind === "model_turn") return "checking";
+  if (last.kind === "tool_call") {
+    if (last.tool_name !== null && READ_TOOLS.has(last.tool_name)) return "reading";
+    if (last.tool_name !== null && WRITE_TOOLS.has(last.tool_name)) return "editing";
+    if (last.tool_name === "execute_command") return "command";
+    if (last.tool_name === "search_files") return "searching";
+  }
+  return "working";
+}
+
+/** Contextual status label (brief §8). A parked run is waiting on a human —
+ *  that outranks every other derivation, because the persisted status is still
+ *  `running` while the run sits on an approval. A live run derives its label
+ *  from the last persisted step; every other frame keeps the persisted status
+ *  vocabulary. */
+function statusLabel(run: AgentRunView, locale: Locale = getLocale()): string {
+  if (run.pending_approval !== null) return tr(locale, "agent.stateWaitingApproval");
+  if (run.status === "running") {
+    switch (liveActivity(run)) {
+      case "reading":
+        return tr(locale, "agent.stateReading");
+      case "editing":
+        return tr(locale, "agent.stateEditing");
+      case "command":
+        return tr(locale, "agent.stateRunning");
+      case "searching":
+        return tr(locale, "agent.stateSearching");
+      case "checking":
+        return tr(locale, "agent.stateChecking");
+      default:
+        return tr(locale, "agent.stateWorking");
+    }
+  }
+  switch (run.status) {
     case "paused":
-      return tr(locale, "agent.statusPaused");
+      return tr(locale, "agent.statePaused");
     case "completed":
-      return tr(locale, "agent.statusCompleted");
+      return tr(locale, "agent.stateCompleted");
     case "cancelled":
-      return tr(locale, "agent.statusCancelled");
+      return tr(locale, "agent.stateCancelled");
     case "budget_exhausted":
-      return tr(locale, "agent.statusBudget");
+      return tr(locale, "agent.stateBudget");
     case "spend_limit_exceeded":
-      return tr(locale, "agent.statusSpend");
+      return tr(locale, "agent.stateSpend");
     case "error":
-      return tr(locale, "agent.statusError");
+      return tr(locale, "agent.stateError");
     default:
-      return status;
+      return run.status;
+  }
+}
+
+/** The model chip's per-state glyph + text (brief §12). One element changing
+ *  state: `● {model} · running`, `✓ {model} · {n}s`, `◐ {model} · waiting`,
+ *  `■ {model} · budget`. The glyph is applied here so the catalog holds one
+ *  template per state; the default (cancelled / spend / error / queued) is
+ *  the bare model name — no invented running signal. `●` means executing, `◐`
+ *  a held park (waiting or paused), `■` a hard stop at the cap, `✓` done; the
+ *  label always carries the exact meaning, so a repeated glyph never rides
+ *  alone. */
+function modelChip(run: AgentRunView, locale: Locale): { glyph: string; text: string } {
+  const model = run.model || "agent";
+  if (run.pending_approval !== null) {
+    return { glyph: "◐", text: tr(locale, "agent.modelWaiting", { model }) };
+  }
+  switch (run.status) {
+    case "running":
+      return { glyph: "●", text: tr(locale, "agent.modelRunning", { model }) };
+    case "completed": {
+      const secs = run.finished_at !== null ? Math.max(0, run.finished_at - run.started_at) : 0;
+      return { glyph: "✓", text: tr(locale, "agent.modelCompleted", { model, n: formatCountdown(secs, locale) }) };
+    }
+    case "paused":
+      return { glyph: "◐", text: tr(locale, "agent.modelPaused", { model }) };
+    case "budget_exhausted":
+      return { glyph: "■", text: tr(locale, "agent.modelBudget", { model }) };
+    default:
+      return { glyph: "", text: model };
   }
 }
 
@@ -742,6 +854,13 @@ function AgentRunSteps({
   // status read with no motion at all.
   const parked = pending !== null;
   const spineLive = isRunning && !parked;
+  // The mark transformation is driven by the SAME derivation as the status
+  // label, so the two can never disagree about what the run is doing. `null`
+  // for every non-live frame — those have no travelling pulse to transform.
+  const mark = liveActivity(run);
+  // One model-chip element changing state (brief §12) — never a second
+  // indicator beside it.
+  const chip = modelChip(run, locale);
   const foldable = foldableRun(run, sorted);
   // One latch instead of a remount on the fold boundary: the rows stay
   // mounted either way, so a row's own open/closed state survives the round
@@ -758,7 +877,10 @@ function AgentRunSteps({
   return (
     <section
       className={
-        "nex-agent-run " + runStateClass(run.status) + (parked ? " nex-agent-run-parked" : "")
+        "nex-agent-run " +
+        runStateClass(run.status) +
+        (parked ? " nex-agent-run-parked" : "") +
+        (mark ? ` nex-agent-mark-${mark}` : "")
       }
       aria-label={t("agent.runAria", { id: run.run_id })}
     >
@@ -766,16 +888,16 @@ function AgentRunSteps({
         <span className={statusClass(run.status)} role="status">
           {/* Same rule as the spine: a parked run keeps the persisted
               `running` status, so it is waiting on a human, not burning
-              cycles — the status pill still reads the same. */}
+              cycles — no spinner, and the label says so. */}
           {isRunning && !parked && (
             <span className="nex-spinner nex-agent-spinner" aria-hidden="true" />
           )}
           {isPaused && <span className="nex-agent-paused-dot" aria-hidden="true" />}
-          {statusLabel(run.status, locale)}
+          {statusLabel(run, locale)}
         </span>
         <span className="nex-agent-run-meta">
           <span className="nex-tag nex-tag-mono" title={t("agent.modelTitle")}>
-            {run.model || "agent"}
+            {chip.glyph ? `${chip.glyph} ${chip.text}` : chip.text}
           </span>
           <span className="nex-agent-run-id">run {run.run_id}</span>
         </span>

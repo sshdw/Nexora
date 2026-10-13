@@ -212,13 +212,35 @@ const en = {
   "conv.attachDialogTitle": "Attach files",
 
   // ---- agent runs (AgentRunSteps.tsx) --------------------------------------------
-  "agent.statusRunning": "Running",
-  "agent.statusPaused": "Paused",
-  "agent.statusCompleted": "Completed",
-  "agent.statusCancelled": "Cancelled",
-  "agent.statusBudget": "Budget exhausted",
-  "agent.statusSpend": "Spend limit exceeded",
-  "agent.statusError": "Error",
+  // Contextual run states (brief §8, §12). Every string maps to a real
+  // backend event: `stateWaitingApproval` requires a live `approval_requested`
+  // park, the six working states derive from the last persisted step (`kind`
+  // + `tool_name`), and the five terminals keep the `agent_runs.status`
+  // vocabulary. There is deliberately no "Planning"/"Understanding" string —
+  // the core emits no such event, and brief §8 forbids inventing one.
+  "agent.stateWorking": "Working",
+  "agent.stateReading": "Reading files",
+  "agent.stateEditing": "Editing files",
+  "agent.stateRunning": "Running command",
+  "agent.stateSearching": "Searching workspace",
+  "agent.stateChecking": "Checking result",
+  "agent.stateWaitingApproval": "Waiting for approval",
+  "agent.statePaused": "Paused",
+  "agent.stateCompleted": "Completed",
+  "agent.stateCancelled": "Cancelled",
+  "agent.stateBudget": "Budget exhausted",
+  "agent.stateSpend": "Spend limit exceeded",
+  "agent.stateError": "Error",
+  // Model chip (brief §12): one element changing state — `● {model} · running`,
+  // `✓ {model} · {n}s`, `◐ {model} · waiting`, `■ {model} · budget`. The glyph
+  // is applied by the component so the catalog holds one template per state.
+  // `{n}` is the localized duration from `formatCountdown`, unit included
+  // (`18s` / `1:15` / `18 с`) — appending another unit here would double it.
+  "agent.modelRunning": "{model} · running",
+  "agent.modelCompleted": "{model} · {n}",
+  "agent.modelPaused": "{model} · paused",
+  "agent.modelWaiting": "{model} · waiting",
+  "agent.modelBudget": "{model} · budget",
   "agent.runAria": "Agent run {id}",
   "agent.modelTitle": "Model",
   "agent.controlsAria": "Controls for agent run {id}",
@@ -1712,13 +1734,24 @@ const ru: Record<StringKey, string> = {
   "conv.autonomyFull": "Полный авто",
   "conv.attachDialogTitle": "Прикрепить файлы",
 
-  "agent.statusRunning": "Выполняется",
-  "agent.statusPaused": "На паузе",
-  "agent.statusCompleted": "Завершён",
-  "agent.statusCancelled": "Отменён",
-  "agent.statusBudget": "Бюджет исчерпан",
-  "agent.statusSpend": "Превышен лимит трат",
-  "agent.statusError": "Ошибка",
+  "agent.stateWorking": "Работает",
+  "agent.stateReading": "Читает файлы",
+  "agent.stateEditing": "Редактирует файлы",
+  "agent.stateRunning": "Выполняет команду",
+  "agent.stateSearching": "Ищет в рабочей области",
+  "agent.stateChecking": "Проверяет результат",
+  "agent.stateWaitingApproval": "Ожидает подтверждения",
+  "agent.statePaused": "На паузе",
+  "agent.stateCompleted": "Завершён",
+  "agent.stateCancelled": "Отменён",
+  "agent.stateBudget": "Бюджет исчерпан",
+  "agent.stateSpend": "Превышен лимит трат",
+  "agent.stateError": "Ошибка",
+  "agent.modelRunning": "{model} · выполняется",
+  "agent.modelCompleted": "{model} · {n}",
+  "agent.modelPaused": "{model} · пауза",
+  "agent.modelWaiting": "{model} · ожидание",
+  "agent.modelBudget": "{model} · бюджет",
   "agent.runAria": "Запуск агента {id}",
   "agent.modelTitle": "Модель",
   "agent.controlsAria": "Управление запуском агента {id}",

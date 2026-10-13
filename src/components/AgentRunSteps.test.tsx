@@ -23,10 +23,12 @@
 
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+// #154 marker line for edit testing
 
 import type { AgentRunView, AgentStepView } from "../lib/useAgentRun";
 import { LOCALE_KEY, LocaleProvider } from "../lib/useLocale";
 import AgentRunSteps, { type AgentRunStepsProps } from "./AgentRunSteps";
+// #154 contextual state-language tests are appended at the end of this file.
 
 /** `AgentStep` row shape → `AgentStepView` (mirrors the hook's `toStepView`). */
 function stepView(overrides: Partial<AgentStepView> = {}): AgentStepView {
@@ -681,5 +683,105 @@ describe("run-scoped callbacks", () => {  it("passes the run id to every control
     fireEvent.click(screen.getByRole("button", { name: "Pause" }));
     expect(onPause).toHaveBeenCalledWith(7);
     expect(within(container).getByText("run 7")).toBeInTheDocument();
+  });
+});
+
+describe("contextual state language (brief §8, §12)", () => {
+  it("derives the running label from the last persisted step", () => {
+    const { rerenderRun } = renderRun(runView());
+    // No steps yet → the honest fallback, never an invented "Planning".
+    expect(screen.getByRole("status")).toHaveTextContent("Working");
+
+    const cases: Array<[Partial<AgentStepView>, string]> = [
+      [{ tool_name: "read_file" }, "Reading files"],
+      [{ tool_name: "list_directory" }, "Reading files"],
+      [{ tool_name: "write_file" }, "Editing files"],
+      [{ tool_name: "edit_file" }, "Editing files"],
+      [{ tool_name: "execute_command" }, "Running command"],
+      [{ tool_name: "search_files" }, "Searching workspace"],
+      // A model turn follows a tool call: the model is checking its result.
+      [{ kind: "model_turn", tool_name: null }, "Checking result"],
+      // A tool outside the named buckets still counts honestly as work.
+      [{ tool_name: "apply_patch" }, "Working"],
+    ];
+    for (const [overrides, expected] of cases) {
+      rerenderRun(runView({ steps: [stepView(overrides)] }));
+      expect(screen.getByRole("status"), `step ${JSON.stringify(overrides)}`).toHaveTextContent(expected);
+    }
+  });
+
+  it("reads Waiting for approval on a parked run, not Running", () => {
+    // The parked run persists `running` (lifecycle.rs: `AwaitingApproval` →
+    // `running`), so the pending approval — not the status string — must say
+    // the run is waiting on a human.
+    renderRun(
+      runView({
+        steps: [stepView({ tool_name: "read_file" })],
+        pending_approval: {
+          call_id: "call-1",
+          name: "execute_command",
+          arguments: '{"command":"rm -rf build"}',
+          timeout_secs: 0,
+          requested_at: 1000,
+        },
+      }),
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("Waiting for approval");
+  });
+
+  it("keeps the persisted terminal vocabulary", () => {
+    const terminals: Array<[string, string]> = [
+      ["completed", "Completed"],
+      ["cancelled", "Cancelled"],
+      ["budget_exhausted", "Budget exhausted"],
+      ["spend_limit_exceeded", "Spend limit exceeded"],
+      ["error", "Error"],
+    ];
+    for (const [status, label] of terminals) {
+      const { unmount } = renderRun(runView({ status }));
+      expect(screen.getByRole("status")).toHaveTextContent(label);
+      unmount();
+    }
+  });
+
+  it("shows the model chip with running state", () => {
+    renderRun(runView({ status: "running", model: "claude-sonnet-4-20250514" }));
+    const chip = document.querySelector(".nex-agent-run-meta .nex-tag-mono");
+    expect(chip?.textContent).toContain("claude-sonnet-4-20250514");
+    expect(chip?.textContent).toContain("running");
+  });
+
+  it("shows the model chip with waiting state when parked", () => {
+    renderRun(
+      runView({
+        status: "running",
+        model: "claude-sonnet-4-20250514",
+        pending_approval: {
+          call_id: "call-1",
+          name: "write_file",
+          arguments: "{}",
+          timeout_secs: 600,
+          requested_at: 1000,
+        },
+      }),
+    );
+    const chip = document.querySelector(".nex-agent-run-meta .nex-tag-mono");
+    expect(chip?.textContent).toContain("claude-sonnet-4-20250514");
+    expect(chip?.textContent).toContain("waiting");
+  });
+
+  it("renders RU state strings", () => {
+    window.localStorage.setItem(LOCALE_KEY, "ru");
+    try {
+      renderRun(
+        runView({
+          status: "running",
+          steps: [stepView({ seq: 1, kind: "tool_call", tool_name: "read_file" })],
+        }),
+      );
+      expect(screen.getByRole("status")).toHaveTextContent("Читает файлы");
+    } finally {
+      window.localStorage.setItem(LOCALE_KEY, "en");
+    }
   });
 });

@@ -1281,7 +1281,7 @@
 @keyframes nex-agent-spine-flow {
   0% {
     opacity: 0;
-    transform: translateY(-40%);
+    transform: translateY(-40%) scaleY(var(--nex-mark-scale-y, 1));
   }
   22% {
     opacity: 1;
@@ -1291,8 +1291,31 @@
   }
   100% {
     opacity: 0;
-    transform: translateY(450%);
+    transform: translateY(450%) scaleY(var(--nex-mark-scale-y, 1));
   }
+}
+
+/* Mark transformation (brief §8): the same pulse reshapes itself per activity
+   state — a static scale change, not a new animation and never a colour
+   change. The `--nex-mark-scale-y` variable above is read by the existing
+   `nex-agent-spine-flow` keyframes and defaults to 1, so a run in the plain
+   `working` state travels exactly as it did before this rule existed. The
+   per-state classes are set on `.nex-agent-run` from the same derivation as
+   the status label, so the mark and the words can never disagree. */
+.nex-agent-mark-reading .nex-agent-spine-pulse {
+  --nex-mark-scale-y: 0.6;
+}
+.nex-agent-mark-editing .nex-agent-spine-pulse {
+  --nex-mark-scale-y: 1.45;
+}
+.nex-agent-mark-command .nex-agent-spine-pulse {
+  --nex-mark-scale-y: 1.1;
+}
+.nex-agent-mark-searching .nex-agent-spine-pulse {
+  --nex-mark-scale-y: 0.4;
+}
+.nex-agent-mark-checking .nex-agent-spine-pulse {
+  --nex-mark-scale-y: 0.75;
 }
 
 /* Reduced motion: the global motion.css gate would freeze the pulse
@@ -1304,7 +1327,7 @@
   .nex-agent-run-state-running:not(.nex-agent-run-parked) .nex-agent-spine-pulse {
     animation: none;
     opacity: 1;
-    transform: translateY(150%);
+    transform: translateY(150%) scaleY(var(--nex-mark-scale-y, 1));
   }
 }
 
