@@ -19,6 +19,7 @@ import PromptLibraryView from "./components/PromptLibraryView";
 import SettingsView from "./components/SettingsView";
 import ShortcutsDialog from "./components/ShortcutsDialog";
 import Sidebar from "./components/Sidebar";
+import { SnackbarProvider } from "./components/SnackbarHost";
 import TaskPanel from "./components/TaskPanel";
 import TerminalPanel from "./components/TerminalPanel";
 import VersionControlPanel from "./components/VersionControlPanel";
@@ -780,8 +781,8 @@ function AppShell() {
       onSelectPrompt: router.selectPrompt,
       onImport: () => setImportOpen(true),
       onRename: rename,
-      onArchive: (id: number) => void archive(id),
-      onRestore: (id: number) => void restore(id),
+      onArchive: (id: number) => archive(id),
+      onRestore: (id: number) => restore(id),
       onDelete: (id: number) => void remove(id),
       workspace,
     }),
@@ -806,6 +807,7 @@ function AppShell() {
   );
 
   return (
+    <SnackbarProvider>
     <div className={"nex-app" + (zen ? " nex-zen" : "")}>
       <a className="nex-skip-link" href="#nex-main-content">
         {t("app.skipLink")}
@@ -967,6 +969,7 @@ function AppShell() {
         />
       )}
     </div>
+    </SnackbarProvider>
   );
 }
 

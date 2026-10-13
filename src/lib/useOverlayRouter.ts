@@ -22,6 +22,12 @@
 //! and Settings opened with a blank body. `NavigationContext` now exposes
 //! only no-argument wrappers; the parameterized openers stay available here
 //! for palette deep links.
+//!
+//! Follow-up fix (NEX-UX-001 remainder): the terminal opener never closed
+//! the audit/debt/docs/gh/release flags, so those flags could stay true
+//! under an open Terminal. The render chain still showed exactly one overlay
+//! (priority branch), but the flags disagreed with it — now every opener
+//! closes every other overlay, so flags and render can never disagree.
 
 import { useCallback, useMemo, useState } from "react";
 
@@ -235,8 +241,11 @@ export function useOverlayRouter(): OverlayRouter {
     setVcsOpen(false);
     setActivityOpen(false);
     setTasksOpen(false);
-    // NOTE: verbatim from App.tsx — the terminal opener never touched
-    // audit/debt/docs/gh/release flags (pre-existing asymmetry, preserved).
+    setAuditOpen(false);
+    setDebtOpen(false);
+    setDocsOpen(false);
+    setGhOpen(false);
+    setReleaseOpen(false);
   }, []);
   const closeTerminal = useCallback(() => {
     setTerminalOpen(false);

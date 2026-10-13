@@ -37,18 +37,21 @@ export interface ConversationsStore {
   working: boolean;
   reload: () => Promise<void>;
   create: () => Promise<number | null>;
-  /** Rename a conversation (FR-002, FR-006). */
-  rename: (id: number, title: string) => Promise<void>;
-  /** Archive an active conversation (FR-006). */
-  archive: (id: number) => Promise<void>;
-  /** Restore an archived conversation (FR-006). */
-  restore: (id: number) => Promise<void>;
+  /** Rename a conversation (FR-002, FR-006). Resolves false when the
+   * backend call failed (failure also lands in `error`). */
+  rename: (id: number, title: string) => Promise<boolean>;
+  /** Archive an active conversation (FR-006). Resolves true on success,
+   * false when the backend call failed (the failure also lands in `error`,
+   * so callers gate success-only UI such as the archive snackbar on it). */
+  archive: (id: number) => Promise<boolean>;
+  /** Restore an archived conversation (FR-006). Same boolean contract as `archive`. */
+  restore: (id: number) => Promise<boolean>;
   /** Permanently delete a conversation and reload the list (FR-002).
    * NEX-SEC-004: the native OS confirmation prompt raised by
    * `deleteConversationPermanently` IS the confirmation — there is no
    * separate in-app confirm step. A cancel rejects with
-   * `confirmationRequired` and deletes nothing. */
-  remove: (id: number) => Promise<void>;
+   * `confirmationRequired` and deletes nothing. Resolves false on failure. */
+  remove: (id: number) => Promise<boolean>;
 }
 
 export function useConversations(): ConversationsStore {
@@ -90,15 +93,20 @@ export function useConversations(): ConversationsStore {
   // Shared runner for the per-conversation management operations: run the
   // backend command, then refresh the list from the backend so the sidebar
   // reflects the resulting title/status membership (FR-002, FR-006).
+  // Returns whether the operation succeeded: callers gate success-only UI
+  // (e.g. the archive snackbar) on `true` so a failure never claims success
+  // — the failure itself still lands in `error` for honest surfacing.
   const run = useCallback(
-    async (operation: () => Promise<void>): Promise<void> => {
+    async (operation: () => Promise<void>): Promise<boolean> => {
       setWorking(true);
       setError(null);
       try {
         await operation();
         await reload();
+        return true;
       } catch (e) {
         setError(toCommandError(e));
+        return false;
       } finally {
         setWorking(false);
       }

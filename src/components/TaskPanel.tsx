@@ -15,15 +15,17 @@
 //! animates on entry (instant render under reduced motion); all visuals ride
 //! the shared panel/tag primitives — zero new CSS, zero raw values.
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useTasks, type TaskView } from "../lib/useTasks";
 import type { AgentTask, AgentTaskStep } from "../lib/tauri";
 import { useStrings, type Strings } from "../lib/useLocale";
+import ConfirmDialog from "./ConfirmDialog";
 import KanbanBoard from "./KanbanBoard";
 import M3Button from "./M3Button";
 import M3SegmentedGroup from "./M3SegmentedGroup";
 import M3LoadingIndicator from "./M3LoadingIndicator";
+import { UNDO_WINDOW_MS, useSnackbar } from "./SnackbarHost";
 
 export interface TaskPanelProps {
   onClose: () => void;
@@ -107,6 +109,32 @@ export default function TaskPanel({ onClose, defaultProvider, defaultModel }: Ta
   const [expandedSteps, setExpandedSteps] = useState<Record<number, boolean>>({});
   const [expandedReport, setExpandedReport] = useState<Record<number, boolean>>({});
   const [busyId, setBusyId] = useState<number | null>(null);
+  // In-app delete confirmation target (ConfirmDialog); the hard delete it
+  // guards is the one truly irreversible op here, so it keeps an explicit
+  // confirm while the undo window below covers slips after confirming.
+  const [deleteTarget, setDeleteTarget] = useState<TaskView | null>(null);
+  // Bounded Undo window for task deletes: confirming hides the row locally
+  // and the `delete_task` IPC only fires when the window expires — Undo
+  // cancels the timer and the row reappears with zero IPC. No backend
+  // soft-delete column needed (forward-only, no migration): tasks have no
+  // status-flag reuse available, and deferral gives a real restore.
+  const [pendingId, setPendingId] = useState<number | null>(null);
+  const pendingRef = useRef<{ id: number; timer: number } | null>(null);
+  const { showSnack, dismissSnack } = useSnackbar();
+
+  // Unmount contract: the pending-delete timer intentionally OUTLIVES the
+  // panel — commit-on-expiry is owned by the timeout closure (it calls
+  // `store.remove` directly), not by mounted state, so navigating away
+  // mid-window still commits instead of leaking a never-firing row. Only
+  // the ref is cleared (a remount must never double-commit through a stale
+  // handle); cancellation stays exclusively with the snackbar Undo
+  // (`cancelPendingDelete`), which owns the live timer while mounted.
+  useEffect(
+    () => () => {
+      pendingRef.current = null;
+    },
+    [],
+  );
 
   const openCreate = useCallback(() => {
     setEditingId(null);
@@ -191,18 +219,52 @@ export default function TaskPanel({ onClose, defaultProvider, defaultModel }: Ta
     [store],
   );
 
-  const handleDelete = useCallback(
-    async (view: TaskView) => {
-      if (!window.confirm(t("task.deleteBody", { title: view.task.title }))) return;
-      setBusyId(view.task.id);
-      try {
-        await store.remove(view.task.id);
-      } finally {
-        setBusyId(null);
-      }
-    },
-    [store, t],
-  );
+  const commitPendingDelete = useCallback(() => {
+    const pending = pendingRef.current;
+    if (pending === null) return;
+    window.clearTimeout(pending.timer);
+    pendingRef.current = null;
+    setPendingId(null);
+    setBusyId(pending.id);
+    void store.remove(pending.id).finally(() => {
+      setBusyId((current) => (current === pending.id ? null : current));
+    });
+  }, [store]);
+
+  const cancelPendingDelete = useCallback(() => {
+    const pending = pendingRef.current;
+    if (pending === null) return;
+    window.clearTimeout(pending.timer);
+    pendingRef.current = null;
+    setPendingId(null);
+    dismissSnack();
+  }, [dismissSnack]);
+
+  const confirmDelete = useCallback(() => {
+    const target = deleteTarget;
+    if (target === null) return;
+    setDeleteTarget(null);
+    // A second confirmed delete flushes the first one's window: the earlier
+    // delete commits now (its snackbar is superseded by the new one).
+    commitPendingDelete();
+    const id = target.task.id;
+    const title = target.task.title;
+    const timer = window.setTimeout(() => {
+      pendingRef.current = null;
+      setPendingId(null);
+      setBusyId(id);
+      void store.remove(id).finally(() => {
+        setBusyId((current) => (current === id ? null : current));
+      });
+    }, UNDO_WINDOW_MS);
+    pendingRef.current = { id, timer };
+    setPendingId(id);
+    showSnack(t("task.deleted", { title }), {
+      actionLabel: t("common.undo"),
+      onAction: cancelPendingDelete,
+      timeoutMs: UNDO_WINDOW_MS,
+    });
+  }, [deleteTarget, commitPendingDelete, store, showSnack, t, cancelPendingDelete]);
 
   const toggleSteps = useCallback((taskId: number) => {
     setExpandedSteps((prev) => ({ ...prev, [taskId]: !prev[taskId] }));
@@ -213,6 +275,11 @@ export default function TaskPanel({ onClose, defaultProvider, defaultModel }: Ta
   }, []);
 
   const doneCount = (view: TaskView) => view.steps.filter((s) => s.status === "completed").length;
+
+  // Rows with a pending (still-undoable) delete stay out of the list until
+  // the window commits or Undo brings them back.
+  const visibleTasks =
+    pendingId === null ? store.tasks : store.tasks.filter((view) => view.task.id !== pendingId);
 
   return (
     <div className="nex-term" role="group" aria-label={t("task.group")}>
@@ -244,7 +311,7 @@ export default function TaskPanel({ onClose, defaultProvider, defaultModel }: Ta
       </header>
 
       {view === "board" ? (
-        <KanbanBoard store={store} />
+        <KanbanBoard store={store} hiddenTaskId={pendingId} />
       ) : (
       <div className="nex-term-body">
         {store.error && (
@@ -349,15 +416,15 @@ export default function TaskPanel({ onClose, defaultProvider, defaultModel }: Ta
           </section>
         )}
 
-        {store.loading && store.tasks.length === 0 ? (
+        {store.loading && visibleTasks.length === 0 ? (
           <M3LoadingIndicator label={t("common.loading")} />
-        ) : store.tasks.length === 0 ? (
+        ) : visibleTasks.length === 0 ? (
           <div className="nex-agent-empty">
             <p>{t("task.noTasksTitle")}</p>
             <p>{t("task.noTasksText")}</p>
           </div>
         ) : (
-          store.tasks.map((view) => {
+          visibleTasks.map((view) => {
             const running = view.task.status === "running";
             const busy = busyId === view.task.id;
             const canRun =
@@ -397,7 +464,7 @@ export default function TaskPanel({ onClose, defaultProvider, defaultModel }: Ta
                     <M3Button variant="quiet" size="sm" disabled={busy || running} onClick={() => openEdit(view)}>
                       {t("task.edit")}
                     </M3Button>
-                    <M3Button variant="quiet" size="sm" disabled={busy || running} onClick={() => void handleDelete(view)}>
+                    <M3Button variant="quiet" size="sm" disabled={busy || running} onClick={() => setDeleteTarget(view)}>
                       {t("task.delete")}
                     </M3Button>
                     {view.steps.length > 0 && (
@@ -437,6 +504,17 @@ export default function TaskPanel({ onClose, defaultProvider, defaultModel }: Ta
           })
         )}
       </div>
+      )}
+      {deleteTarget !== null && (
+        <ConfirmDialog
+          title={t("task.deleteTitle")}
+          body={t("task.deleteBody", { title: deleteTarget.task.title })}
+          confirmLabel={t("task.deleteConfirm")}
+          danger
+          busy={busyId === deleteTarget.task.id}
+          onConfirm={confirmDelete}
+          onCancel={() => setDeleteTarget(null)}
+        />
       )}
     </div>
   );

@@ -64,9 +64,13 @@ interface DeniedMove {
 
 export interface KanbanBoardProps {
   store: TasksStore;
+  /** Id with a pending (still-undoable) delete: hidden like in the list view
+   * until the window commits or Undo brings it back, so confirming a delete
+   * in the list and switching to the board never resurrects the row. */
+  hiddenTaskId?: number | null;
 }
 
-export default function KanbanBoard({ store }: KanbanBoardProps) {
+export default function KanbanBoard({ store, hiddenTaskId = null }: KanbanBoardProps) {
   const { t } = useStrings();
   // Per-board-instance holder label: two boards are two surfaces, so a
   // contended lock honestly names the other board instance.
@@ -81,12 +85,13 @@ export default function KanbanBoard({ store }: KanbanBoardProps) {
     const grouped = new Map<ColumnStatus, TaskView[]>();
     for (const status of COLUMNS) grouped.set(status, []);
     for (const view of store.tasks) {
+      if (view.task.id === hiddenTaskId) continue;
       const bucket = grouped.get(view.task.status);
       if (bucket) bucket.push(view);
       else grouped.set(view.task.status, [view]);
     }
     return grouped;
-  }, [store.tasks]);
+  }, [store.tasks, hiddenTaskId]);
 
   const handleMove = useCallback(
     async (view: TaskView, target: MoveTarget) => {
