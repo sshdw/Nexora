@@ -25,7 +25,10 @@
 //!     on-surface ladder and stop at `on-surface-tertiary`. No opacity
 //!     multiplier — see the CSS note; the floor tier has no headroom for one.
 //!   - Tool group folding (§13.33): a finished, approval-free, error-free,
-//!     long sequence collapses into one counted summary row. Expanding
+//!     long sequence collapses into one counted summary row. "Error-free" is
+//!     the persisted per-step vocabulary — `failed`, `denied` or `cancelled`
+//!     (`isFailedStatus`) — and "approval-free" means no approval still
+//!     OUTSTANDING: a granted park is settled history. Expanding
 //!     restores the SAME step objects in the SAME order with each row's own
 //!     open/closed state intact (rows are hidden, never unmounted).
 //!
@@ -136,12 +139,48 @@ function isTerminalStatus(status: string): boolean {
   );
 }
 
-/** A row the user must always be able to find: an approval gate, a failed
- * tool call, or a failed full-output fetch. These never fade (§13.9: "do not
- * fade important final results, errors, approvals") and they block folding
- * (§13.29: failure stays findable). */
+/** The step statuses that mean "this row did not do what it was asked to",
+ * straight off the `agent_steps.status` CHECK (`succeeded` | `failed` |
+ * `denied` | `cancelled`) — the persisted vocabulary, not a UI invention.
+ *
+ * `denied` is not cosmetic: four dispatch paths record a `tool_call` row
+ * with `status: "denied"` and an `Error:` observation and NO companion
+ * approval row (the document shell ban, the WS-B.3 role gate, the per-turn
+ * over-cap batch, and the injection hold when there is no gate to park on),
+ * so that row is the only trace the model was refused at all.
+ *
+ * `cancelled` is protected for the same reason: `execute_tool_call` writes it
+ * for a tool row when the cancellation token trips, including the error arm
+ * where the observation IS the tool error. A half-executed call is not a
+ * settled result, so it never settles away either. */
+const FAILED_STEP_STATUSES = new Set(["failed", "denied", "cancelled"]);
+
+/** The one predicate for "this step failed", shared by the fold gate, the
+ * fade ladder and the connector tone below — three call sites that must
+ * never drift apart on what counts as a failure. */
+function isFailedStatus(step: AgentStepView): boolean {
+  return step.status !== null && FAILED_STEP_STATUSES.has(step.status);
+}
+
+/** A row the user must always be able to find: an approval that has not been
+ * granted, a failed/denied/cancelled step, or a failed full-output fetch.
+ * These never fade (§13.9: "do not fade important final results, errors,
+ * approvals") and they block folding (§13.29: failure stays findable).
+ *
+ * The approval branch qualifies on `status` rather than on the kind alone: a
+ * GRANTED park persists `kind: "approval", status: "succeeded"` and a rule
+ * denial `denied`, so protecting every approval row would make any run that
+ * ever gated one tool permanently unfoldable — and §13.33 is precisely about
+ * the long, gated-heavy runs. A denial still protects (its status is `denied`,
+ * caught by `isFailedStatus` above), an outstanding one has no `succeeded`
+ * status and protects here, and the live park is covered twice over by the
+ * `run.pending_approval` gate in `foldableRun`. */
 function isProtectedRow(step: AgentStepView): boolean {
-  return step.kind === "approval" || step.status === "failed" || step.observation_error !== null;
+  return (
+    (step.kind === "approval" && step.status !== "succeeded") ||
+    isFailedStatus(step) ||
+    step.observation_error !== null
+  );
 }
 
 /** Temporal-fade bucket (§13.9). `age` counts rows back from the run's
@@ -192,11 +231,20 @@ function foldCounts(steps: AgentStepView[]): FoldCounts {
 
 /** §13.33 fold gate. Deliberately never a status string alone: the run must
  * be finished AND nothing in it may still need the user's eye — no pending
- * approval (the gate keeps its own Approve/Deny live), no failed row, no
- * failed full-output fetch — and the sequence must be long enough for the
- * summary to pay for itself and contain at least one tool call to count. */
+ * approval (the gate keeps its own Approve/Deny live), no failed, denied or
+ * cancelled row, no failed full-output fetch — and the sequence must be long
+ * enough for the summary to pay for itself and contain at least one tool call
+ * to count.
+ *
+ * `budget_exhausted` is terminal in the database sense but NOT finished in
+ * the one §13.33 means ("after a run finishes"): the run stopped at the cap
+ * and is still carrying an unacknowledged decision — the header offers
+ * Continue, and "where exactly did it run out" is the question the user is
+ * about to ask before pressing it. Folding it would answer that question with
+ * a count, so it stays expanded. */
 function foldableRun(run: AgentRunView, sorted: AgentStepView[]): boolean {
   if (!isTerminalStatus(run.status)) return false;
+  if (run.status === "budget_exhausted") return false;
   if (run.pending_approval !== null) return false;
   if (sorted.length < FOLD_MIN_STEPS) return false;
   if (!sorted.some((step) => step.kind === "tool_call")) return false;
@@ -506,17 +554,25 @@ const AgentSpine = memo(function AgentSpine({ live }: { live: boolean }) {
  * counts the hidden rows stood for, then the same control that brings them
  * back. Zero-count buckets are dropped rather than printed as `0 searches`;
  * the leading tool-call total is always shown, so the line can never read
- * empty. */
+ * empty.
+ *
+ * The visible line stays exactly the counts (that is the compact summary the
+ * brief specifies), while the accessible name adds what the control DOES —
+ * without it the button announces only "5 tool calls", which never says
+ * whether pressing it shows or hides the run. `aria-controls` names the
+ * region the button owns, so the relationship survives with the counts. */
 const StepFoldSummary = memo(function StepFoldSummary({
   steps,
   expanded,
+  timelineId,
   onToggle,
 }: {
   steps: AgentStepView[];
   expanded: boolean;
+  timelineId: string;
   onToggle: () => void;
 }) {
-  const { locale } = useStrings();
+  const { locale, t } = useStrings();
   const counts = foldCounts(steps);
   const parts = [countedPhrase(locale, "agent.foldCalls", counts.calls, NOUN_TOOL_CALLS)];
   if (counts.files > 0) {
@@ -529,7 +585,14 @@ const StepFoldSummary = memo(function StepFoldSummary({
     parts.push(countedPhrase(locale, "agent.foldSearches", counts.searches, NOUN_SEARCHES));
   }
   return (
-    <button type="button" className="nex-agent-fold" aria-expanded={expanded} onClick={onToggle}>
+    <button
+      type="button"
+      className="nex-agent-fold"
+      aria-expanded={expanded}
+      aria-controls={timelineId}
+      aria-label={t(expanded ? "agent.foldHide" : "agent.foldShow", { counts: parts.join(" · ") })}
+      onClick={onToggle}
+    >
       <span className="nex-agent-fold-label">{parts.join(" · ")}</span>
       <span className="nex-agent-fold-chevron" aria-hidden="true">
         {expanded ? "▾" : "▸"}
@@ -680,6 +743,9 @@ function AgentRunSteps({
   // trip and expanding restores the original objects in the original order.
   const [foldExpanded, setFoldExpanded] = useState(false);
   const folded = foldable && !foldExpanded;
+  // Stable per run, so the fold button's `aria-controls` survives every step
+  // frame and stays unique when a thread renders several runs at once.
+  const timelineId = `nex-agent-timeline-${run.run_id}`;
   const handleFoldToggle = useCallback(() => {
     setFoldExpanded((v) => !v);
   }, []);
@@ -693,7 +759,12 @@ function AgentRunSteps({
     >
       <header className="nex-agent-run-header">
         <span className={statusClass(run.status)} role="status">
-          {isRunning && <span className="nex-spinner nex-agent-spinner" aria-hidden="true" />}
+          {/* Same rule as the spine: a parked run keeps the persisted
+              `running` status, so it is waiting on a human, not burning
+              cycles — the status pill still reads the same. */}
+          {isRunning && !parked && (
+            <span className="nex-spinner nex-agent-spinner" aria-hidden="true" />
+          )}
           {isPaused && <span className="nex-agent-paused-dot" aria-hidden="true" />}
           {statusLabel(run.status, locale)}
         </span>
@@ -782,8 +853,10 @@ function AgentRunSteps({
           {/* `hidden` and never a `display` override here: the attribute keeps
               every row mounted (so expanding restores the same objects, the
               same order, and each row's own open state) while taking the
-              folded sequence out of sight and out of the a11y tree. */}
-          <div className="nex-agent-timeline" hidden={folded}>
+              folded sequence out of sight and out of the a11y tree. The id
+              is what the fold button's `aria-controls` points at, and is
+              qualified by run id so two runs in one thread never collide. */}
+          <div className="nex-agent-timeline" id={timelineId} hidden={folded}>
             <AgentSpine live={spineLive} />
             <div className="nex-agent-steps">
               {sorted.map((step, idx) => {
@@ -792,7 +865,9 @@ function AgentRunSteps({
                 const slotClass =
                   "nex-agent-step-slot" +
                   (isLast && isActive && !protectedRow ? " nex-agent-step-slot-current" : "") +
-                  (step.status === "failed" ? " nex-agent-step-slot-failed" : "");
+                  // The same predicate the fold gate and the fade ladder read:
+                  // a denied or cancelled call keeps the failure tone too.
+                  (isFailedStatus(step) ? " nex-agent-step-slot-failed" : "");
                 return (
                   <div key={`${run.run_id}-${step.seq}`} className={slotClass}>
                     <StepSection
@@ -809,7 +884,12 @@ function AgentRunSteps({
             </div>
           </div>
           {foldable && (
-            <StepFoldSummary steps={sorted} expanded={!folded} onToggle={handleFoldToggle} />
+            <StepFoldSummary
+              steps={sorted}
+              expanded={!folded}
+              timelineId={timelineId}
+              onToggle={handleFoldToggle}
+            />
           )}
         </>
       )}

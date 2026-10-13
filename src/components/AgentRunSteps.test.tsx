@@ -1,10 +1,15 @@
 //! Agent Activity Spine + run-state visuals (#153).
 //!
 //! Behavior pins only — no timing assertions, no sleeps (repo policy).
-//! Fixtures reuse the row shapes built in `useAgentRun.test.tsx:48-103`
-//! (`AgentRun` / `AgentStep` wire rows) mapped onto the render views this
-//! component consumes (`AgentRunView` / `AgentStepView`, the shapes the live
-//! hook emits), so a drift in either vocabulary shows up here.
+//! Fixtures below are built to the vocabulary the backend actually persists —
+//! `kind` ∈ `model_turn` | `tool_call` | `approval` and `agent_steps.status`
+//! ∈ `succeeded` | `failed` | `denied` | `cancelled` (the CHECK in
+//! `database.rs`), mapped onto the render views this component consumes
+//! (`AgentRunView` / `AgentStepView`, the shapes the live hook emits).
+//! `useAgentRun.test.tsx:48-103` builds its `AgentStep` rows with
+//! `kind: "tool"` and `status: "ok"`, which that persisted vocabulary
+//! excludes, so it exercises the hook's own mapping rather than this
+//! component's and is deliberately not treated as authoritative here.
 //!
 //! jsdom ships no layout and computes no cascade, so these tests pin the two
 //! things jsdom CAN prove, and leave the rest to the stylesheet:
@@ -119,6 +124,9 @@ describe("Agent Activity Spine", () => {
 
     expect(rail(container)).not.toBeNull();
     expect(pulse(container)).not.toBeNull();
+    // The status pill's own motion follows the same rule: a working run
+    // keeps its spinner…
+    expect(container.querySelector(".nex-spinner")).not.toBeNull();
     // The class the pulse animation is keyed on.
     expect(container.querySelector(".nex-agent-run")?.className).toContain("nex-agent-run-state-running");
     // One connector segment per row — never a per-row border rebuilding a rail.
@@ -177,41 +185,111 @@ describe("Agent Activity Spine", () => {
     expect(rail(container)).not.toBeNull();
     expect(connectors(container)).toHaveLength(5);
     expect(pulse(container)).toBeNull();
+    // …and the header stops spinning for the same reason: the status string
+    // still reads `running`, but nothing here is burning cycles. A spinner
+    // on a park is the component's own contradiction (§7: motion means
+    // "executing right now").
+    expect(container.querySelector(".nex-spinner")).toBeNull();
+    expect(container.querySelector(".nex-agent-run")?.className).toContain("nex-agent-run-parked");
     // The blocking approval stays fully readable.
     expect(screen.getByRole("region", { name: "Approval required" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Approve" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Deny" })).toBeInTheDocument();
   });
 
-  it("renders an identical tree for a running run under prefers-reduced-motion", () => {
-    // jsdom computes no CSS, so the honest reduced-motion pin available here
-    // is that the media query changes nothing in the tree: the pulse element
-    // is still there (motion.css + the CSS fallback freeze it to a static
-    // accent segment). Removing it would drop the live state's only mark.
+  it("changes no markup under prefers-reduced-motion, and stops the ticking clock", () => {
+    // Two honest pins, because one alone is not worth much here.
+    //
+    //  (a) THE TREE. jsdom computes no CSS, so the only reduced-motion claim
+    //      available in this file is that the media query changes nothing in
+    //      the markup: the pulse element is still there (motion.css + its
+    //      CSS fallback freeze it to a static accent segment). Removing it
+    //      would drop the live state's only mark, so both arms are identical
+    //      DOM and the reduced arm still carries the segment.
+    //  (b) THE BEHAVIOUR. The arms must genuinely differ in JS: reduced
+    //      schedules ONE timeout at expiry, motion an interval that ticks.
+    //      A stub that answered `matches: true` to every query would render
+    //      the "motion" baseline as reduced and make (a) vacuous — this is
+    //      the self-comparing trap, so the stub below is query-aware and (b)
+    //      fails the moment it stops discriminating.
     const matchMedia = window.matchMedia;
-    window.matchMedia = ((query: string) => ({
-      matches: true,
-      media: query,
-      onchange: null,
-      addListener: () => {},
-      removeListener: () => {},
-      addEventListener: () => {},
-      removeEventListener: () => {},
-      dispatchEvent: () => false,
-    })) as unknown as typeof window.matchMedia;
+    const queries: string[] = [];
+    let prefersReduced = true;
+    window.matchMedia = ((query: string) => {
+      queries.push(query);
+      return {
+        matches: prefersReduced && query.includes("reduce"),
+        media: query,
+        onchange: null,
+        addListener: () => {},
+        removeListener: () => {},
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        dispatchEvent: () => false,
+      };
+    }) as unknown as typeof window.matchMedia;
+    vi.useFakeTimers();
 
     try {
+      // The stub discriminates, both ways, before anything is asserted.
+      expect(window.matchMedia("(prefers-reduced-motion: reduce)").matches).toBe(true);
+      prefersReduced = false;
+      expect(window.matchMedia("(prefers-reduced-motion: reduce)").matches).toBe(false);
+      prefersReduced = true;
+
       const run = runView({ steps: mixedSteps() });
       const reduced = renderRun(run);
       const markup = reduced.container.innerHTML;
       const spineMarkup = rail(reduced.container)?.outerHTML ?? "";
+      // Reduced motion keeps the accent segment: static, not absent.
+      expect(pulse(reduced.container)).not.toBeNull();
       reduced.unmount();
 
       const motion = renderRun(run);
       expect(motion.container.innerHTML).toBe(markup);
       expect(rail(motion.container)?.outerHTML ?? "").toBe(spineMarkup);
       expect(pulse(motion.container)).not.toBeNull();
+      motion.unmount();
+
+      // (b) The real difference, on a run that actually has a countdown.
+      // Clock frozen by the fake timers, so `remaining` is exactly the
+      // 600s deadline: reduced → one 600_000ms timeout, no interval;
+      // motion → a 30_000ms interval (the coarser pre-minute cadence).
+      const nowSecs = Date.now() / 1000;
+      const parked = runView({
+        steps: mixedSteps(),
+        pending_approval: {
+          call_id: "call-r",
+          name: "execute_command",
+          arguments: "{}",
+          timeout_secs: 600,
+          requested_at: nowSecs,
+        },
+      });
+      const intervalSpy = vi.spyOn(window, "setInterval");
+      const timeoutSpy = vi.spyOn(window, "setTimeout");
+
+      const reducedParked = renderRun(parked);
+      expect(queries).toContain("(prefers-reduced-motion: reduce)");
+      expect(intervalSpy, "reduced motion must not schedule a ticking clock").not.toHaveBeenCalled();
+      expect(timeoutSpy).toHaveBeenCalledWith(expect.any(Function), 600_000);
+      reducedParked.unmount();
+
+      intervalSpy.mockClear();
+      timeoutSpy.mockClear();
+      prefersReduced = false;
+
+      const motionParked = renderRun(parked);
+      expect(intervalSpy).toHaveBeenCalledWith(expect.any(Function), 30_000);
+      expect(timeoutSpy, "motion arm must not fall back to the one-shot").not.toHaveBeenCalledWith(
+        expect.any(Function),
+        600_000,
+      );
+      motionParked.unmount();
+      intervalSpy.mockRestore();
+      timeoutSpy.mockRestore();
     } finally {
+      vi.useRealTimers();
       window.matchMedia = matchMedia;
     }
   });
@@ -223,7 +301,10 @@ describe("temporal fade (brief 13.9)", () => {
       stepView({ id: 1, seq: 1 }),
       stepView({ id: 2, seq: 2 }),
       stepView({ id: 3, seq: 3, status: "failed" }),
-      stepView({ id: 4, seq: 4, kind: "approval", tool_name: "execute_command" }),
+      // An approval with NO status is the outstanding shape, and the only
+      // one that protects: a granted park persists `status: "succeeded"`
+      // (persistence.rs) and is settled, so it fades like any other row.
+      stepView({ id: 4, seq: 4, kind: "approval", tool_name: "execute_command", status: null }),
       stepView({ id: 5, seq: 5, tool_name: "edit_file" }),
       stepView({ id: 6, seq: 6, observation_error: "boom" }),
       stepView({ id: 7, seq: 7 }),
@@ -239,12 +320,46 @@ describe("temporal fade (brief 13.9)", () => {
     expect(bySeq.get(5)?.className).toBe("nex-agent-step nex-agent-step-age-1");
     expect(bySeq.get(2)?.className).toBe("nex-agent-step nex-agent-step-age-2");
     expect(bySeq.get(1)?.className).toBe("nex-agent-step nex-agent-step-age-2");
-    // Protected rows never fade, at any age: the approval row is age 3 and
-    // the failed row age 4 here, so both would otherwise be dimmed.
+    // Protected rows never fade, at any age: the outstanding approval row is
+    // age 3 and the failed row age 4 here, so both would otherwise be dimmed.
     expect(bySeq.get(4)?.className).toBe("nex-agent-step");
     expect(bySeq.get(3)?.className).toBe("nex-agent-step");
     // A failed row also keeps its own connector tone.
     expect(connectors(container)[2].className).toContain("nex-agent-step-slot-failed");
+  });
+
+  it("never fades a denied or cancelled call, and keeps the failure tone", () => {
+    // The vocabulary the backend actually writes: `denied` for the four
+    // dispatch denials (document shell ban, WS-B.3 role gate, over-cap
+    // batch, injection hold with no gate to park on) — each a tool_call row
+    // with an `Error:` observation and NO approval row beside it — and
+    // `cancelled` for a call the cancellation token tripped mid-flight.
+    const denial = "Error: tool 'execute_command' is not available to agent role 'reader'";
+    const steps = [
+      stepView({ id: 1, seq: 1 }),
+      stepView({ id: 2, seq: 2, status: "failed", observation: "Error: exit 1" }),
+      stepView({ id: 3, seq: 3, status: "denied", observation: denial }),
+      stepView({ id: 4, seq: 4 }),
+      stepView({ id: 5, seq: 5, status: "cancelled", observation: "Error: interrupted" }),
+      stepView({ id: 6, seq: 6 }),
+    ];
+    const { container } = renderRun(runView({ status: "running", steps }));
+    const bySeq = new Map(rows(container).map((el) => [Number(seqOf(el)?.slice(1)), el]));
+
+    // Age 4 and age 2 would otherwise be at the floor tier: the denial is
+    // the only record that the model was refused, so it stays at full ink.
+    expect(bySeq.get(2)?.className).toBe("nex-agent-step");
+    expect(bySeq.get(3)?.className).toBe("nex-agent-step");
+    expect(bySeq.get(5)?.className).toBe("nex-agent-step");
+    // …and an untouched row at the same age still fades, so the pin above
+    // is about the status and not about the position.
+    expect(bySeq.get(1)?.className).toBe("nex-agent-step nex-agent-step-age-2");
+    expect(bySeq.get(4)?.className).toBe("nex-agent-step nex-agent-step-age-1");
+    // One predicate for the tone: denied and cancelled read as failed too.
+    for (const idx of [1, 2, 4]) {
+      expect(connectors(container)[idx].className).toContain("nex-agent-step-slot-failed");
+    }
+    expect(connectors(container)[3].className).not.toContain("nex-agent-step-slot-failed");
   });
 });
 
@@ -354,6 +469,133 @@ describe("tool group folding (brief 13.33)", () => {
     const live = renderRun(runView({ status: "running", steps: longRun().steps }));
     expect(screen.queryByRole("button", { name: /tool calls/ })).toBeNull();
     expect(pulse(live.container)).not.toBeNull();
+  });
+
+  it("never folds a call that failed, was denied, or was cancelled", () => {
+    // Each of these is persisted on a tool_call row with an `Error:`
+    // observation and no companion approval row, so folding the run would
+    // take the only record of the refusal out of sight.
+    for (const status of ["failed", "denied", "cancelled"]) {
+      const view = renderRun(
+        longRun({
+          steps: [
+            ...mixedSteps(),
+            stepView({ id: 16, seq: 6, status, observation: "Error: tool call refused" }),
+          ],
+        }),
+      );
+      expect(screen.queryByRole("button", { name: /tool calls/ }), `status ${status}`).toBeNull();
+      expect(view.container.querySelector(".nex-agent-timeline"), `status ${status}`).not.toHaveAttribute(
+        "hidden",
+      );
+      view.unmount();
+    }
+
+    // A rule denial parks the same status on the approval row itself.
+    const ruled = renderRun(
+      longRun({
+        steps: [
+          ...mixedSteps(),
+          stepView({
+            id: 16,
+            seq: 6,
+            kind: "approval",
+            tool_name: "execute_command",
+            status: "denied",
+            observation: "denied by rule:r1",
+          }),
+        ],
+      }),
+    );
+    expect(screen.queryByRole("button", { name: /tool calls/ })).toBeNull();
+    expect(ruled.container.querySelector(".nex-agent-timeline")).not.toHaveAttribute("hidden");
+    ruled.unmount();
+  });
+
+  it("folds a run whose only approval was granted, and protects an outstanding one", () => {
+    // persistence.rs: a granted park persists `kind: "approval"` with
+    // `status: "succeeded"` — settled, not awaiting an eye — so it must not
+    // hold the whole run open. Without the status qualifier every run that
+    // ever gated one tool would be permanently unfoldable.
+    const granted = renderRun(
+      longRun({
+        steps: [
+          ...mixedSteps(),
+          stepView({
+            id: 16,
+            seq: 6,
+            kind: "approval",
+            tool_name: "execute_command",
+            status: "succeeded",
+            observation: "approved",
+          }),
+        ],
+      }),
+    );
+    expect(screen.getByRole("button", { name: /tool calls/ })).toBeInTheDocument();
+    expect(granted.container.querySelector(".nex-agent-timeline")).toHaveAttribute("hidden");
+    granted.unmount();
+
+    // No status at all is the outstanding shape (the live gate on a parked
+    // run is `run.pending_approval`, which a finished run no longer has) —
+    // that one still protects.
+    const outstanding = renderRun(
+      longRun({
+        steps: [
+          ...mixedSteps(),
+          stepView({ id: 16, seq: 6, kind: "approval", tool_name: "execute_command", status: null }),
+        ],
+      }),
+    );
+    expect(screen.queryByRole("button", { name: /tool calls/ })).toBeNull();
+    expect(outstanding.container.querySelector(".nex-agent-timeline")).not.toHaveAttribute("hidden");
+  });
+
+  it("keeps a budget-exhausted run expanded, Continue and all", () => {
+    // Terminal in the database, unfinished in the §13.33 sense: the header
+    // still offers Continue, so "where it ran out" is the question the user
+    // is about to ask. Folding it would answer with a count.
+    const exhausted = renderRun(longRun({ status: "budget_exhausted" }));
+    expect(screen.queryByRole("button", { name: /tool calls/ })).toBeNull();
+    expect(exhausted.container.querySelector(".nex-agent-timeline")).not.toHaveAttribute("hidden");
+    expect(screen.getByRole("button", { name: "Continue" })).toBeInTheDocument();
+    exhausted.unmount();
+
+    // The same long, clean, terminal run without the budget stop does fold —
+    // so the exclusion is the status and not the length.
+    const completed = renderRun(longRun({ status: "completed" }));
+    expect(screen.getByRole("button", { name: /tool calls/ })).toBeInTheDocument();
+    expect(completed.container.querySelector(".nex-agent-timeline")).toHaveAttribute("hidden");
+  });
+
+  it("names the fold button for what it does and owns the timeline it hides", () => {
+    const { container } = renderRun(longRun());
+    const timeline = container.querySelector(".nex-agent-timeline");
+    const summary = screen.getByRole("button", {
+      name: "Show run steps (5 tool calls · 3 files · 1 command · 1 search)",
+    });
+    // The counts alone never say whether the control shows or hides, so the
+    // name carries the action; `aria-controls` ties it to the region.
+    expect(timeline).toHaveAttribute("id", "nex-agent-timeline-7");
+    expect(summary).toHaveAttribute("aria-controls", "nex-agent-timeline-7");
+    expect(summary).toHaveTextContent("5 tool calls · 3 files · 1 command · 1 search");
+
+    fireEvent.click(summary);
+    expect(screen.getByRole("button", { name: /^Hide run steps/ })).toBe(summary);
+    expect(summary).toHaveAttribute("aria-expanded", "true");
+    expect(container.querySelector(".nex-agent-timeline")).not.toHaveAttribute("hidden");
+
+    const stored = window.localStorage.getItem(LOCALE_KEY);
+    window.localStorage.setItem(LOCALE_KEY, "ru");
+    try {
+      renderRun(longRun());
+      expect(
+        screen.getByRole("button", { name: /Показать шаги запуска \(5 вызовов/ }),
+      ).toHaveAttribute("aria-controls", "nex-agent-timeline-7");
+    } finally {
+      if (stored === null) window.localStorage.removeItem(LOCALE_KEY);
+      else window.localStorage.setItem(LOCALE_KEY, stored);
+    }
   });
 
   it("declines the fold summary in EN and RU", () => {
