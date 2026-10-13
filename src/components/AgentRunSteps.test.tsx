@@ -245,6 +245,10 @@ describe("Agent Activity Spine", () => {
       expect(pulse(reduced.container)).not.toBeNull();
       reduced.unmount();
 
+      // (a) is only honest if this arm really renders WITH motion: flip the
+      // stub immediately before the render, so the DOM equality below compares
+      // a reduced tree against a motion tree rather than against itself.
+      prefersReduced = false;
       const motion = renderRun(run);
       expect(motion.container.innerHTML).toBe(markup);
       expect(rail(motion.container)?.outerHTML ?? "").toBe(spineMarkup);
@@ -255,6 +259,9 @@ describe("Agent Activity Spine", () => {
       // Clock frozen by the fake timers, so `remaining` is exactly the
       // 600s deadline: reduced → one 600_000ms timeout, no interval;
       // motion → a 30_000ms interval (the coarser pre-minute cadence).
+      // This is the arm that discriminates, and its FIRST render is the
+      // reduced one, so the stub goes back before it renders.
+      prefersReduced = true;
       const nowSecs = Date.now() / 1000;
       const parked = runView({
         steps: mixedSteps(),
@@ -331,9 +338,11 @@ describe("temporal fade (brief 13.9)", () => {
   it("never fades a denied or cancelled call, and keeps the failure tone", () => {
     // The vocabulary the backend actually writes: `denied` for the four
     // dispatch denials (document shell ban, WS-B.3 role gate, over-cap
-    // batch, injection hold with no gate to park on) — each a tool_call row
-    // with an `Error:` observation and NO approval row beside it — and
-    // `cancelled` for a call the cancellation token tripped mid-flight.
+    // batch, injection hold with no gate to park on) — each a tool_call
+    // row with an `Error:` observation and NO approval row beside it (the
+    // sticky-group and rule denials are approval ROWS, not tool_call
+    // paths) — and `cancelled` for a call the cancellation token tripped
+    // mid-flight.
     const denial = "Error: tool 'execute_command' is not available to agent role 'reader'";
     const steps = [
       stepView({ id: 1, seq: 1 }),
@@ -569,8 +578,8 @@ describe("tool group folding (brief 13.33)", () => {
   });
 
   it("names the fold button for what it does and owns the timeline it hides", () => {
-    const { container } = renderRun(longRun());
-    const timeline = container.querySelector(".nex-agent-timeline");
+    const en = renderRun(longRun());
+    const timeline = en.container.querySelector(".nex-agent-timeline");
     const summary = screen.getByRole("button", {
       name: "Show run steps (5 tool calls · 3 files · 1 command · 1 search)",
     });
@@ -583,15 +592,22 @@ describe("tool group folding (brief 13.33)", () => {
     fireEvent.click(summary);
     expect(screen.getByRole("button", { name: /^Hide run steps/ })).toBe(summary);
     expect(summary).toHaveAttribute("aria-expanded", "true");
-    expect(container.querySelector(".nex-agent-timeline")).not.toHaveAttribute("hidden");
+    expect(en.container.querySelector(".nex-agent-timeline")).not.toHaveAttribute("hidden");
 
     const stored = window.localStorage.getItem(LOCALE_KEY);
     window.localStorage.setItem(LOCALE_KEY, "ru");
     try {
-      renderRun(longRun());
+      // `longRun()` is always run 7, so the EN tree MUST come down first:
+      // two live runs would put two `id="nex-agent-timeline-7"` in one DOM and
+      // `aria-controls` would resolve to an ambiguous target — the exact defect
+      // the uniqueness above is meant to rule out.
+      en.unmount();
+      const ru = renderRun(longRun());
       expect(
         screen.getByRole("button", { name: /Показать шаги запуска \(5 вызовов/ }),
       ).toHaveAttribute("aria-controls", "nex-agent-timeline-7");
+      expect(ru.container.querySelectorAll("#nex-agent-timeline-7")).toHaveLength(1);
+      ru.unmount();
     } finally {
       if (stored === null) window.localStorage.removeItem(LOCALE_KEY);
       else window.localStorage.setItem(LOCALE_KEY, stored);

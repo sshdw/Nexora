@@ -145,9 +145,14 @@ function isTerminalStatus(status: string): boolean {
  *
  * `denied` is not cosmetic: four dispatch paths record a `tool_call` row
  * with `status: "denied"` and an `Error:` observation and NO companion
- * approval row (the document shell ban, the WS-B.3 role gate, the per-turn
- * over-cap batch, and the injection hold when there is no gate to park on),
- * so that row is the only trace the model was refused at all.
+ * approval row — the per-turn over-cap batch (dispatch.rs:171), the
+ * document shell ban (:200), the WS-B.3 role gate (:226), and the injection
+ * hold when there is no gate to park on (:279) — so that row is the only
+ * trace the model was refused at all. The sticky-group and rule denials are
+ * NOT part of this count: those write an `approval` ROW with status `denied`
+ * (persistence.rs `approval_denied_by_group` / `approval_with_provenance`),
+ * and the execute paths persist only what `classify_outcome` returns —
+ * `succeeded` | `cancelled` | `failed`, never `denied`.
  *
  * `cancelled` is protected for the same reason: `execute_tool_call` writes it
  * for a tool row when the cancellation token trips, including the error arm

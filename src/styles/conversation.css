@@ -1334,6 +1334,26 @@
   background: var(--nex-sys-color-error);
 }
 
+/* High contrast: HC drops shadow and lets BORDERS carry separation
+   (tokens.css HC header, brief §19), and that contract sets the 3:1
+   non-text floor — but the HC `outline-variant` (#57534a) reaches only
+   2.18:1 against the run card's `surface-container-high` (#1e1d24), the
+   one theme where the hairline is the sole carrier. So the rail and its
+   resting connectors step up to `outline` (#8a8478, 4.50:1). The current
+   (accent) and failed (error) segments are already far above the floor
+   and keep their own tones, so the `:not()`s keep this override off them:
+   a plain `[data-theme=…] .nex-agent-step-slot::before` out-specifies
+   `.nex-agent-step-slot-current::before` and would grey both out. Scoped
+   by the theme ATTRIBUTE, matching the HC mechanism in tokens.css — no
+   media query. */
+[data-theme="high-contrast"] .nex-agent-spine,
+[data-theme="high-contrast"]
+  .nex-agent-step-slot:not(.nex-agent-step-slot-current):not(
+      .nex-agent-step-slot-failed
+    )::before {
+  background: var(--nex-sys-color-outline);
+}
+
 /* Temporal fade (brief §13.9): inactive rows step their ink DOWN the
    on-surface ladder — on-surface → variant → tertiary — and stop
    there. Deliberately NOT an opacity multiplier: on the step row's
@@ -1368,12 +1388,24 @@
 /* Folded finished run (brief §13.33): one quiet disclosure carrying the
    counts the rows stood for. Small rounding (a control, §18), no pill,
    no border, no fill at rest — it must not compete with the approval
-   gate or the status pill above it. */
+   gate or the status pill above it. The gutter offset is the fold's own
+   (`space-lg`, the timeline's `padding-inline-start`): the card's own
+   inline padding is `space-md`, so a fold with no offset would sit `lg`
+   — 20px — left of the rows it discloses, and read as stranded against
+   the card edge the moment the run folds.
+   Resting ink is measured, not assumed: this label is the ONLY control that
+   un-folds a run, so it is gated at AA 4.5:1 on the card's own
+   `surface-container-high`. Measured from the real hexes with
+   scripts/check-contrast.py's method — label 5.61:1 dark / 6.64:1 light /
+   9.44:1 HC, chevron (`on-surface-faint`, non-text-adjacent) 5.23 / 6.30 /
+   7.42. Hover (`on-surface-variant`) 5.54 / 6.75 / 11.20. All hold 4.5:1
+   in every theme, so the tone stays down the ladder where it belongs. */
 .nex-agent-fold {
   align-self: flex-start;
   display: inline-flex;
   align-items: center;
   gap: var(--nex-sys-space-xxs);
+  margin-inline-start: var(--nex-sys-space-lg);
   padding: var(--nex-sys-space-xxxs) var(--nex-sys-space-xs);
   border: none;
   border-radius: var(--nex-sys-shape-small);
