@@ -257,6 +257,18 @@ const en = {
   "agent.ariaHunk": "hunk header",
   "agent.ariaAddedHeader": "added file header",
   "agent.ariaRemovedHeader": "removed file header",
+  // Folded-run summary (brief §13.33). The template is shared by every
+  // bucket; the noun declension is supplied by the call site so RU gets
+  // one/few/many right without a nine-key catalog.
+  "agent.foldCalls": "{n} {unit}",
+  "agent.foldFiles": "{n} {unit}",
+  "agent.foldCommands": "{n} {unit}",
+  "agent.foldSearches": "{n} {unit}",
+  // Accessible names for the fold button: the visible line is the counts
+  // alone, so the name carries the action the control actually performs
+  // (show vs hide) plus the counts it summarizes.
+  "agent.foldShow": "Show run steps ({counts})",
+  "agent.foldHide": "Hide run steps ({counts})",
 
   // ---- context panel --------------------------------------------------------------
   "ctx.group": "Conversation context",
@@ -1745,6 +1757,12 @@ const ru: Record<StringKey, string> = {
   "agent.ariaHunk": "заголовок фрагмента",
   "agent.ariaAddedHeader": "заголовок добавленного файла",
   "agent.ariaRemovedHeader": "заголовок удалённого файла",
+  "agent.foldCalls": "{n} {unit}",
+  "agent.foldFiles": "{n} {unit}",
+  "agent.foldCommands": "{n} {unit}",
+  "agent.foldSearches": "{n} {unit}",
+  "agent.foldShow": "Показать шаги запуска ({counts})",
+  "agent.foldHide": "Скрыть шаги запуска ({counts})",
 
   "ctx.group": "Контекст разговора",
   "ctx.loading": "Загрузка контекста",
