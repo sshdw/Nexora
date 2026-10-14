@@ -11,9 +11,9 @@
 //! registry (like ShortcutsDialog) — no hand-copied combos here.
 //!
 //! KNOWN EXCEPTION (#219 nav trim): the nav trim unregistered the palette
-//! commands for the hidden panels, so ten rows below — go.library,
+//! commands for the hidden panels, so nine rows below — go.library,
 //! go.activity, go.health, go.privacy, go.diagnostics, go.audit, go.debt,
-//! go.gh, go.release and go.terminal — currently name ids the registry no
+//! go.gh and go.terminal — currently name ids the registry no
 //! longer produces. They are deliberate and enumerated, not drift: the panels
 //! and this content model stay intact and unreachable, and each id is
 //! re-registered the moment its panel is revived, at which point the row

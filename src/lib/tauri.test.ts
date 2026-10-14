@@ -2,7 +2,7 @@
 //! (#219), and the Rust commands they call stay registered.
 //!
 //! `TerminalPanel.tsx` and `TerminalEntry.tsx` are deleted, so nothing in the
-//! frontend calls these two functions any more. They are kept anyway: the
+//! frontend calls these three functions any more. They are kept anyway: the
 //! backend `terminal_run` / `terminal_kill` pair is the contract, and the
 //! panel returns with the wrappers untouched. A deletion here (or a rename of
 //! the IPC command names) would quietly break that contract, so the wrappers
