@@ -10,6 +10,14 @@ edition = "2021"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+# Shared, interface-free core (issue #160, brief §2.3/§2.4): the stable error
+# taxonomy, the three-manifest version parity logic, and the allow-listed
+# config keys. This is a PLAIN PATH DEPENDENCY across the workspace exclusion:
+# `src-tauri` stays excluded from the root workspace (own manifest, lockfile,
+# target dir, pinned toolchain, Tauri build untouched), while depending on one
+# member of it. The dependency arrow points desktop -> core, never the reverse:
+# `nexora-core` does not know Tauri exists.
+nexora-core = { path = "../crates/nexora-core" }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }

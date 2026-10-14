@@ -200,12 +200,18 @@ fn doctor_reports_real_schema_version_read_only() {
     let (base, dir) = sandbox("doctor-realdb");
     std::fs::create_dir_all(&dir).expect("fake app-data dir must be creatable");
     let db_path = dir.join("nexora.db");
-    // Minimal desktop-shaped database: a schema_version bookkeeping table.
+    // Desktop-shaped database. The DDL mirrors
+    // `src-tauri/src/infrastructure/database.rs` verbatim — including
+    // `applied_at INTEGER NOT NULL` — so this fixture also guards any future
+    // `doctor` query that touches that column (#226 item 2).
     let connection = rusqlite::Connection::open(&db_path).expect("fixture must open");
     connection
         .execute_batch(
-            "CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
-             INSERT INTO schema_version (version) VALUES (7), (14);",
+            "CREATE TABLE schema_version (
+                 version INTEGER PRIMARY KEY CHECK (version > 0),
+                 applied_at INTEGER NOT NULL CHECK (applied_at > 0)
+             );
+             INSERT INTO schema_version (version, applied_at) VALUES (7, 1), (14, 1);",
         )
         .expect("fixture setup must succeed");
     drop(connection);
@@ -226,6 +232,94 @@ fn doctor_reports_real_schema_version_read_only() {
     assert_eq!(
         size_before, size_after,
         "doctor must not modify the database"
+    );
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// The shared spine (issue #160): `doctor` must render the version-manifest
+/// facts through `nexora_core::version`, the same functions the Desktop
+/// `ReleasePanel` "versions" badge is computed from.
+///
+/// The verdict is asserted against `nexora_core` directly rather than a
+/// hard-coded expectation, so this test breaks if `doctor` ever grows its own
+/// private copy of the parity rule — the exact divergence the extraction
+/// exists to prevent.
+#[test]
+fn doctor_version_parity_agrees_with_the_shared_spine() {
+    let (base, _dir) = sandbox("doctor-parity");
+    let repo_root = workspace_root();
+    let expected = nexora_core::version::read_manifest_versions(&repo_root);
+
+    let output = run_offline(&["doctor"], &base);
+    assert_eq!(output.status.code(), Some(0));
+    let text = stdout_text(&output);
+    let line = text
+        .lines()
+        .find(|line| line.starts_with("versions:"))
+        .unwrap_or_else(|| panic!("doctor must print a versions line:\n{text}"));
+
+    // Same three manifests, same per-manifest values, same verdict.
+    for (label, value) in [
+        ("package.json", expected.package_json.as_deref()),
+        ("src-tauri/Cargo.toml", expected.cargo.as_deref()),
+        ("src-tauri/tauri.conf.json", expected.tauri_conf.as_deref()),
+    ] {
+        let rendered = value.unwrap_or("unknown");
+        let needle = format!("{label}={rendered}");
+        assert!(line.contains(&needle), "expected '{needle}' in:\n{line}");
+    }
+    assert!(
+        line.ends_with(&format!("agree={}", expected.agree())),
+        "doctor verdict must equal the shared spine's:\n{line}\nexpected agree={}",
+        expected.agree()
+    );
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// Locate the workspace root holding all three shared manifests, starting from
+/// this integration test's package directory.
+fn workspace_root() -> PathBuf {
+    let mut dir: Option<&std::path::Path> = Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR")));
+    while let Some(candidate) = dir {
+        if nexora_core::version::MANIFEST_PATHS
+            .iter()
+            .all(|relative| candidate.join(relative).is_file())
+        {
+            return candidate.to_path_buf();
+        }
+        dir = candidate.parent();
+    }
+    panic!("workspace root with all three manifests must exist");
+}
+
+#[test]
+fn doctor_reports_unknown_versions_when_no_checkout_is_visible() {
+    // An installed CLI has no manifests to read. `doctor` must say `unknown`
+    // rather than inventing a version — the same honest-unknown rule Desktop
+    // applies to a missing manifest.
+    let (base, _dir) = sandbox("doctor-no-checkout");
+    let mut command = Command::new(nexora());
+    command
+        .arg("doctor")
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default());
+    #[cfg(target_os = "windows")]
+    command.env("APPDATA", &base);
+    #[cfg(not(target_os = "windows"))]
+    command.env("HOME", &base);
+    // Run from an empty directory: no manifests are reachable from here.
+    command.current_dir(&base);
+    let output = command.output().expect("stub binary must execute");
+    assert_eq!(output.status.code(), Some(0));
+    let text = stdout_text(&output);
+    let line = text
+        .lines()
+        .find(|line| line.starts_with("versions:"))
+        .unwrap_or_else(|| panic!("doctor must print a versions line:\n{text}"));
+    assert_eq!(
+        line,
+        "versions: package.json=unknown src-tauri/Cargo.toml=unknown \
+         src-tauri/tauri.conf.json=unknown agree=false",
     );
     let _ = std::fs::remove_dir_all(&base);
 }

@@ -7,8 +7,19 @@
 //! the single translation point from the application/infrastructure error
 //! types. It deliberately never exposes a credential, raw SQL, a file path, or
 //! a conversation/prompt payload (ARCHITECTURE.md §9, §11; DATABASE.md §14).
-
-use serde::Serialize;
+//!
+//! # Shared taxonomy (issue #160)
+//!
+//! [`ErrorKind`] and [`CommandError`] now live in the Tauri-free
+//! `nexora-core` crate (`crates/nexora-core/src/error.rs`) so the CLI can
+//! produce the identical taxonomy and exit codes without linking the window
+//! application. They are re-exported here under their original names, so every
+//! existing `use super::error::{CommandError, ErrorKind}` and every frontend
+//! payload stay byte-identical.
+//!
+//! What stayed here is exactly the business logic: the `From` impls that map
+//! this app's classified errors into the taxonomy. The taxonomy and its
+//! exit-code table moved; the translation did not.
 
 use crate::application::attachments::AttachmentError;
 use crate::application::compat::CompatError;
@@ -33,68 +44,18 @@ use crate::infrastructure::database::DatabaseError;
 use crate::infrastructure::providers::credentials::CredentialError;
 
 /// Stable, secret-free error categories the frontend can branch on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) enum ErrorKind {
-    /// The referenced entity does not exist.
-    NotFound,
-    /// A caller-supplied value was rejected (length, empty, ...).
-    InvalidInput,
-    /// A persistence / `SQLite` operation failed.
-    Database,
-    /// The OS secure keyring could not satisfy a credential operation.
-    Credential,
-    /// AI request execution failed (unknown/unavailable provider, missing
-    /// credentials, provider failure, ...).
-    Request,
-    /// A destructive operation was invoked without a valid server-side
-    /// confirmation.
-    ConfirmationRequired,
-    /// A document could not be serialized or deserialized.
-    Serialization,
-    /// The input was not valid JSON.
-    InvalidJson,
-    /// The input used an unsupported document format.
-    UnsupportedFormat,
-    /// The input used an unsupported document version.
-    UnsupportedVersion,
-    /// The input carried invalid document data.
-    InvalidData,
-    /// A filesystem I/O operation failed.
-    Io,
-    /// The request conflicts with state held elsewhere (an edit lock owned
-    /// by another surface). The message names the holder and the deadline.
-    Conflict,
-}
+///
+/// Shared with the CLI through `nexora-core` (issue #160) so both surfaces
+/// classify a failure identically. Re-exported under its original name: the
+/// serialized shape and every call site are unchanged.
+pub(crate) use nexora_core::error::CoreErrorKind as ErrorKind;
 
 /// Serializable, secret-free command error returned to the frontend.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct CommandError {
-    /// Stable machine-readable category, safe to surface and branch on.
-    pub kind: ErrorKind,
-    /// Human-readable message. Never contains a credential, raw SQL, or a
-    /// stored payload (prompt / message content, file path).
-    pub message: String,
-}
-
-impl CommandError {
-    /// Build a classified command error with a curated `message`.
-    pub(crate) fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
-        Self {
-            kind,
-            message: message.into(),
-        }
-    }
-}
-
-impl std::fmt::Display for CommandError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}: {}", self.kind, self.message)
-    }
-}
-
-impl std::error::Error for CommandError {}
+///
+/// Shared with the CLI through `nexora-core` (issue #160). The `From` impls
+/// below remain here — mapping this application's classified errors into the
+/// taxonomy is business logic and did not move.
+pub(crate) use nexora_core::error::CoreError as CommandError;
 
 /// Curated, secret-free message for an unclassified `SQLite` failure. The raw
 /// rusqlite detail is deliberately neither surfaced (the frontend text below

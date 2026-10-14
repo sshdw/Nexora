@@ -11,6 +11,12 @@ name = "nexora"
 path = "src/main.rs"
 
 [dependencies]
+# Shared, interface-free core (issue #160, brief §2.3/§2.4): the stable
+# error taxonomy + exit-code table, the three-manifest version parity, and
+# the allow-listed config keys. The dependency arrow points CLI -> core, so
+# `doctor` and Desktop `ReleasePanel` read the same facts from the same code
+# instead of maintaining two copies. `nexora-core` does not depend on Clap.
+nexora-core = { path = "../../crates/nexora-core" }
 # Phase 0 needs argument parsing only. Ratatui/Crossterm (brief §2.1:
 # Ratatui 0.30.2 + Crossterm 0.29) are deliberately NOT depended on yet —
 # the stub must never open a fullscreen TUI; they arrive with the
