@@ -21,7 +21,6 @@ import ShortcutsDialog from "./components/ShortcutsDialog";
 import Sidebar from "./components/Sidebar";
 import { SnackbarProvider } from "./components/SnackbarHost";
 import TaskPanel from "./components/TaskPanel";
-import TerminalPanel from "./components/TerminalPanel";
 import VersionControlPanel from "./components/VersionControlPanel";
 import {
   buildCommands,
@@ -29,10 +28,6 @@ import {
   type PaletteCommand,
 } from "./lib/commands";
 import {
-  COMBO_ACTIVITY_OPEN,
-  COMBO_AUDIT_OPEN,
-  COMBO_GH_OPEN,
-  COMBO_HEALTH_OPEN,
   COMBO_HELP_F1,
   COMBO_HELP_QUESTION,
   COMBO_HELP_SLASH,
@@ -44,7 +39,6 @@ import {
   COMBO_TAB_NEXT_TAB,
   COMBO_TAB_PREV_PAGEDUP,
   COMBO_TASKS_OPEN,
-  COMBO_TERMINAL_OPEN,
   COMBO_ZEN_TOGGLE,
   matchesAnyCombo,
   matchesCombo,
@@ -90,9 +84,11 @@ function AppShell() {
   // `selectedId` — open tab ids, the primary pane id, and the optional
   // secondary split-pane id (see useConversationTabs.ts).
   const tabs = useConversationTabs();
-  // Overlay router (NEX-FE-001): the eleven workspace-scoped destinations
-  // own their visibility + deep-link payloads here; `router.active` is the
-  // discriminated view of which overlay is on top.
+  // Overlay router (NEX-FE-001): the workspace-scoped destinations own their
+  // visibility + deep-link payloads here; `router.active` is the
+  // discriminated view of which overlay is on top. Since #219 only settings,
+  // vcs and tasks are reachable from this shell — the other overlays keep
+  // their flags, openers and panels but no UI can raise them.
   const router = useOverlayRouter();
   // Per-conversation composer drafts, keyed by conversation id: each tab (and
   // each split pane) owns its draft, so typing in one pane never clobbers the
@@ -105,8 +101,10 @@ function AppShell() {
   const io = useImportExport();
   const [exportTargetId, setExportTargetId] = useState<number | null>(null);
   const [importOpen, setImportOpen] = useState(false);
-  // Agent workspace folder (1.3.0): sidebar picker + header indicator share
-  // this store; Settings reads it read-only.
+  // Agent workspace folder (1.3.0): the header indicator, Settings and the
+  // onboarding flow share this store. Since #219 it has no sidebar picker —
+  // the folder + roots controls left the rail; the palette's "Workspace: Add
+  // Folder…" and onboarding's step 2 still register a root.
   const workspace = useWorkspace();
   // Per-run spend guard (micro-USD budget): Settings edits it, new agent runs
   // read it backend-side.
@@ -202,7 +200,6 @@ function AppShell() {
         router.closeLibrary();
         router.closeVcs();
         router.closeActivity();
-        router.closeTerminal();
         router.closeTasks();
         router.closeAudit();
         router.closeDebt();
@@ -426,41 +423,6 @@ function AppShell() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  // Activity & Health shortcuts (go.activity / go.health — Ctrl+Shift+A/H):
-  // same guarded pattern as the shortcuts dialog (open from anywhere,
-  // including typing targets — the combos insert no text — while an open
-  // dialog still owns the keyboard). Deep links retarget the tab even when
-  // the panel is already open.
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (
-        !matchesAnyCombo(event, [COMBO_ACTIVITY_OPEN, COMBO_HEALTH_OPEN])
-      ) {
-        return;
-      }
-      if (document.querySelector('[role="dialog"]') !== null) return;
-      event.preventDefault();
-      if (matchesCombo(event, COMBO_HEALTH_OPEN)) router.openActivity("health");
-      else router.openActivity("activity");
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [router]);
-
-  // Terminal shortcut (shortcut:go.terminal — Ctrl+`): same guarded pattern
-  // (opens from anywhere including typing targets — the combo inserts no
-  // text — while an open dialog still owns the keyboard).
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (!matchesCombo(event, COMBO_TERMINAL_OPEN)) return;
-      if (document.querySelector('[role="dialog"]') !== null) return;
-      event.preventDefault();
-      router.openTerminal();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [router]);
-
   // Tasks shortcut (shortcut:go.tasks — Ctrl+Shift+T): same guarded pattern
   // (opens from anywhere including typing targets — the combo inserts no
   // text — while an open dialog still owns the keyboard).
@@ -470,34 +432,6 @@ function AppShell() {
       if (document.querySelector('[role="dialog"]') !== null) return;
       event.preventDefault();
       router.openTasks();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [router]);
-
-  // Code Audit shortcut (shortcut:go.audit — Ctrl+Shift+U): same guarded
-  // pattern (opens from anywhere including typing targets — the combo
-  // inserts no text — while an open dialog still owns the keyboard).
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (!matchesCombo(event, COMBO_AUDIT_OPEN)) return;
-      if (document.querySelector('[role="dialog"]') !== null) return;
-      event.preventDefault();
-      router.openAudit();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [router]);
-
-  // Issues & PRs shortcut (shortcut:go.gh — Ctrl+Shift+G): same guarded
-  // pattern (opens from anywhere including typing targets — the combo
-  // inserts no text — while an open dialog still owns the keyboard).
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (!matchesCombo(event, COMBO_GH_OPEN)) return;
-      if (document.querySelector('[role="dialog"]') !== null) return;
-      event.preventDefault();
-      router.openGh();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -559,16 +493,8 @@ function AppShell() {
         {
           goConversations: router.closeAll,
           openSettings: router.openSettings,
-          openLibrary: router.openLibrary,
           openVcs: router.openVcs,
-          openActivity: router.openActivity,
-          openTerminal: router.openTerminal,
           openTasks: router.openTasks,
-          openAudit: router.openAudit,
-          openDebt: router.openDebt,
-          openGh: router.openGh,
-          openDocs: router.openDocs,
-          openRelease: router.openRelease,
           newConversation: () => void handleNewConversation(),
           openImport: () => setImportOpen(true),
           exportActive: exportActiveConversation,
@@ -741,10 +667,11 @@ function AppShell() {
       />
     );
 
-  // Navigation context value (NEX-FE-001): everything Sidebar took as ~30
-  // props. All openers are no-argument wrappers so rail click events never
-  // reach the parameterized router openers. Memoized so Sidebar only
-  // re-renders when navigation state actually changes.
+  // Navigation context value (NEX-FE-001): everything Sidebar took as props.
+  // All openers are no-argument wrappers so rail click events never reach the
+  // parameterized router openers. Memoized so Sidebar only re-renders when
+  // navigation state actually changes. Since #219 it names the five kept
+  // destinations only — the sidebar renders no row for anything else.
   const navigation: Navigation = useMemo(
     () => ({
       conversations,
@@ -758,33 +685,14 @@ function AppShell() {
       onNewConversation: () => void handleNewConversation(),
       onRetry: reload,
       onOpenSettings: openDefaultSettings,
-      libraryActive: router.active === "library",
-      onOpenPromptLibrary: router.openLibrary,
       vcsActive: router.active === "vcs",
       onOpenVersionControl: () => router.openVcs(),
-      activityActive: router.active === "activity",
-      onOpenActivity: () => router.openActivity("activity"),
-      terminalActive: router.active === "terminal",
-      onOpenTerminal: () => router.openTerminal(),
       tasksActive: router.active === "tasks",
       onOpenTasks: router.openTasks,
-      auditActive: router.active === "audit",
-      onOpenAudit: router.openAudit,
-      debtActive: router.active === "debt",
-      onOpenDebt: router.openDebt,
-      ghActive: router.active === "gh",
-      onOpenGh: router.openGh,
-      docsActive: router.active === "docs",
-      onOpenDocs: router.openDocs,
-      releaseActive: router.active === "release",
-      onOpenRelease: router.openRelease,
-      onSelectPrompt: router.selectPrompt,
-      onImport: () => setImportOpen(true),
       onRename: rename,
       onArchive: (id: number) => archive(id),
       onRestore: (id: number) => restore(id),
       onDelete: (id: number) => void remove(id),
-      workspace,
     }),
     [
       conversations,
@@ -802,7 +710,6 @@ function AppShell() {
       archive,
       restore,
       remove,
-      workspace,
     ],
   );
 
@@ -841,7 +748,12 @@ function AppShell() {
                 a11y tree while the overlay owns the view) but never
                 unmounted, so ConversationView instances keep scroll position
                 and in-flight agent-run state. The tab strip is chrome-only
-                (no live state) and stays conditionally rendered. */}
+                (no live state) and stays conditionally rendered.
+                Since #219 only settings / vcs / tasks can reach this branch —
+                the rest of the chain renders the hidden panels only if their
+                router flag is set, and nothing sets it any more. They are
+                kept (not dead code to delete) so re-adding a rail row or a
+                palette command revives the panel unchanged. */}
             <div className="nex-main-hidden" aria-hidden="true">
               {conversationContent}
             </div>
@@ -861,8 +773,6 @@ function AppShell() {
                 tabRequest={router.activityRequest}
                 activeConversationId={tabs.activeId}
               />
-            ) : router.terminalOpen ? (
-              <TerminalPanel onClose={router.closeTerminal} request={router.terminalRequest} />
             ) : router.tasksOpen ? (
               <TaskPanel
                 onClose={router.closeTasks}

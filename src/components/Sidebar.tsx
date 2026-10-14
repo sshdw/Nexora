@@ -1,28 +1,26 @@
-import ActivityHealthEntry from "./ActivityHealthEntry";
-import AuditEntry from "./AuditEntry";
 import ConversationList from "./ConversationList";
-import DebtEntry from "./DebtEntry";
-import DocsEntry from "./DocsEntry";
-import IssuesEntry from "./IssuesEntry";
-import M3RailItem from "./M3RailItem";
-import { useNavigation } from "./NavigationContext";
 import NewConversationButton from "./NewConversationButton";
 import NexoraMark from "./NexoraMark";
-import PromptLibraryEntry from "./PromptLibraryEntry";
-import ReleaseEntry from "./ReleaseEntry";
 import SearchBox from "./SearchBox";
 import SettingsEntry from "./SettingsEntry";
 import TaskEntry from "./TaskEntry";
-import TerminalEntry from "./TerminalEntry";
 import VersionControlEntry from "./VersionControlEntry";
-import WorkspaceFolderButton from "./WorkspaceFolderButton";
-import WorkspaceRootsSwitcher from "./WorkspaceRootsSwitcher";
-import { ImportIcon } from "./icons";
+import { useNavigation } from "./NavigationContext";
 import { useStrings } from "../lib/useLocale";
 
 // Navigation + conversation wiring comes from NavigationContext (NEX-FE-001),
 // so the shell renders a prop-less `<Sidebar />`. Field-for-field identical
 // rendering — pure prop-to-context move, no visual change.
+//
+// Nav trim (#219): the rail keeps exactly three destinations — Version
+// Control, Tasks, Settings — under the Chat block (brand + New Conversation +
+// Search + conversations). Prompt Library, Activity, Audit, Debt, Issues &
+// PRs, Docs, Release, the Workspace folder button + roots switcher and the
+// import row have NO rail entry and no other UI access path; their components,
+// hooks, i18n keys and backend commands are untouched, so re-adding one is a
+// single-row change here. The terminal UI is gone outright (TerminalPanel +
+// TerminalEntry deleted); `terminal_run` / `terminal_kill` stay registered
+// backend-side.
 export default function Sidebar() {
   const {
     conversations,
@@ -36,33 +34,14 @@ export default function Sidebar() {
     onNewConversation,
     onRetry,
     onOpenSettings,
-    libraryActive,
-    onOpenPromptLibrary,
     vcsActive,
     onOpenVersionControl,
-    activityActive,
-    onOpenActivity,
-    terminalActive,
-    onOpenTerminal,
     tasksActive,
     onOpenTasks,
-    auditActive,
-    onOpenAudit,
-    debtActive,
-    onOpenDebt,
-    ghActive,
-    onOpenGh,
-    docsActive,
-    onOpenDocs,
-    releaseActive,
-    onOpenRelease,
-    onSelectPrompt,
-    onImport,
     onRename,
     onArchive,
     onRestore,
     onDelete,
-    workspace,
   } = useNavigation();
   const { t } = useStrings();
   return (
@@ -77,11 +56,7 @@ export default function Sidebar() {
         <NewConversationButton onClick={() => onNewConversation()} disabled={creating}>
           {t("nav.newConversation")}
         </NewConversationButton>
-        <SearchBox
-          conversations={conversations}
-          onSelectResult={onSelect}
-          onSelectPrompt={onSelectPrompt}
-        />
+        <SearchBox conversations={conversations} onSelectResult={onSelect} />
       </div>
 
       <ConversationList
@@ -99,37 +74,19 @@ export default function Sidebar() {
         onDelete={onDelete}
       />
 
-      {/* Bottom-anchored rail destinations (settings entry + workspace):
-          .nex-sidebar-footer pins this group to the rail foot with
-          margin-top:auto, separated by a single hairline seam.
-          No-argument wrappers (NEX-FE-001): rail `onClick` handlers receive
-          the native click event, which must never reach navigation openers
-          (previously `openSettings(clickEvent)` set the settings section to
-          the event object and Settings opened with a blank body). */}
+      {/* Bottom-anchored rail destinations. `.nex-sidebar-footer` pins this
+          group to the rail foot with margin-top:auto, separated by a single
+          hairline seam — Version Control and Tasks keep their icon rows, and
+          Settings stays last so it reads as the rail's floor (the Cursor
+          pattern the owner's reference shows). No-argument wrappers
+          (NEX-FE-001): rail `onClick` handlers receive the native click
+          event, which must never reach navigation openers (previously
+          `openSettings(clickEvent)` set the settings section to the event
+          object and Settings opened with a blank body). */}
       <div className="nex-sidebar-footer">
-        <SettingsEntry onClick={() => onOpenSettings()} />
-        <PromptLibraryEntry active={libraryActive} onClick={() => onOpenPromptLibrary()} />
         <VersionControlEntry active={vcsActive} onClick={() => onOpenVersionControl()} />
-        <ActivityHealthEntry active={activityActive} onClick={() => onOpenActivity()} />
-        <TerminalEntry active={terminalActive} onClick={() => onOpenTerminal()} />
         <TaskEntry active={tasksActive} onClick={() => onOpenTasks()} />
-        <AuditEntry active={auditActive} onClick={() => onOpenAudit()} />
-        <DebtEntry active={debtActive} onClick={() => onOpenDebt()} />
-        <IssuesEntry active={ghActive} onClick={() => onOpenGh()} />
-        <DocsEntry active={docsActive} onClick={() => onOpenDocs()} />
-        <ReleaseEntry active={releaseActive} onClick={() => onOpenRelease()} />
-        <WorkspaceFolderButton store={workspace} />
-        <WorkspaceRootsSwitcher store={workspace} />
-        {workspace.error && (
-          <p className="nex-sidebar-error" role="alert">
-            {workspace.error.message}
-          </p>
-        )}
-        <M3RailItem
-          label={t("nav.importConversation")}
-          icon={<ImportIcon />}
-          onClick={() => onImport()}
-        />
+        <SettingsEntry onClick={() => onOpenSettings()} />
       </div>
     </aside>
   );

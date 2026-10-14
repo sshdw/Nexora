@@ -1,12 +1,17 @@
 //! Exclusivity pins for `useOverlayRouter` (NEX-UX-001 remainder).
 //!
-//! Merged #204 centralized the eleven overlay flags here with per-opener
-//! resets plus the `active` discriminated view and the `closeAll` contract;
-//! App's overlay branch renders exactly one branch by construction. These
-//! pins prove every opener leaves exactly its own flag set (including the
-//! terminal opener, which previously left audit/debt/docs/gh/release
-//! untouched) and that `active`/`hasOverlay` always agree with the flags.
-//! No timing assertions (policy).
+//! Merged #204 centralized the overlay flags here with per-opener resets
+//! plus the `active` discriminated view and the `closeAll` contract; App's
+//! overlay branch renders exactly one branch by construction. These pins
+//! prove every opener leaves exactly its own flag set and that
+//! `active`/`hasOverlay` always agree with the flags. No timing assertions
+//! (policy).
+//!
+//! Nav trim (#219): the terminal flag/opener left the router with the
+//! terminal UI, so its row and its dedicated cross-check are gone. The
+//! cross-check they proved is stronger here now — it runs over EVERY pair of
+//! remaining openers instead of terminal-vs-five, which covers the original
+//! audit/debt/docs/gh/release cases plus the rest.
 
 import { act, renderHook } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
@@ -18,7 +23,6 @@ const ALL_FLAGS = [
   "settingsOpen",
   "vcsOpen",
   "activityOpen",
-  "terminalOpen",
   "tasksOpen",
   "auditOpen",
   "debtOpen",
@@ -34,7 +38,6 @@ type Opener =
   | "openSettings"
   | "openVcs"
   | "openActivity"
-  | "openTerminal"
   | "openTasks"
   | "openAudit"
   | "openDebt"
@@ -47,7 +50,6 @@ const OPENER_FOR_FLAG: ReadonlyArray<readonly [Flag, OverlayKind, Opener]> = [
   ["settingsOpen", "settings", "openSettings"],
   ["vcsOpen", "vcs", "openVcs"],
   ["activityOpen", "activity", "openActivity"],
-  ["terminalOpen", "terminal", "openTerminal"],
   ["tasksOpen", "tasks", "openTasks"],
   ["auditOpen", "audit", "openAudit"],
   ["debtOpen", "debt", "openDebt"],
@@ -95,28 +97,24 @@ describe("useOverlayRouter exclusivity", () => {
     expect(result.current.active).toBe("tasks");
   });
 
-  it("openTerminal closes audit/debt/docs/gh/release (NEX-UX-001 remainder fix)", () => {
-    const { result } = renderHook(() => useOverlayRouter());
-    for (const open of [
-      "openAudit",
-      "openDebt",
-      "openGh",
-      "openDocs",
-      "openRelease",
-    ] as const) {
-      act(() => {
-        result.current[open]();
-      });
-      act(() => {
-        result.current.openTerminal();
-      });
-      expect(result.current.terminalOpen).toBe(true);
-      expect(result.current.auditOpen).toBe(false);
-      expect(result.current.debtOpen).toBe(false);
-      expect(result.current.ghOpen).toBe(false);
-      expect(result.current.docsOpen).toBe(false);
-      expect(result.current.releaseOpen).toBe(false);
-      expect(result.current.active).toBe("terminal");
+  // NEX-UX-001 remainder, generalized: the old pin was "openTerminal closes
+  // audit/debt/docs/gh/release". With the terminal gone this walks every
+  // ordered pair, so that contract (and its siblings) is asserted rather than
+  // merely dropped.
+  it("opening any overlay closes whichever one was already open", () => {
+    for (const [firstFlag, , firstOpener] of OPENER_FOR_FLAG) {
+      for (const [secondFlag, , secondOpener] of OPENER_FOR_FLAG) {
+        if (firstFlag === secondFlag) continue;
+        const { result } = renderHook(() => useOverlayRouter());
+        act(() => {
+          (result.current[firstOpener] as () => void)();
+        });
+        act(() => {
+          (result.current[secondOpener] as () => void)();
+        });
+        expect(result.current[secondFlag]).toBe(true);
+        expect(result.current[firstFlag]).toBe(false);
+      }
     }
   });
 

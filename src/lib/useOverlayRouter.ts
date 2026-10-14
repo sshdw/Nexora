@@ -1,19 +1,28 @@
 //! Overlay router for the M3E shell (NEX-FE-001).
 //!
-//! Extracted verbatim from `src/App.tsx` (`AppShell`): the eleven
-//! workspace-scoped navigation destinations (Settings, Prompt Library,
-//! Version Control, Activity & Health, Terminal, Tasks, Code Audit, Debt,
-//! Issues & PRs, Docs, Release) each open as an overlay over the
-//! still-mounted conversation panes. Opening any destination closes the
-//! others (overlay-exit contract); the request-token pattern (`vcsRequest`,
-//! `activityRequest`, `terminalRequest`) lets palette deep links retarget an
-//! already-open panel without replays on re-render.
+//! Extracted verbatim from `src/App.tsx` (`AppShell`): the workspace-scoped
+//! navigation destinations each open as an overlay over the still-mounted
+//! conversation panes. Opening any destination closes the others (overlay-exit
+//! contract); the request-token pattern (`vcsRequest`, `activityRequest`) lets
+//! palette deep links retarget an already-open panel without replays on
+//! re-render.
+//!
+//! Nav trim (#219): of the ten overlays below only three are reachable
+//! from the shell today (settings, vcs, tasks) — the rail offers no entry for
+//! the other seven and the palette registers no command that opens them, so
+//! their flags stay `false` and their branches never render. They are NOT
+//! dead code: each panel, its hook, its i18n keys and its backend commands
+//! stay, so re-adding a rail row or a palette command re-opens the overlay
+//! with no other change. The terminal flag/opener/priority branch are gone
+//! outright (the terminal UI is deleted); `terminal_run`/`terminal_kill`
+//! stay registered backend-side.
 //!
 //! `active` is the single discriminated view of which overlay is on top,
 //! derived in the same priority as App's render chain (library, VCS,
-//! activity, terminal, tasks, audit, debt, GH, docs, release, settings), so
+//! activity, tasks, audit, debt, GH, docs, release, settings), so
 //! rail `active` flags and `hasOverlay` can never disagree with what
-//! renders. No visual or behavioral change — pure move out of `AppShell`.
+//! renders. Extracted from `AppShell` as a pure move; #219 only removed the
+//! terminal rows and unreachable entries.
 //!
 //! Drive-by fix (found while extracting): rail/composer `onClick` handlers
 //! were wired DIRECTLY to the parameterized openers (`openSettings`,
@@ -27,14 +36,15 @@
 //! the audit/debt/docs/gh/release flags, so those flags could stay true
 //! under an open Terminal. The render chain still showed exactly one overlay
 //! (priority branch), but the flags disagreed with it — now every opener
-//! closes every other overlay, so flags and render can never disagree.
+//! closes every other overlay, so flags and render can never disagree. (The
+//! terminal opener itself was removed with the terminal UI in #219; the
+//! per-opener resets it proved still govern the remaining overlays.)
 
 import { useCallback, useMemo, useState } from "react";
 
 import type { ActivityHealthTab } from "../components/ActivityHealthPanel";
 import type {
   PaletteSettingsSection,
-  PaletteTerminalRequest,
   PaletteVcsRequest,
 } from "./commands";
 
@@ -44,7 +54,6 @@ export type OverlayKind =
   | "settings"
   | "vcs"
   | "activity"
-  | "terminal"
   | "tasks"
   | "audit"
   | "debt"
@@ -57,7 +66,6 @@ export interface OverlayRouter {
   settingsOpen: boolean;
   vcsOpen: boolean;
   activityOpen: boolean;
-  terminalOpen: boolean;
   tasksOpen: boolean;
   auditOpen: boolean;
   debtOpen: boolean;
@@ -77,16 +85,12 @@ export interface OverlayRouter {
   /** Activity & Health tab + deep-link request token. */
   activityTab: ActivityHealthTab;
   activityRequest: { token: number; tab: ActivityHealthTab } | null;
-  /** Palette deep-link request for the Terminal panel. */
-  terminalRequest: { token: number; action: PaletteTerminalRequest } | null;
   openSettings: (section?: PaletteSettingsSection) => void;
   closeSettings: () => void;
   openLibrary: () => void;
   closeLibrary: () => void;
   openVcs: (request?: PaletteVcsRequest) => void;
   closeVcs: () => void;
-  openTerminal: (request?: PaletteTerminalRequest) => void;
-  closeTerminal: () => void;
   openActivity: (tab?: ActivityHealthTab) => void;
   closeActivity: () => void;
   openTasks: () => void;
@@ -101,7 +105,9 @@ export interface OverlayRouter {
   closeDocs: () => void;
   openRelease: () => void;
   closeRelease: () => void;
-  /** Open the Prompt Library on one prompt's Edit modal (search result). */
+  /** Open the Prompt Library on one prompt's Edit modal. Unreachable since
+   * #219 (the sidebar search box no longer routes prompt hits), kept with
+   * the library so the deep link returns with the panel. */
   selectPrompt: (promptId: number) => void;
   /** Close every overlay (overlay-exit contract). */
   closeAll: () => void;
@@ -111,12 +117,14 @@ export function useOverlayRouter(): OverlayRouter {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
   // Version Control screen (read-only git base): a workspace-scoped
-  // navigation destination like Settings/Library — a sidebar rail entry
-  // (not a header action: the header is per-conversation, VCS is per
-  // workspace) opening an overlay over the still-mounted panes.
+  // navigation destination like Settings — a sidebar rail entry (not a header
+  // action: the header is per-conversation, VCS is per workspace) opening an
+  // overlay over the still-mounted panes.
   const [vcsOpen, setVcsOpen] = useState(false);
-  // Prompt Library navigation state. When set from a search result (FR-009), the
-  // Prompt Library screen opens with that prompt's existing Edit modal.
+  // Prompt Library navigation state: the prompt to edit on open (FR-009).
+  // Unreachable since #219 — the library has no rail entry, and the sidebar
+  // search box no longer routes prompt hits here — but the flag and the
+  // panel's `initialEditId` stay so re-adding either restores the deep link.
   const [promptToEditId, setPromptToEditId] = useState<number | null>(null);
   // Palette deep-link targets: the settings section to show and the VCS
   // panel request to raise when those overlays open from the palette.
@@ -127,57 +135,47 @@ export function useOverlayRouter(): OverlayRouter {
     action: PaletteVcsRequest;
   } | null>(null);
   // Activity & Health screen (read-only feed + project snapshot): ONE overlay
-  // area with two tabs — a single rail entry opens it; palette/shortcuts
-  // deep-link the tab via the request token (same pattern as vcsRequest).
+  // area with two tabs — deep-linked to a tab via the request token (same
+  // pattern as vcsRequest). No rail entry, palette command or shortcut opens
+  // it since #219; flag, openers, tab state and panel stay.
   const [activityOpen, setActivityOpen] = useState(false);
   const [activityTab, setActivityTab] = useState<ActivityHealthTab>("activity");
   const [activityRequest, setActivityRequest] = useState<{
     token: number;
     tab: ActivityHealthTab;
   } | null>(null);
-  // Workspace Terminal screen: a workspace-scoped navigation destination
-  // like Settings/Library/VCS/Activity — a sidebar rail entry (not a
-  // header action: the header is per-conversation, the terminal is per
-  // workspace) opening an overlay over the still-mounted panes. Palette
-  // deep-links (clear / focus-input) ride the same request-token pattern
-  // as vcsRequest.
-  const [terminalOpen, setTerminalOpen] = useState(false);
-  const [terminalRequest, setTerminalRequest] = useState<{
-    token: number;
-    action: PaletteTerminalRequest;
-  } | null>(null);
-  // Tasks screen: a workspace-scoped navigation destination like
-  // Settings/Library/VCS/Activity/Terminal — a sidebar rail entry opening
-  // an overlay over the still-mounted panes (palette + Ctrl+Shift+T open it
-  // too; no panel request token — the panel reloads from the backend).
-  const [tasksOpen, setTasksOpen] = useState(false);
-  // Code Audit screen: a workspace-scoped navigation destination like
-  // Settings/Library/VCS/Activity/Terminal/Tasks — a sidebar rail entry
-  // opening an overlay over the still-mounted panes (palette + Ctrl+Shift+U
-  // open it too; the panel scans manually on Run only, never on mount).
-  const [auditOpen, setAuditOpen] = useState(false);
-  // Debt backlog screen: a workspace-scoped navigation destination like
-  // Settings/Library/VCS/Activity/Terminal/Tasks/Audit — a sidebar rail
-  // entry opening an overlay over the still-mounted panes (palette opens it
-  // too; the panel lists from the backend on mount and imports manually).
-  const [debtOpen, setDebtOpen] = useState(false);
-  // Issues & PRs screen: a workspace-scoped navigation destination like
-  // Settings/Library/VCS/Activity/Terminal/Tasks/Audit — a sidebar rail
+  // Tasks screen: a workspace-scoped navigation destination — a sidebar rail
   // entry opening an overlay over the still-mounted panes (palette +
-  // Ctrl+Shift+G open it too; the panel loads from the backend on mount
-  // and on every kind/state change, plus manual Refresh).
+  // Ctrl+Shift+T open it too; no panel request token — the panel reloads
+  // from the backend).
+  const [tasksOpen, setTasksOpen] = useState(false);
+  // Code Audit screen: a workspace-scoped destination like
+  // Settings/Library/VCS/Activity — an overlay over the still-mounted panes
+  // (the panel scans manually on Run only, never on mount). No rail entry,
+  // palette command or shortcut opens it since #219; the flag, opener and
+  // panel stay so re-adding one is a one-line change.
+  const [auditOpen, setAuditOpen] = useState(false);
+  // Debt backlog screen: a workspace-scoped destination opening an overlay
+  // over the still-mounted panes (the panel lists from the backend on mount
+  // and imports manually). No rail entry or palette command opens it since
+  // #219; flag, opener and panel stay.
+  const [debtOpen, setDebtOpen] = useState(false);
+  // Issues & PRs screen: a workspace-scoped destination opening an overlay
+  // over the still-mounted panes (the panel loads from the backend on mount
+  // and on every kind/state change, plus manual Refresh). No rail entry,
+  // palette command or shortcut opens it since #219; flag, opener and panel
+  // stay.
   const [ghOpen, setGhOpen] = useState(false);
-  // Docs screen: a workspace-scoped navigation destination like
-  // Settings/Library/VCS/Activity/Terminal/Tasks/Audit/Debt/GH — a sidebar
-  // rail entry opening an overlay over the still-mounted panes (palette opens
-  // it too; the migration section loads its version spine from the backend
-  // on mount, everything else renders from code-backed registries).
+  // Docs screen: a workspace-scoped destination opening an overlay over the
+  // still-mounted panes (the migration section loads its version spine from
+  // the backend on mount, everything else renders from code-backed
+  // registries). No rail entry or palette command opens it since #219;
+  // flag, opener and panel stay.
   const [docsOpen, setDocsOpen] = useState(false);
-  // Release screen: a workspace-scoped navigation destination like
-  // Settings/Library/VCS/Activity/Terminal/Tasks/Audit/Debt/GH/Docs — a
-  // sidebar rail entry opening an overlay over the still-mounted panes
-  // (palette opens it too; the panel loads from the backend on mount and on
-  // manual Refresh).
+  // Release screen: a workspace-scoped destination opening an overlay over
+  // the still-mounted panes (the panel loads from the backend on mount and on
+  // manual Refresh). No rail entry or palette command opens it since #219;
+  // flag, opener and panel stay.
   const [releaseOpen, setReleaseOpen] = useState(false);
 
   const openSettings = useCallback((section?: PaletteSettingsSection) => {
@@ -186,7 +184,6 @@ export function useOverlayRouter(): OverlayRouter {
     setLibraryOpen(false);
     setVcsOpen(false);
     setActivityOpen(false);
-    setTerminalOpen(false);
     setTasksOpen(false);
     setAuditOpen(false);
     setDebtOpen(false);
@@ -195,13 +192,14 @@ export function useOverlayRouter(): OverlayRouter {
     setReleaseOpen(false);
   }, []);
   const openLibrary = useCallback(() => {
+    // No rail entry or palette command calls this since #219; the opener and
+    // the panel stay, so re-adding either restores the destination.
     // A fresh entry to the library opens the list, not a previously staged edit.
     setPromptToEditId(null);
     setLibraryOpen(true);
     setSettingsOpen(false);
     setVcsOpen(false);
     setActivityOpen(false);
-    setTerminalOpen(false);
     setTasksOpen(false);
     setAuditOpen(false);
     setDebtOpen(false);
@@ -222,7 +220,6 @@ export function useOverlayRouter(): OverlayRouter {
     setLibraryOpen(false);
     setSettingsOpen(false);
     setActivityOpen(false);
-    setTerminalOpen(false);
     setTasksOpen(false);
     setAuditOpen(false);
     setDebtOpen(false);
@@ -233,23 +230,6 @@ export function useOverlayRouter(): OverlayRouter {
   const closeVcs = useCallback(() => {
     setVcsOpen(false);
   }, []);
-  const openTerminal = useCallback((request?: PaletteTerminalRequest) => {
-    setTerminalRequest(request ? { token: Date.now(), action: request } : null);
-    setTerminalOpen(true);
-    setLibraryOpen(false);
-    setSettingsOpen(false);
-    setVcsOpen(false);
-    setActivityOpen(false);
-    setTasksOpen(false);
-    setAuditOpen(false);
-    setDebtOpen(false);
-    setDocsOpen(false);
-    setGhOpen(false);
-    setReleaseOpen(false);
-  }, []);
-  const closeTerminal = useCallback(() => {
-    setTerminalOpen(false);
-  }, []);
   const openActivity = useCallback((tab: ActivityHealthTab = "activity") => {
     // Deep links always retarget the tab (even when already open): the
     // token identifies the request so re-renders never replay it.
@@ -259,7 +239,6 @@ export function useOverlayRouter(): OverlayRouter {
     setLibraryOpen(false);
     setSettingsOpen(false);
     setVcsOpen(false);
-    setTerminalOpen(false);
     setTasksOpen(false);
     setAuditOpen(false);
     setDebtOpen(false);
@@ -276,7 +255,6 @@ export function useOverlayRouter(): OverlayRouter {
     setSettingsOpen(false);
     setVcsOpen(false);
     setActivityOpen(false);
-    setTerminalOpen(false);
     setAuditOpen(false);
     setDebtOpen(false);
     setDocsOpen(false);
@@ -291,7 +269,6 @@ export function useOverlayRouter(): OverlayRouter {
     setSettingsOpen(false);
     setVcsOpen(false);
     setActivityOpen(false);
-    setTerminalOpen(false);
     setTasksOpen(false);
     setGhOpen(false);
     setReleaseOpen(false);
@@ -310,7 +287,6 @@ export function useOverlayRouter(): OverlayRouter {
     setSettingsOpen(false);
     setVcsOpen(false);
     setActivityOpen(false);
-    setTerminalOpen(false);
     setTasksOpen(false);
     setAuditOpen(false);
     setGhOpen(false);
@@ -324,7 +300,6 @@ export function useOverlayRouter(): OverlayRouter {
     setSettingsOpen(false);
     setVcsOpen(false);
     setActivityOpen(false);
-    setTerminalOpen(false);
     setTasksOpen(false);
     setAuditOpen(false);
     setDebtOpen(false);
@@ -341,7 +316,6 @@ export function useOverlayRouter(): OverlayRouter {
     setSettingsOpen(false);
     setVcsOpen(false);
     setActivityOpen(false);
-    setTerminalOpen(false);
     setTasksOpen(false);
     setAuditOpen(false);
     setDebtOpen(false);
@@ -354,7 +328,6 @@ export function useOverlayRouter(): OverlayRouter {
     setSettingsOpen(false);
     setVcsOpen(false);
     setActivityOpen(false);
-    setTerminalOpen(false);
     setTasksOpen(false);
     setAuditOpen(false);
     setDebtOpen(false);
@@ -376,7 +349,6 @@ export function useOverlayRouter(): OverlayRouter {
     setPromptToEditId(promptId);
     setVcsOpen(false);
     setActivityOpen(false);
-    setTerminalOpen(false);
     setTasksOpen(false);
     setAuditOpen(false);
     setDebtOpen(false);
@@ -386,15 +358,13 @@ export function useOverlayRouter(): OverlayRouter {
   }, []);
 
   // Overlay-exit contract shared by tab mutations and palette commands:
-  // switching surface closes Settings/Library/VCS/Activity/Terminal/Tasks (same
-  // as clicking a tab or sidebar row — overlays never sit above a switched
-  // tab).
+  // switching surface closes every overlay (same as clicking a tab or sidebar
+  // row — overlays never sit above a switched tab).
   const closeAll = useCallback(() => {
     setLibraryOpen(false);
     setSettingsOpen(false);
     setVcsOpen(false);
     setActivityOpen(false);
-    setTerminalOpen(false);
     setTasksOpen(false);
     setAuditOpen(false);
     setDebtOpen(false);
@@ -409,7 +379,6 @@ export function useOverlayRouter(): OverlayRouter {
     if (libraryOpen) return "library";
     if (vcsOpen) return "vcs";
     if (activityOpen) return "activity";
-    if (terminalOpen) return "terminal";
     if (tasksOpen) return "tasks";
     if (auditOpen) return "audit";
     if (debtOpen) return "debt";
@@ -422,7 +391,6 @@ export function useOverlayRouter(): OverlayRouter {
     libraryOpen,
     vcsOpen,
     activityOpen,
-    terminalOpen,
     tasksOpen,
     auditOpen,
     debtOpen,
@@ -442,7 +410,6 @@ export function useOverlayRouter(): OverlayRouter {
       settingsOpen,
       vcsOpen,
       activityOpen,
-      terminalOpen,
       tasksOpen,
       auditOpen,
       debtOpen,
@@ -456,15 +423,12 @@ export function useOverlayRouter(): OverlayRouter {
       vcsRequest,
       activityTab,
       activityRequest,
-      terminalRequest,
       openSettings,
       closeSettings,
       openLibrary,
       closeLibrary,
       openVcs,
       closeVcs,
-      openTerminal,
-      closeTerminal,
       openActivity,
       closeActivity,
       openTasks,
@@ -487,7 +451,6 @@ export function useOverlayRouter(): OverlayRouter {
       settingsOpen,
       vcsOpen,
       activityOpen,
-      terminalOpen,
       tasksOpen,
       auditOpen,
       debtOpen,
@@ -501,15 +464,12 @@ export function useOverlayRouter(): OverlayRouter {
       vcsRequest,
       activityTab,
       activityRequest,
-      terminalRequest,
       openSettings,
       closeSettings,
       openLibrary,
       closeLibrary,
       openVcs,
       closeVcs,
-      openTerminal,
-      closeTerminal,
       openActivity,
       closeActivity,
       openTasks,

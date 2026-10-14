@@ -12,10 +12,18 @@
 //! blank body). App additionally passes no-arg wrappers; palette deep links
 //! keep calling the router's parameterized openers directly.
 
+// Nav trim (#219): the interface below is the SHELL's nav contract — it
+// names only what the sidebar actually renders. Destinations the rail no
+// longer offers (Prompt Library, Activity, Audit, Debt, Issues & PRs, Docs,
+// Release, Terminal, Workspace roots, import) are not listed here, because a
+// context member the sidebar never reads is a dead nav entry. Their
+// components, hooks, i18n keys, router state and backend commands are all
+// intact — re-adding one restores the member, the rail row and App's wiring
+// without touching the panel.
+
 import { createContext, useContext } from "react";
 
 import type { CommandError, Conversation } from "../lib/tauri";
-import type { WorkspaceStore } from "../lib/useWorkspace";
 
 export interface Navigation {
   conversations: Conversation[];
@@ -29,46 +37,16 @@ export interface Navigation {
   onNewConversation: () => void;
   onRetry: () => void;
   onOpenSettings: () => void;
-  /** Whether the Prompt Library screen is currently shown. */
-  libraryActive: boolean;
-  onOpenPromptLibrary: () => void;
   /** Whether the Version Control screen is currently shown. */
   vcsActive: boolean;
   onOpenVersionControl: () => void;
-  /** Whether the Activity & Health screen is currently shown. */
-  activityActive: boolean;
-  onOpenActivity: () => void;
-  /** Whether the Terminal screen is currently shown. */
-  terminalActive: boolean;
-  onOpenTerminal: () => void;
   /** Whether the Tasks screen is currently shown. */
   tasksActive: boolean;
   onOpenTasks: () => void;
-  /** Whether the Code Audit screen is currently shown. */
-  auditActive: boolean;
-  onOpenAudit: () => void;
-  /** Whether the Debt backlog screen is currently shown. */
-  debtActive: boolean;
-  onOpenDebt: () => void;
-  /** Whether the Issues & PRs screen is currently shown. */
-  ghActive: boolean;
-  onOpenGh: () => void;
-  /** Whether the Docs screen is currently shown. */
-  docsActive: boolean;
-  onOpenDocs: () => void;
-  /** Whether the Release screen is currently shown. */
-  releaseActive: boolean;
-  onOpenRelease: () => void;
-  /** Open a prompt found by search in the Prompt Library editor. */
-  onSelectPrompt: (promptId: number) => void;
-  /** Open the import-conversation flow (FR-011). */
-  onImport: () => void;
   onRename: (id: number, title: string) => Promise<boolean>;
   onArchive: (id: number) => Promise<boolean>;
   onRestore: (id: number) => Promise<boolean>;
   onDelete: (id: number) => void;
-  /** Agent workspace folder store (1.3.0 folder picker + recent list). */
-  workspace: WorkspaceStore;
 }
 
 const NavigationContext = createContext<Navigation | null>(null);

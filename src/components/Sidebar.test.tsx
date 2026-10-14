@@ -6,12 +6,18 @@
 //! click event, which previously flowed straight into the parameterized
 //! `openSettings(section?)` / `openVcs(request?)` and opened Settings with
 //! a blank body. No timing assertions (policy).
+//!
+//! Nav trim (#219): the rail offers exactly three destinations — Version
+//! Control, Tasks, Settings — under the Chat block (brand + New Conversation +
+//! search + conversation list). The second suite below pins that every
+//! trimmed destination renders no control at all, using the SAME accessible
+//! names its entry component used before, so a rename cannot make the
+//! absence vacuous.
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { LocaleProvider } from "../lib/useLocale";
-import type { WorkspaceStore } from "../lib/useWorkspace";
 import { NavigationProvider, type Navigation } from "./NavigationContext";
 import Sidebar from "./Sidebar";
 
@@ -26,23 +32,6 @@ afterEach(() => {
   cleanup();
 });
 
-function workspaceStub(): WorkspaceStore {
-  return {
-    root: null,
-    recent: [],
-    roots: [],
-    loading: false,
-    saving: false,
-    error: null,
-    reload: vi.fn(async () => {}),
-    pickFolder: vi.fn(async () => null),
-    selectRecent: vi.fn(async () => null),
-    addRoot: vi.fn(async () => []),
-    removeRoot: vi.fn(async () => []),
-    addRootFolder: vi.fn(async () => null),
-  };
-}
-
 function navigationStub(): Navigation {
   return {
     conversations: [],
@@ -56,33 +45,14 @@ function navigationStub(): Navigation {
     onNewConversation: vi.fn(),
     onRetry: vi.fn(),
     onOpenSettings: vi.fn(),
-    libraryActive: false,
-    onOpenPromptLibrary: vi.fn(),
     vcsActive: false,
     onOpenVersionControl: vi.fn(),
-    activityActive: false,
-    onOpenActivity: vi.fn(),
-    terminalActive: false,
-    onOpenTerminal: vi.fn(),
     tasksActive: false,
     onOpenTasks: vi.fn(),
-    auditActive: false,
-    onOpenAudit: vi.fn(),
-    debtActive: false,
-    onOpenDebt: vi.fn(),
-    ghActive: false,
-    onOpenGh: vi.fn(),
-    docsActive: false,
-    onOpenDocs: vi.fn(),
-    releaseActive: false,
-    onOpenRelease: vi.fn(),
-    onSelectPrompt: vi.fn(),
-    onImport: vi.fn(),
     onRename: vi.fn(async () => true),
     onArchive: vi.fn(),
     onRestore: vi.fn(),
     onDelete: vi.fn(),
-    workspace: workspaceStub(),
   };
 }
 
@@ -97,17 +67,9 @@ function renderSidebar(navigation: Navigation) {
 }
 
 const RAIL_ENTRIES: ReadonlyArray<readonly [string, (navigation: Navigation) => (...args: never[]) => void]> = [
-  ["Settings", (navigation) => navigation.onOpenSettings],
-  ["Prompt Library", (navigation) => navigation.onOpenPromptLibrary],
   ["Version Control", (navigation) => navigation.onOpenVersionControl],
-  ["Activity and health", (navigation) => navigation.onOpenActivity],
-  ["Terminal", (navigation) => navigation.onOpenTerminal],
   ["Tasks", (navigation) => navigation.onOpenTasks],
-  ["Code audit", (navigation) => navigation.onOpenAudit],
-  ["Technical debt backlog", (navigation) => navigation.onOpenDebt],
-  ["GitHub issues and pull requests", (navigation) => navigation.onOpenGh],
-  ["Product documentation", (navigation) => navigation.onOpenDocs],
-  ["Release readiness", (navigation) => navigation.onOpenRelease],
+  ["Settings", (navigation) => navigation.onOpenSettings],
 ];
 
 describe("Sidebar rail entries", () => {
@@ -119,5 +81,56 @@ describe("Sidebar rail entries", () => {
     expect(opener).toHaveBeenCalledTimes(1);
     // The native click event must not leak into the opener's parameters.
     expect(opener.mock.calls[0]).toEqual([]);
+  });
+});
+
+// The EN catalog value each trimmed control carried, so these assertions
+// fail if a row returns under a new label. Sources: `nav.*Label` on the
+// entry components (PromptLibraryEntry → nav.library, ActivityHealthEntry →
+// nav.activityLabel, …), `nav.workspaceFolder` on WorkspaceFolderButton,
+// `roots.add` on WorkspaceRootsSwitcher, `nav.importConversation` on the
+// import rail row, and `nav.terminal` on the deleted TerminalEntry. The two
+// rows that had no component of their own (the import row was inline in
+// Sidebar) and the deleted terminal row kept their keys only as long as the
+// row existed, so the labels below are pinned here as the contract.
+const TRIMMED_CONTROLS: readonly string[] = [
+  "Prompt Library",
+  "Activity and health",
+  "Terminal",
+  "Code audit",
+  "Technical debt backlog",
+  "GitHub issues and pull requests",
+  "Product documentation",
+  "Release readiness",
+  "Workspace folder",
+  "Add folder…",
+  "Import conversation",
+];
+
+describe("Sidebar nav trim (#219)", () => {
+  it.each(TRIMMED_CONTROLS)("renders no control named %s", (name) => {
+    renderSidebar(navigationStub());
+    expect(screen.queryByRole("button", { name })).toBeNull();
+    expect(screen.queryByText(name)).toBeNull();
+  });
+
+  it("exposes exactly the three kept rail destinations and the Chat block", () => {
+    renderSidebar(navigationStub());
+    const rail = document.querySelector(".nex-sidebar-footer");
+    expect(rail).not.toBeNull();
+    const railLabels = Array.from(
+      rail!.querySelectorAll<HTMLButtonElement>("button"),
+    ).map((button) => button.getAttribute("aria-label"));
+    expect(railLabels).toEqual(["Version Control", "Tasks", "Settings"]);
+  });
+
+  it("keeps New Conversation and the search box wired", () => {
+    const navigation = navigationStub();
+    renderSidebar(navigation);
+    fireEvent.click(screen.getByRole("button", { name: "New conversation" }));
+    const creator = navigation.onNewConversation as ReturnType<typeof vi.fn>;
+    expect(creator).toHaveBeenCalledTimes(1);
+    expect(creator.mock.calls[0]).toEqual([]);
+    expect(screen.getByRole("searchbox")).not.toBeNull();
   });
 });
