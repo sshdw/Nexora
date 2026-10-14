@@ -16,8 +16,9 @@ import {
  * moves — not a CSS transition, not a CSS keyframe loop, and not
  * a JS timeline. This file pins both halves:
  *
- *   - CSS:  the global block in src/index.css collapses
- *           duration, delay, iteration-count and fill-mode.
+ *   - CSS:  the ONE global block, in src/styles/motion.css,
+ *           collapses duration, delay and iteration-count, and
+ *           holds the end frame.
  *   - JS:   a vendored React Bits component (TextType, copied in
  *           #218) branches on useReducedMotion() and renders its
  *           final static frame WITHOUT starting GSAP or the
@@ -58,35 +59,56 @@ describe("reduced-motion gate — CSS half", () => {
   // Read as text: this half of the gate is a CSS block, and the
   // assertion is about what that block declares, not about what
   // the bundler made of it.
-  const css = readRepoFile("src/index.css");
+  //
+  // src/styles/motion.css, NOT src/index.css. There used to be a
+  // second copy of this block in the Tailwind entry — with the same
+  // properties, the same values and no coverage the other file did
+  // not already have. Two copies drift, and the tests below would
+  // have kept reading whichever one they were written against, so
+  // #218 folded both into motion.css and the entry points here.
+  const css = readRepoFile("src/styles/motion.css");
   const reducedBlock = /@media \(prefers-reduced-motion: reduce\) \{([\s\S]*?)\n\}/.exec(css);
+  // Comments are stripped before matching: these assertions are
+  // about declarations, and a prose line that happens to contain
+  // "animation-fill-mode: forwards !important" must not satisfy
+  // one.
+  const declarations = reducedBlock?.[1].replace(/\/\*[\s\S]*?\*\//g, "") ?? "";
 
   it("ships a prefers-reduced-motion block", () => {
     expect(reducedBlock).not.toBeNull();
+    expect(declarations).not.toBe("");
+  });
+
+  it("keeps the block in ONE file", () => {
+    // The entry stylesheet must not grow a second reduced-motion
+    // block. motion.css is the one that ships. (Comments stripped:
+    // the entry POINTS at the gate in prose, and prose is not a
+    // rule.)
+    const entry = readRepoFile("src/index.css").replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(entry).not.toMatch(/@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*?\n\}/);
   });
 
   it("collapses durations and delays to a single frame", () => {
-    const block = reducedBlock![1];
-    expect(block).toMatch(/animation-duration:\s*0\.01ms\s*!important/);
-    expect(block).toMatch(/transition-duration:\s*0\.01ms\s*!important/);
-    expect(block).toMatch(/animation-delay:\s*0ms\s*!important/);
-    expect(block).toMatch(/transition-delay:\s*0ms\s*!important/);
+    expect(declarations).toMatch(/animation-duration:\s*0\.01ms\s*!important/);
+    expect(declarations).toMatch(/transition-duration:\s*0\.01ms\s*!important/);
+    expect(declarations).toMatch(/animation-delay:\s*0ms\s*!important/);
+    expect(declarations).toMatch(/transition-delay:\s*0ms\s*!important/);
   });
 
   it("freezes looping keyframes at one iteration", () => {
-    // The app's skeleton pulse, progress slide and the
-    // tw-animate-css blink loops are all `infinite`. Without this
-    // line they keep looping while the durations are collapsed.
-    expect(reducedBlock![1]).toMatch(/animation-iteration-count:\s*1\s*!important/);
+    // The app's skeleton pulse and progress slide are both
+    // `infinite`. Without this line they keep looping while the
+    // durations are collapsed.
+    expect(declarations).toMatch(/animation-iteration-count:\s*1\s*!important/);
   });
 
   it("holds the end frame so a collapsed entrance cannot flash back to its start", () => {
-    expect(reducedBlock![1]).toMatch(/animation-fill-mode:\s*forwards\s*!important/);
+    expect(declarations).toMatch(/animation-fill-mode:\s*forwards\s*!important/);
   });
 
   it("reaches pseudo-elements and wins over utilities", () => {
-    expect(reducedBlock![1]).toMatch(/\*,\s*\*::before,\s*\*::after/);
-    expect(reducedBlock![1]).toMatch(/!important/);
+    expect(declarations).toMatch(/\*,\s*\*::before,\s*\*::after/);
+    expect(declarations).toMatch(/!important/);
   });
 });
 
@@ -157,6 +179,37 @@ describe("reduced-motion gate — JS half", () => {
     // allowed — the counterpart to the assertion above.
     expect(gsapMock.set).toHaveBeenCalledTimes(1);
     expect(gsapMock.to).toHaveBeenCalledTimes(1);
+
+    vi.doUnmock("gsap");
+  });
+
+  it("renders nothing and starts no tween for an empty text list", async () => {
+    // Upstream reads `textArray[finalIndex]` unconditionally, so
+    // `text={[]}` threw on the static-frame path (and again in the
+    // typing effect). Both are guarded; this is the half that would
+    // have thrown first, under reduced motion.
+    const gsapMock = { set: vi.fn(), to: vi.fn() };
+    vi.doMock("gsap", () => ({ gsap: gsapMock }));
+    mockReducedMotion(true);
+    vi.resetModules();
+
+    const { default: EmptyTextType } = await import("../components/TextType");
+
+    // No `expect(...).not.toThrow()` wrapper: an exception fails this
+    // test on its own. What matters is what it renders.
+    const { container } = render(<EmptyTextType text={[]} />);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // Nothing to reveal, so nothing is rendered — no frame, no
+    // cursor. (Scoped to this render's own container: this file has
+    // no global cleanup, so document.body still holds earlier
+    // tests' nodes.)
+    expect(container.innerHTML).toBe("");
+    expect(gsapMock.set).not.toHaveBeenCalled();
+    expect(gsapMock.to).not.toHaveBeenCalled();
 
     vi.doUnmock("gsap");
   });

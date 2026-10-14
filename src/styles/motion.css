@@ -176,7 +176,15 @@
   *::after {
     animation-duration: 0.01ms !important;
     animation-delay: 0ms !important;
+    /* #218 (Tailwind stack): the skeleton's pulse and the progress
+       slide are `infinite`; with only the duration collapsed they
+       would keep looping instead of settling, so they run ONCE. */
     animation-iteration-count: 1 !important;
+    /* …and once, the END frame has to be held. A collapsed entrance
+       resolves to where it finished only if fill-mode keeps it
+       there; without this a 0.01ms animation flashes back to its
+       start state. */
+    animation-fill-mode: forwards !important;
     transition-duration: 0.01ms !important;
     transition-delay: 0ms !important;
     scroll-behavior: auto !important;

@@ -1,15 +1,23 @@
 /* ============================================================
    Tailwind v4 + shadcn entry — NEXORA BLACK THEME 1.0
-   Issue #218 (stack install: tailwind + shadcn + Origin UI +
-   React Bits + black theme foundation).
+   Issue #218 (stack install: tailwind + shadcn + React Bits +
+   black theme foundation).
 
    This file is FOUNDATION, not a restyle. The merged shell
    still paints from src/styles/tokens.css (`--nex-sys-*`,
    M3E, warm neutral) and src/styles/theme.css. Nothing here
-   touches a selector the existing shell paints, so the app
-   looks identical after this PR; the theme below becomes the
-   paint source for everything added on top of the stack
-   (shadcn primitives, Origin UI, React Bits) from #220 on.
+   sets a colour, a size or a selector the existing shell
+   paints, so the app looks identical after this PR; the theme
+   below becomes the paint source for everything added on top
+   of the stack (shadcn primitives, React Bits) from #220 on.
+
+   The one thing here that CAN change what paints is the
+   cascade (see CASCADE below): the merged sheets move from
+   unlayered to `layer(base)`, which lets a Tailwind utility
+   outrank an element reset for the first time. No merged
+   surface carries a utility class, so nothing in the shell
+   changes — re-captured against origin/main in
+   docs/visual-proof/218/ (byte-identical md5).
 
    Two things from the stock shadcn setup are removed on
    purpose, because both rewrite global state underneath the
@@ -34,27 +42,93 @@
 
    Also deliberately absent: any font import. shadcn's preset
    ships its own typeface; adopting it would re-letter every
-   already-merged surface. The black theme keeps the system
-   sans stack that src/styles/tokens.css declares.
+   already-merged surface. `--font-sans` below therefore
+   aliases the system stack that src/styles/tokens.css already
+   declares rather than naming a family nothing loads.
+
+   ---- CASCADE: why the legacy sheets are imported HERE ----
+
+   This file is the app's only stylesheet entry (src/main.tsx
+   imports nothing else). That is not tidiness — it is the
+   cascade contract:
+
+   The legacy M3E sheets are UNLAYERED rules. Per CSS Cascade
+   Level 5, unlayered normal declarations outrank every
+   layered normal declaration, so while those sheets stayed
+   unlayered, `button { background: transparent; padding: 0;
+   border: none }` in theme.css beat `bg-primary`, `px-2.5`,
+   `border` and `text-sm` on every shadcn component. The claim
+   "the theme is the paint source for everything added from
+   #220 on" would have been false in the shipped bundle.
+
+   So every legacy sheet is imported below with an explicit
+   `layer(base)`, and the layer order is declared ONCE, here:
+   theme < base < components < utilities. Utilities now win —
+   which is the whole point of Tailwind — while the legacy
+   sheets keep their own relative order and keep beating each
+   other exactly as they did unlayered.
+
+   !important still crosses layers in the right direction:
+   for important declarations, EARLIER layers win, so
+   src/styles/motion.css keeps its reduced-motion gate
+   (`!important`, in base) above any Tailwind utility.
+
+   Do not re-import a sheet from src/main.tsx. An import there
+   is unlayered by definition and silently reinstates the bug.
+   src/theme.test.ts asserts this contract.
    ============================================================ */
 
 @layer theme, base, components, utilities;
 
 @import "tailwindcss/theme.css" layer(theme);
 @import "tailwindcss/utilities.css" layer(utilities);
+/* The one import that cannot carry `layer(...)`: tw-animate-css
+   ships `@utility` at-rules, and Tailwind refuses to parse one inside
+   a layer ("`@utility` cannot be nested"). Unlayered here, it is
+   still emitted INTO the utilities layer — verified in the built
+   bundle — so it lands in the same place a layered import would.
+   src/theme.test.ts pins this exception, by name. */
 @import "tw-animate-css";
 
-@custom-variant dark (&:is(.dark *));
+/* The merged design system, now inside the cascade. Order is
+   preserved verbatim from the pre-#218 import list in
+   src/main.tsx, so sheet-to-sheet precedence is unchanged. */
+@import "./styles/tokens.css" layer(base);
+@import "./styles/motion.css" layer(base);
+@import "./styles/theme.css" layer(base);
+@import "./styles.css" layer(base);
+@import "./styles/components.css" layer(base);
+@import "./styles/conversation.css" layer(base);
+@import "./styles/context.css" layer(base);
+@import "./styles/settings.css" layer(base);
+@import "./styles/prompts.css" layer(base);
+@import "./styles/importExport.css" layer(base);
+@import "./styles/tabs.css" layer(base);
+@import "./styles/versionControl.css" layer(base);
+@import "./styles/terminal.css" layer(base);
+@import "./styles/activityHealth.css" layer(base);
+@import "./styles/palette.css" layer(base);
+@import "./styles/shortcuts.css" layer(base);
+@import "./styles/onboarding.css" layer(base);
+@import "./styles/tasks.css" layer(base);
+
+/* The app's dark theme is `data-theme`, not a class:
+   src/lib/useAppearance.ts writes documentElement.dataset.theme,
+   and tokens.css treats a bare `:root` as dark already. Keying
+   the variant off `.dark` (the shadcn default) matched nothing
+   in this app, so every `dark:` utility was dead. */
+@custom-variant dark (&:is([data-theme="dark"], [data-theme="dark"] *));
 
 /* ----------------------------------------------------------
    Tailwind theme mapping.
 
    Every entry here aliases a `--*` var that is DEFINED in the
-   :root/.dark/.light blocks further down. Tailwind resolves
-   these lazily, so a var that is missing from the CSS surfaces
-   as an unstyled utility at runtime with no build error —
-   src/theme.test.ts parses this mapping and asserts each
-   target exists, which is what makes the mapping trustworthy.
+   default/dark block or the light block further down. Tailwind
+   resolves these lazily, so a var that is missing from the CSS
+   surfaces as an unstyled utility at runtime with no build
+   error — src/theme.test.ts parses this mapping and asserts
+   each target resolves in BOTH themes, which is what makes the
+   mapping trustworthy.
 
    Sidebar + chart tokens are carried by shadcn's preset and
    are defined below alongside the rest, even though the
@@ -63,8 +137,12 @@
    arrive.
    ---------------------------------------------------------- */
 @theme inline {
+    /* The stack's font family is the system stack the merged
+       tokens already declare. Naming shadcn's preset face here
+       would point at a family nothing loads (and silently
+       re-letter every merged surface through `font-sans`). */
     --font-heading: var(--font-sans);
-    --font-sans: 'Geist Variable', sans-serif;
+    --font-sans: var(--nex-sys-type-family);
     --color-sidebar-ring: var(--sidebar-ring);
     --color-sidebar-border: var(--sidebar-border);
     --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -132,9 +210,15 @@
                 `muted-foreground` for everything secondary. No
                 coloured chrome, no gradients, no glows
 
-   `.dark` repeats the black theme verbatim because shadcn's
-   `dark:` variant is written against it. Dark is the default,
-   so an un-marked `:root` already paints black.
+   `[data-theme="dark"]` repeats the black theme verbatim
+   because shadcn's `dark:` variant is written against it, and
+   so that an explicitly-marked dark root resolves the same way
+   as the default. Dark is the default: an un-marked `:root`
+   already paints black, which matches tokens.css.
+
+   Theme selection uses the SAME mechanism as the merged tokens:
+   the `data-theme` attribute on the root element (tokens.css
+   "THEME MECHANISM"), not a `.dark` class the app never sets.
 
    Contrast (WCAG AA, measured by src/theme.test.ts through the
    sRGB conversion of these oklch values; alpha composited in
@@ -158,7 +242,7 @@
        invisible.
    ============================================================ */
 :root,
-.dark {
+:root[data-theme="dark"] {
     --background: oklch(0.145 0.004 264);
     --foreground: oklch(0.965 0.003 264);
 
@@ -229,12 +313,18 @@
 }
 
 /* Light counterpart. Not a restyle of anything — it exists so
-   a `.light` root resolves instead of falling through to the
-   black theme, and so light-only surfaces have honest values
-   when they arrive. Same discipline: near-white canvas,
-   barely-darker surfaces, hairline borders, the SAME single
-   cold accent so identity does not change with the theme. */
-.light {
+   a light root resolves instead of falling through to the black
+   theme, and so light-only surfaces have honest values when they
+   arrive. Same discipline: near-white canvas, barely-darker
+   surfaces, hairline borders, the SAME single cold accent so
+   identity does not change with the theme.
+
+   Selected by `[data-theme="light"]` on the root, which is the
+   mechanism the app actually uses (src/lib/useAppearance.ts writes
+   `documentElement.dataset.theme`; tokens.css uses the same
+   attribute, alongside its `.nex-theme-light` class hook). It was
+   `.light`, a class nothing ever sets, so the block was dead. */
+:root[data-theme="light"] {
     --background: oklch(0.99 0.002 264);
     --foreground: oklch(0.18 0.004 264);
 
@@ -279,48 +369,35 @@
     --sidebar-ring: oklch(0.52 0.13 232);
 }
 
-/* ============================================================
-   REDUCED MOTION — the global gate.
+/* ----------------------------------------------------------
+   REDUCED MOTION — one block, in one file:
+   src/styles/motion.css, imported above with layer(base).
 
-   src/styles/motion.css already collapses duration and delay
-   under `prefers-reduced-motion: reduce`, and the app's own
-   animation tokens are frozen there. This block adds what the
-   Tailwind side needs:
+   That block already collapses duration and delay; #218 adds the
+   two properties the Tailwind side needs to it, in place:
 
-     * iteration-count   — infinite loops (the skeleton pulse,
-       the progress slide, `tw-animate-css` blink loops) must
-       run ONCE and hold, never loop while reduced
-     * fill-mode         — a collapsed `animate-in` resolves to
-       its end frame only if the end frame is held; without it a
-       0.01ms animation can flash back to its start state
-     * transition/animation-name on ::before/::after — catches
-       icon and marker pseudo-elements that animate in circles
-       with no content box of their own
+     * animation-iteration-count: 1 — the skeleton's pulse and the
+       progress slide are `infinite`; collapsed to 0.01ms they
+       would keep looping instead of settling
+     * animation-fill-mode: forwards — a collapsed entrance
+       resolves to its END frame only if the end frame is held;
+       without it a 0.01ms animation can flash back to its start
 
-   Selector is `*` plus both pseudo-elements at
-   `!important`, matching the specificity strategy already used
-   in motion.css: it has to beat every utility class in the
-   stack, and utility classes are exactly what these motion
-   props arrive through.
+   Being in `base` — ahead of the Tailwind utilities layer —
+   its `!important` declarations outrank any utility, because for
+   important declarations the EARLIER layer wins.
 
-   CSS cannot reach JS timelines. A rAF loop or a GSAP tween is
-   a clock the stylesheet cannot stop, so every animated
-   component in the stack branches on `useReducedMotion()`
-   (src/lib/useReducedMotion.ts) instead, and collapses to a
-   static final frame. src/lib/motion.test.ts pins that: the
-   gate holds for CSS (this block) and for the JS timeline of a
-   copied React Bits component.
-   ============================================================ */
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-delay: 0ms !important;
-    animation-iteration-count: 1 !important;
-    animation-fill-mode: forwards !important;
-    transition-duration: 0.01ms !important;
-    transition-delay: 0ms !important;
-    scroll-behavior: auto !important;
-  }
-}
+   There is deliberately no second copy of this block here. Two
+   reduced-motion blocks in two files drift: the one nobody reads
+   is the one that goes stale, and the tests would read whichever
+   one they happened to be written against. src/lib/motion.test.ts
+   asserts against src/styles/motion.css — the file that ships.
+
+   CSS cannot reach a JS timeline. A rAF loop or a GSAP tween is a
+   clock the stylesheet cannot stop, so every animated component
+   in the stack branches on useReducedMotion()
+   (src/lib/useReducedMotion.ts) instead and renders its static
+   final frame. That half of the gate is pinned by the same test
+   file, with a GSAP spy: "no timeline was created" is the
+   assertion, not "the text happened to look finished".
+   ---------------------------------------------------------- */

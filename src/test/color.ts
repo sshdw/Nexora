@@ -41,7 +41,10 @@ export function parseOklch(value: string): Oklch | null {
 function parseAlpha(raw: string): number {
   if (raw.endsWith("%")) return parseFloat(raw) / 100;
   const n = parseFloat(raw);
-  return n > 1 ? n / 100 : n;
+  // `/ 1.5` is invalid CSS (alpha is clamped to 0..1 by the
+  // compositor), and silently passing 1.5 through would make a
+  // contrast assertion read a colour that cannot exist. Clamp.
+  return Math.min(1, n > 1 ? n / 100 : n);
 }
 
 /**

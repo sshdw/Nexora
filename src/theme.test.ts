@@ -1,15 +1,38 @@
+import { readdirSync } from "node:fs";
+import { resolve } from "node:path";
+import { createElement } from "react";
+import { render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import { contrastOnWash, contrastOver, contrastRatio, parseOklch, type Oklch } from "./test/color";
 import { readRepoFile } from "./test/readRepoFile";
 
+import { Button } from "./components/ui/button";
+
 // Read as text, not as a style injection: these assertions are
 // about what the files DECLARE.
 const css = readRepoFile("src/index.css");
+const mainTsx = readRepoFile("src/main.tsx");
+
+/**
+ * The same stylesheet with its comments removed.
+ *
+ * The comments here are load-bearing prose — they carry the
+ * reasoning behind most of what follows — but they are not
+ * declarations. Parsing them would let an `@import "tailwindcss"`
+ * inside an explanation, or a `--token:` in a note, satisfy an
+ * assertion about what actually ships, which is how a gate starts
+ * passing on its own comments.
+ */
+const cssCode = css.replace(/\/\*[\s\S]*?\*\//g, "");
+
+/**
+ * The stack's copied components — the two files whose classes route
+ * through the black theme's vars. Every one of them has a lineage
+ * header in-file; there is no copied source without one.
+ */
 const componentSources: Record<string, string> = {
   button: readRepoFile("src/components/ui/button.tsx"),
-  slider: readRepoFile("src/components/ui/slider.tsx"),
-  tooltip: readRepoFile("src/components/ui/tooltip.tsx"),
   textType: readRepoFile("src/components/TextType.tsx"),
 };
 
@@ -19,49 +42,79 @@ const componentSources: Record<string, string> = {
  * Tailwind resolves theme vars LAZILY: a `bg-primary` whose
  * `--primary` was never defined compiles cleanly and renders as
  * transparent. Nothing in the build or in `tsc` catches that, so
- * this file is the gate that does. It asserts three things:
+ * this file is the gate that does. It asserts four things:
  *
  *   1. COVERAGE   every var the `@theme inline` mapping aliases,
- *                 and every var a vendored component references,
- *                 is actually defined in the stylesheet.
+ *                 every var a copied component references, and
+ *                 every colour utility it paints with, resolves in
+ *                 BOTH theme blocks.
  *   2. TYPED      every colour-bearing role parses as an OKLCH
  *                 value, so the contrast assertions below are
  *                 real measurements rather than string matches.
  *   3. DIRECTION  the canvas is near-black, one cold accent
  *                 carries the identity, the role ladder holds, and
  *                 the text pairs clear WCAG AA.
+ *   4. CASCADE    the merged M3E sheets load INSIDE a cascade
+ *                 layer, from the one stylesheet entry, so
+ *                 Tailwind utilities can outrank the legacy
+ *                 element resets instead of losing to them.
  *
  * The numbers asserted here are computed from the stylesheet by
  * src/test/color.ts — nothing here is transcribed from the
  * comment block in the CSS, which can drift.
  */
 
-/** All custom properties DEFINED in the file, as `--name -> value`. */
-function definedVars(): Map<string, string> {
+/* ----------------------------------------------------------
+   Block-scoped parsing.
+
+   Deliberately NOT file-global: a var defined only in the light
+   block satisfies nothing here. A `--primary` that existed solely
+   under `:root[data-theme="light"]` used to pass this file while
+   the default (dark) root painted nothing at all — which is the
+   exact failure the file exists to catch, hiding in the file that
+   catches it.
+   ---------------------------------------------------------- */
+
+/** Body of a top-level rule in src/index.css, found by its selector. */
+function ruleBody(selector: RegExp, label: string): string {
+  const match = new RegExp(`${selector.source}\\s*\\{([\\s\\S]*?)\\n\\}`).exec(cssCode);
+  if (!match) throw new Error(`src/index.css: no block matching ${label}`);
+  return match[1];
+}
+
+/** The default theme — dark, painted by an un-marked `:root`. */
+const DARK_BLOCK = ruleBody(/:root,\s*:root\[data-theme="dark"\]/, "the dark/default theme block");
+
+/** The light counterpart, selected by `data-theme="light"`. */
+const LIGHT_BLOCK = ruleBody(/:root\[data-theme="light"\]/, "the light theme block");
+
+/** Custom properties DEFINED in a block body, as `--name -> value`. */
+function definedVars(body: string): Map<string, string> {
   const out = new Map<string, string>();
   // A declaration is `--name: value;`. Negative values, `calc()`
   // and `var()` fall back are fine — only `--*: ` at the start of
   // a declaration counts.
-  for (const match of css.matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+);/gi)) {
+  for (const match of body.matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+);/gi)) {
     out.set(match[1], match[2].trim());
   }
   return out;
 }
 
+const darkDefined = definedVars(DARK_BLOCK);
+const lightDefined = definedVars(LIGHT_BLOCK);
+
 /** Every custom property REFERENCE anywhere in the file. */
 function referencedVars(): Set<string> {
   const out = new Set<string>();
-  for (const match of css.matchAll(/var\(\s*(--[a-z0-9-]+)/gi)) {
+  for (const match of cssCode.matchAll(/var\(\s*(--[a-z0-9-]+)/gi)) {
     out.add(match[1]);
   }
   return out;
 }
 
-const defined = definedVars();
-
 /** The @theme inline mapping block, as `--alias -> var(--target)`. */
 function themeMapping(): Map<string, string> {
-  const block = /@theme inline \{([\s\S]*?)\n\}/.exec(css);
+  const block = /@theme inline \{([\s\S]*?)\n\}/.exec(cssCode);
   if (!block) throw new Error("src/index.css: no @theme inline block found");
   const out = new Map<string, string>();
   for (const match of block[1].matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+);/gi)) {
@@ -71,64 +124,346 @@ function themeMapping(): Map<string, string> {
   return out;
 }
 
-/** `--name` from the `:root, .dark` block — the black theme proper. */
+const mapping = themeMapping();
+/** Keys `@theme inline` emits into the theme layer (`--color-*`, `--radius-*`). */
+const themeKeys = new Set(mapping.keys());
+
+/**
+ * Vars this file references that the theme does not own, named and
+ * justified rather than swept into a deny-list:
+ *   --nex-sys-type-family  declared by src/styles/tokens.css, which
+ *                          src/index.css imports above. The stack's
+ *                          `--font-sans` aliases it on purpose: the
+ *                          app does not adopt a new typeface.
+ */
+const externalVars = new Map<string, string>([
+  ["--nex-sys-type-family", "declared by src/styles/tokens.css (imported, layer(base))"],
+]);
+
+/** `--name` from the dark/default block — the black theme proper. */
 function blackThemeVar(name: string): Oklch {
-  return themeBlockVar(":root,\\s*\\.dark", name, "black");
+  return blockVar(DARK_BLOCK, name, "dark");
 }
 
-/** `--name` from the `.light` block. */
+/** `--name` from the light block. */
 function lightThemeVar(name: string): Oklch {
-  return themeBlockVar("\\.light", name, "light");
+  return blockVar(LIGHT_BLOCK, name, "light");
 }
 
-function themeBlockVar(selectorPattern: string, name: string, label: string): Oklch {
-  const block = new RegExp(`${selectorPattern} \\{([\\s\\S]*?)\\n\\}`).exec(css);
-  if (!block) throw new Error(`src/index.css: no block matching ${selectorPattern}`);
-  const declaration = new RegExp(`${name}\\s*:\\s*([^;]+);`).exec(block[1]);
+function blockVar(body: string, name: string, label: string): Oklch {
+  const declaration = new RegExp(`${name}\\s*:\\s*([^;]+);`).exec(body);
   if (!declaration) throw new Error(`src/index.css: ${name} is not defined in the ${label} theme`);
   const parsed = parseOklch(declaration[1]);
   if (!parsed) throw new Error(`src/index.css: ${name} is "${declaration[1]}", not an oklch() value`);
   return parsed;
 }
 
-const mapping = themeMapping();
+/* ----------------------------------------------------------
+   Tailwind class tokens.
+
+   A copied component does not reference a theme var the way CSS
+   does — it references it the way a design system does, through
+   utility classes: `bg-primary`, `text-primary-foreground`,
+   `ring-ring/50`, `bg-destructive/10`. A gate that only scanned
+   `var(--x)` would have missed every one of them, which is why
+   this walks class strings and resolves them through the same
+   `@theme inline` table Tailwind uses.
+   ---------------------------------------------------------- */
+
+/** Utility prefixes that take a colour, i.e. that resolve to `--color-*`. */
+const COLOUR_PREFIXES = [
+  "bg-",
+  "text-",
+  "border-",
+  "ring-",
+  "outline-",
+  "fill-",
+  "stroke-",
+  "divide-",
+  "accent-",
+  "caret-",
+];
+
+/** `text-*` that are type sizes, not colours. */
+const FONT_SIZES = new Set([
+  "xs",
+  "sm",
+  "base",
+  "lg",
+  "xl",
+  "2xl",
+  "3xl",
+  "4xl",
+  "5xl",
+  "6xl",
+  "7xl",
+  "8xl",
+  "9xl",
+]);
+
+/**
+ * Tokens Tailwind resolves WITHOUT a `--color-*` entry: the CSS-wide
+ * keywords, `transparent`/`current`, the static black/white, and the
+ * structural sides of `border-*`. Anything else under a colour
+ * prefix has to come from the theme or it paints nothing.
+ */
+const NOT_A_THEME_COLOUR = new Set([
+  "transparent",
+  "current",
+  "currentcolor",
+  "inherit",
+  "initial",
+  "unset",
+  "revert",
+  "none",
+  "black",
+  "white",
+  "b",
+  "t",
+  "l",
+  "r",
+  "x",
+  "y",
+  "s",
+  "e",
+  "w",
+  "n",
+  "start",
+  "end",
+  "block",
+]);
+
+/** Every class token in a component source, comments and interpolations aside. */
+function classTokens(source: string): string[] {
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/^\s*\/\/.*$/gm, " ");
+  const tokens = new Set<string>();
+  for (const match of code.matchAll(/(["'`])([^"'`]*)\1/g)) {
+    for (const raw of match[2].replace(/\$\{[^}]*\}/g, " ").split(/\s+/)) {
+      if (raw) tokens.add(raw);
+    }
+  }
+  return [...tokens].sort();
+}
+
+/** The colour-bearing utilities among a component's class tokens. */
+function colourUtilities(source: string): string[] {
+  const out = new Set<string>();
+  for (const token of classTokens(source)) {
+    // Strip variant prefixes one at a time: `dark:`,
+    // `focus-visible:aria-invalid:`, `has-data-[icon=inline-end]:`.
+    let bare = token;
+    while (/^[a-z0-9[\]_.-]+:/i.test(bare)) bare = bare.replace(/^[a-z0-9[\]_.-]+:/i, "");
+    // Strip the opacity modifier: `bg-destructive/10` -> `bg-destructive`.
+    bare = bare.replace(/\/\s*\d+$/, "");
+    for (const prefix of COLOUR_PREFIXES) {
+      if (!bare.startsWith(prefix)) continue;
+      const name = bare.slice(prefix.length);
+      // `size-4`, `px-2.5`, `[color-mix(...)]` — not a colour name.
+      if (name === "" || /^[[\d.]/.test(name)) continue;
+      if (prefix === "text-" && FONT_SIZES.has(name)) continue;
+      if (NOT_A_THEME_COLOUR.has(name)) continue;
+      out.add(`${prefix}${name}`);
+    }
+  }
+  return [...out].sort();
+}
 
 describe("black theme — variable coverage", () => {
-  it("defines every var the @theme inline mapping aliases", () => {
-    const missing = [...mapping.values()]
-      .filter((target) => !defined.has(target))
-      .map((target) => `${target} (aliased by ${[...mapping].find(([, v]) => v === target)?.[0]})`);
+  it("defines every colour role the @theme inline mapping aliases, in BOTH themes", () => {
+    // Scoped to the two theme blocks on purpose: a var that exists
+    // under one theme but not the other paints nothing on the other.
+    // Only the `--color-*` keys are per-theme; the shape scale and
+    // the font alias are derived, and the next test holds those.
+    const missing: string[] = [];
+    for (const [alias, target] of mapping) {
+      if (!alias.startsWith("--color-")) continue;
+      if (!darkDefined.has(target)) missing.push(`dark: ${target} (aliased by ${alias})`);
+      if (!lightDefined.has(target)) missing.push(`light: ${target} (aliased by ${alias})`);
+    }
     expect(missing).toEqual([]);
   });
 
+  it("derives the shape and font keys from vars that resolve", () => {
+    // `--radius-*` step off the single `--radius` declared on the
+    // default root (the light block deliberately does not redeclare
+    // it: the shape scale is theme-independent), and `--font-*`
+    // points at the merged token stack. Each has to land on
+    // something that is actually declared somewhere.
+    const unresolved: string[] = [];
+    for (const [alias, target] of mapping) {
+      if (alias.startsWith("--color-")) continue;
+      const resolves = darkDefined.has(target) || themeKeys.has(target) || externalVars.has(target);
+      if (!resolves) unresolved.push(`${alias} -> ${target}`);
+    }
+    expect(unresolved).toEqual([]);
+  });
+
   it("defines every var referenced with var() inside src/index.css", () => {
-    // `--font-sans` is forwarded from the runtime font stack and is
-    // intentionally not a colour var; the font is not adopted in
-    // this PR (see the header of src/index.css).
-    const tolerated = new Set(["--font-sans"]);
+    // A reference is resolvable if the theme defines it, if
+    // `@theme inline` emits it into the theme layer, or if it is one
+    // of the named external tokens above.
     const missing = [...referencedVars()]
-      .filter((name) => !defined.has(name) && !tolerated.has(name))
+      .filter((name) => !darkDefined.has(name) && !themeKeys.has(name) && !externalVars.has(name))
       .sort();
     expect(missing).toEqual([]);
   });
 
-  it("defines every theme var referenced by a vendored component", () => {
-    // Radix/Origin UI/React Bits sources reference shadcn's
-    // semantic tokens directly (and `--border` reaches the app
-    // through arbitrary-value utilities). A typo there renders
-    // as an invisible border, not an error.
+  it("defines every theme var a copied component references with var()", () => {
+    // shadcn's generated components reach for shadcn's semantic
+    // tokens directly, including `--radius-md` from `@theme inline`
+    // and, in arbitrary-value utilities, the raw paint vars. A typo
+    // there renders as an invisible border, not an error.
     const missing: string[] = [];
     for (const [name, source] of Object.entries(componentSources)) {
       for (const match of source.matchAll(/var\(\s*(--[a-z0-9-]+)/gi)) {
-        if (!defined.has(match[1])) missing.push(`${name}: ${match[1]}`);
+        const target = match[1];
+        if (darkDefined.has(target) || themeKeys.has(target)) continue;
+        missing.push(`${name}: ${target}`);
       }
     }
     expect([...new Set(missing)].sort()).toEqual([]);
   });
 
+  it("routes every colour utility a copied component uses through a defined var", () => {
+    // The real reference from a component into the theme is a class,
+    // not a `var()`. `bg-primary` compiles to `var(--color-primary)`
+    // to `var(--primary)`; if `--primary` is missing it renders
+    // transparent and nothing warns. Each utility is resolved
+    // through the same mapping Tailwind uses and must land on a var
+    // both theme blocks define.
+    const unresolved: string[] = [];
+    for (const [name, source] of Object.entries(componentSources)) {
+      for (const utility of colourUtilities(source)) {
+        const key = `--color-${utility.slice(utility.indexOf("-") + 1)}`;
+        const target = mapping.get(key);
+        if (target === undefined) {
+          unresolved.push(`${name}: ${utility} (no ${key} in @theme inline)`);
+          continue;
+        }
+        if (!darkDefined.has(target)) {
+          unresolved.push(`${name}: ${utility} -> ${target} undefined in the dark theme`);
+        }
+        if (!lightDefined.has(target)) {
+          unresolved.push(`${name}: ${utility} -> ${target} undefined in the light theme`);
+        }
+      }
+    }
+    expect(unresolved).toEqual([]);
+  });
+
+  it("resolves the default Button's colour utility to the theme's own var", () => {
+    // jsdom compiles no CSS and implements no cascade layers, so this
+    // cannot answer "which of two rules wins" — that half is asserted
+    // from the stylesheet in the cascade describe below. What it does
+    // assert is real: the generated Button really does carry
+    // `bg-primary`, and a utility that routes a colour through
+    // `var(--primary)` computes to that var, with `--primary` read
+    // out of the dark block of the real stylesheet.
+    const style = document.createElement("style");
+    style.textContent = `:root{${DARK_BLOCK}}\n.bg-primary{background-color:var(--primary)}`;
+    document.head.appendChild(style);
+    try {
+      const { container } = render(createElement(Button));
+      const button = container.querySelector("button");
+      expect(button).not.toBeNull();
+      expect(button!.className.split(/\s+/)).toContain("bg-primary");
+      expect(getComputedStyle(button!).backgroundColor).toBe("var(--primary)");
+      expect(getComputedStyle(document.documentElement).getPropertyValue("--primary")).toBe(
+        darkDefined.get("--primary"),
+      );
+      container.remove();
+    } finally {
+      style.remove();
+    }
+  });
+
   it("maps --radius to a rem length so rounded-* utilities resolve", () => {
-    const radius = defined.get("--radius");
+    const radius = darkDefined.get("--radius");
     expect(radius).toMatch(/^[\d.]+rem$/);
+  });
+});
+
+describe("cascade — the merged sheets load inside a layer", () => {
+  /**
+   * The contract, and the bug it prevents.
+   *
+   * The M3E sheets carry element resets (`button { background:
+   * transparent; padding: 0; border: none }`) and they used to be
+   * imported UNLAYERED from src/main.tsx. Per CSS Cascade L5 an
+   * unlayered normal declaration outranks every layered one, so
+   * those resets silently beat `bg-primary`, `px-2.5`, `border`,
+   * `text-sm` and every other Tailwind utility in the shipped
+   * bundle: components on the stack rendered unstyled while every
+   * test stayed green, because the utilities resolve fine and lose
+   * at paint time.
+   *
+   * So: one stylesheet entry, every sheet in a declared layer, and
+   * utilities declared last.
+   */
+  const LEGACY_DIR = resolve(process.cwd(), "src/styles");
+  /** Every merged stylesheet on disk, as import specifiers. */
+  const legacySheets = [
+    "./styles.css",
+    ...readdirSync(LEGACY_DIR)
+      .filter((name) => name.endsWith(".css"))
+      .map((name) => `./styles/${name}`),
+  ].sort();
+
+  /** `@import "<specifier>"[ layer(<name>)]` → `specifier -> layer`. */
+  function importedLayers(): Map<string, string | null> {
+    const out = new Map<string, string | null>();
+    for (const match of cssCode.matchAll(/@import\s+["']([^"']+)["']([^;]*);/g)) {
+      const qualifier = /\blayer\(\s*([a-z-]+)\s*\)/.exec(match[2]);
+      out.set(match[1], qualifier ? qualifier[1] : null);
+    }
+    return out;
+  }
+
+  it("declares the layer order exactly once, ahead of every @import", () => {
+    const statements = cssCode.match(/@layer\s+[a-z][a-z-]*(?:\s*,\s*[a-z][a-z-]*)*\s*;/gi) ?? [];
+    expect(statements).toHaveLength(1);
+    // utilities LAST: that is what lets a utility outrank a reset.
+    const order = (statements[0] ?? "")
+      .replace(/@layer|;/g, "")
+      .split(",")
+      .map((s) => s.trim());
+    expect(order).toEqual(["theme", "base", "components", "utilities"]);
+    expect(cssCode.indexOf("@layer theme,")).toBeLessThan(cssCode.search(/@import\s+["']/));
+  });
+
+  it("imports every merged sheet with layer(base)", () => {
+    const layers = importedLayers();
+    expect([...layers.keys()].filter((spec) => legacySheets.includes(spec)).sort()).toEqual(
+      legacySheets,
+    );
+    for (const specifier of legacySheets) {
+      expect(`${specifier}: ${layers.get(specifier)}`).toBe(`${specifier}: base`);
+    }
+  });
+
+  it("leaves no merged sheet unlayered", () => {
+    // The whole point: an unlayered sheet outranks every utility
+    // again, which is how the resets got in front of the theme.
+    //
+    // One exception, named: tw-animate-css ships `@utility` at-rules
+    // and Tailwind refuses to parse one inside a layer
+    // ("`@utility` cannot be nested"), so its import cannot carry
+    // `layer(...)`. It is emitted into the utilities layer anyway —
+    // checked in the built bundle — and this assertion fails the day
+    // a SECOND sheet is imported unlayered.
+    const unlayered = [...importedLayers()]
+      .filter(([, layer]) => layer === null)
+      .map(([specifier]) => specifier);
+    expect(unlayered).toEqual(["tw-animate-css"]);
+  });
+
+  it("keeps exactly one stylesheet entry, in src/main.tsx", () => {
+    // A second `import "./x.css"` in main.tsx is unlayered by
+    // definition and would reinstate the bug behind this file's back.
+    const entries = [...mainTsx.matchAll(/import\s+(?:[^"']*from\s+)?["']([^"']+\.css)["']/g)].map(
+      (match) => match[1],
+    );
+    expect(entries).toEqual(["./index.css"]);
   });
 });
 
@@ -239,11 +574,22 @@ describe("black theme — direction", () => {
   it("gives the light counterpart the same discipline", () => {
     const light = lightThemeVar;
     expect(light("--background").l).toBeGreaterThan(0.95);
-    // Same single cold accent, so identity does not change with
-    // the theme.
+    // Same single cold accent, so identity does not change with the
+    // theme.
     expect(light("--primary").h).toBeGreaterThanOrEqual(200);
     expect(light("--primary").h).toBeLessThanOrEqual(270);
     expect(contrastRatio(light("--foreground"), light("--background"))).toBeGreaterThanOrEqual(4.5);
     expect(contrastRatio(light("--muted-foreground"), light("--background"))).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it("selects both themes with the attribute the app actually writes", () => {
+    // src/lib/useAppearance.ts writes `documentElement.dataset.theme`;
+    // tokens.css treats a bare `:root` as dark. A `.dark`/`.light`
+    // class pair matched nothing at runtime, and a `dark:` variant
+    // keyed off it was dead on every screen.
+    expect(css).toMatch(/@custom-variant\s+dark\s*\(\s*&:is\(\[data-theme="dark"\]/);
+    expect(css).toMatch(/^:root\[data-theme="light"\] \{/m);
+    expect(css).not.toMatch(/^\.dark \{/m);
+    expect(css).not.toMatch(/^\.light \{/m);
   });
 });

@@ -21,8 +21,10 @@
      1. `import { useReducedMotion } from "@/lib/useReducedMotion"`
         + a hand-written reduced-motion branch that renders the
         final static frame and starts NO timeline (upstream ships
-        none — see src/lib/motion.test.ts).
-     2. `'use client'` dropped (this is a Vite app).
+        none — see src/lib/motion.test.tsx), and an empty-text
+        guard so `text={[]}` renders nothing instead of throwing.
+     2. The React Server Components client directive dropped from
+        the top of the file — this is a Vite app, not Next.
      3. The default cursor character kept; `cursorClassName` and
         Tailwind utility strings kept as authored so diffs
         against upstream stay legible.
@@ -149,7 +151,9 @@ const TextType = ({
     // entirely. The static frame below carries the same information
     // the animation would have settled on (all text, fully
     // revealed), so nothing is lost for a user who opted out.
-    if (reducedMotion || !isVisible) return;
+    // Same for an empty `text` array: there is no sentence to
+    // read, and upstream would dereference `undefined` here.
+    if (reducedMotion || !isVisible || textArray.length === 0) return;
 
     let timeout: ReturnType<typeof setTimeout>;
 
@@ -218,6 +222,15 @@ const TextType = ({
     variableSpeed,
     onSentenceComplete
   ]);
+
+  // NEXORA (#218): no text, nothing to reveal. Upstream reads
+  // `textArray[finalIndex]` unconditionally, so `text={[]}` threw
+  // on the reduced-motion path (and on the cursor path whenever
+  // `hideCursorWhileTyping` was set). Rendering nothing is the
+  // honest answer: there is no frame to show and no sentence to
+  // type. Guarded here — after every hook, so hook order is
+  // untouched.
+  if (textArray.length === 0) return null;
 
   const shouldHideCursor =
     hideCursorWhileTyping && (currentCharIndex < textArray[currentTextIndex].length || isDeleting);
