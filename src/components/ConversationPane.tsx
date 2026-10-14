@@ -22,6 +22,14 @@ export interface ConversationPaneProps {
   conversation: Conversation;
   selectedProvider: string | null;
   selectedModel: string | null;
+  /** Models the selected provider offers (#220) — the composer's
+   * model list. Passed down, never re-fetched here: the provider
+   * store in App stays the only source. */
+  models: readonly string[];
+  /** Persist a model choice (the app's provider store). */
+  onSelectModel: (model: string) => void;
+  /** Last model-selection failure, surfaced in the composer. */
+  modelError: string | null;
   /** Agent-autonomy default store lifted in App (single source, NEX-FE-003). */
   autonomy: AutonomyStore;
   draft: string;
@@ -43,6 +51,9 @@ export default function ConversationPane({
   conversation,
   selectedProvider,
   selectedModel,
+  models,
+  onSelectModel,
+  modelError,
   autonomy,
   draft,
   setDraft,
@@ -109,6 +120,9 @@ export default function ConversationPane({
           conversationId={conversation.id}
           selectedProvider={selectedProvider}
           selectedModel={selectedModel}
+          models={models}
+          onSelectModel={onSelectModel}
+          modelError={modelError}
           autonomy={autonomy}
           onOpenSettings={onOpenSettings}
           onMessageSent={onMessageSent}

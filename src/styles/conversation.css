@@ -181,12 +181,15 @@
   outline: none;
 }
 
-/* Rename/composer focus visibility (accessibility.md §2): same
+/* Rename-input focus visibility (accessibility.md §2): the same
    token-ring restoration as components.css — the outline:none
-   resets below would otherwise leave only the sub-3:1 border
-   shift as the focus sign. */
-.nex-conversation-rename-input:focus-visible,
-.nex-composer-input:focus-visible {
+   reset above would otherwise leave only the sub-3:1 border
+   shift as the focus sign.
+   #220 removed the composer from this rule: the composer's
+   focus moment is its container's accent seam
+   (src/styles/composer.css), so the warm M3E ring belongs to
+   the rename field alone. */
+.nex-conversation-rename-input:focus-visible {
   outline: var(--nex-sys-focus-ring-width) solid var(--nex-sys-focus-ring-color);
   outline-offset: var(--nex-sys-focus-ring-offset);
 }
@@ -558,147 +561,6 @@
   }
 }
 
-/* ---- Send-failure strip (calm, inline, above the composer) ---- */
-.nex-composer-error {
-  flex-shrink: 0;
-  width: 100%;
-  max-width: var(--nex-sys-layout-measure-max);
-  margin: 0 auto var(--nex-sys-space-xs);
-  padding: var(--nex-sys-space-sm) var(--nex-sys-space-md);
-  font-size: var(--nex-sys-type-size-body-small);
-  color: var(--nex-sys-color-error);
-  background: var(--nex-sys-color-error-container);
-  border: 1px solid var(--nex-sys-color-error-outline);
-  border-radius: var(--nex-sys-shape-medium);
-  text-align: left;
-}
-
-/* ---- Composer: one composed elevated control (0.3.0) ----
-   Shell on surface-container-high with large-increased corners;
-   the textarea lives inside borderless; the bottom bar hosts the
-   attach action, the model tag and the send pill. */
-.nex-composer {
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--nex-sys-space-xs);
-  padding: var(--nex-sys-space-sm) var(--nex-sys-space-md) var(--nex-sys-space-md);
-  background: var(--nex-sys-color-surface-container);
-}
-
-.nex-composer-inner {
-  width: 100%;
-  max-width: var(--nex-sys-layout-measure-max);
-  margin-inline: auto;
-  display: flex;
-  flex-direction: column;
-  gap: var(--nex-sys-space-xs);
-}
-
-.nex-composer-shell {
-  display: flex;
-  flex-direction: column;
-  border-radius: var(--nex-sys-shape-large-increased);
-  background: var(--nex-sys-color-surface-container-high);
-  border: 1px solid var(--nex-sys-color-outline-variant);
-  transition: border-color var(--motion-duration-fast) var(--motion-easing-standard);
-}
-/* Focus-within lifts the seam to the accent hairline (the field
-   focus moment for the composed control). */
-.nex-composer-shell:focus-within {
-  border-color: var(--nex-sys-focus-field-color);
-}
-
-.nex-composer-attachments {
-  list-style: none;
-  margin: 0;
-  padding: var(--nex-sys-space-sm) var(--nex-sys-space-sm) 0;
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--nex-sys-space-xs);
-}
-
-.nex-attachment-text {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.nex-composer-input {
-  display: block;
-  width: 100%;
-  resize: none;
-  min-height: 48px;
-  max-height: 160px;
-  padding: var(--nex-sys-space-sm) var(--nex-sys-space-md) var(--nex-sys-space-xxs);
-  border: none;
-  border-radius: var(--nex-sys-shape-large-increased);
-  background: transparent;
-  color: var(--nex-sys-color-on-surface);
-  font-size: var(--nex-sys-type-size-body-large);
-  line-height: var(--nex-sys-type-line-height-normal);
-  outline: none;
-}
-
-.nex-composer-input::placeholder {
-  color: var(--nex-sys-color-on-surface-tertiary);
-}
-
-.nex-composer-input:disabled {
-  opacity: var(--nex-sys-state-disabled-opacity);
-}
-
-/* Bottom bar of the composed control. */
-.nex-composer-bar {
-  display: flex;
-  align-items: center;
-  gap: var(--nex-sys-space-xxs);
-  padding: var(--nex-sys-space-xxs) var(--nex-sys-space-xs) var(--nex-sys-space-xs)
-    var(--nex-sys-space-xxs);
-}
-
-.nex-composer-bar-spacer {
-  flex: 1 1 auto;
-}
-
-/* Attach: M3IconButton carries the quiet-at-rest grammar (components.css);
-   this hook only reserves its slot inside the shell bar. */
-.nex-composer-attach {
-  flex-shrink: 0;
-}
-
-.nex-composer-model-tag {
-  margin-right: var(--nex-sys-space-xxs);
-}
-
-/* ---- Send: the thread's primary action (M3Button primary expressive).
-   The filled-pill grammar + spring-overshoot press + loading state live
-   in the shared .nex-btn system (components.css); this hook only keeps
-   the send control clear of the model tag beside it. ---- */
-.nex-composer-send {
-  flex-shrink: 0;
-}
-
-/* Hint row under the composed control. */
-.nex-composer-hint {
-  display: flex;
-  align-items: center;
-  gap: var(--nex-sys-space-sm);
-  padding: 0 var(--nex-sys-space-xxs);
-  font-size: var(--nex-sys-type-size-label-small);
-  color: var(--nex-sys-color-on-surface-faint);
-}
-
-.nex-composer-hint .nex-composer-model {
-  font-family: var(--nex-sys-type-family-mono);
-  font-size: var(--nex-sys-type-size-label-small);
-  color: var(--nex-sys-color-on-surface-variant);
-}
-
-.nex-composer-hint .nex-composer-shortcut {
-  color: var(--nex-sys-color-on-surface-faint);
-}
-
 /* ============================================================
    Search results panel (conversation search, FR-006)
    Floats over the sidebar below the input — a true floating layer,
@@ -813,33 +675,6 @@
    Placed chronologically inside the thread; shows live steps,
    status pill, approval, and budget affordances.
    ============================================================ */
-
-.nex-composer-agent-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
-  /* Small, not full: this is a control in the composer, and the shape
-     mapping reserves the full step for geometry that means status —
-     "never a row, a button, a field, or a panel". */
-  border-radius: var(--nex-sys-shape-small);
-  background: var(--nex-sys-color-surface-container-high);
-  border: 1px solid var(--nex-sys-color-outline-variant);
-  font-size: var(--nex-sys-type-size-label-medium);
-  color: var(--nex-sys-color-on-surface-variant);
-  cursor: pointer;
-  user-select: none;
-}
-.nex-composer-agent-toggle input {
-  accent-color: var(--nex-sys-color-primary);
-}
-.nex-composer-agent-toggle:has(input:checked) {
-  /* Checked = container + label only. A third accent surface (an
-     accent border around an accent wash on an accent label) pushed
-     the checkbox to three accent surfaces at rest. */
-  background: var(--nex-sys-color-primary-container);
-  color: var(--nex-sys-color-primary);
-}
 
 .nex-agent-run {
   width: 100%;

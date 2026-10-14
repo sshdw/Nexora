@@ -113,6 +113,13 @@
 @import "./styles.css" layer(base);
 @import "./styles/components.css" layer(base);
 @import "./styles/conversation.css" layer(base);
+/* #220: the composer is the first merged surface to paint from the
+   black theme above instead of `--nex-sys-*`. Imported AFTER
+   conversation.css (whose old composer block it replaces) and
+   components.css (whose `.nex-seg` / `.nex-chip` primitives it
+   re-points, composer-scoped, at the shadcn vars) so the
+   same-selector-later-wins tie-break is available to it. */
+@import "./styles/composer.css" layer(base);
 @import "./styles/context.css" layer(base);
 @import "./styles/settings.css" layer(base);
 @import "./styles/prompts.css" layer(base);
@@ -414,4 +421,11 @@
    final frame. That half of the gate is pinned by the same test
    file, with a GSAP spy: "no timeline was created" is the
    assertion, not "the text happened to look finished".
+
+   #220 adds the first new animated surface on this stack (the
+   composer's autonomy explainer). Its hand-written branch lives in
+   src/components/ComposerAutonomyHint.tsx and its GSAP-spy test
+   in src/composer.test.ts — and the reverse check, that every
+   animation already merged still collapses, is asserted there
+   too, against the same motion.css block.
    ---------------------------------------------------------- */

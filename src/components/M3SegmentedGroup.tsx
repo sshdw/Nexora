@@ -15,6 +15,7 @@
 //! activation), Home/End jump to the ends.
 
 import { useRef } from "react";
+import type { ReactNode } from "react";
 
 export interface M3SegmentOption<T extends string> {
   value: T;
@@ -22,6 +23,10 @@ export interface M3SegmentOption<T extends string> {
   /** Per-option accessible name when the visible label is abbreviated. */
   ariaLabel?: string;
   disabled?: boolean;
+  /** Optional mark before the label (#220) — an icon or a tick.
+   * Decorative by contract: callers pass `aria-hidden` marks, and
+   * the option's accessible name stays its label / ariaLabel. */
+  leading?: ReactNode;
 }
 
 export interface M3SegmentedGroupProps<T extends string> {
@@ -35,6 +40,11 @@ export interface M3SegmentedGroupProps<T extends string> {
   variant?: "standard" | "connected";
   semantics?: "radio" | "tabs";
   disabled?: boolean;
+  /** Extra class on the group container (#220). Appended, never
+   * replacing `nex-seg`, so a caller that re-paints the group —
+   * the composer does, on the black theme — leaves every other
+   * surface's geometry untouched. */
+  className?: string;
 }
 
 export default function M3SegmentedGroup<T extends string>({
@@ -46,6 +56,7 @@ export default function M3SegmentedGroup<T extends string>({
   variant = "standard",
   semantics = "radio",
   disabled = false,
+  className = "",
 }: M3SegmentedGroupProps<T>) {
   const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const isTabs = semantics === "tabs";
@@ -107,7 +118,9 @@ export default function M3SegmentedGroup<T extends string>({
   return (
     <div
       className={
-        "nex-seg" + (variant === "connected" ? " nex-seg-connected" : "")
+        "nex-seg" +
+        (variant === "connected" ? " nex-seg-connected" : "") +
+        (className ? " " + className : "")
       }
       role={isTabs ? "tablist" : "radiogroup"}
       aria-label={label}
@@ -137,6 +150,7 @@ export default function M3SegmentedGroup<T extends string>({
             onClick={() => onChange(option.value)}
             onKeyDown={(event) => handleKeyDown(event, index)}
           >
+            {option.leading}
             {option.label}
           </button>
         );

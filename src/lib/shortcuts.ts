@@ -438,3 +438,32 @@ export const SHORTCUT_GROUPS: readonly string[] = (() => {
 export function shortcutsInGroup(group: string): ShortcutEntry[] {
   return SHORTCUTS.filter((entry) => entry.group === group);
 }
+
+/* ----------------------------------------------------------
+   Chip lookups (#220).
+
+   The composer's placeholder teaches shortcuts INLINE, which
+   only works if the key labels come from this inventory rather
+   than from a second hand-written list in the view: a shortcut
+   that is rebound here must change its chip with it, or the
+   composer ends up teaching a key the app does not have.
+
+   Both lookups fail soft — an unknown id yields an empty
+   array, never a throw — because a chip is teaching, not
+   behaviour: a registry rename must degrade the hint, not
+   break the composer. Every id used by the composer is
+   asserted to exist in src/composer.test.ts, so the soft
+   failure can never become a silent one.
+   ---------------------------------------------------------- */
+
+/** The inventoried entry for one shortcut id, if it is registered. */
+export function shortcutById(id: string): ShortcutEntry | undefined {
+  return SHORTCUTS.find((entry) => entry.id === id);
+}
+
+/** Display labels for one shortcut id, in inventory order.
+ *  Empty for an unregistered id (see the note above). */
+export function shortcutKeys(id: string): string[] {
+  const entry = shortcutById(id);
+  return entry ? [...entry.keys] : [];
+}

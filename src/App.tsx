@@ -143,6 +143,24 @@ function AppShell() {
     [],
   );
 
+  // Model list + selection dispatch for the composer's model picker
+  // (#220). Both come out of the ONE provider store above — the
+  // composer lists what it is given and dispatches a choice back,
+  // so there is no second copy of the selection anywhere.
+  const providerModels = useMemo<string[]>(() => {
+    const match = providers.providers.find(
+      (entry) => entry.supported.name === providers.selectedProvider,
+    );
+    return match ? match.supported.models : [];
+  }, [providers.providers, providers.selectedProvider]);
+  const selectModel = useCallback(
+    (model: string) => {
+      void providers.selectModel(model);
+    },
+    [providers],
+  );
+  const modelError = providers.error ? providers.error.message : null;
+
   // Drop tabs for conversations that no longer exist (deleted). Archived
   // conversations stay listed (ConversationList.tsx:69-70 groups them), so
   // archiving never closes a tab.
@@ -616,6 +634,9 @@ function AppShell() {
           conversation={activeConversation}
           selectedProvider={providers.selectedProvider}
           selectedModel={providers.selectedModel}
+          models={providerModels}
+          onSelectModel={selectModel}
+          modelError={modelError}
           autonomy={autonomy}
           draft={draftFor(activeConversation.id)}
           setDraft={setDraftFor(activeConversation.id)}
@@ -633,6 +654,9 @@ function AppShell() {
           conversation={splitConversation}
           selectedProvider={providers.selectedProvider}
           selectedModel={providers.selectedModel}
+          models={providerModels}
+          onSelectModel={selectModel}
+          modelError={modelError}
           autonomy={autonomy}
           draft={draftFor(splitConversation.id)}
           setDraft={setDraftFor(splitConversation.id)}
@@ -652,6 +676,9 @@ function AppShell() {
         conversation={activeConversation}
         selectedProvider={providers.selectedProvider}
         selectedModel={providers.selectedModel}
+        models={providerModels}
+        onSelectModel={selectModel}
+        modelError={modelError}
         autonomy={autonomy}
         draft={draftFor(activeConversation.id)}
         setDraft={setDraftFor(activeConversation.id)}
