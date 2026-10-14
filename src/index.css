@@ -75,19 +75,33 @@
 
    Do not re-import a sheet from src/main.tsx. An import there
    is unlayered by definition and silently reinstates the bug.
-   src/theme.test.ts asserts this contract.
+   src/theme.test.ts asserts this contract against the SOURCE; the
+   bundle-level layer order is checked separately, by `npx vite build`
+   and reading the layer offsets out of dist/assets/*.css (manual
+   step, result recorded in the PR body).
    ============================================================ */
 
+/* Tailwind normalises this declaration away when it emits the bundle,
+   so read it as the INTENDED order, not the enforcement mechanism:
+   the shipped order is the order the layers are first used in —
+   properties, theme, base, components, utilities (and `components`
+   emits no block at all until something uses it). */
 @layer theme, base, components, utilities;
 
 @import "tailwindcss/theme.css" layer(theme);
 @import "tailwindcss/utilities.css" layer(utilities);
 /* The one import that cannot carry `layer(...)`: tw-animate-css
    ships `@utility` at-rules, and Tailwind refuses to parse one inside
-   a layer ("`@utility` cannot be nested"). Unlayered here, it is
-   still emitted INTO the utilities layer — verified in the built
-   bundle — so it lands in the same place a layered import would.
-   src/theme.test.ts pins this exception, by name. */
+   a layer ("`@utility` cannot be nested"). Its `@utility` classes
+   WOULD land in the utilities layer, but nothing in src/ uses an
+   `animate-*` class, so it contributes none today. What it does emit
+   is a set of `@property --tw-enter-*` / `--tw-exit-*`
+   registrations, and those land UNLAYERED at top level, after the
+   utilities layer closes. That is inert: an `@property` registers a
+   custom property and declares no rule, so there is nothing there for
+   the unlayered position to out-rank, and the names it registers
+   (`--tw-*`) are ones no legacy sheet defines and no theme var
+   competes with. src/theme.test.ts pins this exception, by name. */
 @import "tw-animate-css";
 
 /* The merged design system, now inside the cascade. Order is

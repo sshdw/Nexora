@@ -62,6 +62,12 @@ const componentSources: Record<string, string> = {
  * The numbers asserted here are computed from the stylesheet by
  * src/test/color.ts — nothing here is transcribed from the
  * comment block in the CSS, which can drift.
+ *
+ * A gate that cannot fail is worse than no gate, so the extractor the
+ * coverage half leans on is pinned by its own test: the colour
+ * utilities it finds in button.tsx are asserted EXACTLY. That is what
+ * caught the first version of it, which returned an empty set and let
+ * every assertion below pass on nothing.
  */
 
 /* ----------------------------------------------------------
@@ -202,6 +208,20 @@ const FONT_SIZES = new Set([
 ]);
 
 /**
+ * `bg-clip-*` is background-CLIP — where the fill is painted out to,
+ * not what colour it is. `bg-clip-padding` (shadcn's Button carries
+ * it) resolves to a keyword, so routing it at `--color-clip-padding`
+ * would report a theme gap that does not exist. These four are the
+ * values Tailwind ships; the family, not this list, is the rule.
+ */
+const BACKGROUND_CLIP = new Set([
+  "clip-border",
+  "clip-content",
+  "clip-padding",
+  "clip-text",
+]);
+
+/**
  * Tokens Tailwind resolves WITHOUT a `--color-*` entry: the CSS-wide
  * keywords, `transparent`/`current`, the static black/white, and the
  * structural sides of `border-*`. Anything else under a colour
@@ -233,12 +253,32 @@ const NOT_A_THEME_COLOUR = new Set([
   "block",
 ]);
 
+/**
+ * A string literal, matched PER DELIMITER: a `"`-delimited string may
+ * contain `'`, and a backtick one may contain both.
+ *
+ * The obvious one-liner, `/(["'`])([^"'`]*)\1/`, does NOT say that. It
+ * pairs whatever quote opened a string with the NEXT quote of ANY
+ * kind, so a class string containing an apostrophe is abandoned whole
+ * and two quotes of different types are read as one string. shadcn's
+ * Button carries `[&_svg:not([class*='size-'])]:size-4`, so that
+ * version saw an apostrophe, mispaired every class string in the
+ * file, returned 51 tokens of pure structure (`"{\n  variants: {…"`,
+ * `default:`, `"icon-xs":`) and ZERO colour utilities — which made
+ * the gate below pass on an empty set, forever, silently. Anchoring
+ * each delimiter to itself is the entire fix.
+ */
+const STRING_LITERAL = /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`/g;
+
 /** Every class token in a component source, comments and interpolations aside. */
 function classTokens(source: string): string[] {
   const code = source.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/^\s*\/\/.*$/gm, " ");
   const tokens = new Set<string>();
-  for (const match of code.matchAll(/(["'`])([^"'`]*)\1/g)) {
-    for (const raw of match[2].replace(/\$\{[^}]*\}/g, " ").split(/\s+/)) {
+  for (const match of code.matchAll(STRING_LITERAL)) {
+    // The body is the MATCH with its delimiters trimmed off, never a
+    // capture group: a capture group delimited by the quote class
+    // cannot hold a quote of the other kind, which is the bug above.
+    for (const raw of match[0].slice(1, -1).replace(/\$\{[^}]*\}/g, " ").split(/\s+/)) {
       if (raw) tokens.add(raw);
     }
   }
@@ -261,6 +301,7 @@ function colourUtilities(source: string): string[] {
       // `size-4`, `px-2.5`, `[color-mix(...)]` — not a colour name.
       if (name === "" || /^[[\d.]/.test(name)) continue;
       if (prefix === "text-" && FONT_SIZES.has(name)) continue;
+      if (prefix === "bg-" && BACKGROUND_CLIP.has(name)) continue;
       if (NOT_A_THEME_COLOUR.has(name)) continue;
       out.add(`${prefix}${name}`);
     }
@@ -324,6 +365,62 @@ describe("black theme — variable coverage", () => {
     expect([...new Set(missing)].sort()).toEqual([]);
   });
 
+  it("extracts the class tokens it claims to, from BOTH copied components", () => {
+    // The anti-vacuity pin, and the reason the gate below is a gate at
+    // all. `unresolved` can only ever be non-empty if this extractor
+    // returns something — and the version it replaced returned NOTHING
+    // for button.tsx while looking like it worked, so every assertion
+    // downstream passed on an empty set. Mutation-checked: restoring
+    // `/(["'`])([^"'`]*)\1/` fails HERE and leaves the gate below green.
+    expect(Object.keys(componentSources).sort()).toEqual(["button", "textType"]);
+
+    const button = colourUtilities(componentSources.button);
+    // The headline case: `bg-primary` is the class the whole black
+    // theme exists to paint, and it is the first thing that vanishes
+    // when the extractor starts mispairing quotes.
+    expect(button).toContain("bg-primary");
+    // The rest of what the PR body advertises, named so a regression
+    // says WHAT it lost rather than only how many.
+    expect(button).toEqual(
+      expect.arrayContaining([
+        "bg-primary",
+        "text-primary-foreground",
+        "ring-ring",
+        "bg-destructive",
+        "border-border",
+        "border-destructive",
+      ]),
+    );
+    // EXACT, not a subset. A containment check would still pass if the
+    // extractor lost 16 of 17; a set check makes a registry update
+    // that introduces a colour utility a diff somebody has to read.
+    expect(button).toEqual([
+      "bg-background",
+      "bg-destructive",
+      "bg-input",
+      "bg-muted",
+      "bg-primary",
+      "bg-secondary",
+      "border-border",
+      "border-destructive",
+      "border-input",
+      "border-ring",
+      "ring-destructive",
+      "ring-ring",
+      "text-destructive",
+      "text-foreground",
+      "text-primary",
+      "text-primary-foreground",
+      "text-secondary-foreground",
+    ]);
+
+    // TextType is scanned too. It paints no colour of its own — its
+    // classes are layout, and the colour arrives as a `style={{ color }}`
+    // prop — so what is pinned there is that the scan SEES the file,
+    // not what it happens to find in it today.
+    expect(classTokens(componentSources.textType)).toContain("inline-block");
+  });
+
   it("routes every colour utility a copied component uses through a defined var", () => {
     // The real reference from a component into the theme is a class,
     // not a `var()`. `bg-primary` compiles to `var(--color-primary)`
@@ -351,23 +448,28 @@ describe("black theme — variable coverage", () => {
     expect(unresolved).toEqual([]);
   });
 
-  it("resolves the default Button's colour utility to the theme's own var", () => {
-    // jsdom compiles no CSS and implements no cascade layers, so this
-    // cannot answer "which of two rules wins" — that half is asserted
-    // from the stylesheet in the cascade describe below. What it does
-    // assert is real: the generated Button really does carry
-    // `bg-primary`, and a utility that routes a colour through
-    // `var(--primary)` computes to that var, with `--primary` read
-    // out of the dark block of the real stylesheet.
+  it("renders the default Button with bg-primary, against the real dark block", () => {
+    // What this actually proves, narrowly: the generated Button really
+    // does carry `bg-primary`, and `--primary` as the browser sees it
+    // on the document root is the value the dark block declares —
+    // read out of src/index.css, not typed in.
+    //
+    // What it deliberately does NOT claim: which rule wins. jsdom
+    // compiles no CSS, implements no cascade layers, and does not run
+    // Tailwind — an earlier version of this test injected its own
+    // `.bg-primary{background-color:var(--primary)}` and then asserted
+    // getComputedStyle echoed `var(--primary)` back, which was the
+    // test agreeing with itself about a rule it had just written. That
+    // echo is gone; the cascade half is asserted from the stylesheet
+    // in the cascade describe below, and against the built bundle.
     const style = document.createElement("style");
-    style.textContent = `:root{${DARK_BLOCK}}\n.bg-primary{background-color:var(--primary)}`;
+    style.textContent = `:root{${DARK_BLOCK}}`;
     document.head.appendChild(style);
     try {
       const { container } = render(createElement(Button));
       const button = container.querySelector("button");
       expect(button).not.toBeNull();
       expect(button!.className.split(/\s+/)).toContain("bg-primary");
-      expect(getComputedStyle(button!).backgroundColor).toBe("var(--primary)");
       expect(getComputedStyle(document.documentElement).getPropertyValue("--primary")).toBe(
         darkDefined.get("--primary"),
       );
@@ -399,6 +501,16 @@ describe("cascade — the merged sheets load inside a layer", () => {
    *
    * So: one stylesheet entry, every sheet in a declared layer, and
    * utilities declared last.
+   *
+   * SCOPE, stated rather than implied: everything in this describe
+   * reads src/index.css and src/main.tsx as SOURCE. It asserts the
+   * contract that was written, not the bundle that came out. The
+   * bundle-level layer order is checked separately and manually —
+   * `npx vite build`, then read the layer offsets out of
+   * `dist/assets/*.css` — and the result is recorded in the PR body.
+   * A source assertion cannot see a bundler normalising a
+   * declaration away, which is exactly what it does with
+   * `@layer theme, base, components, utilities;`.
    */
   const LEGACY_DIR = resolve(process.cwd(), "src/styles");
   /** Every merged stylesheet on disk, as import specifiers. */
@@ -448,9 +560,17 @@ describe("cascade — the merged sheets load inside a layer", () => {
     // One exception, named: tw-animate-css ships `@utility` at-rules
     // and Tailwind refuses to parse one inside a layer
     // ("`@utility` cannot be nested"), so its import cannot carry
-    // `layer(...)`. It is emitted into the utilities layer anyway —
-    // checked in the built bundle — and this assertion fails the day
-    // a SECOND sheet is imported unlayered.
+    // `layer(...)`. Its `@utility` classes WOULD land in the
+    // utilities layer, but nothing in src/ uses an `animate-*` class,
+    // so today it contributes none — 0 `@utility` and 0 `.animate-*`
+    // in the built CSS. What it does emit is 56 `@property --tw-*`
+    // registrations, unlayered at top level after the utilities
+    // layer closes, and that is inert: an `@property` registers a
+    // custom property and declares no rule, so there is nothing there
+    // for the unlayered position to out-rank, and the names it
+    // registers (`--tw-*`) are ones no legacy sheet defines. So this
+    // assertion fails the day a SECOND sheet is imported unlayered —
+    // which is the only failure it is here to catch.
     const unlayered = [...importedLayers()]
       .filter(([, layer]) => layer === null)
       .map(([specifier]) => specifier);

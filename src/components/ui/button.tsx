@@ -4,7 +4,7 @@
    Generator    npx shadcn@latest add button
    Command      npx shadcn@latest init -y -t vite -b radix -p nova --css-variables
    Registry     shadcn/ui — style "radix-nova", base "radix"
-   Tool         shadcn@4.21.4 (see package.json dependencies)
+   Tool         shadcn@4.21.4 (see package.json devDependencies)
    License      MIT (shadcn/ui)
 
    Kept verbatim so the next `shadcn add` diffs cleanly against
