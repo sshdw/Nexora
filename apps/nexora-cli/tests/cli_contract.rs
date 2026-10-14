@@ -17,24 +17,41 @@ fn nexora() -> PathBuf {
 }
 
 /// Run the stub with a scrubbed environment: no provider config, no
-/// proxies (offline proof), and an isolated `HOME` so the real desktop
-/// database is never even looked at.
-fn run_offline(args: &[&str], home: &std::path::Path) -> Output {
-    Command::new(nexora())
+/// proxies (offline proof), and an isolated base directory for the
+/// platform-specific location the stub resolves (`HOME` on Unix,
+/// `APPDATA` on Windows) so the real desktop database is never looked at.
+fn run_offline(args: &[&str], base: &std::path::Path) -> Output {
+    let mut command = Command::new(nexora());
+    command
         .args(args)
         .env_clear()
-        .env("HOME", home)
-        .env("PATH", std::env::var("PATH").unwrap_or_default())
-        .env("USER", "nexora-test")
-        .output()
-        .expect("stub binary must execute")
+        .env("PATH", std::env::var("PATH").unwrap_or_default());
+    #[cfg(target_os = "windows")]
+    command.env("APPDATA", base);
+    #[cfg(not(target_os = "windows"))]
+    command.env("HOME", base).env("USER", "nexora-test");
+    command.output().expect("stub binary must execute")
 }
 
-fn temp_home(name: &str) -> PathBuf {
+fn temp_base(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("nexora-cli-test-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("temp HOME must be creatable");
+    std::fs::create_dir_all(&dir).expect("temp base must be creatable");
     dir
+}
+
+/// Platform sandbox: the directory to point the OS-specific base env var
+/// at, plus the app-data dir the stub must resolve from it under the
+/// desktop rules (`com.nexora.app` joined onto the Tauri per-OS base).
+fn sandbox(name: &str) -> (PathBuf, PathBuf) {
+    let base = temp_base(name);
+    #[cfg(target_os = "windows")]
+    let app_data_dir = base.join("com.nexora.app");
+    #[cfg(target_os = "macos")]
+    let app_data_dir = base.join("Library/Application Support/com.nexora.app");
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let app_data_dir = base.join(".local/share/com.nexora.app");
+    (base, app_data_dir)
 }
 
 fn stdout_text(output: &Output) -> String {
@@ -51,8 +68,8 @@ const PLANTED_SECRETS: &[&str] = &[
 
 #[test]
 fn help_exits_zero_offline_with_no_provider() {
-    let home = temp_home("help");
-    let output = run_offline(&["--help"], &home);
+    let (base, _dir) = sandbox("help");
+    let output = run_offline(&["--help"], &base);
     assert_eq!(output.status.code(), Some(0));
     let text = stdout_text(&output);
     assert!(
@@ -63,13 +80,13 @@ fn help_exits_zero_offline_with_no_provider() {
         !text.contains('\u{1b}'),
         "piped help must not contain ANSI escapes"
     );
-    let _ = std::fs::remove_dir_all(&home);
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 #[test]
 fn version_exits_zero_offline() {
-    let home = temp_home("version");
-    let output = run_offline(&["--version"], &home);
+    let (base, _dir) = sandbox("version");
+    let output = run_offline(&["--version"], &base);
     assert_eq!(output.status.code(), Some(0));
     let text = stdout_text(&output);
     assert!(
@@ -80,13 +97,13 @@ fn version_exits_zero_offline() {
         !text.contains('\u{1b}'),
         "piped version must not contain ANSI escapes"
     );
-    let _ = std::fs::remove_dir_all(&home);
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 #[test]
 fn doctor_prints_every_required_field_offline() {
-    let home = temp_home("doctor-fields");
-    let output = run_offline(&["doctor"], &home);
+    let (base, _dir) = sandbox("doctor-fields");
+    let output = run_offline(&["doctor"], &base);
     assert_eq!(output.status.code(), Some(0));
     let text = stdout_text(&output);
     for field in [
@@ -109,25 +126,28 @@ fn doctor_prints_every_required_field_offline() {
         !text.contains('\u{1b}'),
         "piped doctor must not contain ANSI escapes"
     );
-    let _ = std::fs::remove_dir_all(&home);
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 #[test]
 fn doctor_output_contains_zero_secret_values() {
-    let home = temp_home("doctor-secrets");
+    let (base, _dir) = sandbox("doctor-secrets");
     // Plant hostile material where a careless implementation could echo
     // it: environment variables visible to the child process.
-    let output = Command::new(nexora())
+    let mut command = Command::new(nexora());
+    command
         .arg("doctor")
         .env_clear()
-        .env("HOME", &home)
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("OPENAI_API_KEY", PLANTED_SECRETS[0])
         .env("AWS_SECRET_ACCESS_KEY", PLANTED_SECRETS[1])
         .env("SLACK_TOKEN", PLANTED_SECRETS[2])
-        .env("GITHUB_TOKEN", PLANTED_SECRETS[3])
-        .output()
-        .expect("stub binary must execute");
+        .env("GITHUB_TOKEN", PLANTED_SECRETS[3]);
+    #[cfg(target_os = "windows")]
+    command.env("APPDATA", &base);
+    #[cfg(not(target_os = "windows"))]
+    command.env("HOME", &base);
+    let output = command.output().expect("stub binary must execute");
     assert_eq!(output.status.code(), Some(0));
     let combined = format!(
         "{}{}",
@@ -154,31 +174,30 @@ fn doctor_output_contains_zero_secret_values() {
             "doctor output contains key-like pattern {pattern}:\n{combined}"
         );
     }
-    let _ = std::fs::remove_dir_all(&home);
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 #[test]
 fn doctor_never_creates_the_database() {
-    let home = temp_home("doctor-nocreate");
-    let db_path = home.join(".local/share/com.nexora.app/nexora.db");
+    let (base, dir) = sandbox("doctor-nocreate");
+    let db_path = dir.join("nexora.db");
     assert!(!db_path.exists());
-    let output = run_offline(&["doctor"], &home);
+    let output = run_offline(&["doctor"], &base);
     assert_eq!(output.status.code(), Some(0));
     assert!(
         stdout_text(&output).contains("database: not found"),
-        "fresh HOME must report honestly, not invent state"
+        "fresh sandbox must report honestly, not invent state"
     );
     assert!(
         !db_path.exists(),
         "doctor must never create the desktop database"
     );
-    let _ = std::fs::remove_dir_all(&home);
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 #[test]
 fn doctor_reports_real_schema_version_read_only() {
-    let home = temp_home("doctor-realdb");
-    let dir = home.join(".local/share/com.nexora.app");
+    let (base, dir) = sandbox("doctor-realdb");
     std::fs::create_dir_all(&dir).expect("fake app-data dir must be creatable");
     let db_path = dir.join("nexora.db");
     // Minimal desktop-shaped database: a schema_version bookkeeping table.
@@ -194,7 +213,7 @@ fn doctor_reports_real_schema_version_read_only() {
     let size_before = std::fs::metadata(&db_path)
         .expect("fixture must exist")
         .len();
-    let output = run_offline(&["doctor"], &home);
+    let output = run_offline(&["doctor"], &base);
     assert_eq!(output.status.code(), Some(0));
     let text = stdout_text(&output);
     assert!(
@@ -208,15 +227,15 @@ fn doctor_reports_real_schema_version_read_only() {
         size_before, size_after,
         "doctor must not modify the database"
     );
-    let _ = std::fs::remove_dir_all(&home);
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 #[test]
 fn bare_invocation_never_opens_a_tui() {
-    let home = temp_home("bare");
+    let (base, _dir) = sandbox("bare");
     // Piped stdout (captured): the stub must not emit fullscreen control
     // sequences and must exit non-zero with guidance, not hang in a TUI.
-    let output = run_offline(&[], &home);
+    let output = run_offline(&[], &base);
     assert_eq!(output.status.code(), Some(2));
     let combined = format!(
         "{}{}",
@@ -231,5 +250,5 @@ fn bare_invocation_never_opens_a_tui() {
         combined.contains("nexora doctor"),
         "bare run must point at real commands"
     );
-    let _ = std::fs::remove_dir_all(&home);
+    let _ = std::fs::remove_dir_all(&base);
 }
