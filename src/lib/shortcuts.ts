@@ -38,19 +38,17 @@
 //!     (universal "help" key; preventDefault suppresses browser help).
 //!     Chords (e.g. Ctrl+K Ctrl+S) are intentionally unsupported: every
 //!     shortcut is a single key press with modifiers.
-//!   - Ctrl+Shift+A / Ctrl+Shift+H (activity/health): the Ctrl map owns only
-//!     Tab/PageUp/PageDown (+ palette K/P, help //?) and Ctrl+Shift+Tab is
-//!     owned by tabs.prev — A/H with Ctrl+Shift are unbound, collision-free.
-//!   - Ctrl+` (terminal): the Ctrl map owns only Tab/PageUp/PageDown (+
-//!     palette K/P, help //?, activity/health A/H) — backtick with Ctrl is
-//!     unbound, collision-free (VS Code norm; inserts no text).
-//!   - Ctrl+Shift+T (tasks): the Ctrl map owns only Tab/PageUp/PageDown (+
-//!     palette K/P, help //?, activity/health A/H, terminal `) — T with
-//!     Ctrl+Shift is unbound, collision-free (inserts no text).
-//!   - Ctrl+Shift+U (code audit): same map plus tasks T — U with Ctrl+Shift
-//!     is unbound, collision-free (inserts no text).
-//!   - Ctrl+Shift+G (issues & PRs): same map plus audit U — G with
-//!     Ctrl+Shift is unbound, collision-free (inserts no text).
+//!   - Ctrl+Shift+T (tasks): the Ctrl map owns only Tab/PageUp/PageDown
+//!     (+ palette K/P, help //?) — T with Ctrl+Shift is unbound,
+//!     collision-free (inserts no text).
+//!
+//! Nav trim (#219): the Go group lost every shortcut whose destination left
+//! the navigation — Ctrl+Shift+A/H (activity/health), Ctrl+Shift+U (code
+//! audit), Ctrl+Shift+G (issues & PRs) and Ctrl+` (terminal) are
+//! unregistered together with their `COMBO_*` definitions and their App-level
+//! handlers, so no key opens a hidden panel and `go.tasks` is the only Go
+//! shortcut left. The panels and their backend commands stay; re-adding a
+//! combo here (with its App-level effect) is the whole re-entry.
 //!
 //! Out of scope (deferred, documented): user-customizable bindings. The
 //! registry shape (stable ids + combo definitions) is designed so a future
@@ -142,35 +140,11 @@ export const COMBO_TAB_JUMP_GUARD: ShortcutCombo = { key: "", ctrl: false, alt: 
 export const COMBO_HELP_SLASH: ShortcutCombo = { key: "/", ctrl: true, alt: false, meta: false, shift: "any" };
 export const COMBO_HELP_QUESTION: ShortcutCombo = { key: "?", ctrl: true, alt: false, meta: false, shift: "any" };
 export const COMBO_HELP_F1: ShortcutCombo = { key: "F1", ctrl: false, alt: false, meta: false, shift: "any" };
-/** Ctrl+Shift+A / Ctrl+Shift+H (activity/health): the Ctrl map owns only
- * Tab/PageUp/PageDown (+ palette K/P, help //?), and Ctrl+Shift+Tab is
- * owned by tabs.prev — A/H with Ctrl+Shift are unbound, collision-free.
- * `ci` matches the "A"/"H" key value Shift produces. */
-export const COMBO_ACTIVITY_OPEN: ShortcutCombo = { key: "a", ctrl: true, alt: false, meta: false, shift: true, ci: true };
-export const COMBO_HEALTH_OPEN: ShortcutCombo = { key: "h", ctrl: true, alt: false, meta: false, shift: true, ci: true };
-/** Ctrl+` (terminal): the Ctrl map owns only Tab/PageUp/PageDown (+
- * palette K/P, help //?, activity/health A/H) — backtick with Ctrl is
- * unbound, collision-free (VS Code terminal norm; inserts no text, so it
- * opens from anywhere including typing targets). */
-export const COMBO_TERMINAL_OPEN: ShortcutCombo = { key: "`", ctrl: true, alt: false, meta: false, shift: "any" };
 /** Ctrl+Shift+T (tasks): the Ctrl map owns only Tab/PageUp/PageDown (+
- * palette K/P, help //?, activity/health A/H, terminal `) — T with
- * Ctrl+Shift is unbound, collision-free (`ci` matches the "T" key value
- * Shift produces; inserts no text, so it opens from anywhere including
- * typing targets). */
+ * palette K/P, help //?) — T with Ctrl+Shift is unbound, collision-free
+ * (`ci` matches the "T" key value Shift produces; inserts no text, so it
+ * opens from anywhere including typing targets). */
 export const COMBO_TASKS_OPEN: ShortcutCombo = { key: "t", ctrl: true, alt: false, meta: false, shift: true, ci: true };
-/** Ctrl+Shift+U (code audit): the Ctrl map owns only Tab/PageUp/PageDown (+
- * palette K/P, help //?, activity/health A/H, terminal `, tasks T) — U with
- * Ctrl+Shift is unbound, collision-free (`ci` matches the "U" key value
- * Shift produces; inserts no text, so it opens from anywhere including
- * typing targets). */
-export const COMBO_AUDIT_OPEN: ShortcutCombo = { key: "u", ctrl: true, alt: false, meta: false, shift: true, ci: true };
-/** Ctrl+Shift+G (issues & PRs): the Ctrl map owns only Tab/PageUp/PageDown (+
- * palette K/P, help //?, activity/health A/H, terminal `, tasks T, audit U)
- * — G with Ctrl+Shift is unbound, collision-free (`ci` matches the "G" key
- * value Shift produces; inserts no text, so it opens from anywhere
- * including typing targets). */
-export const COMBO_GH_OPEN: ShortcutCombo = { key: "g", ctrl: true, alt: false, meta: false, shift: true, ci: true };
 
 // --- The inventory (100% of the Phase-1 grep — see module header). ----------
 
@@ -196,33 +170,6 @@ export const SHORTCUTS: readonly ShortcutEntry[] = [
   },
   // Go (navigation destinations).
   {
-    id: "go.activity",
-    keys: ["Ctrl+Shift+A"],
-    group: "Go",
-    scope: "Global (any focus, no open dialog)",
-    description: "Open the Activity feed",
-    source: "App.tsx (activity-health effect)",
-    combos: [COMBO_ACTIVITY_OPEN],
-  },
-  {
-    id: "go.health",
-    keys: ["Ctrl+Shift+H"],
-    group: "Go",
-    scope: "Global (any focus, no open dialog)",
-    description: "Open the Project health view",
-    source: "App.tsx (activity-health effect)",
-    combos: [COMBO_HEALTH_OPEN],
-  },
-  {
-    id: "go.terminal",
-    keys: ["Ctrl+`"],
-    group: "Go",
-    scope: "Global (any focus, no open dialog)",
-    description: "Open the workspace Terminal",
-    source: "App.tsx (terminal effect)",
-    combos: [COMBO_TERMINAL_OPEN],
-  },
-  {
     id: "go.tasks",
     keys: ["Ctrl+Shift+T"],
     group: "Go",
@@ -230,24 +177,6 @@ export const SHORTCUTS: readonly ShortcutEntry[] = [
     description: "Open the Task manager",
     source: "App.tsx (tasks effect)",
     combos: [COMBO_TASKS_OPEN],
-  },
-  {
-    id: "go.audit",
-    keys: ["Ctrl+Shift+U"],
-    group: "Go",
-    scope: "Global (any focus, no open dialog)",
-    description: "Open the Code audit",
-    source: "App.tsx (audit effect)",
-    combos: [COMBO_AUDIT_OPEN],
-  },
-  {
-    id: "go.gh",
-    keys: ["Ctrl+Shift+G"],
-    group: "Go",
-    scope: "Global (any focus, no open dialog)",
-    description: "Open Issues & PRs",
-    source: "App.tsx (gh effect)",
-    combos: [COMBO_GH_OPEN],
   },
   // Tabs.
   {

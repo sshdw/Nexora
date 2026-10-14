@@ -3,7 +3,6 @@ import { useEffect, useState } from "react";
 import type {
   CommandError,
   Conversation,
-  Prompt,
   SearchResults,
 } from "../lib/tauri";
 import { search } from "../lib/tauri";
@@ -17,9 +16,12 @@ export interface SearchBoxProps {
   conversations: Conversation[];
   /** Called with the conversation id when a conversation/message result is chosen. */
   onSelectResult: (conversationId: number) => void;
-  /** Called with the prompt id when a prompt search result is chosen. */
-  onSelectPrompt: (promptId: number) => void;
 }
+
+// Prompt results are deliberately not listed (#219): choosing one opened the
+// Prompt Library, and that panel has no UI access path any more. The backend
+// `search` command still returns prompt hits and `usePrompts` still owns the
+// Prompt Library data — only the row that would have opened it is gone.
 
 // Small settle delay so each keystroke does not fire an FTS query.
 const DEBOUNCE_MS = 250;
@@ -27,7 +29,6 @@ const DEBOUNCE_MS = 250;
 export default function SearchBox({
   conversations,
   onSelectResult,
-  onSelectPrompt,
 }: SearchBoxProps) {
   const { t } = useStrings();
   const [value, setValue] = useState("");
@@ -61,24 +62,17 @@ export default function SearchBox({
     setResults(null);
   };
 
-  const openPrompt = (promptId: number) => {
-    onSelectPrompt(promptId);
-    // Return the sidebar to the organized list after opening a result.
-    setValue("");
-    setResults(null);
-  };
-
   const titleFor = (conversationId: number): string => {
     const match = conversations.find((c) => c.id === conversationId);
     return match ? match.title : tr(getLocale(), "common.conversation");
   };
 
   const showResults = value.trim() !== "";
+  // Prompt hits are part of the backend payload but not of the result list
+  // (#219) — see the note above the component.
   const hasResults =
     results !== null &&
-    (results.conversations.length > 0 ||
-      results.message_matches.length > 0 ||
-      results.prompts.length > 0);
+    (results.conversations.length > 0 || results.message_matches.length > 0);
 
   return (
     <div className="nex-search">
@@ -157,27 +151,6 @@ export default function SearchBox({
                       <span className="nex-search-result-snippet">
                         {message.content}
                       </span>
-                    </button>
-                  ))}
-                </>
-              )}
-              {results.prompts.length > 0 && (
-                <>
-                  <p className="nex-search-group">{t("search.groupPrompts")}</p>
-                  {results.prompts.map((prompt: Prompt) => (
-                    <button
-                      key={`prompt-${prompt.id}`}
-                      type="button"
-                      className="nex-search-result"
-                      onClick={() => openPrompt(prompt.id)}
-                    >
-                      <span className="nex-search-result-title">
-                        {prompt.title}
-                      </span>
-                      <span className="nex-search-result-snippet">
-                        {prompt.content}
-                      </span>
-                      <span className="nex-search-result-meta">{t("search.metaPrompt")}</span>
                     </button>
                   ))}
                 </>

@@ -5,20 +5,14 @@
 //! the equivalent button/sidebar row/shortcut calls (App.tsx), so invoking
 //! from the palette === clicking the UI (no parallel command system, no
 //! duplicated logic). Sources:
-//!   sidebar destinations ... Sidebar.tsx:107-121 (Settings/Library/VCS/
-//!                             Import rail entries) + App.tsx:255-278 openers
-//!   header actions ......... App.tsx:76-101 (Split toggle, Export)
-//!   tab commands ........... useConversationTabs.ts:12-28 shortcut map +
-//!                             ConversationTabs.tsx:174-203 strip actions
+//!   sidebar destinations ... Sidebar.tsx (the Settings / VCS / Tasks rail
+//!                             entries) + App.tsx openers
+//!   header actions ......... App.tsx (Split toggle, Export)
+//!   tab commands ........... useConversationTabs.ts shortcut map +
+//!                             ConversationTabs.tsx strip actions
 //!   VCS actions ............ VersionControlPanel.tsx (tabs: Working tree +
 //!                             Timeline; Refresh, commit composer, push,
 //!                             commit explain)
-//!   activity & health ....... ActivityHealthPanel.tsx (read-only feed +
-//!                             project snapshot; go.activity/go.health deep
-//!                             links raise the panel's tab request)
-//!   terminal ................ TerminalPanel.tsx (workspace command runs;
-//!                             go.terminal opens, focus-input/clear raise the
-//!                             panel's request)
 //!   tasks ................... TaskPanel.tsx (user task lists + the autonomous
 //!                             plan → act → verify → report loop; go.tasks
 //!                             opens)
@@ -27,6 +21,17 @@
 //!   settings sections ...... SettingsView GROUP MAP comment (7 groups)
 //!   help ................... ShortcutsDialog.tsx (show-shortcuts command),
 //!                             OnboardingFlow.tsx (replay-onboarding command)
+//!
+//! Nav trim (#219): the registry no longer holds a command for any hidden
+//! destination — `go.library`, `go.activity`/`go.health`/`go.diagnostics`/
+//! `go.privacy`, `go.audit`, `go.debt`, `go.gh`, `go.docs`, `go.release` and
+//! the whole terminal trio (`go.terminal`, `terminal.focus-input`,
+//! `terminal.clear`) are unregistered, so the palette opens only Settings,
+//! Version Control, Tasks, Conversations and the chat/tab/help actions. The
+//! panels, their i18n keys and their backend commands are untouched: adding
+//! the command back here (with its `PaletteDeps` field) is the whole re-entry.
+//! The `deps` fields for the hidden panels went with them so the registry
+//! cannot wire an opener it never shows.
 //!
 //! NL-tolerance WITHOUT an LLM (explicit scope decision): each command
 //! carries hand-written keyword aliases (including common verbs like
@@ -42,7 +47,6 @@
 //!   "dark" ............. settings.appearance
 //!   "clear" ............ settings.data
 //!   "close tab" ........ tabs.close-active
-//!   "prompt library" ... go.library
 //!   "new conv" ......... chat.new
 //!
 //! MRU decision: in-memory only (module-level Map, session lifetime).
@@ -71,9 +75,6 @@ export type PaletteSettingsSection =
 /** VCS panel requests the palette can raise (handled inside the panel). */
 export type PaletteVcsRequest = "refresh" | "focus-commit";
 
-/** Terminal panel requests the palette can raise (handled inside the panel). */
-export type PaletteTerminalRequest = "clear" | "focus-input";
-
 /** One invokable command: stable id, display title, NL keyword aliases, run. */
 export interface PaletteCommand {
   /** Stable id (also the MRU key). Never renamed once shipped. */
@@ -92,24 +93,9 @@ export interface PaletteCommand {
 export interface PaletteDeps {
   goConversations: () => void;
   openSettings: (section?: PaletteSettingsSection) => void;
-  openLibrary: () => void;
   openVcs: (request?: PaletteVcsRequest) => void;
-  /** Open the workspace Terminal overlay (optional panel request). */
-  openTerminal: (request?: PaletteTerminalRequest) => void;
   /** Open the Tasks overlay (task manager + autonomous mode). */
   openTasks: () => void;
-  /** Open the Code Audit overlay (read-only repo findings). */
-  openAudit: () => void;
-  /** Open the Debt backlog overlay (manual entries + audit imports). */
-  openDebt: () => void;
-  /** Open the Issues & PRs overlay (read-only GitHub lists). */
-  openGh: () => void;
-  /** Open the Docs overlay (in-app product documentation). */
-  openDocs: () => void;
-  /** Open the Release overlay (readiness checklist + issue filing). */
-  openRelease: () => void;
-  /** Open the Activity & Health overlay on the requested tab. */
-  openActivity: (tab: "activity" | "health") => void;
   newConversation: () => void;
   openImport: () => void;
   exportActive: () => void;
@@ -137,7 +123,6 @@ export function buildCommands(deps: PaletteDeps, locale: Locale = "en"): Palette
   const tabs = tr(locale, "palette.sectionTabs");
   const help = tr(locale, "palette.sectionHelp");
   const vcs = tr(locale, "palette.sectionVcs");
-  const terminal = tr(locale, "palette.sectionTerminal");
   const commands: PaletteCommand[] = [
     {
       id: "go.conversations",
@@ -147,13 +132,6 @@ export function buildCommands(deps: PaletteDeps, locale: Locale = "en"): Palette
       run: deps.goConversations,
     },
     {
-      id: "go.library",
-      title: tr(locale, "palette.cmd.go_library"),
-      section: go,
-      keywords: ["prompts", "prompt library", "templates", "saved prompts"],
-      run: deps.openLibrary,
-    },
-    {
       id: "go.vcs",
       title: tr(locale, "palette.cmd.go_vcs"),
       section: go,
@@ -161,81 +139,11 @@ export function buildCommands(deps: PaletteDeps, locale: Locale = "en"): Palette
       run: () => deps.openVcs(),
     },
     {
-      id: "go.terminal",
-      title: tr(locale, "palette.cmd.go_terminal"),
-      section: go,
-      keywords: ["terminal", "console", "shell", "command line", "cli", "run command", "prompt"],
-      run: () => deps.openTerminal(),
-    },
-    {
       id: "go.tasks",
       title: tr(locale, "palette.cmd.go_tasks"),
       section: go,
       keywords: ["tasks", "todo", "autonomous", "plan", "checklist", "agent tasks", "run tasks"],
       run: () => deps.openTasks(),
-    },
-    {
-      id: "go.audit",
-      title: tr(locale, "palette.cmd.go_audit"),
-      section: go,
-      keywords: ["audit", "code audit", "lint", "static analysis", "dead code", "review", "bugs", "quality"],
-      run: () => deps.openAudit(),
-    },
-    {
-      id: "go.debt",
-      title: tr(locale, "palette.cmd.go_debt"),
-      section: go,
-      keywords: ["debt", "tech debt", "backlog", "todo", "fixme", "pay down", "cleanup", "backlog"],
-      run: () => deps.openDebt(),
-    },
-    {
-      id: "go.gh",
-      title: tr(locale, "palette.cmd.go_gh"),
-      section: go,
-      keywords: ["github", "issues", "pull requests", "prs", "bugs", "tickets"],
-      run: () => deps.openGh(),
-    },
-    {
-      id: "go.docs",
-      title: tr(locale, "palette.cmd.go_docs"),
-      section: go,
-      keywords: ["docs", "documentation", "help", "guide", "manual", "migration", "migrate", "how to", "features"],
-      run: () => deps.openDocs(),
-    },
-    {
-      id: "go.release",
-      title: tr(locale, "palette.cmd.go_release"),
-      section: go,
-      keywords: ["release", "readiness", "checklist", "ship", "versions", "migrations", "snapshot", "file issue"],
-      run: () => deps.openRelease(),
-    },
-    {
-      id: "go.activity",
-      title: tr(locale, "palette.cmd.go_activity"),
-      section: go,
-      keywords: ["activity", "feed", "runs", "history", "recent", "agent runs", "timeline"],
-      run: () => deps.openActivity("activity"),
-    },
-    {
-      id: "go.health",
-      title: tr(locale, "palette.cmd.go_health"),
-      section: go,
-      keywords: ["health", "status", "providers", "budget", "spend", "cost", "context", "git", "flags"],
-      run: () => deps.openActivity("health"),
-    },
-    {
-      id: "go.diagnostics",
-      title: tr(locale, "palette.cmd.go_diagnostics"),
-      section: go,
-      keywords: ["diagnostics", "system info", "version", "update", "upgrade", "backup", "snapshot", "crash", "bundle"],
-      run: () => deps.openActivity("health"),
-    },
-    {
-      id: "go.privacy",
-      title: tr(locale, "palette.cmd.go_privacy"),
-      section: go,
-      keywords: ["privacy", "telemetry", "tracking", "usage stats", "export ledger", "wipe", "what leaves", "egress"],
-      run: () => deps.openActivity("health"),
     },
     {
       id: "go.settings",
@@ -424,20 +332,6 @@ export function buildCommands(deps: PaletteDeps, locale: Locale = "en"): Palette
         "check in",
       ],
       run: () => deps.openVcs("focus-commit"),
-    },
-    {
-      id: "terminal.focus-input",
-      title: tr(locale, "palette.cmd.terminal_focus-input"),
-      section: terminal,
-      keywords: ["terminal", "focus", "input", "type", "command line", "shell prompt"],
-      run: () => deps.openTerminal("focus-input"),
-    },
-    {
-      id: "terminal.clear",
-      title: tr(locale, "palette.cmd.terminal_clear"),
-      section: terminal,
-      keywords: ["terminal", "clear", "clean", "wipe", "scrollback", "reset output"],
-      run: () => deps.openTerminal("clear"),
     },
   ];
   // Per-tab jumps mirror Alt+1..Alt+9 (useConversationTabs.ts:21) for the
