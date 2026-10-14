@@ -8,7 +8,6 @@ import type {
 import { search } from "../lib/tauri";
 import { getLocale, tr } from "../lib/strings";
 import { useStrings } from "../lib/useLocale";
-import M3LoadingIndicator from "./M3LoadingIndicator";
 import { SearchIcon } from "./icons";
 
 export interface SearchBoxProps {
@@ -44,8 +43,14 @@ export default function SearchBox({
       setLoading(false);
       return;
     }
+    // Loading-only must never open the panel (#228): the spinner lives
+    // inline in the input. Any results from the previous query are dropped
+    // here too, so the panel cannot linger over the list showing stale hits
+    // for a query that no longer matches — it opens only when the CURRENT
+    // query's results or error actually arrive.
     setLoading(true);
     setError(null);
+    setResults(null);
     const timer = window.setTimeout(() => {
       void search(query)
         .then(setResults)
@@ -67,7 +72,7 @@ export default function SearchBox({
     return match ? match.title : tr(getLocale(), "common.conversation");
   };
 
-  const showResults = value.trim() !== "";
+  const showResults = error !== null || results !== null;
   // Prompt hits are part of the backend payload but not of the result list
   // (#219) — see the note above the component.
   const hasResults =
@@ -83,13 +88,23 @@ export default function SearchBox({
       <input
         id="nex-search-input"
         type="search"
-        className="nex-search-input"
+        className={
+          "nex-search-input" + (loading ? " nex-search-input-loading" : "")
+        }
         placeholder={t("search.placeholder")}
         value={value}
         onChange={(event) => setValue(event.target.value)}
         autoComplete="off"
         spellCheck={false}
       />
+      {loading && (
+        // The wait signal is an inline adornment inside the field, not a
+        // floating status over the list (#228). role="status" carries the
+        // text so reduced motion loses no information.
+        <span className="nex-spinner nex-search-spinner" role="status">
+          <span className="nex-sr-only">{t("search.searching")}</span>
+        </span>
+      )}
       {showResults && (
         // Plain labelled group of actionable buttons. The previous
         // role="listbox" was an ARIA misuse: its children are buttons,
@@ -99,15 +114,12 @@ export default function SearchBox({
           role="group"
           aria-label={t("search.resultsAria")}
         >
-          {loading && (
-            <M3LoadingIndicator size="sm" label={t("search.searching")} />
-          )}
           {error && (
             <p className="nex-search-status nex-fade-in" role="alert">
               {error.message}
             </p>
           )}
-          {!loading && !error && results && (
+          {!error && results && (
             <>
               {!hasResults && (
                 <div className="nex-search-empty nex-fade-in">
