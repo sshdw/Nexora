@@ -642,6 +642,33 @@
    inside labelled groups.
    ============================================================ */
 
+/* Inline wait adornment (#228). While the debounced FTS query is in
+   flight the spinner sits INSIDE the field — a trailing counterpart to
+   the leading search glyph — so a loading-only state never floats a
+   panel over the history. It reuses the shared .nex-spinner ring
+   (components.css); vertical centering uses top/bottom + auto margins,
+   NOT transform, so the ring's own rotate animation is free to run.
+   Reduced motion freezes it on a static frame; the sr-only label
+   carries the text. */
+.nex-search-spinner {
+  position: absolute;
+  right: var(--nex-sys-space-sm);
+  top: 0;
+  bottom: 0;
+  margin-block: auto;
+  color: var(--nex-sys-color-on-surface-tertiary);
+  pointer-events: none;
+}
+
+/* Reserve room for the trailing adornment while it is present so a long
+   query never runs under the spinner — mirrors the field's leading
+   inset (space-sm offset + the 16px glyph + space-xs gap). */
+.nex-search-input-loading {
+  padding-right: calc(
+    var(--nex-sys-space-sm) + var(--nex-sys-space-md) + var(--nex-sys-space-xs)
+  );
+}
+
 .nex-search-results {
   position: absolute;
   top: calc(100% + var(--nex-sys-space-xxs));
