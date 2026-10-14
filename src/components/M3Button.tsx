@@ -1,21 +1,38 @@
-//! M3E common button (library primitive).
+//! Common button (library primitive) — #230 Phase 0.
 //!
-//! OFFICIAL common-button grammar (skill components.md "Buttons"): label-large
-//! 14/500, emphasized weight for the primary only, one primary per region,
-//! press = 12% state layer (+ optional fast-spatial micro-morph on the
-//! whitelisted send/create/confirm moments). Rests on the shared .nex-btn*
-//! system in components.css — this module owns variant mapping, the loading
-//! state (spinner + label, control disabled, aria-busy) and keyboard parity
-//! (native <button>: Enter/Space). Reduced motion: transitions collapse via
-//! the motion.css gate; the loading spinner freezes into a static ring while
-//! the visible label keeps the information.
+//! The canonical button, now a thin adapter over the vendored
+//! `ui/button` (NEXORA-DESIGN-SYSTEM.md §3: "Button (`M3Button` →
+//! migrate to `ui/button`)"): this module owns only the Nexora
+//! variant vocabulary, the loading state and the block/filled
+//! modifiers, while `ui/button` owns the paint — every colour
+//! resolves to a shadcn token in src/index.css, so the button is on
+//! the black theme with no `--nex-sys-*` reference of its own.
+//!
+//! Variant mapping (contract button canon):
+//!   primary     → `default`   (the one accent fill, one per region)
+//!   secondary   → `secondary` (neutral tonal container action)
+//!   quiet       → `ghost`     (text-only action)
+//!   destructive → `destructive` (tinted at rest; `filled` intensifies
+//!                 it to the solid error fill at the confirm step only —
+//!                 NEXORA ADAPTATION: destructive never idles filled)
+//!
+//! `expressive` is retained for API compatibility: the press
+//! feedback it used to add is now the base button's own active
+//! translate, so no extra class is emitted and no caller changes.
+//!
+//! Loading disables the control, sets `aria-busy` and shows the
+//! inline spinner beside the label — the label keeps the
+//! information under reduced motion, when the spin freezes.
 
 import type { ButtonHTMLAttributes, ReactNode } from "react";
 
-/** Variant mapping (contract button canon, [player]/[doc-cards]):
- * primary = filled action (one per region) · secondary = tonal container
- * action · quiet = text-only action · destructive = error-toned action
- * (text at rest; filled only at the confirm step via `filled`). */
+import { Button } from "./ui/button";
+import { Spinner } from "./ui/spinner";
+
+/** Variant mapping (contract button canon): primary = filled action
+ * (one per region) · secondary = tonal container action · quiet =
+ * text-only action · destructive = error-toned action (text at rest;
+ * filled only at the confirm step via `filled`). */
 export type M3ButtonVariant =
   | "primary"
   | "secondary"
@@ -27,26 +44,24 @@ export interface M3ButtonProps
   variant?: M3ButtonVariant;
   size?: "md" | "sm";
   /** Busy work in flight: disables the control, announces aria-busy and
-   * shows the inline spinner beside the label (skill components.md §1
-   * loading row). Reduced motion: static ring + label text. */
+   * shows the inline spinner beside the label. Reduced motion: the spin
+   * freezes and the label text carries the state. */
   loading?: boolean;
-  /** Press micro-morph (scale + radius easing on the OFFICIAL
-   * expressive-fast-spatial pair). Reserved for send/create/confirm
-   * moments only — never for quiet/reading-surface actions. */
+  /** Retained for API compatibility (see the module note). */
   expressive?: boolean;
   /** Full-width block layout (e.g. the sidebar creation action). */
   block?: boolean;
-  /** Intensified confirm step for destructive actions (filled error fill).
-   * NEXORA ADAPTATION: destructive intensifies only at confirm, never idle. */
+  /** Intensified confirm step for destructive actions (solid error
+   * fill). NEXORA ADAPTATION: destructive intensifies only at confirm. */
   filled?: boolean;
   children: ReactNode;
 }
 
-const VARIANT_CLASS: Record<M3ButtonVariant, string> = {
-  primary: "nex-btn-primary",
-  secondary: "nex-btn-tonal",
-  quiet: "nex-btn-ghost",
-  destructive: "nex-btn-danger",
+const VARIANT: Record<M3ButtonVariant, "default" | "secondary" | "ghost" | "destructive"> = {
+  primary: "default",
+  secondary: "secondary",
+  quiet: "ghost",
+  destructive: "destructive",
 };
 
 export default function M3Button({
@@ -63,33 +78,37 @@ export default function M3Button({
   ...rest
 }: M3ButtonProps) {
   const busy = disabled || loading;
+  // `expressive` is accepted for API compatibility and deliberately has
+  // no effect: the press feedback it used to add is now the base
+  // button's own active translate. Referenced here so the linter does
+  // not flag the destructured prop, and never forwarded to the DOM.
+  void expressive;
   if (import.meta.env.DEV && filled && variant !== "destructive") {
     console.warn(
       `[M3Button] "filled" is ignored for variant "${variant}" (only "destructive" supports it).`,
     );
   }
   const classes = [
-    "nex-btn",
+    block ? "w-full" : "",
     filled && variant === "destructive"
-      ? "nex-btn-danger-filled"
-      : VARIANT_CLASS[variant],
-    size === "sm" ? "nex-btn-sm" : "",
-    expressive ? "nex-btn-expressive" : "",
-    block ? "nex-m3-btn-block" : "",
+      ? "bg-destructive text-destructive-foreground hover:bg-destructive/90"
+      : "",
     className,
   ]
     .filter(Boolean)
     .join(" ");
   return (
-    <button
+    <Button
       type={type}
+      variant={VARIANT[variant]}
+      size={size === "sm" ? "sm" : "default"}
       className={classes}
       disabled={busy}
       aria-busy={loading || undefined}
       {...rest}
     >
-      {loading && <span className="nex-spinner" aria-hidden="true" />}
+      {loading && <Spinner data-icon="inline-start" aria-hidden="true" />}
       {children}
-    </button>
+    </Button>
   );
 }

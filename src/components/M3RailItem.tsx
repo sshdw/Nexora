@@ -1,14 +1,20 @@
-//! M3E navigation-rail item (library primitive — the sidebar pattern).
+//! Navigation-rail item (library primitive — the sidebar row) — #230 Phase 0.
 //!
-//! OFFICIAL rail grammar as Nexora's sidebar embodies it (skill
-//! components.md "Navigation rail", contract §Shell): expanded-rail variant,
-//! active = pill + tone step + emphasized label, filled icon when active vs
-//! outlined at rest (OFFICIAL a11y guidance — shape + tone, never color
-//! alone). The active background settles on the default-speed spring curve;
-//! reduced motion resolves to an instant tone swap via the motion.css gate.
-//! Destinations announce with aria-current; native <button> keyboard parity.
+//! The rail grammar as Nexora's sidebar embodies it: one full-width
+//! row with an optional leading icon and a label. Active = a thin
+//! accent indicator at the leading edge plus a surface tone step —
+//! never an accent fill (MAP row 1: "Active row = thin indicator +
+//! surface shift, never amber fill"). `aria-current` announces the
+//! destination; native `<button>` keeps Enter/Space parity.
+//!
+//! Painted from shadcn tokens (`--accent`/`--muted`/`--foreground`/
+//! `--muted-foreground`/`--primary`), never a `--nex-sys-*` value.
+//! The tone/colour fades are CSS transitions the global
+//! reduced-motion gate collapses.
 
 import type { ButtonHTMLAttributes, ReactNode } from "react";
+
+import { cn } from "../lib/utils";
 
 export interface M3RailItemProps
   extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, "children"> {
@@ -18,7 +24,7 @@ export interface M3RailItemProps
   icon?: ReactNode;
   /** Filled variant shown while active (falls back to `icon`). */
   activeIcon?: ReactNode;
-  /** Selected destination: pill tone + emphasized label + aria-current. */
+  /** Selected destination: tone step + thin accent indicator + aria-current. */
   active?: boolean;
   children?: ReactNode;
 }
@@ -37,22 +43,31 @@ export default function M3RailItem({
   return (
     <button
       type={type}
-      className={
-        "nex-m3-rail-item" +
-        (active ? " is-active" : "") +
-        (className ? " " + className : "")
-      }
+      className={cn(
+        "relative flex h-8 w-full items-center gap-2 rounded-md px-2 text-sm transition-colors outline-none",
+        "focus-visible:ring-3 focus-visible:ring-ring/50",
+        active
+          ? "bg-accent font-medium text-foreground"
+          : "text-muted-foreground hover:bg-muted hover:text-foreground",
+        className,
+      )}
       aria-label={label}
       aria-current={active ? "page" : undefined}
       title={label}
       {...rest}
     >
+      {active ? (
+        <span
+          className="absolute top-1/2 left-0 h-4 w-0.5 -translate-y-1/2 rounded-full bg-primary"
+          aria-hidden="true"
+        />
+      ) : null}
       {iconNode ? (
-        <span className="nex-m3-rail-icon" aria-hidden="true">
+        <span className="inline-flex shrink-0" aria-hidden="true">
           {iconNode}
         </span>
       ) : null}
-      <span className="nex-m3-rail-label">{children ?? label}</span>
+      <span className="truncate">{children ?? label}</span>
     </button>
   );
 }

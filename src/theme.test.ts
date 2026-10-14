@@ -27,13 +27,23 @@ const mainTsx = readRepoFile("src/main.tsx");
 const cssCode = css.replace(/\/\*[\s\S]*?\*\//g, "");
 
 /**
- * The stack's copied components — the two files whose classes route
+ * The stack's copied components — the files whose classes route
  * through the black theme's vars. Every one of them has a lineage
  * header in-file; there is no copied source without one.
+ *
+ * #230 Phase 0 adds the four text-field/spinner primitives the
+ * rebuild was missing (ui/input, ui/textarea, ui/native-select,
+ * ui/spinner). They are registered here so their colour utilities
+ * are gated exactly like button.tsx's: a utility whose target var
+ * is undefined renders transparent and nothing else warns.
  */
 const componentSources: Record<string, string> = {
   button: readRepoFile("src/components/ui/button.tsx"),
   textType: readRepoFile("src/components/TextType.tsx"),
+  input: readRepoFile("src/components/ui/input.tsx"),
+  textarea: readRepoFile("src/components/ui/textarea.tsx"),
+  nativeSelect: readRepoFile("src/components/ui/native-select.tsx"),
+  spinner: readRepoFile("src/components/ui/spinner.tsx"),
 };
 
 /**
@@ -365,14 +375,21 @@ describe("black theme — variable coverage", () => {
     expect([...new Set(missing)].sort()).toEqual([]);
   });
 
-  it("extracts the class tokens it claims to, from BOTH copied components", () => {
+  it("extracts the class tokens it claims to, from every copied component", () => {
     // The anti-vacuity pin, and the reason the gate below is a gate at
     // all. `unresolved` can only ever be non-empty if this extractor
     // returns something — and the version it replaced returned NOTHING
     // for button.tsx while looking like it worked, so every assertion
     // downstream passed on an empty set. Mutation-checked: restoring
     // `/(["'`])([^"'`]*)\1/` fails HERE and leaves the gate below green.
-    expect(Object.keys(componentSources).sort()).toEqual(["button", "textType"]);
+    expect(Object.keys(componentSources).sort()).toEqual([
+      "button",
+      "input",
+      "nativeSelect",
+      "spinner",
+      "textType",
+      "textarea",
+    ]);
 
     const button = colourUtilities(componentSources.button);
     // The headline case: `bg-primary` is the class the whole black
@@ -599,7 +616,7 @@ describe("black theme — direction", () => {
 
   it("keeps every surface barely lighter than the canvas", () => {
     const canvas = blackThemeVar("--background").l;
-    const steps = ["--card", "--popover", "--sidebar", "--muted", "--accent"].map((name) => ({
+    const steps = ["--card", "--popover", "--muted", "--accent"].map((name) => ({
       name,
       l: blackThemeVar(name).l,
     }));
@@ -650,14 +667,14 @@ describe("black theme — direction", () => {
     expect(mutedForeground.l).toBeLessThan(foreground.l);
     // Muted text is the first thing this theme dims, but never
     // past AA on any surface it lands on.
-    for (const surface of ["--background", "--card", "--popover", "--muted", "--sidebar"]) {
+    for (const surface of ["--background", "--card", "--popover", "--muted"]) {
       expect(contrastRatio(mutedForeground, blackThemeVar(surface))).toBeGreaterThanOrEqual(4.5);
     }
   });
 
   it("carries a legible primary text ladder", () => {
     const foreground = blackThemeVar("--foreground");
-    for (const surface of ["--background", "--card", "--popover", "--muted", "--sidebar"]) {
+    for (const surface of ["--background", "--card", "--popover", "--muted"]) {
       expect(contrastRatio(foreground, blackThemeVar(surface))).toBeGreaterThanOrEqual(4.5);
     }
   });

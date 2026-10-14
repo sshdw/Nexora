@@ -1,21 +1,22 @@
-//! M3E segmented button group (library primitive).
+//! Segmented button group (library primitive) — #230 Phase 0.
 //!
-//! OFFICIAL button-group grammar ([doc-cards] Day/Week/Month, [comp-grid]
-//! Going triplet; skill components.md "Segmented controls"): 2–5 persistent
-//! choices, single-select, selected segment carries the container tone +
-//! emphasized label. Standard variant: pill container, pill segments.
-//! Connected variant: flush inner edges with asymmetric inner corners
-//! (contract §Shape, [doc-cards]). Selection settles with the
-//! default-speed spring curve; reduced motion resolves to an instant
-//! tone/weight swap via the motion.css gate.
+//! 2–5 persistent choices, single-select, on the black theme's tokens
+//! (`--muted` container, `--accent` hover, `--background` selected
+//! segment, `--foreground`/`--muted-foreground` text). No `--nex-sys-*`
+//! value remains. The standard variant is a quiet tonal container with
+//! quiet segments; the connected variant is flush with a shared
+//! hairline. Selection settles by tone/weight, no motion.
 //!
 //! Semantics: `radio` (default — preference/choice groups, radiogroup +
-//! aria-checked) or `tabs` (view switchers that show/hide panels, preserving
-//! the existing tablist/tab pattern). Arrow keys move and select (automatic
-//! activation), Home/End jump to the ends.
+//! aria-checked) or `tabs` (view switchers, preserving the tablist/tab
+//! pattern). Arrow keys move and select (automatic activation),
+//! Home/End jump to the ends. All behaviour is unchanged from the M3E
+//! original — only the paint moved.
 
 import { useRef } from "react";
 import type { ReactNode } from "react";
+
+import { cn } from "../lib/utils";
 
 export interface M3SegmentOption<T extends string> {
   value: T;
@@ -41,9 +42,8 @@ export interface M3SegmentedGroupProps<T extends string> {
   semantics?: "radio" | "tabs";
   disabled?: boolean;
   /** Extra class on the group container (#220). Appended, never
-   * replacing `nex-seg`, so a caller that re-paints the group —
-   * the composer does, on the black theme — leaves every other
-   * surface's geometry untouched. */
+   * replacing the base classes, so a caller that re-paints the group
+   * leaves every other surface's geometry untouched. */
   className?: string;
 }
 
@@ -60,6 +60,7 @@ export default function M3SegmentedGroup<T extends string>({
 }: M3SegmentedGroupProps<T>) {
   const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const isTabs = semantics === "tabs";
+  const isConnected = variant === "connected";
   const isOptionDisabled = (index: number) =>
     disabled || options[index]?.disabled === true;
   // Roving tabindex anchor: the selected option, or — when nothing is
@@ -117,11 +118,13 @@ export default function M3SegmentedGroup<T extends string>({
 
   return (
     <div
-      className={
-        "nex-seg" +
-        (variant === "connected" ? " nex-seg-connected" : "") +
-        (className ? " " + className : "")
-      }
+      className={cn(
+        "inline-flex self-start items-center",
+        isConnected
+          ? "overflow-hidden rounded-lg border border-border"
+          : "gap-0.5 rounded-lg bg-muted p-0.5",
+        className,
+      )}
       role={isTabs ? "tablist" : "radiogroup"}
       aria-label={label}
       aria-labelledby={labelledBy}
@@ -140,7 +143,17 @@ export default function M3SegmentedGroup<T extends string>({
             aria-selected={isTabs ? selected : undefined}
             aria-checked={!isTabs ? selected : undefined}
             aria-label={option.ariaLabel}
-            className={selected ? "is-active" : undefined}
+            className={cn(
+              "inline-flex items-center gap-1.5 text-sm whitespace-nowrap transition-colors outline-none",
+              "focus-visible:ring-3 focus-visible:ring-ring/50",
+              "disabled:pointer-events-none disabled:opacity-50",
+              isConnected
+                ? "h-8 border-r border-border px-3 last:border-r-0"
+                : "h-7 rounded-sm px-2.5",
+              selected
+                ? "bg-background font-medium text-foreground"
+                : "text-muted-foreground hover:bg-accent hover:text-foreground",
+            )}
             tabIndex={
               selected || (value === null && index === firstEnabledIndex)
                 ? undefined

@@ -151,32 +151,19 @@
    each target resolves in BOTH themes, which is what makes the
    mapping trustworthy.
 
-   Sidebar + chart tokens are carried by shadcn's preset and
-   are defined below alongside the rest, even though the
-   Nexora shell has no sidebar-slot API yet. They cost eight
-   lines now and save a silent gap when the slot components
-   arrive.
+   #230 Phase 0 prunes the dead half of the mapping: the
+   `--chart-*` ramp, the `--sidebar*` slots and `--font-heading`
+   had zero `var()` references anywhere in the tree (the shell's
+   rail is `.nex-sidebar`, not shadcn's sidebar-slot API, and no
+   surface draws a chart), so they are removed here and in both
+   theme blocks rather than carried as a second source of truth.
    ---------------------------------------------------------- */
 @theme inline {
     /* The stack's font family is the system stack the merged
        tokens already declare. Naming shadcn's preset face here
        would point at a family nothing loads (and silently
        re-letter every merged surface through `font-sans`). */
-    --font-heading: var(--font-sans);
     --font-sans: var(--nex-sys-type-family);
-    --color-sidebar-ring: var(--sidebar-ring);
-    --color-sidebar-border: var(--sidebar-border);
-    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
-    --color-sidebar-accent: var(--sidebar-accent);
-    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
-    --color-sidebar-primary: var(--sidebar-primary);
-    --color-sidebar-foreground: var(--sidebar-foreground);
-    --color-sidebar: var(--sidebar);
-    --color-chart-5: var(--chart-5);
-    --color-chart-4: var(--chart-4);
-    --color-chart-3: var(--chart-3);
-    --color-chart-2: var(--chart-2);
-    --color-chart-1: var(--chart-1);
     --color-ring: var(--ring);
     --color-input: var(--input);
     --color-border: var(--border);
@@ -214,8 +201,8 @@
                 surface and not as a dead pixel field
      surfaces   barely lighter than the canvas — separation is
                 carried by HAIRLINE BORDERS and by tone steps,
-                never by fills. The chrome steps (card, popover,
-                sidebar) sit 0.02–0.03 oklch above the canvas; the
+                never by fills. The chrome steps (card, popover)
+                sit 0.02–0.03 oklch above the canvas; the
                 nested and hover surfaces (muted, accent) sit
                 ~0.10 above it and stay under 0.13 — which is why
                 nothing in this theme leans on a shadow for rest
@@ -241,11 +228,33 @@
    the `data-theme` attribute on the root element (tokens.css
    "THEME MECHANISM"), not a `.dark` class the app never sets.
 
+   ---- TOKEN AUTHORITY (#230 Phase 0) ----
+
+   `NEXORA-DESIGN-SYSTEM.md` §2 makes this file the contract: the
+   vars below are the ONLY theme, and where a legacy `--nex-sys-*`
+   twin still exists it LOSES. Recorded verdicts, applied as each
+   surface migrates (never both systems on one surface):
+
+     shadcn `--primary`   beats `--nex-sys-color-primary`
+     shadcn `--ring`      beats the legacy focus-ring colour
+     shadcn `--destructive` beats `--nex-sys-color-error*`
+     shadcn `--border`    beats `--nex-sys-color-outline*`
+     shadcn `--foreground` + `--muted-foreground` beat the legacy
+       on-surface / on-surface-variant text pair
+
+   Shape is this file's `--radius` (the shape.small step, 8px);
+   the canonical `--nex-sys-motion-*` names win over the legacy
+   `--motion-*` aliases (call sites migrate with their surface);
+   elevation/z tokens win over Tailwind literals. The legacy
+   `--nex-sys-*` names themselves are pruned with `tokens.css` in
+   Phase 6, not here — this phase only removes the dead shadcn
+   tokens above.
+
    Contrast (WCAG AA, measured by src/theme.test.ts through the
    sRGB conversion of these oklch values; alpha composited in
    sRGB space, as the browser does):
      foreground / background     17.88     foreground / card   17.14
-     foreground / muted          14.86     foreground / sidebar 17.41
+     foreground / muted          14.86
      muted-foreground / background  5.88
      muted-foreground / card        5.64
      muted-foreground / muted       4.89    (the tightest text pair)
@@ -308,23 +317,6 @@
        use after an action fill. */
     --ring: oklch(0.72 0.12 232);
 
-    /* Chart ramp: one cold accent, then neutral steps. No
-       rainbow categorical palette in a monochrome shell. */
-    --chart-1: oklch(0.72 0.12 232);
-    --chart-2: oklch(0.62 0.01 264);
-    --chart-3: oklch(0.52 0.01 264);
-    --chart-4: oklch(0.42 0.01 264);
-    --chart-5: oklch(0.34 0.01 264);
-
-    --sidebar: oklch(0.165 0.004 264);
-    --sidebar-foreground: oklch(0.965 0.003 264);
-    --sidebar-primary: oklch(0.72 0.12 232);
-    --sidebar-primary-foreground: oklch(0.145 0.004 264);
-    --sidebar-accent: oklch(0.24 0.004 264);
-    --sidebar-accent-foreground: oklch(0.965 0.003 264);
-    --sidebar-border: oklch(1 0 0 / 10%);
-    --sidebar-ring: oklch(0.72 0.12 232);
-
     /* One shape scale. `--radius` is the step shadcn's
        `rounded-md` utilities resolve from, and it is set to the
        control step of the Nexora scale (8px, shape.small):
@@ -373,21 +365,6 @@
     --border: oklch(0.18 0.004 264 / 14%);
     --input: oklch(0.18 0.004 264 / 18%);
     --ring: oklch(0.52 0.13 232);
-
-    --chart-1: oklch(0.52 0.13 232);
-    --chart-2: oklch(0.58 0.01 264);
-    --chart-3: oklch(0.66 0.01 264);
-    --chart-4: oklch(0.74 0.01 264);
-    --chart-5: oklch(0.82 0.01 264);
-
-    --sidebar: oklch(0.97 0.002 264);
-    --sidebar-foreground: oklch(0.18 0.004 264);
-    --sidebar-primary: oklch(0.52 0.13 232);
-    --sidebar-primary-foreground: oklch(0.99 0.002 264);
-    --sidebar-accent: oklch(0.93 0.003 264);
-    --sidebar-accent-foreground: oklch(0.18 0.004 264);
-    --sidebar-border: oklch(0.18 0.004 264 / 14%);
-    --sidebar-ring: oklch(0.52 0.13 232);
 }
 
 /* ----------------------------------------------------------
