@@ -141,7 +141,7 @@ jobs:
 
       - name: Resolve pinned toolchain (rust-toolchain.toml)
         run: |
-          rustup component add clippy
+          rustup component add clippy rustfmt
           rustc --version
           cargo clippy --version
 
