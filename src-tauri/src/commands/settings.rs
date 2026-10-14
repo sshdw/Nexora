@@ -22,270 +22,148 @@
 
 use tauri::State;
 
-use crate::application::import::{McpServerList, MCP_SERVERS_KEY};
-use crate::application::routing::{
-    is_valid_custom_model_id, RoutingProfile, AGENT_PROFILE_KEY, CHAT_PROFILE_KEY,
-};
 use crate::application::settings::SettingsService;
-use crate::application::workspace::{
-    parse_recent, parse_registry, WORKSPACE_RECENT_KEY, WORKSPACE_RECENT_MAX, WORKSPACE_ROOTS_KEY,
-    WORKSPACE_ROOT_KEY, WORKSPACE_ROOT_MAX_LEN,
-};
 use crate::infrastructure::database::Database;
-use crate::infrastructure::providers::supported_providers;
 
 use super::error::{CommandError, ErrorKind};
 
-/// The appearance theme key persisted by the Settings view (Phase 10.8).
-pub(crate) const THEME_KEY: &str = "appearance.theme";
+// ---------------------------------------------------------------------------
+// Shared validation spine (issue #160, brief §2.3/§2.4)
+// ---------------------------------------------------------------------------
+//
+// The allowlist, the registry-free value domains, and the exact rejection
+// messages moved to the Tauri-free `nexora-core` crate so the CLI accepts,
+// rejects, and *words* a setting identically (brief §3.1: one system, two
+// interfaces). The build-dependent domains — which providers/models exist,
+// whether a routing profile or MCP server list parses, which flags are
+// registered — stayed here, and are injected as predicates. What moved is the
+// rule; what stays is the business knowledge it is applied to.
+//
+// Every key *name* now has exactly one definition, in `nexora_core::config`.
+// The application modules that own a key (`import`, `routing`, `workspace`,
+// `agent::service`) re-export it; this module no longer defines or re-exports
+// any of them, because the gate below matches on the shared table rather than
+// on a local `match`.
 
-/// The selected-provider key persisted by the provider/model hook (FR-004).
-pub(crate) const SELECTED_PROVIDER_KEY: &str = "provider.selected";
+/// The application-owned halves of [`nexora_core::config::ConfigRegistry`].
+///
+/// Each closure delegates to the single existing source of truth, so the
+/// command gate and the service/import paths cannot drift:
+///
+/// - [`SELECTED_PROVIDER_KEY`] accepts only names returned by the build's
+///   `supported_providers()` registry.
+/// - [`SELECTED_MODEL_KEY`] accepts a model listed for a supported provider
+///   (union across providers; the writer orders model before provider when
+///   switching, so per-provider coupling is not assumed) or a custom model ID.
+/// - `agent.spend_limit_micro_usd` / `agent.approval_timeout_secs` accept
+///   exactly the domains `resolve_spend_limit` / `resolve_approval_timeout`
+///   resolve.
+/// - [`CHAT_PROFILE_KEY`] / [`AGENT_PROFILE_KEY`] funnel through
+///   `RoutingProfile::from_json`, the single shared validity definition.
+/// - [`WORKSPACE_RECENT_KEY`] / [`WORKSPACE_ROOTS_KEY`] must additionally
+///   round-trip through the tolerant `parse_recent` / `parse_registry`: a
+///   truncation or corrupt-input mismatch means the value is out of domain.
+/// - [`MCP_SERVERS_KEY`] funnels through `McpServerList::from_json`, shared
+///   with the setup import. Its rejection is value-free, because MCP
+///   environment values may carry secrets.
+fn desktop_config_registry() -> nexora_core::config::ConfigRegistry<'static> {
+    use nexora_core::config::ConfigRegistry;
 
-/// The selected-model key persisted by the provider/model hook (FR-004).
-pub(crate) const SELECTED_MODEL_KEY: &str = "provider.model";
-
-/// Autonomy mode persisted for agent runs (Task 5.2, DP-AUTONOMY).
-pub(crate) const AUTONOMY_KEY: &str = "agent.autonomy";
-
-/// Theme values defined by the current implementation (no others exist).
-const VALID_THEMES: &[&str] = &["dark", "light"];
-
-/// Valid autonomy modes for [`AUTONOMY_KEY`] (Task 5.2).
-const VALID_AUTONOMY: &[&str] = &["supervised", "semi_autonomous", "full_autonomous"];
+    ConfigRegistry {
+        is_provider: &|name| {
+            crate::infrastructure::providers::supported_providers()
+                .iter()
+                .any(|p| p.name == name)
+        },
+        is_listed_model: &|model| {
+            crate::infrastructure::providers::supported_providers()
+                .iter()
+                .any(|p| p.models.iter().any(|m| m == model))
+        },
+        is_custom_model_id: &|model| crate::application::routing::is_valid_custom_model_id(model),
+        is_routing_profile: &|raw| {
+            crate::application::routing::RoutingProfile::from_json(raw).is_ok()
+        },
+        is_mcp_server_list: &|raw| {
+            crate::application::import::McpServerList::from_json(raw).is_ok()
+        },
+        is_known_flag: &|name| crate::application::flags::is_known_flag(name),
+    }
+}
 
 /// Validate one setting write against the domains defined by the existing
 /// implementation (FR-012: invalid values are rejected before persistence).
 ///
-/// Rules:
-/// - Only the explicitly supported setting keys may be written: the ten
-///   base keys below, the `mcp.servers` MCP server list, plus the four
-///   `flags.*` feature-flag keys.
+/// Rules (all preserved exactly; see `nexora_core::config::validate_setting`
+/// for the normative description):
+///
+/// - Only the explicitly supported setting keys may be written: the twelve
+///   base keys, plus the `flags.*` feature-flag keys.
 /// - A `None` value (clearing back to the default state) is always valid.
 /// - [`THEME_KEY`] accepts only the implemented themes (`dark`, `light`).
 /// - [`SELECTED_PROVIDER_KEY`] accepts only names returned by the build's
 ///   `supported_providers()` registry (the single source of truth).
 /// - [`SELECTED_MODEL_KEY`] accepts model identifiers listed for a
-///   supported provider (union across providers; the writer orders model
-///   before provider when switching, so per-provider coupling is not assumed)
-///   or a custom model ID (1..=200 chars of `A-Za-z0-9._/:-+`, no `..`).
-/// - [`AUTONOMY_KEY`] accepts only the three autonomy modes
-///   (`supervised`, `semi_autonomous`, `full_autonomous`).
-/// - `agent.spend_limit_micro_usd` accepts a trimmed `u64` greater than zero
-///   — exactly the domain `resolve_spend_limit`
-///   (`application/agent/service.rs`) resolves, so the command gate and the
-///   service agree exactly.
+///   supported provider (union across providers) or a custom model ID
+///   (1..=200 chars of `A-Za-z0-9._/:-+`, no `..`).
+/// - [`AUTONOMY_KEY`] accepts only the three autonomy modes.
+/// - `agent.spend_limit_micro_usd` accepts a trimmed `u64` greater than zero.
 /// - `agent.approval_timeout_secs` accepts a trimmed `u64` within
-///   `MIN_APPROVAL_TIMEOUT_SECS..=MAX_APPROVAL_TIMEOUT_SECS` — exactly the
-///   domain `resolve_approval_timeout` (`application/agent/service.rs`)
-///   resolves, so the command gate and the service agree exactly.
+///   `MIN_APPROVAL_TIMEOUT_SECS..=MAX_APPROVAL_TIMEOUT_SECS`.
 /// - [`CHAT_PROFILE_KEY`] / [`AGENT_PROFILE_KEY`] accept a JSON array of
-///   1..=16 `{provider, model}` entries where each provider is a supported
-///   provider name and each model is listed for that provider or a valid
-///   custom model ID (same charset rule as [`SELECTED_MODEL_KEY`]).
-///   Resolution-time `recommended_models` gating still applies at use; the
-///   stored profile only records explicit user order.
+///   1..=16 `{provider, model}` entries. Resolution-time `recommended_models`
+///   gating still applies at use; the stored profile only records explicit
+///   user order.
 /// - `flags.*` feature-flag keys accept only `true` / `false`
-///   (case-insensitive, surrounding whitespace trimmed) — the same
-///   [`parse_global_bool`](crate::application::flags::parse_global_bool)
-///   domain the flag service resolves, so the command gate and the service
-///   agree exactly. Clearing a flag key restores its hardcoded default.
+///   (case-insensitive, trimmed).
 /// - [`WORKSPACE_ROOT_KEY`] accepts a non-empty path up to 1024 chars with no
 ///   null byte. Full filesystem guard (existence, `C:\Windows`, drive roots,
-///   canonicalization) lives in the workspace commands
-///   (`commands/workspace.rs::set_workspace_root` via
-///   `application/workspace.rs::validate_workspace_root`); this syntactic
-///   check only keeps obvious junk out of the generic key/value path.
-/// - [`WORKSPACE_RECENT_KEY`] accepts a JSON array of at most 5 non-empty
-///   strings, each up to 1024 chars.
-/// - [`WORKSPACE_ROOTS_KEY`] accepts a JSON array of non-empty strings, each
-///   up to 1024 chars, with NO length cap — the registry must never evict.
-/// - [`MCP_SERVERS_KEY`] accepts a JSON array of MCP server entries
-///   (`{name, command, args, env}`) that passes
-///   [`McpServerList::from_json`] — the single source shared with the setup
-///   import, so both paths agree. Rejection is value-free (unlike
-///   [`rejected`]): MCP environment values may carry secrets, so the
-///   offending value must never be echoed into the error message.
+///   canonicalization) lives in the workspace commands.
+/// - [`WORKSPACE_RECENT_KEY`] accepts at most 5 non-empty strings, each up to
+///   1024 chars; [`WORKSPACE_ROOTS_KEY`] the same with NO length cap.
+/// - [`MCP_SERVERS_KEY`] accepts a JSON array of MCP server entries that
+///   passes `McpServerList::from_json`. Rejection is value-free.
 ///
 /// No credential, payload, or path value can appear here beyond the workspace
 /// root strings and non-secret MCP environment material: only the supported
 /// keys above reach persistence, and secret-like values are rejected before
-/// persistence (the MCP arm denies them with a value-free error).
+/// persistence.
 fn validate_setting(key: &str, value: Option<&str>) -> Result<(), CommandError> {
-    // Clearing a setting restores its default state; never an invalid value.
-    let Some(value) = value else {
-        return Ok(());
-    };
-    match key {
-        THEME_KEY => {
-            if VALID_THEMES.contains(&value) {
-                Ok(())
-            } else {
-                Err(rejected(key, value))
+    // The tolerant workspace parsers are the one place where the desktop's
+    // rule is stricter than the shared syntactic check: a value that parses
+    // but does not round-trip is corrupt and must not be stored. They are
+    // folded in as an extra guard on top of the shared gate so the ordering of
+    // the shared checks (clear -> secret-adjacent -> allowlist -> domain)
+    // stays exactly as documented.
+    if let Some(raw) = value {
+        let round_trips = match nexora_core::config::classify_key(key) {
+            Some(nexora_core::config::ConfigKey::WorkspaceRecent) => {
+                is_valid_root_list(raw, Some(nexora_core::config::WORKSPACE_RECENT_MAX))
             }
+            Some(nexora_core::config::ConfigKey::WorkspaceRoots) => is_valid_root_list(raw, None),
+            _ => true,
+        };
+        if !round_trips {
+            return Err(CommandError::new(
+                ErrorKind::InvalidInput,
+                format!("value '{raw}' is not a valid '{key}' setting"),
+            ));
         }
-        SELECTED_PROVIDER_KEY => {
-            if supported_providers().iter().any(|p| p.name == value) {
-                Ok(())
-            } else {
-                Err(rejected(key, value))
-            }
-        }
-        SELECTED_MODEL_KEY => {
-            if is_valid_model_value(value) {
-                Ok(())
-            } else {
-                Err(rejected(key, value))
-            }
-        }
-        AUTONOMY_KEY => {
-            if VALID_AUTONOMY.contains(&value) {
-                Ok(())
-            } else {
-                Err(rejected(key, value))
-            }
-        }
-        crate::application::agent::service::SPEND_LIMIT_KEY => {
-            // Mirror `resolve_spend_limit` parsing exactly (see
-            // `is_valid_spend_limit`); clearing (`None`) restores the
-            // no-limit default and stays allowed (handled above).
-            if is_valid_spend_limit(value) {
-                Ok(())
-            } else {
-                Err(rejected(key, value))
-            }
-        }
-        crate::application::agent::service::APPROVAL_TIMEOUT_KEY => {
-            // Mirror `resolve_approval_timeout` parsing exactly (see
-            // `is_valid_approval_timeout`); clearing (`None`) restores the
-            // default deadline (handled above).
-            if is_valid_approval_timeout(value) {
-                Ok(())
-            } else {
-                Err(rejected(key, value))
-            }
-        }
-        WORKSPACE_ROOT_KEY => {
-            if is_valid_workspace_root(value) {
-                Ok(())
-            } else {
-                Err(rejected(key, value))
-            }
-        }
-        WORKSPACE_RECENT_KEY => {
-            // `parse_recent` truncates to the max; a round-trip mismatch means
-            // the stored value was corrupt or overfull.
-            if is_valid_root_list(value, Some(WORKSPACE_RECENT_MAX)) {
-                Ok(())
-            } else {
-                Err(rejected(key, value))
-            }
-        }
-        WORKSPACE_ROOTS_KEY => {
-            // The registry is unbounded (no eviction): any-length JSON array
-            // of non-empty paths round-tripping through `parse_registry`.
-            if is_valid_root_list(value, None) {
-                Ok(())
-            } else {
-                Err(rejected(key, value))
-            }
-        }
-        CHAT_PROFILE_KEY | AGENT_PROFILE_KEY => {
-            if is_valid_routing_profile(value) {
-                Ok(())
-            } else {
-                Err(rejected(key, value))
-            }
-        }
-        MCP_SERVERS_KEY => {
-            if McpServerList::from_json(value).is_ok() {
-                Ok(())
-            } else {
-                // Value-free rejection (unlike `rejected`): MCP environment
-                // values may carry secrets, so the offending value must never
-                // be echoed into the error message.
-                Err(CommandError::new(
-                    ErrorKind::InvalidInput,
-                    format!("value for '{key}' is not a valid MCP server list"),
-                ))
-            }
-        }
-        _ if crate::application::flags::is_known_flag_setting(key) => {
-            if crate::application::flags::parse_global_bool(value).is_some() {
-                Ok(())
-            } else {
-                Err(rejected(key, value))
-            }
-        }
-        _ => Err(CommandError::new(
-            ErrorKind::InvalidInput,
-            format!("setting key '{key}' is not supported"),
-        )),
     }
+
+    nexora_core::config::validate_setting(&desktop_config_registry(), key, value)
+        .map_err(|rejection| CommandError::new(rejection.kind(), rejection.message()))
 }
 
-/// Domain check for [`SELECTED_MODEL_KEY`]: a model identifier listed for a
-/// supported provider (union across providers; the writer orders model
-/// before provider when switching, so per-provider coupling is not assumed)
-/// or a custom model ID (1..=200 chars of `A-Za-z0-9._/:-+`, no `..`).
-fn is_valid_model_value(value: &str) -> bool {
-    supported_providers()
-        .iter()
-        .any(|p| p.models.iter().any(|m| m == value))
-        || is_valid_custom_model_id(value)
-}
-
-/// Syntactic check for [`WORKSPACE_ROOT_KEY`]: a non-empty path up to 1024
-/// chars with no null byte. Full filesystem guard (existence, `C:\Windows`,
-/// drive roots, canonicalization) lives in the workspace commands
-/// (`commands/workspace.rs::set_workspace_root` via
-/// `application/workspace.rs::validate_workspace_root`); this only keeps
-/// obvious junk out of the generic key/value path.
-fn is_valid_workspace_root(value: &str) -> bool {
-    !value.trim().is_empty() && !value.contains('\0') && value.len() <= WORKSPACE_ROOT_MAX_LEN
-}
-
-/// Domain check for `agent.spend_limit_micro_usd`: a trimmed `u64` greater
-/// than zero — exactly the domain `resolve_spend_limit`
-/// (`application/agent/service.rs`) resolves, so the command gate and the
-/// service agree exactly.
-fn is_valid_spend_limit(value: &str) -> bool {
-    match value.trim().parse::<u64>() {
-        Ok(limit) => limit > 0,
-        Err(_) => false,
-    }
-}
-
-/// Domain check for `agent.approval_timeout_secs`: a trimmed `u64` within
-/// `MIN_APPROVAL_TIMEOUT_SECS..=MAX_APPROVAL_TIMEOUT_SECS` — exactly the
-/// domain `resolve_approval_timeout` (`application/agent/service.rs`)
-/// resolves, so the command gate and the service agree exactly.
-fn is_valid_approval_timeout(value: &str) -> bool {
-    use crate::application::agent::service::{
-        MAX_APPROVAL_TIMEOUT_SECS, MIN_APPROVAL_TIMEOUT_SECS,
-    };
-    match value.trim().parse::<u64>() {
-        Ok(secs) => (MIN_APPROVAL_TIMEOUT_SECS..=MAX_APPROVAL_TIMEOUT_SECS).contains(&secs),
-        Err(_) => false,
-    }
-}
-
-/// Routing profiles accepted for [`CHAT_PROFILE_KEY`] / [`AGENT_PROFILE_KEY`].
-///
-/// No independent logic lives here: validity is decided solely by
-/// [`RoutingProfile::from_json`] (parse plus the single shared validation),
-/// so the command gate and the service load/save paths agree exactly.
-fn is_valid_routing_profile(value: &str) -> bool {
-    RoutingProfile::from_json(value).is_ok()
-}
-
-/// Strict JSON-array-of-paths check shared by the workspace list gate arms:
-/// every entry non-empty and within [`WORKSPACE_ROOT_MAX_LEN`], and the
-/// tolerant parse must preserve every entry (a truncation or corrupt-input
-/// mismatch means the value is out of domain). `Some(max)` enforces a length
-/// cap (the 5-entry picker-history ring); `None` leaves the length unbounded
-/// (the registry never evicts).
+/// Strict JSON-array-of-paths check with the desktop's round-trip guard:
+/// every entry non-empty and within the length bound, and the tolerant parse
+/// must preserve every entry (a truncation or corrupt-input mismatch means the
+/// value is out of domain). `Some(max)` enforces a length cap (the 5-entry
+/// picker-history ring); `None` leaves the length unbounded (the registry
+/// never evicts).
 fn is_valid_root_list(value: &str, cap: Option<usize>) -> bool {
+    use crate::application::workspace::{parse_recent, parse_registry};
+
     let items = match cap {
         Some(_) => parse_recent(Some(value)),
         None => parse_registry(Some(value)),
@@ -297,21 +175,13 @@ fn is_valid_root_list(value: &str, cap: Option<usize>) -> bool {
                 None => true,
             };
             within_cap
-                && list
-                    .iter()
-                    .all(|s| !s.trim().is_empty() && s.len() <= WORKSPACE_ROOT_MAX_LEN)
+                && list.iter().all(|s| {
+                    !s.trim().is_empty() && s.len() <= nexora_core::config::WORKSPACE_ROOT_MAX_LEN
+                })
                 && items.len() == list.len()
         }
         Err(_) => false,
     }
-}
-
-/// Build the uniform secret-free rejection for an out-of-domain value.
-fn rejected(key: &str, value: &str) -> CommandError {
-    CommandError::new(
-        ErrorKind::InvalidInput,
-        format!("value '{value}' is not a valid '{key}' setting"),
-    )
 }
 
 /// Read one setting by `key` (`None` when absent).
@@ -361,6 +231,27 @@ pub(crate) fn list_settings(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The key names under test come from the shared core (issue #160) under
+    // their historical local aliases, so these assertions still describe the
+    // same settings the Settings view writes.
+    use nexora_core::config::{
+        AGENT_PROFILE_KEY, APPEARANCE_THEME_KEY as THEME_KEY, AUTONOMY_KEY, CHAT_PROFILE_KEY,
+        MCP_SERVERS_KEY, SELECTED_MODEL_KEY, SELECTED_PROVIDER_KEY, WORKSPACE_RECENT_KEY,
+        WORKSPACE_ROOTS_KEY, WORKSPACE_ROOT_KEY,
+    };
+
+    // The application-owned halves the gate is wired to. These assertions
+    // deliberately exercise the same builders the registry closures call, so
+    // the gate and the service paths are proven to agree (issue #160).
+    use crate::application::routing::RoutingProfile;
+    use crate::infrastructure::providers::supported_providers;
+
+    /// Theme values defined by the current implementation (no others exist).
+    const VALID_THEMES: [&str; 2] = nexora_core::config::VALID_THEMES;
+
+    /// Valid autonomy modes for [`AUTONOMY_KEY`] (Task 5.2).
+    const VALID_AUTONOMY: [&str; 3] = nexora_core::config::VALID_AUTONOMY;
 
     fn assert_accepted(key: &str, value: &str) {
         assert!(

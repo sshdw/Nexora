@@ -17,6 +17,12 @@
 //!   (`src-tauri/src/infrastructure/providers/credentials.rs`) but a
 //!   dedicated probe account that can never collide with a provider name,
 //!   and prints only `AVAILABLE`/`UNAVAILABLE` — never values.
+//! - The version-parity readout consumes `nexora_core::version` (issue #160),
+//!   the SAME functions the desktop `ReleasePanel` badge is computed from, so
+//!   the two surfaces cannot report different verdicts about the manifests.
+//!   An installed CLI usually has no checkout to inspect; the search walks up
+//!   from the working directory and honestly reports `unknown` when there is
+//!   none, exactly as Desktop renders an absent manifest.
 //! - Everything printed here is secret-free by construction: fixed labels,
 //!   versions, counts, and fixed-vocabulary failure reasons. Raw OS/SQLite
 //!   error text is never propagated (it may quote paths, which may carry
@@ -24,6 +30,7 @@
 
 use std::path::PathBuf;
 
+use nexora_core::version::ManifestVersions;
 use rusqlite::OpenFlags;
 
 /// Desktop app-data identifier (`src-tauri/tauri.conf.json`).
@@ -215,10 +222,31 @@ pub(crate) struct DoctorReport {
     pub(crate) rustc_version: &'static str,
     pub(crate) cargo_version: &'static str,
     pub(crate) build_target: &'static str,
+    pub(crate) manifests: ManifestVersions,
     pub(crate) app_data_dir: Option<PathBuf>,
     pub(crate) app_data_dir_exists: bool,
     pub(crate) database: DatabaseState,
     pub(crate) keyring: KeyringStatus,
+}
+
+/// Walk up from `start` looking for a directory holding all three manifests.
+///
+/// An installed CLI normally has no checkout, so this honestly returns `None`
+/// and `doctor` reports the versions as unknown — the same way Desktop's
+/// `ReleasePanel` renders an absent manifest. The walk is bounded by the
+/// filesystem root and touches only the shared manifest paths.
+fn find_manifest_root(start: &std::path::Path) -> Option<PathBuf> {
+    let mut dir = Some(start);
+    while let Some(candidate) = dir {
+        let holds_all = nexora_core::version::MANIFEST_PATHS
+            .iter()
+            .all(|relative| candidate.join(relative).is_file());
+        if holds_all {
+            return Some(candidate.to_path_buf());
+        }
+        dir = candidate.parent();
+    }
+    None
 }
 
 /// Collect the doctor facts. Performs no network I/O, opens no TUI, and
@@ -229,12 +257,20 @@ pub(crate) fn collect() -> DoctorReport {
         .as_ref()
         .is_some_and(|dir| std::fs::metadata(dir).is_ok_and(|meta| meta.is_dir()));
     let database = inspect_database(app_data_dir.as_ref());
+    let manifests = std::env::current_dir()
+        .ok()
+        .as_deref()
+        .and_then(find_manifest_root)
+        .map_or_else(ManifestVersions::default, |root| {
+            nexora_core::version::read_manifest_versions(&root)
+        });
     DoctorReport {
         binary_name: "nexora",
         binary_version: env!("CARGO_PKG_VERSION"),
         rustc_version: BUILD_RUSTC_VERSION,
         cargo_version: BUILD_CARGO_VERSION,
         build_target: BUILD_TARGET,
+        manifests,
         app_data_dir,
         app_data_dir_exists,
         database,
@@ -255,6 +291,19 @@ pub(crate) fn render(report: &DoctorReport) -> String {
     let _ = writeln!(out, "rustc: {} [build-time]", report.rustc_version);
     let _ = writeln!(out, "cargo: {} [build-time]", report.cargo_version);
     let _ = writeln!(out, "target: {}", report.build_target);
+    // Version-manifest parity: the exact fact the Desktop `ReleasePanel`
+    // "versions" badge is computed from, read through `nexora_core::version`.
+    // An absent manifest prints `unknown` (never an invented value), which is
+    // what Desktop renders for a missing manifest too.
+    let versions = &report.manifests;
+    let _ = writeln!(
+        out,
+        "versions: package.json={} src-tauri/Cargo.toml={} src-tauri/tauri.conf.json={} agree={}",
+        versions.package_json.as_deref().unwrap_or("unknown"),
+        versions.cargo.as_deref().unwrap_or("unknown"),
+        versions.tauri_conf.as_deref().unwrap_or("unknown"),
+        versions.agree()
+    );
     match &report.app_data_dir {
         Some(dir) => {
             let state = if report.app_data_dir_exists {
@@ -291,6 +340,21 @@ pub(crate) fn render(report: &DoctorReport) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn report_with(manifests: ManifestVersions) -> DoctorReport {
+        DoctorReport {
+            binary_name: "nexora",
+            binary_version: "0.1.0",
+            rustc_version: "rustc 1.97.1",
+            cargo_version: "cargo 1.97.1",
+            build_target: "x86_64-unknown-linux-gnu",
+            manifests,
+            app_data_dir: Some(PathBuf::from("/tmp/nexora-test")),
+            app_data_dir_exists: false,
+            database: DatabaseState::NotFound,
+            keyring: KeyringStatus::Unavailable,
+        }
+    }
 
     #[test]
     fn linux_prefers_xdg_data_home() {
@@ -352,23 +416,14 @@ mod tests {
 
     #[test]
     fn render_covers_every_required_field() {
-        let report = DoctorReport {
-            binary_name: "nexora",
-            binary_version: "0.1.0",
-            rustc_version: "rustc 1.97.1",
-            cargo_version: "cargo 1.97.1",
-            build_target: "x86_64-unknown-linux-gnu",
-            app_data_dir: Some(PathBuf::from("/tmp/nexora-test")),
-            app_data_dir_exists: false,
-            database: DatabaseState::NotFound,
-            keyring: KeyringStatus::Unavailable,
-        };
+        let report = report_with(ManifestVersions::default());
         let text = render(&report);
         for field in [
             "binary:",
             "rustc:",
             "cargo:",
             "target:",
+            "versions:",
             "app_data_dir:",
             "database:",
             "keyring: UNAVAILABLE",
@@ -383,20 +438,13 @@ mod tests {
 
     #[test]
     fn render_found_database_reports_schema_version() {
-        let report = DoctorReport {
-            binary_name: "nexora",
-            binary_version: "0.1.0",
-            rustc_version: "rustc 1.97.1",
-            cargo_version: "cargo 1.97.1",
-            build_target: "x86_64-unknown-linux-gnu",
-            app_data_dir: Some(PathBuf::from("/tmp/nexora-test")),
-            app_data_dir_exists: true,
-            database: DatabaseState::Found {
-                schema_version: 14,
-                size_bytes: 42,
-            },
-            keyring: KeyringStatus::Available,
+        let mut report = report_with(ManifestVersions::default());
+        report.app_data_dir_exists = true;
+        report.database = DatabaseState::Found {
+            schema_version: 14,
+            size_bytes: 42,
         };
+        report.keyring = KeyringStatus::Available;
         let text = render(&report);
         assert!(text.contains("schema_version=14"));
         assert!(text.contains("keyring: AVAILABLE"));
@@ -406,20 +454,116 @@ mod tests {
     fn render_never_propagates_raw_error_text() {
         // `Unreadable` carries fixed vocabulary only — synthesising it here
         // proves no caller can smuggle a path-bearing SQLite error through.
-        let report = DoctorReport {
-            binary_name: "nexora",
-            binary_version: "0.1.0",
-            rustc_version: "rustc 1.97.1",
-            cargo_version: "cargo 1.97.1",
-            build_target: "x86_64-unknown-linux-gnu",
-            app_data_dir: None,
-            app_data_dir_exists: false,
-            database: DatabaseState::Unreadable {
-                reason: "schema_version could not be read",
-            },
-            keyring: KeyringStatus::Unavailable,
+        let mut report = report_with(ManifestVersions::default());
+        report.app_data_dir = None;
+        report.database = DatabaseState::Unreadable {
+            reason: "schema_version could not be read",
         };
         let text = render(&report);
         assert!(text.contains("database: unreadable (schema_version could not be read)"));
+    }
+
+    // ---- ReleasePanel parity (issue #160) --------------------------------
+
+    #[test]
+    fn version_line_matches_release_panel_facts_when_in_parity() {
+        // The Desktop `ReleasePanel` "versions" badge is `pass` exactly when
+        // `versions_agree` is true and `package_json_version` is present.
+        // `doctor` must render the same verdict from the same struct.
+        let report = report_with(ManifestVersions {
+            package_json: Some("2.0.0".into()),
+            cargo: Some("2.0.0".into()),
+            tauri_conf: Some("2.0.0".into()),
+        });
+        assert!(report.manifests.agree(), "fixture must be in parity");
+        let text = render(&report);
+        assert!(
+            text.contains(
+                "versions: package.json=2.0.0 src-tauri/Cargo.toml=2.0.0 \
+                 src-tauri/tauri.conf.json=2.0.0 agree=true"
+            ),
+            "doctor must report the ReleasePanel parity facts:\n{text}"
+        );
+    }
+
+    #[test]
+    fn version_line_reports_a_mismatch_as_disagree() {
+        // Desktop renders `versionsDiffer` when all three are present but
+        // unequal; `doctor` must say `agree=false` and name every version.
+        let report = report_with(ManifestVersions {
+            package_json: Some("2.0.0".into()),
+            cargo: Some("2.0.1".into()),
+            tauri_conf: Some("2.0.2".into()),
+        });
+        let text = render(&report);
+        assert!(
+            text.contains("agree=false"),
+            "mismatch must not agree:\n{text}"
+        );
+        for version in ["2.0.0", "2.0.1", "2.0.2"] {
+            assert!(text.contains(version), "missing {version} in:\n{text}");
+        }
+    }
+
+    #[test]
+    fn version_line_reports_an_absent_manifest_as_unknown_never_invented() {
+        // Desktop renders `versionsUnknown` (a warning, not a failure) when a
+        // manifest is missing. `doctor` must print `unknown`, not a guess.
+        let report = report_with(ManifestVersions {
+            package_json: Some("2.0.0".into()),
+            cargo: Some("2.0.0".into()),
+            tauri_conf: None,
+        });
+        assert!(!report.manifests.agree());
+        let text = render(&report);
+        assert!(
+            text.contains("src-tauri/tauri.conf.json=unknown"),
+            "absent manifest must render unknown:\n{text}"
+        );
+        assert!(
+            text.contains("agree=false"),
+            "absent manifest cannot agree:\n{text}"
+        );
+    }
+
+    #[test]
+    fn version_line_with_no_checkout_is_all_unknown() {
+        let text = render(&report_with(ManifestVersions::default()));
+        assert_eq!(
+            text.lines()
+                .find(|line| line.starts_with("versions:"))
+                .expect("versions line"),
+            "versions: package.json=unknown src-tauri/Cargo.toml=unknown \
+             src-tauri/tauri.conf.json=unknown agree=false"
+        );
+    }
+
+    #[test]
+    fn manifest_root_search_stops_at_a_workspace_boundary() {
+        let root = std::env::temp_dir().join(format!("nexora-doctor-root-{}", std::process::id()));
+        let nested = root.join("apps/nexora-cli");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src-tauri")).expect("fixture tree");
+        std::fs::create_dir_all(&nested).expect("fixture tree");
+        std::fs::write(root.join("package.json"), r#"{"version":"9.9.9"}"#).expect("write");
+        std::fs::write(
+            root.join("src-tauri/Cargo.toml"),
+            "[package]\nversion = \"9.9.9\"\n",
+        )
+        .expect("write");
+        std::fs::write(
+            root.join("src-tauri/tauri.conf.json"),
+            r#"{"version":"9.9.9"}"#,
+        )
+        .expect("write");
+
+        let found = find_manifest_root(&nested).expect("root must be discovered by walking up");
+        assert_eq!(
+            found, root,
+            "the search must walk up to the workspace root, not stop at the crate"
+        );
+        let versions = nexora_core::version::read_manifest_versions(&found);
+        assert!(versions.agree(), "fixture manifests must agree");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

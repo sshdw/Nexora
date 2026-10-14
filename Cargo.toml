@@ -1,6 +1,7 @@
-# Nexora repository workspace (phase 0: CLI scaffold, issue #159).
+# Nexora repository workspace (CLI stream: CLI scaffold #159, shared core #160).
 #
-# This virtual manifest owns ONLY `apps/nexora-cli`. `src-tauri` is
+# This virtual manifest owns the CLI adapter (`apps/nexora-cli`) and the
+# shared, interface-free core (`crates/nexora-core`). `src-tauri` is
 # explicitly EXCLUDED: it keeps its own manifest, lockfile, target dir,
 # pinned toolchain file, and Tauri build exactly as before. The `exclude`
 # entry is load-bearing — without it, any cargo invocation inside
@@ -8,7 +9,12 @@
 # workspace" because cargo walks up to this file. With the exclusion,
 # `cargo build`/`cargo test` inside `src-tauri/` behave byte-identically
 # to a checkout without this file.
+#
+# `src-tauri` reaches `crates/nexora-core` through an ordinary path
+# dependency (see src-tauri/Cargo.toml). A path dependency from an excluded
+# package into a workspace member is supported and does not merge the two
+# workspaces: the desktop keeps its own lockfile and target dir.
 [workspace]
-members = ["apps/nexora-cli"]
+members = ["apps/nexora-cli", "crates/nexora-core"]
 exclude = ["src-tauri"]
 resolver = "2"

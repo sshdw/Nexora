@@ -39,9 +39,14 @@ use serde::Serialize;
 
 use crate::infrastructure::database::{Database, DatabaseError, MIGRATIONS};
 
-/// Manifest version caps: versions are short dotted strings; anything longer
-/// is treated as absent (a corrupt manifest must not poison parity).
-const MAX_VERSION_CHARS: usize = 64;
+/// Manifest version caps and the three-manifest parity rule now live in the
+/// Tauri-free shared core (issue #160, brief §2.3/§2.4) so the CLI `doctor`
+/// computes the same facts from the same code. Re-exported under their
+/// original names: this module's callers, tests, and the `ReleaseStatus`
+/// payload are unchanged.
+pub(crate) use nexora_core::version::{
+    parse_cargo_manifest_version, parse_json_manifest_version, versions_agree, MAX_VERSION_CHARS,
+};
 
 /// Issue input caps, mirroring the debt backlog vocabulary (titles 1..=200,
 /// locations at most 1024, details at most 4000 chars).
@@ -220,73 +225,13 @@ pub(crate) struct IssueInput {
 /// missing, unreadable, or carries no usable version. Best-effort by design:
 /// a production workspace folder is user data, not a checkout, so absent
 /// manifests are an honest unknown — never an error.
+///
+/// The version parsing itself lives in `nexora_core::version` (issue #160);
+/// this stays a thin filesystem read so the desktop keeps its own manifest
+/// paths and ordering.
 fn read_manifest(root: &Path, relative: &str, parse: fn(&str) -> Option<String>) -> Option<String> {
     let text = std::fs::read_to_string(root.join(relative)).ok()?;
     parse(&text)
-}
-
-/// Parse the `version` string out of a JSON manifest (`package.json`,
-/// `tauri.conf.json`). `None` for invalid JSON, a missing key, or a
-/// non-string / over-long value.
-#[must_use]
-pub(crate) fn parse_json_manifest_version(text: &str) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_str(text).ok()?;
-    let version = value.get("version")?.as_str()?;
-    if version.is_empty() || version.chars().count() > MAX_VERSION_CHARS {
-        return None;
-    }
-    Some(version.to_string())
-}
-
-/// Parse the `[package]` `version` out of `Cargo.toml` with a stdlib-only
-/// line scanner (no TOML parser — same binding as the dependency inventory).
-/// Only `version = "…"` lines *after* the `[package]` header and *before*
-/// the next section header count, so dependency `version` requirements never
-/// leak in. `None` when the block or a usable value is absent.
-#[must_use]
-pub(crate) fn parse_cargo_manifest_version(text: &str) -> Option<String> {
-    let mut in_package = false;
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('[') {
-            in_package = trimmed == "[package]";
-            continue;
-        }
-        if !in_package {
-            continue;
-        }
-        let Some(rest) = trimmed.strip_prefix("version") else {
-            continue;
-        };
-        let rest = rest.trim_start();
-        let Some(rest) = rest.strip_prefix('=') else {
-            continue;
-        };
-        let value = rest.trim();
-        if value.len() >= 2 && value.starts_with('"') && value.ends_with('"') {
-            let version = &value[1..value.len() - 1];
-            if !version.is_empty() && version.chars().count() <= MAX_VERSION_CHARS {
-                return Some(version.to_string());
-            }
-            return None;
-        }
-    }
-    None
-}
-
-/// True only when all three manifest versions are present and equal. A
-/// missing manifest is a disagree (the panel renders *which* manifest is
-/// unknown from the individual fields).
-#[must_use]
-pub(crate) fn versions_agree(
-    package_json: Option<&str>,
-    cargo: Option<&str>,
-    tauri_conf: Option<&str>,
-) -> bool {
-    match (package_json, cargo, tauri_conf) {
-        (Some(first), Some(second), Some(third)) => first == second && second == third,
-        _ => false,
-    }
 }
 
 // ---------------------------------------------------------------------------

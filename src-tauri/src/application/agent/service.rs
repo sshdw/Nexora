@@ -399,7 +399,7 @@ pub(crate) fn resolve_preset(db: &Database) -> RunPreset {
 
 /// Setting key backing the approval-park deadline
 /// (`agent.approval_timeout_secs`, NEX-AGENT-004).
-pub(crate) const APPROVAL_TIMEOUT_KEY: &str = "agent.approval_timeout_secs";
+pub(crate) use nexora_core::config::APPROVAL_TIMEOUT_KEY;
 
 /// Default approval-park deadline in seconds (10 minutes — mirrors
 /// [`super::approval::DEFAULT_APPROVAL_TIMEOUT`]; the `u64` form is what the
@@ -411,8 +411,7 @@ pub(crate) const DEFAULT_APPROVAL_TIMEOUT_SECS: u64 = 10 * 60;
 /// being a deadline. Out-of-domain values fall back to the default (the
 /// command gate in `commands/settings.rs` enforces the same domain, so the
 /// two agree exactly).
-pub(crate) const MIN_APPROVAL_TIMEOUT_SECS: u64 = 1;
-pub(crate) const MAX_APPROVAL_TIMEOUT_SECS: u64 = 24 * 60 * 60;
+pub(crate) use nexora_core::config::{MAX_APPROVAL_TIMEOUT_SECS, MIN_APPROVAL_TIMEOUT_SECS};
 
 /// Resolve the approval-park deadline from `app_settings`
 /// (`agent.approval_timeout_secs`), defaulting to
@@ -434,7 +433,7 @@ pub(crate) fn resolve_approval_timeout(db: &Database) -> std::time::Duration {
     }
 }
 /// Setting key backing the per-run spend guard (`agent.spend_limit_micro_usd`).
-pub(crate) const SPEND_LIMIT_KEY: &str = "agent.spend_limit_micro_usd";
+pub(crate) use nexora_core::config::SPEND_LIMIT_KEY;
 
 /// Resolve the persisted per-run spend limit in micro-USD, mirroring
 /// [`resolve_autonomy_mode`]: `None` means "no limit" and preserves today's

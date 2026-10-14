@@ -31,10 +31,9 @@ use crate::application::settings::SettingsService;
 use crate::infrastructure::database::{Database, DatabaseError};
 
 /// Settings key holding the chat routing profile (JSON array of entries).
-pub(crate) const CHAT_PROFILE_KEY: &str = "routing.profile.chat";
-
-/// Settings key holding the agent routing profile (JSON array of entries).
-pub(crate) const AGENT_PROFILE_KEY: &str = "routing.profile.agent";
+/// Owned by the shared core (issue #160) so the CLI's `config` command and the
+/// desktop write gate cannot name a key differently.
+pub(crate) use nexora_core::config::{AGENT_PROFILE_KEY, CHAT_PROFILE_KEY};
 
 /// Maximum entries kept in one routing profile; longer payloads are rejected.
 pub(crate) const MAX_PROFILE_ENTRIES: usize = 16;

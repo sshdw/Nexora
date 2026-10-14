@@ -2356,6 +2356,7 @@ dependencies = [
  "git2",
  "keyring",
  "log",
+ "nexora-core",
  "reqwest",
  "rusqlite",
  "serde",
@@ -2365,6 +2366,14 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-fs",
  "tauri-plugin-opener",
+]
+
+[[package]]
+name = "nexora-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -541,7 +541,7 @@ impl From<DatabaseError> for ImportError {
 /// [`McpServerEntry`]) in the existing generic settings store (FR-012).
 /// Accepted by the settings-command gate exactly when
 /// [`McpServerList::from_json`] accepts the value, so both paths agree.
-pub(crate) const MCP_SERVERS_KEY: &str = "mcp.servers";
+pub(crate) use nexora_core::config::MCP_SERVERS_KEY;
 
 /// Value bound mirrored from the `app_settings` CHECK (DATABASE.md §7.6):
 /// `length(value) <= 10000`. Any storable settings value — including the
@@ -577,17 +577,14 @@ const MAX_MCP_ENV_NAME_LEN: usize = 128;
 /// Maximum characters in one MCP environment variable value.
 const MAX_MCP_ENV_VALUE_LEN: usize = 4096;
 
-// The four key strings below mirror the gate-owned constants in
-// `commands/settings.rs` (`THEME_KEY`, `SELECTED_PROVIDER_KEY`,
-// `SELECTED_MODEL_KEY`, `AUTONOMY_KEY`). The routing, flags, and workspace
-// keys are reused from their application owners instead of being duplicated.
-// The `gate_agrees_with_setup_import_allowlist` test in
-// `commands/settings.rs` pins both paths to identical verdicts — update it
-// with any change here.
-const APPEARANCE_THEME_KEY: &str = "appearance.theme";
-const SELECTED_PROVIDER_KEY: &str = "provider.selected";
-const SELECTED_MODEL_KEY: &str = "provider.model";
-const AUTONOMY_KEY: &str = "agent.autonomy";
+// The setting key strings are owned by the shared, Tauri-free core
+// (`nexora-core`, issue #160) and re-exported here, so the setup import and
+// the settings write gate cannot drift apart by accident — there is one
+// definition of every key name. The `gate_agrees_with_setup_import_allowlist`
+// test in `commands/settings.rs` still pins both paths to identical verdicts.
+use nexora_core::config::{
+    APPEARANCE_THEME_KEY, AUTONOMY_KEY, SELECTED_MODEL_KEY, SELECTED_PROVIDER_KEY,
+};
 
 /// VS Code `settings.json` keys with a genuine Nexora counterpart:
 /// `(source key, Nexora settings key)`. See the mapping table in the

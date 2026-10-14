@@ -39,24 +39,24 @@ use crate::application::settings::SettingsService;
 use crate::infrastructure::database::Database;
 
 /// Setting key for the chosen agent workspace root.
-pub(crate) const WORKSPACE_ROOT_KEY: &str = "agent.workspace_root";
+pub(crate) use nexora_core::config::WORKSPACE_ROOT_KEY;
 
 /// Setting key for the recent workspace roots (JSON array, most-recent first).
 /// MRU history for the single-root picker only — NOT the registry (see
 /// [`WORKSPACE_ROOTS_KEY`]).
-pub(crate) const WORKSPACE_RECENT_KEY: &str = "agent.workspace_recent";
+pub(crate) use nexora_core::config::WORKSPACE_RECENT_KEY;
 
 /// Setting key for the registered workspace roots (JSON array of canonical
 /// paths, most-recent first). Unbounded on purpose: the registry must never
 /// silently evict entries, so it lives apart from the 5-entry recent ring.
-pub(crate) const WORKSPACE_ROOTS_KEY: &str = "agent.workspace_roots";
+pub(crate) use nexora_core::config::WORKSPACE_ROOTS_KEY;
 
 /// Maximum number of recent workspace roots kept.
-pub(crate) const WORKSPACE_RECENT_MAX: usize = 5;
+pub(crate) use nexora_core::config::WORKSPACE_RECENT_MAX;
 
 /// Longest workspace root accepted (matches the `conversations.workspace_root`
 /// `CHECK (length <= 1024)` bound).
-pub(crate) const WORKSPACE_ROOT_MAX_LEN: usize = 1024;
+pub(crate) use nexora_core::config::WORKSPACE_ROOT_MAX_LEN;
 
 /// Guard failure for a workspace root candidate. Carries no secret: only the
 /// rejected path shape is described, never a credential or message payload.

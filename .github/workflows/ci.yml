@@ -134,6 +134,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Follow-up to #226 item 1: the root workspace and `src-tauri` pin the
+      # toolchain in two separate files by design (no symlink, which is fragile
+      # on Windows). This makes the "change both together" convention an
+      # enforced check instead of a comment.
+      - name: Toolchain channels match
+        shell: bash
+        run: |
+          root=$(grep -E '^channel' rust-toolchain.toml)
+          tauri=$(grep -E '^channel' src-tauri/rust-toolchain.toml)
+          echo "root:  $root"
+          echo "tauri: $tauri"
+          test "$root" = "$tauri"
+
       - name: Install baseline Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -145,6 +158,23 @@ jobs:
           rustc --version
           cargo clippy --version
 
+      # brief §2.3/§2.4: the shared core must stay interface-free. This is the
+      # enforced version of that rule (issue #160) — a Tauri/Clap/Ratatui/
+      # Crossterm/React dependency creeping into `nexora-core` would let the
+      # window app leak back into the terminal CLI.
+      - name: Shared core has no UI/shell dependencies
+        shell: bash
+        run: |
+          if cargo tree -p nexora-core --edges normal --prefix none \
+            | tr ' ' '\n' \
+            | grep -Eiq '^(tauri|tauri-[a-z-]+|clap|ratatui|crossterm|react(-[a-z]+)?)$'; then
+            echo "::error::nexora-core must not depend on Tauri/Clap/Ratatui/Crossterm/React"
+            cargo tree -p nexora-core --edges normal
+            exit 1
+          fi
+          echo "nexora-core dependency tree is clean"
+          cargo tree -p nexora-core --edges normal
+
       - name: Cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -152,13 +182,13 @@ jobs:
           shared-key: ${{ runner.os }}-cli
 
       - name: cargo fmt (cli)
-        run: cargo fmt -p nexora-cli -- --check
+        run: cargo fmt --all -- --check
 
       - name: cargo clippy (cli)
-        run: cargo clippy -p nexora-cli --all-targets --all-features -- -D warnings
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: cargo test (cli)
-        run: cargo test -p nexora-cli
+        run: cargo test --all
 
       - name: Run stub --help/--version/doctor
         run: cargo run -p nexora-cli -- --help && cargo run -p nexora-cli -- --version && cargo run -p nexora-cli -- doctor
