@@ -126,7 +126,11 @@ const en = {
     "The active root drives Version Control, Code Audit, Terminal, Tasks and agent runs, Issues & PRs (origin of the active root), flags, and diagnostics. Global search and the conversation list stay global — conversations only carry a folder tag. Switching refreshes manually.",
 
   // ---- sidebar search (SearchBox.tsx) ---------------------------------------
-  "search.label": "Search conversations and prompts",
+  // #219: the result list covers conversations + message matches only, so
+  // `label` promises exactly that. `groupPrompts` / `metaPrompt` stay in the
+  // catalog unused — the backend `search` still returns prompt hits and they
+  // return with the Prompt Library, which has no UI access path today.
+  "search.label": "Search conversations and messages",
   "search.placeholder": "Search",
   "search.resultsAria": "Search results",
   "search.searching": "Searching",
@@ -580,11 +584,7 @@ const en = {
   "shortcuts.scopeButton": "Focused button (native behaviour, no custom handler)",
   "shortcuts.desc.palette.toggle": "Open / close the command palette",
   "shortcuts.desc.help.show-shortcuts": "Open this keyboard-shortcuts reference",
-  "shortcuts.desc.go.activity": "Open the Activity feed",
-  "shortcuts.desc.go.health": "Open the Project health view",
   "shortcuts.desc.go.tasks": "Open the Task manager",
-  "shortcuts.desc.go.audit": "Open the Code audit",
-  "shortcuts.desc.go.gh": "Open Issues & PRs",
   "shortcuts.desc.tabs.next": "Next conversation tab",
   "shortcuts.desc.tabs.prev": "Previous conversation tab",
   "shortcuts.desc.tabs.jump": "Jump to tab by position",
@@ -1381,11 +1381,7 @@ export function tp(locale: Locale, key: PluralKey, count: number, vars?: Vars): 
 const SHORTCUT_DESC_KEY: Record<string, StringKey> = {
   "palette.toggle": "shortcuts.desc.palette.toggle",
   "help.show-shortcuts": "shortcuts.desc.help.show-shortcuts",
-  "go.activity": "shortcuts.desc.go.activity",
-  "go.health": "shortcuts.desc.go.health",
   "go.tasks": "shortcuts.desc.go.tasks",
-  "go.audit": "shortcuts.desc.go.audit",
-  "go.gh": "shortcuts.desc.go.gh",
   "tabs.next": "shortcuts.desc.tabs.next",
   "tabs.prev": "shortcuts.desc.tabs.prev",
   "tabs.jump": "shortcuts.desc.tabs.jump",
@@ -1588,7 +1584,7 @@ const ru: Record<StringKey, string> = {
   "roots.coverageNote":
     "Активная папка определяет версионный контроль, аудит кода, терминал, задачи и запуски агента, Issues и PR (origin активной папки), флаги и диагностику. Глобальный поиск и список разговоров остаются общими — у разговоров лишь метка папки. После переключения обновляйте виды вручную.",
 
-  "search.label": "Поиск по разговорам и промптам",
+  "search.label": "Поиск по разговорам и сообщениям",
   "search.placeholder": "Поиск",
   "search.resultsAria": "Результаты поиска",
   "search.searching": "Поиск",
@@ -2025,11 +2021,7 @@ const ru: Record<StringKey, string> = {
   "shortcuts.scopeButton": "Сфокусированная кнопка (нативное поведение, без своего обработчика)",
   "shortcuts.desc.palette.toggle": "Открыть / закрыть палитру команд",
   "shortcuts.desc.help.show-shortcuts": "Открыть эту справку по горячим клавишам",
-  "shortcuts.desc.go.activity": "Открыть ленту активности",
-  "shortcuts.desc.go.health": "Открыть вид здоровья проекта",
   "shortcuts.desc.go.tasks": "Открыть менеджер задач",
-  "shortcuts.desc.go.audit": "Открыть аудит кода",
-  "shortcuts.desc.go.gh": "Открыть Issues и PR",
   "shortcuts.desc.tabs.next": "Следующая вкладка разговора",
   "shortcuts.desc.tabs.prev": "Предыдущая вкладка разговора",
   "shortcuts.desc.tabs.jump": "Перейти к вкладке по номеру",

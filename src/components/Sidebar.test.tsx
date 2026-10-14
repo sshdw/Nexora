@@ -87,12 +87,18 @@ describe("Sidebar rail entries", () => {
 // The EN catalog value each trimmed control carried, so these assertions
 // fail if a row returns under a new label. Sources: `nav.*Label` on the
 // entry components (PromptLibraryEntry → nav.library, ActivityHealthEntry →
-// nav.activityLabel, …), `nav.workspaceFolder` on WorkspaceFolderButton,
-// `roots.add` on WorkspaceRootsSwitcher, `nav.importConversation` on the
-// import rail row, and `nav.terminal` on the deleted TerminalEntry. The two
-// rows that had no component of their own (the import row was inline in
-// Sidebar) and the deleted terminal row kept their keys only as long as the
-// row existed, so the labels below are pinned here as the contract.
+// nav.activityLabel, …), `nav.workspaceFolder` / `roots.title` on the two
+// workspace rail rows, `nav.importConversation` on the import rail row, and
+// `nav.terminal` on the deleted TerminalEntry. The two rows that had no
+// component of their own (the import row was inline in Sidebar) and the
+// deleted terminal row kept their keys only as long as the row existed, so
+// the labels below are pinned here as the contract.
+//
+// Every entry names the row's ACCESSIBLE NAME (the M3RailItem `label`, which
+// sets aria-label), not a label only visible after an expand click: the
+// workspace-roots panel is gated behind an `open` state initialised to false,
+// so "Add folder…" would be null even if the row came back. "Workspace
+// roots" is the rail button's own name and renders unconditionally.
 const TRIMMED_CONTROLS: readonly string[] = [
   "Prompt Library",
   "Activity and health",
@@ -103,7 +109,7 @@ const TRIMMED_CONTROLS: readonly string[] = [
   "Product documentation",
   "Release readiness",
   "Workspace folder",
-  "Add folder…",
+  "Workspace roots",
   "Import conversation",
 ];
 

@@ -9,6 +9,17 @@
 //! catalog (`docs.migN`) with a bare `vN` fallback, so prose can lag but the
 //! version list never can. Shortcuts render straight from the SHORTCUTS
 //! registry (like ShortcutsDialog) — no hand-copied combos here.
+//!
+//! KNOWN EXCEPTION (#219 nav trim): the nav trim unregistered the palette
+//! commands for the hidden panels, so ten rows below — go.library,
+//! go.activity, go.health, go.privacy, go.diagnostics, go.audit, go.debt,
+//! go.gh, go.release and go.terminal — currently name ids the registry no
+//! longer produces. They are deliberate and enumerated, not drift: the panels
+//! and this content model stay intact and unreachable, and each id is
+//! re-registered the moment its panel is revived, at which point the row
+//! becomes true again. `src/lib/navTrim.test.ts` pins the invariant for every
+//! OTHER row and pins this list itself, so a new row cannot join the
+//! exception by accident.
 
 import type { StringKey } from "./strings";
 
@@ -33,9 +44,27 @@ export interface DocsFeature {
   bodyKey: StringKey;
 }
 
+/** The `paletteId`s that #219 unregistered along with their panels — the one
+ * documented exception to the rule above, enumerated so the exception cannot
+ * grow silently. Keep in sync with the nav-trim note in this module's header
+ * and with `HIDDEN_PANEL_DOC_IDS` in src/lib/navTrim.test.ts. */
+export const HIDDEN_PANEL_DOC_IDS: readonly string[] = [
+  "go.library",
+  "go.terminal",
+  "go.audit",
+  "go.debt",
+  "go.gh",
+  "go.activity",
+  "go.health",
+  "go.privacy",
+  "go.diagnostics",
+];
+
 // Feature inventory (12): one row per workspace surface. Blurbs describe
 // only shipped behavior with its backend anchor in parentheses for the
 // reviewer (anchors: the Tauri command each surface is presentational over).
+// Ten rows name hidden panels and are exempt from the honesty rule for as
+// long as they are hidden — see HIDDEN_PANEL_DOC_IDS above.
 export const DOC_FEATURES: readonly DocsFeature[] = [
   { paletteId: "chat.new", titleKey: "docs.featChat", bodyKey: "docs.featChatBody" },
   { paletteId: "go.library", titleKey: "docs.featLibrary", bodyKey: "docs.featLibraryBody" },

@@ -13,10 +13,17 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+// The parameters stay declared even though this stub never reads them: they
+// are load-bearing for `mockInvoke.mock.calls[n][0]` typing under tsc, and the
+// repo's eslint config sets no `argsIgnorePattern`, so a `_` prefix alone
+// would still trip `no-unused-vars`. The `void` statements below make the
+// parameters genuinely read without changing the stub's behaviour.
 const { mockInvoke } = vi.hoisted(() => ({
-  mockInvoke: vi.fn(
-    async (_cmd: string, _args?: unknown): Promise<unknown> => null,
-  ),
+  mockInvoke: vi.fn(async (cmd: string, args?: unknown): Promise<unknown> => {
+    void cmd;
+    void args;
+    return null;
+  }),
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mockInvoke }));
