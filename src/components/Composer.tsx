@@ -26,7 +26,7 @@
    the same registry the help dialog and the global key effects
    match — so a rebound key changes the chip with it. The "+"
    chip is a capability hint, not a key, and says so by being a
-   literal glyph. `src/composer.test.ts` asserts both ids are
+   literal glyph. `src/components/Composer.test.tsx` asserts both ids are
    registered.
 
    SOURCES OF TRUTH, unchanged from before this PR:

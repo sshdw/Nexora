@@ -438,20 +438,25 @@ export default function ConversationView({
         )}
       </div>
 
+      {/* The COMPOSER's own failure strips (#220). These used to carry
+          the shared `.nex-composer-error`, which nine other panels also
+          use and which stays on the M3E error tokens in
+          conversation.css — repainting it here recoloured all of them.
+          The composer's strips get their own class instead. */}
       {attachmentError && (
-        <div className="nex-composer-error nex-fade-in" role="alert">
+        <div className="nex-composer-strip-error nex-fade-in" role="alert">
           {attachmentError.message}
         </div>
       )}
 
       {error && (
-        <div className="nex-composer-error nex-fade-in" role="alert">
+        <div className="nex-composer-strip-error nex-fade-in" role="alert">
           {error.message}
         </div>
       )}
 
       {agentError && (
-        <div className="nex-composer-error nex-fade-in" role="alert">
+        <div className="nex-composer-strip-error nex-fade-in" role="alert">
           {agentError}
         </div>
       )}

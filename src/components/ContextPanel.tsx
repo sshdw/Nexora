@@ -199,6 +199,9 @@ export default function ContextPanel({ conversationId }: { conversationId: numbe
   // this one moves when the user moves the slider.
   const budget = budgetStore.budget;
   const budgetUsed = stats.has_token_data ? stats.total_tokens : null;
+  // `>` and not `>=`: landing exactly ON the budget is using it all,
+  // not exceeding it. No token data means no verdict either way.
+  const overBudget = budgetUsed !== null && budgetUsed > budget;
 
   const rows: Array<{ label: string; value: string; title?: string }> = [
     { label: t("ctx.labelSession"), value: stats.title },
@@ -327,15 +330,27 @@ export default function ContextPanel({ conversationId }: { conversationId: numbe
             {t("ctx.budgetTokens", { n: formatCount(budget) })}
           </span>
         </div>
-        <p className="nex-context-budget-reading" id={hintId}>
-          {budgetUsed === null ? (
-            t("ctx.noTokenData")
-          ) : (
-            t("ctx.budgetUsed", {
-              used: formatCount(budgetUsed),
-              budget: formatCount(budget),
-            })
-          )}
+        {/* The live reading. Over budget it is announced as a status
+            (the value changed under a control that was already there)
+            and it takes the destructive tone — which is what the hint
+            below promises, so the hint has to be true or be deleted. */}
+        <p
+          className={
+            "nex-context-budget-reading" + (overBudget ? " is-over" : "")
+          }
+          role={overBudget ? "status" : undefined}
+        >
+          {budgetUsed === null
+            ? t("ctx.noTokenData")
+            : overBudget
+              ? t("ctx.budgetExceeded", { budget: formatCount(budget) })
+              : t("ctx.budgetUsed", {
+                  used: formatCount(budgetUsed),
+                  budget: formatCount(budget),
+                })}
+        </p>
+        <p className="nex-context-budget-hint" id={hintId}>
+          {t("ctx.budgetHint")}
         </p>
         {budgetStore.error && (
           <p className="nex-context-budget-error" role="alert">

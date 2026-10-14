@@ -22,7 +22,13 @@
    is a component with a GSAP cursor tween and a setTimeout
    chain inside it, and the honest way to promise "no timeline
    was created" is never to create the subtree that would own
-   one. src/composer.test.ts asserts that with a GSAP spy.
+   one. src/components/Composer.test.tsx asserts the finished
+   sentence renders, that the spy records nothing here, and —
+   because this component passes `showCursor={false}`, which is
+   the one case where "nothing recorded" proves nothing on its
+   own — that the same spy DOES record TextType's cursor tween
+   when motion is allowed. That positive control is what makes
+   the negative assertion mean something.
 
    `useReducedMotion` fails closed (no matchMedia → true), so an
    environment that cannot answer the question renders still.

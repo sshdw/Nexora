@@ -425,7 +425,7 @@
    #220 adds the first new animated surface on this stack (the
    composer's autonomy explainer). Its hand-written branch lives in
    src/components/ComposerAutonomyHint.tsx and its GSAP-spy test
-   in src/composer.test.ts — and the reverse check, that every
+   in src/components/Composer.test.tsx — and the reverse check, that every
    animation already merged still collapses, is asserted there
    too, against the same motion.css block.
    ---------------------------------------------------------- */

@@ -41,6 +41,7 @@ import type { Attachment } from "../lib/tauri";
 import { LocaleProvider } from "../lib/useLocale";
 import ComposerAutonomyHint from "./ComposerAutonomyHint";
 import Composer, { type ComposerProps } from "./Composer";
+import TextType from "./TextType";
 
 // The GSAP spy is installed for the WHOLE file, hoisted, so that
 // whichever copy of the vendored TextType a component ends up
@@ -460,8 +461,34 @@ describe("composer — reduced-motion gate (GSAP spy)", () => {
     expect(screen.getByText("Semi-auto: routine steps run alone.")).toBeInTheDocument();
     // …and the assertion that matters: no timeline was created.
     // Not "it looked finished" — the GSAP API was never called.
+    //
+    // NOTE, and it is why the positive control below is not
+    // optional: this explainer passes `showCursor={false}`, and
+    // TextType only calls GSAP inside `if (showCursor && …)`. So
+    // these two assertions CANNOT distinguish "no timeline" from
+    // "this component never had a cursor to blink" — on their own
+    // they would survive the reduced-motion branch being deleted.
+    // What is load-bearing here is the finished-frame assertion
+    // above plus the typing counterpart below; the spy reading is
+    // the third leg, and the positive control proves the leg is
+    // attached to anything.
     expect(gsapSpy.set).not.toHaveBeenCalled();
     expect(gsapSpy.to).not.toHaveBeenCalled();
+  });
+
+  it("POSITIVE CONTROL — the spy is live against the real GSAP module", () => {
+    // If the spy were not wired to the module TextType imports, every
+    // `.not.toHaveBeenCalled()` above would pass forever and mean
+    // nothing. So: drive TextType itself — the REAL vendored
+    // component, with a cursor, motion allowed — and require the
+    // spy to see it. This test is what makes the negative
+    // assertions load-bearing instead of decorative.
+    mockReducedMotion(false);
+    const { unmount } = render(<TextType text="x" showCursor />);
+
+    expect(gsapSpy.set).toHaveBeenCalled();
+    expect(gsapSpy.to).toHaveBeenCalled();
+    unmount();
   });
 
   it("runs the timeline when motion is allowed (the counterpart)", async () => {
@@ -582,5 +609,77 @@ describe("composer sheet — theme linkage (src/styles/composer.css)", () => {
   it("registers no second stylesheet entry or unlayered import", () => {
     const entry = readRepoFile("src/index.css").replace(/\/\*[\s\S]*?\*\//g, "");
     expect(entry).toMatch(/@import\s+"\.\/styles\/composer\.css"\s+layer\(base\);/);
+  });
+});
+
+describe("shared-class scope — the failure strip stays shared", () => {
+  // The one real scope violation this PR shipped, pinned so it
+  // cannot come back: `.nex-composer-error` reads like the
+  // composer's, is used by 25 sites in 10 components, and round 1
+  // moved it into composer.css and repainted it on `--destructive`
+  // — recolouring nine panels outside this issue's scope. The
+  // shared class is back on the M3E tokens in conversation.css; the
+  // composer has its own strip.
+  const conversation = readRepoFile("src/styles/conversation.css").replace(
+    /\/\*[\s\S]*?\*\//g,
+    "",
+  );
+  const composerSheet = readRepoFile("src/styles/composer.css").replace(
+    /\/\*[\s\S]*?\*\//g,
+    "",
+  );
+
+  it("keeps the shared strip in the shell sheet, on the M3E error tokens", () => {
+    const block = /\.nex-composer-error\s*\{([\s\S]*?)\n\}/.exec(conversation);
+    expect(block).not.toBeNull();
+    expect(block![1]).toContain("var(--nex-sys-color-error)");
+    expect(block![1]).toContain("var(--nex-sys-color-error-container)");
+    expect(block![1]).toContain("var(--nex-sys-color-error-outline)");
+  });
+
+  it("declares no rule for the shared strip in the composer sheet", () => {
+    // A descendant selector would not save it: the strip renders as
+    // a SIBLING of `.nex-composer`, not inside it.
+    expect(composerSheet).not.toMatch(/\.nex-composer-error\b/);
+  });
+
+  it("gives the composer its own strip, and that is the only destructive strip here", () => {
+    const strips = [...composerSheet.matchAll(/\.(nex-composer-strip-error)\s*\{([\s\S]*?)\n\}/g)];
+    expect(strips).toHaveLength(1);
+    expect(strips[0][2]).toContain("var(--destructive)");
+  });
+
+  it("keeps the shared TEXT FIELD in the shell sheet too", () => {
+    // `.nex-composer-input` is not the composer's either: Version
+    // Control's commit box carries it, and App.tsx's "Focus message
+    // input" queries it by name. Round 1 restyled that panel by
+    // accident; the shared rule is back, and the composer reaches it
+    // through a descendant selector instead.
+    const block = /\.nex-composer-input\s*\{([\s\S]*?)\n\}/.exec(conversation);
+    expect(block).not.toBeNull();
+    expect(block![1]).toContain("var(--nex-sys-color-on-surface)");
+    expect(block![1]).toContain("min-height: 48px");
+    // …and the composer sheet has no UNSCOPED rule for it.
+    expect(composerSheet).not.toMatch(/(?<!shell )\.nex-composer-input\s*[,{:]/);
+    for (const hook of [
+      ".nex-composer-shell .nex-composer-input",
+      ".nex-composer-shell .nex-composer-input::placeholder",
+      ".nex-composer-shell .nex-composer-input:disabled",
+      ".nex-composer-shell .nex-composer-input:focus-visible",
+    ]) {
+      expect(composerSheet).toContain(hook);
+    }
+  });
+
+  it("re-points the two shared M3E primitives only through descendants", () => {
+    // `.nex-seg` and `.nex-chip` are shared with every other
+    // surface, so the composer can only re-point them through a
+    // selector that cannot match anywhere else. Both carry a second
+    // class for exactly that reason.
+    for (const hook of ["nex-composer-pills", "nex-composer-autonomy", "nex-composer-model-list"]) {
+      expect(composerSheet).toMatch(new RegExp(`\\.${hook}\\.nex-seg`));
+    }
+    expect(composerSheet).toMatch(/\.nex-composer-attachments \.nex-chip/);
+    expect(composerSheet).toMatch(/\.nex-composer \.nex-seg button:focus-visible/);
   });
 });

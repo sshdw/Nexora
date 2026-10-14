@@ -7,7 +7,11 @@
    number they actually intend to fill, expressed in the same
    token unit. The panel then answers the question the model
    limit cannot — "am I near the budget I set?" — and says so
-   when the budget is exceeded.
+   when the budget is exceeded: `ContextPanel` compares
+   `total_tokens` against this value and swaps the reading for
+   `ctx.budgetExceeded` with the destructive tone, which is the
+   behaviour `ctx.budgetHint` promises the reader. This module
+   owns the number; the panel owns that reading.
 
    WHY localStorage AND NOT THE BACKEND. The backend validates
    every `set_setting` key against a fixed domain allowlist

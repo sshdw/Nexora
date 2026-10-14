@@ -6,9 +6,33 @@
    (src/styles/tokens.css). The pivot: the composer is the one
    dominant element of the conversation, so it gets the new
    theme while the already-merged shell keeps its own tokens.
-   Nothing outside `.nex-composer*` is restyled here.
 
-   Contract this sheet keeps, and src/composer.test.ts asserts:
+   SCOPE — stated precisely, because the first version of this PR
+   got it wrong twice. Nothing outside the composer's own surfaces
+   is restyled here, and every rule below is either a
+   composer-only class or a descendant selector that cannot match
+   anywhere else.
+
+   Two classes merely READ like the composer's and are not:
+
+     `.nex-composer-error`   the shared failure strip. Nine panels
+                             render their own notices with it. It
+                             stays on the M3E error tokens in
+                             conversation.css; the composer has
+                             `.nex-composer-strip-error` below.
+     `.nex-composer-input`   the shared text field. Version
+                             Control's commit box carries it, and
+                             App.tsx's "Focus message input"
+                             queries it by name. It stays on the
+                             M3E tokens; the composer reaches it
+                             through `.nex-composer-shell`.
+
+   Round 1 moved both into this sheet and repainted them, which
+   silently recoloured nine panels and one commit box. composer.css
+   declares no rule for either name — src/components/Composer.test.tsx
+   asserts that, so the regression cannot return quietly.
+
+   Contract this sheet keeps, and src/components/Composer.test.tsx asserts:
 
      1. THEME LINKAGE. Every colour is a shadcn semantic token
         (`--background`, `--card`, `--foreground`,
@@ -29,12 +53,15 @@
         reduced-motion block: one copy, in one file.
 
    Imported with `layer(base)` from src/index.css, AFTER
-   components.css and conversation.css, because two rules in
-   here deliberately outrank the M3E primitives they reuse
-   (`.nex-seg` pills, `.nex-chip` attachments, the composer's
-   own old block) — the same-selector-later-wins tie-break is
-   the only reason the shared primitives stay untouched for
-   every other surface.
+   components.css and conversation.css. Two re-pointings of
+   shared M3E primitives need that order at EQUAL specificity
+   — `.nex-composer-pills.nex-seg` and
+   `.nex-composer-attachments .nex-chip` — which is safe
+   precisely because each carries a second class the other
+   surfaces never have, so no other surface can match them at
+   all. Everything else here is scoped by descendant selector
+   (`.nex-composer-shell …`, `.nex-composer-attachments …`) and
+   wins on specificity, not on order.
    ============================================================ */
 
 /* ---- Region: canvas, one hairline, no fill ---------------------------
@@ -55,7 +82,7 @@
 
 /* The reading column. 760px is the thread's measure
    (`--nex-sys-layout-measure-max` in tokens.css), written as a
-   literal so this sheet depends on no M3E var; src/composer.test.ts
+   literal so this sheet depends on no M3E var; src/components/Composer.test.tsx
    asserts the two stay equal, so the composer's box can never
    drift out of alignment with the messages above it. */
 .nex-composer-inner {
@@ -91,7 +118,12 @@
   position: relative;
 }
 
-.nex-composer-input {
+/* `.nex-composer-shell` is what scopes these: the field class is
+   shared with Version Control's commit box (and queried by name by
+   App.tsx's "Focus message input"), so an unscoped
+   `.nex-composer-input` rule here would restyle that panel too.
+   The composer can only be inside its own shell. */
+.nex-composer-shell .nex-composer-input {
   display: block;
   width: 100%;
   resize: none;
@@ -108,20 +140,21 @@
   outline: none;
 }
 
-.nex-composer-input::placeholder {
+.nex-composer-shell .nex-composer-input::placeholder {
   color: var(--muted-foreground);
 }
 
-.nex-composer-input:disabled {
+.nex-composer-shell .nex-composer-input:disabled {
   opacity: 0.5;
 }
 
 /* The composer owns its focus moment on the container (the
-   seam above), so the textarea's M3E outline ring — which is
-   warm and would break the theme — is dropped here. Same
-   selector, later sheet: only this rule changes, and only for
-   the composer; the conversation rename field keeps its own. */
-.nex-composer-input:focus-visible {
+   seam above), so its field's M3E outline ring — warm, and wrong
+   against the black theme — is dropped here. One selector deeper
+   than the shared rule in conversation.css, so this wins on
+   specificity rather than on import order, and the Version
+   Control commit box and the rename field keep theirs. */
+.nex-composer-shell .nex-composer-input:focus-visible {
   outline: none;
 }
 
@@ -522,20 +555,45 @@
 }
 
 .nex-context-budget-reading,
+.nex-context-budget-hint,
 .nex-context-budget-error {
   margin: 0;
   font-size: 0.75rem;
   color: var(--muted-foreground);
 }
 
+/* Over budget. The one place in this block that spends the accent on
+   a STATE rather than on a control, and deliberately the loudest:
+   `ctx.budgetHint` tells the reader this is what "over" looks like,
+   so the promise and the paint have to agree. */
+.nex-context-budget-reading.is-over {
+  color: var(--destructive);
+  font-weight: 500;
+}
+
 .nex-context-budget-error {
   color: var(--destructive);
 }
 
-/* ---- Send-failure strip (calm, inline, above the composer) -----------
-   Shared with the Context panel's unavailable notice, which is
-   why it is a composer-scoped class rather than a new one. */
-.nex-composer-error {
+/* ---- The composer's OWN failure strip --------------------------------
+   Attachment / send / agent failures, rendered directly above the
+   composer box by ConversationView.
+
+   WHY THIS IS A NEW CLASS AND NOT `.nex-composer-error`. The
+   first version of this PR moved that rule here and repainted it
+   on `--destructive` — which silently recoloured the failure
+   notices of nine OTHER panels (Audit, Issues, Kanban, Release,
+   Debt, Tasks, Docs, Version Control, Context), because the class
+   is shared and the name reads like it belongs to the composer.
+   It does not; it is back on the M3E error tokens in
+   conversation.css, where it shipped. This rule styles the
+   composer's own strip and nothing else.
+
+   Note the strip is a SIBLING of `.nex-composer`, not a
+   descendant, so a `.nex-composer .nex-…` selector would never
+   match it — which is why the scoping is in the class name and
+   the caller (ConversationView), not in a combinator. */
+.nex-composer-strip-error {
   flex-shrink: 0;
   width: 100%;
   max-width: 760px;

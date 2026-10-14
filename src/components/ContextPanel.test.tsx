@@ -113,8 +113,16 @@ describe("context panel — budget slider", () => {
     expect(slider.getAttribute("aria-valuenow")).toBe(
       screen.getByText("128 000 tokens").textContent?.replace(/\D/g, ""),
     );
-    // Described by the reading underneath it (the fixture's usage).
-    expect(slider).toHaveAccessibleDescription("32 000 of 128 000 tokens used");
+    // Described by the hint: it is the control's DESCRIPTION (what
+    // the number is for), while the live reading is the value the
+    // control already announces through aria-valuenow. Both were
+    // declared in round 1 and the hint was the one never rendered.
+    expect(slider).toHaveAccessibleDescription(
+      "Tokens this conversation is measured against. Above it the budget reads as over.",
+    );
+    expect(
+      screen.getByText("32 000 of 128 000 tokens used"),
+    ).toBeInTheDocument();
   });
 
   it("reads the stored budget on mount", async () => {
@@ -151,6 +159,39 @@ describe("context panel — budget slider", () => {
     expect(window.localStorage.getItem(CONTEXT_BUDGET_KEY)).toBeNull();
     // Rendering the control must not write; only a committed change does.
     expect(slider).toBeInTheDocument();
+  });
+
+  it("says the budget is exceeded, and says it as a status", async () => {
+    // `ctx.budgetHint` promises the reader that going over is
+    // visible. That promise is now kept: the reading swaps to the
+    // exceeded copy, takes the destructive tone, and is announced.
+    window.localStorage.setItem(CONTEXT_BUDGET_KEY, "16000");
+    await renderPanel();
+
+    const reading = screen.getByText("Over budget — past 16 000 tokens.");
+    expect(reading).toBeInTheDocument();
+    expect(reading).toHaveAttribute("role", "status");
+    expect(reading).toHaveClass("is-over");
+    // The ordinary reading is gone, not appended to.
+    expect(screen.queryByText(/of 16 000 tokens used/)).not.toBeInTheDocument();
+  });
+
+  it("treats landing exactly on the budget as using it all, not over", async () => {
+    // `>`, not `>=`: 32 000 used against a 32 000 budget is exactly
+    // on the line, and calling that "over" would make the warning
+    // fire a whole step early.
+    window.localStorage.setItem(CONTEXT_BUDGET_KEY, "32000");
+    await renderPanel();
+    expect(screen.getByText("32 000 of 32 000 tokens used")).toBeInTheDocument();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("gives no verdict when there is no usage to measure", async () => {
+    window.localStorage.setItem(CONTEXT_BUDGET_KEY, "8000");
+    conversationContextStats.mockResolvedValue(stats({ has_token_data: false, total_tokens: 0 }));
+    await renderPanel();
+    expect(screen.getByText("No persisted token usage")).toBeInTheDocument();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
   it("says so when there is no persisted token usage to measure", async () => {

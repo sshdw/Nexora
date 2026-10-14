@@ -452,7 +452,7 @@ export function shortcutsInGroup(group: string): ShortcutEntry[] {
    array, never a throw — because a chip is teaching, not
    behaviour: a registry rename must degrade the hint, not
    break the composer. Every id used by the composer is
-   asserted to exist in src/composer.test.ts, so the soft
+   asserted to exist in src/components/Composer.test.tsx, so the soft
    failure can never become a silent one.
    ---------------------------------------------------------- */
 

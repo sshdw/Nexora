@@ -327,6 +327,7 @@ const en = {
   "ctx.budgetHint": "Tokens this conversation is measured against. Above it the budget reads as over.",
   "ctx.budgetTokens": "{n} tokens",
   "ctx.budgetUsed": "{used} of {budget} tokens used",
+  "ctx.budgetExceeded": "Over budget — past {budget} tokens.",
   "ctx.budgetSaveFailed": "Could not save the context budget.",
 
   // ---- settings ----------------------------------------------------------------------
@@ -1788,6 +1789,7 @@ const ru: Record<StringKey, string> = {
   "ctx.budgetHint": "Сколько токенов учитывать в этом разговоре. Больше бюджета — он считается превышенным.",
   "ctx.budgetTokens": "{n} токенов",
   "ctx.budgetUsed": "использовано {used} из {budget} токенов",
+  "ctx.budgetExceeded": "Бюджет превышен — больше {budget} токенов.",
   "ctx.budgetSaveFailed": "Не удалось сохранить бюджет контекста.",
 
   "settings.title": "Настройки",
