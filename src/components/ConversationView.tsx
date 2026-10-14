@@ -10,11 +10,18 @@
 //! or corrupting persisted state. A failed AI request additionally restores
 //! the sent text into the composer so it can be resent without retyping —
 //! frontend draft state only; persisted history is never modified.
+//!
+//! #220: the composer moved to `Composer.tsx` — it is now one dominant
+//! control on the black theme, and testing it does not need a thread,
+//! a backend or an agent run around it. Everything below this line
+//! still behaves exactly as before: this component keeps owning the
+//! hooks, the send guards, the draft and the error surfaces, and hands
+//! the composer a plain set of callbacks.
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 
-import { formatBytes, formatRelativeTime } from "../lib/format";
+import { formatRelativeTime } from "../lib/format";
 import {
   agentSetMode,
   cancelAgentRun,
@@ -30,13 +37,11 @@ import { useAgentRun } from "../lib/useAgentRun";
 import { useAttachments } from "../lib/useAttachments";
 import { useConversation } from "../lib/useConversation";
 import AgentRunSteps from "./AgentRunSteps";
+import Composer from "./Composer";
 import ContextPanel from "./ContextPanel";
 import { useStrings } from "../lib/useLocale";
-import M3Button from "./M3Button";
-import M3IconButton from "./M3IconButton";
 import M3LoadingIndicator from "./M3LoadingIndicator";
 import M3SegmentedGroup from "./M3SegmentedGroup";
-import { ArrowUpIcon, CloseIcon, PaperclipIcon } from "./icons";
 import NexoraMark from "./NexoraMark";
 
 export interface ConversationViewProps {
@@ -45,6 +50,15 @@ export interface ConversationViewProps {
   selectedProvider: string | null;
   /** Selected model for the selected provider, or null if none. */
   selectedModel: string | null;
+  /** Models the selected provider offers (#220). The composer lists
+   * these; it never invents a model, and it never keeps its own
+   * copy of the selection. */
+  models: readonly string[];
+  /** Persist a model choice through the app's provider store (the
+   * single source of truth, FR-012). */
+  onSelectModel: (model: string) => void;
+  /** Last model-selection failure, surfaced in the composer's strip. */
+  modelError: string | null;
   /** Agent-autonomy default store lifted in App (single source, NEX-FE-003):
    * the header selector reads and writes the same store as Settings, so a
    * change in either surface reflects in the other immediately. */
@@ -64,6 +78,9 @@ export default function ConversationView({
   conversationId,
   selectedProvider,
   selectedModel,
+  models,
+  onSelectModel,
+  modelError,
   autonomy,
   onOpenSettings,
   onMessageSent,
@@ -421,153 +438,51 @@ export default function ConversationView({
         )}
       </div>
 
+      {/* The COMPOSER's own failure strips (#220). These used to carry
+          the shared `.nex-composer-error`, which nine other panels also
+          use and which stays on the M3E error tokens in
+          conversation.css — repainting it here recoloured all of them.
+          The composer's strips get their own class instead. */}
       {attachmentError && (
-        <div className="nex-composer-error nex-fade-in" role="alert">
+        <div className="nex-composer-strip-error nex-fade-in" role="alert">
           {attachmentError.message}
         </div>
       )}
 
       {error && (
-        <div className="nex-composer-error nex-fade-in" role="alert">
+        <div className="nex-composer-strip-error nex-fade-in" role="alert">
           {error.message}
         </div>
       )}
 
       {agentError && (
-        <div className="nex-composer-error nex-fade-in" role="alert">
+        <div className="nex-composer-strip-error nex-fade-in" role="alert">
           {agentError}
         </div>
       )}
 
-      <div className="nex-composer">
-        <div className="nex-composer-inner">
-          {agentMode && (
-            <div className="nex-agent-autonomy" role="group" aria-label={t("conv.autonomyAria")}>
-              <span className="nex-agent-autonomy-label">{t("conv.autonomyLabel")}</span>
-              <M3SegmentedGroup
-                label={t("conv.autonomyAria")}
-                semantics="radio"
-                value={autonomy.mode}
-                onChange={(mode) => void handleAutonomyChange(mode)}
-                options={[
-                  { value: "supervised", label: t("conv.autonomySupervised") },
-                  {
-                    value: "semi_autonomous",
-                    label: t("conv.autonomySemi"),
-                    ariaLabel: t("conv.autonomySemiAria"),
-                  },
-                  { value: "full_autonomous", label: t("conv.autonomyFull") },
-                ]}
-              />
-            </div>
-          )}
-          <div className="nex-composer-shell">
-            {attachments.length > 0 && (
-              <ul className="nex-composer-attachments" aria-label={t("conv.attachedFiles")}>
-                {attachments.map((attachment) => (
-                  <li key={attachment.id} className="nex-chip">
-                    <PaperclipIcon className="nex-chip-icon" />
-                    <span className="nex-attachment-text">
-                      <span className="nex-chip-name" title={attachment.file_name}>
-                        {attachment.file_name}
-                      </span>
-                      {formatBytes(attachment.file_size_bytes) !== null && (
-                        <span className="nex-chip-size">
-                          {formatBytes(attachment.file_size_bytes)}
-                        </span>
-                      )}
-                    </span>
-                    <M3IconButton
-                      label={t("conv.removeFile", { name: attachment.file_name })}
-                      size="sm"
-                      className="nex-chip-remove"
-                      disabled={attachmentsBusy || sending}
-                      onClick={() => void remove(attachment.id)}
-                    >
-                      <CloseIcon />
-                    </M3IconButton>
-                  </li>
-                ))}
-              </ul>
-            )}
-            <textarea
-              className="nex-composer-input"
-              rows={1}
-              placeholder={t("conv.messagePlaceholder")}
-              aria-label={t("conv.messageAria")}
-              value={draft}
-              disabled={sending || agentBusy}
-              onChange={(event) => setDraft(event.target.value)}
-              onKeyDown={(event) => {
-                // shortcut:composer.send (Shift+Enter = shortcut:composer.newline).
-                if (event.key === "Enter" && !event.shiftKey) {
-                  event.preventDefault();
-                  void handleSubmit();
-                }
-              }}
-            />
-            <div className="nex-composer-bar">
-              <M3IconButton
-                label={t("conv.addFile")}
-                className="nex-composer-attach"
-                disabled={sending || attachmentsBusy || agentBusy}
-                onClick={() => void pickAndAttach()}
-              >
-                <PaperclipIcon />
-              </M3IconButton>
-              <label className="nex-composer-agent-toggle" title={t("conv.agentToggleTitle")}>
-                <input
-                  type="checkbox"
-                  checked={agentMode}
-                  onChange={(e) => setAgentMode(e.target.checked)}
-                  aria-label={t("conv.agentModeAria")}
-                />
-                <span>{t("conv.agentToggle")}</span>
-              </label>
-              <span className="nex-composer-bar-spacer" />
-              {selectedModel && (
-                <span
-                  className="nex-tag nex-tag-mono nex-composer-model-tag"
-                  title={t("conv.modelTagTitle")}
-                >
-                  {selectedModel}
-                </span>
-              )}
-              <M3Button
-                variant="primary"
-                expressive
-                loading={sending || agentBusy}
-                className="nex-composer-send"
-                onClick={() => void handleSubmit()}
-                disabled={!canSend}
-              >
-                {sending || agentBusy ? (agentMode ? t("conv.running") : t("conv.sending")) : (
-                  <>
-                    {t("conv.send")}
-                    <ArrowUpIcon aria-hidden="true" />
-                  </>
-                )}
-              </M3Button>
-            </div>
-          </div>
-          {ready ? (
-            <p className="nex-composer-hint">
-              <span className="nex-composer-shortcut">
-                {t("conv.hintSend")}
-              </span>
-            </p>
-          ) : (
-            <p className="nex-composer-hint">
-              <span className="nex-composer-shortcut">
-                {t("conv.hintSetup")}{" "}
-              </span>
-              <M3Button variant="quiet" size="sm" onClick={onOpenSettings}>
-                {t("conv.openSettings")}
-              </M3Button>
-            </p>
-          )}
-        </div>
-      </div>
+      <Composer
+        draft={draft}
+        onDraftChange={setDraft}
+        onSubmit={() => void handleSubmit()}
+        sending={sending}
+        agentBusy={agentBusy}
+        attachmentsBusy={attachmentsBusy}
+        canSend={canSend}
+        attachments={attachments}
+        onPickFiles={() => void pickAndAttach()}
+        onRemoveAttachment={(id) => void remove(id)}
+        agentMode={agentMode}
+        onAgentModeChange={setAgentMode}
+        autonomy={autonomy}
+        onAutonomyChange={(mode) => void handleAutonomyChange(mode)}
+        selectedModel={selectedModel}
+        models={models}
+        onSelectModel={onSelectModel}
+        modelError={modelError}
+        ready={ready}
+        onOpenSettings={onOpenSettings}
+      />
         </>
       )}
     </div>

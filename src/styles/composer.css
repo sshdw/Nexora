@@ -1,0 +1,608 @@
+/* ============================================================
+   COMPOSER — Cursor-style prompt field on the black theme (#220)
+
+   This is the FIRST merged surface to paint from the shadcn
+   vars in src/index.css rather than from `--nex-sys-*`
+   (src/styles/tokens.css). The pivot: the composer is the one
+   dominant element of the conversation, so it gets the new
+   theme while the already-merged shell keeps its own tokens.
+
+   SCOPE — stated precisely, because the first version of this PR
+   got it wrong twice. Nothing outside the composer's own surfaces
+   is restyled here, and every rule below is either a
+   composer-only class or a descendant selector that cannot match
+   anywhere else.
+
+   Two classes merely READ like the composer's and are not:
+
+     `.nex-composer-error`   the shared failure strip. Nine panels
+                             render their own notices with it. It
+                             stays on the M3E error tokens in
+                             conversation.css; the composer has
+                             `.nex-composer-strip-error` below.
+     `.nex-composer-input`   the shared text field. Version
+                             Control's commit box carries it, and
+                             App.tsx's "Focus message input"
+                             queries it by name. It stays on the
+                             M3E tokens; the composer reaches it
+                             through `.nex-composer-shell`.
+
+   Round 1 moved both into this sheet and repainted them, which
+   silently recoloured nine panels and one commit box. composer.css
+   declares no rule for either name — src/components/Composer.test.tsx
+   asserts that, so the regression cannot return quietly.
+
+   Contract this sheet keeps, and src/components/Composer.test.tsx asserts:
+
+     1. THEME LINKAGE. Every colour is a shadcn semantic token
+        (`--background`, `--card`, `--foreground`,
+        `--muted-foreground`, `--border`, `--input`, `--ring`,
+        `--primary`, `--primary-foreground`, `--popover`,
+        `--destructive`). No `--nex-sys-*`, no raw hex, no
+        rgb()/hsl(). A surface added to the composer must be
+        able to follow a theme change by editing index.css.
+     2. NO GLAMOUR. No gradient, no glow, no shadow, no fill
+        where a hairline would do. Separation is `--border`;
+        the only accent is the send action, the focus ring and
+        the one selected-model tick.
+     3. THE GLOBAL MOTION GATE IS NOT RE-STATED. Durations
+        come from `src/styles/motion.css` (`--motion-*`), whose
+        `prefers-reduced-motion` block (imported layer(base),
+        `!important`) collapses every transition and animation
+        declared in this file. There is deliberately no second
+        reduced-motion block: one copy, in one file.
+
+   Imported with `layer(base)` from src/index.css, AFTER
+   components.css and conversation.css. Two re-pointings of
+   shared M3E primitives need that order at EQUAL specificity
+   — `.nex-composer-pills.nex-seg` and
+   `.nex-composer-attachments .nex-chip` — which is safe
+   precisely because each carries a second class the other
+   surfaces never have, so no other surface can match them at
+   all. Everything else here is scoped by descendant selector
+   (`.nex-composer-shell …`, `.nex-composer-attachments …`) and
+   wins on specificity, not on order.
+   ============================================================ */
+
+/* ---- Region: canvas, one hairline, no fill ---------------------------
+   The strip under the thread is the canvas itself with a
+   single hairline on top. A lighter band behind the composer
+   would make it read as a panel sitting ON the page; here it
+   reads as part of the same near-black stage, with the
+   rounded control as the only elevated thing on it. */
+.nex-composer {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 16px 14px;
+  background: var(--background);
+  border-top: 1px solid var(--border);
+}
+
+/* The reading column. 760px is the thread's measure
+   (`--nex-sys-layout-measure-max` in tokens.css), written as a
+   literal so this sheet depends on no M3E var; src/components/Composer.test.tsx
+   asserts the two stay equal, so the composer's box can never
+   drift out of alignment with the messages above it. */
+.nex-composer-inner {
+  width: 100%;
+  max-width: 760px;
+  margin-inline: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ---- The one elevated container -------------------------------------
+   `--card` sits 0.03 oklch above the canvas (black theme §
+   surfaces), which is the whole reason nothing here leans on a
+   shadow for separation. */
+.nex-composer-shell {
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-2xl);
+  background: var(--card);
+  border: 1px solid var(--border);
+  transition: border-color var(--motion-duration-fast) var(--motion-easing-standard);
+}
+
+/* Focus-within lifts the seam to the accent hairline — the one
+   sanctioned accent use before an action fill. */
+.nex-composer-shell:focus-within {
+  border-color: color-mix(in oklch, var(--ring) 55%, transparent);
+}
+
+/* ---- Field + inline shortcut teaching --------------------------------- */
+.nex-composer-field {
+  position: relative;
+}
+
+/* `.nex-composer-shell` is what scopes these: the field class is
+   shared with Version Control's commit box (and queried by name by
+   App.tsx's "Focus message input"), so an unscoped
+   `.nex-composer-input` rule here would restyle that panel too.
+   The composer can only be inside its own shell. */
+.nex-composer-shell .nex-composer-input {
+  display: block;
+  width: 100%;
+  resize: none;
+  min-height: 40px;
+  max-height: 160px;
+  padding: 12px 14px 4px;
+  border: none;
+  border-radius: var(--radius-2xl);
+  background: transparent;
+  color: var(--foreground);
+  font-family: inherit;
+  font-size: 0.9375rem;
+  line-height: 1.5;
+  outline: none;
+}
+
+.nex-composer-shell .nex-composer-input::placeholder {
+  color: var(--muted-foreground);
+}
+
+.nex-composer-shell .nex-composer-input:disabled {
+  opacity: 0.5;
+}
+
+/* The composer owns its focus moment on the container (the
+   seam above), so its field's M3E outline ring — warm, and wrong
+   against the black theme — is dropped here. One selector deeper
+   than the shared rule in conversation.css, so this wins on
+   specificity rather than on import order, and the Version
+   Control commit box and the rename field keep theirs. */
+.nex-composer-shell .nex-composer-input:focus-visible {
+  outline: none;
+}
+
+/* The teaching line. It stands in for the placeholder, so it
+   paints the composer's own surface colour — which is what
+   occludes the native placeholder underneath it, leaving the
+   attribute in place as the no-JS / AT fallback.
+   `aria-hidden`: every key it shows is announced by the
+   hint row's description instead. */
+.nex-composer-teach {
+  position: absolute;
+  top: 12px;
+  left: 14px;
+  right: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  background: var(--card);
+  color: var(--muted-foreground);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  pointer-events: none;
+  overflow: hidden;
+  max-height: 22px;
+}
+
+/* A key chip: hairline + the nested surface tone, mono, dim.
+   Read as punctuation, never as a button. */
+.nex-composer-teach kbd {
+  font-family: ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace;
+  font-size: 0.75rem;
+  line-height: 1;
+  padding: 3px 5px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.nex-composer-teach-sep {
+  color: var(--muted-foreground);
+  opacity: 0.5;
+}
+
+/* ---- Bottom control row ------------------------------------------------ */
+.nex-composer-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px 8px 8px;
+}
+
+/* Attach: the round "+". Quiet at rest with a hairline so it
+   reads as a control rather than as a stray glyph — the fill
+   only arrives on hover. */
+.nex-composer-attach {
+  flex-shrink: 0;
+  border-color: var(--border);
+  color: var(--muted-foreground);
+}
+
+.nex-composer-attach:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.nex-composer-bar-spacer {
+  flex: 1 1 auto;
+}
+
+/* The M3E primitives the composer reuses (`.nex-seg` pills, the
+   chip's `.nex-icon-btn` remove) carry the app-wide focus ring from
+   theme.css, which is a WARM 1px outline — invisible against a
+   near-black composer and wrong beside the shadcn buttons' accent
+   ring. Re-pointed at the black theme, and only inside the
+   composer: the same ring, spelled the way the rest of the stack
+   spells it (accent at 50%, 3px), so one keyboard pass moves
+   through the whole control row without a colour change. */
+.nex-composer .nex-seg button:focus-visible,
+.nex-composer .nex-icon-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--ring) 50%, transparent);
+}
+
+/* The two primary modes (Chat / Agent) as pill buttons. Same
+   `M3SegmentedGroup` primitive and the same radio semantics as
+   every other segmented group in the app — only the paint is
+   re-pointed at the black theme, and only inside the composer
+   (the selector carries two classes, so `.nex-seg` in
+   components.css still wins everywhere else). */
+.nex-composer-pills.nex-seg {
+  align-self: auto;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-lg);
+  background: var(--muted);
+}
+
+.nex-composer-pills.nex-seg button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 4px 10px;
+  border-radius: calc(var(--radius-lg) - 2px);
+  font-size: 0.8125rem;
+  color: var(--muted-foreground);
+  transition: background-color var(--motion-duration-fast) var(--motion-easing-standard),
+    color var(--motion-duration-fast) var(--motion-easing-standard);
+}
+
+.nex-composer-pills.nex-seg button:hover {
+  background: var(--accent);
+  color: var(--foreground);
+}
+
+.nex-composer-pills.nex-seg button.is-active {
+  background: var(--background);
+  color: var(--foreground);
+  font-weight: 500;
+}
+
+/* The selected mode carries the theme's one thin accent tick
+   instead of an accent fill: at rest the composer stays
+   near-black and only one mark is coloured. */
+.nex-composer-pill-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: var(--radius-3xl);
+  background: var(--border);
+  flex-shrink: 0;
+}
+
+.nex-composer-pills.nex-seg button.is-active .nex-composer-pill-dot {
+  background: var(--primary);
+}
+
+/* ---- Mode / model picker ---------------------------------------------- */
+.nex-composer-model-trigger {
+  max-width: 220px;
+  min-width: 0;
+}
+
+.nex-composer-model-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace;
+  font-size: 0.75rem;
+}
+
+/* The menu: the same `--popover` tone as the composer shell,
+   separated by the same hairline. The trigger's own
+   open-state ring comes from the primitive. */
+.nex-composer-model-menu {
+  width: 260px;
+  padding: 8px;
+  gap: 6px;
+  border-radius: var(--radius-lg);
+  background: var(--popover);
+  border: 1px solid var(--border);
+}
+
+/* Model list: the same segmented primitive, stacked. Rows are
+   quiet; the picked one carries a neutral wash plus the one
+   thin accent tick on its leading edge. */
+.nex-composer-model-list.nex-seg {
+  flex-direction: column;
+  align-self: stretch;
+  gap: 1px;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 2px;
+  border-radius: var(--radius-md);
+  background: transparent;
+}
+
+.nex-composer-model-list.nex-seg button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-height: 30px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  font-family: ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace;
+  font-size: 0.75rem;
+  text-align: left;
+  color: var(--muted-foreground);
+}
+
+.nex-composer-model-list.nex-seg button:hover {
+  background: var(--accent);
+  color: var(--foreground);
+}
+
+.nex-composer-model-list.nex-seg button.is-active {
+  position: relative;
+  background: var(--accent);
+  color: var(--foreground);
+  font-weight: 400;
+}
+
+/* The tick. Width 2px, full row height, accent — the only
+   coloured mark in the menu. */
+.nex-composer-model-list.nex-seg button.is-active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  border-radius: var(--radius-3xl);
+  background: var(--primary);
+}
+
+.nex-composer-model-empty {
+  padding: 8px;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+}
+
+.nex-composer-model-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+/* ---- Send: the one accent fill in the composer ------------------------ */
+.nex-composer-send {
+  flex-shrink: 0;
+}
+
+/* ---- Attachments -------------------------------------------------------- */
+.nex-composer-attachments {
+  list-style: none;
+  margin: 0;
+  padding: 10px 10px 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.nex-attachment-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* M3E chips re-pointed at the black theme, composer-scoped
+   (two classes on the selector: components.css still owns the
+   chips everywhere else). */
+.nex-composer-attachments .nex-chip {
+  max-width: 320px;
+  padding: 5px 6px 5px 8px;
+  border-radius: var(--radius-md);
+  background: var(--muted);
+  border-color: var(--border);
+  transition: background-color var(--motion-duration-fast) var(--motion-easing-standard),
+    border-color var(--motion-duration-fast) var(--motion-easing-standard);
+}
+
+.nex-composer-attachments .nex-chip:hover {
+  background: var(--accent);
+}
+
+.nex-composer-attachments .nex-chip-icon,
+.nex-composer-attachments .nex-chip-remove {
+  color: var(--muted-foreground);
+}
+
+.nex-composer-attachments .nex-chip-name {
+  color: var(--foreground);
+  font-size: 0.8125rem;
+}
+
+.nex-composer-attachments .nex-chip-size {
+  color: var(--muted-foreground);
+  font-size: 0.6875rem;
+}
+
+/* ---- Autonomy row (agent mode only) ----------------------------------- */
+.nex-agent-autonomy {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 2px;
+}
+
+.nex-agent-autonomy-label {
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+}
+
+/* Autonomy is a three-way choice, so it stays a segmented group
+   (M3E grammar) rather than becoming pills: pills are the
+   two-option case. */
+.nex-composer-autonomy.nex-seg {
+  align-self: auto;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-lg);
+  background: var(--muted);
+}
+
+.nex-composer-autonomy.nex-seg button {
+  min-height: 28px;
+  padding: 4px 10px;
+  border-radius: calc(var(--radius-lg) - 2px);
+  font-size: 0.8125rem;
+  color: var(--muted-foreground);
+  transition: background-color var(--motion-duration-fast) var(--motion-easing-standard),
+    color var(--motion-duration-fast) var(--motion-easing-standard);
+}
+
+.nex-composer-autonomy.nex-seg button:hover {
+  background: var(--accent);
+  color: var(--foreground);
+}
+
+.nex-composer-autonomy.nex-seg button.is-active {
+  background: var(--background);
+  color: var(--foreground);
+  font-weight: 500;
+}
+
+/* ---- Autonomy explainer (the animated line) ---------------------------
+   One line, one step below the pill row. Dim on purpose: it
+   explains the mode, it does not compete with the input. */
+.nex-autonomy-explain {
+  display: block;
+  min-width: 0;
+  flex: 1 1 220px;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--muted-foreground);
+}
+
+/* ---- Hint row ---------------------------------------------------------- */
+.nex-composer-hint {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 2px;
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+}
+
+.nex-composer-shortcut {
+  color: var(--muted-foreground);
+}
+
+/* ---- Context panel: the budget slider (#220) --------------------------
+   The one control the composer's context view owns. Its own
+   small block, painted from the same shadcn tokens as the
+   composer, so a control that sits among M3E rows still reads
+   as part of the new stack rather than an imported widget. */
+.nex-context-budget {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 1.5rem;
+  padding: 12px;
+  border-radius: var(--radius-lg);
+  background: var(--card);
+  border: 1px solid var(--border);
+}
+
+.nex-context-budget .nex-context-section-title {
+  margin: 0;
+  font-size: 0.8125rem;
+  font-weight: 400;
+  color: var(--foreground);
+}
+
+.nex-context-budget-control {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.nex-context-budget-control [data-slot="slider"] {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.nex-context-budget-value {
+  flex-shrink: 0;
+  font-family: ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+}
+
+.nex-context-budget-reading,
+.nex-context-budget-hint,
+.nex-context-budget-error {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+}
+
+/* Over budget. The one place in this block that spends the accent on
+   a STATE rather than on a control, and deliberately the loudest:
+   `ctx.budgetHint` tells the reader this is what "over" looks like,
+   so the promise and the paint have to agree. */
+.nex-context-budget-reading.is-over {
+  color: var(--destructive);
+  font-weight: 500;
+}
+
+.nex-context-budget-error {
+  color: var(--destructive);
+}
+
+/* ---- The composer's OWN failure strip --------------------------------
+   Attachment / send / agent failures, rendered directly above the
+   composer box by ConversationView.
+
+   WHY THIS IS A NEW CLASS AND NOT `.nex-composer-error`. The
+   first version of this PR moved that rule here and repainted it
+   on `--destructive` — which silently recoloured the failure
+   notices of nine OTHER panels (Audit, Issues, Kanban, Release,
+   Debt, Tasks, Docs, Version Control, Context), because the class
+   is shared and the name reads like it belongs to the composer.
+   It does not; it is back on the M3E error tokens in
+   conversation.css, where it shipped. This rule styles the
+   composer's own strip and nothing else.
+
+   Note the strip is a SIBLING of `.nex-composer`, not a
+   descendant, so a `.nex-composer .nex-…` selector would never
+   match it — which is why the scoping is in the class name and
+   the caller (ConversationView), not in a combinator. */
+.nex-composer-strip-error {
+  flex-shrink: 0;
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 8px 12px;
+  font-size: 0.8125rem;
+  color: var(--destructive);
+  background: color-mix(in oklch, var(--destructive) 10%, var(--background));
+  border: 1px solid color-mix(in oklch, var(--destructive) 30%, transparent);
+  border-radius: var(--radius-md);
+  text-align: left;
+}

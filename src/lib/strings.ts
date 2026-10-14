@@ -212,6 +212,23 @@ const en = {
   "conv.autonomySemiAria": "Semi-autonomous",
   "conv.autonomyFull": "Full-auto",
   "conv.attachDialogTitle": "Attach files",
+  // ---- composer, Cursor-style (#220) --------------------------------------
+  // Placeholder chips: the key labels come from src/lib/shortcuts.ts, these
+  // are only the words that follow them.
+  "conv.chipAttach": "attach files",
+  "conv.chipPalette": "command palette",
+  "conv.chipShortcuts": "all shortcuts",
+  // Mode/model picker.
+  "conv.modePickerAria": "Agent mode and model",
+  "conv.modelSection": "Model",
+  "conv.modeChat": "Chat",
+  "conv.modeChatAria": "Chat mode — one answer per message",
+  "conv.modelNone": "No model selected",
+  "conv.modelSwitchFailed": "Could not save the model choice",
+  "conv.modelOpenSettings": "Provider settings",
+  "conv.autonomyExplainSupervised": "Supervised: every tool call waits for your approval.",
+  "conv.autonomyExplainSemi": "Semi-auto: routine steps run alone, writes still ask first.",
+  "conv.autonomyExplainFull": "Full-auto: the agent runs to the end without stopping.",
 
   // ---- agent runs (AgentRunSteps.tsx) --------------------------------------------
   "agent.statusRunning": "Running",
@@ -303,6 +320,15 @@ const en = {
   "ctx.filesTitle": "Changed files: {n}",
   "ctx.noFiles": "No file changes recorded.",
   "ctx.changedPath": "Changed file path",
+  // Context budget slider (#220): a real, persisted working budget the
+  // conversation is measured against, next to the model's own context limit.
+  "ctx.budgetTitle": "Context budget",
+  "ctx.budgetLabel": "Context budget",
+  "ctx.budgetHint": "Tokens this conversation is measured against. Above it the budget reads as over.",
+  "ctx.budgetTokens": "{n} tokens",
+  "ctx.budgetUsed": "{used} of {budget} tokens used",
+  "ctx.budgetExceeded": "Over budget — past {budget} tokens.",
+  "ctx.budgetSaveFailed": "Could not save the context budget.",
 
   // ---- settings ----------------------------------------------------------------------
   "settings.title": "Settings",
@@ -1662,6 +1688,19 @@ const ru: Record<StringKey, string> = {
   "conv.autonomySemiAria": "Полуавтономный",
   "conv.autonomyFull": "Полный авто",
   "conv.attachDialogTitle": "Прикрепить файлы",
+  "conv.chipAttach": "прикрепить файлы",
+  "conv.chipPalette": "командная палитра",
+  "conv.chipShortcuts": "все горячие клавиши",
+  "conv.modePickerAria": "Режим агента и модель",
+  "conv.modelSection": "Модель",
+  "conv.modeChat": "Чат",
+  "conv.modeChatAria": "Режим чата — один ответ на сообщение",
+  "conv.modelNone": "Модель не выбрана",
+  "conv.modelSwitchFailed": "Не удалось сохранить выбор модели",
+  "conv.modelOpenSettings": "Настройки провайдера",
+  "conv.autonomyExplainSupervised": "Под присмотром: каждый вызов инструмента ждёт вашего подтверждения.",
+  "conv.autonomyExplainSemi": "Полуавто: рутинные шаги идут сами, запись файлов всё равно спросит.",
+  "conv.autonomyExplainFull": "Полный авто: агент дорабатывает задачу без остановок.",
 
   "agent.statusRunning": "Выполняется",
   "agent.statusPaused": "На паузе",
@@ -1745,6 +1784,13 @@ const ru: Record<StringKey, string> = {
   "ctx.filesTitle": "Изменённых файлов: {n}",
   "ctx.noFiles": "Изменения файлов не записаны.",
   "ctx.changedPath": "Путь изменённого файла",
+  "ctx.budgetTitle": "Бюджет контекста",
+  "ctx.budgetLabel": "Бюджет контекста",
+  "ctx.budgetHint": "Сколько токенов учитывать в этом разговоре. Больше бюджета — он считается превышенным.",
+  "ctx.budgetTokens": "{n} токенов",
+  "ctx.budgetUsed": "использовано {used} из {budget} токенов",
+  "ctx.budgetExceeded": "Бюджет превышен — больше {budget} токенов.",
+  "ctx.budgetSaveFailed": "Не удалось сохранить бюджет контекста.",
 
   "settings.title": "Настройки",
   "settings.subtitle": "Настройки этого устройства. Всё хранится локально.",

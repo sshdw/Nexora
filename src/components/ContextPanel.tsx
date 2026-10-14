@@ -1,13 +1,22 @@
 //! Read-only Context panel: per-conversation token/cost breakdown stats +
-//! changed-files diff list (no agent behavior change).
+//! changed-files diff list (no agent behavior change), plus the
+//! context-budget slider (#220).
 //!
 //! Presentational over the existing IPC wrappers: stats come from the new
 //! `conversation_context_stats` command; diffs are grouped client-side from
 //! the already-persisted `write_file` step observations (`list_agent_runs` /
 //! `list_agent_steps`). Diff rendering reuses the existing `DiffView`
 //! classifier from `AgentRunSteps` — no new diff engine.
+//!
+//! The ONE control in this panel is the budget slider, and its value is real
+//! rather than decorative: it is persisted (src/lib/useContextBudget.ts) and
+//! the reading under it — tokens used against tokens budgeted — is computed
+//! from that same number, so moving the thumb changes what the panel says.
+//! It is built on the Radix primitive through shadcn's recipe
+//! (src/components/ui/slider.tsx) and paints only shadcn semantic tokens;
+//! nothing else in this panel was restyled.
 
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 
 import {
   conversationContextStats,
@@ -19,8 +28,15 @@ import {
 } from "../lib/tauri";
 import { DiffView } from "./AgentRunSteps";
 import M3LoadingIndicator from "./M3LoadingIndicator";
+import {
+  CONTEXT_BUDGET_MAX,
+  CONTEXT_BUDGET_MIN,
+  CONTEXT_BUDGET_STEP,
+  useContextBudget,
+} from "../lib/useContextBudget";
 import { getLocale, tr, type Locale } from "../lib/strings";
 import { useStrings } from "../lib/useLocale";
+import { Slider } from "./ui/slider";
 
 export interface ChangedFile {
   path: string;
@@ -71,6 +87,11 @@ export default function ContextPanel({ conversationId }: { conversationId: numbe
   const [files, setFiles] = useState<ChangedFile[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  // #220: the budget slider's own state (persisted, clamped) — read
+  // by the panel's usage reading below, so the control is wired to
+  // something real rather than sitting there looking adjustable.
+  const budgetStore = useContextBudget();
+  const hintId = useId();
 
   useEffect(() => {
     let cancelled = false;
@@ -171,6 +192,16 @@ export default function ContextPanel({ conversationId }: { conversationId: numbe
   const other = stats.other_step_count;
   const total = user + assistant + tools + other;
   const pct = (v: number): number => (total === 0 ? 0 : (v / total) * 100);
+
+  // Budget reading (#220): what the user budgeted against what the
+  // conversation has actually used. Distinct from the `usage_percent`
+  // row above, which measures against the model's own context limit —
+  // this one moves when the user moves the slider.
+  const budget = budgetStore.budget;
+  const budgetUsed = stats.has_token_data ? stats.total_tokens : null;
+  // `>` and not `>=`: landing exactly ON the budget is using it all,
+  // not exceeding it. No token data means no verdict either way.
+  const overBudget = budgetUsed !== null && budgetUsed > budget;
 
   const rows: Array<{ label: string; value: string; title?: string }> = [
     { label: t("ctx.labelSession"), value: stats.title },
@@ -276,6 +307,56 @@ export default function ContextPanel({ conversationId }: { conversationId: numbe
             {t("ctx.legendOther")} {pct(other).toFixed(1)}%
           </li>
         </ul>
+      </section>
+
+      <section className="nex-context-budget" aria-labelledby={`${hintId}-title`}>
+        <h3 className="nex-context-section-title" id={`${hintId}-title`}>
+          {t("ctx.budgetTitle")}
+        </h3>
+        <div className="nex-context-budget-control">
+          <Slider
+            value={[budget]}
+            min={CONTEXT_BUDGET_MIN}
+            max={CONTEXT_BUDGET_MAX}
+            step={CONTEXT_BUDGET_STEP}
+            // On the THUMB, where `role="slider"` actually lives.
+            thumbProps={{ "aria-label": t("ctx.budgetLabel"), "aria-describedby": hintId }}
+            // Live while dragging; persisted only on release, so a
+            // drag across the track is one write, not two hundred.
+            onValueChange={(next) => budgetStore.setBudget(next[0])}
+            onValueCommit={(next) => budgetStore.commitBudget(next[0])}
+          />
+          <span className="nex-context-budget-value">
+            {t("ctx.budgetTokens", { n: formatCount(budget) })}
+          </span>
+        </div>
+        {/* The live reading. Over budget it is announced as a status
+            (the value changed under a control that was already there)
+            and it takes the destructive tone — which is what the hint
+            below promises, so the hint has to be true or be deleted. */}
+        <p
+          className={
+            "nex-context-budget-reading" + (overBudget ? " is-over" : "")
+          }
+          role={overBudget ? "status" : undefined}
+        >
+          {budgetUsed === null
+            ? t("ctx.noTokenData")
+            : overBudget
+              ? t("ctx.budgetExceeded", { budget: formatCount(budget) })
+              : t("ctx.budgetUsed", {
+                  used: formatCount(budgetUsed),
+                  budget: formatCount(budget),
+                })}
+        </p>
+        <p className="nex-context-budget-hint" id={hintId}>
+          {t("ctx.budgetHint")}
+        </p>
+        {budgetStore.error && (
+          <p className="nex-context-budget-error" role="alert">
+            {budgetStore.error}
+          </p>
+        )}
       </section>
 
       <section className="nex-context-files" aria-label={t("vcs.changedTitle", { n: files.length })}>
