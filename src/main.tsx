@@ -1,24 +1,13 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
-import "./styles/tokens.css";
-import "./styles/motion.css";
-import "./styles/theme.css";
-import "./styles.css";
-import "./styles/components.css";
-import "./styles/conversation.css";
-import "./styles/context.css";
-import "./styles/settings.css";
-import "./styles/prompts.css";
-import "./styles/importExport.css";
-import "./styles/tabs.css";
-import "./styles/versionControl.css";
-import "./styles/terminal.css";
-import "./styles/activityHealth.css";
-import "./styles/palette.css";
-import "./styles/shortcuts.css";
-import "./styles/onboarding.css";
-import "./styles/tasks.css";
+// The ONLY stylesheet import in the app (#218). The Tailwind/shadcn
+// theme layers AND every merged M3E sheet are pulled in from here, in
+// one place, each with an explicit cascade layer — see the CASCADE note
+// in src/index.css. Adding a second CSS import here would land
+// unlayered, and unlayered normal declarations outrank every Tailwind
+// utility, which is the bug the single entry exists to prevent.
+import "./index.css";
 
 // DEV-ONLY visual-QA hook: with ?mock in the URL (dev builds only), install
 // the in-memory IPC stand-in from src/lib/mockBackend.ts before mounting so

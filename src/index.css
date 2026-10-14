@@ -1,0 +1,417 @@
+/* ============================================================
+   Tailwind v4 + shadcn entry — NEXORA BLACK THEME 1.0
+   Issue #218 (stack install: tailwind + shadcn + React Bits +
+   black theme foundation).
+
+   This file is FOUNDATION, not a restyle. The merged shell
+   still paints from src/styles/tokens.css (`--nex-sys-*`,
+   M3E, warm neutral) and src/styles/theme.css. Nothing here
+   sets a colour, a size or a selector the existing shell
+   paints, so the app looks identical after this PR; the theme
+   below becomes the paint source for everything added on top
+   of the stack (shadcn primitives, React Bits) from #220 on.
+
+   The one thing here that CAN change what paints is the
+   cascade (see CASCADE below): the merged sheets move from
+   unlayered to `layer(base)`, which lets a Tailwind utility
+   outrank an element reset for the first time. No merged
+   surface carries a utility class, so nothing in the shell
+   changes — re-captured against origin/main in
+   docs/visual-proof/218/ (byte-identical md5).
+
+   Two things from the stock shadcn setup are removed on
+   purpose, because both rewrite global state underneath the
+   Nexora design system:
+
+   1. Preflight. `@import "tailwindcss"` pulls Tailwind's
+      global reset — margins, borders, font stacks, and
+      `border-color` on every element. The merged M3E sheets
+      assume the theme.css reset instead, so we import the
+      theme and utilities layers explicitly: utilities exist,
+      nothing is reset. This is what makes "no visual change"
+      true rather than merely intended.
+
+   2. The stock `@layer base` block, which forced
+      `border-border` onto `*`, pinned `bg-background` /
+      `text-foreground` onto `html`/`body`, and set the app
+      font from shadcn's own default. Dropped for the same
+      reason: the shell's own baseline file owns those.
+
+   Added components must therefore set their own colours from
+   the vars below. Do not reintroduce a global base reset.
+
+   Also deliberately absent: any font import. shadcn's preset
+   ships its own typeface; adopting it would re-letter every
+   already-merged surface. `--font-sans` below therefore
+   aliases the system stack that src/styles/tokens.css already
+   declares rather than naming a family nothing loads.
+
+   ---- CASCADE: why the legacy sheets are imported HERE ----
+
+   This file is the app's only stylesheet entry (src/main.tsx
+   imports nothing else). That is not tidiness — it is the
+   cascade contract:
+
+   The legacy M3E sheets are UNLAYERED rules. Per CSS Cascade
+   Level 5, unlayered normal declarations outrank every
+   layered normal declaration, so while those sheets stayed
+   unlayered, `button { background: transparent; padding: 0;
+   border: none }` in theme.css beat `bg-primary`, `px-2.5`,
+   `border` and `text-sm` on every shadcn component. The claim
+   "the theme is the paint source for everything added from
+   #220 on" would have been false in the shipped bundle.
+
+   So every legacy sheet is imported below with an explicit
+   `layer(base)`, and the layer order is declared ONCE, here:
+   theme < base < components < utilities. Utilities now win —
+   which is the whole point of Tailwind — while the legacy
+   sheets keep their own relative order and keep beating each
+   other exactly as they did unlayered.
+
+   !important still crosses layers in the right direction:
+   for important declarations, EARLIER layers win, so
+   src/styles/motion.css keeps its reduced-motion gate
+   (`!important`, in base) above any Tailwind utility.
+
+   Do not re-import a sheet from src/main.tsx. An import there
+   is unlayered by definition and silently reinstates the bug.
+   src/theme.test.ts asserts this contract against the SOURCE; the
+   bundle-level layer order is checked separately, by `npx vite build`
+   and reading the layer offsets out of dist/assets/*.css (manual
+   step, result recorded in the PR body).
+   ============================================================ */
+
+/* Tailwind normalises this declaration away when it emits the bundle,
+   so read it as the INTENDED order, not the enforcement mechanism:
+   the shipped order is the order the layers are first used in —
+   properties, theme, base, components, utilities (and `components`
+   emits no block at all until something uses it). */
+@layer theme, base, components, utilities;
+
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+/* The one import that cannot carry `layer(...)`: tw-animate-css
+   ships `@utility` at-rules, and Tailwind refuses to parse one inside
+   a layer ("`@utility` cannot be nested"). Its `@utility` classes
+   WOULD land in the utilities layer, but nothing in src/ uses an
+   `animate-*` class, so it contributes none today. What it does emit
+   is a set of `@property --tw-enter-*` / `--tw-exit-*`
+   registrations, and those land UNLAYERED at top level, after the
+   utilities layer closes. That is inert: an `@property` registers a
+   custom property and declares no rule, so there is nothing there for
+   the unlayered position to out-rank, and the names it registers
+   (`--tw-*`) are ones no legacy sheet defines and no theme var
+   competes with. src/theme.test.ts pins this exception, by name. */
+@import "tw-animate-css";
+
+/* The merged design system, now inside the cascade. Order is
+   preserved verbatim from the pre-#218 import list in
+   src/main.tsx, so sheet-to-sheet precedence is unchanged. */
+@import "./styles/tokens.css" layer(base);
+@import "./styles/motion.css" layer(base);
+@import "./styles/theme.css" layer(base);
+@import "./styles.css" layer(base);
+@import "./styles/components.css" layer(base);
+@import "./styles/conversation.css" layer(base);
+@import "./styles/context.css" layer(base);
+@import "./styles/settings.css" layer(base);
+@import "./styles/prompts.css" layer(base);
+@import "./styles/importExport.css" layer(base);
+@import "./styles/tabs.css" layer(base);
+@import "./styles/versionControl.css" layer(base);
+@import "./styles/terminal.css" layer(base);
+@import "./styles/activityHealth.css" layer(base);
+@import "./styles/palette.css" layer(base);
+@import "./styles/shortcuts.css" layer(base);
+@import "./styles/onboarding.css" layer(base);
+@import "./styles/tasks.css" layer(base);
+
+/* The app's dark theme is `data-theme`, not a class:
+   src/lib/useAppearance.ts writes documentElement.dataset.theme,
+   and tokens.css treats a bare `:root` as dark already. Keying
+   the variant off `.dark` (the shadcn default) matched nothing
+   in this app, so every `dark:` utility was dead. */
+@custom-variant dark (&:is([data-theme="dark"], [data-theme="dark"] *));
+
+/* ----------------------------------------------------------
+   Tailwind theme mapping.
+
+   Every entry here aliases a `--*` var that is DEFINED in the
+   default/dark block or the light block further down. Tailwind
+   resolves these lazily, so a var that is missing from the CSS
+   surfaces as an unstyled utility at runtime with no build
+   error — src/theme.test.ts parses this mapping and asserts
+   each target resolves in BOTH themes, which is what makes the
+   mapping trustworthy.
+
+   Sidebar + chart tokens are carried by shadcn's preset and
+   are defined below alongside the rest, even though the
+   Nexora shell has no sidebar-slot API yet. They cost eight
+   lines now and save a silent gap when the slot components
+   arrive.
+   ---------------------------------------------------------- */
+@theme inline {
+    /* The stack's font family is the system stack the merged
+       tokens already declare. Naming shadcn's preset face here
+       would point at a family nothing loads (and silently
+       re-letter every merged surface through `font-sans`). */
+    --font-heading: var(--font-sans);
+    --font-sans: var(--nex-sys-type-family);
+    --color-sidebar-ring: var(--sidebar-ring);
+    --color-sidebar-border: var(--sidebar-border);
+    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+    --color-sidebar-accent: var(--sidebar-accent);
+    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+    --color-sidebar-primary: var(--sidebar-primary);
+    --color-sidebar-foreground: var(--sidebar-foreground);
+    --color-sidebar: var(--sidebar);
+    --color-chart-5: var(--chart-5);
+    --color-chart-4: var(--chart-4);
+    --color-chart-3: var(--chart-3);
+    --color-chart-2: var(--chart-2);
+    --color-chart-1: var(--chart-1);
+    --color-ring: var(--ring);
+    --color-input: var(--input);
+    --color-border: var(--border);
+    --color-destructive: var(--destructive);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-accent: var(--accent);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-muted: var(--muted);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-secondary: var(--secondary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-primary: var(--primary);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-popover: var(--popover);
+    --color-card-foreground: var(--card-foreground);
+    --color-card: var(--card);
+    --color-foreground: var(--foreground);
+    --color-background: var(--background);
+    --radius-sm: calc(var(--radius) * 0.6);
+    --radius-md: calc(var(--radius) * 0.8);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) * 1.4);
+    --radius-2xl: calc(var(--radius) * 1.8);
+    --radius-3xl: calc(var(--radius) * 2.2);
+    --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+/* ============================================================
+   BLACK THEME 1.0 — dark-first, one cold accent.
+
+   Direction (owner pivot 2026-10-13, supersedes the warm-neutral
+   M3E palette for everything added on top of the stack):
+
+     canvas     near-black, a hair off pure #000 so it reads as a
+                surface and not as a dead pixel field
+     surfaces   barely lighter than the canvas — separation is
+                carried by HAIRLINE BORDERS and by tone steps,
+                never by fills. The chrome steps (card, popover,
+                sidebar) sit 0.02–0.03 oklch above the canvas; the
+                nested and hover surfaces (muted, accent) sit
+                ~0.10 above it and stay under 0.13 — which is why
+                nothing in this theme leans on a shadow for rest
+                separation
+     accent     exactly one, cold (hue ~232), used sparingly:
+                primary action fills, focus rings, the one thin
+                active indicator, small interactive icon states.
+                No secondary or tertiary accent — the shadcn
+                `secondary`/`accent` roles are neutral tones on
+                purpose, so a stray `bg-accent` cannot paint
+                colour
+     text       muted ladder — `foreground` for content, and
+                `muted-foreground` for everything secondary. No
+                coloured chrome, no gradients, no glows
+
+   `[data-theme="dark"]` repeats the black theme verbatim
+   because shadcn's `dark:` variant is written against it, and
+   so that an explicitly-marked dark root resolves the same way
+   as the default. Dark is the default: an un-marked `:root`
+   already paints black, which matches tokens.css.
+
+   Theme selection uses the SAME mechanism as the merged tokens:
+   the `data-theme` attribute on the root element (tokens.css
+   "THEME MECHANISM"), not a `.dark` class the app never sets.
+
+   Contrast (WCAG AA, measured by src/theme.test.ts through the
+   sRGB conversion of these oklch values; alpha composited in
+   sRGB space, as the browser does):
+     foreground / background     17.88     foreground / card   17.14
+     foreground / muted          14.86     foreground / sidebar 17.41
+     muted-foreground / background  5.88
+     muted-foreground / card        5.64
+     muted-foreground / muted       4.89    (the tightest text pair)
+     muted-foreground / accent      4.76
+     primary-foreground / primary   8.17
+     destructive-foreground / destructive 7.43
+     destructive / background      7.43
+     destructive over its own 10% wash     6.66
+     border (12% white) over the canvas    1.33 — a hairline, not
+       a control boundary. WCAG 1.4.11's 3:1 floor applies to
+       boundaries a user needs in order to identify a control;
+       a decorative seam is exempt, and the rest of this theme
+       leans on tone steps for those instead. The number is
+       pinned by test so a "hairline" cannot quietly become
+       invisible.
+   ============================================================ */
+:root,
+:root[data-theme="dark"] {
+    --background: oklch(0.145 0.004 264);
+    --foreground: oklch(0.965 0.003 264);
+
+    --card: oklch(0.175 0.004 264);
+    --card-foreground: oklch(0.965 0.003 264);
+
+    --popover: oklch(0.175 0.004 264);
+    --popover-foreground: oklch(0.965 0.003 264);
+
+    /* The one accent. Cold blue, light enough to carry the
+       near-black canvas colour as text on its fill and to stay
+       visible as a hairline. */
+    --primary: oklch(0.72 0.12 232);
+    --primary-foreground: oklch(0.145 0.004 264);
+
+    /* Neutral roles, deliberately achromatic. */
+    --secondary: oklch(0.24 0.004 264);
+    --secondary-foreground: oklch(0.965 0.003 264);
+
+    --muted: oklch(0.24 0.004 264);
+    --muted-foreground: oklch(0.64 0.008 264);
+
+    --accent: oklch(0.25 0.004 264);
+    --accent-foreground: oklch(0.965 0.003 264);
+
+    /* Destructive. Not muted — a destructive state that has to be
+       squinted at is a destructive state that gets clicked. What
+       keeps it from becoming chrome is that nothing else in this
+       theme is red: it is loud BECAUSE it is singular. It also
+       has to clear AA in both pairings it is used in, including
+       as text on the `destructive/10` wash shadcn's destructive
+       button variant paints behind it. See the ledger above. */
+    --destructive: oklch(0.72 0.16 22);
+    --destructive-foreground: oklch(0.145 0.004 264);
+
+    /* Hairlines. Border carries separation everywhere in this
+       theme, so it sits as low as still reads as a line. */
+    --border: oklch(1 0 0 / 12%);
+    --input: oklch(1 0 0 / 14%);
+
+    /* Focus ring carries the accent — the sanctioned accent
+       use after an action fill. */
+    --ring: oklch(0.72 0.12 232);
+
+    /* Chart ramp: one cold accent, then neutral steps. No
+       rainbow categorical palette in a monochrome shell. */
+    --chart-1: oklch(0.72 0.12 232);
+    --chart-2: oklch(0.62 0.01 264);
+    --chart-3: oklch(0.52 0.01 264);
+    --chart-4: oklch(0.42 0.01 264);
+    --chart-5: oklch(0.34 0.01 264);
+
+    --sidebar: oklch(0.165 0.004 264);
+    --sidebar-foreground: oklch(0.965 0.003 264);
+    --sidebar-primary: oklch(0.72 0.12 232);
+    --sidebar-primary-foreground: oklch(0.145 0.004 264);
+    --sidebar-accent: oklch(0.24 0.004 264);
+    --sidebar-accent-foreground: oklch(0.965 0.003 264);
+    --sidebar-border: oklch(1 0 0 / 10%);
+    --sidebar-ring: oklch(0.72 0.12 232);
+
+    /* One shape scale. `--radius` is the step shadcn's
+       `rounded-md` utilities resolve from, and it is set to the
+       control step of the Nexora scale (8px, shape.small):
+       controls and fields round small, meaningful containers
+       take the larger steps that `--radius-*` derives. */
+    --radius: 0.5rem;
+}
+
+/* Light counterpart. Not a restyle of anything — it exists so
+   a light root resolves instead of falling through to the black
+   theme, and so light-only surfaces have honest values when they
+   arrive. Same discipline: near-white canvas, barely-darker
+   surfaces, hairline borders, the SAME single cold accent so
+   identity does not change with the theme.
+
+   Selected by `[data-theme="light"]` on the root, which is the
+   mechanism the app actually uses (src/lib/useAppearance.ts writes
+   `documentElement.dataset.theme`; tokens.css uses the same
+   attribute, alongside its `.nex-theme-light` class hook). It was
+   `.light`, a class nothing ever sets, so the block was dead. */
+:root[data-theme="light"] {
+    --background: oklch(0.99 0.002 264);
+    --foreground: oklch(0.18 0.004 264);
+
+    --card: oklch(1 0 0);
+    --card-foreground: oklch(0.18 0.004 264);
+
+    --popover: oklch(1 0 0);
+    --popover-foreground: oklch(0.18 0.004 264);
+
+    --primary: oklch(0.52 0.13 232);
+    --primary-foreground: oklch(0.99 0.002 264);
+
+    --secondary: oklch(0.95 0.003 264);
+    --secondary-foreground: oklch(0.18 0.004 264);
+
+    --muted: oklch(0.95 0.003 264);
+    --muted-foreground: oklch(0.46 0.008 264);
+
+    --accent: oklch(0.93 0.003 264);
+    --accent-foreground: oklch(0.18 0.004 264);
+
+    --destructive: oklch(0.55 0.2 22);
+    --destructive-foreground: oklch(0.99 0.002 264);
+
+    --border: oklch(0.18 0.004 264 / 14%);
+    --input: oklch(0.18 0.004 264 / 18%);
+    --ring: oklch(0.52 0.13 232);
+
+    --chart-1: oklch(0.52 0.13 232);
+    --chart-2: oklch(0.58 0.01 264);
+    --chart-3: oklch(0.66 0.01 264);
+    --chart-4: oklch(0.74 0.01 264);
+    --chart-5: oklch(0.82 0.01 264);
+
+    --sidebar: oklch(0.97 0.002 264);
+    --sidebar-foreground: oklch(0.18 0.004 264);
+    --sidebar-primary: oklch(0.52 0.13 232);
+    --sidebar-primary-foreground: oklch(0.99 0.002 264);
+    --sidebar-accent: oklch(0.93 0.003 264);
+    --sidebar-accent-foreground: oklch(0.18 0.004 264);
+    --sidebar-border: oklch(0.18 0.004 264 / 14%);
+    --sidebar-ring: oklch(0.52 0.13 232);
+}
+
+/* ----------------------------------------------------------
+   REDUCED MOTION — one block, in one file:
+   src/styles/motion.css, imported above with layer(base).
+
+   That block already collapses duration and delay; #218 adds the
+   two properties the Tailwind side needs to it, in place:
+
+     * animation-iteration-count: 1 — the skeleton's pulse and the
+       progress slide are `infinite`; collapsed to 0.01ms they
+       would keep looping instead of settling
+     * animation-fill-mode: forwards — a collapsed entrance
+       resolves to its END frame only if the end frame is held;
+       without it a 0.01ms animation can flash back to its start
+
+   Being in `base` — ahead of the Tailwind utilities layer —
+   its `!important` declarations outrank any utility, because for
+   important declarations the EARLIER layer wins.
+
+   There is deliberately no second copy of this block here. Two
+   reduced-motion blocks in two files drift: the one nobody reads
+   is the one that goes stale, and the tests would read whichever
+   one they happened to be written against. src/lib/motion.test.ts
+   asserts against src/styles/motion.css — the file that ships.
+
+   CSS cannot reach a JS timeline. A rAF loop or a GSAP tween is a
+   clock the stylesheet cannot stop, so every animated component
+   in the stack branches on useReducedMotion()
+   (src/lib/useReducedMotion.ts) instead and renders its static
+   final frame. That half of the gate is pinned by the same test
+   file, with a GSAP spy: "no timeline was created" is the
+   assertion, not "the text happened to look finished".
+   ---------------------------------------------------------- */
