@@ -1,0 +1,8 @@
+# Pinned toolchain for repo-root workspace operations (the CLI crate).
+#
+# Intentionally identical to `src-tauri/rust-toolchain.toml`: a single
+# channel for the whole repo. Kept as a separate file (rather than a
+# symlink, which is fragile on Windows checkouts) — if the channel ever
+# changes, both files must change together.
+[toolchain]
+channel = "1.97.1"

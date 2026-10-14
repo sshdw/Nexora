@@ -121,3 +121,44 @@ jobs:
 
       - name: npm run build
         run: npm run build
+
+  cli:
+    name: cli (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install baseline Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Resolve pinned toolchain (rust-toolchain.toml)
+        run: |
+          rustup component add clippy rustfmt
+          rustc --version
+          cargo clippy --version
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .->target
+          shared-key: ${{ runner.os }}-cli
+
+      - name: cargo fmt (cli)
+        run: cargo fmt -p nexora-cli -- --check
+
+      - name: cargo clippy (cli)
+        run: cargo clippy -p nexora-cli --all-targets --all-features -- -D warnings
+
+      - name: cargo test (cli)
+        run: cargo test -p nexora-cli
+
+      - name: Run stub --help/--version/doctor
+        run: cargo run -p nexora-cli -- --help && cargo run -p nexora-cli -- --version && cargo run -p nexora-cli -- doctor

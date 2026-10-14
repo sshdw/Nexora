@@ -27,3 +27,7 @@ dist-ssr
 # Tauri
 src-tauri/target
 src-tauri/gen
+
+# Repo-root Cargo workspace (CLI): build artifacts
+/target
+apps/nexora-cli/target
