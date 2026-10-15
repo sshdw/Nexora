@@ -1,11 +1,11 @@
 /* ============================================================
    COMPOSER — the conversation's single dominant control (#220)
 
-   Rebuilt Cursor-style on the black theme: ONE rounded
-   container (`.nex-composer-shell`) holding the field, its
-   inline shortcut-teaching line, and a compact bottom control
+   Rebuilt Cursor-style on the mono theme (#220, repainted #235):
+   ONE rounded container (`.nex-composer-shell`) holding the field,
+   its inline shortcut-teaching line, and a compact bottom control
    row — attach, the two primary modes, the mode/model picker,
-   and the one accent fill (send). Everything else recedes.
+   and the one light fill (send). Everything else recedes.
 
    Anatomy stolen from the owner-supplied reference: the single
    rounded container; a placeholder that TEACHES the shortcuts
@@ -298,7 +298,13 @@ export default function Composer({
                   aria-label={t("conv.modePickerAria")}
                   title={t("conv.modelTagTitle")}
                 >
-                  <span className="nex-composer-model-name">
+                  <span
+                    className={
+                      selectedModel === null
+                        ? "nex-composer-model-name is-placeholder"
+                        : "nex-composer-model-name"
+                    }
+                  >
                     {selectedModel ?? t("conv.modelNone")}
                   </span>
                   <ChevronDownIcon />

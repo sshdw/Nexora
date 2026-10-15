@@ -1,6 +1,19 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+// Type payloads, NOT stylesheet entries. These two imports emit
+// only `@font-face` registrations (no selectors, no cascade
+// participants), so they cannot outrank a utility the way an
+// unlayered sheet would — the "exactly one stylesheet entry"
+// gate in src/theme.test.ts still holds, by construction (it
+// matches only `*.css` import paths, and these are bare
+// specifiers). Owner-approved freeze exception per NEXORA-THEME.md
+// §3 (#235): `@fontsource-variable/inter` (variable, all seven
+// subsets incl. cyrillic in the one index.css) + `@fontsource/
+// cascadia-code` (400). The stacks live in src/index.css
+// (`--font-sans` / `--font-mono`).
+import "@fontsource-variable/inter";
+import "@fontsource/cascadia-code";
 // The ONLY stylesheet import in the app (#218). The Tailwind/shadcn
 // theme layers AND every merged M3E sheet are pulled in from here, in
 // one place, each with an explicit cascade layer — see the CASCADE note

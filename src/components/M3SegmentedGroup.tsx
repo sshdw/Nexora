@@ -145,7 +145,7 @@ export default function M3SegmentedGroup<T extends string>({
             aria-label={option.ariaLabel}
             className={cn(
               "inline-flex items-center gap-1.5 text-sm whitespace-nowrap transition-colors outline-none",
-              "focus-visible:ring-3 focus-visible:ring-ring/50",
+              "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
               "disabled:pointer-events-none disabled:opacity-50",
               isConnected
                 ? "h-8 border-r border-border px-3 last:border-r-0"

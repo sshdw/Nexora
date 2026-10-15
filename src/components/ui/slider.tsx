@@ -19,19 +19,20 @@
    slider inherits its accessibility from the primitive
    instead of re-deriving it.
 
-   Two rewrites against the generated recipe, both the black
+   Two rewrites against the generated recipe, both the mono
    theme in src/index.css speaking:
 
      1. The generated thumb is `bg-white`, which is not a
         shadcn semantic token — under a light theme it would
         be a white dot on a pale track. It is `bg-primary`
-        here: one cold accent, the same tone the range fill
+        here: the light fill, the same tone the range fill
         uses, so the active position is read as one thing.
      2. The generated thumb carries a permanent
         `ring-ring/50` halo. The hairline rules say a control
         announces itself with a border and a focus ring, not
         with a resting glow, so the ring is `focus-visible`
-        only.
+        only — 2px solid at 80% with a 2px offset, like every
+        other focus in this theme (#235).
 
    And one bug fix against it: the recipe sizes the track with
    `data-horizontal:h-1`, which Tailwind compiles to
@@ -106,7 +107,7 @@ function Slider({
         <SliderPrimitive.Thumb
           data-slot="slider-thumb"
           key={index}
-          className="relative block size-3 shrink-0 rounded-full border border-primary bg-primary ring-ring transition-[color,box-shadow] select-none hover:ring-3 focus-visible:ring-3 focus-visible:outline-hidden active:ring-3 disabled:pointer-events-none disabled:opacity-50"
+          className="relative block size-3 shrink-0 rounded-full border border-primary bg-primary ring-ring transition-[color,box-shadow] select-none hover:ring-2 focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-background focus-visible:outline-hidden active:ring-2 disabled:pointer-events-none disabled:opacity-50"
           {...thumbProps}
         />
       ))}

@@ -361,7 +361,9 @@
 .nex-input:focus,
 .nex-select:focus,
 .nex-textarea:focus {
-  border-color: var(--nex-sys-focus-field-color);
+  /* THEME §1 (mono, #235): the focus signal is the theme ring, not
+     the M3E amber field tint. */
+  border-color: var(--ring);
   background: var(--nex-sys-color-surface-container-high);
 }
 
@@ -427,9 +429,11 @@
   /* Focus deepens to the SAME step hover does, it does not snap the
      fill back to the nested tier underneath the pointer (an earlier
      build did, so moving the mouse onto a focused field visibly
-     reversed a full tier). The accent border is the focus signal. */
+     reversed a full tier). The theme ring is the focus signal
+     (THEME §1, mono — #235 repoints the old amber border here;
+     the 2px ring itself lives on :focus-visible above). */
   background: var(--nex-sys-color-surface-container-high);
-  border-color: var(--nex-sys-focus-field-color);
+  border-color: var(--ring);
   outline: none;
 }
 
@@ -437,15 +441,15 @@
    The global :focus-visible ring (theme.css) loses to the
    outline:none resets above on specificity, leaving only a
    sub-3:1 border shift (measured 2.98 dark / 1.65 light). These
-   :focus-visible rules restore the token ring on top of the
-   border-moment (blended ring 4.32:1 vs the field fill in dark;
-   high-contrast solid 2px). Tokens only, no new values. */
+   :focus-visible rules restore the mono theme ring on top of the
+   border-moment (THEME §1: 2px solid white 80% + 2px offset,
+   #235). Tokens only, no new values. */
 .nex-input:focus-visible,
 .nex-select:focus-visible,
 .nex-textarea:focus-visible,
 .nex-search-input:focus-visible {
-  outline: var(--nex-sys-focus-ring-width) solid var(--nex-sys-focus-ring-color);
-  outline-offset: var(--nex-sys-focus-ring-offset);
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
 }
 
 /* ============================================================

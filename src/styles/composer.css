@@ -41,10 +41,12 @@
         `--destructive`). No `--nex-sys-*`, no raw hex, no
         rgb()/hsl(). A surface added to the composer must be
         able to follow a theme change by editing index.css.
+        Type is the theme's `--font-sans`, code/model names the
+        theme's `--font-mono` — no hardcoded stacks.
      2. NO GLAMOUR. No gradient, no glow, no shadow, no fill
         where a hairline would do. Separation is `--border`;
-        the only accent is the send action, the focus ring and
-        the one selected-model tick.
+        the only light marks are the send fill, the focus ring
+        and the one selected-model tick.
      3. THE GLOBAL MOTION GATE IS NOT RE-STATED. Durations
         come from `src/styles/motion.css` (`--motion-*`), whose
         `prefers-reduced-motion` block (imported layer(base),
@@ -78,6 +80,7 @@
   padding: 10px 16px 14px;
   background: var(--background);
   border-top: 1px solid var(--border);
+  font-family: var(--font-sans);
 }
 
 /* The reading column. 760px is the thread's measure
@@ -107,8 +110,9 @@
   transition: border-color var(--motion-duration-fast) var(--motion-easing-standard);
 }
 
-/* Focus-within lifts the seam to the accent hairline — the one
-   sanctioned accent use before an action fill. */
+/* Focus-within lifts the seam to the light hairline — a tone
+   step, not a colour. The keyboard ring itself is the 2px white
+   ring with offset on the focused control (below). */
 .nex-composer-shell:focus-within {
   border-color: color-mix(in oklch, var(--ring) 55%, transparent);
 }
@@ -185,7 +189,7 @@
 /* A key chip: hairline + the nested surface tone, mono, dim.
    Read as punctuation, never as a button. */
 .nex-composer-teach kbd {
-  font-family: ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 0.75rem;
   line-height: 1;
   padding: 3px 5px;
@@ -228,16 +232,19 @@
 
 /* The M3E primitives the composer reuses (`.nex-seg` pills, the
    chip's `.nex-icon-btn` remove) carry the app-wide focus ring from
-   theme.css, which is a WARM 1px outline — invisible against a
-   near-black composer and wrong beside the shadcn buttons' accent
-   ring. Re-pointed at the black theme, and only inside the
-   composer: the same ring, spelled the way the rest of the stack
-   spells it (accent at 50%, 3px), so one keyboard pass moves
-   through the whole control row without a colour change. */
+   theme.css, which is a flat outline with no offset gap — invisible
+   against a near-black composer and wrong beside the shadcn buttons'
+   gapped white ring. Re-pointed at the mono theme, and only inside the
+   composer: 2px solid at 80% over a 2px background-colour gap
+   (the THEME §1 ring, spelled as two shadows because plain CSS
+   has no ring-offset), so one keyboard pass moves through the
+   whole control row without a colour change. */
 .nex-composer .nex-seg button:focus-visible,
 .nex-composer .nex-icon-btn:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px color-mix(in oklch, var(--ring) 50%, transparent);
+  box-shadow:
+    0 0 0 2px var(--background),
+    0 0 0 4px var(--ring);
 }
 
 /* The two primary modes (Chat / Agent) as pill buttons. Same
@@ -278,9 +285,9 @@
   font-weight: 500;
 }
 
-/* The selected mode carries the theme's one thin accent tick
-   instead of an accent fill: at rest the composer stays
-   near-black and only one mark is coloured. */
+/* The selected mode carries the theme's one thin light tick
+   instead of a colour fill: at rest the composer stays
+   near-black and only one mark is light. */
 .nex-composer-pill-dot {
   width: 5px;
   height: 5px;
@@ -290,7 +297,7 @@
 }
 
 .nex-composer-pills.nex-seg button.is-active .nex-composer-pill-dot {
-  background: var(--primary);
+  background: var(--tick);
 }
 
 /* ---- Mode / model picker ---------------------------------------------- */
@@ -303,8 +310,16 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 0.75rem;
+}
+
+/* Placeholder state ("no model selected") is a UI label, not a model
+   name: THEME §3 scopes mono to code/paths/ids/model names, so it
+   renders the sans face. A real model name keeps --font-mono above;
+   the menu rows below are model ids and stay mono too. */
+.nex-composer-model-name.is-placeholder {
+  font-family: var(--font-sans);
 }
 
 /* The menu: the same `--popover` tone as the composer shell,
@@ -321,7 +336,7 @@
 
 /* Model list: the same segmented primitive, stacked. Rows are
    quiet; the picked one carries a neutral wash plus the one
-   thin accent tick on its leading edge. */
+   thin light tick on its leading edge. */
 .nex-composer-model-list.nex-seg {
   flex-direction: column;
   align-self: stretch;
@@ -342,7 +357,7 @@
   min-height: 30px;
   padding: 6px 8px;
   border-radius: var(--radius-sm);
-  font-family: ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 0.75rem;
   text-align: left;
   color: var(--muted-foreground);
@@ -360,8 +375,8 @@
   font-weight: 400;
 }
 
-/* The tick. Width 2px, full row height, accent — the only
-   coloured mark in the menu. */
+/* The tick. Width 2px, full row height, the light fill at 70%
+   (`--tick`) — the only bright mark in the menu. */
 .nex-composer-model-list.nex-seg button.is-active::before {
   content: "";
   position: absolute;
@@ -370,7 +385,7 @@
   bottom: 4px;
   width: 2px;
   border-radius: var(--radius-3xl);
-  background: var(--primary);
+  background: var(--tick);
 }
 
 .nex-composer-model-empty {
@@ -386,7 +401,10 @@
   border-top: 1px solid var(--border);
 }
 
-/* ---- Send: the one accent fill in the composer ------------------------ */
+/* ---- Send: the light fill in the composer ---------------------------
+   The one light-fill action: `ui/button`'s default variant on
+   `--primary`. Send-to-Cancel during a run is a P4 item, not
+   faked here. */
 .nex-composer-send {
   flex-shrink: 0;
 }
@@ -549,7 +567,7 @@
 
 .nex-context-budget-value {
   flex-shrink: 0;
-  font-family: ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 0.75rem;
   color: var(--muted-foreground);
 }
@@ -562,10 +580,11 @@
   color: var(--muted-foreground);
 }
 
-/* Over budget. The one place in this block that spends the accent on
-   a STATE rather than on a control, and deliberately the loudest:
-   `ctx.budgetHint` tells the reader this is what "over" looks like,
-   so the promise and the paint have to agree. */
+/* Over budget. The one place in this block that spends a STATE
+   colour rather than a neutral: `ctx.budgetHint` tells the
+   reader this is what "over" looks like, so the promise and the
+   paint have to agree. `--destructive` is a state role, not
+   chrome — the mono theme reserves hue for exactly this. */
 .nex-context-budget-reading.is-over {
   color: var(--destructive);
   font-weight: 500;
