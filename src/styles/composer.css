@@ -297,7 +297,7 @@
 }
 
 .nex-composer-pills.nex-seg button.is-active .nex-composer-pill-dot {
-  background: var(--primary);
+  background: var(--tick);
 }
 
 /* ---- Mode / model picker ---------------------------------------------- */
@@ -367,8 +367,8 @@
   font-weight: 400;
 }
 
-/* The tick. Width 2px, full row height, the light fill — the
-   only bright mark in the menu. */
+/* The tick. Width 2px, full row height, the light fill at 70%
+   (`--tick`) — the only bright mark in the menu. */
 .nex-composer-model-list.nex-seg button.is-active::before {
   content: "";
   position: absolute;
@@ -377,7 +377,7 @@
   bottom: 4px;
   width: 2px;
   border-radius: var(--radius-3xl);
-  background: var(--primary);
+  background: var(--tick);
 }
 
 .nex-composer-model-empty {

@@ -179,6 +179,7 @@
     --color-primary: var(--primary);
     --color-primary-hover: var(--primary-hover);
     --color-primary-pressed: var(--primary-pressed);
+    --color-tick: var(--tick);
     --color-popover-foreground: var(--popover-foreground);
     --color-popover: var(--popover);
     --color-card-foreground: var(--card-foreground);
@@ -331,6 +332,10 @@
     --primary-foreground: oklch(0.165 0.006 286);
     --primary-hover: oklch(0.965 0.006 85);
     --primary-pressed: oklch(0.871 0.009 78);
+    /* The 2px active tick: the light fill at 70% (THEME §2). A
+       dedicated token — not `bg-primary/70` scattered at three
+       call sites — so the alpha lives in one place. */
+    --tick: oklch(0.938 0.005 68 / 70%);
 
     /* Neutral roles, deliberately achromatic. */
     --secondary: oklch(0.24 0.004 264);
@@ -415,6 +420,10 @@
     --primary-foreground: oklch(0.938 0.005 68);
     --primary-hover: oklch(0.28 0.006 286);
     --primary-pressed: oklch(0.1 0.003 286);
+    /* Light-theme tick: the dark tone at 70%, so it reads on
+       white (D8 judgement — THEME §2 tables the dark canvas only,
+       noted in the #235 PR body). */
+    --tick: oklch(0.165 0.006 286 / 70%);
 
     --secondary: oklch(0.95 0.003 264);
     --secondary-foreground: oklch(0.18 0.004 264);

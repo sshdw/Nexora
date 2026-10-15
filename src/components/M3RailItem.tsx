@@ -58,7 +58,7 @@ export default function M3RailItem({
     >
       {active ? (
         <span
-          className="absolute top-1/2 left-0 h-4 w-0.5 -translate-y-1/2 rounded-full bg-primary"
+          className="absolute top-1/2 left-0 h-4 w-0.5 -translate-y-1/2 rounded-full bg-tick"
           aria-hidden="true"
         />
       ) : null}

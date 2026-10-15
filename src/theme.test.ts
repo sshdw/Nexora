@@ -443,8 +443,9 @@ describe("black theme — variable coverage", () => {
     // extractor lost 16 of 17; a set check makes a registry update
     // that introduces a colour utility a diff somebody has to read.
     // (#235: +`bg-primary-hover`/`bg-primary-pressed` — the
-    // light-fill hover/pressed steps — and
-    // +`ring-offset-background` — the 2px focus gap's paint.)
+    // light-fill hover/pressed steps — +`ring-offset-background`
+    // — the 2px focus gap's paint — and +`text-muted-foreground`
+    // — the disabled default's muted text, no fill.)
     expect(button).toEqual([
       "bg-background",
       "bg-destructive",
@@ -463,6 +464,7 @@ describe("black theme — variable coverage", () => {
       "ring-ring",
       "text-destructive",
       "text-foreground",
+      "text-muted-foreground",
       "text-primary",
       "text-primary-foreground",
       "text-secondary-foreground",
