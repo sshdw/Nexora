@@ -1,22 +1,25 @@
-//! Dialog primitive (0.2.2 component layer).
+//! Dialog primitive (library) — #230 Phase 0.
 //!
-//! Shared modal chrome for every screen: scrim, elevated card, title and
-//! action row come from the .nex-dialog* token-driven system in
-//! components.css; this module owns only the accessibility semantics the
-//! audit requires of dialogs (§9.5): Esc to close, initial focus, Tab
-//! cycling trapped inside the card, and focus restoration on close.
-//! It renders no business logic — callers keep full control of flows.
+//! Shared modal chrome for every screen. This module owns only the
+//! accessibility semantics the audit requires of dialogs: Esc to
+//! close, initial focus, Tab cycling trapped inside the card, focus
+//! restoration on close, and background inertness. It renders no
+//! business logic — callers keep full control of flows.
 //!
 //! While `busy`, Esc and backdrop clicks are ignored so an in-flight
-//! operation cannot be dismissed mid-write (existing behavior preserved).
+//! operation cannot be dismissed mid-write (existing behavior
+//! preserved).
 //!
-//! Background inertness (0.2.5 QA pass): while the dialog is open every
-//! element outside it is marked `inert`, so screen-reader virtual cursor
-//! navigation cannot reach content behind the modal. The walk is idempotent
-//! per instance (only elements this instance flipped are restored), so
-//! StrictMode double-mounting and stacked dialogs behave correctly.
+//! #230 Phase 0 moves the chrome onto the black theme's tokens
+//! (`--popover`/`--popover-foreground`/`--border`/`--background`
+//! scrim) and a single hairline border + floating-layer shadow — no
+//! `--nex-sys-*` value and no `nex-*` class remains. The exit is a
+//! plain opacity transition on the utilities layer, collapsed by the
+//! global reduced-motion gate; `EXIT_MS` stays in sync with it.
 
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+
+import { cn } from "../lib/utils";
 
 const FOCUSABLE_SELECTOR = [
   "a[href]",
@@ -27,9 +30,9 @@ const FOCUSABLE_SELECTOR = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(",");
 
-/** Exit-animation window. Mirrors the OFFICIAL short4 anchor used by
- * .nex-dialog-exit; collapses to 0 when the user prefers reduced motion
- * (the global CSS gate already renders the exit instantly). */
+/** Exit-animation window. Mirrors the opacity transition below;
+ * collapses to 0 when the user prefers reduced motion (the global CSS
+ * gate already renders the exit instantly). */
 const EXIT_MS = matchMedia("(prefers-reduced-motion: reduce)").matches
   ? 0
   : 200;
@@ -55,10 +58,10 @@ export default function ModalShell({
   const cardRef = useRef<HTMLDivElement>(null);
   const backdropRef = useRef<HTMLDivElement>(null);
   const restoreRef = useRef<HTMLElement | null>(null);
-  // 0.3.0 exit motion: the shell stays mounted while the card/scrim play
-  // the OFFICIAL short4 exit, then the parent's onClose unmounts for real.
-  // Purely presentational — dismissal semantics (Esc/backdrop/Cancel) and
-  // focus restoration are unchanged.
+  // Exit motion: the shell stays mounted while the card/scrim fade,
+  // then the parent's onClose unmounts for real. Purely presentational —
+  // dismissal semantics (Esc/backdrop/Cancel) and focus restoration are
+  // unchanged.
   const [closing, setClosing] = useState(false);
   const closingRef = useRef(false);
   const onCloseRef = useRef(onClose);
@@ -152,25 +155,29 @@ export default function ModalShell({
   return (
     <div
       ref={backdropRef}
-      className={
-        "nex-dialog-backdrop" +
-        (closing ? " is-closing" : "") +
-        (align === "top" ? " is-top" : "")
-      }
+      className={cn(
+        "fixed inset-0 z-50 flex bg-background/80 p-4 transition-opacity duration-200",
+        align === "top" ? "items-start justify-center pt-12" : "items-center justify-center",
+        closing ? "opacity-0" : "opacity-100",
+      )}
       role="presentation"
       onClick={busy ? undefined : requestClose}
       onKeyDown={handleKeyDown}
     >
       <div
         ref={cardRef}
-        className={"nex-dialog-card" + (closing ? " is-closing" : "")}
+        className={cn(
+          "relative w-full max-w-lg rounded-lg border border-border bg-popover p-5 text-popover-foreground shadow-lg outline-none",
+          "transition-opacity duration-200",
+          closing ? "opacity-0" : "opacity-100",
+        )}
         role="dialog"
         aria-modal="true"
         aria-label={title}
         tabIndex={-1}
         onClick={(event) => event.stopPropagation()}
       >
-        <h3 className="nex-dialog-title">{title}</h3>
+        <h3 className="mb-3 text-base font-medium text-foreground">{title}</h3>
         {children}
       </div>
     </div>

@@ -1,15 +1,16 @@
-//! M3E icon button (library primitive).
+//! Icon button (library primitive) — #230 Phase 0.
 //!
-//! OFFICIAL grammar (skill components.md "Icon buttons"): quiet at rest,
-//! accent only on small interactive states, fast-effects color/state fades,
-//! press = 12% layer. `label` is required: it becomes both the aria-label
-//! and the tooltip text, so icon-only controls always carry an accessible
-//! name with keyboard-focus parity (skill components.md + accessibility.md).
-//! Sizes: sm 28 (in-row actions) · md 36 (headers) · lg 44. Reduced motion:
-//! state fades collapse via the motion.css gate.
+//! The canonical icon-only control, an adapter over the vendored
+//! `ui/button` (ghost variant, icon sizes). `label` is required: it
+//! becomes both the aria-label and the tooltip text, so icon-only
+//! controls always carry an accessible name with keyboard-focus
+//! parity. Sizes: sm 28 (in-row actions) · md 32 (headers) · lg 36.
+//! `danger` keeps the error tone on hover/focus only (never idle
+//! colour), matching the destructive-role discipline.
 
 import type { ButtonHTMLAttributes, ReactNode } from "react";
 
+import { Button } from "./ui/button";
 import Tooltip from "./Tooltip";
 
 export interface M3IconButtonProps
@@ -17,10 +18,12 @@ export interface M3IconButtonProps
   /** Accessible name (required): aria-label + tooltip + title. */
   label: string;
   size?: "sm" | "md" | "lg";
-  /** Error tone on hover/press only (never idle color). */
+  /** Error tone on hover/focus only (never idle colour). */
   danger?: boolean;
   children: ReactNode;
 }
+
+const SIZE = { sm: "icon-sm", md: "icon", lg: "icon-lg" } as const;
 
 export default function M3IconButton({
   label,
@@ -32,25 +35,24 @@ export default function M3IconButton({
   ...rest
 }: M3IconButtonProps) {
   const classes = [
-    "nex-icon-btn",
-    size === "sm" ? "nex-icon-btn-sm" : "",
-    size === "lg" ? "nex-icon-btn-lg" : "",
-    danger ? "nex-icon-btn-danger" : "",
+    danger ? "hover:text-destructive focus-visible:text-destructive" : "",
     className,
   ]
     .filter(Boolean)
     .join(" ");
   return (
     <Tooltip label={label}>
-      <button
+      <Button
         type={type}
+        variant="ghost"
+        size={SIZE[size]}
         className={classes}
         aria-label={label}
         title={label}
         {...rest}
       >
         {children}
-      </button>
+      </Button>
     </Tooltip>
   );
 }

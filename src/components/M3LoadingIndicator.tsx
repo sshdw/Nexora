@@ -1,12 +1,17 @@
-//! M3E contained loading indicator for waits under ~5s (library).
+//! Contained loading indicator for waits under ~5s (library) — #230 Phase 0.
 //!
-//! OFFICIAL split (skill components.md "Loading indicators"): <200ms none ·
-//! 200ms–5s loading indicator · >5s progress indicator. The contained variant
-//! sits in a quiet tone pill with a bouncy expressive dot rhythm (transform/
-//! opacity only, official spring-to-CSS bezier) — never accent-colored washes
-//! near reading surfaces. role="status" announces politely; the visible text
-//! label always accompanies the motion so reduced motion (static dots + text
-//! via the motion.css gate) loses no information.
+//! The waiting state for a bounded read. `role="status"` announces
+//! politely, and the visible text label always accompanies the glyph
+//! so reduced motion (spinner frozen by the global gate) loses no
+//! information. SYSTEM §8: a spinner is never the sole proof of work,
+//! so the label is required.
+//!
+//! Painted from shadcn tokens (`--muted-foreground` text) — no
+//! `--nex-sys-*` value remains. The glyph is the shared `Spinner`
+//! (ui/spinner), so every loading state in the rebuild reads the same.
+
+import { cn } from "../lib/utils";
+import { Spinner } from "./ui/spinner";
 
 export interface M3LoadingIndicatorProps {
   /** Short waiting description, e.g. "Loading messages". Announced and
@@ -21,17 +26,14 @@ export default function M3LoadingIndicator({
 }: M3LoadingIndicatorProps) {
   return (
     <div
-      className={
-        "nex-m3-loading" + (size === "sm" ? " nex-m3-loading-sm" : "")
-      }
+      className={cn(
+        "inline-flex items-center gap-2 text-muted-foreground",
+        size === "sm" ? "text-xs" : "text-sm",
+      )}
       role="status"
     >
-      <span className="nex-m3-loading-dots" aria-hidden="true">
-        <span className="nex-m3-loading-dot" />
-        <span className="nex-m3-loading-dot" />
-        <span className="nex-m3-loading-dot" />
-      </span>
-      <span className="nex-m3-loading-label">{label}</span>
+      <Spinner className={size === "sm" ? "size-3" : "size-4"} aria-hidden="true" />
+      <span>{label}</span>
     </div>
   );
 }

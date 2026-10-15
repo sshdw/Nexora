@@ -652,3 +652,30 @@ export function ReleaseIcon(props: ComponentPropsWithoutRef<"svg">) {
     </svg>
   );
 }
+
+/** Loading spinner glyph (#230 Phase 0): an open ring on the same 16px
+ * grid as the action set. The rotation is CSS (`animate-spin` on the
+ * consuming ui/spinner), never baked into the glyph — so this is a
+ * static shape the reduced-motion gate can freeze while the label text
+ * beside it keeps the information. */
+export function LoaderIcon(props: ComponentPropsWithoutRef<"svg">) {
+  return (
+    <svg
+      aria-hidden="true"
+      focusable="false"
+      width="16"
+      height="16"
+      viewBox="0 0 16 16"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      {...props}
+    >
+      <path
+        d="M8 2.25a5.75 5.75 0 1 1-5.75 5.75"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}

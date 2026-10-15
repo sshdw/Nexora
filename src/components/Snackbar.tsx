@@ -1,15 +1,15 @@
-//! Snackbar primitive (0.2.2 component layer).
+//! Snackbar primitive (library) — #230 Phase 0.
 //!
-//! Transient post-action feedback on the inverse-surface pair with at most
+//! Transient post-action feedback on the popover surface with at most
 //! one action (skill components.md — snackbars). Announced politely via
-//! role="status"; actionable snackbars stay visible longer than plain ones.
-//! Dismissal is the parent's decision: this component only reports intent,
-//! so unmount removes it instantly (the calm-close convention used by every
-//! transient surface in 0.2.2).
+//! role="status"; actionable snackbars stay visible longer than plain
+//! ones. Dismissal is the parent's decision: this component only
+//! reports intent, so unmount removes it instantly.
 //!
-//! Shipped in 0.2.2 as an unconsumed design-system primitive per the 0.2.1
-//! audit (§11.12): wiring it into an existing flow would change product
-//! behavior, which later 0.2.x stages own.
+//! Painted from shadcn tokens (`--popover`/`--border`/`--primary`) —
+//! no `--nex-sys-*` value remains. The enter animation is gone with
+//! the legacy sheet; P7 owns motion, and a toast that simply appears
+//! loses no information.
 
 import { useEffect, useRef } from "react";
 
@@ -46,12 +46,15 @@ export default function Snackbar({
   }, [actionLabel, timeoutMs]);
 
   return (
-    <div className="nex-snackbar" role="status">
+    <div
+      className="fixed right-4 bottom-4 z-50 flex max-w-sm items-center gap-2 rounded-md border border-border bg-popover px-3 py-2 text-sm text-popover-foreground shadow-lg"
+      role="status"
+    >
       <span>{message}</span>
       {actionLabel !== undefined && (
         <button
           type="button"
-          className="nex-snackbar-action"
+          className="shrink-0 rounded-sm px-2 py-0.5 font-medium text-primary transition-colors hover:bg-accent"
           onClick={() => {
             onAction?.();
             dismissRef.current();
