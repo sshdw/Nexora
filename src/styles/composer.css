@@ -314,6 +314,14 @@
   font-size: 0.75rem;
 }
 
+/* Placeholder state ("no model selected") is a UI label, not a model
+   name: THEME §3 scopes mono to code/paths/ids/model names, so it
+   renders the sans face. A real model name keeps --font-mono above;
+   the menu rows below are model ids and stay mono too. */
+.nex-composer-model-name.is-placeholder {
+  font-family: var(--font-sans);
+}
+
 /* The menu: the same `--popover` tone as the composer shell,
    separated by the same hairline. The trigger's own
    open-state ring comes from the primitive. */

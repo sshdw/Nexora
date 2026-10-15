@@ -298,7 +298,13 @@ export default function Composer({
                   aria-label={t("conv.modePickerAria")}
                   title={t("conv.modelTagTitle")}
                 >
-                  <span className="nex-composer-model-name">
+                  <span
+                    className={
+                      selectedModel === null
+                        ? "nex-composer-model-name is-placeholder"
+                        : "nex-composer-model-name"
+                    }
+                  >
                     {selectedModel ?? t("conv.modelNone")}
                   </span>
                   <ChevronDownIcon />
