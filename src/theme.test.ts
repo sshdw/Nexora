@@ -47,7 +47,7 @@ const componentSources: Record<string, string> = {
 };
 
 /**
- * Theme contract for the black theme in src/index.css (#218).
+ * Theme contract for the mono theme in src/index.css (#218, #235).
  *
  * Tailwind resolves theme vars LAZILY: a `bg-primary` whose
  * `--primary` was never defined compiles cleanly and renders as
@@ -61,9 +61,10 @@ const componentSources: Record<string, string> = {
  *   2. TYPED      every colour-bearing role parses as an OKLCH
  *                 value, so the contrast assertions below are
  *                 real measurements rather than string matches.
- *   3. DIRECTION  the canvas is near-black, one cold accent
- *                 carries the identity, the role ladder holds, and
- *                 the text pairs clear WCAG AA.
+ *   3. DIRECTION  the canvas is near-black, NO role carries hue
+ *                 except `--state-ok/warn/err` (+`--destructive`),
+ *                 the primary action is a light fill with dark text
+ *                 at 16.08, and the text pairs clear WCAG AA.
  *   4. CASCADE    the merged M3E sheets load INSIDE a cascade
  *                 layer, from the one stylesheet entry, so
  *                 Tailwind utilities can outrank the legacy
@@ -145,18 +146,41 @@ const mapping = themeMapping();
 const themeKeys = new Set(mapping.keys());
 
 /**
- * Vars this file references that the theme does not own, named and
- * justified rather than swept into a deny-list:
- *   --nex-sys-type-family  declared by src/styles/tokens.css, which
- *                          src/index.css imports above. The stack's
- *                          `--font-sans` aliases it on purpose: the
- *                          app does not adopt a new typeface.
+ * Vars this file references that the theme does not own: none.
+ *
+ * Phase 0 aliased `--font-sans` at the merged token stack
+ * (`--nex-sys-type-family`, declared by src/styles/tokens.css)
+ * because the app adopted no typeface of its own. #235 wires
+ * Inter/Cascadia Code instead (NEXORA-THEME.md §3), so both font
+ * keys now resolve to `--font-sans` / `--font-mono` declared in
+ * the theme blocks below — the map is empty, kept so the next
+ * external reference has a named place to be justified rather
+ * than a deny-list to hide in.
  */
-const externalVars = new Map<string, string>([
-  ["--nex-sys-type-family", "declared by src/styles/tokens.css (imported, layer(base))"],
-]);
+const externalVars = new Map<string, string>([]);
 
-/** `--name` from the dark/default block — the black theme proper. */
+/**
+ * Theme vars that are NOT colours: the shape step and the two
+ * font stacks. The achromatic sweep below parses every other
+ * defined var as OKLCH, so these are named here rather than
+ * skipped silently — an unparseable colour would otherwise pass
+ * by looking like a font.
+ */
+const NON_COLOUR_VARS = new Set(["--radius", "--font-sans", "--font-mono"]);
+
+/** `ring-offset-<colour>` resolves like `bg-<colour>`: Tailwind
+ *  paints the offset from `--color-<colour>`, while
+ *  `ring-offset-<n>` is a WIDTH (2px gap), not a colour at all. */
+function themeKeyForUtility(utility: string): string | null {
+  if (utility.startsWith("ring-offset-")) {
+    const rest = utility.slice("ring-offset-".length);
+    if (/^\d+$/.test(rest)) return null;
+    return `--color-${rest}`;
+  }
+  return `--color-${utility.slice(utility.indexOf("-") + 1)}`;
+}
+
+/** `--name` from the dark/default block — the mono theme proper. */
 function blackThemeVar(name: string): Oklch {
   return blockVar(DARK_BLOCK, name, "dark");
 }
@@ -305,6 +329,10 @@ function colourUtilities(source: string): string[] {
     while (/^[a-z0-9[\]_.-]+:/i.test(bare)) bare = bare.replace(/^[a-z0-9[\]_.-]+:/i, "");
     // Strip the opacity modifier: `bg-destructive/10` -> `bg-destructive`.
     bare = bare.replace(/\/\s*\d+$/, "");
+    // `ring-offset-2` is the focus gap WIDTH, not a colour —
+    // `ring-offset-background` (the gap's paint) is, and is
+    // resolved through themeKeyForUtility below.
+    if (/^ring-offset-\d+$/.test(bare)) continue;
     for (const prefix of COLOUR_PREFIXES) {
       if (!bare.startsWith(prefix)) continue;
       const name = bare.slice(prefix.length);
@@ -401,6 +429,9 @@ describe("black theme — variable coverage", () => {
     expect(button).toEqual(
       expect.arrayContaining([
         "bg-primary",
+        "bg-primary-hover",
+        "bg-primary-pressed",
+        "ring-offset-background",
         "text-primary-foreground",
         "ring-ring",
         "bg-destructive",
@@ -411,18 +442,24 @@ describe("black theme — variable coverage", () => {
     // EXACT, not a subset. A containment check would still pass if the
     // extractor lost 16 of 17; a set check makes a registry update
     // that introduces a colour utility a diff somebody has to read.
+    // (#235: +`bg-primary-hover`/`bg-primary-pressed` — the
+    // light-fill hover/pressed steps — and
+    // +`ring-offset-background` — the 2px focus gap's paint.)
     expect(button).toEqual([
       "bg-background",
       "bg-destructive",
       "bg-input",
       "bg-muted",
       "bg-primary",
+      "bg-primary-hover",
+      "bg-primary-pressed",
       "bg-secondary",
       "border-border",
       "border-destructive",
       "border-input",
       "border-ring",
       "ring-destructive",
+      "ring-offset-background",
       "ring-ring",
       "text-destructive",
       "text-foreground",
@@ -448,7 +485,8 @@ describe("black theme — variable coverage", () => {
     const unresolved: string[] = [];
     for (const [name, source] of Object.entries(componentSources)) {
       for (const utility of colourUtilities(source)) {
-        const key = `--color-${utility.slice(utility.indexOf("-") + 1)}`;
+        const key = themeKeyForUtility(utility);
+        if (key === null) continue;
         const target = mapping.get(key);
         if (target === undefined) {
           unresolved.push(`${name}: ${utility} (no ${key} in @theme inline)`);
@@ -626,18 +664,84 @@ describe("black theme — direction", () => {
     }
   });
 
-  it("uses exactly one accent, and it is cold", () => {
+  it("paints the primary action as a light fill with dark text", () => {
+    // No hue: the action is `#EDEAE7` with the near-black canvas
+    // colour as text on it. Pinned as the 16.08 pair (THEME §2) —
+    // a band, not a point, so rounding the hex→oklch transcription
+    // cannot fail the gate.
     const primary = blackThemeVar("--primary");
-    // Hue 232 = cold blue. Warm accents are the direction the
-    // pivot moved away from.
-    expect(primary.h).toBeGreaterThanOrEqual(200);
-    expect(primary.h).toBeLessThanOrEqual(270);
-    expect(primary.c).toBeGreaterThan(0.05);
+    const onPrimary = blackThemeVar("--primary-foreground");
+    expect(primary.l).toBeGreaterThan(0.9);
+    expect(primary.c).toBeLessThan(0.02);
+    expect(onPrimary.l).toBeLessThan(0.2);
+    const pair = contrastRatio(onPrimary, primary);
+    expect(pair).toBeGreaterThanOrEqual(15.5);
+    expect(pair).toBeLessThanOrEqual(16.6);
   });
 
-  it("keeps the secondary/accent roles achromatic so a stray fill cannot paint colour", () => {
-    for (const name of ["--secondary", "--muted", "--accent"]) {
-      expect(blackThemeVar(name).c).toBeLessThan(0.02);
+  it("steps hover lighter and pressed darker, both achromatic and AA", () => {
+    // State reads through LIGHTNESS, never hue: hover one step up
+    // (`#F5F3EF`), pressed one step down (`#D8D4CE`), dark text on
+    // both still clearing AA.
+    const primary = blackThemeVar("--primary");
+    const onPrimary = blackThemeVar("--primary-foreground");
+    const hover = blackThemeVar("--primary-hover");
+    const pressed = blackThemeVar("--primary-pressed");
+    expect(hover.l).toBeGreaterThan(primary.l);
+    expect(pressed.l).toBeLessThan(primary.l);
+    expect(hover.c).toBeLessThan(0.02);
+    expect(pressed.c).toBeLessThan(0.02);
+    expect(contrastRatio(onPrimary, hover)).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(onPrimary, pressed)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it("keeps every role achromatic except the state roles", () => {
+    // THE mono pin (#235): no permanent blue, amber or violet
+    // anywhere. The ONLY chromatic roles are the state signals —
+    // `--state-ok/warn/err`, plus the pre-existing `--destructive`
+    // — and the pin asserts they ARE chromatic, so a greyed-out
+    // error state fails too. There is deliberately no hue assertion
+    // anywhere in this file anymore: the cold-accent band
+    // (h 200–270) died with the accent.
+    const chromatic = new Set(["--state-ok", "--state-warn", "--state-err", "--destructive"]);
+    const themes = [
+      ["dark", darkDefined],
+      ["light", lightDefined],
+    ] as const;
+    for (const [label, vars] of themes) {
+      for (const [name, value] of vars) {
+        if (NON_COLOUR_VARS.has(name)) continue;
+        const parsed = parseOklch(value);
+        if (!parsed) throw new Error(`src/index.css: ${name} is not an oklch() value (${label})`);
+        if (chromatic.has(name)) {
+          expect(parsed.c).toBeGreaterThan(0.02);
+        } else {
+          expect(parsed.c).toBeLessThan(0.02);
+        }
+      }
+    }
+  });
+
+  it("rings focus in white at 80%, not in colour", () => {
+    // THEME §1: 2px solid white 80% + 2px offset. The token is the
+    // colour; the width/offset live on the components (utilities:
+    // `ring-2` + `ring-offset-2`; plain CSS: the two-shadow spell
+    // in composer.css).
+    const ring = blackThemeVar("--ring");
+    expect(ring.l).toBeGreaterThan(0.99);
+    expect(ring.c).toBeLessThan(0.02);
+    expect(ring.a).toBeGreaterThanOrEqual(0.75);
+    expect(ring.a).toBeLessThanOrEqual(0.85);
+  });
+
+  it("keeps the state roles legible on the canvas, both themes", () => {
+    for (const name of ["--state-ok", "--state-warn", "--state-err"] as const) {
+      expect(contrastRatio(blackThemeVar(name), blackThemeVar("--background"))).toBeGreaterThanOrEqual(
+        4.5,
+      );
+      expect(contrastRatio(lightThemeVar(name), lightThemeVar("--background"))).toBeGreaterThanOrEqual(
+        4.5,
+      );
     }
   });
 
@@ -679,7 +783,9 @@ describe("black theme — direction", () => {
     }
   });
 
-  it("keeps text on the accent fill above the AA floor", () => {
+  it("keeps text on the light fill above the AA floor", () => {
+    // Subsumed by the 16.08 pair pin above; kept as the AA-floor
+    // phrasing so the ladder reads complete.
     expect(
       contrastRatio(blackThemeVar("--primary-foreground"), blackThemeVar("--primary")),
     ).toBeGreaterThanOrEqual(4.5);
@@ -708,13 +814,17 @@ describe("black theme — direction", () => {
     ).toBeGreaterThanOrEqual(4.5);
   });
 
-  it("gives the light counterpart the same discipline", () => {
+  it("gives the light counterpart the same mono discipline", () => {
     const light = lightThemeVar;
     expect(light("--background").l).toBeGreaterThan(0.95);
-    // Same single cold accent, so identity does not change with the
-    // theme.
-    expect(light("--primary").h).toBeGreaterThanOrEqual(200);
-    expect(light("--primary").h).toBeLessThanOrEqual(270);
+    // Same pair, swapped: dark fill, light text — still 16.08, so
+    // identity does not change with the theme. No hue band: see
+    // the achromatic sweep above, which covers both themes.
+    expect(light("--primary").l).toBeLessThan(0.25);
+    expect(light("--primary-foreground").l).toBeGreaterThan(0.9);
+    const pair = contrastRatio(light("--primary-foreground"), light("--primary"));
+    expect(pair).toBeGreaterThanOrEqual(15.5);
+    expect(pair).toBeLessThanOrEqual(16.6);
     expect(contrastRatio(light("--foreground"), light("--background"))).toBeGreaterThanOrEqual(4.5);
     expect(contrastRatio(light("--muted-foreground"), light("--background"))).toBeGreaterThanOrEqual(4.5);
   });

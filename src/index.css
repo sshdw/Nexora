@@ -163,7 +163,8 @@
        tokens already declare. Naming shadcn's preset face here
        would point at a family nothing loads (and silently
        re-letter every merged surface through `font-sans`). */
-    --font-sans: var(--nex-sys-type-family);
+    --font-sans: var(--font-sans);
+    --font-mono: var(--font-mono);
     --color-ring: var(--ring);
     --color-input: var(--input);
     --color-border: var(--border);
@@ -176,6 +177,8 @@
     --color-secondary: var(--secondary);
     --color-primary-foreground: var(--primary-foreground);
     --color-primary: var(--primary);
+    --color-primary-hover: var(--primary-hover);
+    --color-primary-pressed: var(--primary-pressed);
     --color-popover-foreground: var(--popover-foreground);
     --color-popover: var(--popover);
     --color-card-foreground: var(--card-foreground);
@@ -192,10 +195,45 @@
 }
 
 /* ============================================================
-   BLACK THEME 1.0 — dark-first, one cold accent.
+   NEXORA MONO THEME 2.0 — dark-first, no accent (#235).
 
-   Direction (owner pivot 2026-10-13, supersedes the warm-neutral
-   M3E palette for everything added on top of the stack):
+   Direction (owner decision 2026-10-15, NEXORA-THEME.md §1–§2 —
+   supersedes the §218 "one cold accent" below and the warm-neutral
+   M3E palette for everything on the new stack):
+
+     canvas     near-black `#0E0E11`-discipline: the canvas keeps a
+                hair of chroma so it reads as a surface
+     surfaces   barely lighter than the canvas — separation is
+                carried by HAIRLINE BORDERS and by tone steps,
+                never by fills. The chrome steps (card, popover)
+                sit 0.02–0.03 oklch above the canvas; the
+                nested and hover surfaces (muted, accent) sit
+                ~0.10 above it and stay under 0.13 — which is why
+                nothing in this theme leans on a shadow for rest
+                separation
+     action     NO hue anywhere: the primary action is a LIGHT
+                FILL (`--primary` := `#EDEAE7`, dark text on it at
+                16.08), hover one step lighter, pressed one step
+                darker. Segmented actives read through lightness +
+                weight, ticks are 2px light marks — never colour
+     focus      2px solid white 80% + 2px offset, everywhere
+     selection  the light fill at 25% (`::selection` below, plus
+                the `selection:` utilities on the text-field
+                primitives)
+     state      green/red/yellow exist ONLY as `--state-ok/warn/
+                err` (plus `--destructive`) — never decoration,
+                never branding, never focus/selection
+     text       muted ladder — `foreground` for content, and
+                `muted-foreground` for everything secondary. No
+                coloured chrome, no gradients, no glows
+     type       Inter for UI (cyrillic first-class), Cascadia Code
+                for code/paths/commands/ids/model names only —
+                `--font-sans` / `--font-mono` below
+
+   Direction (owner pivot 2026-10-13, SUPERSEDED 2026-10-15 by
+   the mono decision above — history, not paint: the canvas /
+   surface / text numbers below still hold; the hue paragraph
+   after them is dead):
 
      canvas     near-black, a hair off pure #000 so it reads as a
                 surface and not as a dead pixel field
@@ -207,13 +245,11 @@
                 ~0.10 above it and stay under 0.13 — which is why
                 nothing in this theme leans on a shadow for rest
                 separation
-     accent     exactly one, cold (hue ~232), used sparingly:
-                primary action fills, focus rings, the one thin
-                active indicator, small interactive icon states.
-                No secondary or tertiary accent — the shadcn
-                `secondary`/`accent` roles are neutral tones on
-                purpose, so a stray `bg-accent` cannot paint
-                colour
+     ~~accent~~  DEAD 2026-10-15: exactly one, cold (hue ~232) —
+                replaced by the light fill above. Kept one phase
+                so the diff reads as a repaint, not a rewrite.
+                The shadcn `secondary`/`accent` roles stay neutral
+                tones, so a stray `bg-accent` cannot paint colour
      text       muted ladder — `foreground` for content, and
                 `muted-foreground` for everything secondary. No
                 coloured chrome, no gradients, no glows
@@ -259,7 +295,11 @@
      muted-foreground / card        5.64
      muted-foreground / muted       4.89    (the tightest text pair)
      muted-foreground / accent      4.76
-     primary-foreground / primary   8.17
+     primary-foreground / primary   16.08   (the light fill pair)
+     primary-foreground / primary-hover 17.39
+     primary-foreground / primary-pressed 13.06
+     state-ok / background   7.65    state-warn / background  8.04
+     state-err / background  7.64
      destructive-foreground / destructive 7.43
      destructive / background      7.43
      destructive over its own 10% wash     6.66
@@ -282,11 +322,15 @@
     --popover: oklch(0.175 0.004 264);
     --popover-foreground: oklch(0.965 0.003 264);
 
-    /* The one accent. Cold blue, light enough to carry the
-       near-black canvas colour as text on its fill and to stay
-       visible as a hairline. */
-    --primary: oklch(0.72 0.12 232);
-    --primary-foreground: oklch(0.145 0.004 264);
+    /* The action fill. NO hue: `#EDEAE7` with the near-black
+       canvas colour as text on it (16.08). Hover one lightness
+       step up (`#F5F3EF`), pressed one step down (`#D8D4CE`) —
+       state reads through lightness, never hue. The light theme
+       mirrors the pair (dark fill, light text). */
+    --primary: oklch(0.938 0.005 68);
+    --primary-foreground: oklch(0.165 0.006 286);
+    --primary-hover: oklch(0.965 0.006 85);
+    --primary-pressed: oklch(0.871 0.009 78);
 
     /* Neutral roles, deliberately achromatic. */
     --secondary: oklch(0.24 0.004 264);
@@ -308,14 +352,30 @@
     --destructive: oklch(0.72 0.16 22);
     --destructive-foreground: oklch(0.145 0.004 264);
 
+    /* The ONLY chromatic roles in the theme (with `--destructive`
+       below): success / warning / error STATE signals. Never
+       decoration, never branding, never focus, never selection. */
+    --state-ok: oklch(0.703 0.055 138);
+    --state-warn: oklch(0.727 0.101 67);
+    --state-err: oklch(0.72 0.108 29);
+
     /* Hairlines. Border carries separation everywhere in this
        theme, so it sits as low as still reads as a line. */
     --border: oklch(1 0 0 / 12%);
     --input: oklch(1 0 0 / 14%);
 
-    /* Focus ring carries the accent — the sanctioned accent
-       use after an action fill. */
-    --ring: oklch(0.72 0.12 232);
+    /* Focus ring: 2px solid white 80% + 2px offset (THEME §1).
+       The offset is spelled per-component (`ring-offset-2`
+       on utilities, a background-colour inner shadow in plain
+       CSS) — the token is the colour only. */
+    --ring: oklch(1 0 0 / 80%);
+
+    /* Type. Inter for UI (cyrillic first-class), Cascadia Code
+       for code/paths/commands/ids/model names only. System tails
+       cover CJK/Arabic/Hebrew — too heavy to bundle, fallback is
+       honest. Loaded from @fontsource in src/main.tsx. */
+    --font-sans: "Inter Variable", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans", sans-serif;
+    --font-mono: "Cascadia Code", Consolas, "SF Mono", Menlo, monospace;
 
     /* One shape scale. `--radius` is the step shadcn's
        `rounded-md` utilities resolve from, and it is set to the
@@ -326,11 +386,15 @@
 }
 
 /* Light counterpart. Not a restyle of anything — it exists so
-   a light root resolves instead of falling through to the black
+   a light root resolves instead of falling through to the dark
    theme, and so light-only surfaces have honest values when they
    arrive. Same discipline: near-white canvas, barely-darker
-   surfaces, hairline borders, the SAME single cold accent so
-   identity does not change with the theme.
+   surfaces, hairline borders, NO hue — the primary pair is the
+   same two tones swapped (dark fill, light text at 16.08), the
+   ring is the dark tone at 80% so it reads on white. Hover is
+   one lightness step up and pressed one step down in both
+   themes (light values are judgement per FULL-PLAN D8 — THEME
+   §2 tables the dark canvas only — noted in the #235 PR body).
 
    Selected by `[data-theme="light"]` on the root, which is the
    mechanism the app actually uses (src/lib/useAppearance.ts writes
@@ -347,8 +411,10 @@
     --popover: oklch(1 0 0);
     --popover-foreground: oklch(0.18 0.004 264);
 
-    --primary: oklch(0.52 0.13 232);
-    --primary-foreground: oklch(0.99 0.002 264);
+    --primary: oklch(0.165 0.006 286);
+    --primary-foreground: oklch(0.938 0.005 68);
+    --primary-hover: oklch(0.28 0.006 286);
+    --primary-pressed: oklch(0.1 0.003 286);
 
     --secondary: oklch(0.95 0.003 264);
     --secondary-foreground: oklch(0.18 0.004 264);
@@ -359,12 +425,26 @@
     --accent: oklch(0.93 0.003 264);
     --accent-foreground: oklch(0.18 0.004 264);
 
+    --state-ok: oklch(0.48 0.06 140);
+    --state-warn: oklch(0.52 0.1 65);
+    --state-err: oklch(0.48 0.12 25);
+
     --destructive: oklch(0.55 0.2 22);
     --destructive-foreground: oklch(0.99 0.002 264);
 
     --border: oklch(0.18 0.004 264 / 14%);
     --input: oklch(0.18 0.004 264 / 18%);
-    --ring: oklch(0.52 0.13 232);
+    --ring: oklch(0.165 0.006 286 / 80%);
+
+    --font-sans: "Inter Variable", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans", sans-serif;
+    --font-mono: "Cascadia Code", Consolas, "SF Mono", Menlo, monospace;
+}
+
+/* Text selection everywhere: the light fill at 25% (THEME §1).
+   The text-field primitives carry the same wash as `selection:`
+   utilities so their explicitly-set colours never fight this. */
+::selection {
+    background-color: color-mix(in oklch, var(--primary) 25%, transparent);
 }
 
 /* ----------------------------------------------------------

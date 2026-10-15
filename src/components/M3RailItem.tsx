@@ -2,14 +2,14 @@
 //!
 //! The rail grammar as Nexora's sidebar embodies it: one full-width
 //! row with an optional leading icon and a label. Active = a thin
-//! accent indicator at the leading edge plus a surface tone step —
-//! never an accent fill (MAP row 1: "Active row = thin indicator +
+//! light indicator at the leading edge plus a surface tone step —
+//! never a colour fill (MAP row 1: "Active row = thin indicator +
 //! surface shift, never amber fill"). `aria-current` announces the
 //! destination; native `<button>` keeps Enter/Space parity.
 //!
 //! Painted from shadcn tokens (`--accent`/`--muted`/`--foreground`/
 //! `--muted-foreground`/`--primary`), never a `--nex-sys-*` value.
-//! The tone/colour fades are CSS transitions the global
+//! The tone fades are CSS transitions the global
 //! reduced-motion gate collapses.
 
 import type { ButtonHTMLAttributes, ReactNode } from "react";
@@ -24,7 +24,7 @@ export interface M3RailItemProps
   icon?: ReactNode;
   /** Filled variant shown while active (falls back to `icon`). */
   activeIcon?: ReactNode;
-  /** Selected destination: tone step + thin accent indicator + aria-current. */
+  /** Selected destination: tone step + thin light indicator + aria-current. */
   active?: boolean;
   children?: ReactNode;
 }
@@ -45,7 +45,7 @@ export default function M3RailItem({
       type={type}
       className={cn(
         "relative flex h-8 w-full items-center gap-2 rounded-md px-2 text-sm transition-colors outline-none",
-        "focus-visible:ring-3 focus-visible:ring-ring/50",
+        "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
         active
           ? "bg-accent font-medium text-foreground"
           : "text-muted-foreground hover:bg-muted hover:text-foreground",

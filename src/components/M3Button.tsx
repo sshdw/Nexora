@@ -9,7 +9,7 @@
 //! the black theme with no `--nex-sys-*` reference of its own.
 //!
 //! Variant mapping (contract button canon):
-//!   primary     → `default`   (the one accent fill, one per region)
+//!   primary     → `default`   (the light fill, one per region)
 //!   secondary   → `secondary` (neutral tonal container action)
 //!   quiet       → `ghost`     (text-only action)
 //!   destructive → `destructive` (tinted at rest; `filled` intensifies
