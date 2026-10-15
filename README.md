@@ -1,124 +1,152 @@
 # Nexora
 
-Nexora is a local-first AI desktop application for working with multiple AI providers while keeping all user data in a single local SQLite database. Nexora is a desktop AI agent (one agent run per dialog) on Tauri v2. Conversations, prompts, attachments, and settings live entirely on your machine: there are no accounts and no cloud synchronization, and the network is contacted only when you send a request to an AI provider.
+**A local-first AI desktop workspace — multi-provider chat and supervised agent runs, with everything you write stored on your own machine.**
+
+[![CI](https://github.com/sshdw/Nexora/actions/workflows/ci.yml/badge.svg)](https://github.com/sshdw/Nexora/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/sshdw/Nexora)](https://github.com/sshdw/Nexora/releases/latest)
+[![License](https://img.shields.io/github/license/sshdw/Nexora)](LICENSE)
+
+Nexora is a desktop app for people who work with AI all day and do not want their work living on someone else's server. It runs on Tauri v2 with a React 19 frontend and a Rust backend; every conversation, prompt, attachment, and setting lives in a single SQLite file on your disk. There are no accounts, no sync service, and no telemetry — the network is touched only when you send a request to a provider you configured yourself.
+
+Latest release: **v1.5.0** — see [releases](https://github.com/sshdw/Nexora/releases/latest) and the [changelog](CHANGELOG.md). Version 2.0 (visual rebuild) is in development on `main`.
+
+---
+
+## Why local-first
+
+- **Your data is one file you own.** Conversations, prompts, and settings live in a single portable SQLite database (`nexora.db`) in your per-user application-data directory. Copy it, back it up, delete it.
+- **It opens and works offline.** Browsing history, searching, editing prompts, and changing settings need no connection. Startup never blocks on the network.
+- **API keys never touch your database.** Credentials live in the operating system keyring. They are never written to SQLite, logs, or source, and errors surfaced in the UI carry no secret material.
+- **No accounts, no workspaces, no background sync.** Nothing is uploaded until you press send.
 
 ## Features
 
-Nexora implements the approved MVP scope — functional requirements FR-001 through FR-015 of the [SRS](docs/SRS.md) — plus the shipped agent stack:
+**Chat that keeps its history**
 
-- **AI conversations** — create unlimited conversations, exchange messages with an AI, rename, archive/restore, and permanently delete them (FR-002, FR-006).
-- **Persistent history** — complete conversation history survives restarts and remains in chronological order; failed requests show an error instead of corrupting history (FR-003, FR-005).
-- **Multiple AI providers** — connect OpenAI, Anthropic, Google Gemini, xKiro, OpenRouter, NVIDIA NIM, or OpenCode Zen (the last four as OpenAI-compatible endpoints), each with a maintained list of supported models; select provider and model before sending a request (FR-004). Compatible providers ship curated shortlists, and Settings accepts a custom model ID beyond the shortlist.
-- **Prompt library** — create, edit, and delete reusable prompts and insert them into any conversation (FR-007).
-- **Document attachments** — attach local files to a request, review them before sending, and remove them beforehand (FR-008).
-- **Local search** — offline full-text search across conversation titles, message content, and prompts, powered by SQLite FTS5 (FR-009).
-- **Import & export** — export individual conversations to JSON and import them back; invalid files are rejected and roll back atomically (FR-010, FR-011).
-- **Settings** — persisted appearance (dark/light theme) and default provider/model selection; invalid values are rejected (FR-012).
-- **Data management** — permanently remove conversations or prompts, or clear all application data behind an explicit typed confirmation (FR-013).
-- **Credential management** — add, update, and remove provider API keys; missing credentials are detected before a request is sent (FR-014).
-- **Offline access** — browsing history, searching, editing prompts, and changing settings all work without internet access; startup never requires a connection (FR-001, FR-015).
-- **Agent runs with streaming steps** — one run per dialog.
-- **Tools** — file read/write, command execution, directory listing.
-- **Autonomy modes** — `supervised` / `semi_autonomous` (default) / `full_autonomous`; approval parking (parked approvals never auto-resolved).
-- **Run controls** — pause / resume / cancel; iteration budget with extend; financial spend guard (per-run micro-USD budget).
-- **Terminal and diff viewers**.
-- **Classified provider errors (v1.0.2)** — rate limit with Retry-After hint, outage/5xx, network/timeout, rejected credential, invalid request, unexpected response — agent runs and chat alike.
+- Unlimited conversations — rename, archive, restore, or permanently delete.
+- Full history persists across restarts in chronological order; a failed request shows an error instead of corrupting what came before.
+- Offline full-text search across conversation titles, message content, and prompts (SQLite FTS5).
+- Export a conversation to JSON and import it back; malformed files are rejected and rolled back atomically.
 
-## Tech Stack
+**Agent runs with real controls**
 
-| Layer | Technology |
-|---|---|
-| Desktop framework | Tauri v2 |
-| Frontend | React 19, TypeScript (strict), Vite |
-| Backend | Rust |
-| Database | SQLite via `rusqlite` (bundled, with FTS5) |
+- One agent run per dialog, streamed as explicit steps you can follow.
+- Tools: file read/write, command execution, directory listing.
+- Three autonomy levels — `supervised`, `semi_autonomous` (default), `full_autonomous` — plus approval gates that park anything needing a human decision.
+- Run controls: pause, resume, cancel, extend the iteration budget, and a per-run spend guard in micro-USD.
+- Six agent roles on a plan → act → review pipeline, with run snapshots, checkpoints and rollback, an append-only audit trail, a self-audit gate, a read-only run inspector, a cost dashboard, and a task manager for autonomous mode.
 
-Supported providers — OpenAI, Anthropic, Google Gemini, xKiro, OpenRouter, NVIDIA NIM, and OpenCode Zen (the last four as OpenAI-compatible endpoints) — and their supported models are defined in the backend (`src-tauri/src/infrastructure/providers/`).
+**Providers and models**
 
-## Architecture
+- OpenAI, Anthropic, Google Gemini, xKiro, OpenRouter, NVIDIA NIM, and OpenCode Zen, each with a maintained shortlist of supported models — or point Nexora at your own OpenAI-compatible endpoint.
+- Choose the provider and model per request; Settings accepts a custom model ID beyond the curated shortlist.
+- Provider failures are classified, not swallowed: rate limit (with a Retry-After hint), outage/5xx, network/timeout, rejected credential, invalid request, unexpected response — the same taxonomy for chat and for agent runs.
+- A local-only provider health probe (healthy / degraded / unreachable / unknown).
 
-Nexora follows a layered architecture; full details are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+**Prompts and documents**
 
-```
-React UI (src/)
-      ↓
-Tauri IPC commands (thin translation layer)
-      ↓
-Application services (business rules)
-      ↓
-Infrastructure: SQLite repositories · AI provider clients · OS keyring
-```
+- A reusable prompt library you can create, edit, delete, and insert into any conversation.
+- Attach local files to a request, review them before sending, remove them beforehand.
 
-- The React frontend (`src/`) contains no business logic; components access data only through typed wrappers around Tauri commands in `src/lib/`.
-- The Rust backend (`src-tauri/src/`) is organized into command handlers, application services, domain entities, and infrastructure.
-- All persistent data lives in one portable SQLite file (`nexora.db`) in the operating system's per-user application-data directory. The schema is created exclusively by forward-only migrations embedded in the backend.
-- AI providers are external services reached only through the backend, behind a provider-independent execution boundary that handles credential lookup, request execution, and error classification.
+**Workspace and interface**
 
-## Privacy & Security
+- Token-driven component library and app shell: a full token set, reusable primitives, tabs, split view, and a distraction-free zen mode; a Ctrl+K command palette; a hotkeys reference.
+- Integrated git (status, log, diff, timeline, explain-diff, risk signals, stage/commit/push) and a terminal panel with error intelligence for failed commands.
+- Activity feed, health view, cost dashboard, and simplified onboarding.
+- English and Russian, switchable in-app.
 
-- **Local-first data ownership** — every conversation, prompt, attachment record, and setting resides locally in one self-contained database file. There are no user accounts, no shared workspaces, and no background synchronization.
-- **Offline availability** — core functionality works without internet access. Data leaves the machine only when you initiate an AI request with a configured provider.
-- **Protected credentials** — API keys are stored exclusively in the operating system's secure keyring. They are never written to SQLite, log output, or source code, and errors returned to the UI carry no secret material.
+## Providers
 
-## Install
+| Provider | Endpoint | Notes |
+|---|---|---|
+| OpenAI | native | Curated model shortlist |
+| Anthropic | native | Curated model shortlist |
+| Google Gemini | native | Live-verified context windows, tool-capability gated |
+| xKiro | OpenAI-compatible | Curated model shortlist |
+| OpenRouter | OpenAI-compatible | Curated model shortlist |
+| NVIDIA NIM | OpenAI-compatible | Curated model shortlist |
+| OpenCode Zen | OpenAI-compatible | Curated model shortlist |
+| Custom | OpenAI-compatible | Model ID comes from your endpoint configuration |
 
-Users download Nexora from GitHub Releases (latest): [https://github.com/sshdw/Nexora/releases/latest](https://github.com/sshdw/Nexora/releases/latest). The recommended installer is the NSIS `Nexora_*_x64-setup.exe`; the MSI `Nexora_*_x64_en-US.msi` is also published.
+Supported models live in the backend (`src-tauri/src/infrastructure/providers/`).
 
-## Getting Started
+## Download
 
-### Prerequisites
+**Prebuilt installers** — [github.com/sshdw/Nexora/releases/latest](https://github.com/sshdw/Nexora/releases/latest).
+The latest release ships Windows installers (NSIS `*-setup.exe` plus MSI); other platforms — build from source.
 
-- Latest stable Rust
-- Node.js and npm
-- Tauri v2 system dependencies for your platform ([official prerequisites](https://tauri.app/start/prerequisites/))
+**Build from source**
 
-### Run in development
+Prerequisites: a stable Rust toolchain (pinned by `src-tauri/rust-toolchain.toml`), Node.js and npm, and the [Tauri v2 system dependencies](https://tauri.app/start/prerequisites/) for your platform.
 
 ```bash
 npm install
-npm run tauri dev
+npm run tauri dev      # dev build; Vite serves on port 1420 (strict port)
 ```
-
-The dev server binds to port 1420 (strict); the port must be free before starting.
-
-### Production build
 
 ```bash
-npm run tauri build
+npm run tauri build    # production bundle
 ```
 
-## Development
+## Tech stack
 
-There is intentionally no JavaScript test runner. Automated coverage lives entirely in the Rust backend.
-
-| Task | Command |
+| Layer | Technology |
 |---|---|
-| Frontend typecheck | `npx tsc` |
-| Frontend lint | `npx eslint .` |
-| Backend unit tests | `cargo test` inside `src-tauri/` |
-| Backend lint | `cargo clippy` inside `src-tauri/` |
-| Backend formatting | `cargo fmt` inside `src-tauri/` |
+| Desktop shell | Tauri v2 (`com.nexora.app`) |
+| Frontend | React 19, TypeScript (strict), Vite 6, Tailwind CSS 4 |
+| UI system | Token-driven components, Radix primitives, GSAP motion |
+| Backend | Rust (2021), `unsafe_code = "forbid"`, clippy `pedantic` clean |
+| IPC | Tauri commands — thin translation only, business rules live in services |
+| Storage | SQLite via `rusqlite` (bundled, FTS5), forward-only migrations |
+| Credentials | OS keyring (`keyring` crate), resolved in the backend |
+| Integrations | `reqwest` (rustls) for providers, `git2` for the git panel |
 
-Backend tests run against in-memory SQLite instances using the same migrations as production.
+## Docs
 
-## Project Status
+Approved specification documents live in [`docs/`](docs/):
 
-**Nexora 2.0.0** — agent runtime (lifecycle, budgets, task manager), M3E UI, git engine, terminal, EN+RU; see CHANGELOG.
+- [SRS.md](docs/SRS.md) — requirements specification
+- [ARCHITECTURE.md](docs/ARCHITECTURE.md) — layered technical architecture
+- [DATABASE.md](docs/DATABASE.md) — schema and migration strategy
+- [CONTEXT-WINDOWS.md](docs/CONTEXT-WINDOWS.md) — enforced context windows, compaction, capability fallback
+- [NEXORA-DESIGN-BRIEF-2.0-FINAL.md](docs/NEXORA-DESIGN-BRIEF-2.0-FINAL.md) — desktop design direction
+- [NEXORA-CLI-DESIGN-BRIEF.md](docs/NEXORA-CLI-DESIGN-BRIEF.md) — CLI design brief (2.1)
+- [ROADMAP.md](docs/ROADMAP.md) — historical MVP phase record
+- [AGENT-E2E.md](docs/AGENT-E2E.md) — manual UI checklist
 
-Capabilities outside the approved MVP (cloud sync, user accounts, collaboration, mobile/web apps, plugins) are explicitly out of scope — see [docs/SRS.md](docs/SRS.md).
+And the project history:
+
+- [CHANGELOG.md](CHANGELOG.md) — release history
+
+## Roadmap
+
+- **2.0 — visual rebuild: in progress on `main`.** Tracked in the [2.0 milestone](https://github.com/sshdw/Nexora/milestone/1).
+- **2.1 — CLI: next.** A command-line companion in the same repository. Tracked in the [2.1 milestone](https://github.com/sshdw/Nexora/milestone/2); design brief in [docs/NEXORA-CLI-DESIGN-BRIEF.md](docs/NEXORA-CLI-DESIGN-BRIEF.md).
+
+Out of scope by design: cloud sync, user accounts, collaboration, mobile/web clients, and a plugin system.
+
+## Contributing
+
+Issues and pull requests are welcome. Before opening a PR, run the gates in this order:
+
+```bash
+npm test                # frontend tests (vitest)
+npx tsc                 # frontend typecheck
+npx eslint .            # frontend lint
+cd src-tauri
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test              # backend tests, in-memory SQLite
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow.
+
+## Security
+
+Please report vulnerabilities privately via **GitHub → Security → Report a vulnerability** rather than in a public issue — see [SECURITY.md](SECURITY.md).
+
+Security properties of the app itself: `unsafe_code = "forbid"` in the Rust backend; a restrictive content-security policy on the webview; API keys confined to the OS keyring; and IPC errors that are scrubbed of credentials, SQL, and message content.
 
 ## License
 
 [MIT](LICENSE) © 2026 sshdw
-
-## Documentation
-
-Approved specification documents live in [`docs/`](docs/):
-
-- [SRS.md](docs/SRS.md) — requirements specification (FR-001–FR-015)
-- [ARCHITECTURE.md](docs/ARCHITECTURE.md) — technical architecture
-- [DATABASE.md](docs/DATABASE.md) — database design and migration strategy
-- [ROADMAP.md](docs/ROADMAP.md) — implementation phases (historical MVP phases)
-- [AGENT-E2E.md](docs/AGENT-E2E.md) — manual UI checklist
-- [AGENT-4.3-DESIGN.md](docs/AGENT-4.3-DESIGN.md) and [AGENT-5.1-DESIGN.md](docs/AGENT-5.1-DESIGN.md) — historical design records
-- [CHANGELOG.md](CHANGELOG.md)
