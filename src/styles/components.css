@@ -212,41 +212,6 @@
     var(--motion-easing-standard);
 }
 
-/* ---- New Conversation: the sidebar's primary creation action
-   (full-width solid accent button). Item creation is a whitelisted
-   expressive moment, hence the micro-morph class. ---- */
-.nex-new-conversation {
-  width: 100%;
-  justify-content: center;
-  gap: var(--nex-sys-space-xs);
-  min-height: 44px;
-  padding: 10px var(--nex-sys-space-md);
-  border-radius: var(--nex-sys-shape-medium);
-  background: var(--nex-sys-color-primary);
-  border: none;
-  color: var(--nex-sys-color-on-primary);
-  font-size: var(--nex-sys-type-size-label-large);
-  font-weight: var(--nex-sys-type-weight-emphasized);
-}
-.nex-new-conversation-icon {
-  color: inherit;
-  flex-shrink: 0;
-}
-.nex-new-conversation:hover:not(:disabled) {
-  background: var(--nex-sys-color-primary-hover);
-}
-.nex-new-conversation:active:not(:disabled) {
-  background: var(--nex-sys-color-primary);
-}
-.nex-new-conversation:disabled {
-  color: var(--nex-sys-color-on-primary);
-  opacity: var(--nex-sys-state-disabled-opacity);
-  cursor: default;
-}
-.nex-new-conversation:disabled .nex-new-conversation-icon {
-  color: inherit;
-}
-
 /* ============================================================
    ICON BUTTONS (compact single-icon actions)
    New 0.3.0 primitive: square hit area, quiet at rest, tone-step
@@ -316,6 +281,154 @@
 }
 
 /* ============================================================
+   SIDEBAR — the migrated rail (#230 Phase 1)
+
+   Everything the rail's markup needs beyond Tailwind's layout
+   vocabulary lives here, and the only surface it paints is the
+   hover overlay described in (1) below: the rail's own body, the
+   field, the rows and the panel are all painted from the markup
+   onto `--card` / `--muted` / `--popover`.
+
+   WHY A CSS SECTION AT ALL, when SYSTEM §1 says structure is
+   Tailwind and every value is a token: three jobs here cannot be
+   expressed as utilities on the element that needs them.
+
+     1. CROSS-ELEMENT STATE. The row's hover-revealed icon actions
+        have to read TWO states — the row's (hover / selected) and
+        their own (focus-within) — and the date has to yield to
+        them while they show, while the action group overlays the
+        row's trailing edge with the tone of the surface it sits on.
+        That is a `:has()` relationship between a child and a later
+        sibling; utilities compose within one element.
+
+     2. LAYER STACKING + SCROLLBAR. The search results panel is a
+        floating layer that occludes the list, so it takes the
+        z-token (SYSTEM §2: elevation/z tokens win over Tailwind
+        literals like `z-50`) and the rail's scroll container keeps
+        its webkit scrollbar, which has no utility.
+
+     3. THE PANEL'S ENTRANCE, on the two keyframes the sheet
+        already owns (`nex-pop-enter`, `nex-fade-enter`). Both are
+        declared with `--motion-*` tokens, so the ONE global
+        reduced-motion gate in motion.css still collapses them —
+        there is deliberately no second reduced-motion block here.
+
+   Selectors are `data-slot` hooks, never `nex-*` classes: the
+   markup this section serves is migrated, and the hooks travel
+   with it so Phase 6 has nothing left to rename. Values are theme
+   tokens throughout (`--card`, `--muted`, `--accent`, `--border`,
+   `--radius`, `--nex-sys-space-*`, `--nex-sys-z-popover`,
+   `--nex-sys-scrollbar-thumb`, `--motion-*`); no raw hex, radius,
+   duration or z-index.
+   ============================================================ */
+
+/* ---- Row actions: hover-revealed, never hidden from Tab---------- */
+[data-slot="row-actions"] {
+  position: absolute;
+  top: 50%;
+  right: var(--nex-sys-space-xxs);
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  /* No `gap` here: this wrapper holds exactly one child — the docked
+     `M3Toolbar` — and that toolbar carries its own gap, set in the
+     markup (`gap-0.5` on the bar). Four 32px actions at the docked
+     toolbar's legacy 8px gap would claim 152px of a 240px row, and
+     Tailwind utilities sit in a later cascade layer than this sheet,
+     so the markup's value is the one that paints (index.css
+     CASCADE). */
+  /* The group OVERLAYS the row's trailing edge (absolute, so the row
+     never reserves width for it and the title never reflows on hover),
+     which means it has to paint its own surface: the four buttons are
+     ghost — no fill at rest — so without this the title would run
+     between and under them. It takes the tone of whatever it sits on,
+     rail at rest and the row's own raise while shown, so it reads as
+     part of the row rather than as a plate dropped on top of it.
+     Token-only: `--card` / `--muted` / `--accent` are the three
+     surfaces the row itself can have (M3RailItem: rest, hover,
+     selected). */
+  background: var(--card);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--motion-duration-fast) var(--motion-easing-standard),
+    background-color var(--motion-duration-fast) var(--motion-easing-standard);
+}
+
+/* Revealed by: the pointer is over the row, the keyboard is INSIDE
+   the actions, or the row is the selected destination (which keeps
+   its actions visible so the current conversation's management
+   stays reachable, as before).
+
+   `opacity` + `pointer-events`, never `visibility`/`display`: a
+   visibility-hidden subtree is NOT focusable, which is what made the
+   old reveal pointer-only — Tab could never reach these four
+   buttons. They are always in the tab order, and focusing one is
+   itself a reveal trigger.
+
+   Order matters and is deliberate: hover raises the group to the
+   row's hover tone, and the SELECTED rule comes last so a selected
+   row that is also hovered keeps the selected tone instead of
+   dropping back one step. */
+[data-slot="conversation-row"]:hover [data-slot="row-actions"],
+[data-slot="row-actions"]:focus-within,
+[data-slot="conversation-row"][data-selected="true"] [data-slot="row-actions"] {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+[data-slot="conversation-row"]:hover [data-slot="row-actions"] {
+  background: var(--muted);
+}
+[data-slot="conversation-row"][data-selected="true"] [data-slot="row-actions"] {
+  background: var(--accent);
+}
+
+/* The date yields while the actions own that edge — three triggers,
+   the same three that reveal them. `:has()` is what lets the date
+   (which lives INSIDE the row button, before the actions in the
+   tree) react to focus landing in the actions. */
+[data-slot="conversation-date"] {
+  transition: opacity var(--motion-duration-fast) var(--motion-easing-standard);
+}
+[data-slot="conversation-row"]:hover [data-slot="conversation-date"],
+[data-slot="conversation-row"][data-selected="true"] [data-slot="conversation-date"],
+[data-slot="conversation-row"]:has([data-slot="row-actions"]:focus-within) [data-slot="conversation-date"] {
+  opacity: 0;
+}
+
+/* ---- Rail scroll container: the webkit scrollbar has no utility -- */
+[data-slot="conversation-list"]::-webkit-scrollbar {
+  width: 6px;
+}
+[data-slot="conversation-list"]::-webkit-scrollbar-track {
+  background: transparent;
+}
+[data-slot="conversation-list"]::-webkit-scrollbar-thumb {
+  background: var(--nex-sys-scrollbar-thumb);
+  border-radius: var(--radius);
+}
+[data-slot="conversation-list"]::-webkit-scrollbar-thumb:hover {
+  background: var(--nex-sys-scrollbar-thumb-hover);
+}
+
+/* ---- Search results panel: a floating layer over the list --------- */
+[data-slot="search-results"] {
+  z-index: var(--nex-sys-z-popover);
+  transform-origin: top center;
+  animation: nex-pop-enter var(--motion-duration-medium2)
+    var(--motion-easing-emphasized-decelerate);
+}
+
+/* The two states that APPEAR IN PLACE — the failure notice and the
+   empty-with-query answer — fade instead of scaling: effects never
+   move, they only arrive (motion contract, "quick fade enter"). */
+[data-slot="search-status"],
+[data-slot="search-empty"] {
+  animation: nex-fade-enter var(--motion-spring-expressive-fast-effects-duration)
+    var(--motion-spring-expressive-fast-effects-curve);
+}
+
+/* ============================================================
    TEXT FIELDS (input / textarea / select)
    Contained at rest on the elevated tone (0.3.0: fields read as
    surfaces, not outlines); thin accent border-moment on focus is
@@ -379,16 +492,23 @@
   cursor: default;
 }
 
-/* ---- Search field: the shell's own field — nested tier inside the
+/* ---- Search field: the SHARED shell field — nested tier inside the
    elevated nav rail, small control radius (an input is not a status,
-   so it loses the pill — brief §18), accent hairline while focused
-   (brief §16: focus is sanctioned accent). Shared with the Prompt
-   Library toolbar.
+   so it loses the pill — brief §18), hairline while focused.
 
    The hairline below is the §19 "input boundary when necessary" case,
    not decoration: measured, the nested tier sits only 1.045:1 above the
    rail in the dark theme — below the perceptual threshold — so the
-   field needs its own edge instead of leaning on tone alone. ---- */
+   field needs its own edge instead of leaning on tone alone.
+
+   #230 Phase 1: the SIDEBAR moved off these classes (it paints
+   `ui/input` now, with its own focus ring), but they are NOT dead
+   rules — `PromptLibraryView` still declares `.nex-search`,
+   `.nex-search-icon` and `.nex-search-input` on its toolbar field,
+   and that panel is hidden-but-pinned until its own phase. Removing
+   the block with the sidebar migration would have left the Prompt
+   Library's field as a bare unstyled `<input>` with an unpositioned
+   glyph. They stay until that panel migrates. */
 .nex-search {
   position: relative;
 }
@@ -431,7 +551,7 @@
      build did, so moving the mouse onto a focused field visibly
      reversed a full tier). The theme ring is the focus signal
      (THEME §1, mono — #235 repoints the old amber border here;
-     the 2px ring itself lives on :focus-visible above). */
+     the 2px ring itself lives on :focus-visible below). */
   background: var(--nex-sys-color-surface-container-high);
   border-color: var(--ring);
   outline: none;
@@ -443,7 +563,13 @@
    sub-3:1 border shift (measured 2.98 dark / 1.65 light). These
    :focus-visible rules restore the mono theme ring on top of the
    border-moment (THEME §1: 2px solid white 80% + 2px offset,
-   #235). Tokens only, no new values. */
+   #235). Tokens only, no new values.
+
+   `.nex-search-input` stays in the group for the same reason its
+   block above survives the sidebar migration: the sidebar's field is
+   `ui/input` now (own ring), the Prompt Library's is still this
+   class, and `outline: none` above means nothing else would show a
+   focus signal there. */
 .nex-input:focus-visible,
 .nex-select:focus-visible,
 .nex-textarea:focus-visible,

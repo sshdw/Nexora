@@ -223,7 +223,7 @@
   grid-template-columns: 1fr;
 }
 
-.nex-app.nex-zen .nex-sidebar,
+.nex-app.nex-zen [data-slot="sidebar"],
 .nex-app.nex-zen .nex-tabstrip,
 .nex-app.nex-zen .nex-pane-header {
   display: none;

@@ -74,8 +74,17 @@ describe("SearchBox loading / panel-open contract (#228)", () => {
     expect(resultsPanel()).toBeNull();
     const spinner = screen.getByRole("status");
     expect(spinner).toHaveTextContent("Searching");
-    expect(spinner).toHaveClass("nex-search-spinner");
-    expect(input).toHaveClass("nex-search-input-loading");
+    // #230 Phase 1 replaced the two class pins with the STRUCTURAL
+    // contract they stood for, which is what actually keeps the spinner
+    // inside the field: the status node is a child of the same wrapper as
+    // the input, so it is painted IN the field and not over the list. (The
+    // field's trailing padding is now unconditional, so no "-loading"
+    // class exists to toggle: the adornment cannot shift the text as it
+    // appears.)
+    const field = input.parentElement;
+    expect(field).not.toBeNull();
+    expect(field!.contains(spinner)).toBe(true);
+    expect(field!.querySelector('[data-slot="search-adornment"]')).toBe(spinner);
   });
 
   it("opens the panel once results arrive", async () => {
@@ -93,7 +102,12 @@ describe("SearchBox loading / panel-open contract (#228)", () => {
     expect(screen.getByText("Roadmap notes")).toBeInTheDocument();
     // The inline spinner is loading-only; it is gone once data lands.
     expect(screen.queryByRole("status")).toBeNull();
-    expect(input).not.toHaveClass("nex-search-input-loading");
+    // …and the panel is the floating layer it was before: it renders the
+    // result rows, never a bare status line.
+    expect(screen.getByRole("group", { name: "Search results" })).toHaveAttribute(
+      "data-slot",
+      "search-results",
+    );
   });
 
   it("drops the previous results when a new query starts", async () => {
@@ -132,5 +146,22 @@ describe("SearchBox loading / panel-open contract (#228)", () => {
       ),
     );
     expect(resultsPanel()).not.toBeNull();
+  });
+});
+
+// MAP row 2: empty-with-query is the `empty.md` pattern AND it must
+// quote the query back. A bare "No results" line would leave the user
+// guessing which of several near-identical queries came back empty.
+describe("SearchBox empty-with-query (#230 Phase 1)", () => {
+  it("answers with the exact query the user typed", async () => {
+    const { input } = renderSearchBox();
+
+    fireEvent.change(input, { target: { value: "  разговор  " } });
+
+    await waitFor(() => expect(resultsPanel()).not.toBeNull());
+    const empty = document.querySelector('[data-slot="search-empty"]');
+    expect(empty).not.toBeNull();
+    // Trimmed (the query the backend was actually asked), quoted back.
+    expect(empty).toHaveTextContent("No results for “разговор”");
   });
 });

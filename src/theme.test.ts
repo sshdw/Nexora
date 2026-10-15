@@ -44,6 +44,8 @@ const componentSources: Record<string, string> = {
   textarea: readRepoFile("src/components/ui/textarea.tsx"),
   nativeSelect: readRepoFile("src/components/ui/native-select.tsx"),
   spinner: readRepoFile("src/components/ui/spinner.tsx"),
+  // #230 Phase 1: the sidebar conversation list's loading placeholder.
+  skeleton: readRepoFile("src/components/ui/skeleton.tsx"),
 };
 
 /**
@@ -414,6 +416,7 @@ describe("black theme — variable coverage", () => {
       "button",
       "input",
       "nativeSelect",
+      "skeleton",
       "spinner",
       "textType",
       "textarea",
@@ -475,6 +478,13 @@ describe("black theme — variable coverage", () => {
     // prop — so what is pinned there is that the scan SEES the file,
     // not what it happens to find in it today.
     expect(classTokens(componentSources.textType)).toContain("inline-block");
+
+    // Same for the #230 Phase 1 skeleton: its one colour utility has to
+    // route through a defined var like any other copied component, and
+    // the pulse it declares must be the Tailwind utility the global
+    // reduced-motion gate already collapses.
+    expect(colourUtilities(componentSources.skeleton)).toEqual(["bg-accent"]);
+    expect(classTokens(componentSources.skeleton)).toContain("animate-pulse");
   });
 
   it("routes every colour utility a copied component uses through a defined var", () => {

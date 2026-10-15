@@ -11,6 +11,16 @@
 //! `--muted-foreground`/`--primary`), never a `--nex-sys-*` value.
 //! The tone fades are CSS transitions the global
 //! reduced-motion gate collapses.
+//!
+//! `trailing` (#230 Phase 1) is a second slot OUTSIDE the
+//! truncating label span. A row that composes a truncating title
+//! with a fixed meta line (MAP row 3: "title (ellipsis) + relative
+//! date muted") cannot put the date inside the label span: that span
+//! IS the ellipsis box, so a child date ran straight into the title
+//! with no gap and no flex context — the exact defect P1 inherited
+//! ("Новый разговорТолько что"). The date is also the caller's to
+//! keep `shrink-0`: only the title may be compressed, so the date
+//! can never be the part that clips.
 
 import type { ButtonHTMLAttributes, ReactNode } from "react";
 
@@ -26,6 +36,9 @@ export interface M3RailItemProps
   activeIcon?: ReactNode;
   /** Selected destination: tone step + thin light indicator + aria-current. */
   active?: boolean;
+  /** Meta line after the label — relative date, count, status. Rendered
+   * beside the truncating label, never inside it. */
+  trailing?: ReactNode;
   children?: ReactNode;
 }
 
@@ -36,6 +49,7 @@ export default function M3RailItem({
   active = false,
   className = "",
   children,
+  trailing,
   type = "button",
   ...rest
 }: M3RailItemProps) {
@@ -67,7 +81,8 @@ export default function M3RailItem({
           {iconNode}
         </span>
       ) : null}
-      <span className="truncate">{children ?? label}</span>
+      <span className="min-w-0 flex-1 truncate">{children ?? label}</span>
+      {trailing ? <span className="flex shrink-0 items-center">{trailing}</span> : null}
     </button>
   );
 }
