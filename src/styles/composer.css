@@ -232,9 +232,9 @@
 
 /* The M3E primitives the composer reuses (`.nex-seg` pills, the
    chip's `.nex-icon-btn` remove) carry the app-wide focus ring from
-   theme.css, which is a WARM 1px outline — invisible against a
-   near-black composer and wrong beside the shadcn buttons' white
-   ring. Re-pointed at the mono theme, and only inside the
+   theme.css, which is a flat outline with no offset gap — invisible
+   against a near-black composer and wrong beside the shadcn buttons'
+   gapped white ring. Re-pointed at the mono theme, and only inside the
    composer: 2px solid at 80% over a 2px background-colour gap
    (the THEME §1 ring, spelled as two shadows because plain CSS
    has no ring-offset), so one keyboard pass moves through the

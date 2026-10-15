@@ -46,7 +46,8 @@ const buttonVariants = cva(
         // and darkens on press (#D8D4CE). Disabled is muted text
         // with NO fill and a hairline border (THEME §1) — never a
         // washed-out fill: `disabled:opacity-100` cancels the base
-        // wash via tailwind-merge, so the text keeps its 5.64:1.
+        // wash via tailwind-merge, so the text keeps its 5.88:1
+        // (muted on the canvas) instead of being faded twice.
         default:
           "bg-primary text-primary-foreground hover:bg-primary-hover active:bg-primary-pressed disabled:border-border disabled:bg-transparent disabled:text-muted-foreground disabled:opacity-100",
         outline:

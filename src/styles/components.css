@@ -361,7 +361,9 @@
 .nex-input:focus,
 .nex-select:focus,
 .nex-textarea:focus {
-  border-color: var(--nex-sys-focus-field-color);
+  /* THEME §1 (mono, #235): the focus signal is the theme ring, not
+     the M3E amber field tint. */
+  border-color: var(--ring);
   background: var(--nex-sys-color-surface-container-high);
 }
 
@@ -427,9 +429,11 @@
   /* Focus deepens to the SAME step hover does, it does not snap the
      fill back to the nested tier underneath the pointer (an earlier
      build did, so moving the mouse onto a focused field visibly
-     reversed a full tier). The accent border is the focus signal. */
+     reversed a full tier). The theme ring is the focus signal
+     (THEME §1, mono — #235 repoints the old amber border here;
+     the 2px ring itself lives on :focus-visible above). */
   background: var(--nex-sys-color-surface-container-high);
-  border-color: var(--nex-sys-focus-field-color);
+  border-color: var(--ring);
   outline: none;
 }
 

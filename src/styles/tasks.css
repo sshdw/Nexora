@@ -25,7 +25,10 @@
 }
 
 .nex-kanban-column.is-drop-target {
-  outline: 2px solid var(--nex-sys-color-primary);
+  /* THEME §1 (mono, #235): the drop signal is the theme ring, not
+     the M3E amber. The -2px inset is geometry (inside the column
+     frame), kept. */
+  outline: 2px solid var(--ring);
   outline-offset: -2px;
 }
 

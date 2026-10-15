@@ -175,7 +175,9 @@
   padding: 8px var(--nex-sys-space-sm);
   border-radius: var(--nex-sys-shape-small);
   background: var(--nex-sys-color-surface-nested);
-  border: 1px solid var(--nex-sys-focus-field-color);
+  /* Resting border is a neutral hairline (#235: the amber field tint
+     lived here at rest, not just on focus). */
+  border: 1px solid var(--nex-sys-color-outline-variant);
   color: var(--nex-sys-color-on-surface);
   font-size: var(--nex-sys-type-size-body-medium);
   outline: none;
@@ -190,11 +192,11 @@
    shared with Version Control's commit box and was moved out
    along with the shared `.nex-composer-input` paint. The
    composer's OWN field opts back out one selector deeper, in
-   composer.css: its focus moment is the container's accent seam. */
+   composer.css: its focus moment is the container's light seam. */
 .nex-conversation-rename-input:focus-visible,
 .nex-composer-input:focus-visible {
-  outline: var(--nex-sys-focus-ring-width) solid var(--nex-sys-focus-ring-color);
-  outline-offset: var(--nex-sys-focus-ring-offset);
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
 }
 
 /* ---- Text field: the composer AND the Version Control commit box ----
