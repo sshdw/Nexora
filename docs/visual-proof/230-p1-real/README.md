@@ -11,8 +11,11 @@ No `?mock`, no Chromium. Each frame was opened and inspected before acceptance.
 
 `src/lib/format.ts` called `new Intl.DateTimeFormat(navigator.language, …)`
 with no validation. On a C/POSIX-locale box WebKit's JavaScriptCore reports
-`navigator.language === "c"` and throws `RangeError: invalid language tag`
-(V8/Chromium is lenient, which is why mock/Chromium shots never showed it).
+`navigator.language === "c"` and throws `RangeError: invalid language tag`.
+Both engines reject `"c"` (verified on node/V8: the constructor,
+`supportedLocalesOf` and `getCanonicalLocales` all throw for it) — the
+mock/Chromium shots never showed the bug only because their
+`navigator.language` was a valid tag, never `"c"`.
 With no error boundary above the list, the throw unmounted the whole tree:
 skeletons painted (no timestamps yet), then rows arrived, `formatRelativeTime`
 threw, the window went blank. Measured before the fix: exactly ONE painted
@@ -43,6 +46,7 @@ documents that it breaks GL on this box. Used:
 | `07-search-results.png` | real Tauri + real backend | token-exact query `Refactor`: dropdown group `Разговоры` with the two matching conversations (a bare `R` matches nothing — FTS MATCH gets the query as supplied, `search.rs:58`) |
 | `08-empty-with-query.png` | real Tauri + real backend | query `zzzqqqx`: `Ничего не найдено по запросу «zzzqqqx».` empty state in the dropdown |
 | `09-narrow-850px.png` | real Tauri + real backend | window resized to 850×800 (`xwininfo`-verified): sidebar + compressed main pane reflow correctly |
+| `10-list-error.png` | real Tauri + real backend | the migrated list error state (`ConversationList.tsx:72-90`): rename rejected by the backend 500-char CHECK constraint renders the bordered `role="alert"` panel (`text-destructive` message + `Повторить` retry). Triggered by typing a 501-char title into the inline rename field; backend logs the failure, the DB is unchanged (integrity ok, 13 rows), relaunch restores the list |
 
 Colour counts: 1221 and 1218 unique colours in the 1200x800 app body for the
 skeleton frames (a blank window measures 1–6); 947 sustained for the resolved
@@ -58,36 +62,26 @@ states anyway — so no frame here claims that beat. It stays a Chromium
 supplement. Likewise inline-rename and the long-RU-title close-up were already
 covered by Chromium supplements and were not re-driven here; nothing about
 them changed in this fix.
-The old environment-driven "paints one frame then dies" paragraph below is
-kept as history — it describes the bug's symptom, now explained.
+The search error panel (`SearchBox.tsx:145-153`) is not shot either: every
+typed query goes through the backend `sanitize_fts_query`, which quotes each
+token, so user input can never form an invalid FTS5 MATCH expression (a lone
+`"`, `"unclosed`, `*`, `a OR` all yield empty results, never a backend
+error) — only an index-level failure renders it, which needs index sabotage
+on a scratch DB. The busy/disabled row states are transient by design
+(milliseconds-long round-trips) and not photographable. The error panel's own
+retry click did not fire on this box (geometry-verified; sibling buttons in
+the same session respond; no backend call logged) — relaunch restores the
+list, but the click itself needs owner-box verification. Follow-ups: #249
+(search error, busy states, retry), #250 (rename/long-RU/reduced-motion
+re-shoot), #251 (native-tooltip paint artifact), #252 (en-US date fallback).
 
-## What is NOT here, and why
+## Environment verdict (superseded 2026-10-16 — kept as history)
 
-The other eleven beats (inline rename, long RU title unclipped, hover actions,
-keyboard-revealed actions, selected row, search mid-typing + inline spinner,
-search results, empty-with-query, narrow <=900px, reduced-motion, loading
-skeletons *after* the list resolves) are **absent because they are unreachable**,
-not because they were skipped.
-
-With `WEBKIT_DISABLE_COMPOSITING_MODE=1` — the only environment that makes the
-Tauri window produce any frame at all — the WebView paints exactly one frame
-roughly 1.0s–1.5s after launch and then the content layer stops producing frames
-permanently. Measured, not assumed:
-
-* window stays `Map State: IsViewable`, geometry pinned at `1200x800+0+0`;
-* the app process and `WebKitWebProcess` stay alive, RSS flat at ~170 MB;
-* no page reload (connection count to `:1420` is flat after the initial burst);
-* no new lines in the app log;
-* forced resize (x2), `windowunmap`+`windowmap`, `windowraise`,
-  `windowactivate`, mouse jiggle, click and typing all fail to revive it;
-* `import -window root`, `import -window <id>` and `xwd -id <id>` all agree:
-  the window content is genuinely gone, it is not a capture-path artifact.
-
-The frames above were caught inside that ~0.5s window. That is why the sidebar
-still shows loading skeletons: the conversation list never survives long enough
-to resolve on screen, so no interaction beat can be driven or photographed.
-
-## Environment verdict
+The paragraph below was written BEFORE the locale fix, when the evidence
+pointed at the Tauri host path. It is kept verbatim as history: the minimal
+`WebKitWebView` held paint because it never resolved IPC rows, so the
+crashing code path never ran there. The fault was app code
+(`src/lib/format.ts`), fixed in this branch — see "Root cause" above.
 
 The machine is exonerated. A minimal WebKitGTK 4.1 `WebKitWebView` loading the
 **same URL** on the **same Xvfb** renders and holds indefinitely (1175 colours,

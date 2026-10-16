@@ -8,9 +8,11 @@
 #   captures the window only once the WebView has actually painted.
 #
 # WHY IT POLLS FOR *SUSTAINED* PAINT
-#   A first-paint check is a trap. On this box the Tauri WebView reliably paints
-#   ONE full frame roughly 1.0s-1.5s after launch and then the content layer goes
-#   permanently black. A script that accepts the first frame above a colour
+#   A first-paint check is a trap. Before the a1de895 locale fix, the Tauri
+#   WebView on this box reliably painted ONE full frame roughly 1.0s-1.5s
+#   after launch and then the content layer went permanently black (an app
+#   bug — `formatRelativeTime` throwing on `navigator.language === "c"` —
+#   not the host path). A script that accepts the first frame above a colour
 #   threshold will happily "succeed" with a screenshot of a window that is dead
 #   two hundred milliseconds later. This script requires N CONSECUTIVE samples
 #   above the threshold before it calls the capture good, and exits non-zero
@@ -48,17 +50,23 @@
 #                        xdotool, xcompmgr (optional).
 #     xcompmgr was installed on this box for the compositor experiments.
 #
-# KNOWN FAILURE MODE (unresolved — see PR #247 / issue #245)
-#   With WEBKIT_DISABLE_COMPOSITING_MODE=1 the Tauri window paints one full
-#   frame at ~1.0s-1.5s after launch, then the WebView content layer stops
-#   producing frames FOREVER: window stays IsViewable, the app process and
-#   WebKitWebProcess stay alive with flat RSS, no page reload occurs, and forced
-#   resize / unmap+remap / windowraise / mouse and keyboard input all fail to
-#   revive it. A minimal WebKitGTK 4.1 WebView loading the SAME url
-#   (http://localhost:1420/) on the SAME Xvfb renders and holds indefinitely, so
-#   the machine and the dev server are exonerated and the fault is in the Tauri
-#   host path. Until that is fixed this script exits 3 and captures nothing —
-#   which is the correct, honest behaviour.
+# KNOWN FAILURE MODE (RESOLVED 2026-10-16 in commit a1de895 — kept as history)
+#   The symptom below ("paints one frame, then the content layer stops
+#   forever") was NEVER the Tauri host path: it was `src/lib/format.ts`
+#   throwing `RangeError` on `navigator.language === "c"` once IPC rows
+#   resolved, unmounting the whole tree. The minimal-WebKitGTK exoneration
+#   held paint only because it never resolved rows. After the fix the same
+#   recipe sustains paint indefinitely (947 colours across 19 consecutive
+#   samples) — see docs/visual-proof/230-p1-real/ frames 02-10. The
+#   sustained-paint polling stays because first-paint checking is still a
+#   trap in general.
+#   Original (pre-fix) symptom, past tense: with
+#   WEBKIT_DISABLE_COMPOSITING_MODE=1 the Tauri window painted one full
+#   frame at ~1.0s-1.5s after launch, then the WebView content layer
+#   stopped producing frames: window stayed IsViewable, the app process
+#   and WebKitWebProcess stayed alive with flat RSS, no page reload
+#   occurred, and forced resize / unmap+remap / windowraise / mouse and
+#   keyboard input all failed to revive it.
 #
 # USAGE
 #   docs/visual-proof/capture-tauri.sh <output.png> [--display :77] [--env "K=V ..."]
@@ -69,7 +77,8 @@
 # EXIT CODES
 #   0  sustained paint observed and <output.png> written
 #   2  bad usage / missing prerequisite
-#   3  the window never sustained paint (the known failure mode) — nothing written
+#   3  the window never sustained paint (the historical failure mode,
+#      resolved by the a1de895 locale fix) — nothing written
 #   4  the app process died before painting
 set -euo pipefail
 
@@ -206,5 +215,5 @@ done
 
 printf 'capture-tauri: FAILED — no sustained paint in %s samples (max %s colours, threshold %s).\n' \
   "$SAMPLES" "$max" "$MIN_COLOURS" >&2
-printf 'capture-tauri: this is the known Tauri WebView failure mode (issue #245); nothing written.\n' >&2
+printf 'capture-tauri: this is the historical no-sustained-paint mode (issue #245; resolved for the P1 list by the a1de895 locale fix); nothing written.\n' >&2
 exit 3

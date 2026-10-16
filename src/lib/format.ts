@@ -20,13 +20,16 @@ function sameDay(a: Date, b: Date): boolean {
 /** Resolve a safe BCP 47 tag for `Intl` formatting.
  * `navigator.language` is NOT guaranteed to be a valid BCP 47 tag:
  * on a C/POSIX-locale box WebKit's JavaScriptCore reports `"c"` and
- * `new Intl.DateTimeFormat("c", …)` throws `RangeError: invalid language
- * tag` (V8/Chromium is lenient and accepts it, which is why this only
- * crashes the real Tauri/WebKit build — and with no error boundary above
- * the list, the throw unmounts the whole tree). Resolve through
- * `supportedLocalesOf` with an `en-US` fallback, wrapped in try/catch:
- * V8's `supportedLocalesOf(["c"])` itself throws `RangeError`, while JSC
- * returns `[]` for it — both arms land on `en-US`. */
+ * `new Intl.DateTimeFormat("c", …)` throws `RangeError`. Both engines
+ * reject `"c"` (verified on node/V8 v24: the constructor,
+ * `supportedLocalesOf` and `getCanonicalLocales` ALL throw `RangeError`
+ * for it) — the Chromium supplements never showed the bug only because
+ * their `navigator.language` was a valid tag, not `"c"`. With no error
+ * boundary above the list, the throw unmounts the whole tree. Resolve
+ * through `supportedLocalesOf` with an `en-US` fallback, wrapped in
+ * try/catch: V8's `supportedLocalesOf(["c"])` itself throws
+ * `RangeError`, while JSC returns `[]` for it — both arms land on
+ * `en-US`. */
 function dateLocale(): string {
   const tag = navigator.language;
   try {
