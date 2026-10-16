@@ -36,7 +36,7 @@ documents that it breaks GL on this box. Used:
 
 | File | Evidence class | Content |
 |---|---|---|
-| `01-cold-sidebar-loading-skeletons.png` | real Tauri + real backend | cold boot; sidebar, `Новый разговор`, `Поиск`, 7 loading skeletons, footer |
+| `01-cold-sidebar-loading-skeletons.png` | real Tauri + real backend | cold boot; sidebar, `Новый разговор`, `Поиск`, 5 loading skeletons, footer |
 | `01b-cold-sidebar-loading-skeletons-repeat.png` | real Tauri + real backend | same beat on a second, independent Xvfb — proves the recipe is reproducible |
 | `02-conversation-list-after-locale-fix.png` | real Tauri + real backend | resolved list with relative dates (`23h`, `Вчера`, `Oct 14/12/9`), groups `Активные`/`Архив` — the state that previously crashed |
 | `03-hover-actions.png` | real Tauri + real backend | pointer over row 2: the 4-icon action group revealed (export, rename, archive, delete). A native title tooltip paints beside the cursor as a solid black box under software rendering (WebKit tooltip paint artifact, out of P1 scope — noted, not fixed) |
