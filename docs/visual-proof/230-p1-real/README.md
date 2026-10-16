@@ -1,11 +1,33 @@
 # 230 Phase 1 — REAL-Tauri capture evidence
 
-**Status: PARTIAL. Real-build proof is NOT achieved.** This directory holds the
-genuinely reachable real-Tauri frames plus the reason the rest are missing.
+**Status: REAL-BUILD PROOF ACHIEVED for the P1 list/search beats below.**
+The "one frame then permanently blank" failure mode is FIXED — it was a real
+product bug, not a host-path fault (see "Root cause" below). Every frame here
+is **REAL Tauri**: the `src-tauri/target/debug/nexora` WebKitGTK binary, real
+SQLite backend (`schema v14`), real Vite dev server at `http://localhost:1420`.
+No `?mock`, no Chromium. Each frame was opened and inspected before acceptance.
 
-Every frame here is **REAL Tauri**: the `src-tauri/target/debug/nexora` WebKitGTK
-binary, real SQLite backend (`schema v14`, 12 active conversations seeded),
-real Vite dev server at `http://localhost:1420`. No `?mock`, no Chromium.
+## Root cause (fixed in this branch)
+
+`src/lib/format.ts` called `new Intl.DateTimeFormat(navigator.language, …)`
+with no validation. On a C/POSIX-locale box WebKit's JavaScriptCore reports
+`navigator.language === "c"` and throws `RangeError: invalid language tag`
+(V8/Chromium is lenient, which is why mock/Chromium shots never showed it).
+With no error boundary above the list, the throw unmounted the whole tree:
+skeletons painted (no timestamps yet), then rows arrived, `formatRelativeTime`
+threw, the window went blank. Measured before the fix: exactly ONE painted
+frame (~883–905 colours) then a permanent colour count of 1. After the fix:
+947 colours sustained across 19 consecutive samples over ~10s.
+
+Fix: `dateLocale()` resolves the tag through
+`Intl.DateTimeFormat.supportedLocalesOf` with an `en-US` fallback, wrapped in
+try/catch (both arms are load-bearing: V8's `supportedLocalesOf(["c"])`
+*throws* `RangeError`; JSC returns `[]`). Regression test:
+`src/lib/format.test.ts` (stubs `navigator.language = "c"`).
+
+Recipe note: launch WITHOUT `LIBGL_ALWAYS_SOFTWARE=1` — `capture-tauri.sh`
+documents that it breaks GL on this box. Used:
+`WEBKIT_DISABLE_COMPOSITING_MODE=1` only, on Xvfb `:89`, openbox WM.
 
 ## Frames
 
@@ -13,9 +35,31 @@ real Vite dev server at `http://localhost:1420`. No `?mock`, no Chromium.
 |---|---|---|
 | `01-cold-sidebar-loading-skeletons.png` | real Tauri + real backend | cold boot; sidebar, `Новый разговор`, `Поиск`, 7 loading skeletons, footer |
 | `01b-cold-sidebar-loading-skeletons-repeat.png` | real Tauri + real backend | same beat on a second, independent Xvfb — proves the recipe is reproducible |
+| `02-conversation-list-after-locale-fix.png` | real Tauri + real backend | resolved list with relative dates (`23h`, `Вчера`, `Oct 14/12/9`), groups `Активные`/`Архив` — the state that previously crashed |
+| `03-hover-actions.png` | real Tauri + real backend | pointer over row 2: the 4-icon action group revealed (export, rename, archive, delete). A native title tooltip paints beside the cursor as a solid black box under software rendering (WebKit tooltip paint artifact, out of P1 scope — noted, not fixed) |
+| `04-selected-row.png` | real Tauri + real backend | clicked row 1: tab strip, thread message, composer, selected row with actions, pointer parked on neutral canvas |
+| `05-keyboard-actions.png` | real Tauri + real backend | fresh launch, ZERO clicks: 8× Tab lands focus on row 1's delete button (focus ring visible, `Удалить разг…` tooltip) — action group revealed by keyboard focus alone |
+| `06-search-mid-typing-spinner.png` | real Tauri + real backend | `R` typed, caret visible, dropdown not yet open, circular spinner glyph at the input's trailing edge — caught inside the 250ms debounce (zoom-verified) |
+| `07-search-results.png` | real Tauri + real backend | token-exact query `Refactor`: dropdown group `Разговоры` with the two matching conversations (a bare `R` matches nothing — FTS MATCH gets the query as supplied, `search.rs:58`) |
+| `08-empty-with-query.png` | real Tauri + real backend | query `zzzqqqx`: `Ничего не найдено по запросу «zzzqqqx».` empty state in the dropdown |
+| `09-narrow-850px.png` | real Tauri + real backend | window resized to 850×800 (`xwininfo`-verified): sidebar + compressed main pane reflow correctly |
 
-Colour counts: 1221 and 1218 unique colours in the 1200x800 app body (a blank
-window measures 1–6).
+Colour counts: 1221 and 1218 unique colours in the 1200x800 app body for the
+skeleton frames (a blank window measures 1–6); 947 sustained for the resolved
+list (darker surface than the skeleton flash frame).
+
+## What is NOT here, and why
+
+Reduced-motion is **not real-build proven**: `gtk-enable-animations=0` (via a
+scratch `XDG_CONFIG_HOME`) was attempted and the app renders identically, but
+whether WebKitGTK maps that setting to `prefers-reduced-motion: reduce` cannot
+be verified from outside the WebView, and a still cannot distinguish the two
+states anyway — so no frame here claims that beat. It stays a Chromium
+supplement. Likewise inline-rename and the long-RU-title close-up were already
+covered by Chromium supplements and were not re-driven here; nothing about
+them changed in this fix.
+The old environment-driven "paints one frame then dies" paragraph below is
+kept as history — it describes the bug's symptom, now explained.
 
 ## What is NOT here, and why
 
