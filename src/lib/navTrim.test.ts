@@ -137,8 +137,13 @@ describe("hidden panels stay on disk (#219)", () => {
       expect(sidebar).not.toContain(`from "./${component}"`);
       expect(sidebar).not.toContain(`<${component}`);
     }
-    // The kept rail rows, in order, with Settings last.
-    const rail = sidebar.slice(sidebar.indexOf('className="nex-sidebar-footer"'));
+    // The kept rail rows, in order, with Settings last. #230 Phase 1
+    // migrated the rail group off `.nex-sidebar-footer` onto its
+    // `data-slot` hook, so the slice anchor moves with it; the order
+    // contract below is unchanged.
+    const rail = sidebar.slice(
+      sidebar.indexOf('data-slot="sidebar-footer"'),
+    );
     const order = ["VersionControlEntry", "TaskEntry", "SettingsEntry"].map((name) =>
       rail.indexOf(`<${name}`),
     );

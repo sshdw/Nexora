@@ -5,6 +5,7 @@ import type { Conversation } from "../lib/tauri";
 import M3IconButton from "./M3IconButton";
 import M3RailItem from "./M3RailItem";
 import M3Toolbar from "./M3Toolbar";
+import { Input } from "./ui/input";
 import { useStrings } from "../lib/useLocale";
 import { useSnackbar } from "./SnackbarHost";
 import {
@@ -28,6 +29,37 @@ export interface ConversationItemProps {
   onDelete: (id: number) => void;
 }
 
+// One conversation row, NEXORA-COMPONENT-MAP.md row 3: a title that
+// ellipsizes, a muted relative date that never yields to it, hover-revealed
+// icon actions, and an inline rename that replaces the title in place. No
+// badges, counters, snippets or pins.
+//
+// The row rides the shared M3RailItem primitive (thin light tick + tone step
+// when selected — never a colour fill), and the two facts that were
+// colliding in the old markup are now structural rather than stylistic:
+//   - the title is the ONLY truncating box (`min-w-0 flex-1 truncate`), and
+//     the date lives in the row's `trailing` slot, outside that box;
+//   - the date is `shrink-0`, so a long RU title ellipsizes around it and
+//     the date is never the part that clips.
+//
+// Height comes from the primitive (32px, THEME §4 compact) rather than a
+// per-row override, so the conversation rows, the footer rail rows and the
+// loading placeholders that stand in for them all share one rhythm — the
+// four 32px icon actions then fill exactly one row.
+//
+// An ARCHIVED row keeps the same tone as an unselected active one. The old
+// sheet dimmed its title one more step down the legacy ladder; the new
+// theme's only dimmer step is an opacity multiplier, which would push the
+// title under the 4.5:1 text floor (THEME §2), and the "Archived" group
+// label above the group already carries that fact.
+//
+// The actions are absolutely positioned and revealed by the migrated CSS in
+// src/styles/components.css (`[data-slot="row-actions"]`). That reveal is CSS
+// and not Tailwind because it is a cross-element state rule — it has to read
+// the row's hover/selected state AND the actions' own focus-within — and
+// because it must never hide the buttons from the tab order: `opacity` +
+// `pointer-events` only, so Tab reaches the actions and focusing one reveals
+// the group.
 export default function ConversationItem({
   conversation,
   selected,
@@ -78,10 +110,13 @@ export default function ConversationItem({
   };
 
   if (renaming) {
+    // The field replaces the row IN PLACE (MAP row 3): same box, same
+    // height as the row it stands in for, so the list does not jump when
+    // the title turns editable.
     return (
-      <li className="nex-conversation-item-wrap">
-        <input
-          className="nex-conversation-rename-input"
+      <li className="px-2">
+        <Input
+          className="h-8"
           value={draftTitle}
           aria-label={t("list.renameAria")}
           autoFocus
@@ -102,45 +137,43 @@ export default function ConversationItem({
   }
 
   return (
-    <li className="nex-conversation-item-wrap">
-      <div className="nex-conversation-row">
-        {/* Row selection rides the shared M3RailItem primitive (contract
-            §Shell expanded-rail grammar): active = pill + tone step +
-            emphasized label on the default-speed spring, with the
-            title/time composed inside the rail label. Selection is conveyed
-            by aria-current only. */}
-        <M3RailItem
-          label={conversation.title}
-          active={selected}
-          className={
-            "nex-conversation-item" + (archived ? " is-archived" : "")
-          }
-          onClick={() => onSelect(conversation.id)}
-        >
-          <span
-            className="nex-conversation-title"
-            title={conversation.title}
-            aria-hidden="true"
-          >
-            {conversation.title}
-          </span>
+    <li
+      data-slot="conversation-row"
+      data-selected={selected ? "true" : undefined}
+      className="relative"
+    >
+      <M3RailItem
+        label={conversation.title}
+        active={selected}
+        onClick={() => onSelect(conversation.id)}
+        trailing={
           <time
-            className="nex-conversation-time"
+            data-slot="conversation-date"
+            className="text-xs text-muted-foreground tabular-nums"
             dateTime={new Date(conversation.updated_at * 1000).toISOString()}
           >
             {formatRelativeTime(conversation.updated_at, locale)}
           </time>
-        </M3RailItem>
-        {/* Compact icon actions replace the timestamp while hovered /
-            focused / selected — they no longer consume row width, so the
-            title can never collide with them (0.3.0 defect fix). Grouped
-            in a docked toolbar (same placement, token-driven look). */}
+        }
+      >
+        <span className="truncate" title={conversation.title} aria-hidden="true">
+          {conversation.title}
+        </span>
+      </M3RailItem>
+      {/* Compact icon actions, docked at the row's trailing edge. The group
+          overlays the row rather than reserving width for it, so the title
+          never reflows on hover; it carries its own surface and the date
+          yields under it while it shows (the migrated CSS in
+          components.css explains both). It is revealed by `opacity`, never
+          `visibility`, so the four buttons stay in the tab order and
+          focusing one reveals the group. */}
+      <div data-slot="row-actions">
         <M3Toolbar
           label={t("list.itemActions", { title: conversation.title })}
-          className="nex-conversation-actions"
+          className="gap-0.5"
         >
           <M3IconButton
-            size="sm"
+            size="md"
             label={t("list.actionExport")}
             onClick={() => onExport(conversation.id)}
             disabled={busy}
@@ -148,7 +181,7 @@ export default function ConversationItem({
             <ExportIcon />
           </M3IconButton>
           <M3IconButton
-            size="sm"
+            size="md"
             label={t("list.actionRename")}
             onClick={beginRename}
             disabled={busy}
@@ -157,7 +190,7 @@ export default function ConversationItem({
           </M3IconButton>
           {archived ? (
             <M3IconButton
-              size="sm"
+              size="md"
               label={t("list.actionRestore")}
               onClick={() => {
                 void onRestore(conversation.id);
@@ -168,7 +201,7 @@ export default function ConversationItem({
             </M3IconButton>
           ) : (
             <M3IconButton
-              size="sm"
+              size="md"
               label={t("list.actionArchive")}
               onClick={() => {
                 void (async () => {
@@ -204,7 +237,7 @@ export default function ConversationItem({
             </M3IconButton>
           )}
           <M3IconButton
-            size="sm"
+            size="md"
             danger
             label={t("list.actionDelete")}
             onClick={() => onDelete(conversation.id)}

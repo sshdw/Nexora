@@ -17,14 +17,37 @@ function sameDay(a: Date, b: Date): boolean {
   );
 }
 
+/** Resolve a safe BCP 47 tag for `Intl` formatting.
+ * `navigator.language` is NOT guaranteed to be a valid BCP 47 tag:
+ * on a C/POSIX-locale box WebKit's JavaScriptCore reports `"c"` and
+ * `new Intl.DateTimeFormat("c", …)` throws `RangeError`. Both engines
+ * reject `"c"` (verified on node/V8 v24: the constructor,
+ * `supportedLocalesOf` and `getCanonicalLocales` ALL throw `RangeError`
+ * for it) — the Chromium supplements never showed the bug only because
+ * their `navigator.language` was a valid tag, not `"c"`. With no error
+ * boundary above the list, the throw unmounts the whole tree. Resolve
+ * through `supportedLocalesOf` with an `en-US` fallback, wrapped in
+ * try/catch: V8's `supportedLocalesOf(["c"])` itself throws
+ * `RangeError`, while JSC returns `[]` for it — both arms land on
+ * `en-US`. */
+function dateLocale(): string {
+  const tag = navigator.language;
+  try {
+    return Intl.DateTimeFormat.supportedLocalesOf([tag])[0] ?? "en-US";
+  } catch {
+    return "en-US";
+  }
+}
+
 function formatLocale(date: Date, options: Intl.DateTimeFormatOptions): string {
-  return new Intl.DateTimeFormat(navigator.language, options).format(date);
+  return new Intl.DateTimeFormat(dateLocale(), options).format(date);
 }
 
 /** Format a conversation's `updated_at` (seconds) as a calm, compact label.
  * Fixed words ("Just now", "Yesterday") follow the UI locale; numeric
- * date parts keep using `navigator.language` (date/number locale formatting
- * beyond string level is out of scope — documented in strings.ts). */
+ * date parts use the safely-resolved browser locale (see `dateLocale` —
+ * date/number locale formatting beyond string level is out of scope —
+ * documented in strings.ts). */
 export function formatRelativeTime(seconds: number, locale: Locale = getLocale()): string {
   const ms = seconds * SECOND_MS;
   const now = Date.now();

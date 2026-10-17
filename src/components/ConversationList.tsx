@@ -2,6 +2,7 @@ import type { CommandError, Conversation } from "../lib/tauri";
 import { useStrings } from "../lib/useLocale";
 import ConversationItem from "./ConversationItem";
 import M3Button from "./M3Button";
+import { Skeleton } from "./ui/skeleton";
 
 export interface ConversationListProps {
   conversations: Conversation[];
@@ -18,6 +19,13 @@ export interface ConversationListProps {
   onDelete: (id: number) => void;
 }
 
+// #230 Phase 1 — the scrolling half of the rail (`components/sidebar.md`:
+// SidebarContent between the search field and the footer). Loading mirrors
+// the rows it replaces (MAP row 19: skeletons stand in for the coming layout,
+// not generic blocks), the group labels are sentence-case quiet text
+// (NEXORA-MAIN-SCREEN.md §3), and the failure notice keeps what happened
+// plus one action to try (SYSTEM §8). Structure only in Tailwind; every
+// colour is a theme token.
 export default function ConversationList({
   conversations,
   loading,
@@ -41,10 +49,20 @@ export default function ConversationList({
   const deleteCancelled = error?.kind === "confirmationRequired";
   if (loading) {
     return (
-      <nav className="nex-conversation-nav" aria-label={t("list.navAria")}>
-        <div className="nex-skeleton-list" role="status" aria-label={t("list.loadingAria")}>
+      <nav
+        data-slot="conversation-list"
+        aria-label={t("list.navAria")}
+        className="flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden px-2 pb-2"
+      >
+        <div
+          role="status"
+          aria-label={t("list.loadingAria")}
+          className="flex flex-col gap-1 pt-3"
+        >
           {Array.from({ length: 5 }).map((_, index) => (
-            <div key={index} className="nex-skeleton-row" />
+            // One row-shaped placeholder per row: same height as the row it
+            // stands in for, so nothing shifts when the data lands.
+            <Skeleton key={index} className="h-8 w-full" />
           ))}
         </div>
       </nav>
@@ -53,9 +71,16 @@ export default function ConversationList({
 
   if (error && !deleteCancelled) {
     return (
-      <nav className="nex-conversation-nav" aria-label={t("list.navAria")}>
-        <div className="nex-conversation-error nex-fade-in" role="alert">
-          <span className="nex-conversation-error-text">{error.message}</span>
+      <nav
+        data-slot="conversation-list"
+        aria-label={t("list.navAria")}
+        className="flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden px-2 pb-2"
+      >
+        <div
+          role="alert"
+          className="mt-3 flex flex-col items-start gap-2 rounded-md border border-border p-2"
+        >
+          <span className="text-xs text-destructive">{error.message}</span>
           <M3Button variant="quiet" size="sm" onClick={onRetry}>
             {t("common.retry")}
           </M3Button>
@@ -66,8 +91,14 @@ export default function ConversationList({
 
   if (conversations.length === 0) {
     return (
-      <nav className="nex-conversation-nav" aria-label={t("list.navAria")}>
-        <p className="nex-conversation-empty-hint">{t("list.emptyHint")}</p>
+      <nav
+        data-slot="conversation-list"
+        aria-label={t("list.navAria")}
+        className="flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden px-2 pb-2"
+      >
+        <p className="px-2 py-3 text-xs text-muted-foreground">
+          {t("list.emptyHint")}
+        </p>
       </nav>
     );
   }
@@ -78,15 +109,23 @@ export default function ConversationList({
   const archived = conversations.filter((c) => c.status === "archived");
 
   return (
-    <nav className="nex-conversation-nav" aria-label={t("list.navAria")}>
+    <nav
+      data-slot="conversation-list"
+      aria-label={t("list.navAria")}
+      className="flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden px-2 pb-2"
+    >
       {deleteCancelled && (
-        <p className="nex-conversation-cancelled nex-fade-in" role="status">
+        <p role="status" className="px-2 py-1.5 text-xs text-muted-foreground">
           {t("list.deleteCancelled")}
         </p>
       )}
-      <ul className="nex-conversation-list">
+      <ul className="w-full">
         {active.length > 0 && (
-          <li className="nex-conversation-group-label">{t("list.groupActive")}</li>
+          // 12/400 muted, sentence case (NEXORA-MAIN-SCREEN.md §3,
+          // THEME §6 ballot): a section label, never an emphasis run.
+          <li className="px-2 pt-3 pb-1 text-xs text-muted-foreground">
+            {t("list.groupActive")}
+          </li>
         )}
         {active.map((conversation) => (
           <ConversationItem
@@ -106,7 +145,9 @@ export default function ConversationList({
 
         {archived.length > 0 && (
           <>
-            <li className="nex-conversation-group-label">{t("list.groupArchived")}</li>
+            <li className="px-2 pt-3 pb-1 text-xs text-muted-foreground">
+              {t("list.groupArchived")}
+            </li>
             {archived.map((conversation) => (
               <ConversationItem
                 key={conversation.id}

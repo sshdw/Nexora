@@ -154,7 +154,7 @@
    #230 Phase 0 prunes the dead half of the mapping: the
    `--chart-*` ramp, the `--sidebar*` slots and `--font-heading`
    had zero `var()` references anywhere in the tree (the shell's
-   rail is `.nex-sidebar`, not shadcn's sidebar-slot API, and no
+   rail is its own element, not shadcn's sidebar-slot API, and no
    surface draws a chart), so they are removed here and in both
    theme blocks rather than carried as a second source of truth.
    ---------------------------------------------------------- */
