@@ -259,7 +259,9 @@ struct GovernorState {
 /// Cloning is cheap: every clone governs the same underlying run state. All
 /// methods are non-blocking except the waiters consumed by the runner
 /// ([`Self::wait_while_paused`], [`Self::wait_for_allowance`]), both of
-/// which wake promptly on [`Self::cancel`].
+/// which wake promptly on [`Self::cancel`]. Mutators take the governor mutex
+/// only for their own critical section, so they block no caller for longer
+/// than a few field writes.
 #[derive(Debug, Clone)]
 pub(crate) struct RunControl {
     token: CancellationToken,
@@ -300,6 +302,8 @@ impl RunControl {
         &self,
         guard: MutexGuard<'a, GovernorState>,
     ) -> MutexGuard<'a, GovernorState> {
+        #[cfg(test)]
+        pre_wait_probe::hold_window();
         self.signal
             .wait(guard)
             .unwrap_or_else(PoisonError::into_inner)
@@ -320,8 +324,20 @@ impl RunControl {
     /// Request immediate cancellation. Wakes every waiter: a loop parked in a
     /// user pause or at an exhausted-budget boundary observes the token and
     /// aborts instead of deadlocking.
+    ///
+    /// The token is mutated under the governor mutex, which is what makes the
+    /// wake loss-free: a waiter only ever *gives up* that mutex by becoming a
+    /// condvar waiter (enqueue and unlock are atomic), so a notifier either
+    /// runs entirely before the waiter's predicate check — which then observes
+    /// the flag — or entirely after the waiter is enqueued, which then
+    /// receives this notification. Notifying without the mutex (issue #256)
+    /// leaves the window between check and enqueue open and wedges a paused
+    /// run forever.
     pub(crate) fn cancel(&self) {
-        self.token.cancel();
+        {
+            let _guard = self.lock_state();
+            self.token.cancel();
+        }
         self.signal.notify_all();
     }
 
@@ -329,9 +345,12 @@ impl RunControl {
     /// every waiter exactly like [`Self::cancel`], and additionally marks
     /// the shutdown origin on the shared token so parked approval waits
     /// record the honest shutdown vocabulary instead of the user-cancel
-    /// text. Never blocks.
+    /// text. Never blocks a caller beyond a governor critical section.
     pub(crate) fn shutdown(&self) {
-        self.token.shutdown();
+        {
+            let _guard = self.lock_state();
+            self.token.shutdown();
+        }
         self.signal.notify_all();
     }
 
@@ -418,5 +437,223 @@ impl RunControl {
     #[must_use]
     pub(crate) fn is_budget_parked(&self) -> bool {
         self.budget_parked.load(Ordering::SeqCst)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test-only park-window probe (never compiled outside test builds)
+// ---------------------------------------------------------------------------
+
+/// Widens the nanosecond-wide window between a waiter's park predicate and its
+/// condvar enqueue so a lost-wakeup regression test can drive the interleaving
+/// deterministically instead of winning a nanosecond coin flip.
+///
+/// The probe only observes; it cannot manufacture the bug. What it guarantees
+/// is that a parking waiter holds the governor mutex — with its predicate
+/// already evaluated — for long enough for a concurrent `cancel` to *attempt*:
+/// a `cancel` that mutates the token without the mutex returns inside the
+/// window and its notification is dropped (the waiter then sleeps forever),
+/// while a `cancel` that mutates the token under the mutex cannot return at
+/// all until the waiter parks, so the notification is always delivered.
+#[cfg(test)]
+mod pre_wait_probe {
+    use std::cell::Cell;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+
+    // Armed per waiting thread, so an armed probe can never latch onto an
+    // unrelated park running in parallel under libtest.
+    thread_local! {
+        static ARMED: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Published by the parking waiter while it still holds the governor mutex,
+    /// immediately before its condvar enqueue.
+    static IN_WINDOW: AtomicBool = AtomicBool::new(false);
+    /// Set by the notifier immediately before it calls `cancel`.
+    static ATTEMPTED: AtomicBool = AtomicBool::new(false);
+    /// Set by the notifier after its `cancel` call returned.
+    static DONE: AtomicBool = AtomicBool::new(false);
+
+    /// How long the notifier waits for the waiter to reach the window.
+    const NOTIFIER_BOUND: Duration = Duration::from_secs(10);
+    /// Grace after `ATTEMPTED` before the waiter concludes the notifier is
+    /// blocked on the governor mutex and parks to let it through. A lock-free
+    /// `cancel` returns in nanoseconds, so this is four orders of magnitude
+    /// more slack than the unfixed path needs to be observed.
+    const BLOCKED_GRACE: Duration = Duration::from_millis(200);
+    /// Poll spacing for the bounded window waits.
+    const POLL: Duration = Duration::from_millis(1);
+
+    /// Arms the probe on the calling thread for one park.
+    pub(crate) struct ProbeGuard;
+
+    impl ProbeGuard {
+        #[must_use]
+        pub(crate) fn arm() -> Self {
+            ARMED.with(|armed| armed.set(true));
+            Self
+        }
+    }
+
+    impl Drop for ProbeGuard {
+        fn drop(&mut self) {
+            ARMED.with(|armed| armed.set(false));
+        }
+    }
+
+    /// Clears the handshake before a scenario arms the probe.
+    pub(crate) fn reset() {
+        IN_WINDOW.store(false, Ordering::Release);
+        ATTEMPTED.store(false, Ordering::Release);
+        DONE.store(false, Ordering::Release);
+    }
+
+    /// Notifier side: wait (bounded) for the waiter to enter the window.
+    pub(crate) fn await_window() {
+        let deadline = Instant::now() + NOTIFIER_BOUND;
+        while !IN_WINDOW.load(Ordering::Acquire) {
+            if Instant::now() >= deadline {
+                return;
+            }
+            std::thread::sleep(POLL);
+        }
+    }
+
+    /// Notifier side: announce the imminent `cancel`.
+    pub(crate) fn notify_attempted() {
+        ATTEMPTED.store(true, Ordering::Release);
+    }
+
+    /// Notifier side: announce that the `cancel` call returned.
+    pub(crate) fn notify_done() {
+        DONE.store(true, Ordering::Release);
+    }
+
+    /// Waiter side: hold the window open until the notifier has either
+    /// completed its `cancel` (unfixed: the notification was dropped) or is
+    /// demonstrably blocked on the governor mutex this thread still holds
+    /// (fixed: the waiter must park to let it through).
+    pub(crate) fn hold_window() {
+        if !ARMED.with(Cell::get) {
+            return;
+        }
+        IN_WINDOW.store(true, Ordering::Release);
+        let mut blocked_deadline: Option<Instant> = None;
+        loop {
+            if DONE.load(Ordering::Acquire) {
+                break;
+            }
+            let now = Instant::now();
+            match blocked_deadline {
+                Some(deadline) if now >= deadline => break,
+                None if ATTEMPTED.load(Ordering::Acquire) => {
+                    blocked_deadline = Some(now + BLOCKED_GRACE);
+                }
+                None | Some(_) => {}
+            }
+            std::thread::sleep(POLL);
+        }
+        IN_WINDOW.store(false, Ordering::Release);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc::channel;
+    use std::thread;
+    use std::time::Duration;
+
+    /// Every assertion below is bounded: a lost wakeup must surface as a test
+    /// failure in seconds, never as a parked thread that wedges the run.
+    const BOUND: Duration = Duration::from_secs(10);
+
+    /// The probe handshake is process-wide, so the two scenarios must not
+    /// overlap (libtest runs tests in parallel).
+    static PROBE_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Parks a fresh control with `park`, fires exactly one `cancel` from
+    /// another thread inside the check-to-enqueue window, and requires the
+    /// waiter to observe the cancellation within [`BOUND`].
+    fn cancel_wakes_parked_waiter(park: fn(&RunControl) -> bool) {
+        let _serial = PROBE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+        pre_wait_probe::reset();
+
+        let control = RunControl::new();
+        let (tx, rx) = channel();
+        let waiter_control = control.clone();
+        let waiter = thread::spawn(move || {
+            let probe = pre_wait_probe::ProbeGuard::arm();
+            let resumed = park(&waiter_control);
+            drop(probe);
+            let _ = tx.send(resumed);
+        });
+
+        let notifier_control = control.clone();
+        let notifier = thread::spawn(move || {
+            pre_wait_probe::await_window();
+            pre_wait_probe::notify_attempted();
+            notifier_control.cancel();
+            pre_wait_probe::notify_done();
+        });
+
+        // A lost wakeup parks the waiter thread forever, so the bound is the
+        // assertion: expiry means cancellation was requested and never
+        // observed (issue #256).
+        let resumed = rx.recv_timeout(BOUND).expect(
+            "a parked waiter must observe the cancellation; a lost wakeup parks it forever",
+        );
+        assert!(!resumed, "cancellation must end the park, never resume it");
+
+        notifier.join().expect("notifier joins");
+        waiter.join().expect("waiter joins");
+    }
+
+    /// Regression for the lost-wakeup deadlock of issue #256: a user-paused run
+    /// that is cancelled while its runner sits between the park predicate and
+    /// the condvar enqueue must still observe the cancellation.
+    #[test]
+    fn cancel_wakes_a_waiter_parked_on_a_user_pause() {
+        cancel_wakes_parked_waiter(|control| {
+            control.pause();
+            control.wait_while_paused()
+        });
+    }
+
+    /// Same race on the other production park: a run over its step allowance
+    /// that is cancelled while parked awaiting `extend_steps`.
+    #[test]
+    fn cancel_wakes_a_waiter_parked_at_the_budget_boundary() {
+        cancel_wakes_parked_waiter(|control| control.wait_for_allowance(1, 1));
+    }
+
+    /// Sibling notifiers mutate `GovernorState` under the governor mutex before
+    /// notifying, so a `resume` cannot be lost either. Pinned here so the
+    /// asymmetry with `cancel` (issue #256) cannot return: `extend_steps` moves
+    /// state while leaving the run paused, and only `resume` ends the park.
+    #[test]
+    fn resume_wakes_a_paused_waiter_that_extend_steps_did_not_release() {
+        let control = RunControl::new();
+        control.pause();
+        let (tx, rx) = channel();
+        let waiter_control = control.clone();
+        let waiter = thread::spawn(move || {
+            let _ = tx.send(waiter_control.wait_while_paused());
+        });
+        control.extend_steps(1);
+        assert!(control.pause_pending(), "extend must not lift a user pause");
+        assert_eq!(control.extra_steps(), 1, "extend must be recorded");
+        control.resume();
+        assert!(
+            rx.recv_timeout(BOUND)
+                .expect("resume wakes the parked waiter"),
+            "the waiter resumes when the pause is lifted"
+        );
+        waiter.join().expect("waiter joins");
     }
 }

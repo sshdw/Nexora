@@ -113,9 +113,14 @@ impl AgentRunRegistry {
     pub(crate) fn cancel(&self, run_id: i64) -> bool {
         // Same shape as `shutdown_cancel` below: clone the entry, drop the
         // runs-map guard, then signal outside the critical section so the
-        // map is never held across `notify_all` (`RunControl::cancel` is one
-        // atomic store plus a wake — the same no-mutex shape as `shutdown`,
-        // so the narrowing is zero-risk symmetry, not a behavior change).
+        // map is never held across `notify_all`. Note that `RunControl::cancel`
+        // takes the *governor* mutex internally — that is its own critical
+        // section, unrelated to this map lock, and dropping the map guard
+        // first is what keeps the two locks from nesting. Do not "simplify"
+        // `RunControl::cancel` back to a bare atomic store: notifying without
+        // the governor mutex loses the wakeup when it lands between a waiter's
+        // park predicate and its condvar enqueue, wedging the run forever
+        // (#256).
         let entry = self
             .runs
             .lock()
