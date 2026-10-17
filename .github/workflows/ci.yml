@@ -36,7 +36,27 @@ jobs:
   rust:
     name: rust (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    # Per-OS wall-clock budget, so one slow leg cannot drag the fast one up.
+    # Linux stays 20m; Windows gets 30m. This is headroom, not a description of
+    # real cost: on current main the job measures 3m23s Linux / 5m55s Windows
+    # (run 39034840473), both far inside the old 20m wall.
+    #
+    # Why Windows still gets more: the two 20m cancellations on PR #247 were a
+    # CACHE MISS, not a slow build. That branch sat 6 commits behind main with a
+    # `src-tauri/Cargo.lock` predating the serde_json / tauri-plugin-dialog /
+    # @tauri-apps/api bump wave; Swatinem/rust-cache keys on the lockfile hash,
+    # so Windows cold-rebuilt every crate -- twice. A diverged lockfile silently
+    # costs a full cold rebuild; rebase onto main rather than raise the wall.
+    #
+    # A timed-out job concludes `cancelled`, and `gh run view --log-failed`
+    # returns nothing for it -- so a timeout yields no failing step to chase and
+    # no step profile to read. Do not "tidy" Windows back to 20m assuming it
+    # never runs long: it does, whenever the lockfile diverges.
+    #
+    # Both legs are listed in `include` on purpose: an entry only ADDS keys to
+    # an existing combination, so a missing entry leaves that leg's
+    # `matrix.timeout` empty and silently falls back to the 360m default.
+    timeout-minutes: ${{ matrix.timeout }}
     env:
       RUSTC_WRAPPER: sccache
       SCCACHE_GHA_ENABLED: "true"
@@ -44,6 +64,11 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            timeout: 20
+          - os: windows-latest
+            timeout: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
