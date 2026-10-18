@@ -54,7 +54,30 @@ function emittedClasses(source: string): string[] {
   return [...tokens].sort();
 }
 
+/** Every class SELECTOR the components layer can see: comments
+ *  stripped, names whole. A plain `css.includes("." + token)` lookup
+ *  is not a gate — a longer class CONTAINS a shorter one
+ *  (`.nex-tabstrip` contains `.nex-tab`, `.nex-tabstrip-list`
+ *  contains `.nex-tabstrip`), and a comment may NAME a class that has
+ *  no rule at all. Both satisfy the substring. Deleting the `.nex-tab`
+ *  rule — the exact regression this file exists for — went green on
+ *  it. So the names come from the selectors themselves, and each one
+ *  is taken whole: a class name ends where its name ends. */
+function classNames(css: string): string[] {
+  const uncommented = css
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^[ \t]*\/\/.*$/gm, "");
+  return [
+    ...new Set(
+      [...uncommented.matchAll(/\.([_a-zA-Z][\w-]*)/g)].map((match) => match[1] ?? ""),
+    ),
+  ].sort();
+}
+
 const CSS = allCss();
+
+/** The selector names `CSS` actually declares. */
+const CLASS_NAMES = new Set(classNames(CSS));
 
 /** The P2 components, with the classNames they own. */
 const SOURCES: Record<string, string> = {
@@ -82,13 +105,23 @@ describe("P2 chrome — no unstyled className", () => {
     );
   });
 
+  it("scans whole class names, and only names a selector declares", () => {
+    // Anti-vacuity pin for the scan the check below leans on.
+    // `.nex-tabstrip-list` is ONE name — a scan that reported prefixes
+    // would satisfy `.nex-tab` out of `.nex-tabstrip` again — and a
+    // name that lives only inside a comment is not a rule.
+    expect(classNames(".nex-tabstrip-list")).toEqual(["nex-tabstrip-list"]);
+    expect(
+      classNames("/* .nex-comment-only */\n.a,\n.b.is-active { color: red }"),
+    ).toEqual(["a", "b", "is-active"]);
+  });
+
   for (const [name, source] of Object.entries(SOURCES)) {
     it(`${name}: every class it emits has a rule`, () => {
-      const missing = emittedClasses(source).filter((token) => {
-        // Modifiers live inside a compound selector
-        // (`.nex-tab.is-active`), so a dotted lookup covers both forms.
-        return !CSS.includes(`.${token}`);
-      });
+      // A modifier lives inside a compound selector
+      // (`.nex-tab.is-active`), so both halves land in CLASS_NAMES in
+      // their own right and each is checked on its own.
+      const missing = emittedClasses(source).filter((token) => !CLASS_NAMES.has(token));
       expect(missing).toEqual([]);
     });
   }

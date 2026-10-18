@@ -136,12 +136,17 @@
   right: 0;
   bottom: 0;
   height: var(--nex-sys-space-xxxs);
-  /* The accent-indicator token IS the primary role, which the mono
-     theme (#235) paints achromatically — so the tick is a light
-     bar on the dark canvas and a dark bar on paper, never a
-     second hue. No radius: a full-width edge tick has nothing to
+  /* The mono theme (#235) has ONE indicator role and it is
+     `--color-tick` (-> `--tick`, src/index.css): chroma ~0.005,
+     so it is a light bar on the dark canvas and a dark bar on
+     paper — never a second hue.
+     NOT `--nex-sys-color-accent-indicator`: that aliases
+     `--nex-sys-color-primary` (tokens.css), which is still the
+     legacy amber (#a9824a dark / #e3c07c light). The alias reads
+     like a role but resolves to a hue, which is how an amber tick
+     got here. No radius: a full-width edge tick has nothing to
      round (the old rule's full-round tick was pill grammar). */
-  background: var(--nex-sys-color-accent-indicator);
+  background: var(--color-tick);
 }
 
 .nex-tab.is-active .nex-tab-label {

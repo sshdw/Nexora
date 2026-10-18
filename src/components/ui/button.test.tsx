@@ -82,16 +82,35 @@ describe("press token — consumed by the button", () => {
     // `scale` is the FIRST entry of the property list, so the first
     // duration is its own — that alignment is the whole mechanic
     // (and the reason the list is spelled out twice).
-    expect(BASE).toMatch(/transition-\[scale,[^\]]*opacity\]/);
+    const properties = /transition-\[([^\]]+)\]/.exec(BASE)?.[1].split(",") ?? [];
+    expect(properties[0]).toBe("scale");
+    // The rest of the list is paint only: fill, text, border, shadow,
+    // opacity. Nothing that moves, so nothing a press can re-clock.
+    for (const property of properties.slice(1)) {
+      expect(property).toMatch(
+        /^(background-color|color|border-color|box-shadow|opacity)$/,
+      );
+    }
+    // A duration list lines up with the property list positionally, so
+    // the contract is read per entry — not by counting how many times
+    // the fade token appears, which is a number that silently rots the
+    // next time a property is added or dropped from the list.
+    const FAST = "var(--nex-sys-motion-duration-fast)";
+    const PRESS = "var(--nex-sys-motion-duration-press)";
+    /** The list `utility` spells out, one entry per transitioned property. */
+    const durations = (utility: string): string[] =>
+      new RegExp(`(?:^|\\s)${utility}\\[transition-duration:([^\\]]+)\\]`)
+        .exec(BASE)?.[1]
+        .split(",") ?? [];
     // At rest: instant release, no travel back.
-    expect(BASE).toMatch(/\[transition-duration:0s,/);
-    // Held: the press token, with the paint transitions untouched.
-    expect(BASE).toMatch(
-      /active:\[transition-duration:var\(--nex-sys-motion-duration-press\),/,
-    );
-    // Every paint entry stays on the state-fade token.
-    const fast = (BASE.match(/var\(--nex-sys-motion-duration-fast\)/g) ?? []).length;
-    expect(fast).toBe(10);
+    expect(durations("")).toEqual(["0s", ...properties.slice(1).map(() => FAST)]);
+    // Held: the press token takes the clock, and ONLY the clock — the
+    // paint entries are the same token they were at rest, so a press
+    // cannot speed up the hover/focus fade it sits on top of.
+    expect(durations("active:")).toEqual([
+      PRESS,
+      ...properties.slice(1).map(() => FAST),
+    ]);
   });
 
   it("presses every variant, not only the primary one", () => {
