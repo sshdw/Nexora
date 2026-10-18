@@ -74,6 +74,15 @@ function classNames(css: string): string[] {
   ].sort();
 }
 
+/** One declaration's VALUE out of a rule body. The LAST occurrence
+ *  wins in CSS, so the last match is the one a browser would apply —
+ *  a first-match read would report a declaration that is overridden
+ *  two lines down. */
+function declaration(rule: string, property: string): string {
+  const found = [...rule.matchAll(new RegExp(`(?:^|;)\\s*${property}:\\s*([^;]+)`, "g"))];
+  return found[found.length - 1]?.[1]?.trim() ?? "";
+}
+
 const CSS = allCss();
 
 /** The selector names `CSS` actually declares. */
@@ -159,6 +168,20 @@ describe("P2 chrome — token discipline in the tabs + pane-header sheet", () =>
     const tick = /\.nex-tab\.is-active::after \{([\s\S]*?)\}/.exec(css)?.[1] ?? "";
     expect(tick).toMatch(/bottom:\s*0/);
     expect(tick).toMatch(/height:\s*var\(--nex-sys-space-xxxs\)/);
+    // …AND its indicator colour, which is what this test was blind
+    // to for months. Nothing watched the hue, so a role-shaped alias
+    // that resolves to a hue shipped green: `--nex-sys-color-
+    // accent-indicator` READS like a role and IS a role — it just
+    // aliases the legacy amber primary. A bare "has a background"
+    // check would sail straight past it, so the value is pinned whole.
+    expect(declaration(tick, "background")).toBe("var(--color-tick)");
+    // Named explicitly, because this is the specific way back: any
+    // other amber-bearing alias (`--nex-sys-color-primary` direct)
+    // fails the pin above, but the alias that started it should not
+    // be able to come back through a door this file can see. `css`
+    // has comments stripped, so the sheet's prose ABOUT this alias
+    // cannot satisfy or trip it — only a declaration can.
+    expect(tick).not.toMatch(/--nex-sys-color-accent-indicator/);
   });
 
   it("lets both split tracks shrink", () => {
