@@ -32,7 +32,9 @@ Window: 1200x800 at (200,107), captured with `import -window`.
 | `08-narrow-850.png` | 2299 | window resized to **850x800** (`xwininfo`-verified) | **This is the frame that proves overflow**: the third tab is cut mid-title at the strip's right edge where `Сплит` begins, while the actions stay pinned. Header (title + chip + export) still fits at 850px. Nothing clipped off-screen. |
 | `09-workspace-chip-tooltip.png` | 2963 | pointer over the workspace chip | **Chip reads `agent_workspace` — the folder NAME.** The native tooltip shows the FULL path `/home/ubuntu/.local/share/com.nexora.app/agent_workspace`. This is MAP row 5 exactly. Captured from the X root (not `-window`) because the tooltip is a separate override-redirect window. |
 | `10-tab-focus.png` | 2630 | keyboard focus (XTEST) | The focus ring is clearly rendered on the sidebar `Поиск` input. Proves the focus treatment paints in the real build. |
-| `10x-crop-tabstrip.png` | 539 | supplement: close crop of the strip | 5 tabs, each with `×`. Active tab is visibly **heavier and brighter** with the tick beneath it; inactive tabs are dimmed. **No pill, no wash, no accent-coloured label** — MAP row 4's grammar holds. Actions pinned right. |
+| `10x-crop-tabstrip.png` | 543 | supplement: close crop of the strip | 5 tabs, each with `×`. Active tab is visibly **heavier and brighter** with the tick beneath it; inactive tabs are dimmed. **No pill, no wash, no accent-coloured label** — MAP row 4's grammar holds. Actions pinned right. |
+| `11-tick-achromatic-after-fix.png` | 2385 | **after the amber-tick fix** | Same surface, tick now neutral `srgb(173,171,171)` instead of warm gold `srgb(201,166,107)`. See Finding #2. |
+| `11x-crop-tick-after-fix.png` | 543 | supplement: crop of that tick | The 2px tick isolated, with its measured pixel. |
 
 ### Frames that were deliberately dropped
 
@@ -50,9 +52,11 @@ hardcoded coordinate while the strip re-laid out between clicks, not product beh
 - **Split controls in the DOM, by eye on `04-split-open.png`: exactly 1.** With two panes
   open there is still only the single tab-strip control. Before this phase the header rendered
   a second one per pane, so a split offered four identical buttons.
-- **Active tab tick colour: `#C9A66B` = `srgb(201,166,107)`** — sampled from the PNG, not
-  eyeballed:
-  `convert 02-two-tabs.png -crop 170x6+270+37 +repage -colors 6 -format %c histogram:info:`
+- **Active tab tick colour** — sampled from the PNGs, not eyeballed:
+  `convert <frame> -crop 170x6+270+37 +repage -colors 6 -format %c histogram:info:`
+  - frames `01`–`10` (before the fix): `#C9A66B` = `srgb(201,166,107)`
+  - frames `11`/`11x` (after the fix): `#ADABAB` = `srgb(173,171,171)`
+  - 2px tall in both, at y=40–41 under the active label
 - **Workspace chip text is achromatic** (`#918D88`, `#84807C` sampled) — correct per THEME §1.
 - **Tab strip + pane header heights: 52px each.** Measured by scanning a pixel column down
   `10-tab-focus.png`: rows y=0..103 are uniformly `srgb(26,25,31)` and the content surface
@@ -79,15 +83,45 @@ re-skin five out-of-scope surfaces, which #230 forbids. The correct fix is a sco
 chrome-height token for `tabs.css` only — which requires a code change this role does not
 make. Declared in the PR Known-Gaps table and tracked as **#262**.
 
-### 2. Non-achromatic accent on the chrome — already tracked, NOT a new finding
+### 2. FIXED — the active-tab tick was amber; it now measures achromatic
 
-The active-tab tick samples `#C9A66B` (warm gold), where THEME §1 requires the chrome to be
-achromatic (`c < 0.02`). This is **already declared** as item #2 of issue **#236**
-("legacy M3E amber carriers survive the mono repaint (P6 residue)"), which records the exact
-chain: `--nex-sys-color-accent-indicator` → `--nex-sys-color-primary` →
-`--nex-ref-palette-amber-60` at `src/styles/tokens.css:192,213`. That token chain is
-**byte-identical at `10b9631`** — P2 neither introduced nor re-blessed it. It dies with
-`tokens.css` in Phase 6, which is the phase that owns the legacy sheet.
+The active-tab tick originally sampled `#C9A66B` = `srgb(201,166,107)` — a warm gold, where
+THEME §1 requires the chrome to be achromatic (`c < 0.02`). Sampled, not eyeballed:
+`convert <frame> -crop 170x6+270+37 +repage -colors 6 -format %c histogram:info:`.
+
+Cause was **token indirection**, not the name that was picked. `tabs.css` painted
+`--nex-sys-color-accent-indicator`, which *reads* like a role and *is* documented as one, but
+`tokens.css:213` backs it with `--nex-sys-color-primary` → `--nex-ref-palette-amber-60`. Every
+consumer silently inherited the hue, and the comment above the rule actively asserted the
+opposite ("the mono theme paints it achromatically"), which is what stopped anyone looking.
+
+Fixed by repointing the rule at the mono theme's real indicator role, `--color-tick`
+(`src/index.css` → `--tick` = `oklch(0.938 0.005 68 / 70%)`), and verified in the production
+bundle, not just on paper.
+
+**Verified after the fix, on this real build** (`11-tick-achromatic-after-fix.png`):
+
+| | before | after |
+|---|---|---|
+| tick pixel | `srgb(201,166,107)` — max−min = **94** (warm gold) | `srgb(173,171,171)` — max−min = **2** (neutral) |
+| height | 2px | 2px (y=40–41) |
+
+Two test gates were fixed in the same pass, because both had been letting this through:
+
+- the tick rule asserted its geometry but never its **background value**, so nothing watched
+  the hue. It is now pinned to `var(--color-tick)` exactly, plus a negative assertion naming
+  `--nex-sys-color-accent-indicator` so that specific alias cannot return through a door this
+  test can see;
+- `paneChrome.test.ts`'s "every class it emits has a rule" gate used
+  `css.includes("." + token)`, which **any class that is a prefix of an existing one satisfies**
+  (`.nex-tab` ⊂ `.nex-tabstrip`) and which any class merely *named in a CSS comment* satisfies.
+  Deleting the `.nex-tab` rule — the exact regression that file exists to catch — went **green**
+  on it. It now matches whole selector names with comments stripped, and the scan itself is
+  pinned against vacuity.
+
+The other four `--nex-sys-color-accent-indicator` carriers (`components.css:686,1506`,
+`conversation.css:850,907`) are still legacy amber and are deliberately left to issue **#236**
+and the Phase 6 sweep.
 
 ### 3. SUGGESTION — coloured legend dots in the Context panel
 
