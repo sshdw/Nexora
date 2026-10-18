@@ -79,7 +79,16 @@
 /* The three empty states are the workspace stage itself, not panels
    sitting on it: the canvas tier, the same plane .nex-main already
    paints (brief §16 — the agent workspace is one continuous stage).
-   The mark inside each is what carries the tone step. */
+
+   #230 P3: COMPACT (MAP row 7, `empty.md`). The stage is still one
+   continuous plane, but the composition inside it stopped being a hero:
+   the 64px marked plate and the display-size heading are gone from the
+   shared `.nex-empty` (EmptyState.tsx no longer emits a mark), the
+   heading dropped to CHROME weight, and the copy clamps to three lines
+   so a long description fills the state instead of growing the pane.
+
+   `.nex-main-placeholder` and `.nex-conversation-placeholder` share the
+   stage and are restated below where they differ. */
 .nex-empty,
 .nex-main-placeholder,
 .nex-conversation-placeholder {
@@ -88,18 +97,18 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: var(--nex-sys-space-sm);
+  gap: var(--nex-sys-space-xxs);
   padding: var(--nex-sys-space-2xl);
   text-align: center;
   background: var(--nex-sys-color-surface-canvas);
 }
 
-/* Mark container: floating-tier tone, large corners — the
-   composition's single shape anchor. One radius across all three
-   empty-mark wraps (this one plus .nex-conversation-empty-mark-wrap
-   and .nex-prompt-empty .nex-empty-mark-wrap): the 56px variants
-   already sat on large, and a 64px square sitting on a different
-   step read as a stray corner rather than a second anchor. */
+/* The mark plate. TWO consumers still emit one — `.nex-placeholder-mark*`
+   (the main-view placeholder) and `.nex-empty-mark*`, which
+   PromptLibraryView renders inside its own `.nex-prompt-empty` block
+   (prompts.css narrows it). EmptyState itself stopped rendering a logo
+   in #230 P3, but the class is NOT dead, so the rule stays: deleting it
+   would silently strip the Prompt Library's mark. */
 .nex-empty-mark-wrap,
 .nex-placeholder-mark-wrap {
   display: flex;
@@ -118,17 +127,27 @@
   height: auto;
   opacity: 0.95;
 }
+/* CHROME weight (THEME §6 "chrome 13/500"), not the display band. An
+   empty state can appear in every pane; a once-per-app display size
+   spent by the pane is what made it read as a hero. */
 .nex-empty-title {
-  /* Display band, reserved ~once per app for the empty-state heading
-     (contract §Density / skill tactic 3: typography attention). */
-  font-size: var(--nex-sys-type-size-display-small);
-  font-weight: var(--nex-sys-type-weight-semibold);
+  margin: 0;
+  font-size: var(--nex-sys-type-size-body-large);
+  font-weight: var(--nex-sys-type-weight-medium);
   letter-spacing: -0.01em;
   line-height: var(--nex-sys-type-line-height-tight);
   color: var(--nex-sys-color-on-surface);
 }
 .nex-empty-text {
+  margin: 0;
   max-width: 380px;
+  /* Three lines is enough for either catalog string; the clamp is what
+     stops a custom description from growing the pane. */
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
   font-size: var(--nex-sys-type-size-body-medium);
   color: var(--nex-sys-color-on-surface-variant);
 }
@@ -155,34 +174,38 @@
 }
 
 /* Conversation view: composed empty pane for a conversation with
-   no messages yet — anchored near the composer, not mid-void. */
+   no messages yet — anchored near the composer, not mid-void.
+
+   #230 P3: COMPACT, one action max (`empty.md`, MAP row 7). The 56px
+   marked hero block is gone. It pointed at the composer — which is on
+   screen directly below it — and the mark, the container and its border
+   were three pieces of furniture around two sentences that were already
+   saying the right thing. What stays is the heading and the copy, at the
+   CHROME weight (THEME §6: "chrome 13/500"), anchored a third of the way
+   up rather than floating in the middle of the void.
+
+   No action is rendered here on purpose. `empty.md`'s EmptyContent slot
+   exists, but this pane's one action IS the composer, and a button that
+   says "write a message" next to the box that takes a message is the
+   permanent-attention thing THEME §6 rejects ("starter chips",
+   "one-action-max"). */
 .nex-conversation-placeholder {
-  justify-content: center;
-  padding-bottom: 30vh;
-}
-.nex-conversation-empty-mark-wrap {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 56px;
-  height: 56px;
-  margin-bottom: var(--nex-sys-space-xs);
-  border-radius: var(--nex-sys-shape-large);
-  background: var(--nex-sys-color-surface-container-high);
-  border: 1px solid var(--nex-sys-color-outline-variant);
-}
-.nex-conversation-empty-mark {
-  width: 26px;
-  height: auto;
-  opacity: 0.95;
+  justify-content: flex-start;
+  padding-top: 22vh;
+  padding-bottom: var(--nex-sys-space-2xl);
+  gap: var(--nex-sys-space-xxs);
+  align-items: flex-start;
+  text-align: start;
 }
 .nex-conversation-empty-title {
-  font-size: var(--nex-sys-type-size-title-large);
-  font-weight: var(--nex-sys-type-weight-semibold);
+  margin: 0;
+  font-size: var(--nex-sys-type-size-body-large);
+  font-weight: var(--nex-sys-type-weight-medium);
   color: var(--nex-sys-color-on-surface);
 }
 .nex-conversation-empty-text {
-  max-width: 360px;
+  margin: 0;
+  max-width: 420px;
   font-size: var(--nex-sys-type-size-body-medium);
   color: var(--nex-sys-color-on-surface-variant);
 }
@@ -288,11 +311,23 @@
 }
 
 .nex-message-assistant .nex-message-author {
-  /* Accent role for the assistant voice (full-M3E role discipline).
-     Grayscale note: hierarchy never depends on this hue — user turns
-     are contained + end-aligned while assistant turns read on the bare
-     canvas, so the distinction survives accent removal. */
-  color: var(--nex-sys-color-primary);
+  /* #230 P3: SIXTH HUE CARRIER, and the one the old comment here got
+     wrong. This read "Accent role for the assistant voice … hierarchy
+     never depends on this hue" and then painted `--nex-sys-color-primary`
+     — tokens.css:504, #a9824a dark / #e3c07c light. The comment claimed
+     a property the rule did not have, which is exactly what stopped the
+     next reader from looking: the assistant's name in every thread was
+     amber and the sheet said that was fine.
+
+     MAP row 7 says the thread separates "by tone, never colour", and
+     THEME §1 bans a permanent amber outright. The assistant voice now
+     reads at full ink against the user's tertiary ink — a LIGHTNESS step,
+     which is the sanctioned way to say "this side is the reply" in a
+     monochrome system, and the one THEME §3 ranks ahead of colour
+     ("hierarchy by size/weight/space first, colour never"). The weight
+     difference between the two author lines is unchanged, so the roles
+     were already separable; this makes them separable at a glance too. */
+  color: var(--nex-sys-color-on-surface);
 }
 
 .nex-message-origin {
@@ -443,35 +478,99 @@
   flex-wrap: wrap;
 }
 
+/* ---- Run-state pills (#230 P3) ----------------------------------------
+   THIRD HUE CARRIER FOUND AND FIXED IN THIS PASS, alongside the Context
+   legend. These were: running = `--nex-sys-color-primary-container` /
+   `--nex-sys-color-primary` (tokens.css:504 → #a9824a dark / #e3c07c
+   light — the legacy amber accent, which THEME §1 bans outright, "no
+   permanent amber anywhere"); completed = a sage wash; budget / spend /
+   error = a brick wash. Every one of them was the LEGACY tinted-container
+   pair, not a mono-theme token.
+
+   What they are now:
+
+   · RUNNING and CANCELLED are ACHROMATIC. Neither is a green/red/yellow
+     STATE in the sense THEME §1 defines. "Running" is carried by the
+     travelling pulse and the spinner; the pill's job is only to say the
+     word, so the word is the whole signal and the container is quiet.
+   · COMPLETED takes `--state-ok`, BUDGET/SPEND/ERROR take `--state-err`
+     and PAUSED takes `--state-warn` — the mono theme's THREE sanctioned
+     state roles (src/index.css). Green/red/yellow exist here and nowhere
+     else on the thread, and only for genuine state.
+   · NO TINTED WASH. The old rules paired a 14%-alpha container with a
+     matching ink; a 14% wash of a hue is decoration that reads as a
+     second, weaker copy of the state. These are quiet containers with a
+     hairline, and the STATE INK does the work — which is also why a
+     grayscale reader loses nothing: the word says "Completed" / "Error"
+     in full either way. */
 .nex-agent-status-running {
-  background: var(--nex-sys-color-primary-container);
-  color: var(--nex-sys-color-primary);
+  background: var(--nex-sys-color-surface-container-highest);
+  color: var(--nex-sys-color-on-surface);
 }
 .nex-agent-status-completed {
-  background: var(--nex-sys-color-success-container);
-  color: var(--nex-sys-color-success);
+  background: var(--nex-sys-color-surface-container-highest);
+  color: var(--state-ok);
 }
 .nex-agent-status-cancelled {
   background: var(--nex-sys-color-surface-container-highest);
   color: var(--nex-sys-color-on-surface-variant);
 }
 .nex-agent-status-budget {
-  background: var(--nex-sys-color-error-container);
-  color: var(--nex-sys-color-error);
+  background: var(--nex-sys-color-surface-container-highest);
+  color: var(--state-err);
 }
 .nex-agent-status-spend {
-  background: var(--nex-sys-color-error-container);
-  color: var(--nex-sys-color-error);
+  background: var(--nex-sys-color-surface-container-highest);
+  color: var(--state-err);
 }
 .nex-agent-status-error {
-  background: var(--nex-sys-color-error-container);
-  color: var(--nex-sys-color-error);
+  background: var(--nex-sys-color-surface-container-highest);
+  color: var(--state-err);
 }
 
 .nex-agent-spinner {
   width: 12px;
   height: 12px;
   border-width: 2px;
+}
+
+/* ---- THE ONE SUMMARY LINE (#230 P3) ------------------------------------
+   The header's status slot is where a run says, ONCE, what happened and
+   what it produced. It used to render a bare status pill, with the counts
+   in a SECOND block below it — the duplicated "COMPLETED" the phase's
+   acceptance forbids. Now the word and the results are one line, in one
+   register, and the results are counted from the run's own steps.
+
+   The separator is a MIDDLE DOT, not a bullet glyph with its own colour:
+   the counts are one fact stated in parts, not a list of tags. */
+.nex-agent-run-summary {
+  font-weight: var(--nex-sys-type-weight-regular);
+  color: var(--nex-sys-color-on-surface-variant);
+}
+
+.nex-agent-run-summary::before {
+  content: "·";
+  margin: 0 var(--nex-sys-space-xxs);
+  color: var(--nex-sys-color-on-surface-faint);
+}
+
+/* The cancel note rides on the same line rather than opening a block of
+   its own: a cancelled run is a fact about the run, not a separate
+   event. */
+.nex-agent-run-summary-note {
+  color: var(--nex-sys-color-on-surface-tertiary);
+}
+
+.nex-agent-run-summary-note::before {
+  content: "·";
+  margin: 0 var(--nex-sys-space-xxs);
+  color: var(--nex-sys-color-on-surface-faint);
+}
+
+/* The status WORD, separated from the results so the two can be told
+   apart at a glance even though they share a line. */
+.nex-agent-run-status {
+  font-weight: var(--nex-sys-type-weight-medium);
 }
 
 .nex-agent-run-meta {
@@ -497,6 +596,60 @@
   font-size: var(--nex-sys-type-size-body-small);
   color: var(--nex-sys-color-error);
   white-space: nowrap;
+}
+
+/* ---- THE ERROR BLOCK (SYSTEM §8) ---------------------------------------
+   "Errors answer: what happened / what survived / next action." Three
+   labelled lines, in that order, and the labels are part of the text —
+   not a tooltip, not an icon, not a colour.
+
+   WHY A BLOCK AND NOT THE OLD TOOLBAR STRING: the error used to sit in a
+   `white-space: nowrap` span inside the header toolbar, so a long provider
+   error was clipped at whatever width the toolbar had left, and nothing
+   below it said what survived or what to do. `nowrap` is deleted here
+   deliberately — the error wraps instead of vanishing.
+
+   WHY IT LIVES OUTSIDE `.nex-agent-timeline`: it must survive the run
+   fold (which only gates on `isProtectedRow`, not on this text) and the
+   temporal fade (which only dims rows inside the timeline). It is never
+   dimmed and never collapsed: "failure persists findable".
+
+   The tone is `--nex-sys-color-error` on a plain container with a left
+   rule — the ONE state colour on the block, and the labels carry the
+   meaning in words, so nothing here is colour-only. */
+.nex-agent-failure {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nex-sys-space-xxs);
+  padding: var(--nex-sys-space-sm) var(--nex-sys-space-sm);
+  border-inline-start: 2px solid var(--nex-sys-color-error);
+  border-radius: var(--nex-sys-shape-extra-small);
+  background: var(--nex-sys-color-surface-container-highest);
+  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--nex-sys-color-on-surface);
+}
+
+.nex-agent-failure-line {
+  display: flex;
+  gap: var(--nex-sys-space-xs);
+  margin: 0;
+  align-items: baseline;
+}
+
+.nex-agent-failure-key {
+  flex: 0 0 auto;
+  min-width: 88px;
+  color: var(--nex-sys-color-on-surface-tertiary);
+}
+
+.nex-agent-failure-value {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.nex-agent-failure-line:first-child .nex-agent-failure-value {
+  color: var(--nex-sys-color-error);
 }
 
 .nex-agent-approval {
@@ -582,29 +735,91 @@
   color: var(--nex-sys-color-on-surface-faint);
 }
 
-.nex-agent-step-kind {
+/* ---- The step grammar: action → file → change → verification -----------
+   #230 P3 (MAP row 8). One line, four slots, each with ONE job:
+   the verb is the row's subject, the path its object, the counts its
+   effect, the status word its outcome. Every one of them is TEXT, so the
+   line survives grayscale, high contrast and no colour vision — the only
+   hue anywhere on a step row is the failure tone on the connector, and
+   even that repeats the word in the row itself.
+
+   ACTION: the verb takes the row's weight so the eye lands on WHAT
+   happened before WHICH file. Not coloured — hierarchy is size/weight/
+   space first (THEME §3), and there is no accent to spend. */
+.nex-agent-step-action {
   font-weight: var(--nex-sys-type-weight-medium);
+  color: var(--nex-sys-color-on-surface);
+  flex-shrink: 0;
 }
 
-.nex-agent-step-tool {
-  font-family: var(--nex-sys-type-family-mono);
-  font-size: var(--nex-sys-type-size-label-small);
+/* FILE: the path, in mono (THEME §3 — mono is for paths, commands and
+   ids, never UI labels). It truncates in the middle of the available
+   space rather than at the end, so the FILENAME survives when a long
+   absolute path does not, and the full value is always one hover away
+   (SYSTEM §8 "paths on hover"). */
+.nex-agent-step-target {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: start;
   color: var(--nex-sys-color-on-surface-variant);
 }
 
-.nex-agent-step-status {
+/* CHANGE: the `+N −M` counts, outline badges — MAP row 9 says "badge.md
+   outline, not filled pills". The container carries the meaning in its
+   `title` and an sr-only sentence, so the two numbers are never read
+   only as digits on a pill. */
+.nex-agent-step-change {
+  flex-shrink: 0;
+  color: var(--nex-sys-color-on-surface-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* VERIFICATION: the outcome word. Pushed to the row's trailing edge so
+   every row's verdict lands in the same column and a scan down the list
+   finds them all in one place. Never a colour — the word is the signal
+   (SYSTEM §8). */
+.nex-agent-step-verify {
   margin-left: auto;
+  flex-shrink: 0;
   font-size: var(--nex-sys-type-size-label-small);
+  color: var(--nex-sys-color-on-surface-tertiary);
+}
+
+/* The repeat count, mono and tabular so `×6` and `×12` do not shift the
+   row width as a live run appends. */
+.nex-agent-step-count {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  color: var(--nex-sys-color-on-surface-tertiary);
+}
+
+/* A repeat's members. One level of indent off the group line that
+   disclosed them, and a hairline on the leading edge so the reader can
+   see the list belongs to the row above it rather than floating. */
+.nex-agent-step-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nex-sys-space-xxs);
+  padding: var(--nex-sys-space-xxs) 0 0 var(--nex-sys-space-sm);
+  border-top: 1px solid var(--nex-sys-color-outline-variant);
+  border-inline-start: 1px solid var(--nex-sys-color-outline-variant);
+  margin: var(--nex-sys-space-xxs) 0 0 var(--nex-sys-space-xs);
 }
 
 .nex-agent-step-duration {
   font-size: var(--nex-sys-type-size-label-small);
   color: var(--nex-sys-color-on-surface-faint);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
 }
 
 .nex-agent-step-chevron {
   margin-left: var(--nex-sys-space-xs);
   color: var(--nex-sys-color-on-surface-faint);
+  flex-shrink: 0;
 }
 
 .nex-agent-step-body {
@@ -643,10 +858,18 @@
 }
 
 /* ---- Task 5.2: paused state, autonomy switch, terminal & diff viewers ---- */
+/* Paused is the ONE genuine warning state on this surface: work stopped
+   and is waiting on a person, which is what `--state-warn` is for. The
+   old rule used the legacy ochre pair (`--nex-sys-color-warning` =
+   #e0b070 dark / #d29a5f light); the mono theme's sanctioned warning role
+   replaces it. See the run-state pill block above for why none of these
+   carry a tinted wash any more. */
 .nex-agent-status-paused {
-  background: var(--nex-sys-color-warning-container);
-  color: var(--nex-sys-color-warning);
+  background: var(--nex-sys-color-surface-container-highest);
+  color: var(--state-warn);
 }
+/* The paused dot is `currentColor`, so it takes the pill's warning ink and
+   disappears with the word under reduced motion. Never a second tone. */
 .nex-agent-paused-dot {
   width: 6px;
   height: 6px;
@@ -680,8 +903,14 @@
   font-size: var(--nex-sys-type-size-label-small);
   color: var(--nex-sys-color-on-surface-variant);
 }
+/* The `$` is the terminal's prompt marker, not a state and not branding.
+   #230 P3: it was `--nex-sys-color-primary` — the legacy amber accent
+   (tokens.css:504), a third amber carrier in this sheet. It takes
+   `on-surface-variant` now: same weight as the command beside it, one
+   step down, so the prompt reads as a quiet frame rather than a second
+   thing asking for attention (THEME §1). */
 .nex-agent-terminal-prompt {
-  color: var(--nex-sys-color-primary);
+  color: var(--nex-sys-color-on-surface-tertiary);
   font-weight: var(--nex-sys-type-weight-emphasized);
 }
 .nex-agent-terminal-command {
@@ -736,6 +965,42 @@
   border-radius: var(--nex-sys-shape-extra-small);
   overflow: hidden;
 }
+
+/* The compact action line MAP row 9 asks for, above the diff body. The
+   counts are OUTLINE badges (badge.md `variant="outline"`), not filled
+   pills — a filled pill per number would put two coloured objects where
+   one quiet fact belongs. Mono + tabular so `+12` and `+120` do not
+   change the header's height as a run streams. */
+.nex-agent-diff-header-line {
+  display: flex;
+  align-items: center;
+  gap: var(--nex-sys-space-xs);
+  padding: var(--nex-sys-space-xxs) var(--nex-sys-space-sm);
+  border-bottom: 1px solid var(--nex-sys-color-outline-variant);
+  background: var(--nex-sys-color-surface-container-high);
+}
+
+.nex-agent-diff-counts {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--nex-sys-space-xxs);
+}
+
+.nex-agent-diff-count {
+  font-family: var(--nex-sys-type-family-mono);
+  font-size: var(--nex-sys-type-size-label-small);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--nex-sys-type-line-height-tight);
+  padding: 0 var(--nex-sys-space-xxs);
+  border: 1px solid var(--nex-sys-color-outline-variant);
+  border-radius: var(--nex-sys-shape-extra-small);
+  background: transparent;
+  /* Both rungs take the SAME ink: the `+` / `−` sign inside the badge is
+     what says added vs removed. Two hues here would be two meanings
+     riding on colour where a glyph already says it, and THEME §1 leaves
+     green/red for state — a diff line is not a state. */
+  color: var(--nex-sys-color-on-surface-variant);
+}
 .nex-agent-diff-body {
   display: flex;
   flex-direction: column;
@@ -771,26 +1036,53 @@
   background: var(--nex-sys-color-surface-container-high);
   color: var(--nex-sys-color-on-surface-variant);
 }
+/* ---- Diff line tones (#230 P3) -----------------------------------------
+   FOURTH and FIFTH HUE CARRIERS, fixed in the same pass.
+
+   The hunk header was `--nex-sys-color-primary-container` /
+   `--nex-sys-color-primary` — the legacy amber, a fourth carrier of the
+   token the Context legend and the run spine also carried.
+
+   Added/removed were sage green and brick red. Those are `--state-ok` /
+   `--state-err`'s JOB in this theme, and a diff line is not a state: a
+   removed line is not an error, and an added line is not a success. Using
+   the state hues here spent the theme's entire chromatic budget on the one
+   surface where the meaning was already carried three other ways — the
+   `+` / `-` glyph in the gutter, the sr-only "added" / "removed" label on
+   every line, and the `+N −M` counts in the header. Colour was the FOURTH,
+   redundant carrier of an already-redundant signal, which is exactly the
+   "decoration" THEME §1 forbids hue for.
+
+   So the two rungs are now TONE, not hue: added lifts one step off the
+   container, removed sits one step below the context ink. The gutter keeps
+   its glyph and gains weight so the sign is unmistakable in grayscale, and
+   the sign is what the reader actually reads. The measure against this
+   sheet's own diff container: added 1.29:1, removed 1.11:1 — deliberately
+   close to the context line, because a diff's job is to make the CHANGED
+   lines findable, not to shout over the surrounding text; the glyph and the
+   sr-only label are what carry it, per SYSTEM §8. */
 .nex-agent-diff-hunk {
-  background: var(--nex-sys-color-primary-container);
-  color: var(--nex-sys-color-primary);
+  background: var(--nex-sys-color-surface-container-highest);
+  color: var(--nex-sys-color-on-surface);
   font-weight: var(--nex-sys-type-weight-medium);
 }
 .nex-agent-diff-added {
-  background: var(--nex-sys-color-success-container);
-  color: var(--nex-sys-color-success);
+  background: var(--nex-sys-color-surface-container-high);
+  color: var(--nex-sys-color-on-surface);
 }
 .nex-agent-diff-added .nex-agent-diff-gutter {
-  background: var(--nex-sys-color-success);
-  color: var(--nex-sys-color-on-success);
+  background: var(--nex-sys-color-surface-container-highest);
+  color: var(--nex-sys-color-on-surface);
+  font-weight: var(--nex-sys-type-weight-emphasized);
 }
 .nex-agent-diff-removed {
-  background: var(--nex-sys-color-error-container);
-  color: var(--nex-sys-color-error);
+  background: var(--nex-sys-color-surface-container-low);
+  color: var(--nex-sys-color-on-surface-variant);
 }
 .nex-agent-diff-removed .nex-agent-diff-gutter {
-  background: var(--nex-sys-color-error);
-  color: var(--nex-sys-color-on-error);
+  background: var(--nex-sys-color-surface-container-low);
+  color: var(--nex-sys-color-on-surface);
+  font-weight: var(--nex-sys-type-weight-emphasized);
 }
 .nex-agent-diff-context {
   color: var(--nex-sys-color-on-surface);
@@ -836,18 +1128,25 @@
   pointer-events: none;
 }
 
-/* The pulse: a short accent segment that travels the rail. Mounted
+/* The pulse: a short indicator segment that travels the rail. Mounted
    only while the run executes (the component decides) AND animated
    only from the run-status class (defence in depth), so no state can
    reach a moving segment by accident. Keyframes start and end at
-   opacity 0, so the loop has no visible seam. */
+   opacity 0, so the loop has no visible seam.
+
+   #230 P3: `--color-tick`, not `--nex-sys-color-accent-indicator` — the
+   latter aliases the legacy amber `--nex-sys-color-primary`
+   (tokens.css:213 → #a9824a), so the travelling segment was amber. See
+   the connector note below for the full reasoning; same token, same
+   reason, and this is the P2 tab-tick precedent applied to the run
+   spine. */
 .nex-agent-spine-pulse {
   position: absolute;
   inset-block-start: 0;
   inset-inline-start: 0;
   inline-size: 1px;
   block-size: 22%;
-  background: var(--nex-sys-color-accent-indicator);
+  background: var(--color-tick);
   opacity: 0;
   will-change: transform, opacity;
 }
@@ -903,11 +1202,24 @@
 /* The run's current row carries the accent — §16 "thin indicator",
    never a filled surface. A failed row keeps the error tone
    findable (§13.29) without borrowing the accent. */
+/* The run's current row carries the indicator — §16 "thin indicator",
+   never a filled surface. A failed row keeps the error tone
+   findable (§13.29) without borrowing it.
+
+   #230 P3: repointed off `--nex-sys-color-accent-indicator`. That token
+   is an ALIAS of `--nex-sys-color-primary` (tokens.css:213), which is
+   still the legacy amber — so the "accent" connector was amber, the same
+   defect P2 fixed in the tab tick and the same defect the Context legend
+   had one file over. It now takes the mono theme's indicator role,
+   `--color-tick` (-> `--tick`, src/index.css: chroma ~0.005), which is
+   what the active tab uses after #230 P2. One indicator role, one token:
+   a tab tick and a run's current row now read as the same system. */
 .nex-agent-step-slot-current::before {
-  background: var(--nex-sys-color-accent-indicator);
+  background: var(--color-tick);
 }
+/* Failure keeps the sanctioned state ink, never the indicator. */
 .nex-agent-step-slot-failed::before {
-  background: var(--nex-sys-color-error);
+  background: var(--state-err);
 }
 
 /* High contrast: HC drops shadow and lets BORDERS carry separation
@@ -940,12 +1252,31 @@
    began. A ladder step holds AA in all three themes; an opacity
    fade does not. The rule never touches a step's own tone, border
    or radius, nor diff/terminal/status colour that carries meaning. */
+/* #230 P3: the selector lists changed with the step grammar.
+   `.nex-agent-step-tool` and `.nex-agent-step-kind` are GONE from the
+   markup — the tool identifier and its duplicate kind label were both
+   replaced by the action verb and the path — so they are gone from these
+   lists too. Leaving them would have been a silent no-op that reads as a
+   live rule; the new slots step down with everything else:
+   `.nex-agent-step-action` and `.nex-agent-step-target` are the row's
+   subject and object, and `.nex-agent-step-verify` is its OUTCOME, which
+   §13.9 protects hardest ("do not fade important final results, errors,
+   approvals") — so it is deliberately absent from both lists. A faded
+   outcome word would be the one thing on the row that changes what the
+   reader is told happened. */
 .nex-agent-step-age-1
   :is(.nex-agent-step-header, .nex-agent-step-observation, .nex-agent-terminal-stdout) {
   color: var(--nex-sys-color-on-surface-variant);
 }
 .nex-agent-step-age-1
-  :is(.nex-agent-step-seq, .nex-agent-step-tool, .nex-agent-step-duration, .nex-agent-step-chevron) {
+  :is(
+    .nex-agent-step-seq,
+    .nex-agent-step-target,
+    .nex-agent-step-change,
+    .nex-agent-step-count,
+    .nex-agent-step-duration,
+    .nex-agent-step-chevron
+  ) {
   color: var(--nex-sys-color-on-surface-tertiary);
 }
 .nex-agent-step-age-2
@@ -954,7 +1285,9 @@
     .nex-agent-step-observation,
     .nex-agent-terminal-stdout,
     .nex-agent-step-seq,
-    .nex-agent-step-tool,
+    .nex-agent-step-target,
+    .nex-agent-step-change,
+    .nex-agent-step-count,
     .nex-agent-step-duration,
     .nex-agent-step-chevron
   ) {
@@ -998,4 +1331,42 @@
 }
 .nex-agent-fold-chevron {
   color: var(--nex-sys-color-on-surface-faint);
+}
+
+/* ============================================================
+   REDUCED MOTION — the hand-written branches for everything this
+   sheet animates.
+
+   The global motion.css gate collapses durations and delays, which is
+   enough for a colour or opacity transition (the end state IS the
+   information). It is NOT enough for an animation that carries its
+   information in POSITION, because a collapsed keyframe animation
+   settles on its last frame — and `.nex-agent-spine-pulse` ends at
+   opacity 0, so a live run would look dead. Its branch lives above,
+   with the segment held as a static indicator at mid-rail.
+   `.nex-message-insert` ends at opacity 1 / translateY(0), which IS its
+   information, so the gate alone is correct for it and it is
+   deliberately left alone.
+
+   So the two branches below are the ones that cannot be left to the
+   gate; the rest of the sheet's motion is colour-only, which the gate
+   already resolves to the correct end frame.
+   ============================================================ */
+
+/* The step row's hover: a tone step on the container, no motion in the
+   content — a row that slid or faded would move text the reader is
+   aiming at. The path's own hover is colour-only for the same reason. */
+.nex-agent-step-header,
+.nex-agent-step-target {
+  transition: color var(--motion-duration-fast) var(--motion-easing-standard);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nex-agent-step-header,
+  .nex-agent-step-target,
+  .nex-agent-fold {
+    /* `none`, not a shorter duration: the tone still changes on hover, it
+       just arrives immediately — same information, zero interpolation. */
+    transition: none;
+  }
 }

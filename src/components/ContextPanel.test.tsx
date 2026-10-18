@@ -125,6 +125,67 @@ describe("context panel — budget slider", () => {
     ).toBeInTheDocument();
   });
 
+  // #230 P3 (MAP row 20): the budget HAIRLINE + cost-on-hover.
+  it("draws the budget as a hairline whose fill IS the reading, and never a guess", async () => {
+    await renderPanel();
+    // `role="img"` with both numbers in its accessible name: the
+    // proportion is never visual-only, and the numbers are the SAME
+    // numbers the readout below prints.
+    const meter = screen.getByRole("img", {
+      name: "32 000 of 128 000 budgeted tokens used. Total cost 0.00 $",
+    });
+    const fill = meter.querySelector(".nex-context-meter-fill");
+    expect(fill).not.toBeNull();
+    // 32 000 of 128 000 = 25%, computed from the persisted figures — no
+    // animation, no timer, no estimate.
+    expect((fill as HTMLElement).style.width).toBe("25%");
+  });
+
+  it("pins the hairline at full and says over, rather than drawing past its track", async () => {
+    window.localStorage.setItem(CONTEXT_BUDGET_KEY, "16000");
+    await renderPanel();
+    // 32 000 used against a 16 000 budget is 200% — the fill clamps to
+    // the track, and the READING is what carries the over-budget verdict.
+    const meter = screen.getByRole("img", { name: /budgeted tokens used/ });
+    const fill = meter.querySelector(".nex-context-meter-fill") as HTMLElement;
+    expect(fill.style.width).toBe("100%");
+    expect(meter.className).toContain("is-over");
+    expect(screen.getByText("Over budget — past 16 000 tokens.")).toBeInTheDocument();
+  });
+
+  it("leaves the hairline empty when there is no usage to measure", async () => {
+    conversationContextStats.mockResolvedValue(stats({ has_token_data: false, total_tokens: 0 }));
+    await renderPanel();
+    // An empty track, not a zero-width fill: the two say different
+    // things ("nothing measured" vs "measured, and it is nothing"). The
+    // fill stays mounted at zero width — the component's computed width is
+    // the single source of its size, and the state is on the track.
+    // The name still carries the cost sentence — the detail does not
+    // disappear just because there is nothing to draw.
+    const meter = screen.getByRole("img", { name: /No persisted token usage/ });
+    expect(meter.className).toContain("is-empty");
+    const fill = meter.querySelector(".nex-context-meter-fill") as HTMLElement;
+    expect(fill).not.toBeNull();
+    expect(fill.style.width).toBe("0%");
+  });
+
+  it("puts cost on the reading and in the meter, never hover-only", async () => {
+    conversationContextStats.mockResolvedValue(stats({ total_cost_micro_usd: 1_234_567 }));
+    await renderPanel();
+    // The mouse affordance…
+    expect(screen.getByText("32 000 of 128 000 tokens used")).toHaveAttribute(
+      "title",
+      "Total cost 1.23 $",
+    );
+    // …and the same sentence where a keyboard or screen-reader user gets
+    // it, so the detail is never hover-ONLY (SYSTEM §8).
+    expect(
+      screen.getByRole("img", { name: /Total cost 1\.23 \$/ }),
+    ).toBeInTheDocument();
+    // And it is NOT a sixteenth permanent row among the stats.
+    expect(screen.queryByText("Total cost")).toBeNull();
+  });
+
   it("reads the stored budget on mount", async () => {
     window.localStorage.setItem(CONTEXT_BUDGET_KEY, "64000");
     await renderPanel();
@@ -171,6 +232,11 @@ describe("context panel — budget slider", () => {
     const reading = screen.getByText("Over budget — past 16 000 tokens.");
     expect(reading).toBeInTheDocument();
     expect(reading).toHaveAttribute("role", "status");
+    // #230 P3: the ONE line this phase rewrites. `is-over` is the
+    // destructive tone both the reading and the new hairline take, and
+    // both are asserted here — the reading by class, the hairline by the
+    // same token below. The promise `ctx.budgetHint` makes ("Above it the
+    // budget reads as over") now has two surfaces keeping it, not one.
     expect(reading).toHaveClass("is-over");
     // The ordinary reading is gone, not appended to.
     expect(screen.queryByText(/of 16 000 tokens used/)).not.toBeInTheDocument();
