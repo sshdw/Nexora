@@ -50,6 +50,13 @@
   --motion-duration-fast: var(--motion-duration-short3);   /* 150ms state fades */
   --motion-duration-normal: var(--motion-duration-short4); /* 200ms micro transitions */
 
+  /* ---- Press token (NEXORA-THEME.md §6, owner-approved 2026-10-15):
+     scale(0.985), 90ms press / instant release on ALL controls.
+     The OFFICIAL duration ladder (short1-4: 50/100/150/200) has NO 90ms
+     stop — this is a deliberate off-ladder value for the press contract. */
+  --motion-duration-press: 90ms;
+  --motion-scale-press: 0.985;
+
   /* ---- Spring→CSS conversion pairs (OFFICIAL table, motion.md §4)
      For non-interruptible one-shot animations; y-values > 1 encode
      overshoot. True interruptible springs need a JS integrator and
@@ -134,6 +141,8 @@
   --nex-sys-motion-duration-extra-long4: var(--motion-duration-extra-long4);
   --nex-sys-motion-duration-fast: var(--motion-duration-fast);
   --nex-sys-motion-duration-normal: var(--motion-duration-normal);
+  --nex-sys-motion-duration-press: var(--motion-duration-press);
+  --nex-sys-motion-scale-press: var(--motion-scale-press);
   --nex-sys-motion-spring-expressive-fast-spatial-curve: var(--motion-spring-expressive-fast-spatial-curve);
   --nex-sys-motion-spring-expressive-fast-spatial-duration: var(--motion-spring-expressive-fast-spatial-duration);
   --nex-sys-motion-spring-expressive-default-spatial-curve: var(--motion-spring-expressive-default-spatial-curve);

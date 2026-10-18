@@ -646,9 +646,6 @@ function AppShell() {
           workspaceRoot={workspace.root}
           workspaceLoading={workspace.loading}
           secondary={false}
-          splitAvailable={tabs.openIds.length > 1}
-          splitOpen
-          onToggleSplit={handleToggleSplit}
         />
         <ConversationPane
           conversation={splitConversation}
@@ -666,9 +663,6 @@ function AppShell() {
           workspaceRoot={workspace.root}
           workspaceLoading={workspace.loading}
           secondary
-          splitAvailable={false}
-          splitOpen
-          onToggleSplit={handleToggleSplit}
         />
       </div>
     ) : (
@@ -688,9 +682,6 @@ function AppShell() {
         workspaceRoot={workspace.root}
         workspaceLoading={workspace.loading}
         secondary={false}
-        splitAvailable={tabs.openIds.length > 1}
-        splitOpen={false}
-        onToggleSplit={handleToggleSplit}
       />
     );
 

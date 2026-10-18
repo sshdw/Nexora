@@ -1,18 +1,33 @@
 /* ============================================================
-   Nexora Conversation Tabs + Split + Zen — M3E shell extension
-   Docked tab strip (first row of .nex-main, above the per-pane
-   conversation header), side-by-side split panes, and chromeless
-   zen reading mode. Top-bar chrome paints the elevated tier above
-   the canvas; the split seam is the only border (brief §16/§19).
-   Tokens only (--nex-sys-*, --motion-*); the only raw
-   values are 1px hairline borders, allowed per codebase precedent for
-   seams/dividers. Motion is transform/opacity only; the global
-   prefers-reduced-motion gate in motion.css collapses every
-   transition below to an instant state change.
+   Nexora Conversation Tabs + Pane header + Split + Zen
+   #230 Phase 2 — MAP rows 4-6, NEXORA-COMPONENT-MAP.md is the
+   approval, NEXORA-DESIGN-SYSTEM.md §4 the shell contract.
+
+   Migrated into this one sheet (the old per-panel rules are
+   gone): the docked tab strip (first row of .nex-main), the
+   per-pane header (title, workspace chip, export), the split
+   grid and chromeless zen mode.
+
+   Tab grammar (MAP row 4, tabs.md `variant="line"`): quiet
+   TEXT rows — no pill, no wash, no accent-coloured label. The
+   active state is exactly two signals: a 2px tick pinned to the
+   BOTTOM edge plus a weight/lightness step on the label. The old
+   rule carried all three at once (rounded container + primary-
+   container fill + full-round top indicator, and the "2px" tick
+   was declared 4px tall by a max-height override). Hover is a
+   lightness step only, so the pointer state cannot be mistaken
+   for the selected one.
+
+   Tokens only (--nex-sys-*, --nex-sys-motion-*); the only raw
+   values are 1px hairline borders, allowed per codebase precedent
+   for seams/dividers. Motion is transform/opacity/colour only and
+   every duration is a token, which is what lets the single global
+   prefers-reduced-motion gate in motion.css collapse all of it
+   (motion.test.tsx owns that block; it is the ONLY one).
    ============================================================ */
 
-/* ---- Tab strip: docked persistent row (contract §Shell — docked
-   rows for persistent chrome). The elevated tier above the canvas,
+/* ---- Tab strip: docked persistent row (SYSTEM §4 — docked rows
+   for persistent chrome). The elevated tier above the canvas,
    flat at rest — a single shell seam, never a shadow. The strip
    scrolls horizontally on overflow so tabs never shrink below a
    tappable width. ---- */
@@ -21,7 +36,7 @@
   align-items: center;
   gap: var(--nex-sys-space-xs);
   min-height: var(--nex-sys-layout-header-height);
-  padding: var(--nex-sys-space-xs) var(--nex-sys-space-sm);
+  padding: var(--nex-sys-space-xxs) var(--nex-sys-space-sm);
   background: var(--nex-sys-color-surface-elevated);
   border-bottom: 1px solid var(--nex-sys-color-shell-seam);
   flex-shrink: 0;
@@ -45,19 +60,18 @@
   flex-shrink: 0;
 }
 
-/* ---- Tab: quiet rounded-square row; selected = container tone +
-   emphasized label (the M3SegmentedGroup selection grammar, applied
-   to a tablist). The thin top marker is the sanctioned
-   thin-indicator accent. ---- */
+/* ---- Tab: a quiet TEXT row, not a container. No radius and no
+   fill at any state — the tab is a label with a tick under it,
+   so nothing reads as a pill to click. max-width stays the
+   pre-existing sidebar-width token: that IS the tab-width
+   contract, and narrowing it was not in scope. ---- */
 .nex-tab {
   display: flex;
   align-items: center;
   gap: var(--nex-sys-space-xxs);
   max-width: var(--nex-sys-layout-sidebar-width);
   min-height: var(--nex-sys-space-2xl);
-  padding: 0 var(--nex-sys-space-xxs) 0 var(--nex-sys-space-sm);
-  border-radius: var(--nex-sys-shape-small);
-  background: transparent;
+  padding: 0 var(--nex-sys-space-xs);
   color: var(--nex-sys-color-on-surface-variant);
   position: relative;
   flex-shrink: 0;
@@ -65,7 +79,9 @@
 
 /* Expressive enter on create only (contract motion table,
    send/create row): fast-spatial spring slide+fade. Tab switching
-   itself animates nothing — instant content swap + tone change. */
+   itself animates nothing — instant content swap + the tick and
+   the weight step below. Token durations, so the global
+   reduced-motion gate collapses it to the end frame. */
 .nex-tab-enter {
   animation: nex-tab-in var(--nex-sys-motion-spring-expressive-fast-spatial-duration)
     var(--nex-sys-motion-spring-expressive-fast-spatial-curve);
@@ -82,28 +98,12 @@
   }
 }
 
+/* Hover: one lightness step toward the surface colour, no fill.
+   The pointer state and the selected state therefore differ in
+   KIND (fill vs none) as well as in degree, so they cannot be
+   confused at a glance or read by anyone who cannot see either. */
 .nex-tab:hover {
-  background: var(--nex-sys-state-hover);
   color: var(--nex-sys-color-on-surface);
-}
-
-.nex-tab.is-active {
-  background: var(--nex-sys-color-accent-indicator-surface);
-  color: var(--nex-sys-color-on-surface);
-}
-
-.nex-tab.is-active::before {
-  content: "";
-  position: absolute;
-  top: var(--nex-sys-space-xxs);
-  left: var(--nex-sys-space-sm);
-  right: var(--nex-sys-space-sm);
-  height: var(--nex-sys-nav-indicator-height);
-  max-height: var(--nex-sys-space-xxs);
-  /* A 2px-tall tick: the one place the full radius is geometry, not
-     decoration (brief §18/§16 thin-indicator punctuation). */
-  border-radius: var(--nex-sys-shape-full);
-  background: var(--nex-sys-color-accent-indicator);
 }
 
 .nex-tab-label {
@@ -120,6 +120,33 @@
   font-weight: var(--nex-sys-type-weight-medium);
   cursor: pointer;
   padding: 0;
+  transition: color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard);
+}
+
+/* Selected: the tone step on the label itself. The tick below is
+   the second, structural signal (tabs.md `variant="line"`). */
+.nex-tab.is-active {
+  color: var(--nex-sys-color-on-surface);
+}
+
+.nex-tab.is-active::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: var(--nex-sys-space-xxxs);
+  /* The mono theme (#235) has ONE indicator role and it is
+     `--color-tick` (-> `--tick`, src/index.css): chroma ~0.005,
+     so it is a light bar on the dark canvas and a dark bar on
+     paper — never a second hue.
+     NOT `--nex-sys-color-accent-indicator`: that aliases
+     `--nex-sys-color-primary` (tokens.css), which is still the
+     legacy amber (#a9824a dark / #e3c07c light). The alias reads
+     like a role but resolves to a hue, which is how an amber tick
+     got here. No radius: a full-width edge tick has nothing to
+     round (the old rule's full-round tick was pill grammar). */
+  background: var(--color-tick);
 }
 
 .nex-tab.is-active .nex-tab-label {
@@ -158,10 +185,16 @@
 /* ---- Split: two live panes side by side on the layout seam.
    The divider is a single hairline on outline-variant (layout
    tokens carry the structure; tone steps carry the separation).
-   Each pane is an independent column: header + conversation. ---- */
+   Each pane is an independent column: header + conversation.
+   minmax(0, 1fr) and not 1fr: a grid track sized with `1fr` has
+   an automatic minimum, so one long unbroken string in a thread
+   or a wide diff widens its track past the 50% it is owed and
+   squeezes the other pane (and its header) to nothing. The
+   `min-width: 0` below can only help once the track itself is
+   allowed to shrink. ---- */
 .nex-split {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;
@@ -186,6 +219,9 @@
   border-left: 1px solid var(--nex-sys-color-shell-seam);
 }
 
+/* ---- Pane header (MAP row 5, breadcrumb.md + separator.md):
+   title + workspace NAME chip + export. The title flexes and
+   truncates; the trailing group keeps its intrinsic size. ---- */
 .nex-pane-header {
   display: flex;
   align-items: center;
@@ -194,6 +230,71 @@
   padding: var(--nex-sys-space-xs) var(--nex-sys-space-md);
   background: var(--nex-sys-color-surface-elevated);
   border-bottom: 1px solid var(--nex-sys-color-shell-seam);
+  flex-shrink: 0;
+}
+
+/* separator.md, vertical: one hairline between the title and the
+   trailing controls. Centre-aligned and token-tall rather than
+   stretched — a full-height divider in a 40-52px header reads as
+   a second seam, not as a separator between two groups. Hairline
+   on the shell seam token, same as the pane divider above. */
+.nex-pane-header-separator {
+  align-self: center;
+  height: var(--nex-sys-space-xl);
+  border-left: 1px solid var(--nex-sys-color-shell-seam);
+  flex-shrink: 0;
+}
+
+/* Workspace chip (MAP row 5): the workspace NAME, on a nested
+   fill with a hairline so the boundary survives the small
+   elevated->nested tone step, at the extra-small radius
+   (THEME §4 reserves 4px for labels and badges). A chip, not a
+   pill, and not a card: no elevation, no shadow.
+
+   This rule was missing entirely until #230 Phase 2 — the two
+   classNames in WorkspaceChip.tsx had no style anywhere in the
+   tree, so the chip rendered as bare inline text. The text child
+   takes the ellipsis so a long name degrades inside the chip
+   instead of pushing the export control off the header. */
+.nex-workspace-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: var(--nex-sys-layout-sidebar-width);
+  min-width: 0;
+  padding: var(--nex-sys-space-xxxs) var(--nex-sys-space-xxs);
+  border-radius: var(--nex-sys-shape-extra-small);
+  background: var(--nex-sys-color-surface-nested);
+  border: 1px solid var(--nex-sys-color-outline-variant);
+  color: var(--nex-sys-color-on-surface-variant);
+  font-size: var(--nex-sys-type-size-body-small);
+  font-weight: var(--nex-sys-type-weight-medium);
+  letter-spacing: var(--nex-sys-type-tracking-body-small);
+  line-height: var(--nex-sys-type-line-height-tight);
+}
+
+.nex-workspace-chip-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Trailing group of the pane header: the workspace NAME chip and
+   the export control (MAP row 5). One declaration, and it is
+   flex-shrink: 0 — the title beside it may flex and truncate
+   while this group keeps its intrinsic width, so a long workspace
+   name can never squeeze the export control off the row.
+
+   The rest is deliberately NOT repeated here. `.nex-m3-toolbar-
+   docked` (components.css) already declares display, alignment
+   and the group's internal gap, and this sheet is imported after
+   it (index.css) — a duplicate here would not be harmless
+   restatement, it would silently out-rank the toolbar's own row
+   spacing. The rule lived in src/styles.css until #230 Phase 2,
+   next to `.nex-main-header` and `.nex-main-body`, which nothing
+   references; the title group's own rules (.nex-main-title*) are
+   still there too and are out of this phase's scope. */
+.nex-main-header-actions {
   flex-shrink: 0;
 }
 

@@ -148,7 +148,7 @@ const mapping = themeMapping();
 const themeKeys = new Set(mapping.keys());
 
 /**
- * Vars this file references that the theme does not own: none.
+ * Vars this file references that the theme does not own.
  *
  * Phase 0 aliased `--font-sans` at the merged token stack
  * (`--nex-sys-type-family`, declared by src/styles/tokens.css)
@@ -158,8 +158,20 @@ const themeKeys = new Set(mapping.keys());
  * the theme blocks below — the map is empty, kept so the next
  * external reference has a named place to be justified rather
  * than a deny-list to hide in.
+ *
+ * #230 Phase 2 adds the three motion tokens ui/button.tsx reaches
+ * for the global press (NEXORA-THEME.md §6): the state-fade it
+ * already inherited from Tailwind's `transition-all`, plus the
+ * press duration and scale. They resolve in src/styles/motion.css,
+ * which owns motion the way tokens.css owns space/type — `:root`,
+ * not a theme block, and not `@theme inline`. Each entry names its
+ * real home so the next reader can go and check it.
  */
-const externalVars = new Map<string, string>([]);
+const externalVars = new Map<string, string>([
+  ["--nex-sys-motion-duration-fast", "src/styles/motion.css :root"],
+  ["--nex-sys-motion-duration-press", "src/styles/motion.css :root"],
+  ["--nex-sys-motion-scale-press", "src/styles/motion.css :root"],
+]);
 
 /**
  * Theme vars that are NOT colours: the shape step and the two
@@ -394,11 +406,19 @@ describe("black theme — variable coverage", () => {
     // tokens directly, including `--radius-md` from `@theme inline`
     // and, in arbitrary-value utilities, the raw paint vars. A typo
     // there renders as an invisible border, not an error.
+    //
+    // `externalVars` counts here for the same reason it counts in the
+    // index.css test above: a var declared in one of the merged
+    // sheets (#230 Phase 2 — the press tokens, which live in
+    // motion.css because that is where motion is declared) resolves
+    // exactly as well as one the theme blocks happen to own.
     const missing: string[] = [];
     for (const [name, source] of Object.entries(componentSources)) {
       for (const match of source.matchAll(/var\(\s*(--[a-z0-9-]+)/gi)) {
         const target = match[1];
-        if (darkDefined.has(target) || themeKeys.has(target)) continue;
+        if (darkDefined.has(target) || themeKeys.has(target) || externalVars.has(target)) {
+          continue;
+        }
         missing.push(`${name}: ${target}`);
       }
     }

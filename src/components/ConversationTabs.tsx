@@ -2,27 +2,39 @@
 //!
 //! Placement (shell-density decision): the strip docks as the first row of
 //! `.nex-main`, directly above the per-pane conversation header — persistent
-//! calm chrome like the slim header below it (contract §Shell: docked rows
-//! for persistent actions). It never overlaps the sidebar (which keeps its
+//! calm chrome like the slim header below it (SYSTEM §4: docked rows for
+//! persistent actions). It never overlaps the sidebar (which keeps its
 //! own conversation list as the opener) or the composer.
 //!
-//! Grammar follows the `M3SegmentedGroup` tabs precedent
-//! (`M3SegmentedGroup.tsx:12-15`): `tablist`/`tab` roles, automatic
-//! activation on Left/Right/Home/End, `aria-selected` for selection. Each tab
-//! carries its own close button (Alt+W closes the active tab — see
-//! `useConversationTabs.ts` for the full shortcut map). Overflow scrolls
-//! horizontally inside the strip; the active tab scrolls into view on
-//! selection. New tabs enter with the expressive fast-spatial spring
-//! (create moment); switching swaps content instantly with a tone-step
-//! selection change — calm persistent chrome, no choreography on select.
-//! Reduced motion collapses the enter animation via the motion.css gate.
+//! Grammar (MAP row 4, `tabs.md` `variant="line"`): quiet TEXT tabs —
+//! `tablist`/`tab` roles, automatic activation on Left/Right/Home/End,
+//! `aria-selected` for selection, a 2px tick under the active row plus a
+//! weight/lightness step and nothing else. Each tab carries its own close
+//! button (Alt+W closes the active tab — see `useConversationTabs.ts`
+//! for the full shortcut map). Overflow scrolls horizontally inside
+//! the strip; the active tab scrolls into view on selection. New tabs
+//! enter with the expressive fast-spatial spring (create moment);
+//! switching swaps content instantly with a tone-step selection change
+//! — calm persistent chrome, no choreography on select. Reduced motion
+//! collapses the enter animation via the motion.css gate.
+//!
+//! ONE Split entry point (SYSTEM §4, MAP row 5): it lives HERE and only
+//! here. The pane header used to render a second one — a duplicate
+//! control for one action, reachable from two places per pane, so a
+//! split of two panes offered four identical buttons. The pane header
+//! keeps title + workspace chip + export (`ConversationPane.tsx`).
+//!
+//! Trailing actions, in order: Split (the single opener), Zen, then the
+//! `+` new-tab button at the very end — MAP row 4 pins the `+` there, so
+//! creation is the last thing in the row and never sits between two
+//! open tabs.
 
 import { useEffect, useRef } from "react";
 
 import M3Button from "./M3Button";
 import M3IconButton from "./M3IconButton";
 import { useStrings } from "../lib/useLocale";
-import { CloseIcon } from "./icons";
+import { CloseIcon, PlusIcon } from "./icons";
 
 export interface TabEntry {
   id: number;
@@ -134,8 +146,7 @@ export default function ConversationTabs({
               role="presentation"
               className={
                 "nex-tab nex-tab-enter" +
-                (selected ? " is-active" : "") +
-                (inSplit ? " is-split" : "")
+                (selected ? " is-active" : "")
               }
             >
               <button
@@ -157,6 +168,11 @@ export default function ConversationTabs({
                 onKeyDown={(event) => handleTabKeyDown(event, index)}
               >
                 <span className="nex-tab-text">{tab.title}</span>
+                {/* Split annotation: a quiet count badge, NOT a second
+                    selection signal. It says which pane a tab is shown
+                    in; the tick under the row says which is primary.
+                    (`is-split` used to ride the wrapper with no rule
+                    anywhere — the badge is the whole of it.) */}
                 {inSplit && (
                   <span className="nex-tab-split-mark" aria-hidden="true">
                     2
@@ -195,15 +211,17 @@ export default function ConversationTabs({
         >
           {t("tabs.zen")}
         </M3Button>
-        <M3Button
-          variant="quiet"
+        {/* `+` last (MAP row 4). The ghost icon button carries the same
+            name the text button had, as its accessible name and tooltip —
+            no new copy, and an icon-only control never loses its label. */}
+        <M3IconButton
           size="sm"
+          label={t("tabs.newTitle")}
           onClick={onNewConversation}
           disabled={creating}
-          title={t("tabs.newTitle")}
         >
-          {t("tabs.new")}
-        </M3Button>
+          <PlusIcon />
+        </M3IconButton>
       </div>
     </div>
   );

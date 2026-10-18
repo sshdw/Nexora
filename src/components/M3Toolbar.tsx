@@ -8,6 +8,17 @@
 //! .nex-pop-enter); reduced motion resolves to fade-only/instant via the
 //! motion.css gate. Both variants expose role="toolbar" with arrow-key
 //! movement between focusable children and Esc-to-dismiss on floating.
+//!
+//! NO LOCAL DROPDOWN — checked, not skipped (#230 Phase 2). The phase
+//! note asked for this component's hand-rolled dropdown to move to
+//! `ui/popover`; there is none, and there never was: `git log -Sdropdown
+//! -- src/components/M3Toolbar.tsx` is empty across the file's history,
+//! and the file holds no menu state, trigger or list role. The `floating`
+//! variant is a selection-context popover the CONSUMER positions and
+//! dismisses (see the props below), not a dropdown this component owns.
+//! A dropdown added here later must use `ui/popover` (Radix, vendored,
+//! already themed) rather than a local open/close flag — that is the
+//! whole reason the ui/ popover exists in this stack.
 
 import { useEffect, useRef, type CSSProperties, type ReactNode } from "react";
 
