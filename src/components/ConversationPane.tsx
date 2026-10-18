@@ -2,14 +2,17 @@
 //!
 //! Extracted verbatim from `src/App.tsx` (`ConversationPane`, formerly
 //! App.tsx:70-166): pane header (title + archived badge, workspace chip,
-//! split toggle, export) over a `ConversationView` keyed by conversation id,
-//! so each pane owns independent hook state (messages, attachments, agent
-//! runs, scroll position) and the two split panes can never clobber each
-//! other. No visual or behavioral change — pure move plus the lifted
-//! `autonomy` store prop (NEX-FE-003).
+//! export) over a `ConversationView` keyed by conversation id, so each
+//! pane owns independent hook state (messages, attachments, agent runs,
+//! scroll position) and the two split panes can never clobber each
+//! other.
+//!
+//! #230 Phase 2 dropped the header's own Split control (SYSTEM §4: ONE
+//! Split entry point — the tab strip owns it; the header keeps title +
+//! workspace chip + export only). The props it needed went with it,
+//! and App.tsx passes none of them here.
 
 import ConversationView from "./ConversationView";
-import M3Button from "./M3Button";
 import M3IconButton from "./M3IconButton";
 import M3Toolbar from "./M3Toolbar";
 import WorkspaceChip from "./WorkspaceChip";
@@ -39,12 +42,8 @@ export interface ConversationPaneProps {
   onExport: (id: number) => void;
   workspaceRoot: string | null;
   workspaceLoading: boolean;
-  /** Secondary (split) pane: the header offers "Close split". */
+  /** Secondary (split) pane: marked apart from the primary one. */
   secondary: boolean;
-  /** Primary pane: whether the "Split" opener is available. */
-  splitAvailable: boolean;
-  splitOpen: boolean;
-  onToggleSplit: () => void;
 }
 
 export default function ConversationPane({
@@ -63,9 +62,6 @@ export default function ConversationPane({
   workspaceRoot,
   workspaceLoading,
   secondary,
-  splitAvailable,
-  splitOpen,
-  onToggleSplit,
 }: ConversationPaneProps) {
   const { t } = useStrings();
   const isArchived = conversation.status === "archived";
@@ -83,25 +79,16 @@ export default function ConversationPane({
             </span>
           )}
         </h2>
+        {/* separator.md, vertical: the hairline between the title group
+            and the trailing controls (MAP row 5). Decorative — it
+            carries no text, so it is hidden from assistive tech rather
+            than announced. */}
+        <span className="nex-pane-header-separator" aria-hidden="true" />
         <M3Toolbar
           label={t("app.paneActions", { title: conversation.title })}
           className="nex-main-header-actions"
         >
           <WorkspaceChip root={workspaceRoot} loading={workspaceLoading} />
-          <M3Button
-            variant="quiet"
-            size="sm"
-            onClick={onToggleSplit}
-            aria-pressed={splitOpen}
-            disabled={secondary ? false : !splitAvailable && !splitOpen}
-            title={
-              secondary
-                ? t("app.splitCloseTitle")
-                : t("app.splitOpenTitle")
-            }
-          >
-            {secondary ? t("app.splitClose") : t("app.split")}
-          </M3Button>
           <M3IconButton
             label={t("app.exportConversation")}
             onClick={() => onExport(conversation.id)}

@@ -143,7 +143,10 @@ describe("exactly one Split control (SYSTEM §4, MAP row 5)", () => {
   });
 
   it("renders no Split control in the pane header", () => {
-    pane({ splitAvailable: true, splitOpen: true, onToggleSplit: vi.fn() });
+    // The header owns no split props at all — the prop chain a header
+    // Split button needed was removed with the control (SYSTEM §4), so
+    // the default pane is the whole surface under test.
+    pane();
     expect(screen.queryAllByRole("button", { name: /split/i })).toHaveLength(0);
     // The header keeps what MAP row 5 gives it: the export action.
     expect(screen.getByRole("button", { name: /export/i })).toBeInTheDocument();
