@@ -134,13 +134,6 @@
   border-radius: var(--nex-sys-shape-full);
 }
 
-.nex-main-header-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--nex-sys-space-xxs);
-  flex-shrink: 0;
-}
-
 .nex-main-body {
   flex: 1 1 auto;
   overflow-y: auto;
