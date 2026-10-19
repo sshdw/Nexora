@@ -25,12 +25,34 @@
 //!     on-surface ladder and stop at `on-surface-tertiary`. No opacity
 //!     multiplier — see the CSS note; the floor tier has no headroom for one.
 //!   - Tool group folding (§13.33): a finished, approval-free, error-free,
-//!     long sequence collapses into one counted summary row. "Error-free" is
+//!     long sequence collapses behind one disclosure. "Error-free" is
 //!     the persisted per-step vocabulary — `failed`, `denied` or `cancelled`
 //!     (`isFailedStatus`) — and "approval-free" means no approval still
 //!     OUTSTANDING: a granted park is settled history. Expanding
 //!     restores the SAME step objects in the SAME order with each row's own
 //!     open/closed state intact (rows are hidden, never unmounted).
+//!
+//! #230 Phase 3 (MAP rows 8 + 9, SYSTEM §7 + §8):
+//!   - ONE SUMMARY LINE. The header carries the status word and the run's
+//!     real results, counted from its own steps, exactly once. The old
+//!     counted fold summary was a SECOND block claiming the same outcome,
+//!     which P3's acceptance forbids outright.
+//!   - THE STEP GRAMMAR: action → file → change → verification, one line.
+//!     Past-tense verbs instead of tool identifiers, the acted-on path with
+//!     its full value on hover, `+N −M` counted from the diff text itself,
+//!     and the persisted status as a word rather than a CHECK-constraint
+//!     string. Never colour-only.
+//!   - REPEATED CALLS GROUP. A consecutive run of the same tool against the
+//!     same target is one fact ("Read ×6 src/db.rs"), behind a disclosure
+//!     that restores the same rows in the same order. Interleaved work keeps
+//!     its real order — the timeline never lies about sequence.
+//!   - THE ERROR BLOCK. What happened / what survived / next action, in
+//!     words, outside the timeline so the fold and the temporal fade can
+//!     never take it out of reach. The old bare `nowrap` error string in the
+//!     toolbar clipped long provider errors and answered nothing else.
+//!   - NO MODEL MONOLOGUE. `model_turn` rows read "Thought" and stay folded
+//!     until asked; the raw narration opens on request rather than streaming
+//!     into the thread.
 //!
 //! Callbacks arrive pre-bound to their run id and stable, so the memoized
 //! root re-renders only when this run's own data changes (#148).
@@ -38,7 +60,7 @@
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 
 import type { AgentRunView, AgentStepView } from "../lib/useAgentRun";
-import { getLocale, tr, type Locale, type StringKey } from "../lib/strings";
+import { getLocale, tp, tr, type Locale, type StringKey } from "../lib/strings";
 import { useStrings } from "../lib/useLocale";
 import M3Button from "./M3Button";
 import M3Toolbar from "./M3Toolbar";
@@ -256,11 +278,172 @@ function foldableRun(run: AgentRunView, sorted: AgentStepView[]): boolean {
   return !sorted.some(isProtectedRow);
 }
 
-function kindLabel(step: AgentStepView, locale: Locale = getLocale()): string {
-  if (step.kind === "model_turn") return tr(locale, "agent.kindModelTurn");
-  if (step.kind === "tool_call") return step.tool_name ?? tr(locale, "agent.kindToolCall");
-  if (step.kind === "approval") return tr(locale, "agent.kindApproval", { tool: step.tool_name ?? "" }).trim();
-  return step.kind;
+/* =====================================================================
+   STEP GRAMMAR (MAP rows 8 + 9, SYSTEM §8) — #230 P3
+   =====================================================================
+   One line per step, reading:
+
+       ACTION  →  FILE  →  CHANGE  →  VERIFICATION
+       Ran       db.rs     +12 −3    ok
+
+   Before this pass a row read `#3 write_file src/db.rs succeeded 84ms`:
+   the persisted STATUS VERBATIM (`succeeded`), a second copy of the tool
+   name beside its own kind label, and no idea what the tool actually DID
+   or what it changed. Three fixes, all binding:
+
+   · ACTION is a verb, not an identifier. `read_file` → "Read",
+     `write_file` → "Wrote". An unrecognised tool falls back to its own
+     name and a generic verb, because inventing a verb for a tool this
+     file has never heard of would be a guess dressed as copy.
+   · FILE is the argument the tool acted on, and it carries its FULL
+     value in `title` (SYSTEM §8 "paths on hover"), so the visible line can
+     truncate without losing the path.
+   · VERIFICATION is the word a person uses — "ok", "failed", "denied",
+     "cancelled" — not the database's `succeeded`/`failed`/`denied`/
+     `cancelled` CHECK constraint. Same four words, translated, and always
+     PRESENT: a row never shows a status only as a colour.
+   ===================================================================== */
+
+/** tool_name → the past-tense verb for it. The key IS the tool name the
+ *  backend persists, so an unknown tool falls through to `agent.actTool`
+ *  rather than being dropped. */
+const TOOL_VERBS: Record<string, StringKey> = {
+  read_file: "agent.actRead",
+  write_file: "agent.actWrite",
+  edit_file: "agent.actEdit",
+  search_files: "agent.actSearch",
+  list_directory: "agent.actList",
+  execute_command: "agent.actRun",
+};
+
+/** Whether this tool has a verb of its own. An UNKNOWN tool has to keep
+ *  its identifier in the FILE slot: `apply_patch src/db.rs` says what ran,
+ *  where a bare "Called src/db.rs" says only that something did — which is
+ *  the generic, contentless row this grammar exists to replace. */
+function hasToolVerb(step: AgentStepView): boolean {
+  return step.tool_name !== null && TOOL_VERBS[step.tool_name] !== undefined;
+}
+
+function toolVerb(step: AgentStepView, locale: Locale = getLocale()): string {
+  const key = step.tool_name ? TOOL_VERBS[step.tool_name] : undefined;
+  return tr(locale, key ?? "agent.actTool");
+}
+
+/** The one argument this tool acted on — the file it touched, the query it
+ *  searched, the command it ran. Returns null when the tool has no
+ *  single obvious target, and the row then shows no file slot at all
+ *  rather than a placeholder. */
+function stepTarget(step: AgentStepView): { text: string; title: string } | null {
+  const args = parseToolArgs(step.arguments);
+  if (args === null) return null;
+  if (step.tool_name === "execute_command") {
+    const command = typeof args.command === "string" ? args.command : null;
+    return command === null ? null : { text: command, title: tr(getLocale(), "agent.commandTitle") };
+  }
+  const path = typeof args.path === "string" ? args.path : null;
+  if (path !== null) return { text: path, title: tr(getLocale(), "agent.pathTitle") };
+  const query = typeof args.query === "string" ? args.query : null;
+  if (query !== null) return { text: query, title: tr(getLocale(), "agent.queryTitle") };
+  return null;
+}
+
+/** Split a filesystem path into directory part (with trailing separator) and
+ * file name, at the last separator. `src/lib/db.rs` → `dir="src/lib/"`,
+ * `name="db.rs"`; `src/` → `dir="src/"`, `name=""`; `db.rs` → `dir=""`,
+ * `name="db.rs"`. The file name is what the reader needs, so it stays
+ * visible; only the directory prefix is elided. Single source of truth is
+ * the same `identity.text` the slot already renders — nothing is parsed
+ * twice. */
+function splitPathTarget(text: string): { dir: string; name: string } {
+  const sep = text.lastIndexOf("/");
+  if (sep < 0) return { dir: "", name: text };
+  return { dir: text.slice(0, sep + 1), name: text.slice(sep + 1) };
+}
+
+/** The persisted step status → the word shown. `null` is the LIVE shape
+ *  (a step row with no status yet), which reads as running while its run
+ *  is live and as nothing at all once it is not. */
+function verifyWord(status: string | null, live: boolean, locale: Locale = getLocale()): string | null {
+  if (status === null) return live ? tr(locale, "agent.verifyRunning") : null;
+  switch (status) {
+    case "succeeded":
+      return tr(locale, "agent.verifyOk");
+    case "failed":
+      return tr(locale, "agent.verifyFailed");
+    case "denied":
+      return tr(locale, "agent.verifyDenied");
+    case "cancelled":
+      return tr(locale, "agent.verifyCancelled");
+    default:
+      return status;
+  }
+}
+
+/** `+N −M` over a unified diff, counted from the lines themselves rather
+ *  than from any stored number. Returns null when there is no diff text —
+ *  the CHANGE slot then simply does not render. */
+export function diffCounts(observation: string | null): { added: number; removed: number } | null {
+  if (!observation) return null;
+  let added = 0;
+  let removed = 0;
+  for (const line of observation.split("\n")) {
+    if (line.startsWith("+++") || line.startsWith("---")) continue;
+    if (line.startsWith("+")) added += 1;
+    else if (line.startsWith("-")) removed += 1;
+  }
+  if (added === 0 && removed === 0) return null;
+  return { added, removed };
+}
+
+/* ---- Repeated calls grouped behind one expandable line ------------------
+   MAP row 8: "tool calls fold to one line (action → file → change →
+   verification)", and P3's acceptance names the grouping explicitly:
+   "repeated calls grouped with an expandable list".
+
+   The unit is a CONSECUTIVE run of steps that share a tool AND a target —
+   "Read ×6 src/a.ts, src/b.ts…" is noise; the same read of the same file
+   five times in a row is one fact the reader wants once. Consecutive only,
+   never across the whole run: interleaved work keeps its real order, so
+   the timeline never lies about what happened when.
+
+   A group of ONE is not a group — it renders as the ordinary row, so the
+   collapse never adds a disclosure around a single item. */
+interface StepGroup {
+  key: string; // grouping identity (tool|target) — consecutive comparison only
+  id: string;  // stable unique DOM/React identity within the run
+  steps: AgentStepView[];
+}
+
+function groupKey(step: AgentStepView): string | null {
+  if (step.kind !== "tool_call" || step.tool_name === null) return null;
+  const target = stepTarget(step);
+  // No single target means no identity to repeat: two `execute_command`
+  // calls with different commands must not fold into one line.
+  return target === null ? null : `${step.tool_name}|${target.text}`;
+}
+
+function groupSteps(steps: AgentStepView[]): Array<AgentStepView | StepGroup> {
+  const out: Array<AgentStepView | StepGroup> = [];
+  let current: StepGroup | null = null;
+  for (const step of steps) {
+    const key = groupKey(step);
+    if (key === null) {
+      current = null;
+      out.push(step);
+      continue;
+    }
+    if (current !== null && current.key === key) {
+      current.steps.push(step);
+      continue;
+    }
+    current = { key, id: `g${step.seq}`, steps: [step] };
+    out.push(current);
+  }
+  return out;
+}
+
+function isGroup(item: AgentStepView | StepGroup): item is StepGroup {
+  return (item as StepGroup).steps !== undefined;
 }
 
 /** RU noun declension for a count (байт/байта/байтов): same one/few/many
@@ -274,35 +457,30 @@ function ruPlural(n: number, forms: [string, string, string]): string {
   return forms[2];
 }
 
-/** Nouns the fold summary counts. EN needs singular/plural, RU the full
- * one/few/many triple — the same shape `ruPlural` already applies to the
+/** Nouns the run summary counts. EN needs singular/plural, RU the full
+ * one/few/many triple - the same shape `ruPlural` already applies to the
  * `agent.showFull` byte unit, kept at the call site so the catalog holds one
- * `{n} {unit}` template per bucket instead of nine near-identical strings. */
+ * `{n} {unit}` template per bucket instead of nine near-identical strings.
+ *
+ * #230 P3: three of these four died with the counted fold summary, which
+ * was the duplicated second "COMPLETED" block. Only commands survive,
+ * because "3 commands" is a fact the run's own summary line still reports
+ * and no `tp` plural key carries. Tool calls, files and searches go
+ * through `tp(locale, "toolCalls" | "changedFiles", n)` instead, which is
+ * the catalog's own plural machinery rather than a second copy of it. */
 interface CountedNoun {
   en: [string, string];
   ru: [string, string, string];
 }
 
-const NOUN_TOOL_CALLS: CountedNoun = {
-  en: ["tool call", "tool calls"],
-  ru: ["вызов", "вызова", "вызовов"],
-};
-const NOUN_FILES: CountedNoun = {
-  en: ["file", "files"],
-  ru: ["файл", "файла", "файлов"],
-};
 const NOUN_COMMANDS: CountedNoun = {
   en: ["command", "commands"],
   ru: ["команда", "команды", "команд"],
 };
-const NOUN_SEARCHES: CountedNoun = {
-  en: ["search", "searches"],
-  ru: ["поиск", "поиска", "поисков"],
-};
 
-/** One counted noun phrase for the fold summary: `12 tool calls`, `4 файла`.
+/** One counted noun phrase for the run summary line: `3 команды`.
  * The template (`{n} {unit}`) is localized in the catalog and interpolated by
- * `tr`; the noun declines here — EN takes the singular at 1 and the plural
+ * `tr`; the noun declines here - EN takes the singular at 1 and the plural
  * otherwise, RU walks the one/few/many triple through `ruPlural` above. */
 function countedPhrase(locale: Locale, key: StringKey, n: number, noun: CountedNoun): string {
   const unit = locale === "ru" ? ruPlural(n, noun.ru) : n === 1 ? noun.en[0] : noun.en[1];
@@ -356,14 +534,51 @@ function TerminalView({ step }: { step: AgentStepView }) {
   );
 }
 
+/** One unified diff (MAP row 9).
+ *
+ *  NEVER RENDERS EMPTY (MAP row 9, "Diffs never appear empty"). Three
+ *  shapes can arrive here — a real diff, a write that changed nothing, and
+ *  a write with no observation text at all — and the old code collapsed the
+ *  last two into the same one-word span while a "diff" whose lines are all
+ *  headers rendered as a bordered box containing nothing but `--- a/x` and
+ *  `+++ b/x`. Now the empty cases SAY what they are, in words, and the
+ *  frame only appears when there is something in it.
+ *
+ *  The counts in the header are counted from the lines themselves
+ *  (`diffCounts` above) rather than from any stored number, so a header
+ *  can never claim "+12 −3" over a diff that shows none. */
 export function DiffView({ observation }: { observation: string | null }) {
-  const { t } = useStrings();
+  const { locale, t } = useStrings();
   if (!observation) return <span className="nex-agent-step-empty">{t("agent.noChanges")}</span>;
   const lines = observation.split("\n");
-  // Remove trailing empty line from final split if observation ends with newline
-  // Keep it as is for rendering; filter will handle.
+  const counts = diffCounts(observation);
+  if (counts === null) {
+    // Headers or context only: there is no change to show, and saying so
+    // is more honest than framing an empty box as a diff.
+    return (
+      <span className="nex-agent-step-empty" aria-label={t("agent.noChangesAria")}>
+        {t("agent.noChanges")}
+      </span>
+    );
+  }
   return (
     <div className="nex-agent-diff" role="group" aria-label={t("agent.fileDiff")}>
+      {/* The compact action line MAP row 9 asks for, carrying the counts as
+          OUTLINE badges rather than filled pills. The label says what the
+          numbers are, so the badges are never the only carrier. */}
+      <div className="nex-agent-diff-header-line">
+        <span className="nex-agent-diff-counts" title={t("agent.diffCountsTitle", counts)}>
+          <span className="nex-agent-diff-count nex-agent-diff-count-added">
+            +{counts.added}
+          </span>
+          <span className="nex-agent-diff-count nex-agent-diff-count-removed">
+            −{counts.removed}
+          </span>
+        </span>
+        <span className="nex-sr-only">
+          {tr(locale, "agent.diffCountsTitle", counts)}
+        </span>
+      </div>
       <div className="nex-agent-diff-body nex-tag-mono">
         {lines.map((line, idx) => {
           // Classify line for styling
@@ -423,10 +638,94 @@ export function DiffView({ observation }: { observation: string | null }) {
   );
 }
 
+/** The one line, in the MAP row 8 grammar. Split out so a grouped
+ *  repeat's disclosure row can render the SAME line with a count, without
+ *  two copies of the grammar drifting apart. */
+function StepLine({
+  step,
+  live,
+  locale,
+}: {
+  step: AgentStepView;
+  /** The step's run is executing: a statusless row reads "running" rather
+   *  than claiming nothing at all. */
+  live: boolean;
+  locale: Locale;
+}) {
+  const target = stepTarget(step);
+  const verify = verifyWord(step.status, live, locale);
+  const counts =
+    step.tool_name === "write_file" || step.tool_name === "edit_file"
+      ? diffCounts(step.observation)
+      : null;
+  // Three kinds, three subjects. A `model_turn` is the model's thinking
+  // ("Thought"); an `approval` is a persisted decision about a named tool
+  // ("Approval · execute_command"); a `tool_call` gets the verb grammar.
+  // #230 P3: the old `kindLabel` covered all three, and folding it into the
+  // action slot without the approval branch made every approval row read
+  // "Thought" — a settled decision reported as the model musing.
+  const isCall = step.kind === "tool_call";
+  const known = hasToolVerb(step);
+  const action = (() => {
+    if (isCall) return toolVerb(step, locale);
+    if (step.kind === "approval") {
+      return tr(locale, "agent.kindApproval", { tool: step.tool_name ?? "" }).trim();
+    }
+    return tr(locale, "agent.kindModelTurn");
+  })();
+  // A known tool spends the FILE slot on the path it acted on. An unknown
+  // one has to spend it on its OWN NAME, because the verb alone ("Called")
+  // names nothing — the reader must be able to see which tool ran. Its
+  // arguments, including any path, are on the expanded row either way.
+  const identity =
+    !isCall
+      ? null
+      : known
+        ? target
+        : step.tool_name !== null
+          ? { text: step.tool_name, title: tr(locale, "agent.toolArgs") }
+          : null;
+  // Only genuine file targets get the directory/name split. Commands,
+  // queries and unknown-tool names render whole as the file-name slot so a
+  // non-path value is never forced through a path split. `identity.text` is
+  // the single source of truth for both parts.
+  const isFilePath = step.tool_name !== null && FILE_TOOLS.has(step.tool_name);
+  const { dir, name } = isFilePath && identity !== null ? splitPathTarget(identity.text) : { dir: "", name: "" };
+  return (
+    <>
+      <span className="nex-agent-step-action">{action}</span>
+      {identity !== null && (
+        <span className="nex-agent-step-target nex-tag-mono" title={identity.title}>
+          {isFilePath ? (
+            <>
+              <span className="nex-agent-step-target-dir">{dir}</span>
+              <span className="nex-agent-step-target-name">{name}</span>
+            </>
+          ) : (
+            <span className="nex-agent-step-target-name">{identity.text}</span>
+          )}
+        </span>
+      )}
+      {counts !== null && (
+        <span
+          className="nex-agent-step-change nex-tag-mono"
+          title={tr(locale, "agent.diffCountsTitle", counts)}
+        >
+          {tr(locale, "agent.diffCounts", counts)}
+        </span>
+      )}
+      {verify !== null && (
+        <span className="nex-agent-step-verify">{verify}</span>
+      )}
+    </>
+  );
+}
+
 const StepSection = memo(function StepSection({
   step,
   defaultOpen,
   fade,
+  live,
   runId,
   onExpandStep,
   onCollapseStep,
@@ -436,6 +735,9 @@ const StepSection = memo(function StepSection({
   /** Temporal-fade bucket class ("" = current row), applied by the parent
    * decision in `fadeClass` and read by CSS only. */
   fade: string;
+  /** The owning run is executing (not parked, not terminal). Drives the
+   *  statusless row's "running" word — never a colour, never motion. */
+  live: boolean;
   runId: number;
   onExpandStep?: (runId: number, seq: number) => void;
   onCollapseStep?: (runId: number, seq: number) => void;
@@ -448,7 +750,12 @@ const StepSection = memo(function StepSection({
   const expanded = step.observation_full !== null;
   const displayObservation = step.observation_full ?? step.observation ?? "";
   const isTerminal = step.kind === "tool_call" && step.tool_name === "execute_command";
-  const isDiff = step.kind === "tool_call" && step.tool_name === "write_file";
+  // Both file WRITERS produce a diff, not just `write_file`: an edit that
+  // changed nothing still shows "No changes needed", which is the honest
+  // read for a tool whose whole job is to change a file.
+  const isDiff =
+    step.kind === "tool_call" &&
+    (step.tool_name === "write_file" || step.tool_name === "edit_file");
   // Stable identities (not inline arrows) so the memo above survives a
   // re-render driven by any other row's frame.
   const seq = step.seq;
@@ -468,11 +775,7 @@ const StepSection = memo(function StepSection({
         onClick={() => setOpen((v) => !v)}
       >
         <span className="nex-agent-step-seq">#{step.seq}</span>
-        <span className="nex-agent-step-kind">{kindLabel(step, locale)}</span>
-        {step.tool_name && step.kind === "tool_call" && (
-          <span className="nex-agent-step-tool">{step.tool_name}</span>
-        )}
-        {step.status && <span className="nex-tag nex-tag-mono nex-agent-step-status">{step.status}</span>}
+        <StepLine step={step} live={live} locale={locale} />
         {step.duration_ms !== null && step.duration_ms !== undefined && (
           <span className="nex-agent-step-duration">{step.duration_ms}ms</span>
         )}
@@ -540,6 +843,95 @@ const StepSection = memo(function StepSection({
   );
 });
 
+/** Repeated calls, one line, expandable list (MAP row 8, P3 acceptance).
+ *
+ *  The group header carries the SAME action/target line as a single row
+ *  plus a count, so a repeat reads as the fact it is ("Read ×6 src/a.ts")
+ *  rather than six near-identical lines. Expanding restores the SAME
+ *  `StepSection` elements in the SAME order with their own open state
+ *  intact — the `hidden` attribute, never a conditional mount, for the
+ *  same reason the run-level fold uses it.
+ *
+ *  A group with a failed member is never collapsed by default: the failure
+ *  has to stay findable (SYSTEM §8 "failure stays findable"), so it opens
+ *  itself once and stays open until the reader closes it. */
+const StepGroupSection = memo(function StepGroupSection({
+  group,
+  defaultOpen,
+  fade,
+  live,
+  runId,
+  timelineId,
+  onExpandStep,
+  onCollapseStep,
+}: {
+  group: StepGroup;
+  defaultOpen: boolean;
+  fade: string;
+  live: boolean;
+  runId: number;
+  timelineId: string;
+  onExpandStep?: (runId: number, seq: number) => void;
+  onCollapseStep?: (runId: number, seq: number) => void;
+}) {
+  const { locale, t } = useStrings();
+  const head = group.steps[0];
+  const hasFailure = group.steps.some(isProtectedRow);
+  const [open, setOpen] = useState<boolean>(defaultOpen || hasFailure);
+  const n = group.steps.length;
+  const target = stepTarget(head);
+  return (
+    <div className={fade ? `nex-agent-step ${fade}` : "nex-agent-step"}>
+      <button
+        type="button"
+        className="nex-agent-step-header nex-agent-step-header-group"
+        aria-expanded={open}
+        aria-controls={timelineId}
+        aria-label={t(open ? "agent.repeatedHide" : "agent.repeatedShow", {
+          n: tp(locale, "toolCalls", n),
+          target: target?.text ?? "",
+        })}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span className="nex-agent-step-seq">
+          #{head.seq}–#{group.steps[group.steps.length - 1].seq}
+        </span>
+        <StepLine step={head} live={live} locale={locale} />
+        <span className="nex-agent-step-count nex-tag-mono">
+          {t("agent.repeatedCalls", { n })}
+        </span>
+        <span className="nex-agent-step-chevron" aria-hidden="true">
+          {open ? "▾" : "▸"}
+        </span>
+      </button>
+      {/* `hidden`, NEVER a conditional mount — the same discipline as the
+          run-level fold above, and for the same reasons: the group's rows
+          stay in the tree so each keeps its own open state across the round
+          trip, and so `aria-controls` points at a region that EXISTS in
+          both states. A disclosure whose `aria-controls` target is absent
+          while collapsed resolves to nothing for a screen reader, which is
+          the relationship the attribute exists to declare. */}
+      <div className="nex-agent-step-group" id={timelineId} hidden={!open}>
+        {group.steps.map((step) => (
+          <StepSection
+            key={`${runId}-${step.seq}`}
+            step={step}
+            // A repeat's members are never auto-opened: the group line
+            // already said what happened, and opening all six buries the
+            // rest of the timeline.
+            defaultOpen={false}
+            fade=""
+            live={live}
+            runId={runId}
+            onExpandStep={onExpandStep}
+            onCollapseStep={onCollapseStep}
+          />
+        ))}
+      </div>
+    </div>
+  );
+});
+
 /** The Activity Spine (brief §7). Mounted once per run and never
  * conditionally on data: the rail itself is the run's timeline frame and
  * stays put whether the run is live, parked or finished. `live` decides only
@@ -555,50 +947,40 @@ const AgentSpine = memo(function AgentSpine({ live }: { live: boolean }) {
   );
 });
 
-/** The folded-run disclosure (§13.33). One button that changes state — the
- * counts the hidden rows stood for, then the same control that brings them
- * back. Zero-count buckets are dropped rather than printed as `0 searches`;
- * the leading tool-call total is always shown, so the line can never read
- * empty.
+/** The folded-run disclosure (§13.33, P3 acceptance "folded tool calls —
+ *  one line each, repeated calls grouped with an expandable list").
  *
- * The visible line stays exactly the counts (that is the compact summary the
- * brief specifies), while the accessible name adds what the control DOES —
- * without it the button announces only "5 tool calls", which never says
- * whether pressing it shows or hides the run. `aria-controls` names the
- * region the button owns, so the relationship survives with the counts. */
+ *  #230 P3 changed what this line SAYS. It used to be a counted summary
+ *  ("12 tool calls · 4 files · 2 commands") — which, next to the run's own
+ *  status pill, was the duplicated COMPLETED block P3's acceptance forbids:
+ *  two blocks claiming the same result in two different registers. The run
+ *  header now carries the ONE summary line with the real counts
+ *  (`nex-agent-run-summary`), so this control says only what it DOES —
+ *  show or hide the run's steps — and the numbers live in exactly one place.
+ *
+ *  `aria-controls` still names the region the button owns, so the
+ *  relationship survives with the name. */
 const StepFoldSummary = memo(function StepFoldSummary({
-  steps,
   expanded,
   timelineId,
   onToggle,
 }: {
-  steps: AgentStepView[];
   expanded: boolean;
   timelineId: string;
   onToggle: () => void;
 }) {
-  const { locale, t } = useStrings();
-  const counts = foldCounts(steps);
-  const parts = [countedPhrase(locale, "agent.foldCalls", counts.calls, NOUN_TOOL_CALLS)];
-  if (counts.files > 0) {
-    parts.push(countedPhrase(locale, "agent.foldFiles", counts.files, NOUN_FILES));
-  }
-  if (counts.commands > 0) {
-    parts.push(countedPhrase(locale, "agent.foldCommands", counts.commands, NOUN_COMMANDS));
-  }
-  if (counts.searches > 0) {
-    parts.push(countedPhrase(locale, "agent.foldSearches", counts.searches, NOUN_SEARCHES));
-  }
+  const { t } = useStrings();
   return (
     <button
       type="button"
       className="nex-agent-fold"
       aria-expanded={expanded}
       aria-controls={timelineId}
-      aria-label={t(expanded ? "agent.foldHide" : "agent.foldShow", { counts: parts.join(" · ") })}
       onClick={onToggle}
     >
-      <span className="nex-agent-fold-label">{parts.join(" · ")}</span>
+      <span className="nex-agent-fold-label">
+        {t(expanded ? "agent.foldHide" : "agent.foldShow")}
+      </span>
       <span className="nex-agent-fold-chevron" aria-hidden="true">
         {expanded ? "▾" : "▸"}
       </span>
@@ -754,6 +1136,93 @@ function AgentRunSteps({
   const handleFoldToggle = useCallback(() => {
     setFoldExpanded((v) => !v);
   }, []);
+  // Stable per group: the identity is the head step's seq — unique within the
+  // run (only one group starts at a given seq) and invariant across the
+  // per-frame re-sort/re-group. Derived from seq, not from a sanitised text
+  // blob: two non-consecutive groups with the same tool+target share that
+  // text, and a non-latin target can sanitise to "" and collide even harder.
+  const groupId = (id: string): string => `${timelineId}-${id}`;
+
+  // ---- THE ONE SUMMARY LINE (#230 P3 acceptance) ------------------------
+  // "Completion = ONE summary line carrying real results only — no
+  // duplicated COMPLETED blocks."
+  //
+  // The header USED to render a status pill, and the folded-run summary
+  // below it rendered its own counts, and for a completed run the reader
+  // saw the word "Completed" twice with two different-looking blocks under
+  // it. Now there is exactly one line: the status word plus the real
+  // results of THIS run, counted from its own steps — files actually
+  // written, commands actually run, tool calls actually made.
+  //
+  // "No changes needed" is the honest read for a finished run that touched
+  // no file, and it is only ever shown for a run that genuinely finished:
+  // an errored or cancelled run never gets to claim it did nothing wrong.
+  const counts = foldCounts(sorted);
+  const ranCalls = counts.calls;
+  // Distinct files actually written/edited: dedupe on the target path each
+  // step reports. A step whose target can't be resolved is excluded — we
+  // never invent a file, and two steps touching the same path count once.
+  const changedFiles = new Set<string>();
+  for (const step of sorted) {
+    if (step.kind !== "tool_call") continue;
+    if (step.tool_name !== "write_file" && step.tool_name !== "edit_file") continue;
+    if (isFailedStatus(step)) continue;
+    const target = stepTarget(step);
+    if (target === null) continue;
+    changedFiles.add(target.text);
+  }
+  const filesChanged = changedFiles.size;
+  const finishedClean = run.status === "completed";
+  const summaryParts: string[] = [];
+  if (filesChanged > 0) summaryParts.push(tp(locale, "changedFiles", filesChanged));
+  if (counts.commands > 0) {
+    summaryParts.push(countedPhrase(locale, "agent.summaryCommands", counts.commands, NOUN_COMMANDS));
+  }
+  if (summaryParts.length === 0) {
+    summaryParts.push(
+      finishedClean
+        ? ranCalls > 0
+          ? tr(locale, "agent.summaryNoChanges")
+          : tr(locale, "agent.summaryNothing")
+        : ranCalls > 0
+          ? tp(locale, "toolCalls", ranCalls)
+          : tr(locale, "agent.summaryNothing"),
+    );
+  } else if (ranCalls > 0) {
+    summaryParts.push(tp(locale, "toolCalls", ranCalls));
+  }
+  const summaryText = summaryParts.join(" · ");
+  // Cancelled runs say what a cancel means, because a cancelled run that
+  // had already written files must not read as "done".
+  const cancelledNote = run.status === "cancelled" && ranCalls === 0;
+
+  // ---- THE ERROR BLOCK (SYSTEM §8) --------------------------------------
+  // "Errors answer: what happened / what survived / next action."
+  //
+  // The run's error used to be a bare string inside the header toolbar, in
+  // a `white-space: nowrap` span — which meant a long provider error was
+  // CLIPPED at the toolbar's width, and nothing said what survived or what
+  // to do next. The error now lives in its own block, always visible, never
+  // folded away, answering all three questions in words.
+  // A GENUINE failure, not every stop. `budget_exhausted` is excluded on
+  // purpose: it is a pause with its own affordance (the Continue button in
+  // this very header) and a summary line that already says what ran, so a
+  // three-line failure block on top of it would be the loudest thing in
+  // the run for a state that is waiting on a decision the user is being
+  // offered. `error` and `spend_limit_exceeded` stopped on their own and
+  // get the block.
+  const isErrorRun = run.status === "error" || run.status === "spend_limit_exceeded";
+  const survived =
+    ranCalls > 0 || sorted.length > 0
+      ? [
+          ...(filesChanged > 0 ? [tp(locale, "changedFiles", filesChanged)] : []),
+          ...(ranCalls > 0 ? [tp(locale, "toolCalls", ranCalls)] : []),
+        ].join(" · ")
+      : tr(locale, "agent.errorSurvivedNone");
+  const nextAction =
+    run.status === "spend_limit_exceeded"
+      ? t("agent.errorNextSpend")
+      : t("agent.errorNextGeneric");
 
   return (
     <section
@@ -763,15 +1232,22 @@ function AgentRunSteps({
       aria-label={t("agent.runAria", { id: run.run_id })}
     >
       <header className="nex-agent-run-header">
+        {/* THE ONE completion line. Status word + real results, once. The
+            spinner/dot that sit beside the word are the same motion rule the
+            spine follows: a parked run keeps the persisted `running` status
+            but is waiting on a human, not burning cycles. */}
         <span className={statusClass(run.status)} role="status">
-          {/* Same rule as the spine: a parked run keeps the persisted
-              `running` status, so it is waiting on a human, not burning
-              cycles — the status pill still reads the same. */}
           {isRunning && !parked && (
             <span className="nex-spinner nex-agent-spinner" aria-hidden="true" />
           )}
           {isPaused && <span className="nex-agent-paused-dot" aria-hidden="true" />}
-          {statusLabel(run.status, locale)}
+          <span className="nex-agent-run-status">{statusLabel(run.status, locale)}</span>
+          <span className="nex-agent-run-summary">{summaryText}</span>
+          {cancelledNote && (
+            <span className="nex-agent-run-summary-note">
+              {t("agent.cancelledNote")}
+            </span>
+          )}
         </span>
         <span className="nex-agent-run-meta">
           <span className="nex-tag nex-tag-mono" title={t("agent.modelTitle")}>
@@ -803,18 +1279,31 @@ function AgentRunSteps({
               {t("agent.continue")}
             </M3Button>
           )}
-          {run.status === "spend_limit_exceeded" && run.error && (
-            <span className="nex-agent-run-error nex-fade-in" role="alert">
-              {run.error}
-            </span>
-          )}
-          {run.status === "error" && run.error && (
-            <span className="nex-agent-run-error" role="alert">
-              {run.error}
-            </span>
-          )}
         </M3Toolbar>
       </header>
+
+      {/* The error block: what happened / what survived / next action, in
+          that order, in words. Outside the timeline, so it is never
+          collapsed by the run fold nor dimmed by the temporal fade
+          (SYSTEM §8: errors persist, findable, never faded). */}
+      {isErrorRun && (
+        <div className="nex-agent-failure" role="alert">
+          <p className="nex-agent-failure-line">
+            <span className="nex-agent-failure-key">{t("agent.errorWhat")}</span>
+            <span className="nex-agent-failure-value">
+              {run.error ?? t("agent.errorWhatUnknown")}
+            </span>
+          </p>
+          <p className="nex-agent-failure-line">
+            <span className="nex-agent-failure-key">{t("agent.errorSurvived")}</span>
+            <span className="nex-agent-failure-value">{survived}</span>
+          </p>
+          <p className="nex-agent-failure-line">
+            <span className="nex-agent-failure-key">{t("agent.errorNext")}</span>
+            <span className="nex-agent-failure-value">{nextAction}</span>
+          </p>
+        </div>
+      )}
 
       {pending && (
         <div className="nex-agent-approval nex-fade-in" role="region" aria-label={t("agent.approvalTitle")}>
@@ -852,7 +1341,7 @@ function AgentRunSteps({
       )}
 
       {sorted.length === 0 ? (
-        <p className="nex-agent-empty">{isActive ? t("agent.waitingSteps") : t("agent.noSteps")}</p>
+        <p className="nex-agent-empty">{isActive ? t("agent.runStarting") : t("agent.noSteps")}</p>
       ) : (
         <>
           {/* `hidden` and never a `display` override here: the attribute keeps
@@ -864,22 +1353,74 @@ function AgentRunSteps({
           <div className="nex-agent-timeline" id={timelineId} hidden={folded}>
             <AgentSpine live={spineLive} />
             <div className="nex-agent-steps">
-              {sorted.map((step, idx) => {
-                const isLast = idx === sorted.length - 1;
-                const protectedRow = isProtectedRow(step);
+              {groupSteps(sorted).map((item, idx, all) => {
+                const isLast = idx === all.length - 1;
+                const protectedRow = isGroup(item)
+                  ? item.steps.some(isProtectedRow)
+                  : isProtectedRow(item);
+                const failed = isGroup(item)
+                  ? item.steps.some(isFailedStatus)
+                  : isFailedStatus(item);
                 const slotClass =
                   "nex-agent-step-slot" +
                   (isLast && isActive && !protectedRow ? " nex-agent-step-slot-current" : "") +
                   // The same predicate the fold gate and the fade ladder read:
                   // a denied or cancelled call keeps the failure tone too.
-                  (isFailedStatus(step) ? " nex-agent-step-slot-failed" : "");
+                  (failed ? " nex-agent-step-slot-failed" : "");
+                const fade = isLast || protectedRow ? "" : fadeClass(all.length - 1 - idx);
+                // #230 P3: "NO model monologue". A `model_turn`'s
+                // observation is the model's own narration, and the old
+                // rule auto-opened the current row — so on a live run the
+                // raw thinking text streamed into the thread, unasked,
+                // ahead of the answer. It now stays folded like every other
+                // row and opens on request. Tool rows keep the auto-open:
+                // a running command's output is the thing the user is
+                // watching, and MAP row 8 asks for it.
+                const autoOpen =
+                  isLast &&
+                  isActive &&
+                  (isGroup(item) ? true : item.kind !== "model_turn");
+                if (!isGroup(item)) {
+                  return (
+                    <div key={`${run.run_id}-${item.seq}`} className={slotClass}>
+                      <StepSection
+                        step={item}
+                        defaultOpen={autoOpen}
+                        fade={fade}
+                        live={spineLive}
+                        runId={run.run_id}
+                        onExpandStep={onExpandStep}
+                        onCollapseStep={onCollapseStep}
+                      />
+                    </div>
+                  );
+                }
+                // A group of one is not a group — it renders as the plain
+                // row, so the extra disclosure never wraps a single item.
+                if (item.steps.length === 1) {
+                  return (
+                    <div key={`${run.run_id}-${item.steps[0].seq}`} className={slotClass}>
+                      <StepSection
+                        step={item.steps[0]}
+                        defaultOpen={autoOpen}
+                        fade={fade}
+                        live={spineLive}
+                        runId={run.run_id}
+                        onExpandStep={onExpandStep}
+                        onCollapseStep={onCollapseStep}
+                      />
+                    </div>
+                  );
+                }
                 return (
-                  <div key={`${run.run_id}-${step.seq}`} className={slotClass}>
-                    <StepSection
-                      step={step}
-                      defaultOpen={isLast && isActive}
-                      fade={isLast || protectedRow ? "" : fadeClass(sorted.length - 1 - idx)}
+                  <div key={`${run.run_id}-${item.id}`} className={slotClass}>
+                    <StepGroupSection
+                      group={item}
+                      defaultOpen={autoOpen}
+                      fade={fade}
+                      live={spineLive}
                       runId={run.run_id}
+                      timelineId={groupId(item.id)}
                       onExpandStep={onExpandStep}
                       onCollapseStep={onCollapseStep}
                     />
@@ -890,7 +1431,6 @@ function AgentRunSteps({
           </div>
           {foldable && (
             <StepFoldSummary
-              steps={sorted}
               expanded={!folded}
               timelineId={timelineId}
               onToggle={handleFoldToggle}

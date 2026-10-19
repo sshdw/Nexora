@@ -255,9 +255,59 @@ const en = {
   "agent.approvalExpiresInMin": "Expires in {n} min",
   "agent.approvalExpired": "Approval expired — the run was cancelled.",
   "agent.approvalElapsed": "Approval window elapsed — the run is being cancelled.",
-  "agent.kindModelTurn": "Model turn",
-  "agent.kindToolCall": "Tool call",
+  // `model_turn` reads as a human state, not the backend's row name
+  // (#230 P3, MAP row 8: "states human-readable"). The row itself is
+  // collapsed by default — the raw narration is the model's monologue
+  // and only opens on request.
+  "agent.kindModelTurn": "Thought",
+  // `agent.kindToolCall` was deleted with the kind label it labelled: a
+  // tool call now names itself with its own VERB (Read / Wrote / Ran), so
+  // "Tool call" beside "read_file" was two names for one fact — the exact
+  // duplication the step grammar replaced.
   "agent.kindApproval": "Approval · {tool}",
+  // One past-tense verb per tool family, so a folded row reads
+  // "Read src/db.rs" instead of "read_file src/db.rs" (MAP row 8:
+  // action → file → change → verification). An unrecognised tool
+  // falls back to its own `tool_name` rather than inventing a verb.
+  "agent.actRead": "Read",
+  "agent.actWrite": "Wrote",
+  "agent.actEdit": "Edited",
+  "agent.actSearch": "Searched",
+  "agent.actList": "Listed",
+  "agent.actRun": "Ran",
+  "agent.actTool": "Called",
+  "agent.pathTitle": "Full path",
+  "agent.queryTitle": "Full query",
+  "agent.commandTitle": "Full command",
+  "agent.diffCounts": "+{added} −{removed}",
+  "agent.diffCountsTitle": "{added} lines added, {removed} lines removed",
+  "agent.noChangesAria": "No changed lines in this diff",
+  // Verification — the step's persisted status as a word, never a hue.
+  "agent.verifyOk": "ok",
+  "agent.verifyFailed": "failed",
+  "agent.verifyDenied": "denied",
+  "agent.verifyCancelled": "cancelled",
+  "agent.verifyRunning": "running",
+  // Repeated calls grouped behind one expandable line. `{n}` is supplied by
+  // `tp(locale, "toolCalls", n)`, which already carries the declensed noun —
+  // the template adds only the target, or it reads "3 tool calls calls to…".
+  "agent.repeatedCalls": "×{n}",
+  "agent.repeatedShow": "Show {n} to {target}",
+  "agent.repeatedHide": "Hide {n} to {target}",
+  // The ONE terminal line: status word + the real results, once.
+  "agent.summaryCommands": "{n} {unit}",
+  "agent.summaryNoChanges": "No changes needed",
+  "agent.summaryNothing": "Nothing ran",
+  "agent.cancelledNote": "nothing ran after the cancel",
+  "agent.errorWhat": "What happened",
+  "agent.errorWhatUnknown": "No cause reported; the run stopped before saying why.",
+  "agent.errorSurvived": "What survived",
+  "agent.errorNext": "Next",
+  "agent.errorSurvivedNone": "Nothing was saved from this run.",
+  "agent.errorNextRetry": "Send the message again to retry.",
+  "agent.errorNextSpend": "Raise the spend limit in Settings, then run again.",
+  "agent.errorNextGeneric": "Send the message again to retry.",
+  "agent.runStarting": "Starting…",
   "agent.toolArgs": "Tool arguments",
   "agent.noOutput": "No output",
   "agent.noChanges": "No changes",
@@ -286,8 +336,12 @@ const en = {
   // Accessible names for the fold button: the visible line is the counts
   // alone, so the name carries the action the control actually performs
   // (show vs hide) plus the counts it summarizes.
-  "agent.foldShow": "Show run steps ({counts})",
-  "agent.foldHide": "Hide run steps ({counts})",
+  // The visible counts live on the ONE summary line above the run
+  // (#230 P3: "Completion = ONE summary line carrying real results
+  // only — no duplicated COMPLETED blocks"). These two names carry
+  // the ACTION alone, so pressing the control still says what it does.
+  "agent.foldShow": "Show run steps",
+  "agent.foldHide": "Hide run steps",
 
   // ---- context panel --------------------------------------------------------------
   "ctx.group": "Conversation context",
@@ -329,6 +383,11 @@ const en = {
   "ctx.budgetUsed": "{used} of {budget} tokens used",
   "ctx.budgetExceeded": "Over budget — past {budget} tokens.",
   "ctx.budgetSaveFailed": "Could not save the context budget.",
+  // #230 P3 (MAP row 20): the hairline's accessible name, and the cost
+  // detail that rides on the readout instead of taking a permanent row.
+  // Both numbers, always spelled out — the proportion is never visual-only.
+  "ctx.budgetMeterAria": "{used} of {budget} budgeted tokens used",
+  "ctx.totalCostTitle": "Total cost {cost}",
 
   // ---- settings ----------------------------------------------------------------------
   "settings.title": "Settings",
@@ -1371,6 +1430,8 @@ const enPlural = {
   groups: { one: "{n} group", few: "{n} groups", many: "{n} groups" },
   runs: { one: "{n} run", few: "{n} runs", many: "{n} runs" },
   steps: { one: "{n} step", few: "{n} steps", many: "{n} steps" },
+  toolCalls: { one: "{n} tool call", few: "{n} tool calls", many: "{n} tool calls" },
+  changedFiles: { one: "{n} file changed", few: "{n} files changed", many: "{n} files changed" },
   models: { one: "{n} model", few: "{n} models", many: "{n} models" },
   commits: { one: "{n} recent commit", few: "{n} recent commits", many: "{n} recent commits" },
 } as const;
@@ -1387,6 +1448,8 @@ const ruPlural: PluralTable = {
   groups: { one: "{n} группа", few: "{n} группы", many: "{n} групп" },
   runs: { one: "{n} запуск", few: "{n} запуска", many: "{n} запусков" },
   steps: { one: "{n} шаг", few: "{n} шага", many: "{n} шагов" },
+  toolCalls: { one: "{n} вызов инструмента", few: "{n} вызова инструментов", many: "{n} вызовов инструментов" },
+  changedFiles: { one: "{n} файл изменён", few: "{n} файла изменено", many: "{n} файлов изменено" },
   models: { one: "{n} модель", few: "{n} модели", many: "{n} моделей" },
   commits: { one: "{n} недавний коммит", few: "{n} недавних коммита", many: "{n} недавних коммитов" },
 };
@@ -1726,9 +1789,42 @@ const ru: Record<StringKey, string> = {
   "agent.approvalExpiresInMin": "Истекает через {n} мин",
   "agent.approvalExpired": "Время подтверждения истекло — запуск отменён.",
   "agent.approvalElapsed": "Время ожидания истекло — запуск отменяется.",
-  "agent.kindModelTurn": "Ход модели",
-  "agent.kindToolCall": "Вызов инструмента",
+  "agent.kindModelTurn": "Размышление",
   "agent.kindApproval": "Подтверждение · {tool}",
+  "agent.actRead": "Прочитал",
+  "agent.actWrite": "Записал",
+  "agent.actEdit": "Изменил",
+  "agent.actSearch": "Искал",
+  "agent.actList": "Показал",
+  "agent.actRun": "Выполнил",
+  "agent.actTool": "Вызвал",
+  "agent.pathTitle": "Полный путь",
+  "agent.queryTitle": "Полный запрос",
+  "agent.commandTitle": "Полная команда",
+  "agent.diffCounts": "+{added} −{removed}",
+  "agent.diffCountsTitle": "добавлено строк: {added}, удалено: {removed}",
+  "agent.noChangesAria": "В этом диффе нет изменённых строк",
+  "agent.verifyOk": "ок",
+  "agent.verifyFailed": "ошибка",
+  "agent.verifyDenied": "запрещено",
+  "agent.verifyCancelled": "отменено",
+  "agent.verifyRunning": "выполняется",
+  "agent.repeatedCalls": "×{n}",
+  "agent.repeatedShow": "Показать {n}: {target}",
+  "agent.repeatedHide": "Скрыть {n}: {target}",
+  "agent.summaryCommands": "{n} {unit}",
+  "agent.summaryNoChanges": "Изменения не нужны",
+  "agent.summaryNothing": "Ничего не выполнялось",
+  "agent.cancelledNote": "после отмены ничего не выполнялось",
+  "agent.errorWhat": "Что произошло",
+  "agent.errorWhatUnknown": "Причина не сообщена: запуск остановился, не указав почему.",
+  "agent.errorSurvived": "Что сохранилось",
+  "agent.errorNext": "Что делать",
+  "agent.errorSurvivedNone": "Из этого запуска ничего не сохранилось.",
+  "agent.errorNextRetry": "Отправьте сообщение ещё раз.",
+  "agent.errorNextSpend": "Поднимите лимит трат в настройках и запустите снова.",
+  "agent.errorNextGeneric": "Отправьте сообщение ещё раз.",
+  "agent.runStarting": "Запуск…",
   "agent.toolArgs": "Аргументы инструмента",
   "agent.noOutput": "Нет вывода",
   "agent.noChanges": "Нет изменений",
@@ -1751,8 +1847,8 @@ const ru: Record<StringKey, string> = {
   "agent.foldFiles": "{n} {unit}",
   "agent.foldCommands": "{n} {unit}",
   "agent.foldSearches": "{n} {unit}",
-  "agent.foldShow": "Показать шаги запуска ({counts})",
-  "agent.foldHide": "Скрыть шаги запуска ({counts})",
+  "agent.foldShow": "Показать шаги запуска",
+  "agent.foldHide": "Скрыть шаги запуска",
 
   "ctx.group": "Контекст разговора",
   "ctx.loading": "Загрузка контекста",
@@ -1791,6 +1887,8 @@ const ru: Record<StringKey, string> = {
   "ctx.budgetUsed": "использовано {used} из {budget} токенов",
   "ctx.budgetExceeded": "Бюджет превышен — больше {budget} токенов.",
   "ctx.budgetSaveFailed": "Не удалось сохранить бюджет контекста.",
+  "ctx.budgetMeterAria": "использовано {used} из {budget} токенов бюджета",
+  "ctx.totalCostTitle": "Итоговая стоимость {cost}",
 
   "settings.title": "Настройки",
   "settings.subtitle": "Настройки этого устройства. Всё хранится локально.",

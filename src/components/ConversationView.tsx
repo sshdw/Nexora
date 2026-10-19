@@ -42,7 +42,6 @@ import ContextPanel from "./ContextPanel";
 import { useStrings } from "../lib/useLocale";
 import M3LoadingIndicator from "./M3LoadingIndicator";
 import M3SegmentedGroup from "./M3SegmentedGroup";
-import NexoraMark from "./NexoraMark";
 
 export interface ConversationViewProps {
   conversationId: number;
@@ -355,10 +354,13 @@ export default function ConversationView({
         {loading ? (
           <M3LoadingIndicator label={t("conv.loadingMessages")} />
         ) : threadItems.length === 0 ? (
+          /* MAP row 7 + `empty.md`: ONE action, and it is the composer that
+             is already on screen below. The old markup rendered a
+             56px-marked hero block with copy pointing at a control the user
+             can see without being told; the compact state below keeps the
+             same two strings and drops the ornament, so the empty thread
+             reads as "ready", not as "missing". */
           <div className="nex-conversation-placeholder nex-empty-enter">
-            <span className="nex-conversation-empty-mark-wrap" aria-hidden="true">
-              <NexoraMark className="nex-conversation-empty-mark" width={26} height={26} />
-            </span>
             <h2 className="nex-conversation-empty-title">{t("conv.emptyTitle")}</h2>
             <p className="nex-conversation-empty-text">
               {t("conv.emptyText")}
