@@ -46,6 +46,11 @@ export interface ModalShellProps {
   /** Top-anchored variant for launchers (command palette): the card docks
    * near the viewport top instead of centering. */
   align?: "center" | "top";
+  /** Sheet variant (side panel, no backdrop) for non-destructive dialogs.
+   * Destructive confirmations keep the backdrop (alert-dialog). A sheet
+   * closes via Esc and its own actions; it is not dismissible by clicking
+   * outside because there is no backdrop to click. */
+  sheet?: boolean;
 }
 
 export default function ModalShell({
@@ -54,9 +59,11 @@ export default function ModalShell({
   busy = false,
   align = "center",
   children,
+  sheet = false,
 }: ModalShellProps) {
   const cardRef = useRef<HTMLDivElement>(null);
   const backdropRef = useRef<HTMLDivElement>(null);
+  const sheetRef = useRef<HTMLDivElement>(null);
   const restoreRef = useRef<HTMLElement | null>(null);
   // Exit motion: the shell stays mounted while the card/scrim fade,
   // then the parent's onClose unmounts for real. Purely presentational —
@@ -89,7 +96,7 @@ export default function ModalShell({
     // and AT virtual cursor both excluded). The walk stops below
     // <html> so <head> is never touched.
     const inerted: HTMLElement[] = [];
-    let node: HTMLElement | null = backdropRef.current;
+    let node: HTMLElement | null = sheet ? sheetRef.current : backdropRef.current;
     while (node) {
       const parent = node.parentElement;
       if (!parent || parent === document.documentElement) break;
@@ -152,34 +159,70 @@ export default function ModalShell({
     }
   };
 
+  const cardBase =
+    "rounded-lg border border-border bg-popover p-5 text-popover-foreground shadow-lg outline-none";
+
   return (
-    <div
-      ref={backdropRef}
-      className={cn(
-        "fixed inset-0 z-50 flex bg-background/80 p-4 transition-opacity duration-200",
-        align === "top" ? "items-start justify-center pt-12" : "items-center justify-center",
-        closing ? "opacity-0" : "opacity-100",
+    <>
+      {!sheet ? (
+        <div
+          ref={backdropRef}
+          className={cn(
+            "fixed inset-0 z-50 flex bg-background/80 p-4 transition-opacity duration-200",
+            align === "top" ? "items-start justify-center pt-12" : "items-center justify-center",
+            closing ? "opacity-0" : "opacity-100",
+          )}
+          role="presentation"
+          onClick={busy ? undefined : requestClose}
+          onKeyDown={handleKeyDown}
+        >
+          <div
+            ref={cardRef}
+            className={cn(
+              "relative w-full max-w-lg",
+              cardBase,
+              "transition-opacity duration-200",
+              closing ? "opacity-0" : "opacity-100",
+            )}
+            role="dialog"
+            aria-modal="true"
+            aria-label={title}
+            tabIndex={-1}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h3 className="mb-3 text-base font-medium text-foreground">{title}</h3>
+            {children}
+          </div>
+        </div>
+      ) : (
+        <div
+          ref={sheetRef}
+          className={cn(
+            "fixed inset-0 z-50 p-4",
+            closing ? "opacity-0" : "opacity-100",
+          )}
+          role="presentation"
+          onKeyDown={handleKeyDown}
+        >
+          <div
+            ref={cardRef}
+            className={cn(
+              "fixed inset-y-0 right-0 w-full max-w-[480px] h-full border-l",
+              cardBase,
+              "rounded-none overflow-y-auto transition-opacity duration-200",
+              closing ? "opacity-0" : "opacity-100",
+            )}
+            role="dialog"
+            aria-modal="true"
+            aria-label={title}
+            tabIndex={-1}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h3 className="mb-3 text-base font-medium text-foreground">{title}</h3>
+            {children}
+          </div>
+        </div>
       )}
-      role="presentation"
-      onClick={busy ? undefined : requestClose}
-      onKeyDown={handleKeyDown}
-    >
-      <div
-        ref={cardRef}
-        className={cn(
-          "relative w-full max-w-lg rounded-lg border border-border bg-popover p-5 text-popover-foreground shadow-lg outline-none",
-          "transition-opacity duration-200",
-          closing ? "opacity-0" : "opacity-100",
-        )}
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        tabIndex={-1}
-        onClick={(event) => event.stopPropagation()}
-      >
-        <h3 className="mb-3 text-base font-medium text-foreground">{title}</h3>
-        {children}
-      </div>
-    </div>
-  );
+    </>
+    );
 }
