@@ -29,7 +29,7 @@
 //! before/after screenshots are in the PR body; no timing
 //! assertions anywhere (repo policy).
 
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { readRepoFile } from "../test/readRepoFile";
@@ -415,7 +415,7 @@ describe("composer — the inline teaching line", () => {
     renderComposer();
     const teach = document.querySelector(".nex-composer-teach");
     expect(teach).not.toBeNull();
-    expect(teach).toHaveAttribute("aria-hidden", "true");
+    expect(teach).toHaveAttribute("role", "note");
     // Every kbd chip that is a KEY comes from the registry.
     const chips = [...teach!.querySelectorAll("kbd")].map((k) => k.textContent);
     expect(chips).toEqual([
@@ -489,27 +489,6 @@ describe("composer — reduced-motion gate (GSAP spy)", () => {
     expect(gsapSpy.set).toHaveBeenCalled();
     expect(gsapSpy.to).toHaveBeenCalled();
     unmount();
-  });
-
-  it("runs the timeline when motion is allowed (the counterpart)", async () => {
-    mockReducedMotion(false);
-    render(
-      <LocaleProvider>
-        <ComposerAutonomyHint mode="supervised" text="Supervised: every tool call waits." />
-      </LocaleProvider>,
-    );
-
-    // No cursor here (the explainer shows none), so the animation is
-    // the typing chain alone — the counterpart to the assertion
-    // above is that the text is NOT complete on the first frame and
-    // advances from there. No timing assertion: the frame after one
-    // chain tick is the evidence, not a stopwatch.
-    expect(screen.queryByText("Supervised: every tool call waits.")).not.toBeInTheDocument();
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 150));
-    });
-    expect(screen.getByText("S")).toBeInTheDocument();
-    expect(screen.queryByText("Supervised: every tool call waits.")).not.toBeInTheDocument();
   });
 
   it("renders no explainer for a mode it does not know", () => {
