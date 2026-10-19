@@ -1,3 +1,4 @@
+> SUPERSEDED 2026-10-19 by `NEXORA-FULL-PLAN.md`. Kept for history. Not authoritative.
 # UNTRACKED DO NOT COMMIT — Nexora full-repo review (read-only, local)
 
 - Date (UTC): 2026-09-08. Reviewer: Cline-equivalent executor, working tree only.

@@ -1,5 +1,15 @@
 # Nexora Design Brief 2.0 — FINAL
 
+> **OWNER OVERRIDE 2026-10-15 — read before using this brief.** The 2026-10-14
+> direction in §16 (one warm amber accent used as punctuation) is SUPERSEDED.
+> Current: monochrome, NO accent. Every role is achromatic (`c<0.02`) except
+> `--state-ok/warn/err` + `--destructive`; active/selected state reads through
+> LIGHTNESS + text WEIGHT + a thin tick, never hue; primary action is a light fill
+> with dark text. Radii are 4 / 6 / 8 / 12 px, frozen (the 4/8/10/14 variant was
+> rejected). The authority is `NEXORA-THEME.md` §1/§5/§6. Everything else in this
+> brief — the §13.x behaviours, the QA protocol in §26, the product surfaces —
+> STANDS. Do not "restore" the accent from this document.
+
 **Status:** Final visual direction for Nexora 2.0
 **Product:** Nexora — local-first AI desktop workspace / agent application
 **Current codebase:** Tauri v2 + React 19 + TypeScript + Rust + SQLite
@@ -903,6 +913,10 @@ Use tone, not borders, wherever possible:
 `canvas → elevated → nested`
 
 ### Accent
+
+> **SUPERSEDED 2026-10-15.** The amber-accent clause below is revoked. See the
+> owner-override banner at the top of this file and `NEXORA-THEME.md` §1/§6. The
+> rest of this section is retained as the 2026-10-14 record.
 
 One primary restrained warm accent.
 

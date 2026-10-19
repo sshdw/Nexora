@@ -1,5 +1,46 @@
 # Nexora CLI — Product, Architecture & Design Brief
 
+> **ПЕРЕОПРЕДЕЛЕНИЕ ВЛАДЕЛЬЦА 2026-10-15 — прочитать до использования брифа.**
+> Направление 2026-10-14 (янтарный акцент как пунктуация) ОТМЕНЕНО. Актуально:
+> монохром, БЕЗ акцента. Все роли ахроматичны (`c<0.02`), кроме `--state-ok/warn/err`
+> и `--destructive`; активное состояние читается через СВЕТЛОТУ + НАЧЕРТАНИЕ +
+> тонкую метку, никогда через оттенок. Радиусы 4 / 6 / 8 / 12 px, заморожены
+> (вариант 4/8/10/14 отвергнут). Радиусы и палитра — по `NEXORA-THEME.md` §1/§5/§6.
+> Остальное содержимое брифа (продуктовые решения, TUI, approval flow, §9.4) —
+> в силе. Не восстанавливать акцент из этого документа.
+
+## 0.1 Machine contract (English) — for implementers
+
+This block is the English, agent-facing summary of the binding CLI contract. Where it
+and the Russian body differ in detail, the Russian body governs. Where the Russian body
+is silent — notably the exit-code numbers in §9.4 — this block and
+`NEXORA-CLI-PLAN.md` §5 govern.
+
+**Stack.** Rust + Ratatui + Crossterm + Clap. The CLI reuses the shared core with the
+Desktop app (SQLite, domain, repositories, providers) — no React port, no Tokio, no
+copyleft dependency.
+
+**Exit codes** (SET 2026-10-14, `NEXORA-CLI-PLAN.md` §5 — one enum, stable across
+versions):
+`0` success · `1` internal/unexpected · `2` usage/validation error ·
+`3` provider/network/auth failure · `4` approval denied or run cancelled ·
+`5` budget/spend exhausted. The TUI exit reflects the last command outcome, not the
+UI close.
+
+**Palette.** Monochrome, NO accent. The amber-accent clauses in this brief are
+SUPERSEDED 2026-10-15 — see `NEXORA-THEME.md` §1/§6. Active state reads through
+lightness + weight + a thin tick, never hue. Green / red / yellow exist only as state
+signals (success / warning / error), never as decoration or branding.
+
+**TUI.** One command per screen; stdout and stderr stay separate; machine mode emits
+JSON / JSONL with no prose, colours, spinners or secrets.
+
+**Approval.** Any side-effecting action outside the granted permission set requires an
+explicit approval step; denial exits `4`.
+
+**Non-interactive.** `--json` / `--jsonl` must be usable from a pipe: no TUI, no
+prompts, no animation; event shapes are the §4 wire types verbatim.
+
 **Статус:** финальный целевой бриф для проектирования Nexora CLI  
 **Продукт:** Nexora CLI — локально-ориентированный AI coding agent с интерактивным TUI и обычным CLI-режимом  
 **Связанный продукт:** Nexora Desktop 2.x  
@@ -263,6 +304,8 @@ CLI не должен жёстко навязывать пользователю
 | Warning | приглушённый ochre/yellow | внимание, ограничение, ожидающее решение |
 | Error | спокойный brick/red | ошибка, отказ, рискованное действие |
 | Border / guide | серый/низкий контраст | разделение смысловых зон |
+
+> ОТМЕНЕНО 2026-10-15 (см. баннер в начале файла): янтарный акцент запрещён.
 
 Цвета не должны означать две вещи одновременно. Статус дополнительно обозначается текстом или символом: `✓ Done`, `! Failed`, `? Approval required`. В режиме без цвета вся информация сохраняется.
 
@@ -563,6 +606,7 @@ Command
 
 - фильтр реагирует сразу;
 - recent commands выделяются весом/контрастом, а не ярким accent;
+> ОТМЕНЕНО 2026-10-15 (см. баннер в начале файла): янтарный акцент запрещён.
 - команды недоступны в текущем состоянии — скрыты или отмечены как disabled с причиной;
 - действие не выполняется до явного выбора;
 - закрытие сохраняет состояние текущего run и composer;
@@ -859,6 +903,11 @@ nexora run <prompt>
 Это иллюстрация формата, не реальная модель поля ID. Финальную схему нужно документировать, версионировать и не менять несовместимо без причины. Machine output не содержит formatted prose, terminal colors, progress spinners или секретов.
 
 ## 9.4 Exit codes
+
+> Коды выхода зафиксированы 2026-10-14 в `NEXORA-CLI-PLAN.md` §5:
+> `0` success · `1` internal/unexpected · `2` usage/validation error ·
+> `3` provider/network/auth failure · `4` approval denied or run cancelled ·
+> `5` budget/spend exhausted. Это единственный источник истины по цифрам.
 
 Использовать документированные коды, а не `1` для любого исхода. Целевая семантика:
 
@@ -1215,6 +1264,8 @@ no fabricated progress
 no forced autoscroll
 no surprise modal takeover
 ```
+
+> ОТМЕНЕНО 2026-10-15 (см. баннер в начале файла): янтарный акцент запрещён.
 
 В CLI Nexora должен быть приятным не потому, что экран постоянно двигается, а потому, что после нескольких часов использования пользователь знает, где он, что делает агент, где находятся изменения и как остановить/проверить/продолжить работу — не борясь с интерфейсом.
 
