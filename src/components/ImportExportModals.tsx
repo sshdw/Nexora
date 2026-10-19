@@ -33,7 +33,7 @@ export function ExportModal({
   };
 
   return (
-    <ModalShell title={t("io.exportTitle")} busy={busy} onClose={onClose}>
+    <ModalShell title={t("io.exportTitle")} busy={busy} onClose={onClose} sheet>
       <div className="nex-io-body">
         {error && (
           <p className="nex-dialog-error nex-fade-in" role="alert">
@@ -84,7 +84,7 @@ export function ImportModal({ store, onImported, onClose }: ImportModalProps) {
   };
 
   return (
-    <ModalShell title={t("io.importTitle")} busy={busy} onClose={onClose}>
+    <ModalShell title={t("io.importTitle")} busy={busy} onClose={onClose} sheet>
       <div className="nex-io-body">
         {error && (
           <p className="nex-dialog-error nex-fade-in" role="alert">
