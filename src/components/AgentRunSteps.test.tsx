@@ -379,7 +379,7 @@ describe("tool group folding (brief 13.33)", () => {
       status: "completed",
       steps: [
         ...mixedSteps(),
-        stepView({ id: 16, seq: 6, tool_name: "write_file" }),
+        stepView({ id: 16, seq: 6, tool_name: "write_file", arguments: '{"path":"src/db.rs"}' }),
         stepView({ id: 17, seq: 7, kind: "model_turn", tool_name: null }),
       ],
       ...overrides,
@@ -643,8 +643,8 @@ describe("tool group folding (brief 13.33)", () => {
           steps: [
             stepView({ id: 21, seq: 1 }),
             stepView({ id: 22, seq: 2 }),
-            stepView({ id: 23, seq: 3, tool_name: "edit_file" }),
-            stepView({ id: 24, seq: 4, tool_name: "write_file" }),
+            stepView({ id: 23, seq: 3, tool_name: "edit_file", arguments: '{"path":"src/a.ts"}' }),
+            stepView({ id: 24, seq: 4, tool_name: "write_file", arguments: '{"path":"src/b.ts"}' }),
             stepView({ id: 25, seq: 5, kind: "model_turn", tool_name: null }),
             stepView({ id: 26, seq: 6, tool_name: "execute_command" }),
           ],
@@ -668,6 +668,68 @@ describe("tool group folding (brief 13.33)", () => {
       if (stored === null) window.localStorage.removeItem(LOCALE_KEY);
       else window.localStorage.setItem(LOCALE_KEY, stored);
     }
+  });
+
+  it("repeated groups never share a React key or a DOM id", () => {
+    // Two non-consecutive groups with the same tool + target:
+    // read src/a.ts ×2 → write src/b.ts → read src/a.ts ×2.
+    // Without a stable per-group id they would collapse to one id and one key.
+    const { container } = renderRun(
+      runView({
+        status: "completed",
+        steps: [
+          stepView({ id: 41, seq: 1, tool_name: "read_file", arguments: '{"path":"src/a.ts"}' }),
+          stepView({ id: 42, seq: 2, tool_name: "read_file", arguments: '{"path":"src/a.ts"}' }),
+          stepView({ id: 43, seq: 3, tool_name: "write_file", arguments: '{"path":"src/b.ts"}' }),
+          stepView({ id: 44, seq: 4, tool_name: "read_file", arguments: '{"path":"src/a.ts"}' }),
+          stepView({ id: 45, seq: 5, tool_name: "read_file", arguments: '{"path":"src/a.ts"}' }),
+        ],
+      }),
+    );
+    const groups = container.querySelectorAll(".nex-agent-step-group");
+    expect(groups).toHaveLength(2);
+    const ids = [...groups].map((g) => g.getAttribute("id"));
+    expect(ids).toEqual(
+      expect.arrayContaining(["nex-agent-timeline-7-g1", "nex-agent-timeline-7-g4"]),
+    );
+    expect(new Set(ids).size).toBe(2);
+    // aria-controls always points at an element that exists, collapsed or not.
+    container.querySelectorAll(".nex-agent-step-header-group").forEach((h) => {
+      const controls = h.getAttribute("aria-controls");
+      expect(controls).not.toBeNull();
+      expect(document.getElementById(controls!)).not.toBeNull();
+    });
+  });
+
+  it("counts distinct files, not write steps", () => {
+    // Writing the same file twice must read as one file changed, not two.
+    const { container } = renderRun(
+      runView({
+        status: "completed",
+        steps: [
+          stepView({ id: 51, seq: 1, tool_name: "write_file", arguments: '{"path":"src/x.rs"}' }),
+          stepView({ id: 52, seq: 2, tool_name: "write_file", arguments: '{"path":"src/x.rs"}' }),
+          stepView({ id: 53, seq: 3, tool_name: "execute_command", arguments: '{"command":"ls"}' }),
+        ],
+      }),
+    );
+    expect(
+      container.querySelector(".nex-agent-run-summary")?.textContent,
+    ).toBe("1 file changed · 1 command · 3 tool calls");
+  });
+
+  it("error block: what happened never reads as the next action", () => {
+    const { container } = renderRun(
+      runView({ status: "error", error: null, steps: mixedSteps() }),
+    );
+    const lines = container.querySelectorAll(".nex-agent-failure-line");
+    expect(lines).toHaveLength(3);
+    // First line: "What happened" carries a real cause, not the retry sentence.
+    expect(lines[0].textContent).toContain("What happened");
+    expect(lines[0].textContent).not.toContain("Send the message again to retry.");
+    // Third line: the next action stays separate and unchanged.
+    expect(lines[2].textContent).toContain("Next");
+    expect(lines[2].textContent).toContain("Send the message again to retry.");
   });
 });
 

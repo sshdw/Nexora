@@ -396,7 +396,8 @@ export function diffCounts(observation: string | null): { added: number; removed
    A group of ONE is not a group — it renders as the ordinary row, so the
    collapse never adds a disclosure around a single item. */
 interface StepGroup {
-  key: string;
+  key: string; // grouping identity (tool|target) — consecutive comparison only
+  id: string;  // stable unique DOM/React identity within the run
   steps: AgentStepView[];
 }
 
@@ -422,7 +423,7 @@ function groupSteps(steps: AgentStepView[]): Array<AgentStepView | StepGroup> {
       current.steps.push(step);
       continue;
     }
-    current = { key, steps: [step] };
+    current = { key, id: `g${step.seq}`, steps: [step] };
     out.push(current);
   }
   return out;
@@ -1109,9 +1110,12 @@ function AgentRunSteps({
   const handleFoldToggle = useCallback(() => {
     setFoldExpanded((v) => !v);
   }, []);
-  // Stable per group, for the same reason — a repeat's disclosure points at
-  // its own list and two groups in one timeline must not collide.
-  const groupId = (key: string): string => `${timelineId}-g${key.replace(/[^a-z0-9]/gi, "")}`;
+  // Stable per group: the identity is the head step's seq — unique within the
+  // run (only one group starts at a given seq) and invariant across the
+  // per-frame re-sort/re-group. Derived from seq, not from a sanitised text
+  // blob: two non-consecutive groups with the same tool+target share that
+  // text, and a non-latin target can sanitise to "" and collide even harder.
+  const groupId = (id: string): string => `${timelineId}-${id}`;
 
   // ---- THE ONE SUMMARY LINE (#230 P3 acceptance) ------------------------
   // "Completion = ONE summary line carrying real results only — no
@@ -1129,12 +1133,19 @@ function AgentRunSteps({
   // an errored or cancelled run never gets to claim it did nothing wrong.
   const counts = foldCounts(sorted);
   const ranCalls = counts.calls;
-  const filesChanged = sorted.filter(
-    (step) =>
-      step.kind === "tool_call" &&
-      (step.tool_name === "write_file" || step.tool_name === "edit_file") &&
-      !isFailedStatus(step),
-  ).length;
+  // Distinct files actually written/edited: dedupe on the target path each
+  // step reports. A step whose target can't be resolved is excluded — we
+  // never invent a file, and two steps touching the same path count once.
+  const changedFiles = new Set<string>();
+  for (const step of sorted) {
+    if (step.kind !== "tool_call") continue;
+    if (step.tool_name !== "write_file" && step.tool_name !== "edit_file") continue;
+    if (isFailedStatus(step)) continue;
+    const target = stepTarget(step);
+    if (target === null) continue;
+    changedFiles.add(target.text);
+  }
+  const filesChanged = changedFiles.size;
   const finishedClean = run.status === "completed";
   const summaryParts: string[] = [];
   if (filesChanged > 0) summaryParts.push(tp(locale, "changedFiles", filesChanged));
@@ -1254,7 +1265,7 @@ function AgentRunSteps({
           <p className="nex-agent-failure-line">
             <span className="nex-agent-failure-key">{t("agent.errorWhat")}</span>
             <span className="nex-agent-failure-value">
-              {run.error ?? t("agent.errorNextGeneric")}
+              {run.error ?? t("agent.errorWhatUnknown")}
             </span>
           </p>
           <p className="nex-agent-failure-line">
@@ -1376,14 +1387,14 @@ function AgentRunSteps({
                   );
                 }
                 return (
-                  <div key={`${run.run_id}-${item.key}`} className={slotClass}>
+                  <div key={`${run.run_id}-${item.id}`} className={slotClass}>
                     <StepGroupSection
                       group={item}
                       defaultOpen={autoOpen}
                       fade={fade}
                       live={spineLive}
                       runId={run.run_id}
-                      timelineId={groupId(item.key)}
+                      timelineId={groupId(item.id)}
                       onExpandStep={onExpandStep}
                       onCollapseStep={onCollapseStep}
                     />

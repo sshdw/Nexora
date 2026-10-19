@@ -273,23 +273,14 @@
   padding: 0;
 }
 
-/* User turns: right-aligned elevated container with one small
-   corner (asymmetric grouping corner — OFFICIAL expressive
-   tactic; the single shape break of the thread). */
-.nex-message-user {
-  align-items: flex-end;
-}
-.nex-message-user .nex-message-meta {
-  flex-direction: row-reverse;
-}
-.nex-message-user .nex-message-body {
-  max-width: 85%;
-  padding: 10px var(--nex-sys-space-md);
-  border-radius: var(--nex-sys-shape-large) var(--nex-sys-shape-large)
-    var(--nex-sys-shape-extra-small) var(--nex-sys-shape-large);
-  background: var(--nex-sys-color-surface-container-highest);
-  border: 1px solid var(--nex-sys-color-outline-variant);
-}
+/* User turns: a plain flat block, full measure like the assistant turn.
+   Row 7 ("user text plain; flat stacked blocks, tone separation") — no
+   filled surface, no border, no shrink-to-fit width, no right alignment,
+   no bubble radius. Tone separation is carried by the meta author label
+   ("You", on-surface-variant ink vs the assistant name, on-surface ink)
+   and by inter-turn spacing, both achromatic; nothing here reads as a
+   card or a bubble per event. The base `.nex-message-body` styles the
+   text; there is no surface to remove on fold or re-group. */
 
 /* Assistant turns: bare canvas, full measure. */
 .nex-message-assistant .nex-message-body {
@@ -753,18 +744,32 @@
 }
 
 /* FILE: the path, in mono (THEME §3 — mono is for paths, commands and
-   ids, never UI labels). It truncates in the middle of the available
-   space rather than at the end, so the FILENAME survives when a long
-   absolute path does not, and the full value is always one hover away
-   (SYSTEM §8 "paths on hover"). */
+   ids, never UI labels). It truncates the DIRECTORY PREFIX, never the
+   file name — the name is what the reader needs, and it stays visible
+   even when a long absolute path does not fit. The full value is always
+   one hover away (SYSTEM §8 "paths on hover") via `title`. The slot is
+   LTR: `direction: rtl` was a start-ellipsis hack that reordered neutral
+   separators (`src/` → `/src`) and threw leading punctuation (`./`, `~`,
+   dotfiles) to the wrong side, so it is gone. */
 .nex-agent-step-target {
+  display: flex;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  color: var(--nex-sys-color-on-surface-variant);
+}
+.nex-agent-step-target-dir {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  direction: rtl;
-  text-align: start;
-  color: var(--nex-sys-color-on-surface-variant);
+}
+.nex-agent-step-target-name {
+  flex: 0 0 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* CHANGE: the `+N −M` counts, outline badges — MAP row 9 says "badge.md
