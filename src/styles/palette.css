@@ -63,8 +63,8 @@
 }
 
 .nex-palette-item.is-active {
-  background: var(--nex-sys-color-secondary-container);
-  color: var(--nex-sys-color-on-secondary-container);
+  background: var(--nex-sys-state-selected);
+  color: var(--nex-sys-color-on-surface);
   font-weight: var(--nex-sys-type-weight-emphasized);
 }
 
