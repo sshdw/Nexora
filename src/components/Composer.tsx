@@ -143,39 +143,38 @@ export default function Composer({
   return (
     <div className="nex-composer">
       <div className="nex-composer-inner">
-        {agentMode && (
-          <div className="nex-agent-autonomy" role="group" aria-label={t("conv.autonomyAria")}>
-            <span className="nex-agent-autonomy-label">{t("conv.autonomyLabel")}</span>
-            <M3SegmentedGroup
-              className="nex-composer-autonomy"
-              label={t("conv.autonomyAria")}
-              semantics="radio"
-              value={autonomy.mode}
-              onChange={(mode) => onAutonomyChange(mode)}
-              options={[
-                { value: "supervised", label: t("conv.autonomySupervised") },
-                {
-                  value: "semi_autonomous",
-                  label: t("conv.autonomySemi"),
-                  ariaLabel: t("conv.autonomySemiAria"),
-                },
-                { value: "full_autonomous", label: t("conv.autonomyFull") },
-              ]}
-            />
-            <ComposerAutonomyHint
-              mode={autonomy.mode}
-              text={
-                autonomy.mode === "supervised"
-                  ? t("conv.autonomyExplainSupervised")
-                  : autonomy.mode === "semi_autonomous"
-                    ? t("conv.autonomyExplainSemi")
-                    : t("conv.autonomyExplainFull")
-              }
-            />
-          </div>
-        )}
-
         <div className="nex-composer-shell">
+          {agentMode && (
+            <div className="nex-agent-autonomy" role="group" aria-label={t("conv.autonomyAria")}>
+              <span className="nex-agent-autonomy-label">{t("conv.autonomyLabel")}</span>
+              <M3SegmentedGroup
+                className="nex-composer-autonomy"
+                label={t("conv.autonomyAria")}
+                semantics="radio"
+                value={autonomy.mode}
+                onChange={(mode) => onAutonomyChange(mode)}
+                options={[
+                  { value: "supervised", label: t("conv.autonomySupervised") },
+                  {
+                    value: "semi_autonomous",
+                    label: t("conv.autonomySemi"),
+                    ariaLabel: t("conv.autonomySemiAria"),
+                  },
+                  { value: "full_autonomous", label: t("conv.autonomyFull") },
+                ]}
+              />
+              <ComposerAutonomyHint
+                mode={autonomy.mode}
+                text={
+                  autonomy.mode === "supervised"
+                    ? t("conv.autonomyExplainSupervised")
+                    : autonomy.mode === "semi_autonomous"
+                      ? t("conv.autonomyExplainSemi")
+                      : t("conv.autonomyExplainFull")
+                }
+              />
+            </div>
+          )}
           {attachments.length > 0 && (
             <ul className="nex-composer-attachments" aria-label={t("conv.attachedFiles")}>
               {attachments.map((attachment) => (
@@ -223,7 +222,7 @@ export default function Composer({
               }}
             />
             {draft === "" && (
-              <span className="nex-composer-teach" aria-hidden="true">
+              <span className="nex-composer-teach" role="note">
                 {TEACH_CHIPS.map((chip, index) => {
                   const keys = chip.kind === "shortcut" ? shortcutKeys(chip.id) : [];
                   return (

@@ -513,6 +513,11 @@
   font-size: 0.75rem;
   line-height: 1.4;
   color: var(--muted-foreground);
+  /* One line, clamped: the full sentence stays reachable via `title=`
+     (set on the element in Composer.tsx) when it overflows. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ---- Hint row ---------------------------------------------------------- */
