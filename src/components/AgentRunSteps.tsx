@@ -347,6 +347,19 @@ function stepTarget(step: AgentStepView): { text: string; title: string } | null
   return null;
 }
 
+/** Split a filesystem path into directory part (with trailing separator) and
+ * file name, at the last separator. `src/lib/db.rs` → `dir="src/lib/"`,
+ * `name="db.rs"`; `src/` → `dir="src/"`, `name=""`; `db.rs` → `dir=""`,
+ * `name="db.rs"`. The file name is what the reader needs, so it stays
+ * visible; only the directory prefix is elided. Single source of truth is
+ * the same `identity.text` the slot already renders — nothing is parsed
+ * twice. */
+function splitPathTarget(text: string): { dir: string; name: string } {
+  const sep = text.lastIndexOf("/");
+  if (sep < 0) return { dir: "", name: text };
+  return { dir: text.slice(0, sep + 1), name: text.slice(sep + 1) };
+}
+
 /** The persisted step status → the word shown. `null` is the LIVE shape
  *  (a step row with no status yet), which reads as running while its run
  *  is live and as nothing at all once it is not. */
@@ -672,12 +685,25 @@ function StepLine({
         : step.tool_name !== null
           ? { text: step.tool_name, title: tr(locale, "agent.toolArgs") }
           : null;
+  // Only genuine file targets get the directory/name split. Commands,
+  // queries and unknown-tool names render whole as the file-name slot so a
+  // non-path value is never forced through a path split. `identity.text` is
+  // the single source of truth for both parts.
+  const isFilePath = step.tool_name !== null && FILE_TOOLS.has(step.tool_name);
+  const { dir, name } = isFilePath && identity !== null ? splitPathTarget(identity.text) : { dir: "", name: "" };
   return (
     <>
       <span className="nex-agent-step-action">{action}</span>
       {identity !== null && (
         <span className="nex-agent-step-target nex-tag-mono" title={identity.title}>
-          {identity.text}
+          {isFilePath ? (
+            <>
+              <span className="nex-agent-step-target-dir">{dir}</span>
+              <span className="nex-agent-step-target-name">{name}</span>
+            </>
+          ) : (
+            <span className="nex-agent-step-target-name">{identity.text}</span>
+          )}
         </span>
       )}
       {counts !== null && (

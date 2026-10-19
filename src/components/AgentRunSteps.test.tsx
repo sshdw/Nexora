@@ -731,6 +731,64 @@ describe("tool group folding (brief 13.33)", () => {
     expect(lines[2].textContent).toContain("Next");
     expect(lines[2].textContent).toContain("Send the message again to retry.");
   });
+
+  it("path target renders directory + file name, name stays visible (LTR)", () => {
+    const { container } = renderRun(
+      runView({
+        status: "completed",
+        steps: [
+          stepView({ id: 81, seq: 1, tool_name: "write_file", arguments: '{"path":"src/lib/db.rs"}' }),
+        ],
+      }),
+    );
+    const slot = container.querySelector(".nex-agent-step-target");
+    expect(slot).not.toBeNull();
+    // Full path is on hover (SYSTEM §8 "paths on hover").
+    expect(slot!.getAttribute("title")).toBe("Full path");
+    const dir = slot!.querySelector(".nex-agent-step-target-dir");
+    const name = slot!.querySelector(".nex-agent-step-target-name");
+    expect(dir).not.toBeNull();
+    expect(name).not.toBeNull();
+    // Directory prefix elides with its own ellipsis; the file name stays.
+    expect(dir?.textContent).toBe("src/lib/");
+    expect(name?.textContent).toBe("db.rs");
+    // LTR order: directory part before the file name.
+    expect(Array.from(slot!.children).map((c) => c.textContent)).toEqual(["src/lib/", "db.rs"]);
+  });
+
+  it("path with no directory (bare file name) renders name only", () => {
+    const { container } = renderRun(
+      runView({
+        status: "completed",
+        steps: [
+          stepView({ id: 82, seq: 1, tool_name: "write_file", arguments: '{"path":"db.rs"}' }),
+        ],
+      }),
+    );
+    const slot = container.querySelector(".nex-agent-step-target")!;
+    const dir = slot.querySelector(".nex-agent-step-target-dir");
+    const name = slot.querySelector(".nex-agent-step-target-name");
+    expect(dir?.textContent).toBe("");
+    expect(name?.textContent).toBe("db.rs");
+  });
+
+  it("command target renders whole text as the name slot, no dir split", () => {
+    const { container } = renderRun(
+      runView({
+        status: "completed",
+        steps: [
+          stepView({ id: 83, seq: 1, tool_name: "execute_command", arguments: '{"command":"npm --version"}' }),
+        ],
+      }),
+    );
+    const slot = container.querySelector(".nex-agent-step-target")!;
+    // A command is not a path: no directory/name split is forced onto it.
+    expect(slot.querySelector(".nex-agent-step-target-dir")).toBeNull();
+    const name = slot.querySelector(".nex-agent-step-target-name");
+    expect(name).not.toBeNull();
+    expect(name?.textContent).toBe("npm --version");
+    expect(slot.getAttribute("title")).toBe("Full command");
+  });
 });
 
 describe("run-scoped callbacks", () => {  it("passes the run id to every control the run renders", () => {
