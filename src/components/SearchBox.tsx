@@ -67,13 +67,27 @@ export default function SearchBox({
     setLoading(true);
     setError(null);
     setResults(null);
+    // Cancelling the timer is not enough: once it fires, the request keeps
+    // running. Without the `active` identity guard a response for a
+    // superseded or cleared query would still land and re-open the panel
+    // with hits that no longer match the field (#233).
+    let active = true;
     const timer = window.setTimeout(() => {
       void search(query)
-        .then(setResults)
-        .catch((e) => setError(toCommandError(e)))
-        .finally(() => setLoading(false));
+        .then((r) => {
+          if (active) setResults(r);
+        })
+        .catch((e) => {
+          if (active) setError(toCommandError(e));
+        })
+        .finally(() => {
+          if (active) setLoading(false);
+        });
     }, DEBOUNCE_MS);
-    return () => window.clearTimeout(timer);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
   }, [value]);
 
   const open = (conversationId: number) => {
