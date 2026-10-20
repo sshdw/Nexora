@@ -373,7 +373,10 @@ describe("temporal fade (brief 13.9)", () => {
 });
 
 describe("tool group folding (brief 13.33)", () => {
-  /** 7 steps: 5 tool calls (3 file, 1 command, 1 search) and 2 model turns. */
+  /**
+   * 7 steps: 5 tool calls (3 file ops — 2 reads + 1 write, 1 command,
+   * 1 search) and 2 model turns. The shape test below pins every count.
+   */
   const longRun = (overrides: Partial<AgentRunView> = {}): AgentRunView =>
     runView({
       status: "completed",
@@ -384,6 +387,19 @@ describe("tool group folding (brief 13.33)", () => {
       ],
       ...overrides,
     });
+
+  it("pins the longRun fixture shape its doc comment states", () => {
+    const steps = longRun().steps;
+    const toolCalls = steps.filter((step) => step.kind === "tool_call");
+    expect(steps).toHaveLength(7);
+    expect(steps.filter((step) => step.kind === "model_turn")).toHaveLength(2);
+    expect(toolCalls).toHaveLength(5);
+    expect(
+      toolCalls.filter((step) => step.tool_name === "read_file" || step.tool_name === "write_file"),
+    ).toHaveLength(3);
+    expect(toolCalls.filter((step) => step.tool_name === "execute_command")).toHaveLength(1);
+    expect(toolCalls.filter((step) => step.tool_name === "search_files")).toHaveLength(1);
+  });
 
   it("collapses a finished long run into one summary and restores the same rows in order", () => {
     const { container, rerenderRun } = renderRun(longRun());
