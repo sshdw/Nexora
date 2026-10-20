@@ -388,6 +388,17 @@
        controls and fields round small, meaningful containers
        take the larger steps that `--radius-*` derives. */
     --radius: 0.5rem;
+
+    /* Chrome row height. NEXORA-THEME.md §6 (owner-approved
+       ballot, 2026-10-15): "Header 40px freeze stands (52 to 40
+       = 12px reclaimed)". The tab strip and the pane header are
+       the two rows this applies to; they are the only consumers.
+       The legacy `--nex-sys-layout-header-height` stays at 52px
+       for the five un-migrated sheets (activityHealth, settings,
+       prompts, versionControl, styles) until each surface owns
+       its own migration — retargeting that shared token would
+       re-skin them, and it dies with tokens.css in Phase 6. */
+    --chrome-height: 40px;
 }
 
 /* Light counterpart. Not a restyle of anything — it exists so

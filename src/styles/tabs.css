@@ -35,7 +35,7 @@
   display: flex;
   align-items: center;
   gap: var(--nex-sys-space-xs);
-  min-height: var(--nex-sys-layout-header-height);
+  min-height: var(--chrome-height);
   padding: var(--nex-sys-space-xxs) var(--nex-sys-space-sm);
   background: var(--nex-sys-color-surface-elevated);
   border-bottom: 1px solid var(--nex-sys-color-shell-seam);
@@ -221,13 +221,22 @@
 
 /* ---- Pane header (MAP row 5, breadcrumb.md + separator.md):
    title + workspace NAME chip + export. The title flexes and
-   truncates; the trailing group keeps its intrinsic size. ---- */
+   truncates; the trailing group keeps its intrinsic size.
+
+   HEIGHT, not min-height: a min-height cannot shrink content, and
+   the header's own row (32px icon control + 8px block padding +
+   the bottom hairline) rendered 48px under THEME §6's 40px freeze
+   (issue #262 round 2). 40px is the contract for this row, so it
+   is a definite height with 2px block padding — the 32px control
+   then fits the 35px content box and the row cannot grow with it
+   or with a long title (which truncates). ---- */
 .nex-pane-header {
   display: flex;
   align-items: center;
   gap: var(--nex-sys-space-sm);
-  min-height: var(--nex-sys-layout-header-height);
-  padding: var(--nex-sys-space-xs) var(--nex-sys-space-md);
+  height: var(--chrome-height);
+  min-height: var(--chrome-height);
+  padding: var(--nex-sys-space-xxxs) var(--nex-sys-space-md);
   background: var(--nex-sys-color-surface-elevated);
   border-bottom: 1px solid var(--nex-sys-color-shell-seam);
   flex-shrink: 0;
@@ -235,7 +244,7 @@
 
 /* separator.md, vertical: one hairline between the title and the
    trailing controls. Centre-aligned and token-tall rather than
-   stretched — a full-height divider in a 40-52px header reads as
+   stretched — a full-height divider in a 40px header reads as
    a second seam, not as a separator between two groups. Hairline
    on the shell seam token, same as the pane divider above. */
 .nex-pane-header-separator {
