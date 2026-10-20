@@ -10,7 +10,7 @@
 //! No timing assertions (policy): the debounced call is awaited with
 //! `waitFor`, never against a clock.
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LocaleProvider } from "../lib/useLocale";
@@ -62,6 +62,17 @@ function renderSearchBox() {
 
 const resultsPanel = () =>
   screen.queryByRole("group", { name: "Search results" });
+
+/** Manually settled promise, so the in-flight window is deterministic. */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
 
 describe("SearchBox loading / panel-open contract (#228)", () => {
   it("keeps the panel closed while loading with no prior results, spinner inline", () => {
@@ -163,5 +174,80 @@ describe("SearchBox empty-with-query (#230 Phase 1)", () => {
     expect(empty).not.toBeNull();
     // Trimmed (the query the backend was actually asked), quoted back.
     expect(empty).toHaveTextContent("No results for “разговор”");
+  });
+});
+
+// #233: the debounce cleanup only cancelled the timer, so a request that had
+// already fired could still resolve and write state for a query the field no
+// longer holds. Both races are driven by a manually settled `invoke` promise.
+describe("SearchBox in-flight identity guard (#233)", () => {
+  it("does not let a response for a cleared query open the panel", async () => {
+    const pending = deferred<SearchResults>();
+    mockInvoke.mockReturnValueOnce(pending.promise);
+    const { input } = renderSearchBox();
+
+    fireEvent.change(input, { target: { value: "abc" } });
+    await waitFor(() => expect(mockInvoke).toHaveBeenCalledTimes(1));
+
+    // Clear the field while `abc` is still in flight.
+    fireEvent.change(input, { target: { value: "" } });
+    expect(resultsPanel()).toBeNull();
+
+    await act(async () => {
+      pending.resolve({
+        conversations: [conversation(1, "Stale hit")],
+        message_matches: [],
+        prompts: [],
+      });
+      await pending.promise;
+    });
+
+    // The cleared field must stay closed: no stale panel, no stale hits.
+    expect(resultsPanel()).toBeNull();
+    expect(screen.queryByText("Stale hit")).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("never applies an old response after the query was retyped", async () => {
+    const first = deferred<SearchResults>();
+    const second = deferred<SearchResults>();
+    mockInvoke
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+    const { input } = renderSearchBox();
+
+    fireEvent.change(input, { target: { value: "abc" } });
+    await waitFor(() => expect(mockInvoke).toHaveBeenCalledTimes(1));
+
+    // Retype before the first request resolves, so its response is superseded.
+    fireEvent.change(input, { target: { value: "abd" } });
+    await waitFor(() => expect(mockInvoke).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      first.resolve({
+        conversations: [conversation(1, "Old hit")],
+        message_matches: [],
+        prompts: [],
+      });
+      await first.promise;
+    });
+
+    // The old response must not land, not even briefly: the second query is
+    // still loading, and loading-only never opens the panel (#228).
+    expect(resultsPanel()).toBeNull();
+    expect(screen.queryByText("Old hit")).toBeNull();
+
+    await act(async () => {
+      second.resolve({
+        conversations: [conversation(2, "New hit")],
+        message_matches: [],
+        prompts: [],
+      });
+      await second.promise;
+    });
+
+    await waitFor(() => expect(screen.getByText("New hit")).toBeInTheDocument());
+    expect(screen.queryByText("Old hit")).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
   });
 });
