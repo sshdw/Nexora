@@ -174,13 +174,18 @@ const externalVars = new Map<string, string>([
 ]);
 
 /**
- * Theme vars that are NOT colours: the shape step and the two
- * font stacks. The achromatic sweep below parses every other
- * defined var as OKLCH, so these are named here rather than
- * skipped silently — an unparseable colour would otherwise pass
- * by looking like a font.
+ * Theme vars that are NOT colours: the shape step, the two
+ * font stacks, and the chrome row height. The achromatic sweep
+ * below parses every other defined var as OKLCH, so these are
+ * named here rather than skipped silently — an unparseable colour
+ * would otherwise pass by looking like a font.
+ *
+ * `--chrome-height` is layout, not paint: THEME §6 freezes the tab
+ * strip and pane header at 40px (issue #262), and it lives in the
+ * default theme block because a length is theme-independent — the
+ * light block inherits it from `:root`.
  */
-const NON_COLOUR_VARS = new Set(["--radius", "--font-sans", "--font-mono"]);
+const NON_COLOUR_VARS = new Set(["--radius", "--font-sans", "--font-mono", "--chrome-height"]);
 
 /** `ring-offset-<colour>` resolves like `bg-<colour>`: Tailwind
  *  paints the offset from `--color-<colour>`, while
