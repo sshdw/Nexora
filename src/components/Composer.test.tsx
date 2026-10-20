@@ -578,8 +578,8 @@ describe("composer sheet — theme linkage (src/styles/composer.css)", () => {
   });
 
   it("keeps the composer's reading measure equal to the thread's", () => {
-    const thread = /--nex-sys-layout-measure-max:\s*([^;]+);/.exec(
-      readRepoFile("src/styles/tokens.css"),
+    const thread = /--layout-measure-max:\s*([^;]+);/.exec(
+      readRepoFile("src/index.css"),
     )?.[1];
     expect(thread).toBe("760px");
     expect(code).toMatch(/max-width:\s*760px/);
@@ -611,9 +611,9 @@ describe("shared-class scope — the failure strip stays shared", () => {
   it("keeps the shared strip in the shell sheet, on the M3E error tokens", () => {
     const block = /\.nex-composer-error\s*\{([\s\S]*?)\n\}/.exec(conversation);
     expect(block).not.toBeNull();
-    expect(block![1]).toContain("var(--nex-sys-color-error)");
-    expect(block![1]).toContain("var(--nex-sys-color-error-container)");
-    expect(block![1]).toContain("var(--nex-sys-color-error-outline)");
+    expect(block![1]).toContain("var(--color-error)");
+    expect(block![1]).toContain("var(--color-error-container)");
+    expect(block![1]).toContain("var(--color-error-outline)");
   });
 
   it("declares no rule for the shared strip in the composer sheet", () => {
@@ -636,7 +636,7 @@ describe("shared-class scope — the failure strip stays shared", () => {
     // through a descendant selector instead.
     const block = /\.nex-composer-input\s*\{([\s\S]*?)\n\}/.exec(conversation);
     expect(block).not.toBeNull();
-    expect(block![1]).toContain("var(--nex-sys-color-on-surface)");
+    expect(block![1]).toContain("var(--color-on-surface)");
     expect(block![1]).toContain("min-height: 48px");
     // …and the composer sheet has no UNSCOPED rule for it.
     expect(composerSheet).not.toMatch(/(?<!shell )\.nex-composer-input\s*[,{:]/);

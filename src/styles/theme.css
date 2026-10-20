@@ -17,12 +17,12 @@ html, body { margin: 0; padding: 0; height: 100%; }
    (brief §16). */
 body {
   margin: 0;
-  background: var(--nex-sys-color-surface-canvas);
-  color: var(--nex-sys-color-on-surface);
-  font-family: var(--nex-sys-type-family);
-  font-size: var(--nex-sys-type-size-body-medium);
-  font-weight: var(--nex-sys-type-weight-regular);
-  line-height: var(--nex-sys-type-line-height-normal);
+  background: var(--color-surface-canvas);
+  color: var(--color-on-surface);
+  font-family: var(--type-family);
+  font-size: var(--type-size-body-medium);
+  font-weight: var(--type-weight-regular);
+  line-height: var(--type-line-height-normal);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-size-adjust: 100%;
@@ -32,10 +32,10 @@ body {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
-  background: var(--nex-sys-color-surface-canvas);
+  background: var(--color-surface-canvas);
 }
 
-a { color: var(--nex-sys-color-primary); }
+a { color: var(--color-primary); }
 a:hover { text-decoration: underline; }
 
 /* Buttons reset to a predictable baseline; themed via .nex-btn* classes. */
@@ -53,7 +53,7 @@ button {
 button:disabled,
 button[disabled] {
   cursor: default;
-  opacity: var(--nex-sys-state-disabled-opacity);
+  opacity: var(--state-disabled-opacity);
 }
 
 ul, ol { margin: 0; padding: 0; list-style: none; }

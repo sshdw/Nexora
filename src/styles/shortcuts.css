@@ -13,33 +13,33 @@
 .nex-shortcuts {
   display: flex;
   flex-direction: column;
-  gap: var(--nex-sys-space-xs);
+  gap: var(--space-xs);
 }
 
 .nex-shortcuts-groups {
   list-style: none;
   margin: 0;
-  padding: var(--nex-sys-space-xxs);
+  padding: var(--space-xxs);
   /* Cap ≈ 8 rows: token multiple, not a raw value. */
-  max-height: calc(var(--nex-sys-space-2xl) * 10);
+  max-height: calc(var(--space-2xl) * 10);
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: var(--nex-sys-space-sm);
+  gap: var(--space-sm);
 }
 
 .nex-shortcuts-group {
   display: flex;
   flex-direction: column;
-  gap: var(--nex-sys-space-xxxs);
+  gap: var(--space-xxxs);
 }
 
 .nex-shortcuts-heading {
   margin: 0;
-  padding: var(--nex-sys-space-xxs) var(--nex-sys-space-xs) 0;
-  font-size: var(--nex-sys-type-size-label-small);
-  font-weight: var(--nex-sys-type-weight-medium);
-  color: var(--nex-sys-color-on-surface-variant);
+  padding: var(--space-xxs) var(--space-xs) 0;
+  font-size: var(--type-size-label-small);
+  font-weight: var(--type-weight-medium);
+  color: var(--color-on-surface-variant);
 }
 
 .nex-shortcuts-rows {
@@ -48,36 +48,36 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--nex-sys-space-xxxs);
+  gap: var(--space-xxxs);
 }
 
 .nex-shortcuts-row {
   display: flex;
   align-items: baseline;
-  gap: var(--nex-sys-space-sm);
-  padding: var(--nex-sys-space-xxs) var(--nex-sys-space-xs);
-  border-radius: var(--nex-sys-shape-small);
+  gap: var(--space-sm);
+  padding: var(--space-xxs) var(--space-xs);
+  border-radius: var(--shape-small);
 }
 
 .nex-shortcuts-row:nth-child(even) {
-  background: var(--nex-sys-color-surface-container-low);
+  background: var(--color-surface-container-low);
 }
 
 .nex-shortcuts-keys {
   display: flex;
-  gap: var(--nex-sys-space-xxxs);
+  gap: var(--space-xxxs);
   flex-shrink: 0;
   /* Key chips align across rows: two chips wide max. */
-  min-width: calc(var(--nex-sys-space-2xl) * 4);
+  min-width: calc(var(--space-2xl) * 4);
 }
 
 .nex-shortcuts-keys kbd {
-  font-family: var(--nex-sys-type-family);
-  font-size: var(--nex-sys-type-size-label-small);
-  background: var(--nex-sys-color-surface-container);
-  border: 1px solid var(--nex-sys-color-outline-variant);
-  border-radius: var(--nex-sys-shape-extra-small);
-  padding: 0 var(--nex-sys-space-xxxs);
+  font-family: var(--type-family);
+  font-size: var(--type-size-label-small);
+  background: var(--color-surface-container);
+  border: 1px solid var(--color-outline-variant);
+  border-radius: var(--shape-extra-small);
+  padding: 0 var(--space-xxxs);
 }
 
 .nex-shortcuts-text {
@@ -87,31 +87,31 @@
 }
 
 .nex-shortcuts-desc {
-  font-size: var(--nex-sys-type-size-body-medium);
-  color: var(--nex-sys-color-on-surface);
+  font-size: var(--type-size-body-medium);
+  color: var(--color-on-surface);
 }
 
 .nex-shortcuts-scope {
-  font-size: var(--nex-sys-type-size-body-small);
-  color: var(--nex-sys-color-on-surface-variant);
+  font-size: var(--type-size-body-small);
+  color: var(--color-on-surface-variant);
 }
 
 .nex-shortcuts-hints {
   display: flex;
-  gap: var(--nex-sys-space-md);
+  gap: var(--space-md);
   margin: 0;
-  padding: var(--nex-sys-space-xxs) var(--nex-sys-space-xs) 0;
-  border-top: 1px solid var(--nex-sys-color-outline-variant);
-  font-size: var(--nex-sys-type-size-label-small);
-  color: var(--nex-sys-color-on-surface-variant);
+  padding: var(--space-xxs) var(--space-xs) 0;
+  border-top: 1px solid var(--color-outline-variant);
+  font-size: var(--type-size-label-small);
+  color: var(--color-on-surface-variant);
 }
 
 .nex-shortcuts-hints kbd {
-  font-family: var(--nex-sys-type-family);
-  font-size: var(--nex-sys-type-size-label-small);
-  background: var(--nex-sys-color-surface-container);
-  border: 1px solid var(--nex-sys-color-outline-variant);
-  border-radius: var(--nex-sys-shape-extra-small);
-  padding: 0 var(--nex-sys-space-xxxs);
-  margin-right: var(--nex-sys-space-xxxs);
+  font-family: var(--type-family);
+  font-size: var(--type-size-label-small);
+  background: var(--color-surface-container);
+  border: 1px solid var(--color-outline-variant);
+  border-radius: var(--shape-extra-small);
+  padding: 0 var(--space-xxxs);
+  margin-right: var(--space-xxxs);
 }
