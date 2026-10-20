@@ -184,7 +184,7 @@ describe("thread + context sheets — no hue (#230 P3, THEME §1)", () => {
       expect(
         rule,
         `.nex-context-seg-${seg} must be an ink tone step, not a hue`,
-      ).toMatch(/var\(--nex-sys-color-on-surface\)\s+\d+%/);
+      ).toMatch(/var\(--color-on-surface\)\s+\d+%/);
       expect(rule, `.nex-context-seg-${seg} must not name a hue`).not.toMatch(
         /--(nex-sys-color-(primary|success|tertiary|secondary|warning))|--(state-|destructive)/,
       );
@@ -205,7 +205,7 @@ describe("thread + context sheets — no hue (#230 P3, THEME §1)", () => {
     // here so a future pass cannot quietly delete it and leave the ladder
     // to carry adjacency it cannot carry.
     expect(context).toMatch(
-      /\.nex-context-seg\s*\{[^}]*box-shadow:\s*inset\s+1px\s+0\s+0\s+0\s+var\(--nex-sys-color-surface-container-high\)/,
+      /\.nex-context-seg\s*\{[^}]*box-shadow:\s*inset\s+1px\s+0\s+0\s+0\s+var\(--color-surface-container-high\)/,
     );
   });
 });

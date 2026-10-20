@@ -7,24 +7,24 @@
 .nex-context-tabs {
   display: flex;
   align-items: center;
-  gap: var(--nex-sys-space-xs);
-  padding: var(--nex-sys-space-xs) var(--nex-sys-space-md);
-  background: var(--nex-sys-color-surface-container);
-  border-bottom: 1px solid var(--nex-sys-color-outline-variant);
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-md);
+  background: var(--color-surface-container);
+  border-bottom: 1px solid var(--color-outline-variant);
 }
 
 .nex-context {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: var(--nex-sys-space-lg) var(--nex-sys-space-xl);
+  padding: var(--space-lg) var(--space-xl);
 }
 
 .nex-context-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  column-gap: var(--nex-sys-space-xl);
-  row-gap: var(--nex-sys-space-md);
+  column-gap: var(--space-xl);
+  row-gap: var(--space-md);
   margin: 0;
 }
 
@@ -33,23 +33,23 @@
 }
 
 .nex-context-label {
-  font-size: var(--nex-sys-type-size-body-small);
-  color: var(--nex-sys-color-on-surface-tertiary);
+  font-size: var(--type-size-body-small);
+  color: var(--color-on-surface-tertiary);
 }
 
 .nex-context-value {
-  margin: var(--nex-sys-space-xxs) 0 0;
-  font-size: var(--nex-sys-type-size-body-large);
-  font-weight: var(--nex-sys-type-weight-semibold);
-  color: var(--nex-sys-color-on-surface);
+  margin: var(--space-xxs) 0 0;
+  font-size: var(--type-size-body-large);
+  font-weight: var(--type-weight-semibold);
+  color: var(--color-on-surface);
   overflow-wrap: anywhere;
 }
 
 .nex-context-section-title {
-  margin: var(--nex-sys-space-xl) 0 var(--nex-sys-space-sm);
-  font-size: var(--nex-sys-type-size-body-small);
-  font-weight: var(--nex-sys-type-weight-medium);
-  color: var(--nex-sys-color-on-surface-tertiary);
+  margin: var(--space-xl) 0 var(--space-sm);
+  font-size: var(--type-size-body-small);
+  font-weight: var(--type-weight-medium);
+  color: var(--color-on-surface-tertiary);
 }
 
 /* Breakdown + files sections: semantic grouping wrappers. Children
@@ -66,8 +66,8 @@
   display: flex;
   height: 8px;
   overflow: hidden;
-  border-radius: var(--nex-sys-shape-full);
-  background: var(--nex-sys-color-surface-container-high);
+  border-radius: var(--shape-full);
+  background: var(--color-surface-container-high);
 }
 
 /* ---- The breakdown legend is CATEGORICAL, not state. -------------------
@@ -126,19 +126,19 @@
    below re-spreads the ladder so even the last rung is legible on its
    own. */
 .nex-context-seg-user {
-  background: color-mix(in oklch, var(--nex-sys-color-on-surface) 100%, transparent);
+  background: color-mix(in oklch, var(--color-on-surface) 100%, transparent);
 }
 
 .nex-context-seg-assistant {
-  background: color-mix(in oklch, var(--nex-sys-color-on-surface) 72%, transparent);
+  background: color-mix(in oklch, var(--color-on-surface) 72%, transparent);
 }
 
 .nex-context-seg-tools {
-  background: color-mix(in oklch, var(--nex-sys-color-on-surface) 48%, transparent);
+  background: color-mix(in oklch, var(--color-on-surface) 48%, transparent);
 }
 
 .nex-context-seg-other {
-  background: color-mix(in oklch, var(--nex-sys-color-on-surface) 26%, transparent);
+  background: color-mix(in oklch, var(--color-on-surface) 26%, transparent);
 }
 
 /* The structural edge. One track-coloured pixel between neighbours, on
@@ -148,10 +148,10 @@
    The last child keeps its trailing edge so the bar closes cleanly. */
 .nex-context-seg {
   height: 100%;
-  box-shadow: inset 1px 0 0 0 var(--nex-sys-color-surface-container-high);
+  box-shadow: inset 1px 0 0 0 var(--color-surface-container-high);
 }
 .nex-context-seg:last-child {
-  box-shadow: inset -1px 0 0 0 var(--nex-sys-color-surface-container-high);
+  box-shadow: inset -1px 0 0 0 var(--color-surface-container-high);
 }
 
 /* High contrast: re-spread the ladder rather than scaling the dark one —
@@ -164,48 +164,48 @@
    specificity, so they win the tie-break by order. */
 :root[data-theme="high-contrast"] .nex-context-seg-user,
 .nex-theme-high-contrast .nex-context-seg-user {
-  background: color-mix(in oklch, var(--nex-sys-color-on-surface) 100%, transparent);
+  background: color-mix(in oklch, var(--color-on-surface) 100%, transparent);
 }
 :root[data-theme="high-contrast"] .nex-context-seg-assistant,
 .nex-theme-high-contrast .nex-context-seg-assistant {
-  background: color-mix(in oklch, var(--nex-sys-color-on-surface) 78%, transparent);
+  background: color-mix(in oklch, var(--color-on-surface) 78%, transparent);
 }
 :root[data-theme="high-contrast"] .nex-context-seg-tools,
 .nex-theme-high-contrast .nex-context-seg-tools {
-  background: color-mix(in oklch, var(--nex-sys-color-on-surface) 58%, transparent);
+  background: color-mix(in oklch, var(--color-on-surface) 58%, transparent);
 }
 :root[data-theme="high-contrast"] .nex-context-seg-other,
 .nex-theme-high-contrast .nex-context-seg-other {
-  background: color-mix(in oklch, var(--nex-sys-color-on-surface) 40%, transparent);
+  background: color-mix(in oklch, var(--color-on-surface) 40%, transparent);
 }
 
 .nex-context-legend {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--nex-sys-space-md);
-  margin: var(--nex-sys-space-sm) 0 0;
+  gap: var(--space-md);
+  margin: var(--space-sm) 0 0;
   padding: 0;
   list-style: none;
-  font-size: var(--nex-sys-type-size-body-small);
-  color: var(--nex-sys-color-on-surface-variant);
+  font-size: var(--type-size-body-small);
+  color: var(--color-on-surface-variant);
 }
 
 .nex-context-legend li {
   display: flex;
   align-items: center;
-  gap: var(--nex-sys-space-xxs);
+  gap: var(--space-xxs);
 }
 
 .nex-context-dot {
   width: 8px;
   height: 8px;
-  border-radius: var(--nex-sys-shape-full);
+  border-radius: var(--shape-full);
 }
 
 .nex-context-file-list {
   display: flex;
   flex-direction: column;
-  gap: var(--nex-sys-space-md);
+  gap: var(--space-md);
   margin: 0;
   padding: 0;
   list-style: none;
@@ -221,7 +221,7 @@
 }
 
 .nex-context-file-header {
-  margin-bottom: var(--nex-sys-space-xs);
+  margin-bottom: var(--space-xs);
 }
 
 /* ---- Budget hairline (MAP row 20, progress.md) --------------------------
@@ -248,8 +248,8 @@
   position: relative;
   block-size: 2px;
   inline-size: 100%;
-  border-radius: var(--nex-sys-shape-full);
-  background: var(--nex-sys-color-surface-container-high);
+  border-radius: var(--shape-full);
+  background: var(--color-surface-container-high);
   overflow: hidden;
 }
 

@@ -15,13 +15,13 @@
    top (launcher pattern) instead of centering. */
 .nex-dialog-backdrop.is-top {
   align-items: flex-start;
-  padding-top: var(--nex-sys-space-xl);
+  padding-top: var(--space-xl);
 }
 
 .nex-palette {
   display: flex;
   flex-direction: column;
-  gap: var(--nex-sys-space-xs);
+  gap: var(--space-xs);
 }
 
 .nex-palette-input {
@@ -31,41 +31,41 @@
 .nex-palette-list {
   list-style: none;
   margin: 0;
-  padding: var(--nex-sys-space-xxs);
+  padding: var(--space-xxs);
   /* Cap ≈ 8 rows: token multiple, not a raw value. */
-  max-height: calc(var(--nex-sys-space-2xl) * 10);
+  max-height: calc(var(--space-2xl) * 10);
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: var(--nex-sys-space-xxxs);
+  gap: var(--space-xxxs);
 }
 
 .nex-palette-section {
-  font-size: var(--nex-sys-type-size-label-small);
-  font-weight: var(--nex-sys-type-weight-medium);
-  color: var(--nex-sys-color-on-surface-variant);
-  padding: var(--nex-sys-space-xxs) var(--nex-sys-space-xs) 0;
+  font-size: var(--type-size-label-small);
+  font-weight: var(--type-weight-medium);
+  color: var(--color-on-surface-variant);
+  padding: var(--space-xxs) var(--space-xs) 0;
 }
 
 .nex-palette-item {
   display: flex;
   align-items: center;
-  gap: var(--nex-sys-space-xs);
-  padding: var(--nex-sys-space-xs) var(--nex-sys-space-sm);
-  border-radius: var(--nex-sys-shape-small);
-  font-size: var(--nex-sys-type-size-body-medium);
-  color: var(--nex-sys-color-on-surface);
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--shape-small);
+  font-size: var(--type-size-body-medium);
+  color: var(--color-on-surface);
   cursor: pointer;
 }
 
 .nex-palette-item:hover {
-  background: var(--nex-sys-state-hover);
+  background: var(--state-hover);
 }
 
 .nex-palette-item.is-active {
-  background: var(--nex-sys-state-selected);
-  color: var(--nex-sys-color-on-surface);
-  font-weight: var(--nex-sys-type-weight-emphasized);
+  background: var(--state-selected);
+  color: var(--color-on-surface);
+  font-weight: var(--type-weight-emphasized);
 }
 
 .nex-palette-item-title {
@@ -77,27 +77,27 @@
 
 .nex-palette-empty {
   margin: 0;
-  padding: var(--nex-sys-space-sm);
-  font-size: var(--nex-sys-type-size-body-small);
-  color: var(--nex-sys-color-on-surface-variant);
+  padding: var(--space-sm);
+  font-size: var(--type-size-body-small);
+  color: var(--color-on-surface-variant);
 }
 
 .nex-palette-hints {
   display: flex;
-  gap: var(--nex-sys-space-md);
+  gap: var(--space-md);
   margin: 0;
-  padding: var(--nex-sys-space-xxs) var(--nex-sys-space-xs) 0;
-  border-top: 1px solid var(--nex-sys-color-outline-variant);
-  font-size: var(--nex-sys-type-size-label-small);
-  color: var(--nex-sys-color-on-surface-variant);
+  padding: var(--space-xxs) var(--space-xs) 0;
+  border-top: 1px solid var(--color-outline-variant);
+  font-size: var(--type-size-label-small);
+  color: var(--color-on-surface-variant);
 }
 
 .nex-palette-hints kbd {
-  font-family: var(--nex-sys-type-family);
-  font-size: var(--nex-sys-type-size-label-small);
-  background: var(--nex-sys-color-surface-container);
-  border: 1px solid var(--nex-sys-color-outline-variant);
-  border-radius: var(--nex-sys-shape-extra-small);
-  padding: 0 var(--nex-sys-space-xxxs);
-  margin-right: var(--nex-sys-space-xxxs);
+  font-family: var(--type-family);
+  font-size: var(--type-size-label-small);
+  background: var(--color-surface-container);
+  border: 1px solid var(--color-outline-variant);
+  border-radius: var(--shape-extra-small);
+  padding: 0 var(--space-xxxs);
+  margin-right: var(--space-xxxs);
 }

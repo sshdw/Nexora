@@ -167,7 +167,7 @@ describe("P2 chrome — token discipline in the tabs + pane-header sheet", () =>
     // The tick: bottom-anchored and 2px (--nex-sys-space-xxxs).
     const tick = /\.nex-tab\.is-active::after \{([\s\S]*?)\}/.exec(css)?.[1] ?? "";
     expect(tick).toMatch(/bottom:\s*0/);
-    expect(tick).toMatch(/height:\s*var\(--nex-sys-space-xxxs\)/);
+    expect(tick).toMatch(/height:\s*var\(--space-xxxs\)/);
     // …AND its indicator colour, which is what this test was blind
     // to for months. Nothing watched the hue, so a role-shaped alias
     // that resolves to a hue shipped green: `--nex-sys-color-

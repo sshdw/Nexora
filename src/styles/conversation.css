@@ -32,22 +32,22 @@
   resize: none;
   min-height: 48px;
   max-height: 160px;
-  padding: var(--nex-sys-space-sm) var(--nex-sys-space-md) var(--nex-sys-space-xxs);
+  padding: var(--space-sm) var(--space-md) var(--space-xxs);
   border: none;
-  border-radius: var(--nex-sys-shape-large-increased);
+  border-radius: var(--shape-large-increased);
   background: transparent;
-  color: var(--nex-sys-color-on-surface);
-  font-size: var(--nex-sys-type-size-body-large);
-  line-height: var(--nex-sys-type-line-height-normal);
+  color: var(--color-on-surface);
+  font-size: var(--type-size-body-large);
+  line-height: var(--type-line-height-normal);
   outline: none;
 }
 
 .nex-composer-input::placeholder {
-  color: var(--nex-sys-color-on-surface-tertiary);
+  color: var(--color-on-surface-tertiary);
 }
 
 .nex-composer-input:disabled {
-  opacity: var(--nex-sys-state-disabled-opacity);
+  opacity: var(--state-disabled-opacity);
 }
 
 /* Shared-field focus visibility (accessibility.md §2), kept here for
@@ -97,10 +97,10 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: var(--nex-sys-space-xxs);
-  padding: var(--nex-sys-space-2xl);
+  gap: var(--space-xxs);
+  padding: var(--space-2xl);
   text-align: center;
-  background: var(--nex-sys-color-surface-canvas);
+  background: var(--color-surface-canvas);
 }
 
 /* The mark plate. TWO consumers still emit one — `.nex-placeholder-mark*`
@@ -116,10 +116,10 @@
   justify-content: center;
   width: 64px;
   height: 64px;
-  margin-bottom: var(--nex-sys-space-xs);
-  border-radius: var(--nex-sys-shape-large);
-  background: var(--nex-sys-color-surface-container-high);
-  border: 1px solid var(--nex-sys-color-outline-variant);
+  margin-bottom: var(--space-xs);
+  border-radius: var(--shape-large);
+  background: var(--color-surface-container-high);
+  border: 1px solid var(--color-outline-variant);
 }
 .nex-empty-mark,
 .nex-placeholder-mark {
@@ -132,11 +132,11 @@
    spent by the pane is what made it read as a hero. */
 .nex-empty-title {
   margin: 0;
-  font-size: var(--nex-sys-type-size-body-large);
-  font-weight: var(--nex-sys-type-weight-medium);
+  font-size: var(--type-size-body-large);
+  font-weight: var(--type-weight-medium);
   letter-spacing: -0.01em;
-  line-height: var(--nex-sys-type-line-height-tight);
-  color: var(--nex-sys-color-on-surface);
+  line-height: var(--type-line-height-tight);
+  color: var(--color-on-surface);
 }
 .nex-empty-text {
   margin: 0;
@@ -148,29 +148,29 @@
   line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  font-size: var(--nex-sys-type-size-body-medium);
-  color: var(--nex-sys-color-on-surface-variant);
+  font-size: var(--type-size-body-medium);
+  color: var(--color-on-surface-variant);
 }
 .nex-empty-actions {
   display: flex;
   align-items: center;
-  gap: var(--nex-sys-space-xs);
-  margin-top: var(--nex-sys-space-sm);
+  gap: var(--space-xs);
+  margin-top: var(--space-sm);
 }
 .nex-empty-prompt {
-  margin-top: var(--nex-sys-space-xxs);
-  font-size: var(--nex-sys-type-size-body-small);
-  color: var(--nex-sys-color-on-surface-tertiary);
+  margin-top: var(--space-xxs);
+  font-size: var(--type-size-body-small);
+  color: var(--color-on-surface-tertiary);
 }
 .nex-placeholder-title {
-  font-size: var(--nex-sys-type-size-title-large);
-  font-weight: var(--nex-sys-type-weight-semibold);
-  color: var(--nex-sys-color-on-surface);
+  font-size: var(--type-size-title-large);
+  font-weight: var(--type-weight-semibold);
+  color: var(--color-on-surface);
 }
 .nex-placeholder-text {
   max-width: 380px;
-  font-size: var(--nex-sys-type-size-body-medium);
-  color: var(--nex-sys-color-on-surface-variant);
+  font-size: var(--type-size-body-medium);
+  color: var(--color-on-surface-variant);
 }
 
 /* Conversation view: composed empty pane for a conversation with
@@ -192,22 +192,22 @@
 .nex-conversation-placeholder {
   justify-content: flex-start;
   padding-top: 22vh;
-  padding-bottom: var(--nex-sys-space-2xl);
-  gap: var(--nex-sys-space-xxs);
+  padding-bottom: var(--space-2xl);
+  gap: var(--space-xxs);
   align-items: flex-start;
   text-align: start;
 }
 .nex-conversation-empty-title {
   margin: 0;
-  font-size: var(--nex-sys-type-size-body-large);
-  font-weight: var(--nex-sys-type-weight-medium);
-  color: var(--nex-sys-color-on-surface);
+  font-size: var(--type-size-body-large);
+  font-weight: var(--type-weight-medium);
+  color: var(--color-on-surface);
 }
 .nex-conversation-empty-text {
   margin: 0;
   max-width: 420px;
-  font-size: var(--nex-sys-type-size-body-medium);
-  color: var(--nex-sys-color-on-surface-variant);
+  font-size: var(--type-size-body-medium);
+  color: var(--color-on-surface-variant);
 }
 
 /* ---- Visually hidden (accessibility) ---- */
@@ -237,7 +237,7 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: var(--nex-sys-color-surface-canvas);
+  background: var(--color-surface-canvas);
 }
 
 /* ---- History thread (scrollable, chronological from the backend) ----
@@ -250,14 +250,14 @@
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: var(--nex-sys-space-lg);
-  padding: var(--nex-sys-space-xl) var(--nex-sys-space-md) var(--nex-sys-space-md);
+  gap: var(--space-lg);
+  padding: var(--space-xl) var(--space-md) var(--space-md);
 }
 
 .nex-thread-status {
-  font-size: var(--nex-sys-type-size-body-small);
-  color: var(--nex-sys-color-on-surface-variant);
-  max-width: var(--nex-sys-layout-measure-max);
+  font-size: var(--type-size-body-small);
+  color: var(--color-on-surface-variant);
+  max-width: var(--layout-measure-max);
   margin-inline: auto;
   width: 100%;
 }
@@ -266,9 +266,9 @@
 .nex-message {
   display: flex;
   flex-direction: column;
-  gap: var(--nex-sys-space-xxs);
+  gap: var(--space-xxs);
   width: 100%;
-  max-width: var(--nex-sys-layout-measure-max);
+  max-width: var(--layout-measure-max);
   margin-inline: auto;
   padding: 0;
 }
@@ -284,21 +284,21 @@
 
 /* Assistant turns: bare canvas, full measure. */
 .nex-message-assistant .nex-message-body {
-  padding: var(--nex-sys-space-xxxs) 0;
+  padding: var(--space-xxxs) 0;
 }
 
 .nex-message-meta {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: var(--nex-sys-space-xs);
-  padding: 0 var(--nex-sys-space-xxs);
+  gap: var(--space-xs);
+  padding: 0 var(--space-xxs);
 }
 
 .nex-message-author {
-  font-size: var(--nex-sys-type-size-label-medium);
-  font-weight: var(--nex-sys-type-weight-semibold);
-  color: var(--nex-sys-color-on-surface-variant);
+  font-size: var(--type-size-label-medium);
+  font-weight: var(--type-weight-semibold);
+  color: var(--color-on-surface-variant);
 }
 
 .nex-message-assistant .nex-message-author {
@@ -318,24 +318,24 @@
      ("hierarchy by size/weight/space first, colour never"). The weight
      difference between the two author lines is unchanged, so the roles
      were already separable; this makes them separable at a glance too. */
-  color: var(--nex-sys-color-on-surface);
+  color: var(--color-on-surface);
 }
 
 .nex-message-origin {
-  font-family: var(--nex-sys-type-family-mono);
-  font-size: var(--nex-sys-type-size-label-small);
-  color: var(--nex-sys-color-on-surface-faint);
+  font-family: var(--type-family-mono);
+  font-size: var(--type-size-label-small);
+  color: var(--color-on-surface-faint);
 }
 
 .nex-message-time {
-  font-size: var(--nex-sys-type-size-label-small);
-  color: var(--nex-sys-color-on-surface-faint);
+  font-size: var(--type-size-label-small);
+  color: var(--color-on-surface-faint);
 }
 
 .nex-message-body {
-  font-size: var(--nex-sys-type-size-body-large);
-  line-height: var(--nex-sys-type-line-height-relaxed);
-  color: var(--nex-sys-color-on-surface);
+  font-size: var(--type-size-body-large);
+  line-height: var(--type-line-height-relaxed);
+  color: var(--color-on-surface);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   /* Reading surface stays selectable/copyable (accessibility.md). */
@@ -345,52 +345,52 @@
 /* Code containment: fenced or inline code inside a message reads inside
    a quiet tone container — never bare accent text on the canvas. */
 .nex-message-body pre {
-  margin: var(--nex-sys-space-xs) 0 0;
-  padding: var(--nex-sys-space-xs) var(--nex-sys-space-sm);
-  border-radius: var(--nex-sys-shape-extra-small);
-  background: var(--nex-sys-color-surface-container-high);
-  border: 1px solid var(--nex-sys-color-outline-variant);
-  font-family: var(--nex-sys-type-family-mono);
-  font-size: var(--nex-sys-type-size-body-small);
-  line-height: var(--nex-sys-type-line-height-normal);
+  margin: var(--space-xs) 0 0;
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--shape-extra-small);
+  background: var(--color-surface-container-high);
+  border: 1px solid var(--color-outline-variant);
+  font-family: var(--type-family-mono);
+  font-size: var(--type-size-body-small);
+  line-height: var(--type-line-height-normal);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   overflow-x: auto;
   user-select: text;
 }
 .nex-message-body code {
-  font-family: var(--nex-sys-type-family-mono);
-  font-size: var(--nex-sys-type-size-body-small);
-  background: var(--nex-sys-color-surface-container-high);
-  border-radius: var(--nex-sys-shape-extra-small);
-  padding: 0 var(--nex-sys-space-xxxs);
+  font-family: var(--type-family-mono);
+  font-size: var(--type-size-body-small);
+  background: var(--color-surface-container-high);
+  border-radius: var(--shape-extra-small);
+  padding: 0 var(--space-xxxs);
 }
 .nex-message-body pre code {
   background: transparent;
-  border-radius: var(--nex-sys-shape-none);
+  border-radius: var(--shape-none);
   padding: 0;
 }
 
 /* Turn clustering: consecutive same-role messages group via tighter
    spacing (tone + spacing group items, never per-row borders). */
 .nex-thread > .nex-message-grouped {
-  margin-top: calc(var(--nex-sys-space-xs) * -1);
+  margin-top: calc(var(--space-xs) * -1);
 }
 .nex-message-grouped .nex-message-meta {
   /* Clustered turns share one reading beat: the repeat author line
      stays but compresses toward the body. */
-  margin-bottom: calc(var(--nex-sys-space-xxxs) * -1);
+  margin-bottom: calc(var(--space-xxxs) * -1);
 }
 
 /* Contained waiting state: the quiet M3 loading pill sits in the
    reading column (loading <5s, contained, text-carried). */
 .nex-thread-waiting {
   width: 100%;
-  max-width: var(--nex-sys-layout-measure-max);
+  max-width: var(--layout-measure-max);
   margin-inline: auto;
   display: flex;
   justify-content: flex-start;
-  padding: var(--nex-sys-space-xxs) 0;
+  padding: var(--space-xxs) 0;
 }
 
 /* New-message insertion (contract motion table streaming/insertion row):
@@ -432,14 +432,14 @@
 .nex-composer-error {
   flex-shrink: 0;
   width: 100%;
-  max-width: var(--nex-sys-layout-measure-max);
-  margin: 0 auto var(--nex-sys-space-xs);
-  padding: var(--nex-sys-space-sm) var(--nex-sys-space-md);
-  font-size: var(--nex-sys-type-size-body-small);
-  color: var(--nex-sys-color-error);
-  background: var(--nex-sys-color-error-container);
-  border: 1px solid var(--nex-sys-color-error-outline);
-  border-radius: var(--nex-sys-shape-medium);
+  max-width: var(--layout-measure-max);
+  margin: 0 auto var(--space-xs);
+  padding: var(--space-sm) var(--space-md);
+  font-size: var(--type-size-body-small);
+  color: var(--color-error);
+  background: var(--color-error-container);
+  border: 1px solid var(--color-error-outline);
+  border-radius: var(--shape-medium);
   text-align: left;
 }
 
@@ -451,21 +451,21 @@
 
 .nex-agent-run {
   width: 100%;
-  max-width: var(--nex-sys-layout-measure-max);
+  max-width: var(--layout-measure-max);
   margin-inline: auto;
   display: flex;
   flex-direction: column;
-  gap: var(--nex-sys-space-xs);
-  padding: var(--nex-sys-space-sm) var(--nex-sys-space-md);
-  border-radius: var(--nex-sys-shape-medium);
-  background: var(--nex-sys-color-surface-container-high);
-  border: 1px solid var(--nex-sys-color-outline-variant);
+  gap: var(--space-xs);
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--shape-medium);
+  background: var(--color-surface-container-high);
+  border: 1px solid var(--color-outline-variant);
 }
 
 .nex-agent-run-header {
   display: flex;
   align-items: center;
-  gap: var(--nex-sys-space-xs);
+  gap: var(--space-xs);
   flex-wrap: wrap;
 }
 
@@ -495,27 +495,27 @@
      grayscale reader loses nothing: the word says "Completed" / "Error"
      in full either way. */
 .nex-agent-status-running {
-  background: var(--nex-sys-color-surface-container-highest);
-  color: var(--nex-sys-color-on-surface);
+  background: var(--color-surface-container-highest);
+  color: var(--color-on-surface);
 }
 .nex-agent-status-completed {
-  background: var(--nex-sys-color-surface-container-highest);
+  background: var(--color-surface-container-highest);
   color: var(--state-ok);
 }
 .nex-agent-status-cancelled {
-  background: var(--nex-sys-color-surface-container-highest);
-  color: var(--nex-sys-color-on-surface-variant);
+  background: var(--color-surface-container-highest);
+  color: var(--color-on-surface-variant);
 }
 .nex-agent-status-budget {
-  background: var(--nex-sys-color-surface-container-highest);
+  background: var(--color-surface-container-highest);
   color: var(--state-err);
 }
 .nex-agent-status-spend {
-  background: var(--nex-sys-color-surface-container-highest);
+  background: var(--color-surface-container-highest);
   color: var(--state-err);
 }
 .nex-agent-status-error {
-  background: var(--nex-sys-color-surface-container-highest);
+  background: var(--color-surface-container-highest);
   color: var(--state-err);
 }
 
@@ -535,57 +535,57 @@
    The separator is a MIDDLE DOT, not a bullet glyph with its own colour:
    the counts are one fact stated in parts, not a list of tags. */
 .nex-agent-run-summary {
-  font-weight: var(--nex-sys-type-weight-regular);
-  color: var(--nex-sys-color-on-surface-variant);
+  font-weight: var(--type-weight-regular);
+  color: var(--color-on-surface-variant);
 }
 
 .nex-agent-run-summary::before {
   content: "·";
-  margin: 0 var(--nex-sys-space-xxs);
-  color: var(--nex-sys-color-on-surface-faint);
+  margin: 0 var(--space-xxs);
+  color: var(--color-on-surface-faint);
 }
 
 /* The cancel note rides on the same line rather than opening a block of
    its own: a cancelled run is a fact about the run, not a separate
    event. */
 .nex-agent-run-summary-note {
-  color: var(--nex-sys-color-on-surface-tertiary);
+  color: var(--color-on-surface-tertiary);
 }
 
 .nex-agent-run-summary-note::before {
   content: "·";
-  margin: 0 var(--nex-sys-space-xxs);
-  color: var(--nex-sys-color-on-surface-faint);
+  margin: 0 var(--space-xxs);
+  color: var(--color-on-surface-faint);
 }
 
 /* The status WORD, separated from the results so the two can be told
    apart at a glance even though they share a line. */
 .nex-agent-run-status {
-  font-weight: var(--nex-sys-type-weight-medium);
+  font-weight: var(--type-weight-medium);
 }
 
 .nex-agent-run-meta {
   display: inline-flex;
   align-items: center;
-  gap: var(--nex-sys-space-xs);
+  gap: var(--space-xs);
 }
 
 .nex-agent-run-id {
-  font-size: var(--nex-sys-type-size-label-small);
-  color: var(--nex-sys-color-on-surface-faint);
-  font-family: var(--nex-sys-type-family-mono);
+  font-size: var(--type-size-label-small);
+  color: var(--color-on-surface-faint);
+  font-family: var(--type-family-mono);
 }
 
 .nex-agent-run-actions {
   display: inline-flex;
   align-items: center;
-  gap: var(--nex-sys-space-xs);
+  gap: var(--space-xs);
   margin-left: auto;
 }
 
 .nex-agent-run-error {
-  font-size: var(--nex-sys-type-size-body-small);
-  color: var(--nex-sys-color-error);
+  font-size: var(--type-size-body-small);
+  color: var(--color-error);
   white-space: nowrap;
 }
 
@@ -611,18 +611,18 @@
 .nex-agent-failure {
   display: flex;
   flex-direction: column;
-  gap: var(--nex-sys-space-xxs);
-  padding: var(--nex-sys-space-sm) var(--nex-sys-space-sm);
-  border-inline-start: 2px solid var(--nex-sys-color-error);
-  border-radius: var(--nex-sys-shape-extra-small);
-  background: var(--nex-sys-color-surface-container-highest);
-  font-size: var(--nex-sys-type-size-body-small);
-  color: var(--nex-sys-color-on-surface);
+  gap: var(--space-xxs);
+  padding: var(--space-sm) var(--space-sm);
+  border-inline-start: 2px solid var(--color-error);
+  border-radius: var(--shape-extra-small);
+  background: var(--color-surface-container-highest);
+  font-size: var(--type-size-body-small);
+  color: var(--color-on-surface);
 }
 
 .nex-agent-failure-line {
   display: flex;
-  gap: var(--nex-sys-space-xs);
+  gap: var(--space-xs);
   margin: 0;
   align-items: baseline;
 }
@@ -630,7 +630,7 @@
 .nex-agent-failure-key {
   flex: 0 0 auto;
   min-width: 88px;
-  color: var(--nex-sys-color-on-surface-tertiary);
+  color: var(--color-on-surface-tertiary);
 }
 
 .nex-agent-failure-value {
@@ -640,7 +640,7 @@
 }
 
 .nex-agent-failure-line:first-child .nex-agent-failure-value {
-  color: var(--nex-sys-color-error);
+  color: var(--color-error);
 }
 
 .nex-agent-approval {
@@ -648,23 +648,23 @@
   align-items: flex-start;
   justify-content: space-between;
   flex-wrap: wrap;
-  gap: var(--nex-sys-space-sm);
-  padding: var(--nex-sys-space-sm);
-  border-radius: var(--nex-sys-shape-small);
-  background: var(--nex-sys-color-surface-container-highest);
-  border: 1px solid var(--nex-sys-color-outline-variant);
+  gap: var(--space-sm);
+  padding: var(--space-sm);
+  border-radius: var(--shape-small);
+  background: var(--color-surface-container-highest);
+  border: 1px solid var(--color-outline-variant);
 }
 
 .nex-agent-approval-text {
   flex: 1 1 auto;
   min-width: 0;
-  font-size: var(--nex-sys-type-size-body-small);
-  color: var(--nex-sys-color-on-surface-variant);
+  font-size: var(--type-size-body-small);
+  color: var(--color-on-surface-variant);
 }
 
 .nex-agent-approval-actions {
   display: inline-flex;
-  gap: var(--nex-sys-space-xs);
+  gap: var(--space-xs);
   flex-shrink: 0;
 }
 
@@ -676,30 +676,30 @@
 .nex-agent-approval-timeout {
   flex-basis: 100%;
   margin: 0;
-  font-size: var(--nex-sys-type-size-body-small);
-  color: var(--nex-sys-color-on-surface-tertiary);
+  font-size: var(--type-size-body-small);
+  color: var(--color-on-surface-tertiary);
 }
 
 .nex-agent-approval-timeout-expired,
 .nex-agent-approval-timeout-confirmed {
-  color: var(--nex-sys-color-on-surface-variant);
+  color: var(--color-on-surface-variant);
 }
 
 .nex-agent-empty {
-  font-size: var(--nex-sys-type-size-body-small);
-  color: var(--nex-sys-color-on-surface-tertiary);
+  font-size: var(--type-size-body-small);
+  color: var(--color-on-surface-tertiary);
 }
 
 .nex-agent-steps {
   display: flex;
   flex-direction: column;
-  gap: var(--nex-sys-space-xs);
+  gap: var(--space-xs);
 }
 
 .nex-agent-step {
-  border-radius: var(--nex-sys-shape-small);
-  background: var(--nex-sys-color-surface-container-highest);
-  border: 1px solid var(--nex-sys-color-outline-variant);
+  border-radius: var(--shape-small);
+  background: var(--color-surface-container-highest);
+  border: 1px solid var(--color-outline-variant);
   overflow: hidden;
 }
 
@@ -707,23 +707,23 @@
   width: 100%;
   display: flex;
   align-items: center;
-  gap: var(--nex-sys-space-xs);
-  padding: var(--nex-sys-space-xs) var(--nex-sys-space-sm);
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm);
   background: transparent;
   border: none;
   cursor: pointer;
   text-align: left;
-  color: var(--nex-sys-color-on-surface);
-  font-size: var(--nex-sys-type-size-body-small);
+  color: var(--color-on-surface);
+  font-size: var(--type-size-body-small);
 }
 .nex-agent-step-header:hover {
-  background: var(--nex-sys-state-hover);
+  background: var(--state-hover);
 }
 
 .nex-agent-step-seq {
-  font-family: var(--nex-sys-type-family-mono);
-  font-size: var(--nex-sys-type-size-label-small);
-  color: var(--nex-sys-color-on-surface-faint);
+  font-family: var(--type-family-mono);
+  font-size: var(--type-size-label-small);
+  color: var(--color-on-surface-faint);
 }
 
 /* ---- The step grammar: action → file → change → verification -----------
@@ -738,8 +738,8 @@
    happened before WHICH file. Not coloured — hierarchy is size/weight/
    space first (THEME §3), and there is no accent to spend. */
 .nex-agent-step-action {
-  font-weight: var(--nex-sys-type-weight-medium);
-  color: var(--nex-sys-color-on-surface);
+  font-weight: var(--type-weight-medium);
+  color: var(--color-on-surface);
   flex-shrink: 0;
 }
 
@@ -756,7 +756,7 @@
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
-  color: var(--nex-sys-color-on-surface-variant);
+  color: var(--color-on-surface-variant);
 }
 .nex-agent-step-target-dir {
   min-width: 0;
@@ -778,7 +778,7 @@
    only as digits on a pill. */
 .nex-agent-step-change {
   flex-shrink: 0;
-  color: var(--nex-sys-color-on-surface-tertiary);
+  color: var(--color-on-surface-tertiary);
   font-variant-numeric: tabular-nums;
 }
 
@@ -789,8 +789,8 @@
 .nex-agent-step-verify {
   margin-left: auto;
   flex-shrink: 0;
-  font-size: var(--nex-sys-type-size-label-small);
-  color: var(--nex-sys-color-on-surface-tertiary);
+  font-size: var(--type-size-label-small);
+  color: var(--color-on-surface-tertiary);
 }
 
 /* The repeat count, mono and tabular so `×6` and `×12` do not shift the
@@ -798,7 +798,7 @@
 .nex-agent-step-count {
   flex-shrink: 0;
   font-variant-numeric: tabular-nums;
-  color: var(--nex-sys-color-on-surface-tertiary);
+  color: var(--color-on-surface-tertiary);
 }
 
 /* A repeat's members. One level of indent off the group line that
@@ -807,40 +807,40 @@
 .nex-agent-step-group {
   display: flex;
   flex-direction: column;
-  gap: var(--nex-sys-space-xxs);
-  padding: var(--nex-sys-space-xxs) 0 0 var(--nex-sys-space-sm);
-  border-top: 1px solid var(--nex-sys-color-outline-variant);
-  border-inline-start: 1px solid var(--nex-sys-color-outline-variant);
-  margin: var(--nex-sys-space-xxs) 0 0 var(--nex-sys-space-xs);
+  gap: var(--space-xxs);
+  padding: var(--space-xxs) 0 0 var(--space-sm);
+  border-top: 1px solid var(--color-outline-variant);
+  border-inline-start: 1px solid var(--color-outline-variant);
+  margin: var(--space-xxs) 0 0 var(--space-xs);
 }
 
 .nex-agent-step-duration {
-  font-size: var(--nex-sys-type-size-label-small);
-  color: var(--nex-sys-color-on-surface-faint);
+  font-size: var(--type-size-label-small);
+  color: var(--color-on-surface-faint);
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;
 }
 
 .nex-agent-step-chevron {
-  margin-left: var(--nex-sys-space-xs);
-  color: var(--nex-sys-color-on-surface-faint);
+  margin-left: var(--space-xs);
+  color: var(--color-on-surface-faint);
   flex-shrink: 0;
 }
 
 .nex-agent-step-body {
-  padding: var(--nex-sys-space-sm);
+  padding: var(--space-sm);
   display: flex;
   flex-direction: column;
-  gap: var(--nex-sys-space-xs);
-  border-top: 1px solid var(--nex-sys-color-outline-variant);
+  gap: var(--space-xs);
+  border-top: 1px solid var(--color-outline-variant);
 }
 
 .nex-agent-step-args {
   margin: 0;
-  padding: var(--nex-sys-space-xs) var(--nex-sys-space-sm);
-  border-radius: var(--nex-sys-shape-extra-small);
-  background: var(--nex-sys-color-surface-container);
-  border: 1px solid var(--nex-sys-color-outline-variant);
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--shape-extra-small);
+  background: var(--color-surface-container);
+  border: 1px solid var(--color-outline-variant);
   overflow-x: auto;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -848,18 +848,18 @@
 
 .nex-agent-step-observation {
   margin: 0;
-  padding: var(--nex-sys-space-xs) 0;
-  font-size: var(--nex-sys-type-size-body-small);
-  line-height: var(--nex-sys-type-line-height-normal);
-  color: var(--nex-sys-color-on-surface);
+  padding: var(--space-xs) 0;
+  font-size: var(--type-size-body-small);
+  line-height: var(--type-line-height-normal);
+  color: var(--color-on-surface);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   font-family: inherit;
 }
 
 .nex-agent-step-empty {
-  font-size: var(--nex-sys-type-size-body-small);
-  color: var(--nex-sys-color-on-surface-faint);
+  font-size: var(--type-size-body-small);
+  color: var(--color-on-surface-faint);
 }
 
 /* ---- Task 5.2: paused state, autonomy switch, terminal & diff viewers ---- */
@@ -870,7 +870,7 @@
    replaces it. See the run-state pill block above for why none of these
    carry a tinted wash any more. */
 .nex-agent-status-paused {
-  background: var(--nex-sys-color-surface-container-highest);
+  background: var(--color-surface-container-highest);
   color: var(--state-warn);
 }
 /* The paused dot is `currentColor`, so it takes the pill's warning ink and
@@ -878,7 +878,7 @@
 .nex-agent-paused-dot {
   width: 6px;
   height: 6px;
-  border-radius: var(--nex-sys-shape-full);
+  border-radius: var(--shape-full);
   background: currentColor;
   display: inline-block;
   flex-shrink: 0;
@@ -891,22 +891,22 @@
 .nex-agent-terminal {
   display: flex;
   flex-direction: column;
-  gap: var(--nex-sys-space-xs);
-  background: var(--nex-sys-color-surface-container);
-  border: 1px solid var(--nex-sys-color-outline-variant);
-  border-radius: var(--nex-sys-shape-extra-small);
+  gap: var(--space-xs);
+  background: var(--color-surface-container);
+  border: 1px solid var(--color-outline-variant);
+  border-radius: var(--shape-extra-small);
   overflow: hidden;
 }
 .nex-agent-terminal-header {
   display: flex;
   align-items: center;
-  gap: var(--nex-sys-space-xs);
-  padding: var(--nex-sys-space-xs) var(--nex-sys-space-sm);
-  background: var(--nex-sys-color-surface-container-high);
-  border-bottom: 1px solid var(--nex-sys-color-outline-variant);
-  font-family: var(--nex-sys-type-family-mono);
-  font-size: var(--nex-sys-type-size-label-small);
-  color: var(--nex-sys-color-on-surface-variant);
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm);
+  background: var(--color-surface-container-high);
+  border-bottom: 1px solid var(--color-outline-variant);
+  font-family: var(--type-family-mono);
+  font-size: var(--type-size-label-small);
+  color: var(--color-on-surface-variant);
 }
 /* The `$` is the terminal's prompt marker, not a state and not branding.
    #230 P3: it was `--nex-sys-color-primary` — the legacy amber accent
@@ -915,8 +915,8 @@
    step down, so the prompt reads as a quiet frame rather than a second
    thing asking for attention (THEME §1). */
 .nex-agent-terminal-prompt {
-  color: var(--nex-sys-color-on-surface-tertiary);
-  font-weight: var(--nex-sys-type-weight-emphasized);
+  color: var(--color-on-surface-tertiary);
+  font-weight: var(--type-weight-emphasized);
 }
 .nex-agent-terminal-command {
   flex: 1 1 auto;
@@ -925,14 +925,14 @@
   white-space: nowrap;
 }
 .nex-agent-terminal-cwd {
-  color: var(--nex-sys-color-on-surface-faint);
-  font-size: var(--nex-sys-type-size-label-small);
+  color: var(--color-on-surface-faint);
+  font-size: var(--type-size-label-small);
 }
 .nex-agent-terminal-body {
-  padding: var(--nex-sys-space-xs) var(--nex-sys-space-sm);
+  padding: var(--space-xs) var(--space-sm);
   display: flex;
   flex-direction: column;
-  gap: var(--nex-sys-space-xxs);
+  gap: var(--space-xxs);
   max-height: 320px;
   overflow-y: auto;
 }
@@ -940,34 +940,34 @@
   margin: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font-family: var(--nex-sys-type-family-mono);
-  font-size: var(--nex-sys-type-size-body-small);
-  color: var(--nex-sys-color-on-surface);
+  font-family: var(--type-family-mono);
+  font-size: var(--type-size-body-small);
+  color: var(--color-on-surface);
 }
 .nex-agent-terminal-stderr {
   margin: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font-family: var(--nex-sys-type-family-mono);
-  font-size: var(--nex-sys-type-size-body-small);
-  color: var(--nex-sys-color-error);
+  font-family: var(--type-family-mono);
+  font-size: var(--type-size-body-small);
+  color: var(--color-error);
 }
 .nex-agent-terminal-separator {
-  font-family: var(--nex-sys-type-family-mono);
-  font-size: var(--nex-sys-type-size-label-small);
-  color: var(--nex-sys-color-on-surface-faint);
-  border-top: 1px dashed var(--nex-sys-color-outline-variant);
-  border-bottom: 1px dashed var(--nex-sys-color-outline-variant);
-  padding: var(--nex-sys-space-xxxs) 0;
+  font-family: var(--type-family-mono);
+  font-size: var(--type-size-label-small);
+  color: var(--color-on-surface-faint);
+  border-top: 1px dashed var(--color-outline-variant);
+  border-bottom: 1px dashed var(--color-outline-variant);
+  padding: var(--space-xxxs) 0;
   margin: 4px 0;
-  background: var(--nex-sys-color-surface-container-high);
+  background: var(--color-surface-container-high);
 }
 .nex-agent-diff {
   display: flex;
   flex-direction: column;
-  background: var(--nex-sys-color-surface-container);
-  border: 1px solid var(--nex-sys-color-outline-variant);
-  border-radius: var(--nex-sys-shape-extra-small);
+  background: var(--color-surface-container);
+  border: 1px solid var(--color-outline-variant);
+  border-radius: var(--shape-extra-small);
   overflow: hidden;
 }
 
@@ -979,40 +979,40 @@
 .nex-agent-diff-header-line {
   display: flex;
   align-items: center;
-  gap: var(--nex-sys-space-xs);
-  padding: var(--nex-sys-space-xxs) var(--nex-sys-space-sm);
-  border-bottom: 1px solid var(--nex-sys-color-outline-variant);
-  background: var(--nex-sys-color-surface-container-high);
+  gap: var(--space-xs);
+  padding: var(--space-xxs) var(--space-sm);
+  border-bottom: 1px solid var(--color-outline-variant);
+  background: var(--color-surface-container-high);
 }
 
 .nex-agent-diff-counts {
   display: inline-flex;
   align-items: center;
-  gap: var(--nex-sys-space-xxs);
+  gap: var(--space-xxs);
 }
 
 .nex-agent-diff-count {
-  font-family: var(--nex-sys-type-family-mono);
-  font-size: var(--nex-sys-type-size-label-small);
+  font-family: var(--type-family-mono);
+  font-size: var(--type-size-label-small);
   font-variant-numeric: tabular-nums;
-  line-height: var(--nex-sys-type-line-height-tight);
-  padding: 0 var(--nex-sys-space-xxs);
-  border: 1px solid var(--nex-sys-color-outline-variant);
-  border-radius: var(--nex-sys-shape-extra-small);
+  line-height: var(--type-line-height-tight);
+  padding: 0 var(--space-xxs);
+  border: 1px solid var(--color-outline-variant);
+  border-radius: var(--shape-extra-small);
   background: transparent;
   /* Both rungs take the SAME ink: the `+` / `−` sign inside the badge is
      what says added vs removed. Two hues here would be two meanings
      riding on colour where a glyph already says it, and THEME §1 leaves
      green/red for state — a diff line is not a state. */
-  color: var(--nex-sys-color-on-surface-variant);
+  color: var(--color-on-surface-variant);
 }
 .nex-agent-diff-body {
   display: flex;
   flex-direction: column;
   max-height: 400px;
   overflow-y: auto;
-  font-family: var(--nex-sys-type-family-mono);
-  font-size: var(--nex-sys-type-size-label-small);
+  font-family: var(--type-family-mono);
+  font-size: var(--type-size-label-small);
   line-height: 1.5;
 }
 .nex-agent-diff-line {
@@ -1026,20 +1026,20 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-weight: var(--nex-sys-type-weight-medium);
+  font-weight: var(--type-weight-medium);
   user-select: none;
-  border-right: 1px solid var(--nex-sys-color-outline-variant);
-  background: var(--nex-sys-color-surface-container-high);
+  border-right: 1px solid var(--color-outline-variant);
+  background: var(--color-surface-container-high);
 }
 .nex-agent-diff-content {
   flex: 1 1 auto;
-  padding: 0 var(--nex-sys-space-sm);
+  padding: 0 var(--space-sm);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 .nex-agent-diff-header {
-  background: var(--nex-sys-color-surface-container-high);
-  color: var(--nex-sys-color-on-surface-variant);
+  background: var(--color-surface-container-high);
+  color: var(--color-on-surface-variant);
 }
 /* ---- Diff line tones (#230 P3) -----------------------------------------
    FOURTH and FIFTH HUE CARRIERS, fixed in the same pass.
@@ -1067,33 +1067,33 @@
    lines findable, not to shout over the surrounding text; the glyph and the
    sr-only label are what carry it, per SYSTEM §8. */
 .nex-agent-diff-hunk {
-  background: var(--nex-sys-color-surface-container-highest);
-  color: var(--nex-sys-color-on-surface);
-  font-weight: var(--nex-sys-type-weight-medium);
+  background: var(--color-surface-container-highest);
+  color: var(--color-on-surface);
+  font-weight: var(--type-weight-medium);
 }
 .nex-agent-diff-added {
-  background: var(--nex-sys-color-surface-container-high);
-  color: var(--nex-sys-color-on-surface);
+  background: var(--color-surface-container-high);
+  color: var(--color-on-surface);
 }
 .nex-agent-diff-added .nex-agent-diff-gutter {
-  background: var(--nex-sys-color-surface-container-highest);
-  color: var(--nex-sys-color-on-surface);
-  font-weight: var(--nex-sys-type-weight-emphasized);
+  background: var(--color-surface-container-highest);
+  color: var(--color-on-surface);
+  font-weight: var(--type-weight-emphasized);
 }
 .nex-agent-diff-removed {
-  background: var(--nex-sys-color-surface-container-low);
-  color: var(--nex-sys-color-on-surface-variant);
+  background: var(--color-surface-container-low);
+  color: var(--color-on-surface-variant);
 }
 .nex-agent-diff-removed .nex-agent-diff-gutter {
-  background: var(--nex-sys-color-surface-container-low);
-  color: var(--nex-sys-color-on-surface);
-  font-weight: var(--nex-sys-type-weight-emphasized);
+  background: var(--color-surface-container-low);
+  color: var(--color-on-surface);
+  font-weight: var(--type-weight-emphasized);
 }
 .nex-agent-diff-context {
-  color: var(--nex-sys-color-on-surface);
+  color: var(--color-on-surface);
 }
 .nex-agent-diff-meta {
-  color: var(--nex-sys-color-on-surface-faint);
+  color: var(--color-on-surface-faint);
   font-style: italic;
 }
 
@@ -1118,7 +1118,7 @@
    fold, and an author `display` would defeat it. */
 .nex-agent-timeline {
   position: relative;
-  padding-inline-start: var(--nex-sys-space-lg);
+  padding-inline-start: var(--space-lg);
 }
 
 /* The rail itself: one continuous hairline, `--nex-sys-color-
@@ -1127,9 +1127,9 @@
 .nex-agent-spine {
   position: absolute;
   inset-block: 0;
-  inset-inline-start: calc(var(--nex-sys-space-lg) / 2);
+  inset-inline-start: calc(var(--space-lg) / 2);
   inline-size: 1px;
-  background: var(--nex-sys-color-outline-variant);
+  background: var(--color-outline-variant);
   pointer-events: none;
 }
 
@@ -1197,11 +1197,11 @@
 .nex-agent-step-slot::before {
   content: "";
   position: absolute;
-  inset-block-start: calc(var(--nex-sys-space-md) + var(--nex-sys-space-xxxs));
-  inset-inline-start: calc(-1 * var(--nex-sys-space-lg));
-  inline-size: var(--nex-sys-space-lg);
+  inset-block-start: calc(var(--space-md) + var(--space-xxxs));
+  inset-inline-start: calc(-1 * var(--space-lg));
+  inline-size: var(--space-lg);
   block-size: 1px;
-  background: var(--nex-sys-color-outline-variant);
+  background: var(--color-outline-variant);
   pointer-events: none;
 }
 /* The run's current row carries the accent — §16 "thin indicator",
@@ -1244,7 +1244,7 @@
   .nex-agent-step-slot:not(.nex-agent-step-slot-current):not(
       .nex-agent-step-slot-failed
     )::before {
-  background: var(--nex-sys-color-outline);
+  background: var(--color-outline);
 }
 
 /* Temporal fade (brief §13.9): inactive rows step their ink DOWN the
@@ -1271,7 +1271,7 @@
    reader is told happened. */
 .nex-agent-step-age-1
   :is(.nex-agent-step-header, .nex-agent-step-observation, .nex-agent-terminal-stdout) {
-  color: var(--nex-sys-color-on-surface-variant);
+  color: var(--color-on-surface-variant);
 }
 .nex-agent-step-age-1
   :is(
@@ -1282,7 +1282,7 @@
     .nex-agent-step-duration,
     .nex-agent-step-chevron
   ) {
-  color: var(--nex-sys-color-on-surface-tertiary);
+  color: var(--color-on-surface-tertiary);
 }
 .nex-agent-step-age-2
   :is(
@@ -1296,7 +1296,7 @@
     .nex-agent-step-duration,
     .nex-agent-step-chevron
   ) {
-  color: var(--nex-sys-color-on-surface-tertiary);
+  color: var(--color-on-surface-tertiary);
 }
 
 /* Folded finished run (brief §13.33): one quiet disclosure carrying the
@@ -1318,24 +1318,24 @@
   align-self: flex-start;
   display: inline-flex;
   align-items: center;
-  gap: var(--nex-sys-space-xxs);
-  margin-inline-start: var(--nex-sys-space-lg);
-  padding: var(--nex-sys-space-xxxs) var(--nex-sys-space-xs);
+  gap: var(--space-xxs);
+  margin-inline-start: var(--space-lg);
+  padding: var(--space-xxxs) var(--space-xs);
   border: none;
-  border-radius: var(--nex-sys-shape-small);
+  border-radius: var(--shape-small);
   background: transparent;
-  color: var(--nex-sys-color-on-surface-tertiary);
+  color: var(--color-on-surface-tertiary);
   font-family: inherit;
-  font-size: var(--nex-sys-type-size-label-small);
+  font-size: var(--type-size-label-small);
   text-align: start;
   cursor: pointer;
   transition: color var(--motion-duration-fast) var(--motion-easing-standard);
 }
 .nex-agent-fold:hover {
-  color: var(--nex-sys-color-on-surface-variant);
+  color: var(--color-on-surface-variant);
 }
 .nex-agent-fold-chevron {
-  color: var(--nex-sys-color-on-surface-faint);
+  color: var(--color-on-surface-faint);
 }
 
 /* ============================================================

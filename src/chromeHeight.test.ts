@@ -57,9 +57,13 @@ function declaration(body: string, property: string): string | undefined {
  * declaration wins, which matches the cascade for the only token
  * these assertions read: `--chrome-height` is declared once, in the
  * default `:root` block, and the light block inherits it.
+ *
+ * `--nex-sys-layout-header-height` died with tokens.css in Phase 6;
+ * the shared 52px row now resolves through the flat `--layout-header-
+ * height` token declared in src/index.css.
  */
 const tokens = new Map<string, string>();
-for (const path of ["src/index.css", "src/styles/tokens.css"]) {
+for (const path of ["src/index.css"]) {
   for (const match of code(path).matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+);/gi)) {
     tokens.set(match[1], match[2].trim());
   }
@@ -139,15 +143,15 @@ describe("THEME §6 chrome freeze — the 40px header", () => {
   it("keeps the shared legacy token at 52px", () => {
     // The token cannot be deleted or retargeted: five sheets below
     // still resolve it, and it dies with tokens.css in Phase 6.
-    expect(declaration(code("src/styles/tokens.css"), "--nex-sys-layout-header-height")).toBe("52px");
-    expect(resolve("var(--nex-sys-layout-header-height)")).toBe("52px");
+    expect(declaration(code("src/index.css"), "--layout-header-height")).toBe("52px");
+    expect(resolve("var(--layout-header-height)")).toBe("52px");
   });
 
   for (const [path, selector] of LEGACY_ROWS) {
     it(`${path} ${selector} still resolves to the legacy 52px`, () => {
       const sheet = code(path);
       const height = declaration(ruleBody(sheet, selector), "min-height");
-      expect(height).toBe("var(--nex-sys-layout-header-height)");
+      expect(height).toBe("var(--layout-header-height)");
       expect(resolve(height)).toBe("52px");
       // And the Phase 2 token must not leak into an out-of-scope sheet.
       expect(sheet).not.toMatch(/--chrome-height/);

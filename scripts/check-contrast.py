@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """NEX-DS-007 gate: every text tier >= 4.5:1 on every text-bearing surface.
 
-Reads the token hex values straight out of src/styles/tokens.css so the
+Reads the token hex values straight out of src/index.css so the
 check tracks the source of truth. Dark `bright` (#3d3c46) is excluded:
 it is a non-text rest surface with zero text consumers (documented in
 the CONTRAST LEDGER).
@@ -22,7 +22,7 @@ import re
 import sys
 from pathlib import Path
 
-TOKENS = Path(__file__).resolve().parent.parent / "src" / "styles" / "tokens.css"
+TOKENS = Path(__file__).resolve().parent.parent / "src" / "index.css"
 
 TIER_ALIASES = ["surface-canvas", "surface-elevated",
                 "surface-nested", "surface-floating"]
@@ -72,29 +72,31 @@ def main() -> int:
     def block_defs(block: str) -> dict:
         # Hex definitions AND var() aliases — a tier alias is a def too.
         return dict(re.findall(
-            r"--nex-sys-color-([a-z-]+):\s*"
-            r"(#[0-9a-fA-F]{6}|var\(--nex-sys-color-[a-z-]+\))",
+            r"--color-([a-z-]+):\s*"
+            r"(#[0-9a-fA-F]{6}|var\(--color-[a-z-]+\))",
             block))
 
-    dark_body = text.split(".nex-theme-dark {", 1)[1].split(
-        "LIGHT THEME", 1)[0]
-    light_body = text.split('.nex-theme-light {', 1)[1].split(
-        "First-paint note", 1)[0]
-    hc_body = text.split(".nex-theme-high-contrast {", 1)[1].split(
-        "CONTRAST LEDGER", 1)[0]
+    dark_body = text.split(":root,\n:root[data-theme=\"dark\"] {", 1)[1].split(
+        ':root[data-theme="light"] {', 1)[0]
+    light_body = text.split(':root[data-theme="light"] {', 1)[1].split(
+        ':root[data-theme="high-contrast"],\n.nex-theme-high-contrast {', 1)[0]
+    hc_body = text.split(':root[data-theme="high-contrast"],\n.nex-theme-high-contrast {', 1)[1].split(
+        "::selection", 1)[0]
     dark, light, hc = (block_defs(b) for b in (dark_body, light_body, hc_body))
 
-    dark_text = ["surface", "surface-dim", "surface-container-lowest",
-                 "surface-container-low", "surface-container",
-                 "surface-container-high", "surface-container-highest"]
-    light_text = ["surface", "surface-dim", "surface-container-lowest",
-                  "surface-container-low", "surface-container",
-                  "surface-container-high", "surface-container-highest",
-                  "surface-bright"]
-    hc_text = ["surface", "surface-dim", "surface-container-lowest",
-               "surface-container-low", "surface-container",
-               "surface-container-high", "surface-container-highest",
-               "surface-bright"]
+    # `surface`, `surface-dim` and `surface-bright` were pruned from
+    # index.css in Phase 6 (they are not defined there), so the gated
+    # set is the container ladder; the four tier aliases are appended
+    # below. Tier aliases resolve to hex directly in index.css.
+    dark_text = ["surface-container-lowest", "surface-container-low",
+                 "surface-container", "surface-container-high",
+                 "surface-container-highest"] + TIER_ALIASES
+    light_text = ["surface-container-lowest", "surface-container-low",
+                  "surface-container", "surface-container-high",
+                  "surface-container-highest"] + TIER_ALIASES
+    hc_text = ["surface-container-lowest", "surface-container-low",
+               "surface-container", "surface-container-high",
+               "surface-container-highest"] + TIER_ALIASES
 
     tiers = ["on-surface", "on-surface-variant",
              "on-surface-tertiary", "on-surface-faint"]
@@ -117,7 +119,6 @@ def main() -> int:
             resolved[alias] = hexv
             print(f"{'PASS' if inside else 'FAIL'} {name:14s} tier {alias:16s} -> {role:26s}"
                   f" {hexv} {'(gated)' if inside else '(NOT GATED)'}")
-            surfaces.append(alias)
 
         # 1b. The four tiers must stay four DISTINCT tones. The 4.5:1
         #     gate cannot catch a merge: aliasing `nested` onto `canvas`

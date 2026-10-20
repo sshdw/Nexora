@@ -34,18 +34,18 @@
 .nex-tabstrip {
   display: flex;
   align-items: center;
-  gap: var(--nex-sys-space-xs);
+  gap: var(--space-xs);
   min-height: var(--chrome-height);
-  padding: var(--nex-sys-space-xxs) var(--nex-sys-space-sm);
-  background: var(--nex-sys-color-surface-elevated);
-  border-bottom: 1px solid var(--nex-sys-color-shell-seam);
+  padding: var(--space-xxs) var(--space-sm);
+  background: var(--color-surface-elevated);
+  border-bottom: 1px solid var(--color-shell-seam);
   flex-shrink: 0;
 }
 
 .nex-tabstrip-list {
   display: flex;
   align-items: center;
-  gap: var(--nex-sys-space-xxs);
+  gap: var(--space-xxs);
   flex: 1 1 auto;
   min-width: 0;
   overflow-x: auto;
@@ -56,7 +56,7 @@
 .nex-tabstrip-actions {
   display: flex;
   align-items: center;
-  gap: var(--nex-sys-space-xxs);
+  gap: var(--space-xxs);
   flex-shrink: 0;
 }
 
@@ -68,11 +68,11 @@
 .nex-tab {
   display: flex;
   align-items: center;
-  gap: var(--nex-sys-space-xxs);
-  max-width: var(--nex-sys-layout-sidebar-width);
-  min-height: var(--nex-sys-space-2xl);
-  padding: 0 var(--nex-sys-space-xs);
-  color: var(--nex-sys-color-on-surface-variant);
+  gap: var(--space-xxs);
+  max-width: var(--layout-sidebar-width);
+  min-height: var(--space-2xl);
+  padding: 0 var(--space-xs);
+  color: var(--color-on-surface-variant);
   position: relative;
   flex-shrink: 0;
 }
@@ -103,21 +103,21 @@
    KIND (fill vs none) as well as in degree, so they cannot be
    confused at a glance or read by anyone who cannot see either. */
 .nex-tab:hover {
-  color: var(--nex-sys-color-on-surface);
+  color: var(--color-on-surface);
 }
 
 .nex-tab-label {
   display: flex;
   align-items: center;
-  gap: var(--nex-sys-space-xxs);
+  gap: var(--space-xxs);
   flex: 1 1 auto;
   min-width: 0;
   border: none;
   background: transparent;
   color: inherit;
   font-family: inherit;
-  font-size: var(--nex-sys-type-size-label-large);
-  font-weight: var(--nex-sys-type-weight-medium);
+  font-size: var(--type-size-label-large);
+  font-weight: var(--type-weight-medium);
   cursor: pointer;
   padding: 0;
   transition: color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard);
@@ -126,7 +126,7 @@
 /* Selected: the tone step on the label itself. The tick below is
    the second, structural signal (tabs.md `variant="line"`). */
 .nex-tab.is-active {
-  color: var(--nex-sys-color-on-surface);
+  color: var(--color-on-surface);
 }
 
 .nex-tab.is-active::after {
@@ -135,7 +135,7 @@
   left: 0;
   right: 0;
   bottom: 0;
-  height: var(--nex-sys-space-xxxs);
+  height: var(--space-xxxs);
   /* The mono theme (#235) has ONE indicator role and it is
      `--color-tick` (-> `--tick`, src/index.css): chroma ~0.005,
      so it is a light bar on the dark canvas and a dark bar on
@@ -150,7 +150,7 @@
 }
 
 .nex-tab.is-active .nex-tab-label {
-  font-weight: var(--nex-sys-type-weight-emphasized);
+  font-weight: var(--type-weight-emphasized);
 }
 
 .nex-tab-text {
@@ -169,13 +169,13 @@
    1.189:1 light / 2.413:1 high-contrast against the host). */
 .nex-tab-split-mark {
   flex-shrink: 0;
-  font-family: var(--nex-sys-type-family-mono);
-  font-size: var(--nex-sys-type-size-label-small);
-  color: var(--nex-sys-color-on-surface-variant);
-  background: var(--nex-sys-color-surface-nested);
-  border: 1px solid var(--nex-sys-color-outline-variant);
-  border-radius: var(--nex-sys-shape-extra-small);
-  padding: 0 var(--nex-sys-space-xxs);
+  font-family: var(--type-family-mono);
+  font-size: var(--type-size-label-small);
+  color: var(--color-on-surface-variant);
+  background: var(--color-surface-nested);
+  border: 1px solid var(--color-outline-variant);
+  border-radius: var(--shape-extra-small);
+  padding: 0 var(--space-xxs);
 }
 
 .nex-tab-close {
@@ -216,7 +216,7 @@
 }
 
 .nex-pane + .nex-pane {
-  border-left: 1px solid var(--nex-sys-color-shell-seam);
+  border-left: 1px solid var(--color-shell-seam);
 }
 
 /* ---- Pane header (MAP row 5, breadcrumb.md + separator.md):
@@ -233,12 +233,12 @@
 .nex-pane-header {
   display: flex;
   align-items: center;
-  gap: var(--nex-sys-space-sm);
+  gap: var(--space-sm);
   height: var(--chrome-height);
   min-height: var(--chrome-height);
-  padding: var(--nex-sys-space-xxxs) var(--nex-sys-space-md);
-  background: var(--nex-sys-color-surface-elevated);
-  border-bottom: 1px solid var(--nex-sys-color-shell-seam);
+  padding: var(--space-xxxs) var(--space-md);
+  background: var(--color-surface-elevated);
+  border-bottom: 1px solid var(--color-shell-seam);
   flex-shrink: 0;
 }
 
@@ -249,8 +249,8 @@
    on the shell seam token, same as the pane divider above. */
 .nex-pane-header-separator {
   align-self: center;
-  height: var(--nex-sys-space-xl);
-  border-left: 1px solid var(--nex-sys-color-shell-seam);
+  height: var(--space-xl);
+  border-left: 1px solid var(--color-shell-seam);
   flex-shrink: 0;
 }
 
@@ -268,17 +268,17 @@
 .nex-workspace-chip {
   display: inline-flex;
   align-items: center;
-  max-width: var(--nex-sys-layout-sidebar-width);
+  max-width: var(--layout-sidebar-width);
   min-width: 0;
-  padding: var(--nex-sys-space-xxxs) var(--nex-sys-space-xxs);
-  border-radius: var(--nex-sys-shape-extra-small);
-  background: var(--nex-sys-color-surface-nested);
-  border: 1px solid var(--nex-sys-color-outline-variant);
-  color: var(--nex-sys-color-on-surface-variant);
-  font-size: var(--nex-sys-type-size-body-small);
-  font-weight: var(--nex-sys-type-weight-medium);
-  letter-spacing: var(--nex-sys-type-tracking-body-small);
-  line-height: var(--nex-sys-type-line-height-tight);
+  padding: var(--space-xxxs) var(--space-xxs);
+  border-radius: var(--shape-extra-small);
+  background: var(--color-surface-nested);
+  border: 1px solid var(--color-outline-variant);
+  color: var(--color-on-surface-variant);
+  font-size: var(--type-size-body-small);
+  font-weight: var(--type-weight-medium);
+  letter-spacing: var(--type-tracking-body-small);
+  line-height: var(--type-line-height-tight);
 }
 
 .nex-workspace-chip-text {
@@ -340,7 +340,7 @@
 }
 
 .nex-app.nex-zen .nex-main {
-  background: var(--nex-sys-color-surface-canvas);
+  background: var(--color-surface-canvas);
 }
 
 /* ---- Zen-from-split: the split grid stays mounted and collapses to one
@@ -360,11 +360,11 @@
    not a status), and the one shadow a floating layer is allowed. */
 .nex-zen-exit {
   position: fixed;
-  top: var(--nex-sys-space-sm);
-  right: var(--nex-sys-space-sm);
+  top: var(--space-sm);
+  right: var(--space-sm);
   z-index: var(--nex-sys-z-dialog);
-  background: var(--nex-sys-color-surface-floating);
-  border: 1px solid var(--nex-sys-color-outline-variant);
-  border-radius: var(--nex-sys-shape-small);
+  background: var(--color-surface-floating);
+  border: 1px solid var(--color-outline-variant);
+  border-radius: var(--shape-small);
   box-shadow: var(--nex-sys-elevation-level1);
 }
