@@ -1,8 +1,44 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96" role="img" aria-label="Nexora Prism — Displace">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96" role="img" aria-label="Nexora Prism">
   <title>Nexora Prism — Displace</title>
-  <!-- DISPLACE. One triangle cut vertically; the halves slide apart and out of
-       register, the way a ray kinks when it crosses a boundary. Two tones keep
-       the seam legible; it never turns into a second colour. -->
-  <path fill="#ffffff" d="M42 8 L42 88 L6 88 Z"/>
-  <path fill="#ffffff" fill-opacity=".58" d="M52 20 L86 88 L52 88 Z"/>
+  <defs>
+    <linearGradient id="faceA" x1="0.15" y1="0" x2="0.85" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.42" stop-color="#f6f7fb"/>
+      <stop offset="1" stop-color="#b9bfd2"/>
+    </linearGradient>
+    <linearGradient id="faceB" x1="0.85" y1="0" x2="0.15" y2="1">
+      <stop offset="0" stop-color="#dfe3f0"/>
+      <stop offset="0.45" stop-color="#9aa0b8"/>
+      <stop offset="1" stop-color="#555a70"/>
+    </linearGradient>
+    <!-- Тень у среза: 3 px, гаснет к нулю — материал «толщиной». -->
+    <linearGradient id="cutA" x1="1" y1="0" x2="0" y2="0">
+      <stop offset="0" stop-color="#5a6076" stop-opacity=".45"/>
+      <stop offset="1" stop-color="#5a6076" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="cutB" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#5a6076" stop-opacity=".45"/>
+      <stop offset="1" stop-color="#5a6076" stop-opacity="0"/>
+    </linearGradient>
+    <clipPath id="clipA"><path d="M40 18 L40 86 L4 86 Z"/></clipPath>
+    <clipPath id="clipB"><path d="M56 10 L92 78 L56 78 Z"/></clipPath>
+  </defs>
+
+  <!-- Тело -->
+  <path fill="url(#faceA)" d="M40 18 L40 86 L4 86 Z"/>
+  <path fill="url(#faceB)" d="M56 10 L92 78 L56 78 Z"/>
+
+  <!-- Внутренняя тень у срезов (внутри фигур, обрезана по их контуру) -->
+  <g clip-path="url(#clipA)">
+    <rect x="34" y="18" width="6" height="68" fill="url(#cutA)"/>
+  </g>
+  <g clip-path="url(#clipB)">
+    <rect x="56" y="10" width="6" height="68" fill="url(#cutB)"/>
+  </g>
+
+  <!-- Кромки: срез + гипотенуза. Тонко, ровно на границе фигуры. -->
+  <path stroke="#ffffff" stroke-opacity=".9" stroke-width="1.4" d="M40 18 L40 86"/>
+  <path stroke="#ffffff" stroke-opacity=".5" stroke-width="1" d="M40 18 L4 86"/>
+  <path stroke="#ffffff" stroke-opacity=".62" stroke-width="1.1" d="M56 10 L56 78"/>
+  <path stroke="#ffffff" stroke-opacity=".3" stroke-width="1" d="M56 10 L92 78"/>
 </svg>
