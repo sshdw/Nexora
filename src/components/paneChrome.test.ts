@@ -146,7 +146,20 @@ describe("P2 chrome — token discipline in the tabs + pane-header sheet", () =>
 
   it("declares no raw duration — every one is a token", () => {
     // The gate that collapses reduced motion cannot collapse a literal.
-    expect(css).not.toMatch(/\d+ms\b/);
+    //
+    // Named exceptions (#230 P7), both raw by contract and both in
+    // SYSTEM §7: the zen chrome-exit cascade (189ms per layer, 0.55 ×
+    // the 343ms settle entrance, 0/40/80ms step) and the snap fallback
+    // (410ms emphasized-decelerate — there is no 410ms token and the
+    // freeze forbids minting one). They are removed before the sweep,
+    // not silently allowed.
+    const withoutContractLiterals = css
+      .replace(
+        /\.nex-app\.nex-zen-exiting[\s\S]*?@keyframes nex-zen-header-exit \{[\s\S]*?\n\}/,
+        "",
+      )
+      .replace(/nex-tab-in 410ms/, "nex-tab-in <snap-fallback>");
+    expect(withoutContractLiterals).not.toMatch(/\d+ms\b/);
     const durations = [...css.matchAll(/var\((--[\w-]*(?:duration|travel)[\w-]*)\)/g)];
     expect(durations.length).toBeGreaterThan(0);
   });

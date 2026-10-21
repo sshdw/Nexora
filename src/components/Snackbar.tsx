@@ -7,9 +7,10 @@
 //! reports intent, so unmount removes it instantly.
 //!
 //! Painted from shadcn tokens (`--popover`/`--border`/`--primary`) —
-//! no `--nex-sys-*` value remains. The enter animation is gone with
-//! the legacy sheet; P7 owns motion, and a toast that simply appears
-//! loses no information.
+//! no `--nex-sys-*` value remains. P7 owns motion: `nex-snackbar`
+//! carries the settle entrance (SYSTEM §7.2). The exit belongs to a
+//! host that keeps the node mounted and sets `data-state="closed"`;
+//! this primitive unmounts on dismissal, so none runs here.
 
 import { useEffect, useRef } from "react";
 
@@ -47,7 +48,7 @@ export default function Snackbar({
 
   return (
     <div
-      className="fixed right-4 bottom-4 z-50 flex max-w-sm items-center gap-2 rounded-md border border-border bg-popover px-3 py-2 text-sm text-popover-foreground shadow-lg"
+      className="nex-snackbar fixed right-4 bottom-4 z-50 flex max-w-sm items-center gap-2 rounded-md border border-border bg-popover px-3 py-2 text-sm text-popover-foreground shadow-lg"
       role="status"
     >
       <span>{message}</span>

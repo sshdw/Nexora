@@ -307,12 +307,23 @@ describe("Sidebar migrated surface (#230 Phase 1)", () => {
     const animations = [...section.matchAll(/animation:\s*([^;]+);/g)].map((m) => m[1]);
     expect(animations.length).toBeGreaterThan(0);
     for (const declaration of animations) {
-      expect(declaration).toContain("var(--motion-");
+      // Same two families as the transitions below: P7's settle spring
+      // is a canonical `--nex-sys-motion-*` token.
+      expect(
+        declaration.includes("var(--motion-") ||
+          declaration.includes("var(--nex-sys-motion-"),
+      ).toBe(true);
     }
     const transitions = [...section.matchAll(/transition:\s*([^;]+);/g)].map((m) => m[1]);
     expect(transitions.length).toBeGreaterThan(0);
     for (const declaration of transitions) {
-      expect(declaration).toContain("var(--motion-");
+      // P7 moved hover/focus paint onto the canonical
+      // `--nex-sys-motion-duration-hover`; both motion families are
+      // token references, which is what this assertion is about.
+      expect(
+        declaration.includes("var(--motion-") ||
+          declaration.includes("var(--nex-sys-motion-"),
+      ).toBe(true);
     }
   });
 

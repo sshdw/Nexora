@@ -393,24 +393,21 @@
   padding: var(--space-xxs) 0;
 }
 
-/* New-message insertion (contract motion table streaming/insertion row):
-   spatial slide-in on the OFFICIAL expressive-default spatial pair, with
-   stagger across genuinely inserted messages via --nex-chat-insert-index
-   (set inline by ConversationView, stepped by the stagger token).
-   Reduced motion resolves to instant append via the global gate. */
+/* New-message insertion (SYSTEM §7.2 message-insert row): 200ms
+   emphasized-decelerate, 8px rise + fade. The spring is removed (an
+   insertion is information arriving, not a spatial event) and so is the
+   per-index delay — a thread is an active surface, and the contract bans
+   stagger inside one. Reduced motion resolves to instant append via the
+   global gate. Streaming text carries no animation at all. */
 .nex-message-enter {
-  animation: nex-message-insert
-    var(--motion-spring-expressive-default-spatial-duration)
-    var(--motion-spring-expressive-default-spatial-curve);
-  animation-delay: calc(
-    var(--nex-chat-insert-index, 0) * var(--motion-stagger-step)
-  );
+  animation: nex-message-insert var(--motion-duration-short4)
+    var(--motion-easing-emphasized-decelerate);
 }
 
 @keyframes nex-message-insert {
   from {
     opacity: 0;
-    transform: translateY(6px);
+    transform: translateY(8px);
   }
 }
 
@@ -1329,7 +1326,7 @@
   font-size: var(--type-size-label-small);
   text-align: start;
   cursor: pointer;
-  transition: color var(--motion-duration-fast) var(--motion-easing-standard);
+  transition: color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard);
 }
 .nex-agent-fold:hover {
   color: var(--color-on-surface-variant);
@@ -1363,7 +1360,7 @@
    aiming at. The path's own hover is colour-only for the same reason. */
 .nex-agent-step-header,
 .nex-agent-step-target {
-  transition: color var(--motion-duration-fast) var(--motion-easing-standard);
+  transition: color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard);
 }
 
 @media (prefers-reduced-motion: reduce) {

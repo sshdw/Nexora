@@ -18,9 +18,9 @@
 //!
 //! `expressive` is retained for API compatibility: the press
 //! feedback it used to add is now the base button's own global
-//! press (scale(0.985), 90ms in / instant out — NEXORA-THEME.md
-//! §6, held in the vendored `ui/button` base string), so no extra
-//! class is emitted and no caller changes.
+//! press (scale 0.97, 90ms in / 411ms spring-snap out — SYSTEM
+//! §7.2, held in `nex-press` + the vendored `ui/button` base),
+//! so no extra class is emitted and no caller changes.
 //!
 //! Loading disables the control, sets `aria-busy` and shows the
 //! inline spinner beside the label — the label keeps the

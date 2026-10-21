@@ -6,12 +6,12 @@
    ("Supervised", "Semi-auto", "Full-auto") are labels nobody can
    act on without that sentence.
 
-   PLAIN TEXT ALWAYS. The per-character TextType typing is
-   ornament on a static sentence, so it is removed: switching
+   PLAIN TEXT ALWAYS. The per-character TextType typing was
+   ornament on a static sentence, so it was removed: switching
    modes swaps the sentence instantly, with no re-typing
-   animation, and there is no JS timeline to collapse under
-   reduced motion. (`TextType` stays vendored for genuine
-   streaming/progress semantics elsewhere; it is not used here.)
+   animation and no JS timeline to collapse under reduced motion.
+   TextType and gsap were deleted in P7 (they had no product
+   caller); they are not coming back here.
 
    One line, clamped with `title=` fallback so the full sentence
    is still reachable on hover/focus when it overflows.

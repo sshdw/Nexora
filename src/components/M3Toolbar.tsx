@@ -4,9 +4,9 @@
 //! [doc-cards]; skill components map row 15): docked rows carry persistent
 //! chrome; floating toolbars appear only as selection-context popovers
 //! anchored to the selection. Floating enters with scale+fade from the
-//! anchor on medium2 · emphasized-decelerate (skill motion.md §7,
-//! .nex-pop-enter); reduced motion resolves to fade-only/instant via the
-//! motion.css gate. Both variants expose role="toolbar" with arrow-key
+//! anchor on the settle spring (SYSTEM §7.2, .nex-pop-enter; fallback
+//! 410ms emphasized-decelerate); reduced motion resolves to
+//! fade-only/instant via the motion.css gate. Both variants expose role="toolbar" with arrow-key
 //! movement between focusable children and Esc-to-dismiss on floating.
 //!
 //! NO LOCAL DROPDOWN — checked, not skipped (#230 Phase 2). The phase

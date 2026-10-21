@@ -50,12 +50,37 @@
   --motion-duration-fast: var(--motion-duration-short3);   /* 150ms state fades */
   --motion-duration-normal: var(--motion-duration-short4); /* 200ms micro transitions */
 
-  /* ---- Press token (NEXORA-THEME.md §6, owner-approved 2026-10-15):
-     scale(0.985), 90ms press / instant release on ALL controls.
-     The OFFICIAL duration ladder (short1-4: 50/100/150/200) has NO 90ms
-     stop — this is a deliberate off-ladder value for the press contract. */
+  /* ---- Press token (SYSTEM §7.2, OD-D9·motion 2026-10-20 — supersedes
+     the 2026-10-15 scale(0.985) / instant-release rule, which stays in
+     THEME §6 as history): scale 0.97, 90ms in, 411ms spring-snap out on
+     ALL controls. The OFFICIAL duration ladder (short1-4: 50/100/150/200)
+     has NO 90ms stop — this is a deliberate off-ladder value, same named
+     exception as the 411ms release. */
   --motion-duration-press: 90ms;
-  --motion-scale-press: 0.985;
+  --motion-scale-press: 0.97;
+
+  /* ---- SYSTEM §7.1 springs (OD-D9·motion, owner-approved 2026-10-20).
+     The source of truth is the pair (ζ, ωₙ); T, peak and t_p are DERIVED:
+       T    = −ln(0.001)/(ζ·ωₙ)
+       peak = e^(−πζ/√(1−ζ²))
+       t_p  = π/(ωₙ·√(1−ζ²))
+     settle: ζ 0.84, ωₙ 24 rad/s -> T 343 ms, peak 0.77 %, t_p 241 ms.
+     snap:   ζ 0.70, ωₙ 24 rad/s -> T 411 ms, peak 4.60 %, t_p 183 ms.
+     Values are linear(). The t_p sample is its OWN stop (70.41 % settle,
+     44.58 % snap) — linear interpolation between stops would otherwise
+     clip the crest. Fallback declaration goes FIRST at every use site,
+     the linear() declaration SECOND; no @supports. */
+
+  /* settle — ζ 0.84, ωₙ 24 rad/s -> T 343 ms, peak 0.77 %, t_p 241 ms
+     (its own stop: 70.41 %). */
+  --nex-sys-motion-spring-settle: linear(0.0000 0.00%, 0.0450 4.00%, 0.1495 8.00%, 0.2798 12.00%, 0.4141 16.00%, 0.5396 20.00%, 0.6498 24.00%, 0.7420 28.00%, 0.8164 32.00%, 0.8743 36.00%, 0.9179 40.00%, 0.9498 44.00%, 0.9723 48.00%, 0.9875 52.00%, 0.9973 56.00%, 1.0032 60.00%, 1.0063 64.00%, 1.0076 68.00%, 1.0077 70.41%, 1.0077 72.00%, 1.0071 76.00%, 1.0062 80.00%, 1.0051 84.00%, 1.0041 88.00%, 1.0032 92.00%, 1.0024 96.00%, 1.0000 100.00%) 343ms;
+  /* snap — ζ 0.70, ωₙ 24 rad/s -> T 411 ms, peak 4.60 %, t_p 183 ms
+     (its own stop: 44.58 %). */
+  --nex-sys-motion-spring-snap: linear(0.0000 0.00%, 0.0645 4.00%, 0.2122 8.00%, 0.3903 12.00%, 0.5648 16.00%, 0.7166 20.00%, 0.8375 24.00%, 0.9263 28.00%, 0.9860 32.00%, 1.0221 36.00%, 1.0402 40.00%, 1.0459 44.00%, 1.0460 44.58%, 1.0438 48.00%, 1.0373 52.00%, 1.0292 56.00%, 1.0211 60.00%, 1.0140 64.00%, 1.0082 68.00%, 1.0039 72.00%, 1.0010 76.00%, 0.9992 80.00%, 0.9982 84.00%, 0.9979 88.00%, 0.9980 92.00%, 0.9982 96.00%, 1.0000 100.00%) 411ms;
+  /* Hover/focus is 120 ms — a named off-ladder token (SYSTEM §7.1/§7.2,
+     OD-D9·motion), the third and last approved addition. 150 ms stays on
+     --motion-duration-fast for non-hover fades; nothing retunes. */
+  --nex-sys-motion-duration-hover: 120ms;
 
   /* ---- Spring→CSS conversion pairs (OFFICIAL table, motion.md §4)
      For non-interruptible one-shot animations; y-values > 1 encode

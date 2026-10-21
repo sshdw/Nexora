@@ -19,7 +19,6 @@
 //! the composer a plain set of callbacks.
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { CSSProperties } from "react";
 
 import { formatRelativeTime } from "../lib/format";
 import {
@@ -314,19 +313,6 @@ export default function ConversationView({
     ...runs.map((r) => ({ kind: "run" as const, ts: r.started_at, run: r })),
   ].sort((a, b) => a.ts - b.ts);
 
-  // Stagger order for the spatial slide-in: genuinely inserted messages
-  // animate in sequence (contract motion table streaming/insertion row);
-  // reduced motion collapses to instant append via the global gate.
-  const freshOrder = new Map<number, number>();
-  {
-    let order = 0;
-    for (const item of threadItems) {
-      if (item.kind === "message" && freshMessageIds?.has(item.message.id)) {
-        freshOrder.set(item.message.id, Math.min(order, 6));
-        order += 1;
-      }
-    }
-  }
   // Tone + spacing grouping: a message that directly follows another of
   // the same role reads as one turn cluster (spacing groups, never
   // per-row borders). Runs break the chain.
@@ -397,11 +383,6 @@ export default function ConversationView({
                     : "nex-message-assistant") +
                   (grouped ? " nex-message-grouped" : "") +
                   (isFresh ? " nex-message-enter" : "")
-                }
-                style={
-                  isFresh
-                    ? ({ "--nex-chat-insert-index": freshOrder.get(item.message.id) ?? 0 } as CSSProperties)
-                    : undefined
                 }
               >
                 <div className="nex-message-meta">

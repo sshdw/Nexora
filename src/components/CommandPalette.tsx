@@ -2,9 +2,9 @@
 //! the command registry (src/lib/commands.ts).
 //!
 //! M3E mapping (skill precedence: contract + PO full-M3E, then OFFICIAL):
-//! dialog enter = scale+fade on the OFFICIAL medium2 · emphasized-decelerate
-//! anchor (skill motion.md §7 "menu opens with scale+fade from anchor
-//! (medium2)"), list navigation = instant highlight swap (calm persistent
+//! dialog enter = scale+fade on the settle spring (SYSTEM §7.2; the
+//! non-linear() fallback is 410ms emphasized-decelerate), list
+//! navigation = instant highlight swap (calm persistent
 //! chrome — same grammar as the tab strip's instant tone-step selection,
 //! ConversationTabs.tsx:14-17), reduced motion = final frame instantly via
 //! the global motion.css gate. All visuals are --nex-sys-* / --motion-*

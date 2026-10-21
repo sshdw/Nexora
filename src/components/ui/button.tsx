@@ -34,27 +34,27 @@ import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "@/lib/utils"
 import { Slot } from "radix-ui"
 
-// #230 P2 DIVERGENCE (NEXORA-THEME.md §6, owner-approved
-// 2026-10-15) — the global press contract on the BASE string.
+// #230 P2/P7 DIVERGENCE (SYSTEM §7.2, OD-D9·motion 2026-10-20) —
+// the global press contract on the BASE string.
 // The registry presses with a 1px nudge, `active:translate-y-px`,
 // and two things about that are wrong for this theme: the nudge
 // reads as a nudge (a pixel of travel, not a press), and it is
 // the base's only active transform, so it lands on every variant
 // while `transition-all` gives it the 150ms state-fade duration
 // the contract reserves for hover/focus. The contract is ONE
-// press — scale(0.985), 90ms in, instant out, on ALL controls —
-// so the base string now:
-//   - transitions an explicit property list instead of `all`, so
-//     the press owns its own clock. A `transition-duration` list
-//     aligns positionally with `transition-property` (the same
-//     mechanic .nex-morph-pill uses in styles/components.css);
-//   - gives `scale` 0s at rest (instant release) and
-//     `var(--nex-sys-motion-duration-press)` while held, and
-//     leaves every paint transition on
-//     `--nex-sys-motion-duration-fast` — the same 150ms value
-//     Tailwind's `transition-all` was already using, so nothing
-//     about hover/focus/disabled changes;
-//   - presses with `var(--nex-sys-motion-scale-press)`;
+// press — scale 0.97, 90ms in, 411ms spring-snap out, on ALL
+// controls — so the base string now:
+//   - carries `nex-press`, the sheet-owned transition
+//     (styles/components.css). Tailwind cannot express the
+//     fallback-first declaration pair the spring contract needs:
+//     a browser without linear() must keep the 410ms
+//     emphasized-decelerate release, which means the fallback
+//     declaration is written FIRST and the linear() one SECOND.
+//     No `transition-*` / `transition-duration` utility remains
+//     here — `nex-press` owns the property list, the 90ms in, the
+//     snap release and the 120ms hover paint clock;
+//   - presses with `var(--nex-sys-motion-scale-press)` (0.97 in
+//     styles/motion.css, legacy alias `--motion-scale-press`);
 //   - drops the registry's `not-aria-[haspopup]` guard, because
 //     the contract says ALL controls. No element in src/ sets
 //     `aria-haspopup` today, so the guard matched nothing;
@@ -63,12 +63,12 @@ import { Slot } from "radix-ui"
 //     global gate in styles/motion.css, which collapses the
 //     durations themselves. Both halves are needed: the gate
 //     makes the press instant, this makes it not move at all.
-// The two `--nex-sys-motion-*` names are declared in
+// The `--nex-sys-motion-*` names are declared in
 // styles/motion.css (motion tokens live in their own sheet, not
 // in the theme blocks) and are registered for the theme gate in
 // src/theme.test.ts.
 const buttonVariants = cva(
-  "group/button inline-flex shrink-0 items-center justify-center rounded-lg border border-transparent bg-clip-padding text-sm font-medium whitespace-nowrap transition-[scale,background-color,color,border-color,box-shadow,opacity] [transition-duration:0s,var(--nex-sys-motion-duration-fast),var(--nex-sys-motion-duration-fast),var(--nex-sys-motion-duration-fast),var(--nex-sys-motion-duration-fast),var(--nex-sys-motion-duration-fast)] outline-none select-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background active:scale-[var(--nex-sys-motion-scale-press)] active:[transition-duration:var(--nex-sys-motion-duration-press),var(--nex-sys-motion-duration-fast),var(--nex-sys-motion-duration-fast),var(--nex-sys-motion-duration-fast),var(--nex-sys-motion-duration-fast),var(--nex-sys-motion-duration-fast)] motion-reduce:active:scale-none disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-2 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+  "group/button inline-flex shrink-0 items-center justify-center rounded-lg border border-transparent bg-clip-padding text-sm font-medium whitespace-nowrap nex-press outline-none select-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background active:scale-[var(--nex-sys-motion-scale-press)] motion-reduce:active:scale-none disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-2 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
   {
     variants: {
       variant: {
