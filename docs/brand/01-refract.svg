@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96" role="img" aria-label="Nexora Prism — Refract">
+  <title>Nexora Prism — Refract</title>
+  <!-- PRISM + BEAM. Solid prism (apex 40,20; base y=76) with a shaded left
+       facet, one beam entering from the left, three beams leaving to the
+       right. Beams are closed polygons, so they keep their shape at any size.
+       Single asset for 32 px and up; below that use 01-refract-small.svg. -->
+  <path fill="#ffffff" d="M40 20 L72 76 L8 76 Z"/>
+  <path fill="#ffffff" fill-opacity=".55" d="M40 20 L40 76 L8 76 Z"/>
+  <path fill="#ffffff" d="M0 47 L17 47 L17 56 L0 56 Z"/>
+  <path fill="#ffffff" d="M54 29 L92 16 L92 25 L54 37 Z"/>
+  <path fill="#ffffff" d="M61 42 L94 38 L94 47 L61 50 Z"/>
+  <path fill="#ffffff" d="M68 61 L92 69 L92 78 L68 70 Z"/>
+</svg>

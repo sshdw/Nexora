@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96" role="img" aria-label="Nexora Prism — Aperture">
+  <title>Nexora Prism — Aperture</title>
+  <!-- APERTURE. Hollow prism: the outer triangle with an aperture that is the
+       same triangle scaled 0.42 about the shared centroid, so all three walls
+       stay optically even. One path, one colour, holds at 16 px. -->
+  <path fill="#ffffff" fill-rule="evenodd"
+        d="M48 6 L92 88 L4 88 Z M48 34.7 L68.9 70.5 L27.1 70.5 Z"/>
+</svg>

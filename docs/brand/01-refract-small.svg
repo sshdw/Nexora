@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96" role="img" aria-label="Nexora Prism — Refract (small sizes)">
+  <title>Nexora Prism — Refract, small sizes</title>
+  <!-- Below 32 px the beams of 01-refract turn to mush. Same prism, beams
+       dropped: use this file for favicon, tray and 16–24 px contexts. -->
+  <path fill="#ffffff" d="M48 14 L80 84 L16 84 Z"/>
+  <path fill="#ffffff" fill-opacity=".55" d="M48 14 L48 84 L16 84 Z"/>
+</svg>
