@@ -13,7 +13,7 @@
 //! button (Alt+W closes the active tab — see `useConversationTabs.ts`
 //! for the full shortcut map). Overflow scrolls horizontally inside
 //! the strip; the active tab scrolls into view on selection. New tabs
-//! enter with the expressive fast-spatial spring (create moment);
+//! enter with the spring-snap scale (create moment, SYSTEM §7.2);
 //! switching swaps content instantly with a tone-step selection change
 //! — calm persistent chrome, no choreography on select. Reduced motion
 //! collapses the enter animation via the motion.css gate.

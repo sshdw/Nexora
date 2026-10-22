@@ -3,9 +3,9 @@
 //! registry defines, so the two cannot drift apart.
 //!
 //! M3E mapping (skill precedence: contract + PO full-M3E, then OFFICIAL):
-//! dialog enter = scale+fade on the OFFICIAL medium2 · emphasized-decelerate
-//! anchor (same grammar as the palette — CommandPalette.tsx:1-11, via
-//! .nex-pop-enter in components.css), rows are calm reading chrome (tone
+//! dialog enter = scale+fade on the settle spring (SYSTEM §7.2; same
+//! grammar as the palette — CommandPalette.tsx:1-11, via .nex-pop-enter
+//! in components.css), rows are calm reading chrome (tone
 //! steps + spacing group items, no per-row borders — contract §Density),
 //! reduced motion = final frame instantly via the global motion.css gate.
 //! All visuals are --nex-sys-* / --motion-* tokens (src/styles/shortcuts.css)

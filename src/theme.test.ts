@@ -7,6 +7,12 @@ import { describe, expect, it } from "vitest";
 import { contrastOnWash, contrastOver, contrastRatio, parseOklch, type Oklch } from "./test/color";
 import { readRepoFile } from "./test/readRepoFile";
 import { PARITY_CASES } from "./test/parityMap";
+import {
+  ZEN_EXIT_LAYER_MS,
+  ZEN_EXIT_STEP_MS,
+  ZEN_EXIT_TOTAL_MS,
+  zenExitDelayMs,
+} from "./lib/zenExit";
 
 import { Button } from "./components/ui/button";
 
@@ -40,7 +46,6 @@ const cssCode = css.replace(/\/\*[\s\S]*?\*\//g, "");
  */
 const componentSources: Record<string, string> = {
   button: readRepoFile("src/components/ui/button.tsx"),
-  textType: readRepoFile("src/components/TextType.tsx"),
   input: readRepoFile("src/components/ui/input.tsx"),
   textarea: readRepoFile("src/components/ui/textarea.tsx"),
   nativeSelect: readRepoFile("src/components/ui/native-select.tsx"),
@@ -172,6 +177,12 @@ const externalVars = new Map<string, string>([
   ["--nex-sys-motion-duration-fast", "src/styles/motion.css :root"],
   ["--nex-sys-motion-duration-press", "src/styles/motion.css :root"],
   ["--nex-sys-motion-scale-press", "src/styles/motion.css :root"],
+  // #230 Phase 7 (SYSTEM §7.1/§7.2, OD-D9·motion): the two springs and
+  // the one named off-ladder hover duration. Same home as the press
+  // tokens — motion.css owns motion, not the theme blocks.
+  ["--nex-sys-motion-spring-settle", "src/styles/motion.css :root"],
+  ["--nex-sys-motion-spring-snap", "src/styles/motion.css :root"],
+  ["--nex-sys-motion-duration-hover", "src/styles/motion.css :root"],
 ]);
 
 /**
@@ -551,7 +562,6 @@ describe("black theme — variable coverage", () => {
       "nativeSelect",
       "skeleton",
       "spinner",
-      "textType",
       "textarea",
     ]);
 
@@ -606,18 +616,18 @@ describe("black theme — variable coverage", () => {
       "text-secondary-foreground",
     ]);
 
-    // TextType is scanned too. It paints no colour of its own — its
-    // classes are layout, and the colour arrives as a `style={{ color }}`
-    // prop — so what is pinned there is that the scan SEES the file,
-    // not what it happens to find in it today.
-    expect(classTokens(componentSources.textType)).toContain("inline-block");
-
-    // Same for the #230 Phase 1 skeleton: its one colour utility has to
+    // The #230 Phase 1 skeleton: its one colour utility has to
     // route through a defined var like any other copied component, and
     // the pulse it declares must be the Tailwind utility the global
     // reduced-motion gate already collapses.
     expect(colourUtilities(componentSources.skeleton)).toEqual(["bg-accent"]);
     expect(classTokens(componentSources.skeleton)).toContain("animate-pulse");
+    // SYSTEM §7.2 skeleton row: the 300ms delay + `both` fill live on
+    // the component too, so a Skeleton that is not a `.nex-skeleton-row`
+    // still starts late and holds its first frame.
+    expect(classTokens(componentSources.skeleton)).toEqual(
+      expect.arrayContaining(["[animation-delay:300ms]", "[animation-fill-mode:both]"]),
+    );
   });
 
   it("routes every colour utility a copied component uses through a defined var", () => {
@@ -983,6 +993,364 @@ describe("black theme — direction", () => {
     expect(css).toMatch(/^:root\[data-theme="light"\] \{/m);
     expect(css).not.toMatch(/^\.dark \{/m);
     expect(css).not.toMatch(/^\.light \{/m);
+  });
+});
+
+/* ----------------------------------------------------------
+   Motion contract — SYSTEM §7 (#230 Phase 7).
+
+   Everything below is read as SOURCE: jsdom paints no cascade, so
+   what is pinned is what the sheets and components DECLARE. The
+   spring table is re-derived from (ζ, ωₙ) rather than transcribed
+   from the comment, and the stop count is deliberately NOT pinned —
+   only the facts the contract names (duration, peak, first/last
+   sample, the t_p crest stop).
+   ---------------------------------------------------------- */
+describe("motion contract — SYSTEM §7", () => {
+  const motionSheet = readRepoFile("src/styles/motion.css");
+  const motionCode = motionSheet.replace(/\/\*[\s\S]*?\*\//g, "");
+  const componentsCode = readRepoFile("src/styles/components.css").replace(
+    /\/\*[\s\S]*?\*\//g,
+    "",
+  );
+  const tabsCode = readRepoFile("src/styles/tabs.css").replace(/\/\*[\s\S]*?\*\//g, "");
+  const conversationCode = readRepoFile("src/styles/conversation.css").replace(
+    /\/\*[\s\S]*?\*\//g,
+    "",
+  );
+
+  /** A `--name: value;` declaration from motion.css, comments stripped. */
+  function tokenValue(name: string): string {
+    const match = new RegExp(`${name}\\s*:\\s*([^;]+);`).exec(motionCode);
+    if (!match) throw new Error(`src/styles/motion.css: ${name} is not declared`);
+    return match[1].trim();
+  }
+
+  /** The body of a flat rule, by literal selector. */
+  function ruleBody(selector: string, source: string): string {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = new RegExp(`${escaped}\\s*\\{([^{}]*)\\}`).exec(source);
+    if (!match) throw new Error(`no rule matching ${selector}`);
+    return match[1];
+  }
+
+  /** The linear() stops of a spring token, plus its declared duration. */
+  function spring(name: "settle" | "snap"): {
+    durationMs: number;
+    stops: Array<{ y: number; percent: number }>;
+  } {
+    const value = tokenValue(`--nex-sys-motion-spring-${name}`);
+    const match = /^linear\(([^)]*)\)\s*(\d+)ms$/.exec(value);
+    if (!match) throw new Error(`--nex-sys-motion-spring-${name} is not a linear() with a duration`);
+    const stops = match[1].split(",").map((stop) => {
+      const parsed = /([\d.]+)\s+([\d.]+)%/.exec(stop.trim());
+      if (!parsed) throw new Error(`unparseable spring stop: ${stop}`);
+      return { y: Number(parsed[1]), percent: Number(parsed[2]) };
+    });
+    return { durationMs: Number(match[2]), stops };
+  }
+
+  /** The comment immediately above a spring token. */
+  function springComment(name: "settle" | "snap"): string {
+    const at = motionSheet.indexOf(`--nex-sys-motion-spring-${name}:`);
+    const start = motionSheet.lastIndexOf("/*", at);
+    const end = motionSheet.lastIndexOf("*/", at);
+    if (at < 0 || start < 0 || end < start) throw new Error(`no comment above the ${name} spring`);
+    return motionSheet.slice(start, end + 2);
+  }
+
+  const SPRINGS = {
+    // The source of truth: SYSTEM §7.1. Everything else is derived.
+    settle: { zeta: 0.84, omega: 24, duration: 343, tpStop: 70.41 },
+    snap: { zeta: 0.70, omega: 24, duration: 411, tpStop: 44.58 },
+  } as const;
+
+  it("declares the three approved tokens and registers them in externalVars", () => {
+    for (const [name, home] of [
+      ["--nex-sys-motion-spring-settle", "src/styles/motion.css :root"],
+      ["--nex-sys-motion-spring-snap", "src/styles/motion.css :root"],
+      ["--nex-sys-motion-duration-hover", "src/styles/motion.css :root"],
+    ] as const) {
+      expect(tokenValue(name)).not.toBe("");
+      expect(externalVars.get(name)).toBe(home);
+    }
+    expect(tokenValue("--nex-sys-motion-duration-hover")).toBe("120ms");
+  });
+
+  it("re-derives both springs from (ζ, ωₙ) and pins the linear() contract", () => {
+    for (const name of ["settle", "snap"] as const) {
+      const spec = SPRINGS[name];
+      const comment = springComment(name);
+      // The pair is the contract. The comment has to name ζ and ωₙ,
+      // plus the three derived facts, so a reader can check the maths.
+      expect(comment).toMatch(new RegExp(`ζ\\s*${spec.zeta}`));
+      expect(comment).toMatch(new RegExp(`ωₙ\\s*${spec.omega}`));
+      for (const derived of ["T", "peak", "t_p"]) {
+        expect(comment).toContain(derived);
+      }
+
+      const { durationMs, stops } = spring(name);
+      const T = (-Math.log(0.001) / (spec.zeta * spec.omega)) * 1000;
+      const peak = Math.exp((-Math.PI * spec.zeta) / Math.sqrt(1 - spec.zeta ** 2));
+      const tp = (Math.PI / (spec.omega * Math.sqrt(1 - spec.zeta ** 2))) * 1000;
+
+      expect(Math.round(T)).toBe(spec.duration);
+      expect(durationMs).toBe(spec.duration);
+      expect(Math.round(tp)).toBe(name === "settle" ? 241 : 183);
+      // Peak: the curve's maximum must be the derived overshoot. The
+      // ±0.0005 band is the four-decimal precision of the token.
+      expect(Math.max(...stops.map((stop) => stop.y)) - 1).toBeCloseTo(peak, 3);
+      expect(Math.abs(Math.max(...stops.map((stop) => stop.y)) - (1 + peak))).toBeLessThan(0.0005);
+      // First sample is 0, last is 1 — the spring starts at rest and
+      // settles exactly.
+      expect(stops[0]).toEqual({ y: 0, percent: 0 });
+      expect(stops[stops.length - 1]).toEqual({ y: 1, percent: 100 });
+      // The crest is its OWN stop (SYSTEM §7.1). Interpolation between
+      // 4% samples would clip it, so a stop must sit at t_p/T.
+      const tpPercent = (tp / T) * 100;
+      expect(Math.abs(tpPercent - spec.tpStop)).toBeLessThan(0.05);
+      const crest = stops.find(
+        (stop) => Math.abs(stop.percent - tpPercent) <= 0.05,
+      );
+      expect(crest, `no t_p stop at ${tpPercent.toFixed(2)}%`).toBeDefined();
+      expect(Math.abs(crest!.y - (1 + peak))).toBeLessThan(0.0005);
+      // Do NOT pin the stop count: the contract pins the facts, not the
+      // sampling density.
+    }
+  });
+
+  it("leaves --motion-duration-fast at 150ms", () => {
+    // The hover token is an addition; it never redefines the state-fade.
+    expect(tokenValue("--motion-duration-fast")).toBe("var(--motion-duration-short3)");
+    expect(tokenValue("--motion-duration-short3")).toBe("150ms");
+    expect(tokenValue("--motion-duration-press")).toBe("90ms");
+    expect(tokenValue("--motion-scale-press")).toBe("0.97");
+  });
+
+  it("uses settle for every entrance, fallback declaration FIRST", () => {
+    const entrances: Array<[label: string, selector: string, source: string]> = [
+      ["dialog backdrop", ".nex-dialog-backdrop", componentsCode],
+      ["dialog card", ".nex-dialog-card", componentsCode],
+      ["popover", ".nex-pop-enter", componentsCode],
+      ["search popover", '[data-slot="search-results"]', componentsCode],
+      ["view", ".nex-view-enter", componentsCode],
+      ["empty", ".nex-empty-enter", componentsCode],
+      ["stagger item", ".nex-stagger > *", componentsCode],
+      ["snackbar", ".nex-snackbar", componentsCode],
+    ];
+    for (const [label, selector, source] of entrances) {
+      const body = ruleBody(selector, source);
+      const fallback = body.indexOf("var(--motion-spring-expressive-default-spatial-duration)");
+      const settle = body.indexOf("var(--nex-sys-motion-spring-settle)");
+      expect(fallback, `${label}: no non-linear() fallback`).toBeGreaterThanOrEqual(0);
+      expect(settle, `${label}: does not use the settle spring`).toBeGreaterThanOrEqual(0);
+      // Declaration order is the fallback: the browser drops the
+      // unsupported SECOND declaration and keeps the FIRST.
+      expect(fallback, `${label}: fallback must come first`).toBeLessThan(settle);
+    }
+  });
+
+  it("gives exits only to the surfaces that stay mounted", () => {
+    // SYSTEM §7.2: dialog, popover, snackbar. Everything else unmounts.
+    for (const keyframes of ["nex-pop-exit", "nex-snackbar-exit", "nex-dialog-exit"]) {
+      expect(componentsCode).toContain(`@keyframes ${keyframes}`);
+    }
+    for (const absent of ["nex-view-exit", "nex-empty-exit", "nex-stagger-exit", "nex-message-exit"]) {
+      expect(componentsCode).not.toContain(absent);
+    }
+    // Exit timing: 0.55 × 343 = 189ms, standard-accelerate, no delay.
+    for (const selector of ['.nex-pop-enter[data-state="closed"]', '.nex-snackbar[data-state="closed"]']) {
+      const body = ruleBody(selector, componentsCode);
+      expect(body).toContain("189ms var(--motion-easing-standard-accelerate) forwards");
+      expect(body).not.toMatch(/\d+ms\s+(?:var\([^)]*\)\s+)?\d+ms/);
+    }
+    // Dialog exit is unchanged: 200ms short4.
+    expect(ruleBody(".nex-dialog-card.is-closing", componentsCode)).toContain(
+      "var(--motion-duration-short4)",
+    );
+  });
+
+  it("turns tab create into a scale-only snap and drops expressive-fast-spatial", () => {
+    const body = ruleBody(".nex-tab-enter", tabsCode);
+    const fallback = body.indexOf("410ms var(--motion-easing-emphasized-decelerate)");
+    const snap = body.indexOf("var(--nex-sys-motion-spring-snap)");
+    expect(fallback).toBeGreaterThanOrEqual(0);
+    expect(snap).toBeGreaterThanOrEqual(0);
+    expect(fallback).toBeLessThan(snap);
+    const keyframes = /@keyframes nex-tab-in \{([\s\S]*?)\n\}/.exec(tabsCode)?.[1] ?? "";
+    expect(keyframes).toContain("scale(0.97)");
+    expect(keyframes).toContain("scale(1)");
+    expect(keyframes).not.toMatch(/opacity|translate/);
+    expect(tabsCode).not.toContain("expressive-fast-spatial");
+  });
+
+  it("inserts messages at 200ms / emphasized-decelerate / 8px, with no spring or delay", () => {
+    const body = ruleBody(".nex-message-enter", conversationCode);
+    expect(body).toContain("var(--motion-duration-short4)");
+    expect(body).toContain("var(--motion-easing-emphasized-decelerate)");
+    expect(body).not.toMatch(/spring/);
+    expect(body).not.toContain("animation-delay");
+    const keyframes = /@keyframes nex-message-insert \{([\s\S]*?)\n\}/.exec(
+      conversationCode,
+    )?.[1] ?? "";
+    expect(keyframes).toContain("translateY(8px)");
+    // The stagger indexed the thread, which the contract bans.
+    expect(conversationCode).not.toContain("--nex-chat-insert-index");
+    const view = readRepoFile("src/components/ConversationView.tsx");
+    expect(view).not.toContain("--nex-chat-insert-index");
+    expect(view).not.toContain("freshOrder");
+  });
+
+  it("never animates streaming text", () => {
+    // Streaming is information, not an event: nothing may select a
+    // stream node with an animation. There is no such selector today,
+    // and this fails the day one is written.
+    expect(conversationCode).not.toMatch(/nex-(?:message-)?stream/i);
+    expect(conversationCode).not.toMatch(/@keyframes[^{]*stream/i);
+  });
+
+  it("stagger: exactly five children, 50ms steps, last delay 200ms", () => {
+    const rules = [
+      ...componentsCode.matchAll(
+        /\.nex-stagger > \*:nth-child\((\d+)\)\s*\{\s*animation-delay:\s*calc\(var\(--motion-stagger-step\) \* (\d+)\);\s*\}/g,
+      ),
+    ];
+    expect(rules.map((match) => Number(match[1]))).toEqual([1, 2, 3, 4, 5]);
+    expect(rules.map((match) => Number(match[2]))).toEqual([0, 1, 2, 3, 4]);
+    // Σ = 4 × 50 = 200ms, under the 250ms contract limit.
+    const STEP_MS = Number(
+      /--motion-stagger-step:\s*(\d+)ms/.exec(motionCode)?.[1],
+    );
+    expect(STEP_MS).toBe(50);
+    expect(STEP_MS * Number(rules[rules.length - 1][2])).toBe(200);
+    expect(ruleBody(".nex-stagger > *", componentsCode)).toContain(
+      "var(--nex-sys-motion-spring-settle)",
+    );
+    // No sixth (or later) staggered child.
+    expect([...componentsCode.matchAll(/\.nex-stagger > \*:nth-child\(\d+\)/g)]).toHaveLength(5);
+  });
+
+  it("skeleton: 300ms delay + both, and the gate's zeroing is expected", () => {
+    const body = ruleBody(".nex-skeleton-row", componentsCode);
+    expect(body).toContain("animation-delay: 300ms");
+    expect(body).toContain("animation-fill-mode: both");
+    const skeleton = classTokens(componentSources.skeleton);
+    expect(skeleton).toEqual(
+      expect.arrayContaining(["[animation-delay:300ms]", "[animation-fill-mode:both]"]),
+    );
+    // EXPECTED: the global reduced-motion gate zeroes animation-delay
+    // for every animation. A reduced-motion user is supposed to skip
+    // the 300ms wait and see the static frame immediately — the delay
+    // is decoration, not information.
+    const gate = /@media \(prefers-reduced-motion: reduce\) \{([\s\S]*?)\n\}/.exec(
+      motionCode,
+    )?.[1] ?? "";
+    expect(gate).toMatch(/animation-delay:\s*0ms\s*!important/);
+  });
+
+  it("press: 0.97 / 90ms in / 411ms snap out, fallback first", () => {
+    const body = ruleBody(".nex-press", componentsCode);
+    const fallback = body.indexOf("410ms var(--motion-easing-emphasized-decelerate)");
+    const snap = body.indexOf("var(--nex-sys-motion-spring-snap)");
+    expect(fallback).toBeGreaterThanOrEqual(0);
+    expect(snap).toBeGreaterThanOrEqual(0);
+    expect(fallback).toBeLessThan(snap);
+    expect(ruleBody(".nex-press:active:not(:disabled)", componentsCode)).toContain(
+      "var(--nex-sys-motion-duration-press)",
+    );
+    // Paint rides the 120ms hover token, never the press clock.
+    expect(body).toContain("var(--nex-sys-motion-duration-hover)");
+
+    const button = componentSources.button.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, "");
+    expect(button).toContain("nex-press");
+    expect(button).toContain("active:scale-[var(--nex-sys-motion-scale-press)]");
+    expect(button).toContain("motion-reduce:active:scale-none");
+    // No Tailwind transition utilities: the fallback-first declaration
+    // pair cannot be expressed, and duplicate clocks would fight.
+    expect(button).not.toContain("transition-[");
+    expect(button).not.toContain("[transition-duration:");
+    expect(button).not.toMatch(/\d+ms\b/);
+    expect(button).not.toMatch(/scale-\[0\./);
+  });
+
+  it("hover: controls move to the 120ms token while fast stays 150ms", () => {
+    expect(tokenValue("--nex-sys-motion-duration-hover")).toBe("120ms");
+    const hoverRules: Array<[label: string, selector: string, source: string]> = [
+      ["legacy button", ".nex-btn", componentsCode],
+      ["tab label", ".nex-tab-label", tabsCode],
+      ["conversation date", '[data-slot="conversation-date"]', componentsCode],
+      ["segmented control", ".nex-seg button", componentsCode],
+      ["nav entry", ".nex-nav-entry", componentsCode],
+      ["snackbar action", ".nex-snackbar-action", componentsCode],
+    ];
+    for (const [label, selector, source] of hoverRules) {
+      expect(ruleBody(selector, source), `${label} is not on the hover token`).toContain(
+        "var(--nex-sys-motion-duration-hover)",
+      );
+    }
+    // Non-hover motion keeps the 150ms clock.
+    expect(ruleBody(".nex-m3-progress-linear-fill", componentsCode)).toContain(
+      "var(--nex-sys-motion-duration-fast)",
+    );
+    expect(ruleBody(".nex-context-meter-fill", readRepoFile("src/styles/context.css").replace(/\/\*[\s\S]*?\*\//g, ""))).toContain(
+      "var(--motion-duration-fast)",
+    );
+  });
+
+  it("audits every transition: hover/paint token or the non-hover fast token", () => {
+    // The complete sweep. A transition on neither clock is an unaudited
+    // duration — the failure mode this test exists to stop.
+    const dir = resolve(process.cwd(), "src/styles");
+    const offenders: string[] = [];
+    for (const file of readdirSync(dir).filter((name) => name.endsWith(".css"))) {
+      const code = readRepoFile(`src/styles/${file}`).replace(/\/\*[\s\S]*?\*\//g, "");
+      for (const match of code.matchAll(/transition:\s*([^;]+);/g)) {
+        const value = match[1].replace(/\s+/g, " ").trim();
+        if (value === "none") continue;
+        if (
+          !/var\(--nex-sys-motion-duration-hover\)|var\(--motion-duration-fast\)|var\(--nex-sys-motion-duration-fast\)/.test(
+            value,
+          )
+        ) {
+          offenders.push(`${file}: ${value}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("zen: three chrome layers, 40ms step, 189ms, content not moved", () => {
+    const exiting = [...tabsCode.matchAll(/\.nex-app\.nex-zen-exiting ([^{]+)\{([^}]*)\}/g)];
+    expect(exiting).toHaveLength(3);
+    const names = exiting.map((match) => match[1].trim());
+    expect(names).toEqual([
+      '[data-slot="sidebar"]',
+      ".nex-tabstrip",
+      ".nex-pane-header",
+    ]);
+    const delays = exiting.map((match) => {
+      const value = match[2];
+      const delay = /nex-zen-[a-z]+-exit 189ms var\(--motion-easing-emphasized-decelerate\) (\d+)ms both/.exec(
+        value,
+      );
+      expect(delay, `layer has no 189ms emphasized-decelerate exit: ${value}`).not.toBeNull();
+      return Number(delay![1]);
+    });
+    expect(delays).toEqual([0, 40, 80]);
+    // 189 = 0.55 × 343. No delay token exists; the step is raw by
+    // contract and the helper below is its JS half.
+    expect(Math.round(0.55 * 343)).toBe(189);
+    const zenKeyframes = (name: string): string =>
+      new RegExp(`@keyframes ${name} \\{([\\s\\S]*?)\\n\\}`).exec(tabsCode)?.[1] ?? "";
+    expect(zenKeyframes("nex-zen-sidebar-exit")).toContain("translateX(-8px)");
+    expect(zenKeyframes("nex-zen-strip-exit")).toContain("translateY(-4px)");
+    expect(zenKeyframes("nex-zen-header-exit")).toContain("translateY(-4px)");
+
+    // The helper table App.tsx schedules on.
+    expect(ZEN_EXIT_STEP_MS).toBe(40);
+    expect(ZEN_EXIT_LAYER_MS).toBe(189);
+    expect(ZEN_EXIT_TOTAL_MS).toBe(269);
+    expect([zenExitDelayMs(false), zenExitDelayMs(true)]).toEqual([269, 0]);
   });
 });
 

@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { render } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { readRepoFile } from "../test/readRepoFile";
@@ -19,14 +19,13 @@ import {
  *   - CSS:  the ONE global block, in src/styles/motion.css,
  *           collapses duration, delay and iteration-count, and
  *           holds the end frame.
- *   - JS:   a vendored React Bits component (TextType, copied in
- *           #218) branches on useReducedMotion() and renders its
- *           final static frame WITHOUT starting GSAP or the
- *           typing timer chain.
+ *   - JS:   the synchronous preference read, the fail-closed
+ *           fallback, and the subscription that re-renders when
+ *           the OS setting changes mid-session.
  *
- * The JS half is asserted with a matchMedia mock and a GSAP
- * spy: "no timeline was created" is the assertion, not "the
- * text happened to look finished".
+ * TextType and gsap were deleted in #230 P7 — there is no vendored
+ * JS timeline left to spy on, so the JS half is the hook contract
+ * only.
  */
 
 /** Install a matchMedia that answers `matches` for the reduced-motion
@@ -136,81 +135,4 @@ describe("reduced-motion gate — JS half", () => {
     expect(added).toContain(`change:${REDUCED_MOTION_QUERY}`);
   });
 
-  it("renders TextType's final static frame and starts no GSAP tween", async () => {
-    // GSAP is mocked rather than driven: the assertion is that no
-    // timeline is ever created, so a spy is the honest check.
-    const gsapMock = { set: vi.fn(), to: vi.fn() };
-    vi.doMock("gsap", () => ({ gsap: gsapMock }));
-    mockReducedMotion(true);
-    vi.resetModules();
-
-    const { default: ReducedTextType } = await import("../components/TextType");
-
-    render(<ReducedTextType text={["first", "final sentence"]} loop />);
-
-    await act(async () => {
-      // No timing assertion: a real reduced-motion render is
-      // synchronous, and the timers below would never fire.
-      await Promise.resolve();
-    });
-
-    // The information the animation would have revealed is all
-    // present in the static frame.
-    expect(screen.getByText("final sentence")).toBeInTheDocument();
-    // No GSAP blink loop, and no typing cursor left behind.
-    expect(gsapMock.to).not.toHaveBeenCalled();
-    expect(gsapMock.set).not.toHaveBeenCalled();
-    expect(document.body.textContent).not.toContain("|");
-
-    vi.doUnmock("gsap");
-  });
-
-  it("runs the TextType timeline when motion is allowed", async () => {
-    const gsapMock = { set: vi.fn(), to: vi.fn() };
-    vi.doMock("gsap", () => ({ gsap: gsapMock }));
-    mockReducedMotion(false);
-    vi.resetModules();
-
-    const { default: AnimatedTextType } = await import("../components/TextType");
-
-    render(<AnimatedTextType text="typing" />);
-
-    // The cursor blink tween is created on mount when motion is
-    // allowed — the counterpart to the assertion above.
-    expect(gsapMock.set).toHaveBeenCalledTimes(1);
-    expect(gsapMock.to).toHaveBeenCalledTimes(1);
-
-    vi.doUnmock("gsap");
-  });
-
-  it("renders nothing and starts no tween for an empty text list", async () => {
-    // Upstream reads `textArray[finalIndex]` unconditionally, so
-    // `text={[]}` threw on the static-frame path (and again in the
-    // typing effect). Both are guarded; this is the half that would
-    // have thrown first, under reduced motion.
-    const gsapMock = { set: vi.fn(), to: vi.fn() };
-    vi.doMock("gsap", () => ({ gsap: gsapMock }));
-    mockReducedMotion(true);
-    vi.resetModules();
-
-    const { default: EmptyTextType } = await import("../components/TextType");
-
-    // No `expect(...).not.toThrow()` wrapper: an exception fails this
-    // test on its own. What matters is what it renders.
-    const { container } = render(<EmptyTextType text={[]} />);
-
-    await act(async () => {
-      await Promise.resolve();
-    });
-
-    // Nothing to reveal, so nothing is rendered — no frame, no
-    // cursor. (Scoped to this render's own container: this file has
-    // no global cleanup, so document.body still holds earlier
-    // tests' nodes.)
-    expect(container.innerHTML).toBe("");
-    expect(gsapMock.set).not.toHaveBeenCalled();
-    expect(gsapMock.to).not.toHaveBeenCalled();
-
-    vi.doUnmock("gsap");
-  });
 });

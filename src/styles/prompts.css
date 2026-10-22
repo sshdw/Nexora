@@ -88,7 +88,7 @@
   border-radius: var(--shape-medium);
   background: var(--color-surface-container-high);
   border: 1px solid var(--color-outline-variant);
-  transition: background-color var(--motion-duration-fast) var(--motion-easing-standard),
+  transition: background-color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
     box-shadow var(--motion-duration-medium2) var(--motion-easing-standard),
     transform var(--motion-duration-medium2) var(--motion-easing-standard);
 }
@@ -145,7 +145,7 @@
   align-items: center;
   gap: 0;
   opacity: 0;
-  transition: opacity var(--motion-duration-fast) var(--motion-easing-standard);
+  transition: opacity var(--nex-sys-motion-duration-hover) var(--motion-easing-standard);
 }
 .nex-prompt-card:hover .nex-prompt-card-tools,
 .nex-prompt-card:focus-within .nex-prompt-card-tools {

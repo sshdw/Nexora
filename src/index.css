@@ -770,18 +770,13 @@
    one they happened to be written against. src/lib/motion.test.ts
    asserts against src/styles/motion.css — the file that ships.
 
-   CSS cannot reach a JS timeline. A rAF loop or a GSAP tween is a
-   clock the stylesheet cannot stop, so every animated component
-   in the stack branches on useReducedMotion()
-   (src/lib/useReducedMotion.ts) instead and renders its static
-   final frame. That half of the gate is pinned by the same test
-   file, with a GSAP spy: "no timeline was created" is the
-   assertion, not "the text happened to look finished".
-
-   #220 adds the first new animated surface on this stack (the
-   composer's autonomy explainer). Its hand-written branch lives in
-   src/components/ComposerAutonomyHint.tsx and its GSAP-spy test
-   in src/components/Composer.test.tsx — and the reverse check, that every
-   animation already merged still collapses, is asserted there
-   too, against the same motion.css block.
+   CSS cannot reach a JS clock. A rAF loop or a timer is a clock the
+   stylesheet cannot stop, so JS-driven motion branches on
+   useReducedMotion() (src/lib/useReducedMotion.ts) and renders its
+   static final frame. #230 P7 deleted the last vendored JS timeline
+   with TextType; the one remaining JS clock is the zen chrome
+   cascade, and zenExitDelayMs collapses it to 0 under reduced motion
+   (src/lib/zenExit.ts, table-tested). The hook contract is pinned in
+   src/lib/motion.test.ts, and every animation already merged is
+   asserted to still collapse against the same motion.css block.
    ---------------------------------------------------------- */

@@ -44,7 +44,10 @@ function Skeleton({ className, ...props }: React.ComponentProps<"div">) {
     <div
       data-slot="skeleton"
       aria-hidden="true"
-      className={cn("animate-pulse rounded-md bg-accent", className)}
+      className={cn(
+        "animate-pulse rounded-md bg-accent [animation-delay:300ms] [animation-fill-mode:both]",
+        className,
+      )}
       {...props}
     />
   )

@@ -107,7 +107,7 @@
   border-radius: var(--radius-2xl);
   background: var(--card);
   border: 1px solid var(--border);
-  transition: border-color var(--motion-duration-fast) var(--motion-easing-standard);
+  transition: border-color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard);
 }
 
 /* Focus-within lifts the seam to the light hairline — a tone
@@ -270,8 +270,8 @@
   border-radius: calc(var(--radius-lg) - 2px);
   font-size: 0.8125rem;
   color: var(--muted-foreground);
-  transition: background-color var(--motion-duration-fast) var(--motion-easing-standard),
-    color var(--motion-duration-fast) var(--motion-easing-standard);
+  transition: background-color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard);
 }
 
 .nex-composer-pills.nex-seg button:hover {
@@ -434,8 +434,8 @@
   border-radius: var(--radius-md);
   background: var(--muted);
   border-color: var(--border);
-  transition: background-color var(--motion-duration-fast) var(--motion-easing-standard),
-    border-color var(--motion-duration-fast) var(--motion-easing-standard);
+  transition: background-color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    border-color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard);
 }
 
 .nex-composer-attachments .nex-chip:hover {
@@ -488,8 +488,8 @@
   border-radius: calc(var(--radius-lg) - 2px);
   font-size: 0.8125rem;
   color: var(--muted-foreground);
-  transition: background-color var(--motion-duration-fast) var(--motion-easing-standard),
-    color var(--motion-duration-fast) var(--motion-easing-standard);
+  transition: background-color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard);
 }
 
 .nex-composer-autonomy.nex-seg button:hover {

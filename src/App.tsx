@@ -52,8 +52,10 @@ import { useImportExport } from "./lib/useImportExport";
 import { useOnboarding } from "./lib/useOnboarding";
 import { useOverlayRouter } from "./lib/useOverlayRouter";
 import { useProviders } from "./lib/useProviders";
+import { prefersReducedMotion } from "./lib/useReducedMotion";
 import { useSpendLimit } from "./lib/useSpendLimit";
 import { useWorkspace } from "./lib/useWorkspace";
+import { zenExitDelayMs } from "./lib/zenExit";
 
 function AppShell() {
   const {
@@ -115,7 +117,15 @@ function AppShell() {
   const autonomy = useAutonomy();
   // Zen reading mode: chromeless (sidebar + tab strip + pane headers hidden
   // via .nex-zen), Esc exits. Session-only, like tab state.
+  //
+  // Entering zen runs the three-layer chrome exit (SYSTEM §7.2, OD-D4):
+  // `.nex-zen-exiting` holds the app while sidebar/strip/header fade out on
+  // CSS, then zen flips and the chrome leaves layout. The timer is the one
+  // thing CSS cannot own; `zenExitDelayMs` collapses it to 0 under reduced
+  // motion. Leaving zen is instant — the chrome returns, no entrance.
   const [zen, setZen] = useState(false);
+  const [zenExiting, setZenExiting] = useState(false);
+  const zenTimer = useRef<number | null>(null);
   // Command palette (Ctrl+K): launcher over the registry in lib/commands.ts.
   const [paletteOpen, setPaletteOpen] = useState(false);
   // Shortcuts help dialog (Ctrl+/): grouped table over lib/shortcuts.ts.
@@ -263,8 +273,38 @@ function AppShell() {
   }, [tabs]);
 
   const toggleZen = useCallback(() => {
-    setZen((prev) => !prev);
-  }, []);
+    // Leaving is instant: the chrome returns and no entrance runs.
+    if (zen) {
+      setZen(false);
+      return;
+    }
+    // Re-entry while the cascade is running is ignored — the exit is
+    // already committed and re-opening it mid-fade would move chrome.
+    if (zenExiting) return;
+    const delay = zenExitDelayMs(prefersReducedMotion());
+    if (delay === 0) {
+      setZen(true);
+      return;
+    }
+    setZenExiting(true);
+    zenTimer.current = window.setTimeout(() => {
+      zenTimer.current = null;
+      setZen(true);
+      setZenExiting(false);
+    }, delay);
+  }, [zen, zenExiting]);
+
+  // Unmount safety: a pending zen cascade must not set state after the
+  // shell is gone.
+  useEffect(
+    () => () => {
+      if (zenTimer.current !== null) {
+        window.clearTimeout(zenTimer.current);
+        zenTimer.current = null;
+      }
+    },
+    [],
+  );
 
   // Language switch (Settings appearance segmented control + palette
   // command): a straight EN<->RU toggle, persisted per device.
@@ -296,8 +336,8 @@ function AppShell() {
 
   // Entering zen keeps focus in content (the main landmark); leaving zen
   // returns focus to the active tab so keyboard users resume where they
-  // were. Reduced-motion users get the same instant chrome swap — zen never
-  // animates, only toggles visibility.
+  // were. Focus moves when the state flips, i.e. after the chrome cascade
+  // (or immediately under reduced motion, where zenExitDelayMs is 0).
   useEffect(() => {
     if (zen) {
       mainRef.current?.focus();
@@ -733,7 +773,13 @@ function AppShell() {
 
   return (
     <SnackbarProvider>
-    <div className={"nex-app" + (zen ? " nex-zen" : "")}>
+    <div
+      className={
+        "nex-app" +
+        (zenExiting ? " nex-zen-exiting" : "") +
+        (zen ? " nex-zen" : "")
+      }
+    >
       <a className="nex-skip-link" href="#nex-main-content">
         {t("app.skipLink")}
       </a>

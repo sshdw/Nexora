@@ -49,11 +49,50 @@
   background: transparent;
   color: inherit;
   cursor: pointer;
-  transition: background-color var(--motion-duration-fast) var(--motion-easing-standard),
-    border-color var(--motion-duration-fast) var(--motion-easing-standard),
-    color var(--motion-duration-fast) var(--motion-easing-standard),
-    opacity var(--motion-duration-fast) var(--motion-easing-standard),
+  /* Paint is hover/focus-driven: 120ms (SYSTEM §7.2). `transform` stays
+     on the non-hover clock — this legacy button's pressed layer is an
+     opacity overlay, not a scale, so no accent token applies here. */
+  transition: background-color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    border-color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    opacity var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
     transform var(--motion-duration-short2) var(--motion-easing-standard);
+}
+
+/* ============================================================
+   GLOBAL PRESS (SYSTEM §7.2, OD-D9·motion)
+   One press for every control: scale 0.97 on a 90ms in, released on
+   the 411ms spring-snap. Declaration order is the fallback contract —
+   the 410ms emphasized-decelerate line FIRST, the linear() spring
+   SECOND, so a browser without linear() keeps the non-overshooting
+   release instead of dropping the transition entirely. Paints ride
+   the 120ms hover token. The button adapters add this class; the
+   scale VALUE itself comes from `active:scale-[var(--nex-sys-
+   motion-scale-press)]` in ui/button.tsx. Reduced motion: the global
+   gate zeroes every duration and `motion-reduce:active:scale-none`
+   removes the scale outright.
+   ============================================================ */
+.nex-press {
+  transition: scale 410ms var(--motion-easing-emphasized-decelerate),
+    background-color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    border-color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    box-shadow var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    opacity var(--nex-sys-motion-duration-hover) var(--motion-easing-standard);
+  transition: scale var(--nex-sys-motion-spring-snap),
+    background-color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    border-color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    box-shadow var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    opacity var(--nex-sys-motion-duration-hover) var(--motion-easing-standard);
+}
+.nex-press:active:not(:disabled) {
+  transition: scale var(--nex-sys-motion-duration-press) var(--motion-easing-standard),
+    background-color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    border-color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    box-shadow var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    opacity var(--nex-sys-motion-duration-hover) var(--motion-easing-standard);
 }
 
 /* Pressed layer (OFFICIAL 0.12 overlay). Painted over the
@@ -168,48 +207,58 @@
 /* Micro-morph press feedback — reserved for the whitelisted
    expressive moments only (send / item creation — NEXORA
    ADAPTATION rationing of the OFFICIAL spring scheme guidance).
-   Press eases down on the standard curve; release settles back
-   with a single soft overshoot (OFFICIAL expressive-fast-spatial
-   conversion pair). Reduced motion collapses both to instant. */
+   Press eases down on the standard curve (90ms); release settles
+   back on the 411ms spring-snap (SYSTEM §7.2). Fallback first, so a
+   browser without linear() gets the 410ms emphasized-decelerate
+   release instead of no release animation at all. Paints ride the
+   120ms hover token. Reduced motion collapses both to instant. */
 .nex-btn-expressive {
-  transition: background-color var(--motion-duration-fast) var(--motion-easing-standard),
-    border-color var(--motion-duration-fast) var(--motion-easing-standard),
-    color var(--motion-duration-fast) var(--motion-easing-standard),
-    opacity var(--motion-duration-fast) var(--motion-easing-standard),
-    transform var(--motion-spring-expressive-fast-spatial-duration)
-      var(--motion-spring-expressive-fast-spatial-curve);
+  transition: background-color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    border-color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    opacity var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    transform 410ms var(--motion-easing-emphasized-decelerate);
+  transition: background-color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    border-color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    opacity var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    transform var(--nex-sys-motion-spring-snap);
 }
 .nex-btn-expressive:active:not(:disabled) {
-  transform: scale(0.98);
-  transition: background-color var(--motion-duration-fast) var(--motion-easing-standard),
-    transform var(--motion-duration-short2) var(--motion-easing-standard);
+  transform: scale(var(--nex-sys-motion-scale-press));
+  transition: background-color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    transform var(--nex-sys-motion-duration-press) var(--motion-easing-standard);
 }
 
 /* Shape-morph press (Banegasn-reference mechanic, sanctioned by
    shape.md §6.3 for primary controls): the pill eases toward a
-   squarer radius while pressed, then springs back. Applied to the
-   composer's send pill only (NEXORA ADAPTATION rationing). */
+   squarer radius while pressed, then springs back on the same
+   411ms snap. The radius itself is a shape change, not hover paint,
+   so it keeps the non-hover 150ms clock. Applied to the composer's
+   send pill only (NEXORA ADAPTATION rationing). Fallback first. */
 .nex-morph-pill {
-  transition-property: background-color, border-color, color, opacity, transform, border-radius;
-  transition-duration: var(--motion-duration-fast), var(--motion-duration-fast),
-    var(--motion-duration-fast), var(--motion-duration-fast),
-    var(--motion-spring-expressive-fast-spatial-duration),
-    var(--motion-spring-expressive-fast-spatial-duration);
-  transition-timing-function: var(--motion-easing-standard),
-    var(--motion-easing-standard), var(--motion-easing-standard),
-    var(--motion-easing-standard), var(--motion-spring-expressive-fast-spatial-curve),
-    var(--motion-spring-expressive-fast-spatial-curve);
+  transition: background-color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    border-color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    opacity var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    transform 410ms var(--motion-easing-emphasized-decelerate),
+    border-radius var(--motion-duration-fast) var(--motion-easing-standard);
+  transition: background-color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    border-color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    opacity var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    transform var(--nex-sys-motion-spring-snap),
+    border-radius var(--motion-duration-fast) var(--motion-easing-standard);
 }
 .nex-morph-pill:active:not(:disabled) {
   border-radius: var(--shape-medium);
-  transform: scale(0.98);
-  transition-duration: var(--motion-duration-fast), var(--motion-duration-fast),
-    var(--motion-duration-fast), var(--motion-duration-fast),
-    var(--motion-duration-short2), var(--motion-duration-short2);
-  transition-timing-function: var(--motion-easing-standard),
-    var(--motion-easing-standard), var(--motion-easing-standard),
-    var(--motion-easing-standard), var(--motion-easing-standard),
-    var(--motion-easing-standard);
+  transform: scale(var(--nex-sys-motion-scale-press));
+  transition: background-color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    border-color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    opacity var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    transform var(--nex-sys-motion-duration-press) var(--motion-easing-standard),
+    border-radius var(--motion-duration-fast) var(--motion-easing-standard);
 }
 
 /* ============================================================
@@ -234,8 +283,8 @@
   background: transparent;
   color: var(--color-on-surface-variant);
   cursor: pointer;
-  transition: background-color var(--motion-duration-fast) var(--motion-easing-standard),
-    color var(--motion-duration-fast) var(--motion-easing-standard);
+  transition: background-color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard);
 }
 .nex-icon-btn::after {
   content: "";
@@ -350,8 +399,8 @@
   background: var(--card);
   opacity: 0;
   pointer-events: none;
-  transition: opacity var(--motion-duration-fast) var(--motion-easing-standard),
-    background-color var(--motion-duration-fast) var(--motion-easing-standard);
+  transition: opacity var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    background-color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard);
 }
 
 /* Revealed by: the pointer is over the row, the keyboard is INSIDE
@@ -388,7 +437,7 @@
    (which lives INSIDE the row button, before the actions in the
    tree) react to focus landing in the actions. */
 [data-slot="conversation-date"] {
-  transition: opacity var(--motion-duration-fast) var(--motion-easing-standard);
+  transition: opacity var(--nex-sys-motion-duration-hover) var(--motion-easing-standard);
 }
 [data-slot="conversation-row"]:hover [data-slot="conversation-date"],
 [data-slot="conversation-row"][data-selected="true"] [data-slot="conversation-date"],
@@ -415,8 +464,11 @@
 [data-slot="search-results"] {
   z-index: var(--nex-sys-z-popover);
   transform-origin: top center;
-  animation: nex-pop-enter var(--motion-duration-medium2)
-    var(--motion-easing-emphasized-decelerate);
+  /* A floating anchored surface, so the popover row applies: settle
+     spring, fallback first and linear() second. */
+  animation: nex-pop-enter var(--motion-spring-expressive-default-spatial-duration)
+    var(--motion-spring-expressive-default-spatial-curve);
+  animation: nex-pop-enter var(--nex-sys-motion-spring-settle);
 }
 
 /* The two states that APPEAR IN PLACE — the failure notice and the
@@ -455,8 +507,8 @@
   font-size: var(--type-size-body-medium);
   font-family: inherit;
   outline: none;
-  transition: border-color var(--motion-duration-fast) var(--motion-easing-standard),
-    background-color var(--motion-duration-fast) var(--motion-easing-standard);
+  transition: border-color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    background-color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard);
 }
 
 .nex-textarea {
@@ -532,8 +584,8 @@
   color: var(--color-on-surface);
   font-size: var(--type-size-body-medium);
   outline: none;
-  transition: border-color var(--motion-duration-fast) var(--motion-easing-standard),
-    background-color var(--motion-duration-fast) var(--motion-easing-standard);
+  transition: border-color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    background-color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard);
 }
 .nex-search-input::placeholder {
   color: var(--color-on-surface-tertiary);
@@ -610,8 +662,8 @@
   font-family: inherit;
   font-weight: var(--type-weight-medium);
   cursor: pointer;
-  transition: background-color var(--motion-duration-fast) var(--motion-easing-standard),
-    color var(--motion-duration-fast) var(--motion-easing-standard);
+  transition: background-color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard);
 }
 
 .nex-seg button:hover {
@@ -651,8 +703,8 @@
   border-radius: var(--shape-small);
   background: transparent;
   text-align: left;
-  transition: background-color var(--motion-duration-fast) var(--motion-easing-standard),
-    color var(--motion-duration-fast) var(--motion-easing-standard);
+  transition: background-color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard);
 }
 .nex-nav-entry:hover {
   background: var(--state-hover);
@@ -767,8 +819,8 @@
   background: var(--color-surface-container-highest);
   border: 1px solid var(--color-outline-variant);
   border-radius: var(--shape-small);
-  transition: background-color var(--motion-duration-fast) var(--motion-easing-standard),
-    border-color var(--motion-duration-fast) var(--motion-easing-standard);
+  transition: background-color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    border-color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard);
 }
 .nex-chip:hover {
   background: var(--state-hover);
@@ -808,8 +860,8 @@
   background: transparent;
   color: var(--color-on-surface-variant);
   cursor: pointer;
-  transition: background-color var(--motion-duration-fast) var(--motion-easing-standard),
-    color var(--motion-duration-fast) var(--motion-easing-standard);
+  transition: background-color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard);
 }
 .nex-chip-remove:hover:not(:disabled),
 .nex-chip-remove:active:not(:disabled) {
@@ -829,9 +881,9 @@
    the level-2 shadow a floating layer is allowed (brief §19). The
    hairline stays because §19 names dialogs as a border job and it
    is the only edge high-contrast mode gets once shadows drop.
-   Enter: scrim fade + card scale 0.9→1 on the OFFICIAL medium4 ·
-   emphasized-decelerate pairing (skill motion.md §7).
-   Exit (0.3.0): card scales back + fades on the OFFICIAL short4 ·
+   Enter: scrim fade + card scale 0.9→1 on the settle spring
+   (SYSTEM §7.2; fallback declaration first, linear() second).
+   Exit (unchanged): card scales back + fades on short4 ·
    standard-accelerate pairing; the shell keeps the dialog mounted
    for the exit (Modal.tsx) — reduced motion resolves instantly.
    Focus/Esc/trap semantics live in src/components/Modal.tsx.
@@ -846,8 +898,10 @@
   justify-content: center;
   background: var(--color-scrim);
   padding: var(--space-md);
-  animation: nex-scrim-enter var(--motion-duration-medium4)
-    var(--motion-easing-emphasized-decelerate);
+  /* Enter: settle spring (fallback first, linear() second). */
+  animation: nex-scrim-enter var(--motion-spring-expressive-default-spatial-duration)
+    var(--motion-spring-expressive-default-spatial-curve);
+  animation: nex-scrim-enter var(--nex-sys-motion-spring-settle);
 }
 .nex-dialog-backdrop.is-closing {
   animation: nex-scrim-exit var(--motion-duration-short4)
@@ -867,8 +921,10 @@
   gap: var(--space-md);
   overflow-y: auto;
   padding: var(--space-xl);
-  animation: nex-dialog-enter var(--motion-duration-medium4)
-    var(--motion-easing-emphasized-decelerate);
+  /* Enter: settle spring (fallback first, linear() second). */
+  animation: nex-dialog-enter var(--motion-spring-expressive-default-spatial-duration)
+    var(--motion-spring-expressive-default-spatial-curve);
+  animation: nex-dialog-enter var(--nex-sys-motion-spring-settle);
 }
 .nex-dialog-card.is-closing {
   animation: nex-dialog-exit var(--motion-duration-short4)
@@ -920,21 +976,38 @@
 }
 
 /* ============================================================
-   POPOVER ENTER MOTION (anchored transient surfaces)
-   Scale 0.96→1 + fade from the top anchor origin — the menu/
-   popover pattern (skill motion.md §7) on the OFFICIAL medium2 ·
-   emphasized-decelerate anchor. Apply .nex-pop-enter to the
-   floating panel element. Reduced motion: final frame only.
+   POPOVER ENTER / EXIT (anchored transient surfaces)
+   Scale 0.96→1 + fade from the top anchor origin on the settle
+   spring (SYSTEM §7.2). Apply .nex-pop-enter to the floating panel
+   element. Exit only when the node stays mounted: `data-state="closed"`
+   runs 189ms (0.55 × 343) standard-accelerate, no JS. Reduced motion:
+   final frame only.
    ============================================================ */
 
 .nex-pop-enter {
   transform-origin: top center;
-  animation: nex-pop-enter var(--motion-duration-medium2)
-    var(--motion-easing-emphasized-decelerate);
+  /* Enter: settle spring (fallback first, linear() second). */
+  animation: nex-pop-enter var(--motion-spring-expressive-default-spatial-duration)
+    var(--motion-spring-expressive-default-spatial-curve);
+  animation: nex-pop-enter var(--nex-sys-motion-spring-settle);
 }
 
 @keyframes nex-pop-enter {
   from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
+/* Exit: only the surfaces that stay mounted get one (SYSTEM §7.2) —
+   0.55 × the 343ms settle entrance = 189ms, standard-accelerate, no
+   delay. Radix owns `data-state`; no JS is added for this. */
+.nex-pop-enter[data-state="closed"] {
+  animation: nex-pop-exit 189ms var(--motion-easing-standard-accelerate) forwards;
+}
+
+@keyframes nex-pop-exit {
+  to {
     opacity: 0;
     transform: scale(0.96);
   }
@@ -960,15 +1033,17 @@
 
 /* ============================================================
    VIEW-SWITCH ENTER (navigation crossfade)
-   Calm fade + ≤8px rise on the OFFICIAL medium2 · standard
-   anchor (skill motion.md §7 "View/navigation switch"). Applied
-   to each main-view root; runs on view mount only — never on
-   re-render. Reduced motion: final frame instantly.
+   Calm fade + ≤8px rise on the settle spring (SYSTEM §7.2).
+   Applied to each main-view root; runs on view mount only —
+   never on re-render. No exit (B3). Reduced motion: final frame.
    ============================================================ */
 
 .nex-view-enter {
-  animation: nex-view-enter var(--motion-duration-medium2)
-    var(--motion-easing-standard);
+  /* Enter: settle spring (fallback first, linear() second). No exit —
+     the view unmounts before a CSS exit could run (B3). */
+  animation: nex-view-enter var(--motion-spring-expressive-default-spatial-duration)
+    var(--motion-spring-expressive-default-spatial-curve);
+  animation: nex-view-enter var(--nex-sys-motion-spring-settle);
 }
 
 @keyframes nex-view-enter {
@@ -980,31 +1055,24 @@
 
 /* ============================================================
    STAGGERED LIST ENTRANCE (first paint of list/card collections)
-   Items rise 8px + fade on the OFFICIAL medium4 ·
-   emphasized-decelerate pair; per-item delay steps by the
-   OFFICIAL short1 anchor (Banegasn-reference pattern re-anchored
-   to official tokens). Applied via .nex-stagger on the container;
-   children up to the 12th participate — later items appear
-   without delay (long lists must not feel slow).
+   Items rise 8px + fade on the settle spring (fallback first,
+   linear() second). EXACTLY five children participate, 50ms steps,
+   last delay 200ms — Σ delay 250ms, the SYSTEM §7.2 limit. Later
+   items appear without delay (a long list must not feel slow), and
+   there is no stagger inside an active thread.
    Reduced motion: global gate resolves to final frame.
    ============================================================ */
 
 .nex-stagger > * {
-  animation: nex-stagger-enter var(--motion-duration-medium4)
-    var(--motion-easing-emphasized-decelerate) backwards;
+  animation: nex-stagger-enter var(--motion-spring-expressive-default-spatial-duration)
+    var(--motion-spring-expressive-default-spatial-curve) backwards;
+  animation: nex-stagger-enter var(--nex-sys-motion-spring-settle) backwards;
 }
 .nex-stagger > *:nth-child(1) { animation-delay: calc(var(--motion-stagger-step) * 0); }
 .nex-stagger > *:nth-child(2) { animation-delay: calc(var(--motion-stagger-step) * 1); }
 .nex-stagger > *:nth-child(3) { animation-delay: calc(var(--motion-stagger-step) * 2); }
 .nex-stagger > *:nth-child(4) { animation-delay: calc(var(--motion-stagger-step) * 3); }
 .nex-stagger > *:nth-child(5) { animation-delay: calc(var(--motion-stagger-step) * 4); }
-.nex-stagger > *:nth-child(6) { animation-delay: calc(var(--motion-stagger-step) * 5); }
-.nex-stagger > *:nth-child(7) { animation-delay: calc(var(--motion-stagger-step) * 6); }
-.nex-stagger > *:nth-child(8) { animation-delay: calc(var(--motion-stagger-step) * 7); }
-.nex-stagger > *:nth-child(9) { animation-delay: calc(var(--motion-stagger-step) * 8); }
-.nex-stagger > *:nth-child(10) { animation-delay: calc(var(--motion-stagger-step) * 9); }
-.nex-stagger > *:nth-child(11) { animation-delay: calc(var(--motion-stagger-step) * 10); }
-.nex-stagger > *:nth-child(12) { animation-delay: calc(var(--motion-stagger-step) * 11); }
 
 @keyframes nex-stagger-enter {
   from {
@@ -1015,13 +1083,15 @@
 
 /* ============================================================
    EMPTY-STATE ENTRANCE (the one display-typography hero moment)
-   Mark + heading rise softly once per view mount on the OFFICIAL
-   medium4 · emphasized-decelerate pair (skill motion.md §7).
+   Mark + heading rise softly once per view mount on the settle
+   spring (SYSTEM §7.2). No exit — the node unmounts first (M4).
    ============================================================ */
 
 .nex-empty-enter {
-  animation: nex-empty-enter var(--motion-duration-medium4)
-    var(--motion-easing-emphasized-decelerate);
+  /* Enter: settle spring (fallback first, linear() second). No exit. */
+  animation: nex-empty-enter var(--motion-spring-expressive-default-spatial-duration)
+    var(--motion-spring-expressive-default-spatial-curve);
+  animation: nex-empty-enter var(--nex-sys-motion-spring-settle);
 }
 
 @keyframes nex-empty-enter {
@@ -1060,9 +1130,12 @@
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
-  transition: opacity var(--motion-duration-short3) var(--motion-easing-standard),
-    transform var(--motion-duration-short3) var(--motion-easing-standard),
-    visibility 0s linear var(--motion-duration-short3);
+  /* Hover/focus reveal: 120ms (SYSTEM §7.2). The visibility leg stays
+     a 0s transition delayed by the same token, so the tip is not
+     display:none mid-fade. */
+  transition: opacity var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    transform var(--nex-sys-motion-duration-hover) var(--motion-easing-standard),
+    visibility 0s linear var(--nex-sys-motion-duration-hover);
 }
 
 .nex-tooltip:hover .nex-tooltip-bubble,
@@ -1070,7 +1143,7 @@
   opacity: 1;
   visibility: visible;
   transform: translateX(-50%) translateY(0);
-  /* Delay only the reveal; hiding stays immediate. OFFICIAL medium4. */
+  /* Delay only the reveal; hiding stays immediate. Same 120ms token. */
   transition-delay: var(--motion-duration-medium4), var(--motion-duration-medium4),
     var(--motion-duration-medium4);
 }
@@ -1082,8 +1155,10 @@
    mapping now reserves for controls (the old 4px corner read as
    a chip, not a control). Bottom-right placement is a desktop
    RECOMMENDATION.
-   Enter: slide-up + fade on the short4 anchor (skill motion.md
-   §7); dismissal is instant (parent unmounts the region).
+   Enter: the settle spring. Exit exists because the host keeps the
+   node mounted for it: 189ms standard-accelerate via
+   `[data-state="closed"]`, no JS. If the host unmounts first the exit
+   simply never runs — information is never withheld.
    ============================================================ */
 
 .nex-snackbar {
@@ -1103,12 +1178,28 @@
   color: var(--color-inverse-on-surface);
   box-shadow: var(--nex-sys-elevation-level1);
   font-size: var(--type-size-body-medium);
-  animation: nex-snackbar-enter var(--motion-duration-short4)
-    var(--motion-easing-standard-decelerate);
+  /* Enter: settle spring (fallback first, linear() second). */
+  animation: nex-snackbar-enter var(--motion-spring-expressive-default-spatial-duration)
+    var(--motion-spring-expressive-default-spatial-curve);
+  animation: nex-snackbar-enter var(--nex-sys-motion-spring-settle);
 }
 
 @keyframes nex-snackbar-enter {
   from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+/* Exit: the host keeps the node mounted long enough for it, so the
+   snackbar is one of the three surfaces with an exit (SYSTEM §7.2).
+   0.55 × 343ms = 189ms, standard-accelerate, no delay. */
+.nex-snackbar[data-state="closed"] {
+  animation: nex-snackbar-exit 189ms var(--motion-easing-standard-accelerate) forwards;
+}
+
+@keyframes nex-snackbar-exit {
+  to {
     opacity: 0;
     transform: translateY(8px);
   }
@@ -1124,7 +1215,7 @@
   font-size: var(--type-size-body-small);
   font-weight: var(--type-weight-medium);
   cursor: pointer;
-  transition: background-color var(--motion-duration-fast) var(--motion-easing-standard);
+  transition: background-color var(--nex-sys-motion-duration-hover) var(--motion-easing-standard);
 }
 .nex-snackbar-action:hover {
   background: var(--state-inverse-hover);
@@ -1148,7 +1239,13 @@
   height: 44px;
   margin-bottom: 4px;
   background: var(--state-hover);
+  /* SYSTEM §7.2: 300ms delay, then the pulse; `both` holds the first
+     frame during the delay so the row never flashes fully opaque.
+     The global reduced-motion gate zeroes animation-delay — EXPECTED:
+     a reduced-motion user gets the static frame immediately. */
   animation: nex-pulse var(--motion-loop-skeleton) ease-in-out infinite;
+  animation-delay: 300ms;
+  animation-fill-mode: both;
 }
 
 @keyframes nex-pulse {
@@ -1265,9 +1362,8 @@
    (OFFICIALLY-supported desktop pattern, [toolbars]/[bars-docked]).
    Docked is placement-only (same visuals as the row it replaces);
    floating is an anchored popover: elevated container, level-1 float,
-   popover z-step, scale+fade enter from the anchor on
-   medium2 · emphasized-decelerate (via .nex-pop-enter; reduced
-   motion: fade-only/instant). ---- */
+   popover z-step, scale+fade enter from the anchor on the settle
+   spring (via .nex-pop-enter; reduced motion: fade-only/instant). ---- */
 .nex-m3-toolbar-docked {
   display: flex;
   align-items: center;
@@ -1469,9 +1565,11 @@
   font-family: inherit;
   text-align: left;
   cursor: pointer;
-  transition: background-color var(--nex-sys-motion-spring-expressive-default-spatial-duration)
-      var(--nex-sys-motion-spring-expressive-default-spatial-curve),
-    color var(--nex-sys-motion-duration-fast)
+  /* Hover/focus paint: 120ms. This used to ride the 500ms expressive
+     spatial pair — a hover response is not a spatial event. */
+  transition: background-color var(--nex-sys-motion-duration-hover)
+      var(--nex-sys-motion-easing-standard),
+    color var(--nex-sys-motion-duration-hover)
       var(--nex-sys-motion-easing-standard);
 }
 .nex-m3-rail-item:hover:not(:disabled) {
