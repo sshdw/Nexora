@@ -346,3 +346,61 @@ fn bare_invocation_never_opens_a_tui() {
     );
     let _ = std::fs::remove_dir_all(&base);
 }
+
+/// #161 concurrent-open proof: `doctor` is a reader and must exit 0 with its
+/// fixed vocabulary while another process holds the database write lock.
+///
+/// The writer is this test process (WAL mode, `BEGIN IMMEDIATE` + a real
+/// insert). `doctor` opens read-only; a static `MAX(schema_version)` read must
+/// not be blocked by the writer. The fixture is built through the SAME core
+/// migrations the desktop uses — never a hand-copied schema.
+#[test]
+fn doctor_reads_while_a_writer_holds_the_database() {
+    let (base, app_data_dir) = sandbox("doctor-concurrent");
+    std::fs::create_dir_all(&app_data_dir).expect("app-data dir");
+    let db_path = app_data_dir.join(nexora_core::storage::app_data::DB_FILE_NAME);
+    let writer = nexora_core::storage::open(&db_path).expect("migrate fixture");
+    writer
+        .execute_batch("BEGIN IMMEDIATE;")
+        .expect("begin writer transaction");
+    writer
+        .execute(
+            "INSERT INTO app_settings (key, value) VALUES ('probe', 'held')",
+            [],
+        )
+        .expect("writer holds the write lock");
+
+    let mut command = Command::new(nexora());
+    command
+        .arg("doctor")
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("USER", "nexora-test");
+    #[cfg(target_os = "windows")]
+    command.env("APPDATA", &base);
+    #[cfg(target_os = "macos")]
+    command.env("HOME", &base);
+    #[cfg(target_os = "linux")]
+    command
+        .env("HOME", &base)
+        .env("XDG_DATA_HOME", base.join(".local/share"));
+    let output = command.output().expect("doctor must execute");
+    let text = stdout_text(&output);
+
+    assert!(
+        output.status.success(),
+        "doctor must exit 0 while a writer is live (stderr: {})",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let target = nexora_core::storage::target_version();
+    assert!(
+        text.contains(&format!(
+            "database: found schema_version={target} size_bytes="
+        )),
+        "doctor must report the migrated schema from the fixed vocabulary:\n{text}"
+    );
+
+    writer.execute_batch("ROLLBACK;").expect("rollback");
+    drop(writer);
+    let _ = std::fs::remove_dir_all(&base);
+}
