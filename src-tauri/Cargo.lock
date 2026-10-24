@@ -2359,6 +2359,8 @@ dependencies = [
 name = "nexora-core"
 version = "0.1.0"
 dependencies = [
+ "log",
+ "rusqlite",
  "serde",
  "serde_json",
 ]
