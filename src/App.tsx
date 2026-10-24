@@ -6,6 +6,7 @@ import ConversationTabs, { type TabEntry } from "./components/ConversationTabs";
 import ActivityHealthPanel from "./components/ActivityHealthPanel";
 import AuditPanel from "./components/AuditPanel";
 import DebtPanel from "./components/DebtPanel";
+import Dock from "./components/Dock";
 import DocsPanel from "./components/DocsPanel";
 import EmptyState from "./components/EmptyState";
 import ReleasePanel from "./components/ReleasePanel";
@@ -18,7 +19,6 @@ import OnboardingFlow from "./components/OnboardingFlow";
 import PromptLibraryView from "./components/PromptLibraryView";
 import SettingsView from "./components/SettingsView";
 import ShortcutsDialog from "./components/ShortcutsDialog";
-import Sidebar from "./components/Sidebar";
 import { SnackbarProvider } from "./components/SnackbarHost";
 import TaskPanel from "./components/TaskPanel";
 import VersionControlPanel from "./components/VersionControlPanel";
@@ -229,6 +229,19 @@ function AppShell() {
       creatingInFlight.current = false;
     }
   }, [create, tabs, router]);
+
+  // Dock panel toggle (wired to Dock's onPanelToggle). Settings opens the
+  // Settings overlay now; workspace / sessions / activity are no-ops until
+  // their panels are built in later phases (R4-04 / R4-05) — intentional
+  // no-op so the Dock fires the toggle without crashing.
+  const handlePanelToggle = useCallback(
+    (panel: "workspace" | "sessions" | "activity" | "settings") => {
+      if (panel === "settings") {
+        router.openSettings();
+      }
+    },
+    [router],
+  );
 
   // Stabilized with useCallback (NEX-FE-002): consumed by the memoized
   // navigation context value.
@@ -738,7 +751,7 @@ function AppShell() {
         {t("app.skipLink")}
       </a>
       <NavigationProvider value={navigation}>
-        <Sidebar />
+        <Dock onNew={handleNewConversation} onPanelToggle={handlePanelToggle} />
       </NavigationProvider>
       <div className="nex-main" id="nex-main-content" tabIndex={-1} ref={mainRef}>
         {!zen && !showOverlays && (
