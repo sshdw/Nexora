@@ -201,14 +201,16 @@ describe("Sidebar migrated surface (#230 Phase 1)", () => {
 
   it("declares the rail's width once, on the rail itself", () => {
     // 256px = `w-64`: THEME §4's 240–256 band, normalized by THEME §6.
-    // The shell grid must size its rail column from the rail, not from a
-    // second copy of the number (the old M3E `--nex-sys-layout-sidebar-
-    // width`, 280px).
+    // The component still owns its own width; the shell grid no longer
+    // has a rail column at all (App.tsx renders the fixed edge Dock and
+    // `.nex-main` is the only in-flow child), so the grid must not name
+    // a second copy of the number — neither the old M3E
+    // `--nex-sys-layout-sidebar-width` (280px) nor an `auto` track.
     expect(source).toContain("w-64");
     const shell = readRepoFile("src/styles.css");
     const appRule = /^\.nex-app \{[\s\S]*?\n\}/m.exec(shell)?.[0] ?? "";
     expect(appRule).not.toMatch(/--nex-sys-layout-sidebar-width/);
-    expect(appRule).toMatch(/grid-template-columns:\s*auto 1fr/);
+    expect(appRule).toMatch(/grid-template-columns:\s*1fr\s*;/);
   });
 
   it("keeps the row's title truncating and its date out of that box", () => {

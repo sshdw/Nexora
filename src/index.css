@@ -42,9 +42,10 @@
 
    Also deliberately absent: any font import. shadcn's preset
    ships its own typeface; adopting it would re-letter every
-   already-merged surface. `--font-sans` below therefore
-   aliases the system stack that src/styles/tokens.css already
-   declares rather than naming a family nothing loads.
+   already-merged surface. `--font-sans` below therefore names
+   the owner-decided face — Geist, registered from
+   src/main.tsx, with the system stack after it — rather than
+   shadcn's preset family.
 
    ---- CASCADE: why the legacy sheets are imported HERE ----
 
@@ -160,10 +161,10 @@
    theme blocks rather than carried as a second source of truth.
    ---------------------------------------------------------- */
 @theme inline {
-    /* The stack's font family is the system stack the merged
-       tokens already declare. Naming shadcn's preset face here
-       would point at a family nothing loads (and silently
-       re-letter every merged surface through `font-sans`). */
+    /* These keys alias the theme blocks' own stacks (Geist first,
+       Inter/Cascadia Code as fallbacks). Naming shadcn's preset
+       face here would point at a family nothing loads (and
+       silently re-letter every merged surface through `font-sans`). */
     --font-sans: var(--font-sans);
     --font-mono: var(--font-mono);
     --color-ring: var(--ring);
@@ -228,9 +229,10 @@
      text       muted ladder — `foreground` for content, and
                 `muted-foreground` for everything secondary. No
                 coloured chrome, no gradients, no glows
-     type       Inter for UI (cyrillic first-class), Cascadia Code
+     type       Geist for UI (cyrillic first-class), Geist Mono
                 for code/paths/commands/ids/model names only —
-                `--font-sans` / `--font-mono` below
+                `--font-sans` / `--font-mono` below; Inter and
+                Cascadia Code stay loaded as fallbacks
 
    Direction (owner pivot 2026-10-13, SUPERSEDED 2026-10-15 by
    the mono decision above — history, not paint: the canvas /
@@ -376,12 +378,14 @@
        CSS) — the token is the colour only. */
     --ring: oklch(1 0 0 / 80%);
 
-    /* Type. Inter for UI (cyrillic first-class), Cascadia Code
-       for code/paths/commands/ids/model names only. System tails
-       cover CJK/Arabic/Hebrew — too heavy to bundle, fallback is
-       honest. Loaded from @fontsource in src/main.tsx. */
-    --font-sans: "Inter Variable", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans", sans-serif;
-    --font-mono: "Cascadia Code", Consolas, "SF Mono", Menlo, monospace;
+    /* Type. Geist is the primary UI face (cyrillic first-class),
+       Geist Mono for code/paths/commands/ids/model names only;
+       Inter and Cascadia Code remain loaded as fallbacks. System
+       tails cover CJK/Arabic/Hebrew — too heavy to bundle, fallback
+       is honest. All four faces load from @fontsource in
+       src/main.tsx. */
+    --font-sans: "Geist Variable", "Inter Variable", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans", sans-serif;
+    --font-mono: "Geist Mono Variable", "Cascadia Code", Consolas, "SF Mono", Menlo, monospace;
 
     /* One shape scale. `--radius` is the step shadcn's
        `rounded-md` utilities resolve from, and it is set to the
@@ -486,11 +490,14 @@
     /* Focus */
     --focus-ring-offset-inset: -1px;
 
-    /* Type */
-    --type-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-      "Helvetica Neue", Arial, sans-serif;
-    --type-family-mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo,
-      Consolas, monospace;
+    /* Type. Geist is the primary face for the whole shell
+       (`--type-family` feeds `.nex-app { font-family }`); the legacy
+       system tail stays after it so a missing webfont still lands on
+       a readable stack rather than a synthesised serif. Inter and
+       Cascadia Code remain loaded in src/main.tsx as the
+       `--font-sans` / `--font-mono` fallbacks. */
+    --type-family: "Geist Variable", "Inter Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --type-family-mono: "Geist Mono Variable", ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
     --type-size-label-small: 11px;
     --type-size-label-medium: 12px;
     --type-size-label-large: 14px;
@@ -605,8 +612,8 @@
     --input: oklch(0.18 0.004 264 / 18%);
     --ring: oklch(0.165 0.006 286 / 80%);
 
-    --font-sans: "Inter Variable", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans", sans-serif;
-    --font-mono: "Cascadia Code", Consolas, "SF Mono", Menlo, monospace;
+    --font-sans: "Geist Variable", "Inter Variable", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans", sans-serif;
+    --font-mono: "Geist Mono Variable", "Cascadia Code", Consolas, "SF Mono", Menlo, monospace;
 
     /* ============================================================
        Light-theme overrides of the relocated legacy tokens (#230
