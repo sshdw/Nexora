@@ -15,10 +15,12 @@ Both frames are distinct and carry >900 colours.
 
 - Prove: Agent is the default mode in a real build; the attachment affordance is absent in
   Agent; the Glide Select pill rests exactly on the selected segment in two groups
-  (mode and autonomy) at two widths; the model row is a row, not a pill.
-- Do not prove: the pill's motion (a still cannot), Chat-mode paint (the mode switch was
-  exercised in tests, not captured), running/approval/complete states, RU, light theme,
-  200 % zoom — those rows stay open for Phases D–F.
+  (mode and autonomy) at two widths.
+- Do not prove: the pill's motion (a still cannot), the model picker's row layout with its
+  popover closed (it is only reachable when the picker is open — covered by tests, not by
+  these stills), Chat-mode paint (the mode switch was exercised in tests, not captured),
+  running/approval/complete states, RU, light theme, 200 % zoom — those rows stay open for
+  Phases D–F.
 
 ## Defect visible in these frames (not fixed here)
 
