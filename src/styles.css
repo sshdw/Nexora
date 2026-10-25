@@ -36,9 +36,11 @@
    keyboard focus (a11y acceptance: full keyboard operability, visible
    focus). It is a floating layer (fixed, dialog z-step), so it earns
    the floating tier, a floating-tier radius, and the one shadow it is
-   allowed: a small control, not a pill (brief §18/§19). Reduced
-   motion: the global gate collapses the slide to an instant
-   appearance. ---- */
+   allowed while focused: a small control, not a pill (brief §18/§19).
+   The shadow belongs to the focused state only — an always-on shadow
+   would bleed 1px into the viewport at rest, because the chip itself
+   sits fully offscreen. Reduced motion: the global gate collapses the
+   slide and the shadow fade to an instant appearance. ---- */
 .nex-skip-link {
   position: fixed;
   top: var(--space-sm);
@@ -51,13 +53,16 @@
   font-size: var(--type-size-label-large);
   font-weight: var(--type-weight-emphasized);
   text-decoration: none;
-  box-shadow: var(--nex-sys-elevation-level1);
   transform: translateY(calc(-100% - var(--space-sm)));
-  transition: transform var(--nex-sys-motion-duration-fast)
-    var(--nex-sys-motion-easing-standard);
+  transition:
+    transform var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard),
+    box-shadow var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard);
 }
 .nex-skip-link:focus-visible {
   transform: translateY(0);
+  box-shadow: var(--nex-sys-elevation-level1);
 }
 
 /* The brand mark: an asset hook, not a paint class — theme.css inverts
