@@ -14,6 +14,19 @@
    the box; hairline separators and no fills where a line will
    do. See the PR body for the two deliberate departures.
 
+   TWO MODES, AND AGENT IS THE ONE THE PANE OPENS ON (R4-02).
+   `agentMode` is controlled: the pane owns the value and the
+   composer only dispatches `onAgentModeChange`. There is no
+   second default here — one owner, one truth.
+
+   NO ATTACHMENTS IN AGENT MODE (R4-02 / G-20). `start_agent_run`
+   cannot carry attachments yet, so while Agent is the mode the
+   "+" control, the attached-file chips and the "+ attach files"
+   teaching chip are ABSENT — not disabled, not greyed. A disabled
+   control promises "later"; only an absent one promises nothing.
+   The draft itself survives the switch untouched: switching modes
+   is not a send, and a send is the only thing that clears it.
+
    THE PLACEHOLDER. The textarea keeps its real `placeholder`
    attribute (the no-JS and AT fallback), and a sibling
    `aria-hidden` line paints over it with the same surface
@@ -139,6 +152,14 @@ export default function Composer({
 }: ComposerProps) {
   const { t } = useStrings();
   const busy = sending || agentBusy;
+  /** The "+" chip teaches the attach control, so it is drawn only
+   *  where that control exists. Agent mode has none (G-20:
+   *  `start_agent_run` takes no attachments), and a chip
+   *  advertising one would be exactly the invented capability this
+   *  phase removes. */
+  const teachChips = agentMode
+    ? TEACH_CHIPS.filter((chip) => chip.kind === "shortcut")
+    : TEACH_CHIPS;
 
   return (
     <div className="nex-composer">
@@ -175,7 +196,13 @@ export default function Composer({
               />
             </div>
           )}
-          {attachments.length > 0 && (
+          {/* Attachments belong to the CHAT path only. An agent run
+              cannot carry them (G-20: `start_agent_run` has no
+              attachment parameter), so neither the draft chips nor
+              the attach control render in Agent mode: showing a file
+              the run would silently drop is a promise the backend
+              cannot keep. */}
+          {!agentMode && attachments.length > 0 && (
             <ul className="nex-composer-attachments" aria-label={t("conv.attachedFiles")}>
               {attachments.map((attachment) => (
                 <li key={attachment.id} className="nex-chip">
@@ -223,7 +250,7 @@ export default function Composer({
             />
             {draft === "" && (
               <span className="nex-composer-teach" role="note">
-                {TEACH_CHIPS.map((chip, index) => {
+                {teachChips.map((chip, index) => {
                   const keys = chip.kind === "shortcut" ? shortcutKeys(chip.id) : [];
                   return (
                     <span key={chip.kind === "shortcut" ? chip.id : chip.glyph}>
@@ -238,19 +265,23 @@ export default function Composer({
           </div>
 
           <div className="nex-composer-bar">
-            <Tooltip label={t("conv.addFile")}>
-              <Button
-                variant="ghost"
-                size="icon-lg"
-                className="nex-composer-attach rounded-full"
-                aria-label={t("conv.addFile")}
-                title={t("conv.addFile")}
-                disabled={busy || attachmentsBusy}
-                onClick={onPickFiles}
-              >
-                <PlusIcon />
-              </Button>
-            </Tooltip>
+            {/* Chat only: absent (not disabled) in Agent mode — see the
+                attachment note at the top of this file. */}
+            {!agentMode && (
+              <Tooltip label={t("conv.addFile")}>
+                <Button
+                  variant="ghost"
+                  size="icon-lg"
+                  className="nex-composer-attach rounded-full"
+                  aria-label={t("conv.addFile")}
+                  title={t("conv.addFile")}
+                  disabled={busy || attachmentsBusy}
+                  onClick={onPickFiles}
+                >
+                  <PlusIcon />
+                </Button>
+              </Tooltip>
+            )}
 
             {/* The two primary modes, as pills: same segmented
                 primitive and the same radio semantics as every
@@ -318,6 +349,12 @@ export default function Composer({
                 <PopoverHeader>
                   <PopoverTitle>{t("conv.modelSection")}</PopoverTitle>
                 </PopoverHeader>
+                {/* A vertical list of options: the primitive is laid
+                    out as rows here (composer.css re-flows its grid
+                    from columns to rows) and `indicator={false}`
+                    keeps a pill from sliding across rows, where a
+                    slide means nothing. The selected row keeps its
+                    own wash and leading tick. */}
                 {models.length === 0 ? (
                   <p className="nex-composer-model-empty">{t("conv.modelNone")}</p>
                 ) : (
@@ -325,6 +362,7 @@ export default function Composer({
                     className="nex-composer-model-list"
                     label={t("conv.modelSection")}
                     semantics="radio"
+                    indicator={false}
                     value={selectedModel}
                     onChange={(model) => onSelectModel(model)}
                     options={models.map((model) => ({ value: model, label: model }))}

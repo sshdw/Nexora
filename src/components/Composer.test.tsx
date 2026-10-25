@@ -24,12 +24,18 @@
 //!                 of its own (the gate is the one stylesheet's
 //!                 job), and keeps the composer's reading measure
 //!                 equal to the thread's.
+//!   5. AGENT      Agent is the mode the pane opens on (R4-02); the
+//!      POLICY    attach control is ABSENT there rather than a
+//!                 disabled promise, the draft survives the switch
+//!                 (a switch is not a send), and the model list —
+//!                 a vertical list — opts out of the sliding pill.
 //!
 //! The paint itself, the hover/selected/focus looks and the
 //! before/after screenshots are in the PR body; no timing
 //! assertions anywhere (repo policy).
 
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { readRepoFile } from "../test/readRepoFile";
@@ -105,8 +111,12 @@ function attachmentStub(overrides: Partial<Attachment> = {}): Attachment {
   };
 }
 
-function renderComposer(overrides: Partial<ComposerProps> = {}) {
-  const props: ComposerProps = {
+// The scene: Agent is the mode the pane opens on (R4-02), so the
+// fixture opens there too. Tests that need Chat ask for it by name —
+// which keeps every chat-only control's coverage honest instead of
+// inheriting it from a default.
+function composerProps(overrides: Partial<ComposerProps> = {}): ComposerProps {
+  return {
     draft: "",
     onDraftChange: vi.fn(),
     onSubmit: vi.fn(),
@@ -117,7 +127,7 @@ function renderComposer(overrides: Partial<ComposerProps> = {}) {
     attachments: [],
     onPickFiles: vi.fn(),
     onRemoveAttachment: vi.fn(),
-    agentMode: false,
+    agentMode: true,
     onAgentModeChange: vi.fn(),
     autonomy: autonomyStub(),
     onAutonomyChange: vi.fn(),
@@ -129,12 +139,36 @@ function renderComposer(overrides: Partial<ComposerProps> = {}) {
     onOpenSettings: vi.fn(),
     ...overrides,
   };
+}
+
+function renderComposer(overrides: Partial<ComposerProps> = {}) {
+  const props = composerProps(overrides);
   const view = render(
     <LocaleProvider>
       <Composer {...props} />
     </LocaleProvider>,
   );
   return { ...view, props };
+}
+
+/** A parent-shaped harness: the composer is controlled, so a mode
+ *  switch and a draft only exist through an owner that holds both —
+ *  exactly how ConversationView wires it (one draft per pane, one
+ *  mode for the composer). Nothing here clears or sends on its own. */
+function StatefulComposer({ overrides = {} }: { overrides?: Partial<ComposerProps> }) {
+  const [draft, setDraft] = useState(overrides.draft ?? "");
+  const [agentMode, setAgentMode] = useState(overrides.agentMode ?? true);
+  return (
+    <LocaleProvider>
+      <Composer
+        {...composerProps(overrides)}
+        draft={draft}
+        onDraftChange={setDraft}
+        agentMode={agentMode}
+        onAgentModeChange={setAgentMode}
+      />
+    </LocaleProvider>
+  );
 }
 
 describe("composer — send flow", () => {
@@ -192,7 +226,7 @@ describe("composer — send flow", () => {
   });
 
   it("names the busy state on the send button", () => {
-    const { rerender, props } = renderComposer({ sending: true, canSend: true });
+    const { rerender, props } = renderComposer({ sending: true, canSend: true, agentMode: false });
     expect(screen.getByRole("button", { name: "Sending…" })).toHaveAttribute("aria-busy", "true");
 
     rerender(
@@ -204,7 +238,7 @@ describe("composer — send flow", () => {
   });
 
   it("disables attach while sending or while attachments are loading", () => {
-    const { rerender, props } = renderComposer({ sending: true });
+    const { rerender, props } = renderComposer({ sending: true, agentMode: false });
     expect(screen.getByRole("button", { name: "Add file" })).toBeDisabled();
 
     rerender(
@@ -231,6 +265,7 @@ describe("composer — send flow", () => {
       attachments: [attachmentStub()],
       attachmentsBusy: false,
       sending: false,
+      agentMode: false,
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Add file" }));
@@ -241,7 +276,11 @@ describe("composer — send flow", () => {
   });
 
   it("disables attachment removal while a send or attachment work is in flight", () => {
-    const { rerender, props } = renderComposer({ attachments: [attachmentStub()], sending: true });
+    const { rerender, props } = renderComposer({
+      attachments: [attachmentStub()],
+      sending: true,
+      agentMode: false,
+    });
     expect(screen.getByRole("button", { name: "Remove notes.md" })).toBeDisabled();
 
     rerender(
@@ -253,7 +292,10 @@ describe("composer — send flow", () => {
   });
 
   it("lists attached files by name and size", () => {
-    renderComposer({ attachments: [attachmentStub({ id: 3, file_name: "spec.pdf", file_size_bytes: 4096 })] });
+    renderComposer({
+      agentMode: false,
+      attachments: [attachmentStub({ id: 3, file_name: "spec.pdf", file_size_bytes: 4096 })],
+    });
     const list = screen.getByLabelText("Attached files");
     expect(within(list).getByText("spec.pdf")).toBeInTheDocument();
     expect(within(list).getByText("4.1 KB")).toBeInTheDocument();
@@ -261,6 +303,44 @@ describe("composer — send flow", () => {
 });
 
 describe("composer — modes", () => {
+  it("opens in Agent, with the segmented control saying so", () => {
+    // R4-02: Agent is the mode the pane opens on. The composer is
+    // controlled — the pane owns the value — so what this pins is
+    // that the control and the rows follow the prop with no
+    // composer-local mirror of their own.
+    renderComposer();
+    const group = screen.getByRole("radiogroup", { name: "Agent mode" });
+    expect(within(group).getByRole("radio", { name: "Agent" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    expect(
+      within(group).getByRole("radio", { name: "Chat mode — one answer per message" }),
+    ).toHaveAttribute("aria-checked", "false");
+    // The Agent pane is on screen, not just labelled: its autonomy row is.
+    expect(screen.getByRole("radiogroup", { name: "Autonomy mode" })).toBeInTheDocument();
+  });
+
+  it("keeps the typed draft through a Chat → Agent round trip, and sends nothing", () => {
+    const onSubmit = vi.fn();
+    render(<StatefulComposer overrides={{ draft: "half a thought", canSend: true, onSubmit }} />);
+    const field = screen.getByLabelText("Message");
+    expect(field).toHaveValue("half a thought");
+    expect(field).toBeEnabled();
+
+    fireEvent.click(screen.getByRole("radio", { name: "Chat mode — one answer per message" }));
+    expect(field).toHaveValue("half a thought");
+    expect(field).toBeEnabled();
+
+    fireEvent.click(screen.getByRole("radio", { name: "Agent" }));
+    expect(field).toHaveValue("half a thought");
+    expect(field).toBeEnabled();
+
+    // A mode switch is not a send: nothing was dispatched, nothing was
+    // cleared. Only the user's send clears the draft.
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it("exposes the two primary modes as one radio group", () => {
     renderComposer({ agentMode: false });
     const group = screen.getByRole("radiogroup", { name: "Agent mode" });
@@ -336,6 +416,40 @@ describe("composer — modes", () => {
   });
 });
 
+describe("composer — attachment policy (R4-02 / G-20)", () => {
+  it("renders the attach control in Chat mode only", () => {
+    const { rerender, props } = renderComposer();
+    expect(screen.queryByRole("button", { name: "Add file" })).not.toBeInTheDocument();
+    expect(screen.queryByTitle("Add file")).not.toBeInTheDocument();
+
+    rerender(
+      <LocaleProvider>
+        <Composer {...props} agentMode={false} />
+      </LocaleProvider>,
+    );
+    expect(screen.getByRole("button", { name: "Add file" })).toBeInTheDocument();
+  });
+
+  it("shows nothing about attachments in Agent mode — the absence is the statement", () => {
+    // `start_agent_run` takes no attachment ids, so a draft file
+    // shown in Agent mode would be a promise the run silently breaks.
+    // Absent — not disabled, not dead, not chipped, not hinted.
+    renderComposer({ attachments: [attachmentStub()] });
+
+    expect(screen.queryByRole("button", { name: "Add file" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Attached files")).not.toBeInTheDocument();
+    expect(screen.queryByText("notes.md")).not.toBeInTheDocument();
+
+    // …and the teaching line no longer advertises the missing control.
+    const teach = document.querySelector(".nex-composer-teach");
+    expect(teach).not.toBeNull();
+    expect(teach!.textContent).not.toMatch(/attach/i);
+    const chips = [...teach!.querySelectorAll("kbd")].map((chip) => chip.textContent);
+    expect(chips).toEqual([shortcutKeys("palette.toggle")[0], shortcutKeys("help.show-shortcuts")[0]]);
+    expect(teach!.textContent).toContain("command palette");
+  });
+});
+
 describe("composer — model picker", () => {
   it("shows the store's model and opens a list of the provider's models", () => {
     renderComposer({ selectedModel: "gemini-3.6-flash" });
@@ -352,6 +466,32 @@ describe("composer — model picker", () => {
       "aria-checked",
       "false",
     );
+  });
+
+  it("draws the model list as rows, with no pill to slide between them", () => {
+    renderComposer();
+    fireEvent.click(screen.getByRole("button", { name: "Agent mode and model" }));
+    const list = screen.getByRole("radiogroup", { name: "Model" });
+
+    // The primitive's grid root, re-flowed to rows by composer.css.
+    expect(list).toHaveClass("nex-seg", "nex-composer-model-list");
+    // `indicator={false}` — no decorative pill is emitted at all, so
+    // nothing can slide across a vertical list.
+    expect(list.querySelector(".nex-seg-indicator")).toBeNull();
+
+    const rows = within(list).getAllByRole("radio");
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.parentElement).toBe(list);
+    }
+    // Selection stays legible without the pill: the active row says so.
+    expect(rows[0]).toHaveAttribute("aria-checked", "true");
+    expect(rows[0]).toHaveClass("is-active");
+    expect(rows[1]).not.toHaveClass("is-active");
+
+    // The mode group next door still carries the shared pill: the
+    // opt-out is local to the list, not a global disable.
+    expect(document.querySelector(".nex-composer-pills .nex-seg-indicator")).not.toBeNull();
   });
 
   it("dispatches the picked model and keeps no copy of the selection", () => {
@@ -412,7 +552,7 @@ describe("composer — hint row", () => {
 
 describe("composer — the inline teaching line", () => {
   it("renders registry key labels, not invented ones", () => {
-    renderComposer();
+    renderComposer({ agentMode: false });
     const teach = document.querySelector(".nex-composer-teach");
     expect(teach).not.toBeNull();
     expect(teach).toHaveAttribute("role", "note");
@@ -524,6 +664,10 @@ describe("composer sheet — theme linkage (src/styles/composer.css)", () => {
   // note must not satisfy (or break) a declaration assertion.
   const code = css.replace(/\/\*[\s\S]*?\*\//g, "");
 
+  /** The declaration block of one rule, or "" when it is not there. */
+  const ruleBody = (selector: string): string =>
+    new RegExp(`${selector.replace(/\./g, "\\.")}\\s*\\{([\\s\\S]*?)\\n\\}`).exec(code)?.[1] ?? "";
+
   it("paints from shadcn semantic tokens only", () => {
     const m3eRefs = [...code.matchAll(/var\(\s*(--nex-sys-[\w-]+)/g)].map((m) => m[1]);
     expect([...new Set(m3eRefs)]).toEqual([]);
@@ -576,6 +720,31 @@ describe("composer sheet — theme linkage (src/styles/composer.css)", () => {
       expect(declaration).toContain("var(--motion-");
     }
   });
+
+  it("stacks the model list in grid flow, never in the inert flex-direction", () => {
+    // The primitive's root is a grid (equal `1fr` column tracks), so
+    // `flex-direction: column` did nothing and the rows stayed side by
+    // side. A vertical list has to be expressed in grid terms.
+    const block = ruleBody(".nex-composer-model-list.nex-seg");
+    expect(block).toContain("grid-auto-flow: row");
+    expect(block).not.toContain("flex-direction");
+  });
+
+  it("leaves the selected segment's fill to the one shared pill", () => {
+    // A `background` on the selected segment paints a second, opaque
+    // pill over the primitive's indicator — same tone, different
+    // radius, and the slide underneath disappears. The pill is the
+    // fill; these rules may only carry what the pill cannot.
+    for (const selector of [
+      ".nex-composer-pills.nex-seg button.is-active",
+      ".nex-composer-autonomy.nex-seg button.is-active",
+    ]) {
+      const block = ruleBody(selector);
+      expect(block).toContain("color: var(--foreground)");
+      expect(block).not.toContain("background");
+    }
+  });
+
 
   it("keeps the composer's reading measure equal to the thread's", () => {
     const thread = /--layout-measure-max:\s*([^;]+);/.exec(

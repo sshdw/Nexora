@@ -97,7 +97,9 @@ export default function ConversationView({
     refresh: refreshAttachments,
   } = useAttachments(conversationId);
   const { runs, reload: reloadAgent, expandStep, collapseStep } = useAgentRun(conversationId);
-  const [agentMode, setAgentMode] = useState<boolean>(false);
+  // R4-02: the pane opens in Agent mode. Chat is still one click away on
+  // the composer's pills, and the choice is pane state for the session.
+  const [agentMode, setAgentMode] = useState<boolean>(true);
   const [viewMode, setViewMode] = useState<"chat" | "context">("chat");
   const [agentBusy, setAgentBusy] = useState<boolean>(false);
   const [agentError, setAgentError] = useState<string | null>(null);

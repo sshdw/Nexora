@@ -274,13 +274,21 @@
     color var(--motion-duration-fast) var(--motion-easing-standard);
 }
 
-.nex-composer-pills.nex-seg button:hover {
+/* Hover is for the segment the pill is NOT under: painting `--accent`
+   on the selected one would cover the shared indicator and read as
+   "nothing is selected" for as long as the pointer rests on it. */
+.nex-composer-pills.nex-seg button:hover:not(.is-active) {
   background: var(--accent);
   color: var(--foreground);
 }
 
+/* Selection is the pill's fill now, not the segment's. The primitive
+   paints ONE shared indicator behind the selected segment; a
+   `background` here would paint a second, opaque pill on top of it
+   (same tone, different radius), hiding the slide and stacking two
+   shapes where the sheet promises one. What is left is what the pill
+   cannot carry: the label tone and the weight. */
 .nex-composer-pills.nex-seg button.is-active {
-  background: var(--background);
   color: var(--foreground);
   font-weight: 500;
 }
@@ -334,11 +342,17 @@
   border: 1px solid var(--border);
 }
 
-/* Model list: the same segmented primitive, stacked. Rows are
-   quiet; the picked one carries a neutral wash plus the one
+/* Model list: the same segmented primitive, stacked. The primitive's
+   root is a GRID (`grid-auto-flow: column`, equal `1fr` tracks), so a
+   vertical list is expressed in grid terms — `flex-direction: column`
+   was inert on it and left the rows side by side. The component is
+   rendered with `indicator={false}`: a slide between rows means
+   nothing, and the pill would paint over a row instead of under one.
+   Rows are quiet; the picked one carries a neutral wash plus the one
    thin light tick on its leading edge. */
 .nex-composer-model-list.nex-seg {
-  flex-direction: column;
+  grid-auto-flow: row;
+  grid-auto-columns: minmax(0, 1fr);
   align-self: stretch;
   gap: 1px;
   max-height: 240px;
@@ -492,15 +506,25 @@
     color var(--motion-duration-fast) var(--motion-easing-standard);
 }
 
-.nex-composer-autonomy.nex-seg button:hover {
+.nex-composer-autonomy.nex-seg button:hover:not(.is-active) {
   background: var(--accent);
   color: var(--foreground);
 }
 
 .nex-composer-autonomy.nex-seg button.is-active {
-  background: var(--background);
   color: var(--foreground);
   font-weight: 500;
+}
+
+/* Same reason as the mode pills above: the shared indicator is the
+   selected fill, so the segment must not draw a second one over it.
+   The pill occupies exactly the selected segment's box (the primitive
+   measures `offsetLeft` / `offsetWidth`), so it carries that
+   segment's radius — the primitive's own `--radius-sm` is smaller
+   than the segments this sheet re-points. */
+.nex-composer-pills.nex-seg .nex-seg-indicator,
+.nex-composer-autonomy.nex-seg .nex-seg-indicator {
+  border-radius: calc(var(--radius-lg) - 2px);
 }
 
 /* ---- Autonomy explainer (the animated line) ---------------------------

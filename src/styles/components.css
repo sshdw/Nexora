@@ -579,54 +579,81 @@
 }
 
 /* ============================================================
-   SEGMENTED CONTROL (persistent 2–5 choice selection)
-   Full-pill container (OFFICIAL segmented shape mapping) with
-   pill segments; selected segment carries the container tone +
-   emphasized label (OFFICIAL selection grammar).
-   Documented as untouched by the shell surface contract, like
-   .nex-tag: the pill radius is the OFFICIAL segmented mapping,
-   and a segmented control is a mode switch — shape carries
-   selection here — so de-pilling it is a component decision,
-   not a shell one.
+   SEGMENTED CONTROL — Glide Select (R4-08)
+
+   ONE shared sliding pill, emitted by M3SegmentedGroup. The class
+   contract this block and the component agree on (G-18):
+
+     .nex-seg              root, always — relative grid container
+     .nex-seg-connected    connected variant (flush hairline)
+     button.is-active      the selected segment (modifier)
+     .nex-seg-indicator    decorative pill, standard variant only;
+                           `aria-hidden` and never in the tab order
+     [data-ready="false"]  before the first measurement — the
+                           transition is not live yet, so nothing
+                           slides in from x=0 on mount
+     [data-no-anim]        one frame after a resize / label change —
+                           the pill jumps, never slides across a
+                           layout swap
+
+   Geometry is the component's job, not the sheet's: it measures the
+   selected segment and publishes `--seg-indicator-x` (offsetLeft) and
+   `--seg-indicator-w` (offsetWidth), the two names sanctioned by
+   plan §5.2. Values come from layout; nothing here invents a design
+   value. Paint (container tone, segment tone, radii, paddings) stays
+   on the component's token utilities, and a caller re-points the
+   whole group through a two-class hook (e.g. composer.css
+   `.nex-composer-pills.nex-seg`).
    ============================================================ */
 
 .nex-seg {
-  display: inline-flex;
+  position: relative;
+  display: inline-grid;
+  grid-auto-flow: column;
+  /* minmax(0, …) so a long label can never widen its own track:
+     equal-width segments are a Glide Select precondition. */
+  grid-auto-columns: minmax(0, 1fr);
+  align-items: center;
   align-self: flex-start;
-  gap: var(--space-xxs);
-  padding: var(--space-xxs);
-  border-radius: var(--shape-full);
-  background: var(--color-surface-container-high);
 }
 
+/* Segments paint above the pill; the pill never takes a pointer
+   event or a focus stop. */
 .nex-seg button {
-  min-height: 34px;
-  padding: 6px var(--space-lg);
-  border: none;
-  border-radius: var(--shape-full);
-  background: transparent;
-  color: var(--color-on-surface-variant);
-  font-size: var(--type-size-label-large);
-  font-family: inherit;
-  font-weight: var(--type-weight-medium);
+  position: relative;
+  z-index: 10;
+  min-width: 0;
   cursor: pointer;
-  transition: background-color var(--motion-duration-fast) var(--motion-easing-standard),
-    color var(--motion-duration-fast) var(--motion-easing-standard);
-}
-
-.nex-seg button:hover {
-  color: var(--color-on-surface);
-  background: var(--state-hover);
-}
-
-.nex-seg button:active {
-  background: var(--state-pressed);
 }
 
 .nex-seg button.is-active {
-  background: var(--color-primary-container);
-  color: var(--color-primary);
-  font-weight: var(--type-weight-emphasized);
+  color: var(--foreground);
+  font-weight: var(--type-weight-medium);
+}
+
+.nex-seg-indicator {
+  position: absolute;
+  z-index: 0;
+  /* The standard container pads by --space-xxxs (the component's
+     p-0.5); the pill matches the segment box inside that padding. */
+  top: var(--space-xxxs);
+  bottom: var(--space-xxxs);
+  left: 0;
+  width: var(--seg-indicator-w, 0px);
+  border-radius: var(--radius-sm);
+  background: var(--background);
+  pointer-events: none;
+  transform: translateX(var(--seg-indicator-x, 0px));
+  /* A normal `transition`, never a keyframe animation: the global
+     reduced-motion gate in motion.css collapses every transition
+     duration, and the selection stays legible from the final frame. */
+  transition: transform var(--motion-duration-short4)
+    var(--motion-easing-standard);
+}
+
+.nex-seg[data-ready="false"] .nex-seg-indicator,
+.nex-seg[data-no-anim] .nex-seg-indicator {
+  transition: none;
 }
 
 /* ============================================================
@@ -1238,27 +1265,16 @@
   width: 100%;
 }
 
-/* ---- Segmented connected variant: flush inner edges, asymmetric
-   inner corners (OFFICIAL connected-group geometry, contract §Shape
-   [doc-cards]). Selected segment keeps the standard container tone +
-   emphasized label; the indicator settles on the default-speed
-   spring curve (reduced motion: instant tone swap). ---- */
+/* ---- Segmented connected variant: flush inner edges sharing one
+   hairline. The component paints the hairline on the segments
+   (`border-r`) and clips the outer corners with the container's
+   `overflow-hidden` + radius, so no per-segment corner rule is needed
+   here — the previous pill-end radii were dead drift (the component
+   never emitted the class) and would have painted corners the
+   connected variant does not have. No sliding pill either: its
+   flush dividers ARE the selection grammar (R4-08). ---- */
 .nex-seg-connected {
-  gap: var(--shape-none);
-}
-.nex-seg-connected button {
-  border-radius: var(--shape-none);
-}
-.nex-seg-connected button:first-child {
-  border-radius: var(--shape-full) var(--shape-none)
-    var(--shape-none) var(--shape-full);
-}
-.nex-seg-connected button:last-child {
-  border-radius: var(--shape-none) var(--shape-full)
-    var(--shape-full) var(--shape-none);
-}
-.nex-seg-connected button:only-child {
-  border-radius: var(--shape-full);
+  gap: 0;
 }
 
 /* ---- Toolbars: docked persistent row + floating selection popover
