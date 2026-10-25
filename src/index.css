@@ -542,6 +542,12 @@
     --layout-measure-max: 760px;
     --layout-header-height: 52px;
     --layout-content-max: 680px;
+    /* The edge Dock rail's width (R4-01; plan §5.2 sanctions the token).
+       ONE source of truth for the rail: Dock.tsx measures itself from it,
+       and the conversation stage reserves it symmetrically so the reading
+       column can never run under the rail. 60px is the fixed rail width,
+       not a spacing step — it lives here so no component spells it. */
+    --dock-width: 60px;
 
     /* Nav */
     --nav-indicator-width: 3px;

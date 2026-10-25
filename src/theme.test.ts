@@ -192,6 +192,10 @@ const NON_COLOUR_VARS = new Set([
   "--font-sans",
   "--font-mono",
   "--chrome-height",
+  /* The edge Dock rail width (plan §5.2). A length, theme-independent:
+     Dock.tsx sizes itself from it and the conversation stage reserves it,
+     so it needs the same exemption from the okLCH sweep. */
+  "--dock-width",
   /* #230 Phase 6: the legacy-format tokens relocated from tokens.css into
      src/index.css. They keep their legacy hex/rgba/px literals (not oklch())
      so the per-(theme, token) parity test can compare resolved literals as

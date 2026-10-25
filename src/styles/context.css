@@ -11,6 +11,14 @@
   padding: var(--space-xs) var(--space-md);
   background: var(--color-surface-container);
   border-bottom: 1px solid var(--color-outline-variant);
+  /* Full-bleed opt-out of the conversation stage's Dock inset
+     (conversation.css, `.nex-main-conversation`). This row is the stage's
+     own chrome: its surface band and hairline span the pane edge to edge,
+     and it sits above the rail's vertically-centred band, so nothing here
+     is behind the Dock. Cancelling the stage padding keeps the row and its
+     content exactly where they were before the inset — the reserve is for
+     the reading column, not for chrome. */
+  margin-inline: calc(-1 * var(--dock-width));
 }
 
 .nex-context {
