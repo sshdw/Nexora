@@ -153,8 +153,9 @@ const themeKeys = new Set(mapping.keys());
  *
  * Phase 0 aliased `--font-sans` at the merged token stack
  * (`--nex-sys-type-family`, declared by src/styles/tokens.css)
- * because the app adopted no typeface of its own. #235 wires
- * Inter/Cascadia Code instead (NEXORA-THEME.md §3), so both font
+ * because the app adopted no typeface of its own. #235 wired
+ * Inter/Cascadia Code; R4-11 makes Geist primary and keeps those
+ * two as fallbacks (NEXORA-THEME.md §3), so both font
  * keys now resolve to `--font-sans` / `--font-mono` declared in
  * the theme blocks below — the map is empty, kept so the next
  * external reference has a named place to be justified rather
