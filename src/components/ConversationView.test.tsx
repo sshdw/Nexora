@@ -146,6 +146,30 @@ describe("pane default mode (R4-02)", () => {
     rerender(pane("half-typed"));
     expect(screen.getByRole("button", { name: "Add file" })).toBeInTheDocument();
   });
+
+  it("opens on a real, typeable field with Send unarmed until there is a draft", () => {
+    // What visual QA saw on a fresh conversation: a composer card with no
+    // visible input, and a Send that read as armed. The field is the
+    // composer's own (pinned in Composer.test.tsx); what the PANE owns is
+    // the arming — `canSend` requires a non-empty trimmed draft, so an
+    // empty conversation cannot send and Send is disabled. A draft arms it.
+    const { rerender } = render(pane(""));
+
+    const field = screen.getByLabelText("Message");
+    expect(field.tagName).toBe("TEXTAREA");
+    expect(field).toBeEnabled();
+    expect(field).toHaveAttribute("placeholder", "Message");
+
+    const send = screen.getByRole("button", { name: /Send/ });
+    expect(send).toBeDisabled();
+
+    rerender(pane("half-typed"));
+    expect(screen.getByRole("button", { name: /Send/ })).toBeEnabled();
+
+    // Whitespace is not a draft: the guard trims before it counts.
+    rerender(pane("   "));
+    expect(screen.getByRole("button", { name: /Send/ })).toBeDisabled();
+  });
 });
 
 describe("mode pill title copy", () => {

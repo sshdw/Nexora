@@ -8,11 +8,12 @@
    and the one light fill (send). Everything else recedes.
 
    Anatomy stolen from the owner-supplied reference: the single
-   rounded container; a placeholder that TEACHES the shortcuts
-   inline; the round "+" on the left with the mode/model picker
-   beside it; the send action on the right; a hint row under
-   the box; hairline separators and no fills where a line will
-   do. See the PR body for the two deliberate departures.
+   rounded container; a field whose placeholder says where typing
+   begins, with a teaching line just under it; the round "+" on the
+   left with the mode/model picker beside it; the send action on the
+   right; a hint row under the box; hairline separators and no fills
+   where a line will do. See the PR body for the two deliberate
+   departures.
 
    TWO MODES, AND AGENT IS THE ONE THE PANE OPENS ON (R4-02).
    `agentMode` is controlled: the pane owns the value and the
@@ -27,12 +28,15 @@
    The draft itself survives the switch untouched: switching modes
    is not a send, and a send is the only thing that clears it.
 
-   THE PLACEHOLDER. The textarea keeps its real `placeholder`
-   attribute (the no-JS and AT fallback), and a sibling
-   `aria-hidden` line paints over it with the same surface
-   colour, so what a user reads is the teaching line while the
-   accessible name stays exactly what it was: `conv.messageAria`
-   on the field itself.
+   THE PLACEHOLDER IS THE AFFORDANCE. The textarea keeps its real
+   `placeholder` attribute and it is what a user SEES: the field has no
+   chrome of its own (the shell is the control), so the placeholder is
+   the only thing that says where typing begins. The teaching line is a
+   quiet row BELOW the editable line, in flow — it used to be an opaque
+   `--card` overlay sitting on the placeholder's own line, which left an
+   empty composer looking like a stack of chrome with no field at all
+   (visual QA, Phase C round 2). Nothing is painted over the
+   placeholder; `aria-label` stays `conv.messageAria` on the field.
 
    THE SHORTCUT CHIPS ARE NOT INVENTED. `palette.toggle` and
    `help.show-shortcuts` are read out of src/lib/shortcuts.ts —

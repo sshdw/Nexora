@@ -597,12 +597,20 @@
                            layout swap
 
    Geometry is the component's job, not the sheet's: it measures the
-   selected segment and publishes `--seg-indicator-x` (offsetLeft) and
-   `--seg-indicator-w` (offsetWidth), the two names sanctioned by
+   selected segment's SEAT (its layout rect inside this container's
+   padding box) and publishes `--seg-indicator-x` (seat left) and
+   `--seg-indicator-w` (seat width), the two names sanctioned by
    plan §5.2. Values come from layout; nothing here invents a design
-   value. Paint (container tone, segment tone, radii, paddings) stays
-   on the component's token utilities, and a caller re-points the
-   whole group through a two-class hook (e.g. composer.css
+   value. The ring around the pill is THIS sheet's, applied once: the
+   container's padding on the ends (the composer's `p-0.5` /
+   `.nex-composer-*` padding) and `--space-xxxs` top and bottom, so the
+   pill is inset by the same token on every side at the first, a middle
+   and the last seat. The component adds no inset of its own — keep it
+   that way, or the inset lands twice. One seat radius
+   (`--seg-radius`) is shared by the segment and the pill, so their
+   corners resolve identically. Paint (container tone, segment tone,
+   paddings) stays on the component's token utilities, and a caller
+   re-points the whole group through a two-class hook (e.g. composer.css
    `.nex-composer-pills.nex-seg`).
    ============================================================ */
 
@@ -615,6 +623,12 @@
   grid-auto-columns: minmax(0, 1fr);
   align-items: center;
   align-self: flex-start;
+  /* THE seat radius: consumed by the segment below and by the pill, so
+     the pill's corners are the segment's corners by construction. A
+     caller that re-points its chips re-points this one property; a
+     second radius declared on the pill alone is exactly how the two
+     drifted apart in Phase C (pill 6px over a 4.8px segment). */
+  --seg-radius: var(--radius-sm);
 }
 
 /* Segments paint above the pill; the pill never takes a pointer
@@ -626,6 +640,14 @@
   cursor: pointer;
 }
 
+/* The standard segment takes the shared seat radius. Not the connected
+   variant: its flush hairline must run edge to edge, and a radius there
+   would shorten the divider. The component carries no `rounded-*`
+   utility for the same reason — utilities outrank this layer. */
+.nex-seg:not(.nex-seg-connected) button {
+  border-radius: var(--seg-radius);
+}
+
 .nex-seg button.is-active {
   color: var(--foreground);
   font-weight: var(--type-weight-medium);
@@ -634,13 +656,17 @@
 .nex-seg-indicator {
   position: absolute;
   z-index: 0;
-  /* The standard container pads by --space-xxxs (the component's
-     p-0.5); the pill matches the segment box inside that padding. */
+  /* The seat box, not the track's: the standard container pads by
+     --space-xxxs (the component's p-0.5) and the pill matches the
+     segment inside that padding. Same token on the ends (the
+     container's padding) and top/bottom (here) — one inset, applied
+     once, so every seat is ringed equally. */
   top: var(--space-xxxs);
   bottom: var(--space-xxxs);
   left: 0;
   width: var(--seg-indicator-w, 0px);
-  border-radius: var(--radius-sm);
+  /* The segment's radius, from the one declaration on the container. */
+  border-radius: var(--seg-radius);
   background: var(--background);
   pointer-events: none;
   transform: translateX(var(--seg-indicator-x, 0px));

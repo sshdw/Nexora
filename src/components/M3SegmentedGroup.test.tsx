@@ -2,22 +2,29 @@
 //! (G-18).
 //!
 //! jsdom ships no layout engine, so the geometry has to be supplied:
-//! `offsetLeft` / `offsetWidth` are answered from two data attributes
-//! a test can set per segment, which is enough for the component's
-//! measurement path. ResizeObserver is absent as well; the stub below
-//! records callbacks so a test can fire one on demand.
+//! `getBoundingClientRect` is answered from per-element box attributes
+//! (a segment's box from two data attributes, the container's from
+//! `setTrack`), which is enough for the component's measurement path.
+//! ResizeObserver is absent as well; the stub below records callbacks
+//! so a test can fire one on demand.
 //!
 //! What is pinned here:
 //!   1. MEASUREMENT — the two sanctioned custom properties
 //!      (`--seg-indicator-x` / `--seg-indicator-w`) follow the
-//!      SELECTED segment's box, on mount, on click, on resize, after
-//!      a locale swap and after `document.fonts.ready`.
+//!      SELECTED segment's seat, on mount, on click, on resize, after
+//!      a locale swap and after `document.fonts.ready`. The seat is
+//!      exact (fractional `1fr` tracks keep their fraction): the pill
+//!      is neither rounded off its segment nor flush against the
+//!      track's end padding.
 //!   2. NO FLY-IN — `data-ready="false"` until the first successful
 //!      measurement, and `data-no-anim` for one frame when the layout
 //!      changes under a still pill. The sheet side of both is
 //!      asserted from `components.css`, because jsdom computes no
 //!      cascade.
-//!   3. SEMANTICS — radiogroup/radio, tablist/tab, aria-checked vs
+//!   3. SEAT SYMMETRY — the same inset token on every side of the
+//!      pill, at the first, a middle and the last seat, and one
+//!      shared radius for the pill and the segment it sits on.
+//!   4. SEMANTICS — radiogroup/radio, tablist/tab, aria-checked vs
 //!      aria-selected, roving tabindex, arrow keys, disabled skip:
 //!      unchanged by the pill. The pill itself is aria-hidden and
 //!      unfocusable.
@@ -38,6 +45,12 @@ type Mode = "chat" | "agent" | "context";
 const TWO_OPTIONS: readonly M3SegmentOption<Mode>[] = [
   { value: "chat", label: "Chat" },
   { value: "agent", label: "Agent" },
+];
+
+const THREE_OPTIONS: readonly M3SegmentOption<Mode>[] = [
+  { value: "chat", label: "Chat" },
+  { value: "agent", label: "Agent" },
+  { value: "context", label: "Context" },
 ];
 
 const THREE_WITH_DISABLED: readonly M3SegmentOption<Mode>[] = [
@@ -74,11 +87,55 @@ function fireResize(): void {
   });
 }
 
-/** Give one element a box without a layout engine. */
+/** A DOMRect with the four fields the measurement reads. */
+function makeRect(left: number, top: number, width: number, height: number): DOMRect {
+  return {
+    x: left,
+    y: top,
+    left,
+    top,
+    width,
+    height,
+    right: left + width,
+    bottom: top + height,
+    toJSON: () => ({}),
+  } as DOMRect;
+}
+
+/** Give one segment a box without a layout engine. `left` is its
+ * offset inside the container, i.e. what a real `offsetLeft` reported. */
 function setBox(element: Element, left: number, width: number): void {
   const node = element as HTMLElement;
   node.dataset.testOffsetLeft = String(left);
   node.dataset.testOffsetWidth = String(width);
+}
+
+/** Give the container a border box: 32px tall (28px segment + the
+ * --space-xxxs padding above and below) and as wide as the tracks. */
+function setTrack(element: Element, width: number, height = 32): void {
+  const node = element as HTMLElement;
+  node.dataset.testRectWidth = String(width);
+  node.dataset.testRectHeight = String(height);
+}
+
+/** The layout of a standard group: `1fr` tracks are fractional, so the
+ * seat edges land on fractions — the case integer offsets rounded away. */
+function threeSeatLayout(trackWidth = 283): {
+  track: number;
+  padding: number;
+  seats: Array<{ left: number; width: number }>;
+} {
+  const padding = 2;
+  const gap = 2;
+  const width = (trackWidth - padding * 2 - gap * 2) / 3;
+  return {
+    track: trackWidth,
+    padding,
+    seats: [0, 1, 2].map((index) => ({
+      left: padding + index * (width + gap),
+      width,
+    })),
+  };
 }
 
 function pill(): HTMLElement | null {
@@ -126,14 +183,28 @@ function GroupHarness({
 
 beforeAll(() => {
   vi.stubGlobal("ResizeObserver", ControlledResizeObserver);
-  vi.spyOn(HTMLElement.prototype, "offsetLeft", "get").mockImplementation(
+  // jsdom answers 0×0 for every element. The measurement reads layout
+  // rects, so the harness supplies them: a container from `setTrack`, a
+  // segment from `setBox` (+ the segment height the sheet gives it).
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
     function (this: HTMLElement) {
-      return Number(this.dataset.testOffsetLeft ?? 0);
-    },
-  );
-  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(
-    function (this: HTMLElement) {
-      return Number(this.dataset.testOffsetWidth ?? 0);
+      if (this.classList.contains("nex-seg")) {
+        return makeRect(
+          0,
+          0,
+          Number(this.dataset.testRectWidth ?? 0),
+          Number(this.dataset.testRectHeight ?? 0),
+        );
+      }
+      const group = this.closest(".nex-seg");
+      if (group === null) return makeRect(0, 0, 0, 0);
+      const track = group.getBoundingClientRect();
+      return makeRect(
+        track.left + Number(this.dataset.testOffsetLeft ?? 0),
+        track.top,
+        Number(this.dataset.testOffsetWidth ?? 0),
+        28,
+      );
     },
   );
 });
@@ -280,6 +351,108 @@ describe("Glide Select measurement", () => {
   });
 });
 
+describe("Glide Select seat (geometry contract)", () => {
+  /** Publish the fractional three-column layout the bug was measured on
+   * (283px track, 2px padding, 2px gaps → 91.667px seats). */
+  function layOutThreeSeats(): ReturnType<typeof threeSeatLayout> {
+    const layout = threeSeatLayout();
+    const root = group();
+    setTrack(root, layout.track);
+    segments().forEach((segment, index) => {
+      const seat = layout.seats[index];
+      if (seat !== undefined) setBox(segment, seat.left, seat.width);
+    });
+    fireResize();
+    return layout;
+  }
+
+  function published(root: HTMLElement): { x: number; w: number } {
+    return {
+      x: Number.parseFloat(root.style.getPropertyValue("--seg-indicator-x")),
+      w: Number.parseFloat(root.style.getPropertyValue("--seg-indicator-w")),
+    };
+  }
+
+  it("seats the pill exactly on the first, a middle and the last segment", () => {
+    render(<GroupHarness options={THREE_OPTIONS} />);
+    const root = group();
+    const layout = layOutThreeSeats();
+    const [chat, agent, context] = segments();
+
+    // First seat: the pill's left edge is the container's padding — not 0,
+    // and not a rounded 0.333 off the track.
+    const first = published(root);
+    expect(first.x).toBeCloseTo(layout.seats[0]!.left, 2);
+    expect(first.w).toBeCloseTo(layout.seats[0]!.width, 2);
+    expect(first.x).toBeCloseTo(layout.padding, 2);
+
+    fireEvent.click(agent!);
+    // The click really moved the selection, not just the pill.
+    expect(chat).toHaveAttribute("aria-checked", "false");
+    const middle = published(root);
+    expect(middle.x).toBeCloseTo(layout.seats[1]!.left, 2);
+    expect(middle.w).toBeCloseTo(layout.seats[1]!.width, 2);
+
+    // Last seat: the same inset on the outer side as the first seat has
+    // on its own — track width minus padding, exactly.
+    fireEvent.click(context!);
+    const last = published(root);
+    expect(last.x).toBeCloseTo(layout.seats[2]!.left, 2);
+    expect(last.w).toBeCloseTo(layout.seats[2]!.width, 2);
+    expect(layout.track - (last.x + last.w)).toBeCloseTo(layout.padding, 2);
+  });
+
+  it("keeps the fractional seat instead of rounding it to whole pixels", () => {
+    render(<GroupHarness options={THREE_OPTIONS} />);
+    const root = group();
+    layOutThreeSeats();
+    const [, agent, context] = segments();
+
+    // The rounded pair (`offsetLeft` / `offsetWidth`) would have been
+    // "96px" / "92px" and "189px" / "92px" on this layout.
+    fireEvent.click(agent!);
+    expect(root.style.getPropertyValue("--seg-indicator-x")).toBe("95.667px");
+    expect(root.style.getPropertyValue("--seg-indicator-w")).toBe("91.667px");
+
+    fireEvent.click(context!);
+    expect(root.style.getPropertyValue("--seg-indicator-x")).toBe("189.333px");
+    expect(root.style.getPropertyValue("--seg-indicator-w")).toBe("91.667px");
+  });
+
+  it("never lets the pill sit flush against the track's edge", () => {
+    render(<GroupHarness options={THREE_OPTIONS} />);
+    const root = group();
+    const layout = layOutThreeSeats();
+    const [, , context] = segments();
+
+    // First seat: a flush pill would publish x = 0.
+    const first = published(root);
+    expect(first.x).toBeGreaterThan(0);
+    expect(first.x).toBeCloseTo(layout.padding, 2);
+
+    fireEvent.click(context!);
+    const last = published(root);
+    const right = last.x + last.w;
+    // A flush last seat would end exactly on the track's edge.
+    expect(right).toBeLessThan(layout.track);
+    expect(right).not.toBeCloseTo(layout.track, 2);
+    expect(right + layout.padding).toBeCloseTo(layout.track, 2);
+  });
+
+  it("leaves the segment's corners to the sheet, not to a utility class", () => {
+    render(<GroupHarness />);
+    // A `rounded-*` utility sits in a later cascade layer than the sheet,
+    // so it wins over a caller's rule: the segment would stay at the
+    // primitive's radius while the pill took the caller's (6px over
+    // 4.8px on the composer). The shared `--seg-radius` is only real if
+    // the segment has no utility of its own.
+    for (const segment of segments()) {
+      expect(segment.className).not.toMatch(/\brounded\b/);
+      expect(segment.className).not.toMatch(/\brounded-/);
+    }
+  });
+});
+
 describe("Glide Select presence", () => {
   it("draws no pill when indicator is false, keeping the segment fill as the cue", () => {
     render(<GroupHarness indicator={false} />);
@@ -404,13 +577,55 @@ describe("components.css contract (G-18)", () => {
     expect(marker![1]).toContain("width: var(--seg-indicator-w");
     expect(marker![1]).toContain("transform: translateX(var(--seg-indicator-x");
     expect(marker![1]).toContain("background: var(--background)");
-    expect(marker![1]).toContain("border-radius: var(--radius-sm)");
+    expect(marker![1]).toContain("border-radius: var(--seg-radius)");
     expect(marker![1]).toContain(
       "transition: transform var(--motion-duration-short4)",
     );
     expect(marker![1]).toContain("var(--motion-easing-standard)");
     // The gate in motion.css reaches transitions only, never keyframes.
     expect(marker![1]).not.toContain("animation");
+  });
+
+  it("declares ONE seat radius for the pill and the segment it covers", () => {
+    // Declared once on the container, consumed by both. A second,
+    // pill-only radius is how the pill resolved to 6px over a 4.8px
+    // segment in Phase C, so the sheet must not grow one back.
+    const container = /\.nex-seg\s*\{([\s\S]*?)\n\}/.exec(sheet);
+    expect(container![1]).toContain("--seg-radius: var(--radius-sm)");
+    // One declaration point in the whole sheet: no third radius to drift.
+    expect(sheet.match(/--seg-radius\s*:/g)).toHaveLength(1);
+
+    const marker = /\.nex-seg-indicator\s*\{([\s\S]*?)\n\}/.exec(sheet);
+    expect(marker![1]).toContain("border-radius: var(--seg-radius)");
+
+    const segment =
+      /\.nex-seg:not\(\.nex-seg-connected\) button\s*\{([\s\S]*?)\n\}/.exec(
+        sheet,
+      );
+    expect(segment).not.toBeNull();
+    expect(segment![1]).toContain("border-radius: var(--seg-radius)");
+    // No calc() on either side: identical corners, not two expressions
+    // that happen to agree today.
+    expect(marker![1]).not.toMatch(/border-radius:[^;]*calc\(/);
+    expect(segment![1]).not.toMatch(/border-radius:[^;]*calc\(/);
+    // The connected variant keeps its flush hairline, so the segment
+    // radius must not reach it.
+    expect(sheet).toMatch(/\.nex-seg:not\(\.nex-seg-connected\) button/);
+  });
+
+  it("keeps the pill's ring on the token and out of the component", () => {
+    const marker = /\.nex-seg-indicator\s*\{([\s\S]*?)\n\}/.exec(sheet);
+    // The vertical ring is the spacing token…
+    expect(marker![1]).toContain("top: var(--space-xxxs)");
+    expect(marker![1]).toContain("bottom: var(--space-xxxs)");
+    // …and the horizontal one is the container's padding (the seat's own
+    // left edge), so the pill declares no inset of its own: no `right`,
+    // no `inset`, no margin, no padding that could apply it twice or pin
+    // the pill flush to the track's edge.
+    expect(marker![1]).not.toMatch(/\bright:/);
+    expect(marker![1]).not.toMatch(/\binset:/);
+    expect(marker![1]).not.toMatch(/\bmargin/);
+    expect(marker![1]).not.toMatch(/\bpadding/);
   });
 
   it("suppresses the transition before ready and during the no-anim frame", () => {

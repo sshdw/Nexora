@@ -569,7 +569,7 @@ describe("composer — the inline teaching line", () => {
     expect(chips).toEqual(["+", "Ctrl+K", "Ctrl+/"]);
   });
 
-  it("keeps the native placeholder as the fallback and the accessible name", () => {
+  it("keeps the native placeholder visible as the field's affordance and its accessible name", () => {
     renderComposer();
     const field = screen.getByLabelText("Message");
     expect(field).toHaveAttribute("placeholder", "Message");
@@ -585,6 +585,77 @@ describe("composer — the inline teaching line", () => {
     // the soft failure is a documented degrade, not a crash.
     expect(shortcutKeys("no.such.shortcut")).toEqual([]);
     expect(SHORTCUTS.some((entry) => entry.id === "no.such.shortcut")).toBe(false);
+  });
+});
+
+describe("composer — the field the user types in (Phase C round 2)", () => {
+  // WHY THIS EXISTS. The composer shipped with its field present in the
+  // DOM but visually absent on screen: the teaching legend was an opaque
+  // `--card` overlay on the placeholder's line, the textarea has no chrome
+  // of its own, and an empty composer therefore read as a stack of chrome
+  // with no input. The behavioural tests here passed anyway, because jsdom
+  // has no paint. So these pin the DOM contract (an editable, focusable
+  // field with a placeholder, in BOTH modes) and the sheet contract that
+  // keeps the placeholder uncovered.
+
+  it("renders an editable, focusable field with its placeholder in Agent and in Chat", () => {
+    for (const agentMode of [true, false]) {
+      const { unmount, props } = renderComposer({ agentMode });
+      const field = screen.getByLabelText("Message");
+
+      // The element itself: a real textarea, editable, focusable, named.
+      expect(field.tagName).toBe("TEXTAREA");
+      expect(field).toBeEnabled();
+      expect(field).toHaveAttribute("placeholder", "Message");
+      (field as HTMLTextAreaElement).focus();
+      expect(field).toHaveFocus();
+
+      // …and it takes text.
+      fireEvent.change(field, { target: { value: "first message" } });
+      expect(props.onDraftChange).toHaveBeenCalledWith("first message");
+
+      unmount();
+    }
+  });
+
+  it("keeps the field typeable in the narrowest proof window (1024×720)", () => {
+    // jsdom renders no layout, so the width half is a statement about the
+    // sheet: composer.css declares NO media query, so no breakpoint can
+    // drop the field at a narrower window. The runtime half proves the
+    // state path — the field exists and dispatches at that window size.
+    const sheet = readRepoFile("src/styles/composer.css").replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(sheet).not.toContain("@media");
+
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1024 });
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 720 });
+    try {
+      const { props } = renderComposer({ agentMode: true });
+      const field = screen.getByLabelText("Message");
+      expect(field).toBeEnabled();
+      expect(field).toHaveAttribute("placeholder", "Message");
+      fireEvent.change(field, { target: { value: "at 1024" } });
+      expect(props.onDraftChange).toHaveBeenCalledWith("at 1024");
+    } finally {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
+      Object.defineProperty(window, "innerHeight", { configurable: true, value: height });
+    }
+  });
+
+  it("keeps the teaching legend out of the placeholder's line", () => {
+    // DOM order is the contract the sheet now relies on: the textarea is
+    // FIRST, the legend follows it in flow. A legend before the field, or
+    // an absolutely positioned one after it, would be back over the
+    // placeholder.
+    renderComposer();
+    const field = screen.getByLabelText("Message");
+    const box = field.parentElement!;
+    expect(box).toHaveClass("nex-composer-field");
+    expect(box.firstElementChild).toBe(field);
+    const teach = box.querySelector(".nex-composer-teach");
+    expect(teach).not.toBeNull();
+    expect(teach!.previousElementSibling).toBe(field);
   });
 });
 
@@ -745,6 +816,63 @@ describe("composer sheet — theme linkage (src/styles/composer.css)", () => {
     }
   });
 
+
+  it("stacks the field above its teaching legend, and paints nothing over the placeholder", () => {
+    // The regression QA caught: `.nex-composer-teach` was `position:
+    // absolute` at the textarea's first line with `background: var(--card)`,
+    // which covered the placeholder — the field's only affordance, because
+    // it has no background or border of its own. The legend is in flow now.
+    const fieldBlock = ruleBody(".nex-composer-field");
+    expect(fieldBlock).toContain("display: flex");
+    expect(fieldBlock).toContain("flex-direction: column");
+    expect(fieldBlock).not.toContain("position: absolute");
+    // The legend's row is reserved, so hiding the legend on the first
+    // keystroke cannot collapse the card under the pointer.
+    expect(fieldBlock).toMatch(/min-height:\s*\d+px/);
+
+    const teachBlock = ruleBody(".nex-composer-teach");
+    expect(teachBlock.length).toBeGreaterThan(0);
+    expect(teachBlock).not.toContain("position: absolute");
+    // No fill: an opaque legend is exactly the occluder.
+    expect(teachBlock).not.toMatch(/background/);
+    // No absolute inset and no clamp that could cut a wrapped line.
+    expect(teachBlock).not.toMatch(/\b(top|left|right)\s*:/);
+    expect(teachBlock).not.toContain("max-height");
+
+    // The field keeps the height that makes its line reachable.
+    const inputBlock = ruleBody(".nex-composer-shell .nex-composer-input");
+    expect(inputBlock).toContain("min-height: 40px");
+  });
+
+  it("paints the model id, which no rule used to colour at all", () => {
+    // The model id carried NO colour: on a <button> the UA's
+    // `color: buttontext` beats inheritance, and with no `color-scheme`
+    // declared that is black — ~1.1:1 on `--card`, the dimmest string in
+    // the composer. It now takes the same quiet-secondary tone as the
+    // metadata around it, so the assertion compares it to that tone
+    // rather than restating a literal.
+    const trigger = ruleBody(".nex-composer-model-trigger");
+    expect(trigger).toContain("color: var(--muted-foreground)");
+
+    const unselectedMode = ruleBody(".nex-composer-pills.nex-seg button");
+    expect(unselectedMode).toContain("color: var(--muted-foreground)");
+
+    // The other bare ghost button in the same popover had the same hole.
+    expect(ruleBody(".nex-composer-model-footer button")).toContain(
+      "color: var(--muted-foreground)",
+    );
+  });
+
+  it("leaves the disabled Send to the theme's button, adding no colour of its own", () => {
+    // Send's armed/unarmed difference is the vendored button's: `default`
+    // is the light fill, the disabled utilities swap it for
+    // `--muted-foreground` text on a `--border` hairline with no fill
+    // (NEXORA-THEME §1). The composer must not paint a second disabled
+    // treatment here, so this rule stays geometry-only.
+    const send = ruleBody(".nex-composer-send");
+    expect(send).toContain("flex-shrink: 0");
+    expect(send).not.toMatch(/color|background|opacity|border/);
+  });
 
   it("keeps the composer's reading measure equal to the thread's", () => {
     const thread = /--layout-measure-max:\s*([^;]+);/.exec(

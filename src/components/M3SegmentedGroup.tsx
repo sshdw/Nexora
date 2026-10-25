@@ -10,10 +10,18 @@
 //!
 //! Glide Select (R4-08): the standard variant draws ONE shared sliding
 //! pill behind the segments. Geometry lives in CSS — the component only
-//! measures the selected segment (`offsetLeft`/`offsetWidth`) and
-//! publishes `--seg-indicator-x` / `--seg-indicator-w` on the container,
-//! so no `left`/`width` is animated from JS; the pill moves on
-//! `transform` at `--motion-duration-short4`. `data-ready="false"` until
+//! measures the selected segment's SEAT (its layout rect, in the
+//! container's padding box) and publishes `--seg-indicator-x` /
+//! `--seg-indicator-w` on the container, so no `left`/`width` is
+//! animated from JS; the pill moves on `transform` at
+//! `--motion-duration-short4`. The rects are exact, never
+//! `offsetLeft`/`offsetWidth`: those round to whole pixels, and the
+//! `1fr` tracks are fractional, so the rounded pair left the pill a
+//! fraction of a pixel off its seat and (at the last seat) flush against
+//! the track's end padding — the "stuck to one end" read in Phase C.
+//! The component adds NO inset of its own: the pill's ring is the
+//! container's padding on the ends and `--space-xxxs` top/bottom, both
+//! declared once in `styles/components.css`. `data-ready="false"` until
 //! the first successful measurement (no fly-in from x=0 on mount), and
 //! `data-no-anim` for one frame after a resize or a label change (the
 //! pill jumps instead of sliding across a layout swap). The global
@@ -69,6 +77,13 @@ export interface M3SegmentedGroupProps<T extends string> {
    * replacing the base classes, so a caller that re-paints the group
    * leaves every other surface's geometry untouched. */
   className?: string;
+}
+
+/** Layout float → a CSS length without float noise. Whole pixels stay
+ * whole ("2px"), fractional seats keep their fraction ("95.667px"):
+ * rounding to integers is what made the pill drift off its segment. */
+function toCssLength(value: number): number {
+  return Math.round(value * 1000) / 1000;
 }
 
 /** One frame, with a timer fallback for environments without rAF. */
@@ -127,9 +142,16 @@ export default function M3SegmentedGroup<T extends string>({
     (_, index) => !isOptionDisabled(index),
   );
 
-  /** Publish the selected segment's geometry as the two sanctioned
-   * Glide Select custom properties (plan §5.2). Values come from
-   * layout, never from invented design values. */
+  /** Publish the selected segment's SEAT as the two sanctioned Glide
+   * Select custom properties (plan §5.2). Values come from layout, never
+   * from invented design values — and never from `offsetLeft` /
+   * `offsetWidth`, which are rounded to whole pixels: equal-width `1fr`
+   * tracks are fractional, so the rounded pair widened the pill by up to
+   * a pixel and moved its left edge, leaving the outer end flush against
+   * the track's padding instead of seated on it. The rects are exact and
+   * are expressed in the pill's containing block (the padding box), so
+   * the sheet's inset — container padding on the ends, `--space-xxxs`
+   * vertically — is applied exactly once. */
   const measure = useCallback((): boolean => {
     const container = containerRef.current;
     if (container === null) return false;
@@ -139,15 +161,22 @@ export default function M3SegmentedGroup<T extends string>({
     const selectedButton =
       selectedIndex >= 0 ? itemRefs.current[selectedIndex] : null;
     if (!selectedButton) return false;
-    const width = selectedButton.offsetWidth;
+    const track = container.getBoundingClientRect();
+    const seat = selectedButton.getBoundingClientRect();
     // A zero-width segment is not laid out (hidden tab, closed popover,
     // display:none) — leave `data-ready="false"` and measure later.
-    if (width <= 0) return false;
+    if (seat.width <= 0) return false;
+    // `clientLeft` is the border the padding box sits behind; without a
+    // border (every group today) this is 0.
+    const x = seat.left - track.left - container.clientLeft;
     container.style.setProperty(
       "--seg-indicator-x",
-      `${selectedButton.offsetLeft}px`,
+      `${toCssLength(x)}px`,
     );
-    container.style.setProperty("--seg-indicator-w", `${width}px`);
+    container.style.setProperty(
+      "--seg-indicator-w",
+      `${toCssLength(seat.width)}px`,
+    );
     return true;
   }, []);
 
@@ -329,7 +358,14 @@ export default function M3SegmentedGroup<T extends string>({
               "disabled:pointer-events-none disabled:opacity-50",
               isConnected
                 ? "h-8 border-r border-border px-3 last:border-r-0"
-                : "h-7 rounded-sm px-2.5",
+                : // No radius utility here: `components.css` gives the
+                  // standard segment `--seg-radius`, the same custom
+                  // property the pill consumes, so the two can never
+                  // resolve to different corners (a `rounded-*` utility
+                  // outranks a caller's rule and used to pin the segment
+                  // at `--radius-sm` while the pill took the caller's
+                  // larger radius).
+                  "h-7 px-2.5",
               selected
                 ? cn(
                     "font-medium text-foreground",

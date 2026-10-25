@@ -117,9 +117,31 @@
   border-color: color-mix(in oklch, var(--ring) 55%, transparent);
 }
 
-/* ---- Field + inline shortcut teaching --------------------------------- */
+/* ---- Field + inline shortcut teaching ---------------------------------
+   STACKED, NEVER OVERLAID. The field is a column: the editable line
+   first, the teaching legend under it, both in normal flow.
+
+   Why this changed (visual QA, Phase C round 2): the legend used to be
+   absolutely positioned at the textarea's FIRST text line and filled
+   with `--card`, so it painted OVER the native placeholder. The field
+   itself has no chrome — transparent background, no border, because the
+   shell is the control — which makes the placeholder the only thing
+   marking where typing begins. Under an opaque legend an empty composer
+   read as a band of chrome with no field at all: no placeholder, no
+   caret, nothing, under copy that says "write your first message
+   below". Nothing may be painted over the placeholder; the legend sits
+   below it. src/components/Composer.test.tsx pins both the stacking and
+   the absence of an absolute / opaque legend. */
 .nex-composer-field {
-  position: relative;
+  display: flex;
+  flex-direction: column;
+  /* The legend's row is RESERVED, so the card keeps its height when the
+     draft hides the legend on the first keystroke: a 26px collapse there
+     would move this card's top edge — and the thread above it — at
+     exactly the moment typing starts. 40px editable line + 26px legend
+     strip (0.8125rem × 1.5 line-height + 6px bottom padding, both set on
+     `.nex-composer-teach` below). */
+  min-height: 66px;
 }
 
 /* `.nex-composer-shell` is what scopes these: the field class is
@@ -162,28 +184,23 @@
   outline: none;
 }
 
-/* The teaching line. It stands in for the placeholder, so it
-   paints the composer's own surface colour — which is what
-   occludes the native placeholder underneath it, leaving the
-   attribute in place as the no-JS / AT fallback.
-   `aria-hidden`: every key it shows is announced by the
-   hint row's description instead. */
+/* The teaching line: a quiet row under the editable line, in flow.
+   Paint only — no background (it must never occlude the placeholder
+   above it), no absolute inset, and no `max-height` clamp: a narrow
+   window wraps the line to two rows instead of cutting a key off.
+   `pointer-events: none` because none of it is a control — every key
+   it names is dispatched by the shortcut registry, and the hint row
+   under the composer describes them for AT. */
 .nex-composer-teach {
-  position: absolute;
-  top: 12px;
-  left: 14px;
-  right: 14px;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  background: var(--card);
+  padding: 0 14px 6px;
   color: var(--muted-foreground);
   font-size: 0.8125rem;
   line-height: 1.5;
   pointer-events: none;
-  overflow: hidden;
-  max-height: 22px;
 }
 
 /* A key chip: hairline + the nested surface tone, mono, dim.
@@ -308,10 +325,33 @@
   background: var(--tick);
 }
 
-/* ---- Mode / model picker ---------------------------------------------- */
+/* ---- Mode / model picker ----------------------------------------------
+   The model id is the one piece of state the composer exists to show, so
+   it may be quiet — it may not be invisible.
+
+   It carried NO colour of its own, and a `<button>` is not a plain
+   inheriting box: the UA's `button { color: buttontext }` applies to the
+   element itself and therefore BEATS the light colour inherited from the
+   shell. No `color-scheme` is declared, so `buttontext` resolves to black
+   and the id painted ~#000 on `--card` (~#101012): about 1.1:1, the
+   dimmest string in the composer — dimmer than an UNSELECTED Chat pill.
+   Measured on the real frame (docs/proof/round4/phase-c/
+   01-agent-1200x800-dark.png): the brightest pixel inside the label is
+   the card tone itself, and the label is only readable when the popover
+   is open, because the ghost variant's `aria-expanded:text-foreground`
+   is the one thing that gives it a colour.
+
+   `--muted-foreground` is the composer's metadata tone and the quiet
+   secondary token this surface already uses for every other secondary
+   string (unselected Chat / Agent, the autonomy label, the explainer,
+   the teaching legend). On `--card` it is 5.64:1 (ledger,
+   src/index.css) — quiet, and readable. Hover and open still lift the
+   trigger to `--foreground` through the ghost variant's utilities,
+   which outrank this layer. */
 .nex-composer-model-trigger {
   max-width: 220px;
   min-width: 0;
+  color: var(--muted-foreground);
 }
 
 .nex-composer-model-name {
@@ -413,6 +453,14 @@
   justify-content: flex-end;
   padding-top: 4px;
   border-top: 1px solid var(--border);
+}
+
+/* Same UA default as the trigger above: this bare ghost button sets no
+   colour of its own, so it would paint in `buttontext` black too. Scoped
+   by the footer class so no other surface picks the rule up; hover still
+   lifts it to `--foreground` through the ghost variant's utility. */
+.nex-composer-model-footer button {
+  color: var(--muted-foreground);
 }
 
 /* ---- Send: the light fill in the composer ---------------------------
