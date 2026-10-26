@@ -109,10 +109,12 @@
    round-4 frame: 3.2 / 16 / 8.8 CSS px from the card's own border).
    The inset now lives HERE, once, and every row inside the shell
    inherits it because none of them declares a horizontal padding of
-   its own. `--space-md` is the composer region's own inline padding
-   (`.nex-composer`, above): the card's text edge and the strip's
-   edge are the same step, so the hint row under the card lines up
-   with the text inside it.
+   its own. `--space-md` equals the composer region's own inline
+   padding (`.nex-composer`, above), so the card's BORDER lines up
+   with the hint row under it; the card's TEXT sits one inset further
+   in (frame 01: border 275, hint ink 279, text ink 296 PNG px). Two
+   independent 16px values that happen to be equal — do not merge
+   them into one.
 
    `--space-sm` on the block axis: the autonomy track used to start
    flush against the card's top border (0px — the round-4 frame has
