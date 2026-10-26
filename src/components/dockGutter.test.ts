@@ -86,6 +86,17 @@ function resolveInline(value: string): string {
   });
 }
 
+/** The rail's width, as the sheets resolve it. The ONE concrete number in
+ *  this file is the token's own declaration (pinned once in the first
+ *  describe); every other expectation compares against this, so a width
+ *  change that keeps the contract does not fail a test. */
+const RAIL_WIDTH = resolve("var(--dock-width)") ?? "";
+
+/** `60px` as written by hand instead of `var(--dock-width)`. */
+function railLiteral(): RegExp {
+  return new RegExp(`\\b${RAIL_WIDTH.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`);
+}
+
 const indexSheet = code("src/index.css");
 const stageSheet = code("src/styles/conversation.css");
 const composerSheet = code("src/styles/composer.css");
@@ -138,7 +149,9 @@ describe("conversation stage reserves the rail at the container", () => {
 
   it("declares the inset as one symmetric padding-inline from the token", () => {
     expect(declaration(stage, "padding-inline")).toBe("var(--dock-width)");
-    expect(resolve(declaration(stage, "padding-inline"))).toBe("60px");
+    // The inset resolves to the rail's own width — the reserve is exactly the
+    // rail, not a second number that happens to be close.
+    expect(resolve(declaration(stage, "padding-inline"))).toBe(RAIL_WIDTH);
     // Symmetry is the invariant: separate sides can drift apart, and a
     // shorthand `padding` after the inline inset would silently win.
     expect(declaration(stage, "padding-left")).toBeUndefined();
@@ -176,12 +189,25 @@ describe("conversation stage reserves the rail at the container", () => {
     // side; a one-value shorthand means both.
     const threadLeft = resolveInline(threadPad[1] ?? threadPad[0] ?? "");
     const placeholderLeft = resolveInline(placeholderPad[1] ?? placeholderPad[0] ?? "");
-    const dock = resolve("var(--dock-width)") ?? "";
 
-    const contentLeft = Number.parseFloat(inset) + Number.parseFloat(threadLeft) + Number.parseFloat(placeholderLeft);
-    expect(contentLeft).toBeGreaterThan(Number.parseFloat(dock));
-    // 60 + 16 + 32 = 108 in the shipped tokens: 48px of clearance.
-    expect(contentLeft).toBe(108);
+    // Each term must still be a resolved length: a token that stops resolving
+    // contributes `NaN`, which compares false against every bound below and
+    // would otherwise pass as "cleared".
+    for (const [label, value] of [
+      ["stage inset", inset],
+      ["thread padding-left", threadLeft],
+      ["placeholder padding-left", placeholderLeft],
+    ] as const) {
+      expect(Number.isFinite(Number.parseFloat(value)), `${label} resolves to a length`).toBe(true);
+    }
+
+    // THE CONTRACT: the sentence's left edge starts strictly right of the
+    // rail's right edge. Stated as that relation and nothing else, because
+    // the three terms above ARE the arithmetic — a token change that still
+    // clears the rail keeps this green, and one that does not, fails.
+    const contentLeft =
+      Number.parseFloat(inset) + Number.parseFloat(threadLeft) + Number.parseFloat(placeholderLeft);
+    expect(contentLeft).toBeGreaterThan(Number.parseFloat(RAIL_WIDTH));
   });
 
   it("keeps the stage's own chrome row full-bleed", () => {
@@ -189,7 +215,7 @@ describe("conversation stage reserves the rail at the container", () => {
     // surface band must still span the pane, so it cancels the stage inset.
     const tabs = ruleBody(contextSheet, ".nex-context-tabs");
     expect(declaration(tabs, "margin-inline")).toBe("calc(-1 * var(--dock-width))");
-    expect(resolveInline(declaration(tabs, "margin-inline") ?? "")).toBe("calc(-1 * 60px)");
+    expect(resolveInline(declaration(tabs, "margin-inline") ?? "")).toBe(`calc(-1 * ${RAIL_WIDTH})`);
   });
 
   it("does not reach the tab strip or the pane header", () => {
@@ -252,16 +278,16 @@ describe("the composer band keeps its paint full-bleed (round 2)", () => {
 
   it("cancels the stage reserve on the band, from the one rail token", () => {
     expect(declaration(band, "margin-inline")).toBe("calc(-1 * var(--dock-width))");
-    expect(resolveInline(declaration(band, "margin-inline") ?? "")).toBe("calc(-1 * 60px)");
+    expect(resolveInline(declaration(band, "margin-inline") ?? "")).toBe(`calc(-1 * ${RAIL_WIDTH})`);
   });
 
   it("spends the borrowed width on transparent border, so content stays reserved", () => {
     expect(declaration(band, "border-inline")).toBe("var(--dock-width) solid transparent");
     const resolved = resolveInline(declaration(band, "border-inline") ?? "");
-    expect(resolved).toBe("60px solid transparent");
+    expect(resolved).toBe(`${RAIL_WIDTH} solid transparent`);
     // The border width IS the reserve: content box = stage content box, so
     // the composer column cannot drift with the band's paint.
-    expect(Number.parseFloat(resolved)).toBe(Number.parseFloat(resolve("var(--dock-width)") ?? ""));
+    expect(Number.parseFloat(resolved)).toBe(Number.parseFloat(RAIL_WIDTH));
   });
 
   it("moves geometry only — the band's tone and hairline stay in composer.css", () => {
@@ -368,11 +394,11 @@ describe("stage sweep — no surface may be left ending at the inset", () => {
       const body = ruleBody(surface.sheet, surface.selector);
       expect(declaration(body, "margin-inline"), surface.note).toBe("calc(-1 * var(--dock-width))");
       expect(resolveInline(declaration(body, "margin-inline") ?? ""), surface.note).toBe(
-        "calc(-1 * 60px)",
+        `calc(-1 * ${RAIL_WIDTH})`,
       );
       // The literal the token replaces must not come back as a hand-typed
       // rail width; a 1px hairline elsewhere in the rule is not a rail width.
-      expect(body, surface.note).not.toMatch(/\b60px\b/);
+      expect(body, surface.note).not.toMatch(railLiteral());
     }
   });
 
