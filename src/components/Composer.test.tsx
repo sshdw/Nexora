@@ -833,6 +833,50 @@ describe("composer sheet — theme linkage (src/styles/composer.css)", () => {
   });
 
 
+  it("gives the pill and its seat ONE radius, re-pointed on the group", () => {
+    // G-18: the primitive's pill and the segment it covers both consume
+    // `--seg-radius` (components.css), so the composer re-points that
+    // ONE property on its two pill groups. Neither shape may declare a
+    // `border-radius` of its own: a pill-only radius is exactly how the
+    // pill drifted off its segment in Phase C (6px over 4.8px).
+    const radiusRules = [
+      ...code.matchAll(/([^{}]*)\{\s*--seg-radius:\s*([^;]+);/g),
+    ];
+    expect(radiusRules).toHaveLength(1);
+    const [, selector = "", value = ""] = radiusRules[0]!;
+    expect(selector).toContain(".nex-composer-pills.nex-seg");
+    expect(selector).toContain(".nex-composer-autonomy.nex-seg");
+    expect(value.trim()).toBe("calc(var(--radius-lg) - 2px)");
+
+    // The seat keeps no radius declaration of its own — the primitive's
+    // `.nex-seg:not(.nex-seg-connected) button` rule applies it.
+    for (const seatSelector of [
+      ".nex-composer-pills.nex-seg button",
+      ".nex-composer-autonomy.nex-seg button",
+    ]) {
+      expect(ruleBody(seatSelector)).not.toMatch(/border-radius/);
+    }
+
+    // And the pill keeps none: the composer sheet does not paint the
+    // indicator at all, because its corners are the seat's by
+    // construction. A rule here is a second radius waiting to drift.
+    expect(code).not.toMatch(/\.nex-seg-indicator/);
+
+    // The derivation is real only if the primitive consumes that token
+    // on both shapes: one re-point here moves the pill and the seat.
+    const primitive = readRepoFile("src/styles/components.css").replace(
+      /\/\*[\s\S]*?\*\//g,
+      "",
+    );
+    const pill = /\.nex-seg-indicator\s*\{([\s\S]*?)\n\}/.exec(primitive)?.[1] ?? "";
+    const seat =
+      /\.nex-seg:not\(\.nex-seg-connected\) button\s*\{([\s\S]*?)\n\}/.exec(
+        primitive,
+      )?.[1] ?? "";
+    expect(pill).toContain("border-radius: var(--seg-radius)");
+    expect(seat).toContain("border-radius: var(--seg-radius)");
+  });
+
   it("stacks the field above its teaching legend, and paints nothing over the placeholder", () => {
     // The regression QA caught: `.nex-composer-teach` was `position:
     // absolute` at the textarea's first line with `background: var(--card)`,

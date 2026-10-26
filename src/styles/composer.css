@@ -284,7 +284,6 @@
   gap: 6px;
   min-height: 28px;
   padding: 4px 10px;
-  border-radius: calc(var(--radius-lg) - 2px);
   font-size: 0.8125rem;
   color: var(--muted-foreground);
   transition: background-color var(--motion-duration-fast) var(--motion-easing-standard),
@@ -547,7 +546,6 @@
 .nex-composer-autonomy.nex-seg button {
   min-height: 28px;
   padding: 4px 10px;
-  border-radius: calc(var(--radius-lg) - 2px);
   font-size: 0.8125rem;
   color: var(--muted-foreground);
   transition: background-color var(--motion-duration-fast) var(--motion-easing-standard),
@@ -564,15 +562,20 @@
   font-weight: 500;
 }
 
-/* Same reason as the mode pills above: the shared indicator is the
-   selected fill, so the segment must not draw a second one over it.
-   The pill occupies exactly the selected segment's box (the primitive
-   measures `offsetLeft` / `offsetWidth`), so it carries that
-   segment's radius — the primitive's own `--radius-sm` is smaller
-   than the segments this sheet re-points. */
-.nex-composer-pills.nex-seg .nex-seg-indicator,
-.nex-composer-autonomy.nex-seg .nex-seg-indicator {
-  border-radius: calc(var(--radius-lg) - 2px);
+/* The shared indicator is the selected fill, so the segment must not
+   draw a second one over it. The pill occupies exactly the selected
+   segment's seat — the primitive measures that seat with
+   `getBoundingClientRect` and publishes `--seg-indicator-x` /
+   `--seg-indicator-w` on the group — so the two shapes must resolve to
+   the same corners. That is ONE property: the primitive's
+   `--seg-radius`, which `components.css` consumes on the segment and on
+   the pill alike. Re-pointed here, for the two groups whose seats are
+   larger than the primitive's `--radius-sm`. Neither shape declares a
+   `border-radius` of its own: a pill-only radius is exactly how the
+   pill drifted off its segment in Phase C (G-18). */
+.nex-composer-pills.nex-seg,
+.nex-composer-autonomy.nex-seg {
+  --seg-radius: calc(var(--radius-lg) - 2px);
 }
 
 /* ---- Autonomy explainer (the animated line) ---------------------------
