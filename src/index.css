@@ -198,6 +198,59 @@
 }
 
 /* ============================================================
+   CONTROL TEXT — the UA's `buttontext` default, answered in
+   `layer(base)` (issue: round-4 visual QA, Defect A).
+
+   The defect, stated as the browser sees it: a `<button>` that
+   declares no colour of its own takes the UA's
+   `color: buttontext`. This app sets `color-scheme` NOWHERE on the
+   themed roots — the only one in the tree lives in the
+   high-contrast block — so the UA resolves `buttontext` against a
+   LIGHT scheme and every such control paints near-black.
+   Nothing else supplied a tone: src/styles/theme.css's element
+   reset deliberately declares no colour ("element resets never
+   invent a tone"), and shadcn's `ghost` variant names only
+   `hover:text-foreground`, no rest value. So on the tab strip's
+   `--color-surface-elevated` bar the tab close ×, the `+`, Split
+   and Zen, and the pane header's export glyph had no colour to
+   paint with at all — they read as embossing, not as controls.
+
+   WHY THIS LAYER, and not an unlayered rule or a colour on the
+   ghost variant: `base` sits BELOW `utilities` in the order
+   declared at the top of this file, so this rule is a FALLBACK BY
+   CONSTRUCTION. Every variant's own `text-*` utility
+   (`text-primary-foreground` on the filled default,
+   `text-secondary-foreground`, `text-destructive`, `text-primary`
+   on link) and every state utility (`hover:text-foreground` on
+   ghost, `disabled:text-muted-foreground` on the filled default)
+   is a normal declaration in the utilities layer, so it outranks
+   this one no matter how specific it is. An UNLAYERED rule here
+   would have beaten all of them — repainting filled buttons with
+   quiet grey on the light fill — which is the trap this placement
+   avoids.
+
+   NO `!important`: for important declarations the EARLIER layer
+   wins, so an important colour in `base` would cross the layers the
+   wrong way and beat the utilities. src/styles/motion.css is the
+   one place that trick is allowed (its reduced-motion gate), and
+   it is pinned as the only one.
+
+   The value is the sheet's quiet text role — the same token the tab
+   strip's own labels use (src/styles/tabs.css, `.nex-tab`), so the
+   action group and the tabs read as one tone tier, and it flips
+   with the theme (dark / light / high-contrast all define it). The
+   brighten on hover stays where it already was: each ghost
+   variant's `hover:text-foreground` utility. Class-scoped legacy
+   rules (`.nex-btn { color: inherit }`) still win over this type
+   selector, so the un-migrated buttons are untouched.
+   ============================================================ */
+@layer base {
+  button {
+    color: var(--color-on-surface-variant);
+  }
+}
+
+/* ============================================================
    NEXORA MONO THEME 2.0 — dark-first, no accent (#235).
 
    Direction (owner decision 2026-10-15, NEXORA-THEME.md §1–§2 —

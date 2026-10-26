@@ -790,6 +790,104 @@ describe("cascade — the merged sheets load inside a layer", () => {
     );
     expect(entries).toEqual(["./index.css"]);
   });
+
+  /* ----------------------------------------------------------
+     The OTHER direction of the same contract (Defect A,
+     round-4 visual QA).
+
+     A bare `<button>` takes the UA's `color: buttontext`, and with
+     no `color-scheme` on the themed roots that is BLACK here —
+     measured on the tab strip's elevated bar, where the close ×,
+     the `+`, Split and Zen painted as embossing. The answer has to
+     be a LAYERED fallback: too weak to beat a variant's own
+     `text-*` utility, strong enough to beat the UA. Those two
+     facts are what these pins hold down — the rule's layer, its
+     absence of `!important` (important declarations invert the
+     layer order), and the utilities it must lose to.
+     ---------------------------------------------------------- */
+
+  /** Body of the top-level `@layer base { … }` block in
+   *  src/index.css. Brace-matched, because `ruleBody`'s `\n}` scan
+   *  stops at the first nested rule's closing brace. */
+  function baseLayerBlock(): string {
+    const start = cssCode.indexOf("@layer base {");
+    if (start === -1) throw new Error("src/index.css: no top-level `@layer base` block");
+    let depth = 0;
+    for (let index = cssCode.indexOf("{", start); index < cssCode.length; index += 1) {
+      if (cssCode[index] === "{") depth += 1;
+      else if (cssCode[index] === "}") {
+        depth -= 1;
+        if (depth === 0) return cssCode.slice(start, index + 1);
+      }
+    }
+    throw new Error("src/index.css: unbalanced `@layer base` block");
+  }
+
+  it("answers the UA's `buttontext` from inside layer(base), by token", () => {
+    const block = baseLayerBlock();
+    // The rule itself: one declaration, one token. A raw colour here
+    // would be a fourth theme's worth of paint nobody reviewed.
+    expect(block).toMatch(
+      /button\s*\{\s*color:\s*var\(--color-on-surface-variant\);\s*\}/,
+    );
+    // No `!important`. For important declarations the EARLIER layer
+    // wins, so an important colour in `base` would cross the layers in
+    // the wrong direction and beat every `text-*` utility on every
+    // variant — motion.css is the one place allowed to do that.
+    expect(block).not.toMatch(/!important/);
+    // …and the rest of src/index.css declares no button colour at all.
+    // An unlayered `button { color }` here would out-rank the utilities
+    // by Cascade L5 (normal declarations) exactly as the old unlayered
+    // sheet imports did, repainting filled buttons quiet grey.
+    expect(cssCode.replace(block, "")).not.toMatch(/\bbutton\b[^{};]*\{/);
+    // The token it names resolves in both theme blocks.
+    expect(definedVars(DARK_BLOCK).has("--color-on-surface-variant")).toBe(true);
+    expect(definedVars(LIGHT_BLOCK).has("--color-on-surface-variant")).toBe(true);
+  });
+
+  it("keeps the element reset free of tone, so this stays the only fallback", () => {
+    // src/styles/theme.css says so in its own header ("element resets
+    // never invent a tone"). Asserted as a declaration, because the
+    // tempting one-line fix — adding `color` to that reset — would put
+    // the same fallback in a sheet whose whole job is geometry, and the
+    // next reader would find two sources for one role.
+    const reset = /button\s*\{([\s\S]*?)\}/.exec(
+      readRepoFile("src/styles/theme.css").replace(/\/\*[\s\S]*?\*\//g, ""),
+    )?.[1] ?? "";
+    expect(reset).toMatch(/font-family:\s*inherit/);
+    expect(reset).not.toMatch(/(?:^|;)\s*color\s*:/);
+  });
+
+  it("still lets a variant's own text utility outrank that fallback", () => {
+    // The mechanism, spelled out: `base` comes BEFORE `utilities` in
+    // the order declared once at the top of src/index.css, so a normal
+    // `text-*` utility wins no matter how specific the fallback is.
+    const order = (/@layer\s+([^;]+);/.exec(cssCode)?.[1] ?? "")
+      .split(",")
+      .map((layer) => layer.trim());
+    expect(order).toEqual(["theme", "base", "components", "utilities"]);
+    expect(order.indexOf("utilities")).toBeGreaterThan(order.indexOf("base"));
+
+    // And the utilities that have to win are still declared, per
+    // variant: filled, secondary, destructive and link paint at rest;
+    // ghost paints on hover (that is the strip's brighten).
+    const button = readRepoFile("src/components/ui/button.tsx");
+    for (const utility of [
+      "text-primary-foreground",
+      "text-secondary-foreground",
+      "text-destructive",
+      "text-primary",
+      "hover:text-foreground",
+    ]) {
+      expect(`${utility}: ${button.includes(utility)}`).toBe(`${utility}: true`);
+    }
+    // The ghost variant has no rest `text-*` at all — which is exactly
+    // why the fallback exists, and why adding one to it instead (the
+    // other tempting fix) would be a second mechanism for one tone.
+    const ghost = /ghost:\s*"([^"]*)"/.exec(button)?.[1] ?? "";
+    expect(ghost).toContain("hover:text-foreground");
+    expect(ghost).not.toMatch(/(?:^|\s)text-/);
+  });
 });
 
 describe("black theme — direction", () => {
