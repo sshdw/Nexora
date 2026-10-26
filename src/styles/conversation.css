@@ -189,10 +189,21 @@
    says "write a message" next to the box that takes a message is the
    permanent-attention thing THEME §6 rejects ("starter chips",
    "one-action-max"). */
+/* The empty state IS the reading column, not a panel stretched across the
+   thread (R4-01, round 3). It takes the same measure as the messages above
+   it and the composer below it — `--layout-measure-max`, centred — and it
+   carries NO inline padding of its own, so its copy starts exactly on the
+   column's left edge, which is the composer card's left edge. The block
+   padding stays: the 22vh anchor is what keeps the state off the middle of
+   the void, and it is vertical only. */
 .nex-conversation-placeholder {
+  width: 100%;
+  max-width: var(--layout-measure-max);
+  margin-inline: auto;
   justify-content: flex-start;
   padding-top: 22vh;
   padding-bottom: var(--space-2xl);
+  padding-inline: 0;
   gap: var(--space-xxs);
   align-items: flex-start;
   text-align: start;
@@ -238,10 +249,108 @@
   display: flex;
   flex-direction: column;
   background: var(--color-surface-canvas);
+  /* ---- The stage clears the edge Dock (R4-01) ----
+     The Dock is a fixed 60px rail pinned to the left edge and vertically
+     centred, so it sits ON TOP of this stage instead of beside it: the
+     empty state used to run underneath the rail ("o messages yet"). The
+     reserve therefore belongs HERE, on the box that owns BOTH the thread
+     and the composer — not on either child, which is what keeps them on
+     one shared axis instead of two columns that can drift apart.
+
+     SYMMETRIC on purpose (`padding-inline` = both sides, one value). The
+     content box is the window minus the rail on each side, so its centre
+     stays at exactly 50vw: a centred thread/composer is NOT pushed by
+     half the rail, which is what "centre the content inside the remaining
+     width" would do. The rail itself reads the same `--dock-width` token,
+     so the reserve and the rail cannot disagree.
+
+     Scope is this box only. The tab strip and the pane header live
+     OUTSIDE `.nex-main-conversation` and stay full-bleed — they sit above
+     the rail's vertical band (owner scope: conversation stage only). The
+     stage's own chrome row, `.nex-context-tabs`, opts back out in
+     context.css so it keeps its full-bleed band; the composer band opts
+     out in the rule directly below. */
+  padding-inline: var(--dock-width);
+}
+
+/* ---- Full-bleed opt-out for the stage's own BANDS (R4-01) ----
+   Owner's rule, restated because it is the whole contract: the rail
+   reserves room for CONTENT, never for PAINT. The inset above keeps
+   the reading column off the rail, and it also shrank every band that
+   used to run edge to edge: the composer's footer tone (`--background`,
+   one step off the stage's `--color-surface-canvas`) and its top
+   hairline stopped at x = 60 and at width − 60, so the footer read as a
+   rectangle floating in the canvas with a hard vertical edge on each
+   side and a horizontal step where it began.
+
+   The opt-out is TWO declarations, and the second one is what keeps the
+   content still:
+
+     1. `margin-inline: calc(-1 * var(--dock-width))` cancels the stage
+        reserve, so the band's border box reaches both window edges. The
+        background paints across that border box (CSS default
+        `background-clip: border-box`), and a `border-top` on the band
+        spans it too — this is the one place the footer's tone and its
+        hairline become full-bleed again.
+     2. `border-inline: var(--dock-width) solid transparent` gives the
+        width the margin bought BACK to the box as invisible border, so
+        the padding box — and therefore every child, including the
+        centred 760px composer column — stays exactly where it was
+        before the inset. No per-band padding arithmetic: a band with
+        16px, 8px or 0 inline padding keeps it without this rule knowing.
+        Not a padding shortcut because it also holds at narrow widths,
+        where the 760px column is clamped by the stage box
+        (`margin-inline` alone would let the column cross x = 60 there).
+
+   Same mechanism as `.nex-context-tabs` in context.css (a negative
+   inline margin cancels the reserve), one step finer: the chrome row's
+   content is console chrome that lives above the rail's vertical band,
+   so it keeps only step 1 and its content returns to the pane edge. A
+   band that carries the reading column takes both steps and keeps its
+   content reserved.
+
+   Sweep result (ConversationView's direct children): this is the ONLY
+   surface that painted a band across the stage and stopped at the
+   inset. `.nex-thread` paints no tone (the stage's canvas shows
+   through), but its SCROLLBAR is paint and had the same fault — see the
+   scroll-viewport rule below. `.nex-composer-strip-error` is a centred
+   card and stays untouched. */
+.nex-main-conversation > .nex-composer {
+  margin-inline: calc(-1 * var(--dock-width));
+  border-inline: var(--dock-width) solid transparent;
 }
 
 /* ---- History thread (scrollable, chronological from the backend) ----
-   A centered reading column, calm and desktop-first. */
+   ONE reading measure, shared with the composer (R4-01, round 3).
+
+   The composer already OWNED the measure: a centred, 760px-bounded card
+   (`.nex-composer-inner`, composer.css:91). The thread's rows were bounded
+   by the same measure too, but its EMPTY STATE was not — the placeholder
+   stretched to the thread's whole box and left-aligned its copy, so the
+   sentence sat on the stage's reserved edge while the composer floated at
+   the window centre. That is the "unrelated columns" reading: at 1536 the
+   gap between the two left edges was 280px.
+
+   The fix is the container's, not the text's. This box now hands its
+   content the SAME box the composer band hands its own children — the
+   stage's reserved content box — and the measure is the centred,
+   max-width-bounded column every row already declares (`.nex-message`,
+   `.nex-thread-status`, `.nex-thread-waiting`, `.nex-agent-run`, and now
+   `.nex-conversation-placeholder`). Hence NO inline padding here: with it,
+   the thread's content box was 32px narrower than the composer's, and
+   below ~912px — unreachable, the window minimum is 1024, but still — the
+   two columns would clamp 16px apart. At zero, both children derive their
+   left edge from one containing block, so the delta is 0 at every width.
+
+   Row geometry is unchanged: centring absorbs the padding this removes (a
+   760px column centred in an 872px box lands on the same x as one centred
+   in 904px), so nothing re-wraps, the user/assistant alignment and the run
+   timeline's own indent are untouched. Only the empty state moves — onto
+   the axis it was supposed to be on.
+
+   Round 4 adds inline padding back, but only from the stage side and only
+   as much as its own negative margin takes away — the scroll-viewport rule
+   below, which nets to zero on this content box. This rule stays at 0. */
 .nex-thread {
   flex: 1 1 auto;
   min-height: 0;
@@ -251,7 +360,40 @@
   flex-direction: column;
   align-items: stretch;
   gap: var(--space-lg);
-  padding: var(--space-xl) var(--space-md) var(--space-md);
+  padding: var(--space-xl) 0 var(--space-md);
+}
+
+/* ---- The thread's SCROLL VIEWPORT reaches the window edge (R4-01, round 4)
+   A scrollbar is paint, so the rail reserves no room for it: it belongs at
+   the window edge, where it was before the stage inset. Sitting inside the
+   inset, `.nex-thread` painted its scrollbar at x = width − 60 — the same
+   fault the composer band had, one affordance further in.
+
+   The margin half is the band's, unchanged: `calc(-1 * var(--dock-width))`
+   cancels the stage reserve, so the viewport's border box spans the window.
+
+   The second half is PADDING here, not the band's transparent border, and
+   that is a measured difference rather than a preference: a scrollbar is
+   painted inside the PADDING box, at the inline-end padding edge, not in
+   the border area. `border-inline: var(--dock-width) solid transparent`
+   therefore leaves the scrollbar at x = width − 60 (verified in the running
+   build: 1120…1140 at 1200 wide, identical to the unfixed box), while
+   `padding-inline: var(--dock-width)` puts the padding-box edge — and with
+   it the scrollbar — at x = width (1180…1200 at 1200 wide) and the content
+   edge back at 60.
+
+   Content is untouched, by the same arithmetic as the band: the width the
+   margin buys (+60 per side) is spent on inline padding (−60 per side), so
+   the content box is still the stage's content box and every row is centred
+   in the same 760 measure it was before. Unlike a margin-only cancel this
+   still holds at narrow widths, where the measure is clamped by the stage
+   box and the content must not cross x = 60. Specificity is why this is a
+   separate rule AFTER `.nex-thread`: the descendant selector outranks the
+   base rule's `padding` shorthand without editing it, and the base rule
+   stays the first `.nex-thread` rule on this sheet. */
+.nex-main-conversation > .nex-thread {
+  margin-inline: calc(-1 * var(--dock-width));
+  padding-inline: var(--dock-width);
 }
 
 .nex-thread-status {
