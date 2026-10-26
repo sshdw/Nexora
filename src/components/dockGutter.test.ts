@@ -50,6 +50,20 @@ function ruleBody(sheet: string, selector: string): string {
   return match[1];
 }
 
+/** Body of the LAST top-level rule for a selector. One class in this file is
+ *  legitimately declared twice — `.nex-conversation-placeholder` appears in
+ *  the shared empty-state group and again as its own conversation rule — and
+ *  the later rule is the one that places it. */
+function lastRuleBody(sheet: string, selector: string): string {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const matches = [
+    ...sheet.matchAll(new RegExp(`(?:^|\\n)${escaped}\\s*\\{([\\s\\S]*?)\\n\\}`, "g")),
+  ];
+  const last = matches[matches.length - 1];
+  if (!last) throw new Error(`no top-level rule for ${selector}`);
+  return last[1];
+}
+
 /** The LAST declaration of `property` in a rule body — last wins in CSS. */
 function declaration(body: string, property: string): string | undefined {
   const matches = [...body.matchAll(new RegExp(`(?:^|[;{\\s])${property}\\s*:\\s*([^;]+);`, "gi"))];
@@ -95,6 +109,34 @@ const RAIL_WIDTH = resolve("var(--dock-width)") ?? "";
 /** `60px` as written by hand instead of `var(--dock-width)`. */
 function railLiteral(): RegExp {
   return new RegExp(`\\b${RAIL_WIDTH.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`);
+}
+
+/** The reading measure — the ONE column the thread's rows, the empty state
+ *  and the composer are all bounded by. Resolved, never hardcoded, so a
+ *  measure change that keeps the contract does not fail a test. */
+const MEASURE = resolve("var(--layout-measure-max)") ?? "";
+
+/** The narrowest window the app ships at (`tauri.conf.json`), so the axis
+ *  can be proved where it is tightest without inventing a width. */
+const MIN_WINDOW_WIDTH = Number(
+  /"minWidth"\s*:\s*(\d+)/.exec(readRepoFile("src-tauri/tauri.conf.json"))?.[1],
+);
+
+/** Where the shared column lands at a given window width: the stage's
+ *  symmetric reserve, then the measure centred inside it — clamped to the
+ *  stage's content box when the window is narrower than the measure, which
+ *  is the same clamp on both children. */
+function sharedColumn(windowWidth: number): {
+  left: number;
+  width: number;
+  centre: number;
+} {
+  const inset = Number.parseFloat(RAIL_WIDTH);
+  const measure = Number.parseFloat(MEASURE);
+  const stageContent = windowWidth - 2 * inset;
+  const width = Math.min(measure, stageContent);
+  const left = inset + (stageContent - width) / 2;
+  return { left, width, centre: left + width / 2 };
 }
 
 const indexSheet = code("src/index.css");
@@ -180,34 +222,24 @@ describe("conversation stage reserves the rail at the container", () => {
   });
 
   it("clears the empty state past the rail by arithmetic, not by eye", () => {
-    // Stage inset + thread padding-left + placeholder padding-left, the
-    // three declarations that place the empty-state sentence.
-    const inset = resolve(declaration(stage, "padding-inline")) ?? "";
-    const threadPad = (declaration(ruleBody(stageSheet, ".nex-thread"), "padding") ?? "").split(/\s+/);
-    const placeholderPad = (declaration(ruleBody(stageSheet, ".nex-conversation-placeholder"), "padding") ?? "").split(/\s+/);
-    // `padding: y x y` and `padding: y` — the SECOND value is the inline
-    // side; a one-value shorthand means both.
-    const threadLeft = resolveInline(threadPad[1] ?? threadPad[0] ?? "");
-    const placeholderLeft = resolveInline(placeholderPad[1] ?? placeholderPad[0] ?? "");
-
-    // Each term must still be a resolved length: a token that stops resolving
-    // contributes `NaN`, which compares false against every bound below and
-    // would otherwise pass as "cleared".
-    for (const [label, value] of [
-      ["stage inset", inset],
-      ["thread padding-left", threadLeft],
-      ["placeholder padding-left", placeholderLeft],
-    ] as const) {
-      expect(Number.isFinite(Number.parseFloat(value)), `${label} resolves to a length`).toBe(true);
-    }
+    // Round 3 moved the empty state ONTO the shared column, so the
+    // sentence's left edge is the column's left edge: the stage inset plus
+    // the centring offset, with no per-text padding left to add into the
+    // sum. Proved at the window's own minimum width — the tightest case the
+    // app ships — rather than at a comfortable one.
+    expect(Number.isFinite(MIN_WINDOW_WIDTH), "minWidth is readable").toBe(true);
+    const column = sharedColumn(MIN_WINDOW_WIDTH);
+    expect(Number.isFinite(column.left), "the column's left edge is a length").toBe(true);
+    expect(Number.isFinite(column.width), "the column's width is a length").toBe(true);
 
     // THE CONTRACT: the sentence's left edge starts strictly right of the
-    // rail's right edge. Stated as that relation and nothing else, because
-    // the three terms above ARE the arithmetic — a token change that still
-    // clears the rail keeps this green, and one that does not, fails.
-    const contentLeft =
-      Number.parseFloat(inset) + Number.parseFloat(threadLeft) + Number.parseFloat(placeholderLeft);
-    expect(contentLeft).toBeGreaterThan(Number.parseFloat(RAIL_WIDTH));
+    // rail's right edge, and the centring alone is what puts it there.
+    expect(column.left).toBeGreaterThan(Number.parseFloat(RAIL_WIDTH));
+
+    // …and the empty copy is not padded off the column it belongs to, so
+    // the sum above is complete: what places the text is the column.
+    const placeholder = lastRuleBody(stageSheet, ".nex-conversation-placeholder");
+    expect(resolveInline(declaration(placeholder, "padding-inline") ?? "")).toBe("0");
   });
 
   it("keeps the stage's own chrome row full-bleed", () => {
@@ -448,5 +480,114 @@ describe("stage sweep — no surface may be left ending at the inset", () => {
     const strip = ruleBody(composerSheet, ".nex-composer-strip-error");
     expect(declaration(strip, "max-width")).toBe("760px");
     expect(declaration(strip, "margin")).toBe("0 auto");
+  });
+});
+
+// ============================================================
+// Round 3 — ONE reading measure.
+//
+// Rounds 1 and 2 put the thread and the composer in one BOX; this round puts
+// them on one COLUMN. The box was not enough. The composer centres a
+// 760px-bounded card inside it (`.nex-composer-inner`), while the thread let
+// its empty state stretch the full width and left-aligned the copy — so the
+// empty conversation read as two unrelated columns: at 1536 the sentence
+// started at x = 108 and the composer card at x = 388. The transcript ROWS
+// were already on the composer's axis (`.nex-message` carries the same
+// centred measure); the empty state was the fourth left edge.
+//
+// THE CHOICE, stated because it could have gone the other way: the composer
+// already owned the measure, so the thread was given it — a centred,
+// `--layout-measure-max`-bounded column — rather than the composer being
+// widened to the stage. A 1536px-wide input line is a worse reading surface
+// than a 760px one, and the owner's constraint was one AXIS, not one width.
+//
+// What is pinned below is the RELATIONSHIP — same measure, same containing
+// box, same centre, clearance at the window minimum — never a pixel snapshot
+// of any of them.
+// ============================================================
+
+describe("one reading measure — the thread and the composer share one column", () => {
+  /** Every thread surface that is a row of the reading column. The run
+   *  timeline is one: it is a card in the column, and its own indent stays
+   *  INSIDE the measure, which is why its padding is untouched here. */
+  const COLUMN_ROWS: Array<[string, string]> = [
+    ["conversation.css .nex-message", ruleBody(stageSheet, ".nex-message")],
+    ["conversation.css .nex-thread-status", ruleBody(stageSheet, ".nex-thread-status")],
+    ["conversation.css .nex-thread-waiting", ruleBody(stageSheet, ".nex-thread-waiting")],
+    ["conversation.css .nex-agent-run", ruleBody(stageSheet, ".nex-agent-run")],
+    [
+      "conversation.css .nex-conversation-placeholder",
+      lastRuleBody(stageSheet, ".nex-conversation-placeholder"),
+    ],
+  ];
+
+  it("bounds the empty state and every thread row by the composer's measure", () => {
+    expect(MEASURE, "the measure resolves to a length").toMatch(/^\d+(?:\.\d+)?px$/);
+    expect(Number.parseFloat(MEASURE)).toBeGreaterThan(0);
+
+    for (const [label, body] of COLUMN_ROWS) {
+      expect(declaration(body, "max-width"), label).toBe("var(--layout-measure-max)");
+      expect(declaration(body, "margin-inline"), label).toBe("auto");
+    }
+
+    // The composer's own column is the same length, whichever sheet spells
+    // it. composer.css writes it as a literal on purpose (that sheet depends
+    // on no M3E var), so the pin is the RESOLVED equality, not the spelling.
+    const composerMeasure = resolveInline(
+      declaration(ruleBody(composerSheet, ".nex-composer-inner"), "max-width") ?? "",
+    );
+    expect(composerMeasure).toBe(MEASURE);
+  });
+
+  it("gives both children the same containing block, so the centring agrees", () => {
+    // The thread carries no inline padding: its content box IS the stage's
+    // content box. Symmetric padding here would shrink the box the column is
+    // centred in — harmless while the measure fits, a 16px drift between the
+    // two columns the moment it does not.
+    const thread = ruleBody(stageSheet, ".nex-thread");
+    const padding = (declaration(thread, "padding") ?? "").split(/\s+/);
+    expect(resolveInline(padding[1] ?? padding[0] ?? "")).toBe("0");
+    expect(declaration(thread, "padding-left")).toBeUndefined();
+    expect(declaration(thread, "padding-right")).toBeUndefined();
+
+    // The composer band's opt-out spends the width its negative margin buys
+    // on transparent border, so the box its children are centred in is that
+    // same stage content box (round 2, unchanged).
+    const band = ruleBody(stageSheet, ".nex-main-conversation > .nex-composer");
+    expect(declaration(band, "border-inline")).toBe("var(--dock-width) solid transparent");
+  });
+
+  it("keeps the shared column's centre exactly on the window centre", () => {
+    // Symmetry, not arithmetic luck: the reserve is equal on both sides, so
+    // the column's centre is 50vw at every width — including below the
+    // measure, where both children clamp to the stage's content box.
+    expect(Number.isFinite(MIN_WINDOW_WIDTH), "minWidth is readable").toBe(true);
+    for (const width of [MIN_WINDOW_WIDTH, 1200, 1536, 2560]) {
+      const column = sharedColumn(width);
+      expect(column.centre, `${width}px column centre`).toBeCloseTo(width / 2, 6);
+      // Neither side of the column ever crosses the rail.
+      expect(column.left, `${width}px left`).toBeGreaterThanOrEqual(Number.parseFloat(RAIL_WIDTH));
+      expect(
+        column.left + column.width,
+        `${width}px right`,
+      ).toBeLessThanOrEqual(width - Number.parseFloat(RAIL_WIDTH));
+    }
+  });
+
+  it("keeps the empty-state copy on the column's edge, not padded off it", () => {
+    const placeholder = lastRuleBody(stageSheet, ".nex-conversation-placeholder");
+    // The block padding is the 22vh anchor and stays; the inline padding is
+    // what used to place the sentence 32px inside the stage's reserved edge.
+    expect(declaration(placeholder, "padding-inline")).toBe("0");
+    expect(declaration(placeholder, "padding-top")).toBe("22vh");
+    // Nothing in the empty state's own text re-centres or re-pads itself: the
+    // fix is the column's, not the copy's.
+    for (const selector of [".nex-conversation-empty-title", ".nex-conversation-empty-text"]) {
+      const body = ruleBody(stageSheet, selector);
+      expect(declaration(body, "margin-inline"), selector).toBeUndefined();
+      expect(declaration(body, "margin"), selector).toBe("0");
+      expect(declaration(body, "padding"), selector).toBeUndefined();
+      expect(declaration(body, "padding-inline"), selector).toBeUndefined();
+    }
   });
 });

@@ -189,10 +189,21 @@
    says "write a message" next to the box that takes a message is the
    permanent-attention thing THEME §6 rejects ("starter chips",
    "one-action-max"). */
+/* The empty state IS the reading column, not a panel stretched across the
+   thread (R4-01, round 3). It takes the same measure as the messages above
+   it and the composer below it — `--layout-measure-max`, centred — and it
+   carries NO inline padding of its own, so its copy starts exactly on the
+   column's left edge, which is the composer card's left edge. The block
+   padding stays: the 22vh anchor is what keeps the state off the middle of
+   the void, and it is vertical only. */
 .nex-conversation-placeholder {
+  width: 100%;
+  max-width: var(--layout-measure-max);
+  margin-inline: auto;
   justify-content: flex-start;
   padding-top: 22vh;
   padding-bottom: var(--space-2xl);
+  padding-inline: 0;
   gap: var(--space-xxs);
   align-items: flex-start;
   text-align: start;
@@ -310,7 +321,32 @@
 }
 
 /* ---- History thread (scrollable, chronological from the backend) ----
-   A centered reading column, calm and desktop-first. */
+   ONE reading measure, shared with the composer (R4-01, round 3).
+
+   The composer already OWNED the measure: a centred, 760px-bounded card
+   (`.nex-composer-inner`, composer.css:91). The thread's rows were bounded
+   by the same measure too, but its EMPTY STATE was not — the placeholder
+   stretched to the thread's whole box and left-aligned its copy, so the
+   sentence sat on the stage's reserved edge while the composer floated at
+   the window centre. That is the "unrelated columns" reading: at 1536 the
+   gap between the two left edges was 280px.
+
+   The fix is the container's, not the text's. This box now hands its
+   content the SAME box the composer band hands its own children — the
+   stage's reserved content box — and the measure is the centred,
+   max-width-bounded column every row already declares (`.nex-message`,
+   `.nex-thread-status`, `.nex-thread-waiting`, `.nex-agent-run`, and now
+   `.nex-conversation-placeholder`). Hence NO inline padding here: with it,
+   the thread's content box was 32px narrower than the composer's, and
+   below ~912px — unreachable, the window minimum is 1024, but still — the
+   two columns would clamp 16px apart. At zero, both children derive their
+   left edge from one containing block, so the delta is 0 at every width.
+
+   Row geometry is unchanged: centring absorbs the padding this removes (a
+   760px column centred in an 872px box lands on the same x as one centred
+   in 904px), so nothing re-wraps, the user/assistant alignment and the run
+   timeline's own indent are untouched. Only the empty state moves — onto
+   the axis it was supposed to be on. */
 .nex-thread {
   flex: 1 1 auto;
   min-height: 0;
@@ -320,7 +356,7 @@
   flex-direction: column;
   align-items: stretch;
   gap: var(--space-lg);
-  padding: var(--space-xl) var(--space-md) var(--space-md);
+  padding: var(--space-xl) 0 var(--space-md);
 }
 
 .nex-thread-status {
