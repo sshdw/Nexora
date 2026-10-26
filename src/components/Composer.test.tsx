@@ -1107,29 +1107,90 @@ describe("composer sheet — theme linkage (src/styles/composer.css)", () => {
     expect(code).toMatch(/max-width:\s*760px/);
   });
 
+  /** The inline-START padding a rule block ends up with, read the way the
+   *  cascade reads it: declarations in source order, shorthand and longhand
+   *  alike, later ones winning. `null` = the rule adds no inline padding. */
+  const inlineStartPadding = (block: string): string | null => {
+    let value: string | null = null;
+    for (const declaration of block.split(";")) {
+      const separator = declaration.indexOf(":");
+      if (separator < 0) continue;
+      const property = declaration.slice(0, separator).trim();
+      const raw = declaration.slice(separator + 1).trim();
+      if (raw === "") continue;
+      if (property === "padding-inline-start") {
+        value = raw;
+      } else if (property === "padding-inline") {
+        value = raw.split(/\s+/)[0]!;
+      } else if (property === "padding") {
+        const parts = raw.split(/\s+/);
+        // 1 value: all sides · 2: block inline · 3: top inline bottom ·
+        // 4: top right bottom left. `padding-block*` cannot touch this axis.
+        value = parts.length === 1 ? parts[0]! : parts.length === 4 ? parts[3]! : parts[1]!;
+      }
+    }
+    return value;
+  };
+
+  /** "No inline inset of its own" — a rule that says nothing, or says 0. */
+  const addedInline = (block: string): string => {
+    const value = inlineStartPadding(block);
+    return value === null || value === "0" ? "none" : value;
+  };
+
   it("puts ONE inner inset on the container and none on the rows", () => {
     // Phase C round 4: the four rows inside the card each spelled their own
     // horizontal padding (2 / 14 / 14 / 8px), so one card had three different
     // left edges. The inset lives on the shell now, once, and every row
-    // inherits it — which is only true while no row re-declares one.
+    // inherits it — which is only true while no row adds one.
     const shell = ruleBody(".nex-composer-shell");
     // Both steps from the spacing scale: `--space-md` inline is the composer
     // region's own horizontal padding, `--space-sm` on the block axis keeps
     // the autonomy track off the card's top border (it was flush: 0px).
     expect(shell).toMatch(/padding:\s*var\(--space-sm\)\s+var\(--space-md\)/);
 
-    for (const selector of [
+    // THE TRAP (Phase C round 5). `.nex-composer-input` is a SHARED class,
+    // and its rule in conversation.css declares an inline padding. Omitting
+    // the inline half here does NOT drop it — the shared 16px survives and
+    // double-counts the shell's own 16px, which is exactly what pushed the
+    // placeholder 17.6px right of the row beneath it. So the reset has to be
+    // a declaration, and this asserts the shared rule really does carry one
+    // (otherwise the reset below would be vacuous and the test meaningless).
+    const sharedSheet = readRepoFile("src/styles/conversation.css").replace(
+      /\/\*[\s\S]*?\*\//g,
+      "",
+    );
+    const sharedField =
+      /\.nex-composer-input\s*\{([\s\S]*?)\n\}/.exec(sharedSheet)?.[1] ?? "";
+    expect(sharedField.length).toBeGreaterThan(0);
+    expect(inlineStartPadding(sharedField)).toBe("var(--space-md)");
+
+    // …and the composer's own rule resolves the field's inline start to 0,
+    // so the text begins on the shell's inset like every other row.
+    const fieldBlock = ruleBody(".nex-composer-shell .nex-composer-input");
+    expect(inlineStartPadding(fieldBlock)).toBe("0");
+
+    // RELATIONSHIP, not a measurement: every other row adds nothing to the
+    // shell's inset, so the field's content edge IS the teaching row's
+    // content edge (and the autonomy row's, and the bar's) — one value,
+    // spelled once, on the container.
+    const rows = [
       ".nex-agent-autonomy",
-      ".nex-composer-shell .nex-composer-input",
       ".nex-composer-teach",
       ".nex-composer-bar",
       ".nex-composer-attachments",
-    ]) {
+    ];
+    for (const selector of rows) {
       const block = ruleBody(selector);
       expect(block.length).toBeGreaterThan(0);
-      // No horizontal padding of its own, in longhand or shorthand.
-      expect(block).not.toMatch(/padding-(inline|left|right)/);
+      // No shorthand padding and no physical inline padding anywhere.
       expect(block).not.toMatch(/(^|[\s;{])padding\s*:/);
+      expect(block).not.toMatch(/padding-(left|right)/);
+      expect(addedInline(block)).toBe("none");
+    }
+    expect(addedInline(fieldBlock)).toBe(addedInline(ruleBody(".nex-composer-teach")));
+    for (const selector of rows) {
+      expect(addedInline(fieldBlock)).toBe(addedInline(ruleBody(selector)));
     }
   });
 

@@ -180,10 +180,27 @@
   resize: none;
   min-height: 40px;
   max-height: 160px;
-  /* Block only: the shell owns the inline inset (see the container
-     rule above), so the text line starts on the same edge as the
-     autonomy row, the teaching row and the bar. */
+  /* BLOCK ONLY, AND THE INLINE HALF EXPLICITLY DROPPED. The shell owns the
+     inline inset (see the container rule above), so this field adds none:
+     its text has to start on the same edge as the autonomy row, the
+     teaching row and the bar.
+
+     `padding-inline: 0` is not redundant with `padding-block` — it is the
+     whole point. `.nex-composer-input` is a SHARED class, and its rule in
+     conversation.css:35 declares `padding: var(--space-sm) var(--space-md)
+     var(--space-xxs)`. A block-only override here wins the block axis and
+     leaves that 16px inline padding standing, which double-counts the
+     shell's own 16px: measured on the round-5 frame, the placeholder's ink
+     sat at 318 PNG while the teaching row's `Ctrl+K` border sat at 296 and
+     the shared content edge is 296 — 22 PNG ≈ 17.6 CSS of phantom indent,
+     the one ragged edge left in the card. Reset it here, explicitly, so the
+     field's inline start is 0 *by declaration* rather than by inheritance
+     accident. The Version Control commit box keeps the shared padding: this
+     rule only reaches fields inside the composer shell.
+     src/components/Composer.test.tsx resolves both rules and asserts the
+     resulting inline start is the same as the rows that declare nothing. */
   padding-block: 12px 4px;
+  padding-inline: 0;
   border: none;
   border-radius: var(--radius-2xl);
   background: transparent;
