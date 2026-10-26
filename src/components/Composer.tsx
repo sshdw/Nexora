@@ -8,18 +8,41 @@
    and the one light fill (send). Everything else recedes.
 
    Anatomy stolen from the owner-supplied reference: the single
-   rounded container; a placeholder that TEACHES the shortcuts
-   inline; the round "+" on the left with the mode/model picker
-   beside it; the send action on the right; a hint row under
-   the box; hairline separators and no fills where a line will
-   do. See the PR body for the two deliberate departures.
+   rounded container; a field whose placeholder says where typing
+   begins, with a teaching line just under it; the round "+" on the
+   left with the mode/model picker beside it; the send action on the
+   right; a hint row under the box; hairline separators and no fills
+   where a line will do. See the PR body for the two deliberate
+   departures.
 
-   THE PLACEHOLDER. The textarea keeps its real `placeholder`
-   attribute (the no-JS and AT fallback), and a sibling
-   `aria-hidden` line paints over it with the same surface
-   colour, so what a user reads is the teaching line while the
-   accessible name stays exactly what it was: `conv.messageAria`
-   on the field itself.
+   TWO MODES, AND AGENT IS THE ONE THE PANE OPENS ON (R4-02).
+   `agentMode` is controlled: the pane owns the value and the
+   composer only dispatches `onAgentModeChange`. There is no
+   second default here — one owner, one truth.
+
+   NO ATTACHMENTS IN AGENT MODE (R4-02 / G-20). `start_agent_run`
+   cannot carry attachments yet, so while Agent is the mode the
+   "+" control, the attached-file chips and the "+ attach files"
+   teaching chip are ABSENT — not disabled, not greyed. A disabled
+   control promises "later"; only an absent one promises nothing.
+   The draft itself survives the switch untouched: switching modes
+   is not a send, and a send is the only thing that clears it.
+
+   THE PLACEHOLDER IS THE AFFORDANCE. The textarea keeps its real
+   `placeholder` attribute and it is what a user SEES: the field has no
+   chrome of its own (the shell is the control), so the placeholder is
+   the only thing that says where typing begins. Because it carries that
+   whole job it is a sentence that says what to do
+   (`conv.messagePlaceholder`), not a bare noun: "Message" read as a form
+   label above the caret rather than as an invitation (visual QA, Phase C
+   round 4). The accessible name stays the short noun `conv.messageAria`
+   — a name names the control; repeating the instruction as the name
+   makes AT announce the same sentence twice. The teaching line is a
+   quiet row BELOW the editable line, in flow — it used to be an opaque
+   `--card` overlay sitting on the placeholder's own line, which left an
+   empty composer looking like a stack of chrome with no field at all
+   (visual QA, Phase C round 2). Nothing is painted over the
+   placeholder.
 
    THE SHORTCUT CHIPS ARE NOT INVENTED. `palette.toggle` and
    `help.show-shortcuts` are read out of src/lib/shortcuts.ts —
@@ -139,6 +162,14 @@ export default function Composer({
 }: ComposerProps) {
   const { t } = useStrings();
   const busy = sending || agentBusy;
+  /** The "+" chip teaches the attach control, so it is drawn only
+   *  where that control exists. Agent mode has none (G-20:
+   *  `start_agent_run` takes no attachments), and a chip
+   *  advertising one would be exactly the invented capability this
+   *  phase removes. */
+  const teachChips = agentMode
+    ? TEACH_CHIPS.filter((chip) => chip.kind === "shortcut")
+    : TEACH_CHIPS;
 
   return (
     <div className="nex-composer">
@@ -175,7 +206,13 @@ export default function Composer({
               />
             </div>
           )}
-          {attachments.length > 0 && (
+          {/* Attachments belong to the CHAT path only. An agent run
+              cannot carry them (G-20: `start_agent_run` has no
+              attachment parameter), so neither the draft chips nor
+              the attach control render in Agent mode: showing a file
+              the run would silently drop is a promise the backend
+              cannot keep. */}
+          {!agentMode && attachments.length > 0 && (
             <ul className="nex-composer-attachments" aria-label={t("conv.attachedFiles")}>
               {attachments.map((attachment) => (
                 <li key={attachment.id} className="nex-chip">
@@ -223,7 +260,7 @@ export default function Composer({
             />
             {draft === "" && (
               <span className="nex-composer-teach" role="note">
-                {TEACH_CHIPS.map((chip, index) => {
+                {teachChips.map((chip, index) => {
                   const keys = chip.kind === "shortcut" ? shortcutKeys(chip.id) : [];
                   return (
                     <span key={chip.kind === "shortcut" ? chip.id : chip.glyph}>
@@ -238,19 +275,23 @@ export default function Composer({
           </div>
 
           <div className="nex-composer-bar">
-            <Tooltip label={t("conv.addFile")}>
-              <Button
-                variant="ghost"
-                size="icon-lg"
-                className="nex-composer-attach rounded-full"
-                aria-label={t("conv.addFile")}
-                title={t("conv.addFile")}
-                disabled={busy || attachmentsBusy}
-                onClick={onPickFiles}
-              >
-                <PlusIcon />
-              </Button>
-            </Tooltip>
+            {/* Chat only: absent (not disabled) in Agent mode — see the
+                attachment note at the top of this file. */}
+            {!agentMode && (
+              <Tooltip label={t("conv.addFile")}>
+                <Button
+                  variant="ghost"
+                  size="icon-lg"
+                  className="nex-composer-attach rounded-full"
+                  aria-label={t("conv.addFile")}
+                  title={t("conv.addFile")}
+                  disabled={busy || attachmentsBusy}
+                  onClick={onPickFiles}
+                >
+                  <PlusIcon />
+                </Button>
+              </Tooltip>
+            )}
 
             {/* The two primary modes, as pills: same segmented
                 primitive and the same radio semantics as every
@@ -287,7 +328,22 @@ export default function Composer({
                 the label changes when the store says so. No
                 tooltip on it: the trigger already carries the
                 model in text, and a bubble repeating it is noise
-                (the icon-only attach beside it does get one). */}
+                (the icon-only attach beside it does get one).
+
+                THE FULL ID IS THE TITLE (Phase C round 4). The
+                visible label renders in full for every id in the
+                catalog (`.nex-composer-model-name` is capped at
+                50ch, the longest one), but the trigger can still
+                shrink on a card narrower than the bar's budget —
+                and a mid-token ellipsis on `…-super-…` hides the
+                variant, which is the part that names the model.
+                `title` is therefore the full id whenever one is
+                selected: it is the hover read AND the accessible
+                description, so AT never gets the cut string. With
+                no model selected the title stays the explanation
+                (there is no id to carry). The accessible NAME is
+                left alone — it says what the control is
+                ("Agent mode and model"), not which model is in it. */}
             <Popover>
               <PopoverTrigger asChild>
                 <Button
@@ -295,7 +351,7 @@ export default function Composer({
                   size="sm"
                   className="nex-composer-model-trigger"
                   aria-label={t("conv.modePickerAria")}
-                  title={t("conv.modelTagTitle")}
+                  title={selectedModel ?? t("conv.modelTagTitle")}
                 >
                   <span
                     className={
@@ -318,6 +374,12 @@ export default function Composer({
                 <PopoverHeader>
                   <PopoverTitle>{t("conv.modelSection")}</PopoverTitle>
                 </PopoverHeader>
+                {/* A vertical list of options: the primitive is laid
+                    out as rows here (composer.css re-flows its grid
+                    from columns to rows) and `indicator={false}`
+                    keeps a pill from sliding across rows, where a
+                    slide means nothing. The selected row keeps its
+                    own wash and leading tick. */}
                 {models.length === 0 ? (
                   <p className="nex-composer-model-empty">{t("conv.modelNone")}</p>
                 ) : (
@@ -325,6 +387,7 @@ export default function Composer({
                     className="nex-composer-model-list"
                     label={t("conv.modelSection")}
                     semantics="radio"
+                    indicator={false}
                     value={selectedModel}
                     onChange={(model) => onSelectModel(model)}
                     options={models.map((model) => ({ value: model, label: model }))}
@@ -343,8 +406,22 @@ export default function Composer({
               </PopoverContent>
             </Popover>
 
+            {/* Send. `disabled:border-transparent` is the ONE state token
+                the composer adds: `ui/button`'s default variant ships the
+                theme's disabled recipe as a full 1px hairline
+                (`disabled:border-border`), and a hairline is exactly what
+                makes an inert Send read as an enabled secondary button.
+                THEME §1's disabled hairline is therefore dropped for this
+                control only — muted label and no fill stay. It has to be a
+                utility here rather than a rule in composer.css: that sheet
+                is `layer(base)` and a Tailwind utility outranks it at any
+                specificity, so only `!important` (reserved for the motion
+                gate) could win from the sheet. `cn` runs tailwind-merge, so
+                this class replaces the variant's `disabled:border-border`
+                instead of stacking with it —
+                src/components/Composer.test.tsx asserts the merge. */}
             <Button
-              className="nex-composer-send"
+              className="nex-composer-send disabled:border-transparent"
               disabled={!canSend}
               aria-busy={busy || undefined}
               onClick={onSubmit}

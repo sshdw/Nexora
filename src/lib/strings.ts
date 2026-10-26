@@ -198,10 +198,14 @@ const en = {
   "conv.agentWorking": "Agent is working",
   "conv.attachedFiles": "Attached files",
   "conv.removeFile": "Remove {name}",
-  "conv.messagePlaceholder": "Message",
+  // The field has no chrome of its own (the shell is the control), so the
+  // placeholder IS the affordance and has to say what to do. "Message" was a
+  // bare noun and read as a form label. The accessible name stays a short
+  // noun: a name names the control, it does not repeat the instruction.
+  "conv.messagePlaceholder": "Ask anything, or describe a task",
   "conv.messageAria": "Message",
   "conv.addFile": "Add file",
-  "conv.agentToggleTitle": "Stream steps via the agent (opt-in)",
+  "conv.agentToggleTitle": "Switch between Chat and Agent mode",
   "conv.agentToggle": "Agent",
   "conv.agentModeAria": "Agent mode",
   "conv.modelTagTitle": "Model used for new messages",
@@ -1737,10 +1741,10 @@ const ru: Record<StringKey, string> = {
   "conv.agentWorking": "Агент работает",
   "conv.attachedFiles": "Прикреплённые файлы",
   "conv.removeFile": "Убрать {name}",
-  "conv.messagePlaceholder": "Сообщение",
+  "conv.messagePlaceholder": "Спросите что угодно или опишите задачу",
   "conv.messageAria": "Сообщение",
   "conv.addFile": "Прикрепить файл",
-  "conv.agentToggleTitle": "Стримить шаги через агента (опционально)",
+  "conv.agentToggleTitle": "Переключение между режимами «Чат» и «Агент»",
   "conv.agentToggle": "Агент",
   "conv.agentModeAria": "Режим агента",
   "conv.modelTagTitle": "Модель для новых сообщений",
