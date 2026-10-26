@@ -28,6 +28,13 @@
 //!     shifted by half the rail. Separate left/right declarations would let
 //!     a later pass change one side.
 //!
+//!  4. A SCROLL VIEWPORT'S SCROLLBAR IS PAINT. The rail reserves room for
+//!     content, so a scroll container inside the inset must cancel it — but
+//!     with PADDING, not the band's transparent border: a scrollbar is
+//!     painted in the padding box, so a border leaves it at width − 60. The
+//!     two halves therefore net to zero on content (margin −inset, padding
+//!     +inset) while the scrollbar reaches the window edge.
+//!
 //! The empty-state clearance is also computed here, because "it clears the
 //! rail" is arithmetic the sheets fully determine: the stage inset plus the
 //! thread's and the placeholder's own padding must exceed the rail width.
@@ -202,12 +209,14 @@ describe("conversation stage reserves the rail at the container", () => {
     expect(declaration(stage, "margin-inline")).toBeUndefined();
   });
 
-  it("puts no Dock offset on the thread, the composer or the empty copy", () => {
+  it("puts no Dock offset on the composer or the empty copy", () => {
     // The fix is the container's. If any of these carried the token
     // themselves, the thread and the composer would be two columns that can
-    // drift, which is the thing this contract forbids.
+    // drift, which is the thing this contract forbids. The thread's own
+    // scroll-viewport opt-out is a margin/padding PAIR that nets to zero on
+    // its content box (round 4, below) — not an offset — so it is excluded
+    // here and pinned there.
     const ownedBlocks: Array<[string, string]> = [
-      ["conversation.css .nex-thread", ruleBody(stageSheet, ".nex-thread")],
       ["conversation.css .nex-conversation-placeholder", ruleBody(stageSheet, ".nex-conversation-placeholder")],
       ["conversation.css .nex-conversation-empty-text", ruleBody(stageSheet, ".nex-conversation-empty-text")],
       ["composer.css .nex-composer", ruleBody(composerSheet, ".nex-composer")],
@@ -345,14 +354,16 @@ describe("the composer band keeps its paint full-bleed (round 2)", () => {
 describe("stage sweep — no surface may be left ending at the inset", () => {
   /** Root class → where its layout rule lives and how it must treat the
    *  reserve. `band` = paints a tone and/or a hairline ACROSS the stage, so
-   *  it must opt out; `content` = paints no band of its own, so it must not
-   *  touch the reserve at all. The completeness test below fails when a new
-   *  direct child of `.nex-main-conversation` is added without a decision. */
+   *  it must opt out; `scroll` = a scroll container whose SCROLLBAR is paint,
+   *  so it opts out too, with padding instead of a transparent border;
+   *  `content` = paints no band and scrolls not, so it must not touch the
+   *  reserve at all. The completeness test below fails when a new direct
+   *  child of `.nex-main-conversation` is added without a decision. */
   const SURFACES: Array<{
     root: string;
     sheet: string;
     selector: string;
-    kind: "band" | "content";
+    kind: "band" | "scroll" | "content";
     note: string;
   }> = [
     {
@@ -372,16 +383,16 @@ describe("stage sweep — no surface may be left ending at the inset", () => {
     {
       root: "nex-thread",
       sheet: stageSheet,
-      selector: ".nex-thread",
-      kind: "content",
-      note: "scroll viewport: paints nothing, the stage canvas shows through",
+      selector: ".nex-main-conversation > .nex-thread",
+      kind: "scroll",
+      note: "scroll viewport: paints no tone, but its scrollbar is paint",
     },
     {
       root: "nex-context",
       sheet: contextSheet,
-      selector: ".nex-context",
-      kind: "content",
-      note: "context scroller: quiet, no band",
+      selector: ".nex-main-conversation > .nex-context",
+      kind: "scroll",
+      note: "context scroller: no band, scrollbar is paint",
     },
     {
       root: "nex-composer-strip-error",
@@ -434,6 +445,37 @@ describe("stage sweep — no surface may be left ending at the inset", () => {
     }
   });
 
+  it("opts every scroll viewport out with a margin/padding pair, never a border", () => {
+    const stageInset = declaration(ruleBody(stageSheet, ".nex-main-conversation"), "padding-inline");
+    for (const surface of SURFACES.filter((entry) => entry.kind === "scroll")) {
+      const body = ruleBody(surface.sheet, surface.selector);
+      // Half one, shared with the bands: cancel exactly the reserve the
+      // stage applies, so the border box reaches both window edges.
+      expect(declaration(body, "margin-inline"), surface.note).toBe(
+        `calc(-1 * ${stageInset})`,
+      );
+      // Half two is PADDING here. A scrollbar is painted in the padding box,
+      // so a transparent border would leave it at width − 60 (measured in
+      // the running build); padding puts the padding-box edge — the
+      // scrollbar — at the window edge.
+      expect(declaration(body, "padding-inline"), surface.note).toBeDefined();
+      expect(declaration(body, "border-inline"), surface.note).toBeUndefined();
+      expect(declaration(body, "border"), surface.note).toBeUndefined();
+      expect(body, surface.note).not.toMatch(railLiteral());
+    }
+    // The thread's inline padding was 0, so its padding is exactly the
+    // reserve: content box = stage content box, unchanged.
+    expect(declaration(ruleBody(stageSheet, ".nex-main-conversation > .nex-thread"), "padding-inline")).toBe(
+      stageInset,
+    );
+    // The context panel already spent `--space-xl` of inline padding, so it
+    // gets the reserve PLUS its own inset — otherwise the panel's content
+    // would move by that inset.
+    expect(
+      declaration(ruleBody(contextSheet, ".nex-main-conversation > .nex-context"), "padding-inline"),
+    ).toBe(`calc(${stageInset} + var(--space-xl))`);
+  });
+
   it("keeps the reading column reserved inside a full-bleed band", () => {
     // Chrome that sits above the rail's vertical band returns to the pane
     // edge (round 1, unchanged): margin only, no compensating border.
@@ -464,8 +506,9 @@ describe("stage sweep — no surface may be left ending at the inset", () => {
 
   it("classifies each content surface as a scroll box or a bounded card, not a band", () => {
     const thread = ruleBody(stageSheet, ".nex-thread");
-    // Scrolls: the scroll viewport belongs to the content, so no tone/hairline
-    // ends at the inset and none is needed at the window edge either.
+    // Scrolls: the viewport paints no tone, so nothing ends at the inset and
+    // nothing needs repainting at the window edge either — only its
+    // scrollbar (paint) is moved there, by the round-4 rule.
     expect(declaration(thread, "background")).toBeUndefined();
     expect(declaration(thread, "border-top")).toBeUndefined();
     expect(declaration(thread, "border-bottom")).toBeUndefined();
@@ -540,15 +583,23 @@ describe("one reading measure — the thread and the composer share one column",
   });
 
   it("gives both children the same containing block, so the centring agrees", () => {
-    // The thread carries no inline padding: its content box IS the stage's
-    // content box. Symmetric padding here would shrink the box the column is
-    // centred in — harmless while the measure fits, a 16px drift between the
-    // two columns the moment it does not.
+    // The thread's base rule carries no inline padding of its own: its
+    // content box IS the stage's content box. Round 4 adds inline padding
+    // from the stage-side opt-out, but exactly the reserve its negative
+    // margin took away, so the content box — the box the column is centred
+    // in — is unchanged. Padding that did NOT cancel would shrink it:
+    // harmless while the measure fits, a 16px drift the moment it does not.
     const thread = ruleBody(stageSheet, ".nex-thread");
     const padding = (declaration(thread, "padding") ?? "").split(/\s+/);
     expect(resolveInline(padding[1] ?? padding[0] ?? "")).toBe("0");
     expect(declaration(thread, "padding-left")).toBeUndefined();
     expect(declaration(thread, "padding-right")).toBeUndefined();
+
+    // …and the pair that does touch it nets to zero: the margin takes the
+    // reserve away, the padding gives back exactly the same width.
+    const viewport = ruleBody(stageSheet, ".nex-main-conversation > .nex-thread");
+    expect(resolveInline(declaration(viewport, "padding-inline") ?? "")).toBe(RAIL_WIDTH);
+    expect(declaration(viewport, "margin-inline")).toBe("calc(-1 * var(--dock-width))");
 
     // The composer band's opt-out spends the width its negative margin buys
     // on transparent border, so the box its children are centred in is that
@@ -588,6 +639,78 @@ describe("one reading measure — the thread and the composer share one column",
       expect(declaration(body, "margin"), selector).toBe("0");
       expect(declaration(body, "padding"), selector).toBeUndefined();
       expect(declaration(body, "padding-inline"), selector).toBeUndefined();
+    }
+  });
+});
+
+// ============================================================
+// Round 4 — the SCROLLBAR is paint.
+//
+// Rounds 1–3 reserved the rail for content and put the thread and the
+// composer on one column. The thread's scroll viewport, though, still began
+// at x = 60: `overflow-y: auto` paints its scrollbar at the padding box's
+// inline end, which was width − 60, 60px inside the window edge and inside
+// the gutter the rail is supposed to leave empty.
+//
+// The fix is the band's two-step opt-out with its second half swapped, and
+// that swap is measured, not stylistic: a scrollbar is painted in the
+// PADDING box, so `border-inline: var(--dock-width) solid transparent` — the
+// band's compensating border — leaves the scrollbar exactly where it was
+// (1120…1140 at 1200 wide). `padding-inline: var(--dock-width)` puts it at
+// 1180…1200, and the content box is the same 60…1120 either way.
+//
+// What is pinned below is the RELATIONSHIP between the two declarations and
+// the boxes they produce — never a pixel snapshot: margin = −reserve gives a
+// window-wide border box, padding = +reserve gives back the stage content
+// box, so the shared measure cannot move while the scrollbar reaches the
+// edge.
+// ============================================================
+
+describe("the thread's scroll viewport spans the window; its content box does not move (round 4)", () => {
+  const stage = ruleBody(stageSheet, ".nex-main-conversation");
+  const viewport = ruleBody(stageSheet, ".nex-main-conversation > .nex-thread");
+
+  it("spans the window while its content box stays on the shared measure", () => {
+    const inset = Number.parseFloat(RAIL_WIDTH);
+    expect(Number.isFinite(inset), "the reserve is a length").toBe(true);
+
+    // The two declarations, read off the sheet as the relationship they are:
+    // the margin is exactly the stage's reserve, and the padding is exactly
+    // the width that margin borrowed.
+    expect(declaration(viewport, "margin-inline")).toBe(
+      `calc(-1 * ${declaration(stage, "padding-inline")})`,
+    );
+    expect(declaration(viewport, "padding-inline")).toBe(declaration(stage, "padding-inline"));
+    // No inline border: the scrollbar paints at the padding box's inline end,
+    // so nothing may sit between that edge and the border box.
+    expect(declaration(viewport, "border-inline")).toBeUndefined();
+    expect(declaration(viewport, "border")).toBeUndefined();
+
+    for (const width of [MIN_WINDOW_WIDTH, 1200, 1536]) {
+      // The box the stage hands both children: its content box.
+      const stageContent = { left: inset, width: width - 2 * inset };
+      // The viewport's border box: the stage content box plus the margin on
+      // each side — the window, at every width.
+      const border = {
+        left: stageContent.left - inset,
+        width: stageContent.width + 2 * inset,
+      };
+      expect(border.left, `${width}px viewport left`).toBe(0);
+      expect(border.left + border.width, `${width}px scrollbar edge`).toBe(width);
+
+      // Its content box: the border box less the padding — the stage content
+      // box again, unchanged by the opt-out.
+      const content = { left: border.left + inset, width: border.width - 2 * inset };
+      expect(content, `${width}px content box`).toEqual(stageContent);
+
+      // …so the 760 column is centred in the same box as the composer card
+      // and lands on the same left edge and centre it always did.
+      const column = sharedColumn(width);
+      expect(content.left + (content.width - column.width) / 2, `${width}px column left`).toBeCloseTo(
+        column.left,
+        6,
+      );
+      expect(column.centre, `${width}px column centre`).toBeCloseTo(width / 2, 6);
     }
   });
 });

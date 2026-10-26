@@ -311,10 +311,10 @@
 
    Sweep result (ConversationView's direct children): this is the ONLY
    surface that painted a band across the stage and stopped at the
-   inset. `.nex-thread` paints nothing (the stage's canvas shows
-   through) and its scroll viewport is content, not paint;
-   `.nex-context` is a quiet scroller; `.nex-composer-strip-error` is a
-   centred card. Those stay untouched. */
+   inset. `.nex-thread` paints no tone (the stage's canvas shows
+   through), but its SCROLLBAR is paint and had the same fault — see the
+   scroll-viewport rule below. `.nex-composer-strip-error` is a centred
+   card and stays untouched. */
 .nex-main-conversation > .nex-composer {
   margin-inline: calc(-1 * var(--dock-width));
   border-inline: var(--dock-width) solid transparent;
@@ -346,7 +346,11 @@
    760px column centred in an 872px box lands on the same x as one centred
    in 904px), so nothing re-wraps, the user/assistant alignment and the run
    timeline's own indent are untouched. Only the empty state moves — onto
-   the axis it was supposed to be on. */
+   the axis it was supposed to be on.
+
+   Round 4 adds inline padding back, but only from the stage side and only
+   as much as its own negative margin takes away — the scroll-viewport rule
+   below, which nets to zero on this content box. This rule stays at 0. */
 .nex-thread {
   flex: 1 1 auto;
   min-height: 0;
@@ -357,6 +361,39 @@
   align-items: stretch;
   gap: var(--space-lg);
   padding: var(--space-xl) 0 var(--space-md);
+}
+
+/* ---- The thread's SCROLL VIEWPORT reaches the window edge (R4-01, round 4)
+   A scrollbar is paint, so the rail reserves no room for it: it belongs at
+   the window edge, where it was before the stage inset. Sitting inside the
+   inset, `.nex-thread` painted its scrollbar at x = width − 60 — the same
+   fault the composer band had, one affordance further in.
+
+   The margin half is the band's, unchanged: `calc(-1 * var(--dock-width))`
+   cancels the stage reserve, so the viewport's border box spans the window.
+
+   The second half is PADDING here, not the band's transparent border, and
+   that is a measured difference rather than a preference: a scrollbar is
+   painted inside the PADDING box, at the inline-end padding edge, not in
+   the border area. `border-inline: var(--dock-width) solid transparent`
+   therefore leaves the scrollbar at x = width − 60 (verified in the running
+   build: 1120…1140 at 1200 wide, identical to the unfixed box), while
+   `padding-inline: var(--dock-width)` puts the padding-box edge — and with
+   it the scrollbar — at x = width (1180…1200 at 1200 wide) and the content
+   edge back at 60.
+
+   Content is untouched, by the same arithmetic as the band: the width the
+   margin buys (+60 per side) is spent on inline padding (−60 per side), so
+   the content box is still the stage's content box and every row is centred
+   in the same 760 measure it was before. Unlike a margin-only cancel this
+   still holds at narrow widths, where the measure is clamped by the stage
+   box and the content must not cross x = 60. Specificity is why this is a
+   separate rule AFTER `.nex-thread`: the descendant selector outranks the
+   base rule's `padding` shorthand without editing it, and the base rule
+   stays the first `.nex-thread` rule on this sheet. */
+.nex-main-conversation > .nex-thread {
+  margin-inline: calc(-1 * var(--dock-width));
+  padding-inline: var(--dock-width);
 }
 
 .nex-thread-status {

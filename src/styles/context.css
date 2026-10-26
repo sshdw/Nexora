@@ -28,6 +28,26 @@
   padding: var(--space-lg) var(--space-xl);
 }
 
+/* ---- Scroll viewport reaches the window edge (R4-01, round 4) ----
+   Same fault as the thread (conversation.css): this is a scroll container
+   inside the stage's Dock inset, so its scrollbar painted at
+   x = width − 60 instead of the window edge. The rail reserves room for
+   content, never for paint, and a scrollbar is paint.
+
+   The mechanism is the thread's, one term longer: the negative inline
+   margin cancels the stage reserve so the border box spans the window,
+   and the width it buys comes back as inline padding so the CONTENT box
+   stays exactly the stage content box. This panel already spent 24px of
+   that padding on its own inset (`--space-xl` above), so the padding here
+   is the reserve PLUS that inset — the arithmetic the thread does not
+   need, because the thread's inline padding was 0. Padding, not a
+   transparent border: a scrollbar is painted in the padding box, so a
+   border would leave it at width − 60 (measured; see the thread rule). */
+.nex-main-conversation > .nex-context {
+  margin-inline: calc(-1 * var(--dock-width));
+  padding-inline: calc(var(--dock-width) + var(--space-xl));
+}
+
 .nex-context-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

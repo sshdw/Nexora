@@ -17,11 +17,11 @@ Every frame is distinct and carries >900 colours.
 
 ## Measured (CSS px, live DOM)
 
-| viewport | empty-state / transcript left | composer left | Δ | column centre = window centre | rail | clipped |
+| viewport | empty-state / transcript left | composer left | Δ to composer | column centre = window centre | rail | clipped |
 |---|---|---|---|---|---|---|
-| 1024×720 | 108 → **132** | 132 | 24 → **0** | 512 = 512 | 60 | yes → no |
-| 1200×800 | 108 → **220** | 220 | 112 → **0** | 600 = 600 | 60 | yes → no |
-| 1536×800 | 108 → **388** | 388 | 280 → **0** | 768 = 768 | 60 | yes → no |
+| 1024×720 | 48 → **132** | 132 | 84 → **0** | 512 = 512 | 60 | yes → no |
+| 1200×800 | 48 → **220** | 220 | 172 → **0** | 600 = 600 | 60 | yes → no |
+| 1536×800 | 48 → **388** | 388 | 340 → **0** | 768 = 768 | 60 | yes → no |
 
 ## What each fix is
 
@@ -34,12 +34,17 @@ Every frame is distinct and carries >900 colours.
    message rows; the empty state was the outlier, stretching to the stage box and
    left-aligning its copy. It now uses the same centred column, so the transcript, the empty
    state and the composer share one axis at every width (Δ = 0 above).
-3. **Controls painted from a token.** A bare `<button>` carries the UA's
+3. **Scroll viewports back at the window edge.** Insetting the stage moved the thread's and
+   the Context panel's scrollbars to window − 60. Both now cancel the reserve with a
+   `margin-inline`/`padding-inline` pair (net zero on content), so the scrollbar paints at
+   the window edge while the reading column does not move; a transparent border cannot do
+   this, because a scrollbar lives inside the padding box.
+4. **Controls painted from a token.** A bare `<button>` carries the UA's
    `color: buttontext`; with no `color-scheme` declared that is black, and the `ghost`
    variant paints no rest colour, so five controls fell through to ≈1.05:1. One base-layer
    fallback `button { color: var(--color-on-surface-variant) }` fixes the class of bug while
    still losing to every variant's own `text-*` utility (layer order, not specificity).
-4. **View switch renamed** to `Conversation`/`Context` (RU `Диалог`/`Контекст`), group label
+5. **View switch renamed** to `Conversation`/`Context` (RU `Диалог`/`Контекст`), group label
    `Pane content` / `Содержимое панели`; the composer keeps `Chat`/`Agent` byte-identical.
 
 ## Not proven by these stills
