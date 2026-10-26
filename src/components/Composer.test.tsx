@@ -271,6 +271,22 @@ describe("composer — modes", () => {
     expect(agent).toHaveAttribute("aria-checked", "false");
   });
 
+  it("keeps its visible mode labels as Chat / Agent — only the view switch was renamed", () => {
+    // Defect B (round-4 visual QA): the stage's view chip and these two
+    // mode pills both read "Chat" in the same chip grammar, one above
+    // the other. THE VIEW SWITCH was renamed (Conversation | Context,
+    // src/lib/viewSwitchLabels.test.ts); this pair is byte-identical to
+    // what shipped, and that is what makes the two switches tell apart
+    // on one screen.
+    renderComposer({ agentMode: false });
+    const group = screen.getByRole("radiogroup", { name: "Agent mode" });
+    const labels = within(group)
+      .getAllByRole("radio")
+      .map((radio) => radio.textContent);
+    expect(labels).toEqual(["Chat", "Agent"]);
+    expect(within(group).queryByText("Conversation")).toBeNull();
+  });
+
   it("switches agent mode from the pills", () => {
     const onAgentModeChange = vi.fn();
     renderComposer({ onAgentModeChange, agentMode: false });

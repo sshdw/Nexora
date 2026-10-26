@@ -178,8 +178,14 @@ const en = {
   "empty.text": "Your conversations will appear here.",
 
   // ---- conversation / composer (ConversationView.tsx) ---------------------------
-  "conv.viewLabel": "Conversation view",
-  "conv.chatTab": "Chat",
+  // Defect B (round-4 visual QA): this switch and the composer's mode switch
+  // both said "Chat" in the same chip grammar, one above the other. The stage
+  // VIEW is now "Conversation" / "Context"; the composer's mode pair keeps
+  // `conv.modeChat` / `conv.agentToggle` byte-identical ("Chat" / "Agent").
+  // The group's own name is not "Conversation view" any more for the same
+  // reason in the a11y tree: it would repeat the option it contains.
+  "conv.viewLabel": "Pane content",
+  "conv.chatTab": "Conversation",
   "conv.contextTab": "Context",
   "conv.messagesAria": "Messages",
   "conv.loadingMessages": "Loading messages",
@@ -1717,8 +1723,8 @@ const ru: Record<StringKey, string> = {
   "empty.title": "Пока нет разговоров",
   "empty.text": "Ваши разговоры появятся здесь.",
 
-  "conv.viewLabel": "Вид разговора",
-  "conv.chatTab": "Чат",
+  "conv.viewLabel": "Содержимое панели",
+  "conv.chatTab": "Диалог",
   "conv.contextTab": "Контекст",
   "conv.messagesAria": "Сообщения",
   "conv.loadingMessages": "Загрузка сообщений",

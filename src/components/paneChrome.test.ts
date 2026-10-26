@@ -184,6 +184,24 @@ describe("P2 chrome — token discipline in the tabs + pane-header sheet", () =>
     expect(tick).not.toMatch(/--nex-sys-color-accent-indicator/);
   });
 
+  it("keeps the strip's tone tier to one declaration per role", () => {
+    // Tab labels: the quiet role, and `inherit` on the label BUTTON so
+    // the row's own token wins over anything a `<button>` would take on
+    // its own (Defect A did not have to touch the tabs; this is why).
+    const tab = /\.nex-tab \{([\s\S]*?)\}/.exec(css)?.[1] ?? "";
+    expect(declaration(tab, "color")).toBe("var(--color-on-surface-variant)");
+    const label = /\.nex-tab-label \{([\s\S]*?)\}/.exec(css)?.[1] ?? "";
+    expect(declaration(label, "color")).toBe("inherit");
+    // The action group does NOT restate the tone it shares with the
+    // tabs: the one base-layer control-text fallback in src/index.css
+    // owns it (theme.test.ts pins that rule, its layer and its missing
+    // `!important`). A second declaration here would be the same
+    // one-role-two-sources mistake the amber tick alias was.
+    const actions = /\.nex-tabstrip-actions \{([\s\S]*?)\}/.exec(css)?.[1] ?? "";
+    expect(actions).not.toMatch(/\bcolor\s*:/);
+    expect(declaration(actions, "flex-shrink")).toBe("0");
+  });
+
   it("lets both split tracks shrink", () => {
     expect(css).toMatch(/grid-template-columns:\s*minmax\(0,\s*1fr\)\s*minmax\(0,\s*1fr\)/);
   });

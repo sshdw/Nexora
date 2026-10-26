@@ -17,8 +17,11 @@
 //!
 //! Tokens: every colour/duration/radius/shape/space comes from
 //! src/styles/motion.css, src/styles.css or src/index.css. The only literals
-//! are the R4-01 documented exceptions (60 px width, 5 px gap, 30 px radius,
-//! 6 px attention dot, 44 × 44 hit area) and framework scale steps.
+//! are the R4-01 documented exceptions (5 px gap, 30 px radius,
+//! 6 px attention dot, 44 × 44 hit area) and framework scale steps. The rail
+//! WIDTH is not a literal: it reads `--dock-width` from src/index.css, which
+//! is also what the conversation stage reserves, so the two can never
+//! disagree about how much room the rail takes.
 
 import type { ComponentPropsWithoutRef, ReactNode } from "react";
 
@@ -279,7 +282,9 @@ export default function Dock({
         paddingBottom: "var(--space-2xl)", // 32 px — clears the 30 px bottom curve
         paddingLeft: "var(--space-xs)",    // 8 px
         paddingRight: "var(--space-xs)",   // 8 px
-        width: 60,
+        // R4-01: 60 px rail, from the ONE layout token the conversation
+        // stage also reserves (`padding-inline: var(--dock-width)`).
+        width: "var(--dock-width)",
       }}
     >
       <div className="flex flex-col gap-[5px] items-center">
