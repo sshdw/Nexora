@@ -100,10 +100,35 @@
 /* ---- The one elevated container -------------------------------------
    `--card` sits 0.03 oklch above the canvas (black theme §
    surfaces), which is the whole reason nothing here leans on a
-   shadow for separation. */
+   shadow for separation.
+
+   ONE INNER INSET, ON THE CONTAINER (Phase C round 4). The card's
+   four rows used to each spell their own horizontal padding — the
+   autonomy row 2px, the field 14px, the teaching row 14px, the bar
+   8px — so one card had three different left edges (measured on the
+   round-4 frame: 3.2 / 16 / 8.8 CSS px from the card's own border).
+   The inset now lives HERE, once, and every row inside the shell
+   inherits it because none of them declares a horizontal padding of
+   its own. `--space-md` is the composer region's own inline padding
+   (`.nex-composer`, above): the card's text edge and the strip's
+   edge are the same step, so the hint row under the card lines up
+   with the text inside it.
+
+   `--space-sm` on the block axis: the autonomy track used to start
+   flush against the card's top border (0px — the round-4 frame has
+   the border at y=773 and the track at y=774), and the bar's own
+   bottom padding was the only thing keeping Send off the bottom
+   edge. The container owns both now.
+
+   A row that genuinely needs to break the inset would be a
+   full-bleed separator or a scroll area; there is none in this
+   card, and a second horizontal padding anywhere below is the
+   regression this rule exists to prevent
+   (src/components/Composer.test.tsx asserts it). */
 .nex-composer-shell {
   display: flex;
   flex-direction: column;
+  padding: var(--space-sm) var(--space-md);
   border-radius: var(--radius-2xl);
   background: var(--card);
   border: 1px solid var(--border);
@@ -155,7 +180,10 @@
   resize: none;
   min-height: 40px;
   max-height: 160px;
-  padding: 12px 14px 4px;
+  /* Block only: the shell owns the inline inset (see the container
+     rule above), so the text line starts on the same edge as the
+     autonomy row, the teaching row and the bar. */
+  padding-block: 12px 4px;
   border: none;
   border-radius: var(--radius-2xl);
   background: transparent;
@@ -196,7 +224,8 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  padding: 0 14px 6px;
+  /* Block only — the shell owns the inline inset. */
+  padding-block: 0 6px;
   color: var(--muted-foreground);
   font-size: 0.8125rem;
   line-height: 1.5;
@@ -221,12 +250,15 @@
   opacity: 0.5;
 }
 
-/* ---- Bottom control row ------------------------------------------------ */
+/* ---- Bottom control row ------------------------------------------------
+   Block only: the shell owns the inline inset, so the bar's first control
+   starts on the same edge as the text above it. The bottom padding belongs
+   to the shell as well — this row used to carry its own 8px. */
 .nex-composer-bar {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 2px 8px 8px 8px;
+  padding-block: 2px 0;
 }
 
 /* Attach: the round "+". Quiet at rest with a hairline so it
@@ -348,12 +380,35 @@
    trigger to `--foreground` through the ghost variant's utilities,
    which outrank this layer. */
 .nex-composer-model-trigger {
-  max-width: 220px;
+  /* No `max-width` here any more (it was 220px). The cap belonged to the
+     LABEL's own measure, not to the button: see `.nex-composer-model-name`
+     below. `min-width: 0` stays so a card narrower than the bar's budget
+     still shrinks the label into an ellipsis instead of pushing Send out. */
   min-width: 0;
   color: var(--muted-foreground);
 }
 
 .nex-composer-model-name {
+  /* 50ch — the longest model id in the catalogs today
+     (`nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free`, 50 characters),
+     so a real id always renders in full. `ch` is the advance of one glyph of
+     the element's own (monospace) face, so 50ch is 50 characters in Geist
+     Mono and in every fallback mono face — the measure follows the font
+     instead of guessing at pixels.
+
+     Why the change (Phase C round 4): the 220px cap on the trigger cut
+     `nvidia/nemotron-3-super-120b-a12b` to `nvidia/nemotron-3-super-…` at
+     both proof sizes, and the truncated part is the VARIANT — the only part
+     that identifies the model. The bar has the room: at 1024 the card is
+     760px, the shell's inset leaves 726px, and the widest possible label
+     (360px) + chevron + padding (396px) + Send (77px) + the mode pills
+     (73px) + three 6px gaps = 564px, leaving 162px for the spacer (Agent
+     mode, no attach control). The ellipsis stays as a ceiling for an id
+     longer than the catalog, never as the normal read.
+     src/components/Composer.test.tsx pins the 50ch against the Rust
+     catalogs, so a longer id added there fails the test rather than
+     silently truncating on screen. */
+  max-width: 50ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -465,7 +520,28 @@
 /* ---- Send: the light fill in the composer ---------------------------
    The one light-fill action: `ui/button`'s default variant on
    `--primary`. Send-to-Cancel during a run is a P4 item, not
-   faked here. */
+   faked here.
+
+   ARMED vs UNARMED (Phase C round 4). The two states resolve to these
+   tokens — there is no third, and the difference is a surface flip, not a
+   tone nudge:
+
+     armed    border transparent · surface `--primary` · label
+              `--primary-foreground`  (16.08:1 on its own surface)
+     unarmed  border transparent · surface transparent (the card shows
+              through) · label `--muted-foreground`  (5.64:1 on `--card`)
+
+   The unarmed state is the vendored button's own disabled treatment minus
+   ONE thing: THEME §1's disabled hairline (`disabled:border-border`). A full
+   1px boundary is secondary-button grammar, so on an empty draft Send read
+   as an enabled secondary action next to the quiet model id (round-4
+   frame). That one divergence is stated where it is made — on the className
+   in src/components/Composer.tsx — and not here, because this sheet is in
+   `layer(base)` and a Tailwind utility outranks it whatever the specificity
+   (src/index.css CASCADE). Painting the disabled state here would need
+   `!important`, which this repo reserves for the motion gate. This rule
+   therefore stays geometry-only, and src/components/Composer.test.tsx
+   asserts both that and the resolved class tokens. */
 .nex-composer-send {
   flex-shrink: 0;
 }
@@ -474,7 +550,7 @@
 .nex-composer-attachments {
   list-style: none;
   margin: 0;
-  padding: 10px 10px 0;
+  /* No padding at all: the shell's inset is the chips' left edge. */
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
@@ -518,13 +594,15 @@
   font-size: 0.6875rem;
 }
 
-/* ---- Autonomy row (agent mode only) ----------------------------------- */
+/* ---- Autonomy row (agent mode only) -----------------------------------
+   No padding of its own: the shell's inline inset is the row's left edge
+   (Phase C round 4 — this row used to start 2px in while the field started
+   14px in, inside the same card). */
 .nex-agent-autonomy {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
-  padding: 0 2px;
 }
 
 .nex-agent-autonomy-label {

@@ -41,6 +41,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readRepoFile } from "../test/readRepoFile";
 
 import { SHORTCUTS, shortcutById, shortcutKeys } from "../lib/shortcuts";
+import { tr } from "../lib/strings";
 import { REDUCED_MOTION_QUERY } from "../lib/useReducedMotion";
 import type { AutonomyStore } from "../lib/useAutonomy";
 import type { Attachment } from "../lib/tauri";
@@ -531,6 +532,31 @@ describe("composer — model picker", () => {
     );
   });
 
+  it("renders a long id in full and keeps it as the trigger's title", () => {
+    // Phase C round 4: the 220px cap cut this id to `nvidia/nemotron-3-super-…`
+    // at both proof sizes, and the cut part is the VARIANT — the only part
+    // that identifies the model. The label node's text is the whole id now;
+    // the sheet's measure (asserted below) is what keeps it on one line.
+    const id = "nvidia/nemotron-3-super-120b-a12b";
+    renderComposer({ selectedModel: id });
+    const trigger = screen.getByRole("button", { name: "Agent mode and model" });
+    const label = trigger.querySelector(".nex-composer-model-name");
+
+    expect(label).not.toBeNull();
+    expect(label!.textContent).toBe(id);
+    // The full id is also the hover read AND the accessible description, so
+    // even a shrunken box never leaves AT with the elided string.
+    expect(trigger).toHaveAttribute("title", id);
+  });
+
+  it("falls back to the explanatory title only when there is no id to carry", () => {
+    renderComposer({ selectedModel: null, models: [] });
+    expect(screen.getByRole("button", { name: "Agent mode and model" })).toHaveAttribute(
+      "title",
+      "Model used for new messages",
+    );
+  });
+
   it("surfaces a model-selection failure", () => {
     renderComposer({ modelError: "provider unreachable" });
     fireEvent.click(screen.getByRole("button", { name: "Agent mode and model" }));
@@ -585,10 +611,16 @@ describe("composer — the inline teaching line", () => {
     expect(chips).toEqual(["+", "Ctrl+K", "Ctrl+/"]);
   });
 
-  it("keeps the native placeholder visible as the field's affordance and its accessible name", () => {
+  it("keeps the native placeholder visible as the field's affordance, not as its name", () => {
     renderComposer();
     const field = screen.getByLabelText("Message");
-    expect(field).toHaveAttribute("placeholder", "Message");
+    // The placeholder says what to do (Phase C round 4: a bare noun read as
+    // a form label, not as an invitation to type)…
+    expect(field).toHaveAttribute("placeholder", "Ask anything, or describe a task");
+    // …and the accessible name stays the short noun, deliberately different:
+    // a name names the control, it is not the instruction repeated.
+    expect(field).toHaveAttribute("aria-label", "Message");
+    expect(field.getAttribute("placeholder")).not.toBe(field.getAttribute("aria-label"));
   });
 
   it("gets out of the way once there is a draft", () => {
@@ -622,7 +654,7 @@ describe("composer — the field the user types in (Phase C round 2)", () => {
       // The element itself: a real textarea, editable, focusable, named.
       expect(field.tagName).toBe("TEXTAREA");
       expect(field).toBeEnabled();
-      expect(field).toHaveAttribute("placeholder", "Message");
+      expect(field).toHaveAttribute("placeholder", "Ask anything, or describe a task");
       (field as HTMLTextAreaElement).focus();
       expect(field).toHaveFocus();
 
@@ -650,7 +682,7 @@ describe("composer — the field the user types in (Phase C round 2)", () => {
       const { props } = renderComposer({ agentMode: true });
       const field = screen.getByLabelText("Message");
       expect(field).toBeEnabled();
-      expect(field).toHaveAttribute("placeholder", "Message");
+      expect(field).toHaveAttribute("placeholder", "Ask anything, or describe a task");
       fireEvent.change(field, { target: { value: "at 1024" } });
       expect(props.onDraftChange).toHaveBeenCalledWith("at 1024");
     } finally {
@@ -672,6 +704,136 @@ describe("composer — the field the user types in (Phase C round 2)", () => {
     const teach = box.querySelector(".nex-composer-teach");
     expect(teach).not.toBeNull();
     expect(teach!.previousElementSibling).toBe(field);
+  });
+});
+
+describe("composer — the field's affordance (Phase C round 4)", () => {
+  // WHY THIS EXISTS. The field has no chrome of its own: the shell is the
+  // control, so the placeholder is the ONLY thing that says where typing
+  // begins. It said "Message" — a bare noun, which reads as a form label
+  // above the caret, not as an invitation. It is a sentence now, and the
+  // accessible name is deliberately NOT that sentence.
+
+  it("instructs in the placeholder while the accessible name stays a noun", () => {
+    renderComposer();
+    const field = screen.getByLabelText("Message");
+    const placeholder = field.getAttribute("placeholder") ?? "";
+
+    // A sentence that says what to do.
+    expect(placeholder).toBe("Ask anything, or describe a task");
+    expect(placeholder.trim().split(/\s+/).length).toBeGreaterThanOrEqual(4);
+
+    // The name is the control's name, not the instruction: repeating the
+    // sentence as the name makes AT announce it twice, and a sentence read
+    // as a label is noise. This is the assertion that keeps the two apart.
+    expect(field).toHaveAttribute("aria-label", "Message");
+    expect(placeholder).not.toBe(field.getAttribute("aria-label"));
+
+    // Short enough for the field's single line at the narrowest proof
+    // window: the card is 760px at 1024 and the shell's inset leaves 726px,
+    // so a 48-character ceiling cannot wrap (~350px at 0.9375rem).
+    expect(placeholder.length).toBeLessThanOrEqual(48);
+  });
+
+  it("ships the same contract in both locales", () => {
+    for (const locale of ["en", "ru"] as const) {
+      const placeholder = tr(locale, "conv.messagePlaceholder");
+      const name = tr(locale, "conv.messageAria");
+      expect(placeholder.trim().split(/\s+/).length).toBeGreaterThanOrEqual(4);
+      expect(placeholder.length).toBeLessThanOrEqual(48);
+      expect(placeholder).not.toBe(name);
+      // The bare nouns that shipped before are gone from both tables.
+      expect(placeholder).not.toBe("Message");
+      expect(placeholder).not.toBe("Сообщение");
+    }
+    // The RU sentence is the translated instruction, not a transliteration.
+    expect(tr("ru", "conv.messagePlaceholder")).toBe(
+      "Спросите что угодно или опишите задачу",
+    );
+  });
+});
+
+describe("composer — Send's two states (Phase C round 4)", () => {
+  // The states are compared as TOKENS, not by eye. `ui/button` ships the
+  // theme's disabled recipe as a full 1px hairline (`disabled:border-border`),
+  // and a hairline is secondary-button grammar: on an empty draft Send read
+  // as an enabled secondary action. The composer replaces that one utility
+  // on the className (it cannot be done from composer.css — that sheet is
+  // `layer(base)`, and a Tailwind utility outranks it at any specificity).
+  const BORDER_TOKENS = ["border-transparent", "border-border"] as const;
+  const SURFACE_TOKENS = ["bg-transparent", "bg-primary"] as const;
+  const LABEL_TOKENS = ["text-muted-foreground", "text-primary-foreground"] as const;
+
+  /** The token that actually paints one property in one state, resolved the
+   *  way the browser resolves it: `disabled:` utilities apply only while the
+   *  button is disabled, other variants (`hover:`, `focus-visible:`) are
+   *  different states and are ignored, and within a state the last class of
+   *  the group wins — tailwind-merge has already resolved the rest. */
+  function paintToken(
+    className: string,
+    disabled: boolean,
+    tokens: readonly string[],
+  ): string {
+    let found = "";
+    for (const cls of className.split(/\s+/)) {
+      const disabledOnly = cls.startsWith("disabled:");
+      if (cls.includes(":") && !disabledOnly) continue;
+      const bare = disabledOnly ? cls.slice("disabled:".length) : cls;
+      if (!tokens.includes(bare)) continue;
+      if (disabledOnly && !disabled) continue;
+      found = bare;
+    }
+    return found;
+  }
+
+  function paint(className: string, disabled: boolean) {
+    return {
+      border: paintToken(className, disabled, BORDER_TOKENS),
+      surface: paintToken(className, disabled, SURFACE_TOKENS),
+      label: paintToken(className, disabled, LABEL_TOKENS),
+    };
+  }
+
+  it("is unbordered and unfilled on an empty draft, and the light fill when armed", () => {
+    const { rerender, props } = renderComposer({ draft: "", canSend: false });
+    const unarmed = screen.getByRole("button", { name: /Send/ });
+    expect(unarmed).toBeDisabled();
+
+    // THE MERGE: the variant's hairline is replaced, not stacked.
+    const classes = unarmed.className.split(/\s+/);
+    expect(classes).toContain("disabled:border-transparent");
+    expect(classes).not.toContain("disabled:border-border");
+
+    const unarmedPaint = paint(unarmed.className, true);
+    expect(unarmedPaint).toEqual({
+      // No boundary, no fill, the theme's quiet text tier (5.64:1 on --card).
+      border: "border-transparent",
+      surface: "bg-transparent",
+      label: "text-muted-foreground",
+    });
+
+    rerender(
+      <LocaleProvider>
+        <Composer {...props} draft="ready" canSend />
+      </LocaleProvider>,
+    );
+    const armed = screen.getByRole("button", { name: /Send/ });
+    expect(armed).toBeEnabled();
+
+    const armedPaint = paint(armed.className, false);
+    expect(armedPaint).toEqual({
+      // The light fill and its own dark label (16.08:1 on --primary).
+      border: "border-transparent",
+      surface: "bg-primary",
+      label: "text-primary-foreground",
+    });
+
+    // Different tokens on both axes that carry the read…
+    expect(armedPaint.surface).not.toBe(unarmedPaint.surface);
+    expect(armedPaint.label).not.toBe(unarmedPaint.label);
+    // …and no control boundary in either state.
+    expect(armedPaint.border).toBe("border-transparent");
+    expect(unarmedPaint.border).toBe("border-transparent");
   });
 });
 
@@ -924,11 +1086,14 @@ describe("composer sheet — theme linkage (src/styles/composer.css)", () => {
   });
 
   it("leaves the disabled Send to the theme's button, adding no colour of its own", () => {
-    // Send's armed/unarmed difference is the vendored button's: `default`
-    // is the light fill, the disabled utilities swap it for
-    // `--muted-foreground` text on a `--border` hairline with no fill
-    // (NEXORA-THEME §1). The composer must not paint a second disabled
-    // treatment here, so this rule stays geometry-only.
+    // Send's armed/unarmed difference is the vendored button's: `default` is
+    // the light fill, and its disabled utilities swap it for `--muted-
+    // foreground` text with no fill. Round 4 drops ONE of those utilities —
+    // the hairline — on the className in Composer.tsx, because composer.css
+    // is `layer(base)` and cannot outrank a Tailwind utility without
+    // `!important` (reserved for the motion gate). This rule therefore stays
+    // geometry-only; the state tokens themselves are pinned by
+    // "composer — Send's two states".
     const send = ruleBody(".nex-composer-send");
     expect(send).toContain("flex-shrink: 0");
     expect(send).not.toMatch(/color|background|opacity|border/);
@@ -940,6 +1105,67 @@ describe("composer sheet — theme linkage (src/styles/composer.css)", () => {
     )?.[1];
     expect(thread).toBe("760px");
     expect(code).toMatch(/max-width:\s*760px/);
+  });
+
+  it("puts ONE inner inset on the container and none on the rows", () => {
+    // Phase C round 4: the four rows inside the card each spelled their own
+    // horizontal padding (2 / 14 / 14 / 8px), so one card had three different
+    // left edges. The inset lives on the shell now, once, and every row
+    // inherits it — which is only true while no row re-declares one.
+    const shell = ruleBody(".nex-composer-shell");
+    // Both steps from the spacing scale: `--space-md` inline is the composer
+    // region's own horizontal padding, `--space-sm` on the block axis keeps
+    // the autonomy track off the card's top border (it was flush: 0px).
+    expect(shell).toMatch(/padding:\s*var\(--space-sm\)\s+var\(--space-md\)/);
+
+    for (const selector of [
+      ".nex-agent-autonomy",
+      ".nex-composer-shell .nex-composer-input",
+      ".nex-composer-teach",
+      ".nex-composer-bar",
+      ".nex-composer-attachments",
+    ]) {
+      const block = ruleBody(selector);
+      expect(block.length).toBeGreaterThan(0);
+      // No horizontal padding of its own, in longhand or shorthand.
+      expect(block).not.toMatch(/padding-(inline|left|right)/);
+      expect(block).not.toMatch(/(^|[\s;{])padding\s*:/);
+    }
+  });
+
+  it("gives the model label the measure of the longest catalog id", () => {
+    // The label must render a real id in FULL: the cap is a `ch` count of the
+    // element's own mono face, so it is a character count and follows the
+    // font instead of guessing at pixels. It was `max-width: 220px` on the
+    // trigger, which cut `nvidia/nemotron-3-super-120b-a12b` mid-token.
+    const name = ruleBody(".nex-composer-model-name");
+    const cap = Number(/max-width:\s*(\d+)ch/.exec(name)?.[1]);
+    expect(cap).toBeGreaterThan(0);
+
+    // …and the cap has to cover the longest id the catalogs can hand the
+    // composer. Read out of the Rust lists rather than restated here, so a
+    // longer id added there fails THIS test instead of truncating on screen.
+    const catalogs = ["openai", "anthropic", "gemini"]
+      .map((provider) =>
+        readRepoFile(`src-tauri/src/infrastructure/providers/${provider}.rs`),
+      )
+      .join("\n");
+    const ids = [
+      ...catalogs.matchAll(/const \w*MODELS\w*: &\[&str\] = &\[([\s\S]*?)\];/g),
+    ].flatMap((block) => [...block[1]!.matchAll(/"([^"]+)"/g)].map((match) => match[1]!));
+    expect(ids.length).toBeGreaterThan(10);
+    const longest = ids.reduce((a, b) => (b.length > a.length ? b : a));
+    expect(longest.length).toBeLessThanOrEqual(cap);
+
+    // The id from the round-4 frame is in the catalog and is the case that
+    // regressed (33 characters; the old 220px cap cut it at ~29).
+    expect(ids).toContain("nvidia/nemotron-3-super-120b-a12b");
+
+    // The fixed cap is gone, and the trigger can still shrink gracefully
+    // (`min-width: 0`) on a card narrower than the bar's budget.
+    const trigger = ruleBody(".nex-composer-model-trigger");
+    expect(trigger).not.toMatch(/max-width/);
+    expect(trigger).toContain("min-width: 0");
   });
 
   it("registers no second stylesheet entry or unlayered import", () => {

@@ -158,7 +158,7 @@ describe("pane default mode (R4-02)", () => {
     const field = screen.getByLabelText("Message");
     expect(field.tagName).toBe("TEXTAREA");
     expect(field).toBeEnabled();
-    expect(field).toHaveAttribute("placeholder", "Message");
+    expect(field).toHaveAttribute("placeholder", "Ask anything, or describe a task");
 
     const send = screen.getByRole("button", { name: /Send/ });
     expect(send).toBeDisabled();

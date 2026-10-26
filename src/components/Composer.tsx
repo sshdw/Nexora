@@ -31,12 +31,18 @@
    THE PLACEHOLDER IS THE AFFORDANCE. The textarea keeps its real
    `placeholder` attribute and it is what a user SEES: the field has no
    chrome of its own (the shell is the control), so the placeholder is
-   the only thing that says where typing begins. The teaching line is a
+   the only thing that says where typing begins. Because it carries that
+   whole job it is a sentence that says what to do
+   (`conv.messagePlaceholder`), not a bare noun: "Message" read as a form
+   label above the caret rather than as an invitation (visual QA, Phase C
+   round 4). The accessible name stays the short noun `conv.messageAria`
+   — a name names the control; repeating the instruction as the name
+   makes AT announce the same sentence twice. The teaching line is a
    quiet row BELOW the editable line, in flow — it used to be an opaque
    `--card` overlay sitting on the placeholder's own line, which left an
    empty composer looking like a stack of chrome with no field at all
    (visual QA, Phase C round 2). Nothing is painted over the
-   placeholder; `aria-label` stays `conv.messageAria` on the field.
+   placeholder.
 
    THE SHORTCUT CHIPS ARE NOT INVENTED. `palette.toggle` and
    `help.show-shortcuts` are read out of src/lib/shortcuts.ts —
@@ -322,7 +328,22 @@ export default function Composer({
                 the label changes when the store says so. No
                 tooltip on it: the trigger already carries the
                 model in text, and a bubble repeating it is noise
-                (the icon-only attach beside it does get one). */}
+                (the icon-only attach beside it does get one).
+
+                THE FULL ID IS THE TITLE (Phase C round 4). The
+                visible label renders in full for every id in the
+                catalog (`.nex-composer-model-name` is capped at
+                50ch, the longest one), but the trigger can still
+                shrink on a card narrower than the bar's budget —
+                and a mid-token ellipsis on `…-super-…` hides the
+                variant, which is the part that names the model.
+                `title` is therefore the full id whenever one is
+                selected: it is the hover read AND the accessible
+                description, so AT never gets the cut string. With
+                no model selected the title stays the explanation
+                (there is no id to carry). The accessible NAME is
+                left alone — it says what the control is
+                ("Agent mode and model"), not which model is in it. */}
             <Popover>
               <PopoverTrigger asChild>
                 <Button
@@ -330,7 +351,7 @@ export default function Composer({
                   size="sm"
                   className="nex-composer-model-trigger"
                   aria-label={t("conv.modePickerAria")}
-                  title={t("conv.modelTagTitle")}
+                  title={selectedModel ?? t("conv.modelTagTitle")}
                 >
                   <span
                     className={
@@ -385,8 +406,22 @@ export default function Composer({
               </PopoverContent>
             </Popover>
 
+            {/* Send. `disabled:border-transparent` is the ONE state token
+                the composer adds: `ui/button`'s default variant ships the
+                theme's disabled recipe as a full 1px hairline
+                (`disabled:border-border`), and a hairline is exactly what
+                makes an inert Send read as an enabled secondary button.
+                THEME §1's disabled hairline is therefore dropped for this
+                control only — muted label and no fill stay. It has to be a
+                utility here rather than a rule in composer.css: that sheet
+                is `layer(base)` and a Tailwind utility outranks it at any
+                specificity, so only `!important` (reserved for the motion
+                gate) could win from the sheet. `cn` runs tailwind-merge, so
+                this class replaces the variant's `disabled:border-border`
+                instead of stacking with it —
+                src/components/Composer.test.tsx asserts the merge. */}
             <Button
-              className="nex-composer-send"
+              className="nex-composer-send disabled:border-transparent"
               disabled={!canSend}
               aria-busy={busy || undefined}
               onClick={onSubmit}
