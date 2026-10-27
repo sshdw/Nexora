@@ -776,6 +776,15 @@
   color: var(--color-on-surface-variant);
 }
 
+/* Shared panel empty-state line. NOT part of the run card: 22 call sites
+   across eight panels (Tasks, Issues, Docs, Debt, Audit, Release, Context,
+   Version Control) render their "nothing here" sentence with this class.
+   Deleting it silently drops their 13px tertiary tone. */
+.nex-agent-empty {
+  font-size: var(--type-size-body-small);
+  color: var(--color-on-surface-tertiary);
+}
+
 .nex-agent-steps {
   display: flex;
   flex-direction: column;

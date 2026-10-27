@@ -150,21 +150,26 @@ export default function ConversationView({
     ready && draft.trim() !== "" && !sending && !attachmentsBusy && !agentBusy && !hasActiveRun;
 
   // D4: the context ring refreshes on conversation change (the pane is keyed
-  // by conversation id) and whenever the run store advances. A content
-  // signature, not a timer and not an effect: a step frame or a status flip
-  // changes the string, an unrelated render does not.
-  const contextRevision = useMemo(
-    () =>
-      runs
-        .map(
-          (run) =>
-            `${run.run_id}:${run.status}:${run.finished_at ?? ""}:${run.steps
-              .map((step) => `${step.seq}:${step.status ?? ""}`)
-              .join(",")}`,
-        )
-        .join("|"),
-    [runs],
-  );
+  // by conversation id) and whenever the run store OR the message store
+  // advances. A content signature, not a timer and not an effect: a step
+  // frame, a status flip or a newly persisted message changes the string, an
+  // unrelated render does not. Messages contribute their count and newest id,
+  // not their text: a re-render with the same history keeps the string (no
+  // refetch), while a persisted user/assistant row changes it. Counting the
+  // text would refetch on every streamed chunk; counting nothing at all is
+  // the Chat-mode bug this replaces.
+  const contextRevision = useMemo(() => {
+    const runSignature = runs
+      .map(
+        (run) =>
+          `${run.run_id}:${run.status}:${run.finished_at ?? ""}:${run.steps
+            .map((step) => `${step.seq}:${step.status ?? ""}`)
+            .join(",")}`,
+      )
+      .join("|");
+    const newest = messages[messages.length - 1];
+    return `${messages.length}:${newest?.id ?? ""}::${runSignature}`;
+  }, [messages, runs]);
 
   // Keep the newest message in view as history loads and responses arrive.
   useEffect(() => {
