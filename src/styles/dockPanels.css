@@ -236,6 +236,15 @@
   color: var(--color-on-surface-variant);
 }
 
+/* `type="search"` is the right semantics, but the UA's own clear button is
+   a blue glyph — the one chromatic thing the monochrome chrome would inherit
+   from the platform. The field is filtered by typing, and Escape/select-all
+   still clear it. */
+.nex-sessions-search-input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
 .nex-sessions-search-input:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 1px;
