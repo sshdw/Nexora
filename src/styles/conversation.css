@@ -76,7 +76,7 @@
    composed rather than empty. Entrance: .nex-empty-enter.
    ============================================================ */
 
-/* The three empty states are the workspace stage itself, not panels
+/* The two empty states are the workspace stage itself, not panels
    sitting on it: the canvas tier, the same plane .nex-main already
    paints (brief §16 — the agent workspace is one continuous stage).
 
@@ -87,11 +87,10 @@
    heading dropped to CHROME weight, and the copy clamps to three lines
    so a long description fills the state instead of growing the pane.
 
-   `.nex-main-placeholder` and `.nex-conversation-placeholder` share the
-   stage and are restated below where they differ. */
+   D1 removed the conversation-level copy entirely: an empty conversation
+   IS the composer, so there is no third placeholder to style. */
 .nex-empty,
-.nex-main-placeholder,
-.nex-conversation-placeholder {
+.nex-main-placeholder {
   flex: 1 1 auto;
   display: flex;
   flex-direction: column;
@@ -173,53 +172,9 @@
   color: var(--color-on-surface-variant);
 }
 
-/* Conversation view: composed empty pane for a conversation with
-   no messages yet — anchored near the composer, not mid-void.
-
-   #230 P3: COMPACT, one action max (`empty.md`, MAP row 7). The 56px
-   marked hero block is gone. It pointed at the composer — which is on
-   screen directly below it — and the mark, the container and its border
-   were three pieces of furniture around two sentences that were already
-   saying the right thing. What stays is the heading and the copy, at the
-   CHROME weight (THEME §6: "chrome 13/500"), anchored a third of the way
-   up rather than floating in the middle of the void.
-
-   No action is rendered here on purpose. `empty.md`'s EmptyContent slot
-   exists, but this pane's one action IS the composer, and a button that
-   says "write a message" next to the box that takes a message is the
-   permanent-attention thing THEME §6 rejects ("starter chips",
-   "one-action-max"). */
-/* The empty state IS the reading column, not a panel stretched across the
-   thread (R4-01, round 3). It takes the same measure as the messages above
-   it and the composer below it — `--layout-measure-max`, centred — and it
-   carries NO inline padding of its own, so its copy starts exactly on the
-   column's left edge, which is the composer card's left edge. The block
-   padding stays: the 22vh anchor is what keeps the state off the middle of
-   the void, and it is vertical only. */
-.nex-conversation-placeholder {
-  width: 100%;
-  max-width: var(--layout-measure-max);
-  margin-inline: auto;
-  justify-content: flex-start;
-  padding-top: 22vh;
-  padding-bottom: var(--space-2xl);
-  padding-inline: 0;
-  gap: var(--space-xxs);
-  align-items: flex-start;
-  text-align: start;
-}
-.nex-conversation-empty-title {
-  margin: 0;
-  font-size: var(--type-size-body-large);
-  font-weight: var(--type-weight-medium);
-  color: var(--color-on-surface);
-}
-.nex-conversation-empty-text {
-  margin: 0;
-  max-width: 420px;
-  font-size: var(--type-size-body-medium);
-  color: var(--color-on-surface-variant);
-}
+/* D1: a conversation with no messages has no placeholder copy at all. The
+   composer below the thread IS the empty state, so there is nothing here to
+   anchor, pad or restate. */
 
 /* ---- Visually hidden (accessibility) ---- */
 .nex-sr-only {
@@ -335,8 +290,9 @@
    content the SAME box the composer band hands its own children — the
    stage's reserved content box — and the measure is the centred,
    max-width-bounded column every row already declares (`.nex-message`,
-   `.nex-thread-status`, `.nex-thread-waiting`, `.nex-agent-run`, and now
-   `.nex-conversation-placeholder`). Hence NO inline padding here: with it,
+   `.nex-thread-status`, `.nex-thread-waiting`, `.nex-agent-run`; the empty
+   state's own copy is gone since D1, and the composer on this same column is
+   what remains). Hence NO inline padding here: with it,
    the thread's content box was 32px narrower than the composer's, and
    below ~912px — unreachable, the window minimum is 1024, but still — the
    two columns would clamp 16px apart. At zero, both children derive their
@@ -598,9 +554,10 @@
 }
 
 /* ============================================================
-   Agent run accordion (Task 5.1)
-   Placed chronologically inside the thread; shows live steps,
-   status pill, approval, and budget affordances.
+   Agent run — ONE line, not a card (D6 / Task 5.1)
+   Placed chronologically inside the thread. The line carries the status,
+   the step count and the real duration; pressing it opens the step list in
+   place. No fill, no border, no nested container: the thread is the surface.
    ============================================================ */
 
 .nex-agent-run {
@@ -610,67 +567,62 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-xs);
-  padding: var(--space-sm) var(--space-md);
-  border-radius: var(--shape-medium);
-  background: var(--color-surface-container-high);
-  border: 1px solid var(--color-outline-variant);
 }
 
-.nex-agent-run-header {
+.nex-agent-run-line {
   display: flex;
   align-items: center;
-  gap: var(--space-xs);
+  gap: var(--space-sm);
   flex-wrap: wrap;
+  min-height: 24px;
 }
 
-/* ---- Run-state pills (#230 P3) ----------------------------------------
-   THIRD HUE CARRIER FOUND AND FIXED IN THIS PASS, alongside the Context
-   legend. These were: running = `--nex-sys-color-primary-container` /
-   `--nex-sys-color-primary` (tokens.css:504 → #a9824a dark / #e3c07c
-   light — the legacy amber accent, which THEME §1 bans outright, "no
-   permanent amber anywhere"); completed = a sage wash; budget / spend /
-   error = a brick wash. Every one of them was the LEGACY tinted-container
-   pair, not a mono-theme token.
-
-   What they are now:
-
-   · RUNNING and CANCELLED are ACHROMATIC. Neither is a green/red/yellow
-     STATE in the sense THEME §1 defines. "Running" is carried by the
-     travelling pulse and the spinner; the pill's job is only to say the
-     word, so the word is the whole signal and the container is quiet.
-   · COMPLETED takes `--state-ok`, BUDGET/SPEND/ERROR take `--state-err`
-     and PAUSED takes `--state-warn` — the mono theme's THREE sanctioned
-     state roles (src/index.css). Green/red/yellow exist here and nowhere
-     else on the thread, and only for genuine state.
-   · NO TINTED WASH. The old rules paired a 14%-alpha container with a
-     matching ink; a 14% wash of a hue is decoration that reads as a
-     second, weaker copy of the state. These are quiet containers with a
-     hairline, and the STATE INK does the work — which is also why a
-     grayscale reader loses nothing: the word says "Completed" / "Error"
-     in full either way. */
-.nex-agent-status-running {
-  background: var(--color-surface-container-highest);
+/* The disclosure is the line's left side. It is a real button (keyboard
+   reachable, aria-expanded/controls) but it has no chrome of its own: the
+   row is text, and the only change on hover is a tone step. */
+.nex-agent-run-disclosure {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  min-width: 0;
+  padding: var(--space-xxxs) 0;
+  border: none;
+  border-radius: var(--shape-small);
+  background: transparent;
+  color: var(--color-on-surface-variant);
+  font-family: inherit;
+  font-size: var(--type-size-body-small);
+  text-align: start;
+  cursor: pointer;
+  transition: color var(--motion-duration-fast) var(--motion-easing-standard);
+}
+.nex-agent-run-disclosure:hover {
   color: var(--color-on-surface);
 }
-.nex-agent-status-completed {
-  background: var(--color-surface-container-highest);
+.nex-agent-run-disclosure.is-static {
+  cursor: default;
+}
+
+/* State ink lives on the one line. The word carries the state; the colour
+   is a second, never the only, signal. Running and cancelled stay
+   achromatic, as they did on the old pills. */
+.nex-agent-run-status {
+  font-weight: var(--type-weight-medium);
+  overflow-wrap: anywhere;
+}
+.nex-agent-run-state-completed .nex-agent-run-status {
   color: var(--state-ok);
 }
-.nex-agent-status-cancelled {
-  background: var(--color-surface-container-highest);
-  color: var(--color-on-surface-variant);
+.nex-agent-run-state-paused .nex-agent-run-status {
+  color: var(--state-warn);
 }
-.nex-agent-status-budget {
-  background: var(--color-surface-container-highest);
+.nex-agent-run-state-budget .nex-agent-run-status,
+.nex-agent-run-state-spend .nex-agent-run-status,
+.nex-agent-run-state-error .nex-agent-run-status {
   color: var(--state-err);
 }
-.nex-agent-status-spend {
-  background: var(--color-surface-container-highest);
-  color: var(--state-err);
-}
-.nex-agent-status-error {
-  background: var(--color-surface-container-highest);
-  color: var(--state-err);
+.nex-agent-run-state-cancelled .nex-agent-run-status {
+  color: var(--color-on-surface-tertiary);
 }
 
 .nex-agent-spinner {
@@ -679,43 +631,21 @@
   border-width: 2px;
 }
 
-/* ---- THE ONE SUMMARY LINE (#230 P3) ------------------------------------
-   The header's status slot is where a run says, ONCE, what happened and
-   what it produced. It used to render a bare status pill, with the counts
-   in a SECOND block below it — the duplicated "COMPLETED" the phase's
-   acceptance forbids. Now the word and the results are one line, in one
-   register, and the results are counted from the run's own steps.
-
-   The separator is a MIDDLE DOT, not a bullet glyph with its own colour:
-   the counts are one fact stated in parts, not a list of tags. */
+/* The real results, once, in the expanded detail row. This is the ONLY
+   `.nex-agent-run-summary` rule: a second block would be a second claim
+   about the same run. */
 .nex-agent-run-summary {
+  min-width: 0;
   font-weight: var(--type-weight-regular);
   color: var(--color-on-surface-variant);
 }
 
-.nex-agent-run-summary::before {
-  content: "·";
-  margin: 0 var(--space-xxs);
-  color: var(--color-on-surface-faint);
-}
-
-/* The cancel note rides on the same line rather than opening a block of
-   its own: a cancelled run is a fact about the run, not a separate
-   event. */
-.nex-agent-run-summary-note {
-  color: var(--color-on-surface-tertiary);
-}
-
-.nex-agent-run-summary-note::before {
-  content: "·";
-  margin: 0 var(--space-xxs);
-  color: var(--color-on-surface-faint);
-}
-
-/* The status WORD, separated from the results so the two can be told
-   apart at a glance even though they share a line. */
-.nex-agent-run-status {
-  font-weight: var(--type-weight-medium);
+.nex-agent-run-detail {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
 }
 
 .nex-agent-run-meta {
@@ -846,11 +776,6 @@
   color: var(--color-on-surface-variant);
 }
 
-.nex-agent-empty {
-  font-size: var(--type-size-body-small);
-  color: var(--color-on-surface-tertiary);
-}
-
 .nex-agent-steps {
   display: flex;
   flex-direction: column;
@@ -861,7 +786,7 @@
    own fill, border and radius inside the run's card, and the code block
    inside it carried a third — three nested containers for one fact, each one
    a step lighter, which is what made a finished run read as a stack of
-   widgets instead of a log. The run card is the container; the spine is the
+   widgets instead of a log. The one line is the disclosure; the spine is the
    structure; the step is a row on it. Only the code/diff block keeps a
    surface of its own, because code genuinely needs containment. */
 .nex-agent-step {
@@ -1397,9 +1322,10 @@
 
 /* High contrast: HC drops shadow and lets BORDERS carry separation
    (tokens.css HC header, brief §19), and that contract sets the 3:1
-   non-text floor — but the HC `outline-variant` (#57534a) reaches only
-   2.18:1 against the run card's `surface-container-high` (#1e1d24), the
-   one theme where the hairline is the sole carrier. So the rail and its
+   non-text floor - but the HC `outline-variant` (#57534a) reaches only
+   2.18:1 against the old run card's `surface-container-high` (#1e1d24); the
+   line now sits on the stage canvas, and the hairline is still the sole
+   carrier of the rail in this theme. So the rail and its
    resting connectors step up to `outline` (#8a8478, 4.50:1). The current
    (accent) and failed (error) segments are already far above the floor
    and keep their own tones, so the `:not()`s keep this override off them:
@@ -1467,45 +1393,6 @@
   color: var(--color-on-surface-tertiary);
 }
 
-/* Folded finished run (brief §13.33): one quiet disclosure carrying the
-   counts the rows stood for. Small rounding (a control, §18), no pill,
-   no border, no fill at rest — it must not compete with the approval
-   gate or the status pill above it. The gutter offset is the fold's own
-   (`space-lg`, the timeline's `padding-inline-start`): the card's own
-   inline padding is `space-md`, so a fold with no offset would sit `lg`
-   — 20px — left of the rows it discloses, and read as stranded against
-   the card edge the moment the run folds.
-   Resting ink is measured, not assumed: this label is the ONLY control that
-   un-folds a run, so it is gated at AA 4.5:1 on the card's own
-   `surface-container-high`. Measured from the real hexes with
-   scripts/check-contrast.py's method — label 5.61:1 dark / 6.64:1 light /
-   9.44:1 HC, chevron (`on-surface-faint`, non-text-adjacent) 5.23 / 6.30 /
-   7.42. Hover (`on-surface-variant`) 5.54 / 6.75 / 11.20. All hold 4.5:1
-   in every theme, so the tone stays down the ladder where it belongs. */
-.nex-agent-fold {
-  align-self: flex-start;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-xxs);
-  margin-inline-start: var(--space-lg);
-  padding: var(--space-xxxs) var(--space-xs);
-  border: none;
-  border-radius: var(--shape-small);
-  background: transparent;
-  color: var(--color-on-surface-tertiary);
-  font-family: inherit;
-  font-size: var(--type-size-label-small);
-  text-align: start;
-  cursor: pointer;
-  transition: color var(--motion-duration-fast) var(--motion-easing-standard);
-}
-.nex-agent-fold:hover {
-  color: var(--color-on-surface-variant);
-}
-.nex-agent-fold-chevron {
-  color: var(--color-on-surface-faint);
-}
-
 /* ============================================================
    REDUCED MOTION — the hand-written branches for everything this
    sheet animates.
@@ -1537,7 +1424,7 @@
 @media (prefers-reduced-motion: reduce) {
   .nex-agent-step-header,
   .nex-agent-step-target,
-  .nex-agent-fold {
+  .nex-agent-run-disclosure {
     /* `none`, not a shorter duration: the tone still changes on hover, it
        just arrives immediately — same information, zero interpolation. */
     transition: none;
@@ -1545,17 +1432,20 @@
 }
 
 /* ============================================================
-   Empty conversation stage (D-03 / D-07)
+   Empty conversation stage (D-03 / D-07 / D1)
 
    Before the first message the composer is not the thread's footer — it is
-   the screen's one object, with a single line above it. So the stage stops
-   behaving like a scrolling column: the pair is centred as a block, the
-   thread gives up its `flex: 1` (nothing to scroll), and the composer drops
-   the footer tone it wears when it sits under real history.
+   the screen's one object. So the stage stops behaving like a scrolling
+   column: the pair is centred as a block, the thread gives up its `flex: 1`
+   (nothing to scroll), and the composer drops the footer tone it wears when
+   it sits under real history.
 
-   The measure is untouched: the placeholder and the composer share the same
-   760 px column in both states, so nothing shifts sideways when the first
-   message lands — only the vertical anchor changes, once.
+   D1 removed the copy that used to sit above the card: the empty screen IS
+   the composer (with its own workspace line). Nothing else is anchored here.
+
+   The measure is untouched: the composer keeps the same 760 px column in
+   both states, so nothing shifts sideways when the first message lands —
+   only the vertical anchor changes, once.
    ============================================================ */
 
 /* NOT `justify-content: center`: that would centre the stage's own chrome
@@ -1570,11 +1460,6 @@
 
 .nex-main-conversation.is-empty > .nex-composer {
   margin-bottom: auto;
-}
-
-.nex-main-conversation.is-empty .nex-conversation-placeholder {
-  padding-top: 0;
-  padding-bottom: var(--space-lg);
 }
 
 .nex-main-conversation.is-empty > .nex-composer {

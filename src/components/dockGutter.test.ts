@@ -2,9 +2,8 @@
 //!
 //! The Dock is a fixed rail pinned to the left edge, vertically centred, so
 //! it is painted ON TOP of the conversation stage rather than beside it. The
-//! stage never reserved its width, and the empty state's sentence ran
-//! underneath the rail ("o messages yet") on the real build at 1200x800 and
-//! 1024x720.
+//! stage never reserved its width, and the empty state's copy ran underneath
+//! the rail on the real build at 1200x800 and 1024x720.
 //!
 //! jsdom computes no cascade and no layout, so a render test cannot see this:
 //! it can prove which elements exist, never where they land or which box
@@ -19,9 +18,9 @@
 //!
 //!  2. THE INSET IS THE CONTAINER'S, NOT THE CHILD'S. It is
 //!     `padding-inline` on `.nex-main-conversation` — the box that owns both
-//!     the thread and the composer — and neither child, nor the empty-state
-//!     copy, carries it. A per-element margin is what turns the thread and
-//!     the composer into two unrelated columns.
+//!     the thread and the composer — and neither child carries it. A
+//!     per-element margin is what turns the thread and the composer into two
+//!     unrelated columns.
 //!
 //!  3. SYMMETRY IS THE CENTRE. `padding-inline` (one value, both sides) keeps
 //!     the content box centred at 50vw, so a centred reading column is not
@@ -37,7 +36,9 @@
 //!
 //! The empty-state clearance is also computed here, because "it clears the
 //! rail" is arithmetic the sheets fully determine: the stage inset plus the
-//! thread's and the placeholder's own padding must exceed the rail width.
+//! thread's own padding must exceed the rail width. D1 removed the separate
+//! placeholder block, so the empty screen is the composer on that same
+//! column and nothing else is anchored there.
 
 import { describe, expect, it } from "vitest";
 
@@ -57,9 +58,8 @@ function ruleBody(sheet: string, selector: string): string {
   return match[1];
 }
 
-/** Body of the LAST top-level rule for a selector. One class in this file is
- *  legitimately declared twice — `.nex-conversation-placeholder` appears in
- *  the shared empty-state group and again as its own conversation rule — and
+/** Body of the LAST top-level rule for a selector. A selector may be
+ *  declared more than once (the empty-stage overrides do exactly this), and
  *  the later rule is the one that places it. */
 function lastRuleBody(sheet: string, selector: string): string {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -209,16 +209,14 @@ describe("conversation stage reserves the rail at the container", () => {
     expect(declaration(stage, "margin-inline")).toBeUndefined();
   });
 
-  it("puts no Dock offset on the composer or the empty copy", () => {
-    // The fix is the container's. If any of these carried the token
-    // themselves, the thread and the composer would be two columns that can
-    // drift, which is the thing this contract forbids. The thread's own
-    // scroll-viewport opt-out is a margin/padding PAIR that nets to zero on
-    // its content box (round 4, below) — not an offset — so it is excluded
-    // here and pinned there.
+  it("puts no Dock offset on the composer", () => {
+    // The fix is the container's. If the composer carried the token itself,
+    // the thread and the composer would be two columns that can drift, which
+    // is the thing this contract forbids. The thread's own scroll-viewport
+    // opt-out is a margin/padding PAIR that nets to zero on its content box
+    // (round 4, below) — not an offset — so it is excluded here and pinned
+    // there.
     const ownedBlocks: Array<[string, string]> = [
-      ["conversation.css .nex-conversation-placeholder", ruleBody(stageSheet, ".nex-conversation-placeholder")],
-      ["conversation.css .nex-conversation-empty-text", ruleBody(stageSheet, ".nex-conversation-empty-text")],
       ["composer.css .nex-composer", ruleBody(composerSheet, ".nex-composer")],
       ["composer.css .nex-composer-inner", ruleBody(composerSheet, ".nex-composer-inner")],
     ];
@@ -231,7 +229,7 @@ describe("conversation stage reserves the rail at the container", () => {
   });
 
   it("clears the empty state past the rail by arithmetic, not by eye", () => {
-    // Round 3 moved the empty state ONTO the shared column, so the
+    // The empty screen is the composer on the shared column (D1), so the
     // sentence's left edge is the column's left edge: the stage inset plus
     // the centring offset, with no per-text padding left to add into the
     // sum. Proved at the window's own minimum width — the tightest case the
@@ -241,14 +239,15 @@ describe("conversation stage reserves the rail at the container", () => {
     expect(Number.isFinite(column.left), "the column's left edge is a length").toBe(true);
     expect(Number.isFinite(column.width), "the column's width is a length").toBe(true);
 
-    // THE CONTRACT: the sentence's left edge starts strictly right of the
+    // THE CONTRACT: the column's left edge starts strictly right of the
     // rail's right edge, and the centring alone is what puts it there.
     expect(column.left).toBeGreaterThan(Number.parseFloat(RAIL_WIDTH));
 
-    // …and the empty copy is not padded off the column it belongs to, so
-    // the sum above is complete: what places the text is the column.
-    const placeholder = lastRuleBody(stageSheet, ".nex-conversation-placeholder");
-    expect(resolveInline(declaration(placeholder, "padding-inline") ?? "")).toBe("0");
+    // …and the empty stage adds no inline offset of its own, so the sum
+    // above is complete: what places the composer is the column.
+    const emptyBand = lastRuleBody(stageSheet, ".nex-main-conversation.is-empty > .nex-composer");
+    expect(declaration(emptyBand, "margin-inline")).toBeUndefined();
+    expect(declaration(emptyBand, "padding-inline")).toBeUndefined();
   });
 
   it("keeps the stage's own chrome row full-bleed", () => {
@@ -560,13 +559,9 @@ describe("one reading measure — the thread and the composer share one column",
     ["conversation.css .nex-thread-status", ruleBody(stageSheet, ".nex-thread-status")],
     ["conversation.css .nex-thread-waiting", ruleBody(stageSheet, ".nex-thread-waiting")],
     ["conversation.css .nex-agent-run", ruleBody(stageSheet, ".nex-agent-run")],
-    [
-      "conversation.css .nex-conversation-placeholder",
-      lastRuleBody(stageSheet, ".nex-conversation-placeholder"),
-    ],
   ];
 
-  it("bounds the empty state and every thread row by the composer's measure", () => {
+  it("bounds every thread row by the composer's measure", () => {
     expect(MEASURE, "the measure resolves to a length").toMatch(/^\d+(?:\.\d+)?px$/);
     expect(Number.parseFloat(MEASURE)).toBeGreaterThan(0);
 
@@ -627,21 +622,28 @@ describe("one reading measure — the thread and the composer share one column",
     }
   });
 
-  it("keeps the empty-state copy on the column's edge, not padded off it", () => {
-    const placeholder = lastRuleBody(stageSheet, ".nex-conversation-placeholder");
-    // The block padding is the 22vh anchor and stays; the inline padding is
-    // what used to place the sentence 32px inside the stage's reserved edge.
-    expect(declaration(placeholder, "padding-inline")).toBe("0");
-    expect(declaration(placeholder, "padding-top")).toBe("22vh");
-    // Nothing in the empty state's own text re-centres or re-pads itself: the
-    // fix is the column's, not the copy's.
-    for (const selector of [".nex-conversation-empty-title", ".nex-conversation-empty-text"]) {
-      const body = ruleBody(stageSheet, selector);
-      expect(declaration(body, "margin-inline"), selector).toBeUndefined();
-      expect(declaration(body, "margin"), selector).toBe("0");
-      expect(declaration(body, "padding"), selector).toBeUndefined();
-      expect(declaration(body, "padding-inline"), selector).toBeUndefined();
-    }
+  it("anchors the empty stage vertically only, never horizontally", () => {
+    // D1 removed the copy that used to sit above the card: the empty screen
+    // IS the composer. The stage rules may therefore move the pair up and
+    // drop the footer tone, but they must not touch the inline axis — that is
+    // the shared column's job, and a second placement would be a second edge.
+    const thread = lastRuleBody(stageSheet, ".nex-main-conversation.is-empty .nex-thread");
+    expect(declaration(thread, "margin-top")).toBe("auto");
+    expect(declaration(thread, "margin-inline")).toBeUndefined();
+    expect(declaration(thread, "padding-inline")).toBeUndefined();
+
+    const band = lastRuleBody(stageSheet, ".nex-main-conversation.is-empty > .nex-composer");
+    // The composer drops the footer tone it wears under real history, but
+    // keeps its own padding-bottom rhythm (a block value, not inline).
+    expect(declaration(band, "background")).toBe("transparent");
+    expect(declaration(band, "border-top-color")).toBe("transparent");
+    expect(declaration(band, "padding-bottom")).toBe("var(--space-2xl)");
+    expect(declaration(band, "padding-inline")).toBeUndefined();
+    expect(declaration(band, "margin-inline")).toBeUndefined();
+    // The vertical anchor is declared in the earlier rule of the same pair.
+    const anchor = ruleBody(stageSheet, ".nex-main-conversation.is-empty > .nex-composer");
+    expect(declaration(anchor, "margin-bottom")).toBe("auto");
+    expect(declaration(anchor, "margin-inline")).toBeUndefined();
   });
 });
 

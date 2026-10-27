@@ -80,27 +80,6 @@ export interface AgentRunStepsProps {
   onCollapseStep?: (runId: number, seq: number) => void;
 }
 
-function statusClass(status: string): string {
-  switch (status) {
-    case "running":
-      return "nex-tag nex-agent-status-running";
-    case "paused":
-      return "nex-tag nex-agent-status-paused";
-    case "completed":
-      return "nex-tag nex-agent-status-completed";
-    case "cancelled":
-      return "nex-tag nex-agent-status-cancelled";
-    case "budget_exhausted":
-      return "nex-tag nex-agent-status-budget";
-    case "spend_limit_exceeded":
-      return "nex-tag nex-agent-status-spend";
-    case "error":
-      return "nex-tag nex-agent-status-error";
-    default:
-      return "nex-tag";
-  }
-}
-
 function statusLabel(status: string, locale: Locale = getLocale()): string {
   switch (status) {
     case "running":
@@ -950,43 +929,27 @@ const AgentSpine = memo(function AgentSpine({ live }: { live: boolean }) {
 /** The folded-run disclosure (§13.33, P3 acceptance "folded tool calls —
  *  one line each, repeated calls grouped with an expandable list").
  *
- *  #230 P3 changed what this line SAYS. It used to be a counted summary
- *  ("12 tool calls · 4 files · 2 commands") — which, next to the run's own
- *  status pill, was the duplicated COMPLETED block P3's acceptance forbids:
- *  two blocks claiming the same result in two different registers. The run
- *  header now carries the ONE summary line with the real counts
- *  (`nex-agent-run-summary`), so this control says only what it DOES —
- *  show or hide the run's steps — and the numbers live in exactly one place.
- *
- *  `aria-controls` still names the region the button owns, so the
- *  relationship survives with the name. */
-const StepFoldSummary = memo(function StepFoldSummary({
-  expanded,
-  timelineId,
-  onToggle,
-}: {
-  expanded: boolean;
-  timelineId: string;
-  onToggle: () => void;
-}) {
-  const { t } = useStrings();
-  return (
-    <button
-      type="button"
-      className="nex-agent-fold"
-      aria-expanded={expanded}
-      aria-controls={timelineId}
-      onClick={onToggle}
-    >
-      <span className="nex-agent-fold-label">
-        {t(expanded ? "agent.foldHide" : "agent.foldShow")}
-      </span>
-      <span className="nex-agent-fold-chevron" aria-hidden="true">
-        {expanded ? "▾" : "▸"}
-      </span>
-    </button>
-  );
-});
+ *  Round 5 (D6) merged this control into the run's ONE line: the line IS
+ *  the disclosure now, so the counts and the action no longer live in two
+ *  places. The component is gone; the CSS keeps the line's hover tone.
+ */
+
+/** Real elapsed time for the one-line run summary. `null` unless the data
+ *  actually carries both ends: a live run has no `finished_at`, and a legacy
+ *  frame with `started_at: 0` cannot claim a duration it does not know. */
+function formatRunDuration(
+  startedAt: number,
+  finishedAt: number | null,
+  locale: Locale = getLocale(),
+): string | null {
+  if (finishedAt === null || startedAt <= 0 || finishedAt < startedAt) return null;
+  const total = Math.max(0, Math.round(finishedAt - startedAt));
+  if (total < 60) return tr(locale, "agent.durationSeconds", { n: total });
+  return tr(locale, "agent.durationMinutes", {
+    m: Math.floor(total / 60),
+    s: total % 60,
+  });
+}
 
 function formatCountdown(totalSecs: number, locale: Locale): string {
   const s = Math.max(0, Math.floor(totalSecs));
@@ -1128,14 +1091,19 @@ function AgentRunSteps({
   // One latch instead of a remount on the fold boundary: the rows stay
   // mounted either way, so a row's own open/closed state survives the round
   // trip and expanding restores the original objects in the original order.
-  const [foldExpanded, setFoldExpanded] = useState(false);
-  const folded = foldable && !foldExpanded;
-  // Stable per run, so the fold button's `aria-controls` survives every step
-  // frame and stays unique when a thread renders several runs at once.
+  // `null` follows the data (a finished long run starts folded); a click
+  // writes an explicit override that survives every step frame.
+  const [manualExpanded, setManualExpanded] = useState<boolean | null>(null);
+  const collapsed = manualExpanded === null ? foldable : !manualExpanded;
+  // Stable per run, so the line's `aria-controls` survives every step frame
+  // and stays unique when a thread renders several runs at once.
   const timelineId = `nex-agent-timeline-${run.run_id}`;
-  const handleFoldToggle = useCallback(() => {
-    setFoldExpanded((v) => !v);
-  }, []);
+  const handleLineToggle = useCallback(() => {
+    setManualExpanded((value) => {
+      const currentCollapsed = value === null ? foldable : !value;
+      return currentCollapsed;
+    });
+  }, [foldable]);
   // Stable per group: the identity is the head step's seq — unique within the
   // run (only one group starts at a given seq) and invariant across the
   // per-frame re-sort/re-group. Derived from seq, not from a sanitised text
@@ -1143,20 +1111,15 @@ function AgentRunSteps({
   // text, and a non-latin target can sanitise to "" and collide even harder.
   const groupId = (id: string): string => `${timelineId}-${id}`;
 
-  // ---- THE ONE SUMMARY LINE (#230 P3 acceptance) ------------------------
-  // "Completion = ONE summary line carrying real results only — no
-  // duplicated COMPLETED blocks."
-  //
-  // The header USED to render a status pill, and the folded-run summary
-  // below it rendered its own counts, and for a completed run the reader
-  // saw the word "Completed" twice with two different-looking blocks under
-  // it. Now there is exactly one line: the status word plus the real
-  // results of THIS run, counted from its own steps — files actually
-  // written, commands actually run, tool calls actually made.
-  //
-  // "No changes needed" is the honest read for a finished run that touched
-  // no file, and it is only ever shown for a run that genuinely finished:
-  // an errored or cancelled run never gets to claim it did nothing wrong.
+  // ---- THE ONE LINE (D6, carrying #230 P3's real results) --------------
+  // The run is no longer a card with a header: it is ONE compact line in the
+  // thread. The line says what the run is doing and how many steps it has —
+  // "Working… · 3 steps" while live, "Done in 7 steps · 12s" when finished.
+  // The real results (files actually written, commands actually run, tool
+  // calls actually made) are still counted from this run's own steps and
+  // shown once, in the expanded detail row. "No changes needed" is only ever
+  // said for a run that genuinely finished: an errored or cancelled run never
+  // gets to claim it did nothing wrong.
   const counts = foldCounts(sorted);
   const ranCalls = counts.calls;
   // Distinct files actually written/edited: dedupe on the target path each
@@ -1196,6 +1159,25 @@ function AgentRunSteps({
   // had already written files must not read as "done".
   const cancelledNote = run.status === "cancelled" && ranCalls === 0;
 
+  // The line's own sentence. `tp(locale, "steps", n)` carries the declensed
+  // noun; the duration is appended only when `finished_at` is real.
+  const stepPhrase = tp(locale, "steps", sorted.length);
+  const durationText = formatRunDuration(run.started_at, run.finished_at, locale);
+  let lineText: string;
+  if (isRunning && sorted.length === 0) {
+    lineText = tr(locale, "agent.runStarting");
+  } else if (isRunning) {
+    lineText = tr(locale, "agent.workingSteps", { steps: stepPhrase });
+  } else if (run.status === "completed") {
+    lineText = tr(locale, "agent.doneIn", { steps: stepPhrase });
+  } else if (sorted.length === 0) {
+    lineText = statusLabel(run.status, locale);
+  } else {
+    lineText = `${statusLabel(run.status, locale)} · ${stepPhrase}`;
+  }
+  if (durationText !== null) lineText = `${lineText} · ${durationText}`;
+  if (cancelledNote) lineText = `${lineText} · ${tr(locale, "agent.cancelledNote")}`;
+
   // ---- THE ERROR BLOCK (SYSTEM §8) --------------------------------------
   // "Errors answer: what happened / what survived / next action."
   //
@@ -1231,30 +1213,37 @@ function AgentRunSteps({
       }
       aria-label={t("agent.runAria", { id: run.run_id })}
     >
-      <header className="nex-agent-run-header">
-        {/* THE ONE completion line. Status word + real results, once. The
-            spinner/dot that sit beside the word are the same motion rule the
-            spine follows: a parked run keeps the persisted `running` status
-            but is waiting on a human, not burning cycles. */}
-        <span className={statusClass(run.status)} role="status">
-          {isRunning && !parked && (
-            <span className="nex-spinner nex-agent-spinner" aria-hidden="true" />
-          )}
-          {isPaused && <span className="nex-agent-paused-dot" aria-hidden="true" />}
-          <span className="nex-agent-run-status">{statusLabel(run.status, locale)}</span>
-          <span className="nex-agent-run-summary">{summaryText}</span>
-          {cancelledNote && (
-            <span className="nex-agent-run-summary-note">
-              {t("agent.cancelledNote")}
-            </span>
-          )}
-        </span>
-        <span className="nex-agent-run-meta">
-          <span className="nex-tag nex-tag-mono" title={t("agent.modelTitle")}>
-            {run.model || "agent"}
+      <div className="nex-agent-run-line">
+        {/* THE ONE line. Status + step count + real duration, once. The
+            spinner/dot beside the word follow the spine's motion rule: a
+            parked run keeps the persisted `running` status but is waiting on
+            a human, not burning cycles. The line is the disclosure: pressing
+            it opens the step list in place, with no card around it. */}
+        {sorted.length === 0 ? (
+          <span className="nex-agent-run-disclosure is-static" role="status">
+            {isRunning && !parked && (
+              <span className="nex-spinner nex-agent-spinner" aria-hidden="true" />
+            )}
+            {isPaused && <span className="nex-agent-paused-dot" aria-hidden="true" />}
+            <span className="nex-agent-run-status">{lineText}</span>
           </span>
-          <span className="nex-agent-run-id">run {run.run_id}</span>
-        </span>
+        ) : (
+          <button
+            type="button"
+            className="nex-agent-run-disclosure"
+            aria-expanded={!collapsed}
+            aria-controls={timelineId}
+            onClick={handleLineToggle}
+          >
+            {isRunning && !parked && (
+              <span className="nex-spinner nex-agent-spinner" aria-hidden="true" />
+            )}
+            {isPaused && <span className="nex-agent-paused-dot" aria-hidden="true" />}
+            <span className="nex-agent-run-status" role="status">
+              {lineText}
+            </span>
+          </button>
+        )}
         <M3Toolbar
           label={t("agent.controlsAria", { id: run.run_id })}
           className="nex-agent-run-actions"
@@ -1280,7 +1269,7 @@ function AgentRunSteps({
             </M3Button>
           )}
         </M3Toolbar>
-      </header>
+      </div>
 
       {/* The error block: what happened / what survived / next action, in
           that order, in words. Outside the timeline, so it is never
@@ -1345,17 +1334,27 @@ function AgentRunSteps({
         </p>
       )}
 
-      {sorted.length === 0 ? (
-        <p className="nex-agent-empty">{isActive ? t("agent.runStarting") : t("agent.noSteps")}</p>
-      ) : (
+      {!collapsed && sorted.length > 0 && (
+        <div className="nex-agent-run-detail">
+          <span className="nex-agent-run-summary">{summaryText}</span>
+          <span className="nex-agent-run-meta">
+            <span className="nex-tag nex-tag-mono" title={t("agent.modelTitle")}>
+              {run.model || "agent"}
+            </span>
+            <span className="nex-agent-run-id">run {run.run_id}</span>
+          </span>
+        </div>
+      )}
+
+      {sorted.length > 0 && (
         <>
           {/* `hidden` and never a `display` override here: the attribute keeps
               every row mounted (so expanding restores the same objects, the
               same order, and each row's own open state) while taking the
               folded sequence out of sight and out of the a11y tree. The id
-              is what the fold button's `aria-controls` points at, and is
-              qualified by run id so two runs in one thread never collide. */}
-          <div className="nex-agent-timeline" id={timelineId} hidden={folded}>
+              is what the line's `aria-controls` points at, and is qualified
+              by run id so two runs in one thread never collide. */}
+          <div className="nex-agent-timeline" id={timelineId} hidden={collapsed}>
             <AgentSpine live={spineLive} />
             <div className="nex-agent-steps">
               {groupSteps(sorted).map((item, idx, all) => {
@@ -1434,13 +1433,6 @@ function AgentRunSteps({
               })}
             </div>
           </div>
-          {foldable && (
-            <StepFoldSummary
-              expanded={!folded}
-              timelineId={timelineId}
-              onToggle={handleFoldToggle}
-            />
-          )}
         </>
       )}
     </section>

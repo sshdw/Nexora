@@ -146,6 +146,7 @@ export default function ConversationPane({
           onMessageSent={onMessageSent}
           draft={draft}
           setDraft={setDraft}
+          workspaceRoot={workspaceRoot}
         />
       </div>
     </section>
