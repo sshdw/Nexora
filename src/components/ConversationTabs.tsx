@@ -40,8 +40,9 @@ import { useEffect, useRef } from "react";
 
 import M3Button from "./M3Button";
 import M3IconButton from "./M3IconButton";
+import WorkspaceChip from "./WorkspaceChip";
 import { useStrings } from "../lib/useLocale";
-import { CloseIcon } from "./icons";
+import { CloseIcon, ExportIcon } from "./icons";
 
 export interface TabEntry {
   id: number;
@@ -59,6 +60,12 @@ export interface ConversationTabsProps {
   onToggleZen: () => void;
   splitOpen: boolean;
   onToggleSplit: () => void;
+  /** Session-scoped actions that live here while the pane header is hidden
+   *  (two or more sessions, no split): the workspace chip and export act on
+   *  the ACTIVE session, which is the one this row names. */
+  workspaceRoot: string | null;
+  workspaceLoading: boolean;
+  onExport: (id: number) => void;
 }
 
 export default function ConversationTabs({
@@ -71,6 +78,9 @@ export default function ConversationTabs({
   onToggleZen,
   splitOpen,
   onToggleSplit,
+  workspaceRoot,
+  workspaceLoading,
+  onExport,
 }: ConversationTabsProps) {
   const { t } = useStrings();
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -196,6 +206,15 @@ export default function ConversationTabs({
         })}
       </div>
       <div className="nex-tabstrip-actions">
+        <WorkspaceChip root={workspaceRoot} loading={workspaceLoading} />
+        {activeId !== null && (
+          <M3IconButton
+            label={t("app.exportConversation")}
+            onClick={() => onExport(activeId)}
+          >
+            <ExportIcon />
+          </M3IconButton>
+        )}
         <M3Button
           variant="quiet"
           size="sm"

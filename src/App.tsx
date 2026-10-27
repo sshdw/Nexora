@@ -215,8 +215,11 @@ function AppShell() {
 
   // Write-through: the active conversation IS the memory, so it is updated on
   // every switch rather than only on unload (a crash keeps the last session).
+  // Only a real id is written: the first render has no active tab, and
+  // writing that `null` would erase the very id the restore effect above is
+  // about to read.
   useEffect(() => {
-    rememberSession(tabs.activeId);
+    if (tabs.activeId !== null) rememberSession(tabs.activeId);
   }, [tabs.activeId]);
 
   // After a successful import the conversation list is reloaded from the
@@ -657,10 +660,12 @@ function AppShell() {
   const splitVisible =
     !showOverlays && tabs.splitId !== null && splitConversation !== undefined;
 
-  // D-04 / C-02: at two or more open sessions the tab strip names them, so
-  // the pane header stops repeating the title. In split view both panes keep
-  // theirs — two panes have to be told apart, and the strip names neither.
-  const paneTitleHidden = tabs.openIds.length > 1 && tabs.splitId === null;
+  // D-04 / C-02: at two or more open sessions the strip owns identity AND the
+  // session actions (workspace chip, export, Zen), so the pane header is not
+  // rendered at all — one row instead of two rows saying the same thing. In
+  // split view both panes keep their headers: two panes have to be told apart,
+  // and each needs its own export.
+  const paneHeaderHidden = tabs.openIds.length > 1 && tabs.splitId === null;
 
   // Live pane content, extracted so Settings/Library overlays render above
   // still-mounted panes (hidden via CSS, never unmounted) instead of
@@ -708,7 +713,7 @@ function AppShell() {
           workspaceRoot={workspace.root}
           workspaceLoading={workspace.loading}
           secondary={false}
-          hideTitle={paneTitleHidden}
+          hideHeader={paneHeaderHidden}
           zen={zen}
           onToggleZen={toggleZen}
         />
@@ -749,7 +754,7 @@ function AppShell() {
         workspaceRoot={workspace.root}
         workspaceLoading={workspace.loading}
         secondary={false}
-        hideTitle={paneTitleHidden}
+        hideHeader={paneHeaderHidden}
         zen={zen}
         onToggleZen={toggleZen}
       />
@@ -807,19 +812,24 @@ function AppShell() {
       <a className="nex-skip-link" href="#nex-main-content">
         {t("app.skipLink")}
       </a>
-      <NavigationProvider value={navigation}>
-        <Dock
-          onNew={handleNewConversation}
-          onPanelToggle={handlePanelToggle}
-          activePanel={
-            dockPanel ?? (router.active === "settings" ? "settings" : null)
-          }
-        />
-      </NavigationProvider>
+      {/* The Dock is the shell's navigation, and every overlay (Settings,
+          VCS, Tasks, …) is a full-bleed surface that owns the whole window:
+          the rail used to paint on top of the Settings navigation and clip
+          its labels. While an overlay is up it is the only navigation, and
+          each one carries its own way back ("Back to conversations", close). */}
+      {!showOverlays && (
+        <NavigationProvider value={navigation}>
+          <Dock
+            onNew={handleNewConversation}
+            onPanelToggle={handlePanelToggle}
+            activePanel={dockPanel}
+          />
+        </NavigationProvider>
+      )}
       {/* Dock panels (D-06). They sit beside the rail, above the stage, and
           never move it: the thread and the composer keep their geometry while
           one is open. Settings is the exception — it is the 720 px modal. */}
-      {dockPanel === "sessions" && (
+      {!showOverlays && dockPanel === "sessions" && (
         <DockPanel
           id="sessions"
           title={t("dock.sessions")}
@@ -833,7 +843,7 @@ function AppShell() {
           />
         </DockPanel>
       )}
-      {dockPanel === "workspace" && (
+      {!showOverlays && dockPanel === "workspace" && (
         <DockPanel
           id="workspace"
           title={t("dock.workspace")}
@@ -842,7 +852,7 @@ function AppShell() {
           <WorkspacePanel workspace={workspace} />
         </DockPanel>
       )}
-      {dockPanel === "activity" && (
+      {!showOverlays && dockPanel === "activity" && (
         <DockPanel
           id="activity"
           title={t("dock.activity")}
@@ -872,6 +882,9 @@ function AppShell() {
             onToggleZen={toggleZen}
             splitOpen={tabs.splitId !== null}
             onToggleSplit={handleToggleSplit}
+            workspaceRoot={workspace.root}
+            workspaceLoading={workspace.loading}
+            onExport={setExportTargetId}
           />
         )}
         {showOverlays ? (

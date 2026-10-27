@@ -797,16 +797,23 @@
   color: var(--color-error);
 }
 
+/* A DECISION, not a card (O-02 / §6.4): a 2 px warning rule on the leading
+   edge, no fill, no radius. It used to be a third filled box inside the run
+   card, at the same tone as the steps around it, so the one thing on screen
+   that was waiting for a human looked like another piece of output. The rule
+   is the only amber in the thread — which is exactly the punctuation D-08
+   allows a state colour to be. */
 .nex-agent-approval {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   flex-wrap: wrap;
   gap: var(--space-sm);
-  padding: var(--space-sm);
-  border-radius: var(--shape-small);
-  background: var(--color-surface-container-highest);
-  border: 1px solid var(--color-outline-variant);
+  padding: var(--space-xxs) 0 var(--space-xxs) var(--space-sm);
+  border-radius: var(--shape-none);
+  background: transparent;
+  border: none;
+  border-inline-start: 2px solid var(--state-warn);
 }
 
 .nex-agent-approval-text {

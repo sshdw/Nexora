@@ -46,12 +46,13 @@ function tabStrip(overrides: Partial<Parameters<typeof ConversationTabs>[0]> = {
     splitId: null,
     onActivate: vi.fn(),
     onClose: vi.fn(),
-    onNewConversation: vi.fn(),
-    creating: false,
     zen: false,
     onToggleZen: vi.fn(),
     splitOpen: false,
     onToggleSplit: vi.fn(),
+    workspaceRoot: null,
+    workspaceLoading: false,
+    onExport: vi.fn(),
     ...overrides,
   };
   const view = render(
@@ -197,6 +198,9 @@ describe("tab strip grammar (MAP row 4)", () => {
           onToggleZen={vi.fn()}
           splitOpen={false}
           onToggleSplit={vi.fn()}
+          workspaceRoot={null}
+          workspaceLoading={false}
+          onExport={vi.fn()}
         />
       </LocaleProvider>,
     );
