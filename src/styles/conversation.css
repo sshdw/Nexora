@@ -429,17 +429,29 @@
   padding: var(--space-xxxs) 0;
 }
 
+/* The meta line is ONE fact — who, with which model — and a timestamp.
+   `space-between` used to spread all three across the full 760 px, so the
+   model name floated in the middle of the line and read as a column of a
+   table rather than as a qualifier of the author. The pair is now grouped
+   on the left and the time is pushed to the far edge. */
 .nex-message-meta {
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: var(--space-xs);
   padding: 0 var(--space-xxs);
 }
 
+.nex-message-time {
+  margin-inline-start: auto;
+}
+
+/* 12/500 — the closed ladder's label step. This line used 600, which is
+   not on the ladder at 12 px and made a meta label louder than the body
+   it introduces. */
 .nex-message-author {
   font-size: var(--type-size-label-medium);
-  font-weight: var(--type-weight-semibold);
+  font-weight: var(--type-weight-medium);
   color: var(--color-on-surface-variant);
 }
 
@@ -838,10 +850,17 @@
   gap: var(--space-xs);
 }
 
+/* A step is a ROW, not a card (D-11: no nested cards). It used to carry its
+   own fill, border and radius inside the run's card, and the code block
+   inside it carried a third — three nested containers for one fact, each one
+   a step lighter, which is what made a finished run read as a stack of
+   widgets instead of a log. The run card is the container; the spine is the
+   structure; the step is a row on it. Only the code/diff block keeps a
+   surface of its own, because code genuinely needs containment. */
 .nex-agent-step {
-  border-radius: var(--shape-small);
-  background: var(--color-surface-container-highest);
-  border: 1px solid var(--color-outline-variant);
+  border-radius: var(--shape-extra-small);
+  background: transparent;
+  border: none;
   overflow: hidden;
 }
 
@@ -1516,4 +1535,43 @@
        just arrives immediately — same information, zero interpolation. */
     transition: none;
   }
+}
+
+/* ============================================================
+   Empty conversation stage (D-03 / D-07)
+
+   Before the first message the composer is not the thread's footer — it is
+   the screen's one object, with a single line above it. So the stage stops
+   behaving like a scrolling column: the pair is centred as a block, the
+   thread gives up its `flex: 1` (nothing to scroll), and the composer drops
+   the footer tone it wears when it sits under real history.
+
+   The measure is untouched: the placeholder and the composer share the same
+   760 px column in both states, so nothing shifts sideways when the first
+   message lands — only the vertical anchor changes, once.
+   ============================================================ */
+
+/* NOT `justify-content: center`: that would centre the stage's own chrome
+   row (Conversation / Context) with the content. The pair is centred by
+   letting the two auto margins below absorb the free space instead, which
+   leaves the chrome row pinned to the top where it belongs. */
+.nex-main-conversation.is-empty .nex-thread {
+  flex: 0 1 auto;
+  overflow: visible;
+  margin-top: auto;
+}
+
+.nex-main-conversation.is-empty > .nex-composer {
+  margin-bottom: auto;
+}
+
+.nex-main-conversation.is-empty .nex-conversation-placeholder {
+  padding-top: 0;
+  padding-bottom: var(--space-lg);
+}
+
+.nex-main-conversation.is-empty > .nex-composer {
+  background: transparent;
+  border-top-color: transparent;
+  padding-bottom: var(--space-2xl);
 }

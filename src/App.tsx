@@ -4,9 +4,13 @@ import CommandPalette from "./components/CommandPalette";
 import ConversationPane from "./components/ConversationPane";
 import ConversationTabs, { type TabEntry } from "./components/ConversationTabs";
 import ActivityHealthPanel from "./components/ActivityHealthPanel";
+import ActivityPanel from "./components/ActivityPanel";
 import AuditPanel from "./components/AuditPanel";
 import DebtPanel from "./components/DebtPanel";
 import Dock from "./components/Dock";
+import DockPanel, { type DockPanelId } from "./components/DockPanel";
+import SessionsPanel from "./components/SessionsPanel";
+import WorkspacePanel from "./components/WorkspacePanel";
 import DocsPanel from "./components/DocsPanel";
 import EmptyState from "./components/EmptyState";
 import ReleasePanel from "./components/ReleasePanel";
@@ -50,6 +54,7 @@ import { useConversations } from "./lib/useConversations";
 import { useConversationTabs } from "./lib/useConversationTabs";
 import { useImportExport } from "./lib/useImportExport";
 import { useOnboarding } from "./lib/useOnboarding";
+import { readLastSession, rememberSession } from "./lib/lastSession";
 import { useOverlayRouter } from "./lib/useOverlayRouter";
 import { useProviders } from "./lib/useProviders";
 import { useSpendLimit } from "./lib/useSpendLimit";
@@ -190,6 +195,30 @@ function AppShell() {
     // every tab change is harmless (early return when all ids are valid).
   }, [conversations, tabs]);
 
+  // Last-session restore (O-13): once the list has landed, reopen the
+  // conversation the previous launch ended on — but only if nothing is open
+  // yet (a deep link or a New click always wins) and only if that id still
+  // exists (it may have been archived or deleted between launches). Runs once
+  // per mount: `restored` is the guard, not the list, so a later delete does
+  // not resurrect a stale id.
+  const restoredSession = useRef(false);
+  useEffect(() => {
+    if (restoredSession.current) return;
+    if (loading || conversations.length === 0) return;
+    restoredSession.current = true;
+    if (tabs.openIds.length > 0) return;
+    const remembered = readLastSession();
+    if (remembered !== null && conversations.some((c) => c.id === remembered)) {
+      tabs.open(remembered);
+    }
+  }, [loading, conversations, tabs]);
+
+  // Write-through: the active conversation IS the memory, so it is updated on
+  // every switch rather than only on unload (a crash keeps the last session).
+  useEffect(() => {
+    rememberSession(tabs.activeId);
+  }, [tabs.activeId]);
+
   // After a successful import the conversation list is reloaded from the
   // backend (single source of truth) and the new conversation is opened.
   const handleImported = async (newId: number) => {
@@ -212,6 +241,7 @@ function AppShell() {
       const id = await create();
       if (id !== null) {
         tabs.open(id);
+        setDockPanel(null);
         // Verbatim from the pre-router body: every overlay EXCEPT Settings
         // closes (pre-existing asymmetry, preserved — new conversations stay
         // behind an open Settings panel).
@@ -231,24 +261,33 @@ function AppShell() {
   }, [create, tabs, router]);
 
   // Dock panel toggle (wired to Dock's onPanelToggle). Settings opens the
-  // Settings overlay now; workspace / sessions / activity are no-ops until
-  // their panels are built in later phases (R4-04 / R4-05) — intentional
-  // no-op so the Dock fires the toggle without crashing.
+  // full Settings overlay (O-11: 720 modal, not a Dock panel); the three
+  // workspace destinations open the overlay card defined in DockPanel.tsx.
+  // Before this, only Settings did anything — three of five Dock buttons
+  // were dead ends and the shell had no way back to a closed conversation.
+  const [dockPanel, setDockPanel] = useState<DockPanelId | null>(null);
   const handlePanelToggle = useCallback(
     (panel: "workspace" | "sessions" | "activity" | "settings") => {
       if (panel === "settings") {
+        setDockPanel(null);
         router.openSettings();
+        return;
       }
+      setDockPanel((prev) => (prev === panel ? null : panel));
     },
     [router],
   );
+  const closeDockPanel = useCallback(() => setDockPanel(null), []);
 
   // Stabilized with useCallback (NEX-FE-002): consumed by the memoized
   // navigation context value.
   const handleSelect = useCallback(
     (id: number) => {
       tabs.open(id);
-      // Opening a conversation (including from a search result) leaves Settings.
+      // Opening a conversation (including from a search result or the
+      // Sessions panel) leaves every overlay — the panel's job is done the
+      // moment the thing it was pointing at is on screen (O-14).
+      setDockPanel(null);
       router.closeAll();
     },
     [tabs, router],
@@ -618,6 +657,11 @@ function AppShell() {
   const splitVisible =
     !showOverlays && tabs.splitId !== null && splitConversation !== undefined;
 
+  // D-04 / C-02: at two or more open sessions the tab strip names them, so
+  // the pane header stops repeating the title. In split view both panes keep
+  // theirs — two panes have to be told apart, and the strip names neither.
+  const paneTitleHidden = tabs.openIds.length > 1 && tabs.splitId === null;
+
   // Live pane content, extracted so Settings/Library overlays render above
   // still-mounted panes (hidden via CSS, never unmounted) instead of
   // replacing them — see the overlay branch below.
@@ -627,7 +671,12 @@ function AppShell() {
         // First-run empty state: logo + heading + supporting line only. The
         // sidebar's New Conversation row is the single creation CTA (one
         // primary per region) — no duplicate CTA here (contract §Shell).
-        <EmptyState />
+        // With history present but nothing open, the copy says so instead of
+        // claiming there are no conversations (data honesty).
+        <EmptyState
+          title={conversations.length === 0 ? undefined : t("app.noSessionTitle")}
+          description={conversations.length === 0 ? undefined : t("app.noSessionText")}
+        />
       ) : (
         // Tabs exist but the active id has no list entry yet (reload in
         // flight after delete/import) — hold the calm placeholder.
@@ -659,6 +708,9 @@ function AppShell() {
           workspaceRoot={workspace.root}
           workspaceLoading={workspace.loading}
           secondary={false}
+          hideTitle={paneTitleHidden}
+          zen={zen}
+          onToggleZen={toggleZen}
         />
         <ConversationPane
           conversation={splitConversation}
@@ -676,6 +728,8 @@ function AppShell() {
           workspaceRoot={workspace.root}
           workspaceLoading={workspace.loading}
           secondary
+          zen={zen}
+          onToggleZen={toggleZen}
         />
       </div>
     ) : (
@@ -695,6 +749,9 @@ function AppShell() {
         workspaceRoot={workspace.root}
         workspaceLoading={workspace.loading}
         secondary={false}
+        hideTitle={paneTitleHidden}
+        zen={zen}
+        onToggleZen={toggleZen}
       />
     );
 
@@ -751,8 +808,55 @@ function AppShell() {
         {t("app.skipLink")}
       </a>
       <NavigationProvider value={navigation}>
-        <Dock onNew={handleNewConversation} onPanelToggle={handlePanelToggle} />
+        <Dock
+          onNew={handleNewConversation}
+          onPanelToggle={handlePanelToggle}
+          activePanel={
+            dockPanel ?? (router.active === "settings" ? "settings" : null)
+          }
+        />
       </NavigationProvider>
+      {/* Dock panels (D-06). They sit beside the rail, above the stage, and
+          never move it: the thread and the composer keep their geometry while
+          one is open. Settings is the exception — it is the 720 px modal. */}
+      {dockPanel === "sessions" && (
+        <DockPanel
+          id="sessions"
+          title={t("dock.sessions")}
+          onClose={closeDockPanel}
+        >
+          <SessionsPanel
+            conversations={conversations}
+            loading={loading}
+            activeId={tabs.activeId}
+            onOpen={handleSelect}
+          />
+        </DockPanel>
+      )}
+      {dockPanel === "workspace" && (
+        <DockPanel
+          id="workspace"
+          title={t("dock.workspace")}
+          onClose={closeDockPanel}
+        >
+          <WorkspacePanel workspace={workspace} />
+        </DockPanel>
+      )}
+      {dockPanel === "activity" && (
+        <DockPanel
+          id="activity"
+          title={t("dock.activity")}
+          onClose={closeDockPanel}
+        >
+          <ActivityPanel
+            onOpenTasks={() => {
+              setDockPanel(null);
+              router.openTasks();
+            }}
+            onOpenConversation={handleSelect}
+          />
+        </DockPanel>
+      )}
       <div className="nex-main" id="nex-main-content" tabIndex={-1} ref={mainRef}>
         {!zen && !showOverlays && (
           <ConversationTabs
@@ -764,8 +868,6 @@ function AppShell() {
               router.closeAll();
             }}
             onClose={tabs.close}
-            onNewConversation={() => void handleNewConversation()}
-            creating={creating}
             zen={zen}
             onToggleZen={toggleZen}
             splitOpen={tabs.splitId !== null}

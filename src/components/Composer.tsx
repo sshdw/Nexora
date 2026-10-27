@@ -62,9 +62,7 @@
    ============================================================ */
 
 import { formatBytes } from "../lib/format";
-import { shortcutKeys } from "../lib/shortcuts";
 import type { Attachment, AutonomyMode } from "../lib/tauri";
-import type { StringKey } from "../lib/strings";
 import type { AutonomyStore } from "../lib/useAutonomy";
 import { useStrings } from "../lib/useLocale";
 import ComposerAutonomyHint from "./ComposerAutonomyHint";
@@ -81,24 +79,6 @@ import {
   PopoverTrigger,
 } from "./ui/popover";
 import { ArrowUpIcon, ChevronDownIcon, CloseIcon, PaperclipIcon, PlusIcon } from "./icons";
-
-/** One chip in the teaching line. `shortcut` chips take their key
- *  label from the registry at render time; `glyph` chips are a
- *  literal on-screen control, never a key. */
-type TeachChip =
-  | { kind: "glyph"; glyph: string; label: StringKey }
-  | { kind: "shortcut"; id: string; label: StringKey };
-
-/** What the empty field teaches. Deliberately NOT the Enter /
- *  Shift+Enter pair: those are the composer hint row's job and
- *  are already stated there (conv.hintSend). What a placeholder
- *  is for — and what the reference uses it for — is the things
- *  you cannot see from the field you are looking at. */
-const TEACH_CHIPS: readonly TeachChip[] = [
-  { kind: "glyph", glyph: "+", label: "conv.chipAttach" },
-  { kind: "shortcut", id: "palette.toggle", label: "conv.chipPalette" },
-  { kind: "shortcut", id: "help.show-shortcuts", label: "conv.chipShortcuts" },
-];
 
 export interface ComposerProps {
   /** Current draft (lifted so the Prompt Library can stage text). */
@@ -162,50 +142,11 @@ export default function Composer({
 }: ComposerProps) {
   const { t } = useStrings();
   const busy = sending || agentBusy;
-  /** The "+" chip teaches the attach control, so it is drawn only
-   *  where that control exists. Agent mode has none (G-20:
-   *  `start_agent_run` takes no attachments), and a chip
-   *  advertising one would be exactly the invented capability this
-   *  phase removes. */
-  const teachChips = agentMode
-    ? TEACH_CHIPS.filter((chip) => chip.kind === "shortcut")
-    : TEACH_CHIPS;
 
   return (
     <div className="nex-composer">
       <div className="nex-composer-inner">
         <div className="nex-composer-shell">
-          {agentMode && (
-            <div className="nex-agent-autonomy" role="group" aria-label={t("conv.autonomyAria")}>
-              <span className="nex-agent-autonomy-label">{t("conv.autonomyLabel")}</span>
-              <M3SegmentedGroup
-                className="nex-composer-autonomy"
-                label={t("conv.autonomyAria")}
-                semantics="radio"
-                value={autonomy.mode}
-                onChange={(mode) => onAutonomyChange(mode)}
-                options={[
-                  { value: "supervised", label: t("conv.autonomySupervised") },
-                  {
-                    value: "semi_autonomous",
-                    label: t("conv.autonomySemi"),
-                    ariaLabel: t("conv.autonomySemiAria"),
-                  },
-                  { value: "full_autonomous", label: t("conv.autonomyFull") },
-                ]}
-              />
-              <ComposerAutonomyHint
-                mode={autonomy.mode}
-                text={
-                  autonomy.mode === "supervised"
-                    ? t("conv.autonomyExplainSupervised")
-                    : autonomy.mode === "semi_autonomous"
-                      ? t("conv.autonomyExplainSemi")
-                      : t("conv.autonomyExplainFull")
-                }
-              />
-            </div>
-          )}
           {/* Attachments belong to the CHAT path only. An agent run
               cannot carry them (G-20: `start_agent_run` has no
               attachment parameter), so neither the draft chips nor
@@ -258,20 +199,6 @@ export default function Composer({
                 }
               }}
             />
-            {draft === "" && (
-              <span className="nex-composer-teach" role="note">
-                {teachChips.map((chip, index) => {
-                  const keys = chip.kind === "shortcut" ? shortcutKeys(chip.id) : [];
-                  return (
-                    <span key={chip.kind === "shortcut" ? chip.id : chip.glyph}>
-                      {index > 0 && <span className="nex-composer-teach-sep"> · </span>}
-                      <kbd>{chip.kind === "glyph" ? chip.glyph : (keys[0] ?? "")}</kbd>{" "}
-                      {t(chip.label)}
-                    </span>
-                  );
-                })}
-              </span>
-            )}
           </div>
 
           <div className="nex-composer-bar">
@@ -322,6 +249,69 @@ export default function Composer({
             </span>
 
             <span className="nex-composer-bar-spacer" />
+
+            {/* Autonomy is a MODE, not a row of pills under the field (D-03
+                rejects the always-open autonomy row; O-12 puts it in
+                "Settings + compact run meta"). The trigger names the live
+                mode in one word and the three choices plus their explainer
+                live behind it, so the composer keeps one control row and the
+                sentence that explains a mode is only on screen while the
+                user is choosing one. */}
+            {agentMode && (
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="nex-composer-autonomy-trigger"
+                    aria-label={t("conv.autonomyAria")}
+                    title={t("conv.autonomyLabel")}
+                  >
+                    <span className="nex-composer-autonomy-dot" aria-hidden="true" />
+                    <span className="nex-composer-autonomy-name">
+                      {autonomy.mode === "supervised"
+                        ? t("conv.autonomySupervised")
+                        : autonomy.mode === "semi_autonomous"
+                          ? t("conv.autonomySemi")
+                          : t("conv.autonomyFull")}
+                    </span>
+                    <ChevronDownIcon />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent align="end" side="top" sideOffset={8} className="nex-composer-autonomy-menu">
+                  <PopoverHeader>
+                    <PopoverTitle>{t("conv.autonomyLabel")}</PopoverTitle>
+                  </PopoverHeader>
+                  <M3SegmentedGroup
+                    className="nex-composer-autonomy"
+                    label={t("conv.autonomyAria")}
+                    semantics="radio"
+                    indicator={false}
+                    value={autonomy.mode}
+                    onChange={(mode) => onAutonomyChange(mode)}
+                    options={[
+                      { value: "supervised", label: t("conv.autonomySupervised") },
+                      {
+                        value: "semi_autonomous",
+                        label: t("conv.autonomySemi"),
+                        ariaLabel: t("conv.autonomySemiAria"),
+                      },
+                      { value: "full_autonomous", label: t("conv.autonomyFull") },
+                    ]}
+                  />
+                  <ComposerAutonomyHint
+                    mode={autonomy.mode}
+                    text={
+                      autonomy.mode === "supervised"
+                        ? t("conv.autonomyExplainSupervised")
+                        : autonomy.mode === "semi_autonomous"
+                          ? t("conv.autonomyExplainSemi")
+                          : t("conv.autonomyExplainFull")
+                    }
+                  />
+                </PopoverContent>
+              </Popover>
+            )}
 
             {/* Model picker. The trigger shows what the provider
                 store holds; picking a row DISPATCHES and waits —
@@ -438,11 +428,11 @@ export default function Composer({
           </div>
         </div>
 
-        {ready ? (
-          <p className="nex-composer-hint">
-            <span className="nex-composer-shortcut">{t("conv.hintSend")}</span>
-          </p>
-        ) : (
+        {/* A hint row is only worth its line when it is ACTIONABLE. "Enter
+            to send" restated what the field already does and sat under the
+            composer on every screen; the setup hint is the one case where
+            the composer cannot work and says what to do about it. */}
+        {!ready && (
           <p className="nex-composer-hint">
             <span className="nex-composer-shortcut">{t("conv.hintSetup")} </span>
             <M3Button variant="quiet" size="sm" onClick={onOpenSettings}>

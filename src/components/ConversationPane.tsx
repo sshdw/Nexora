@@ -13,6 +13,7 @@
 //! and App.tsx passes none of them here.
 
 import ConversationView from "./ConversationView";
+import M3Button from "./M3Button";
 import M3IconButton from "./M3IconButton";
 import M3Toolbar from "./M3Toolbar";
 import WorkspaceChip from "./WorkspaceChip";
@@ -44,6 +45,13 @@ export interface ConversationPaneProps {
   workspaceLoading: boolean;
   /** Secondary (split) pane: marked apart from the primary one. */
   secondary: boolean;
+  /** The tab strip above already names the open session (D-04), so this
+   *  pane does not repeat the title. False in split view, where two panes
+   *  need to be told apart. */
+  hideTitle?: boolean;
+  /** Chromeless reading mode (its strip home is gone at one session). */
+  zen: boolean;
+  onToggleZen: () => void;
 }
 
 export default function ConversationPane({
@@ -62,6 +70,9 @@ export default function ConversationPane({
   workspaceRoot,
   workspaceLoading,
   secondary,
+  hideTitle = false,
+  zen,
+  onToggleZen,
 }: ConversationPaneProps) {
   const { t } = useStrings();
   const isArchived = conversation.status === "archived";
@@ -71,19 +82,24 @@ export default function ConversationPane({
       aria-label={secondary ? t("app.splitPaneAria", { title: conversation.title }) : conversation.title}
     >
       <header className="nex-pane-header">
-        <h2 className="nex-main-title">
-          <span className="nex-main-title-text">{conversation.title}</span>
-          {isArchived && (
-            <span className="nex-main-title-badge">
-              {t("app.archivedBadge")}
-            </span>
-          )}
-        </h2>
+        {!hideTitle && (
+          <h2 className="nex-main-title">
+            <span className="nex-main-title-text">{conversation.title}</span>
+            {isArchived && (
+              <span className="nex-main-title-badge">
+                {t("app.archivedBadge")}
+              </span>
+            )}
+          </h2>
+        )}
         {/* separator.md, vertical: the hairline between the title group
             and the trailing controls (MAP row 5). Decorative — it
             carries no text, so it is hidden from assistive tech rather
-            than announced. */}
-        <span className="nex-pane-header-separator" aria-hidden="true" />
+            than announced. It earns its place only when there IS a title
+            group to separate. */}
+        {!hideTitle && (
+          <span className="nex-pane-header-separator" aria-hidden="true" />
+        )}
         <M3Toolbar
           label={t("app.paneActions", { title: conversation.title })}
           className="nex-main-header-actions"
@@ -95,6 +111,17 @@ export default function ConversationPane({
           >
             <ExportIcon />
           </M3IconButton>
+          {/* Zen's strip home is only rendered at two or more sessions
+              (D-04), so the pane header carries it for the common case. */}
+          <M3Button
+            variant="quiet"
+            size="sm"
+            aria-pressed={zen}
+            title={t("tabs.zenTitle")}
+            onClick={onToggleZen}
+          >
+            {t("tabs.zen")}
+          </M3Button>
         </M3Toolbar>
       </header>
       <div className="nex-pane-body">

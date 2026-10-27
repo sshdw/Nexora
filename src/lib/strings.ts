@@ -71,6 +71,9 @@ const en = {
   "app.noConversationTitle": "No conversation selected",
   "app.noConversationText":
     "Choose a conversation from the sidebar, or create one with New Conversation.",
+  "app.noSessionTitle": "No session open",
+  "app.noSessionText":
+    "Pick one from Sessions in the Dock, or start a new session.",
   "app.archivedBadge": "Archived",
   "app.splitPaneAria": "Split: {title}",
   "app.paneActions": "Actions for {title}",
@@ -84,6 +87,31 @@ const en = {
   "app.zenExitTitle": "Exit chromeless reading mode (Esc)",
   "app.zenExit": "Exit zen · Esc",
   "app.newConversationDefault": "New Conversation",
+
+  // ---- Dock panels (D-06: the shell's only navigation) ---------------------
+  "dock.aria": "Dock",
+  "dock.new": "New",
+  "dock.workspace": "Workspace",
+  "dock.sessions": "Sessions",
+  "dock.activity": "Activity",
+  "dock.settings": "Settings",
+  "dock.activityNeedsYou": "Activity, {count} needs you",
+  "dock.sessionsFilter": "Filter sessions",
+  "dock.sessionsEmpty": "No sessions yet",
+  "dock.sessionsNoMatch": "No sessions match that filter",
+  "dock.workspaceNone": "No folder open",
+  "dock.workspaceNoneText":
+    "Agent runs need a folder to work in. Open one to give the agent a workspace.",
+  "dock.workspaceOpen": "Open folder…",
+  "dock.workspaceChange": "Change folder…",
+  "dock.workspaceRecent": "Recent",
+  "dock.activityEmpty": "Nothing running",
+  "dock.activityEmptyText":
+    "Queued agent tasks and their progress appear here while they run.",
+  "dock.activityRunning": "Running",
+  "dock.activityQueued": "Queued",
+  "dock.activityRecent": "Recent",
+  "dock.activityOpenTasks": "Open tasks",
 
   // ---- sidebar nav ---------------------------------------------------------
   "nav.settings": "Settings",
@@ -189,8 +217,9 @@ const en = {
   "conv.contextTab": "Context",
   "conv.messagesAria": "Messages",
   "conv.loadingMessages": "Loading messages",
-  "conv.emptyTitle": "No messages yet",
-  "conv.emptyText": "Write your first message below to start the conversation.",
+  "conv.emptyTitle": "Ask, plan, or hand off a task",
+  "conv.emptyText":
+    "Describe the outcome — the agent works in the folder you open and shows every step it takes.",
   "conv.authorYou": "You",
   "conv.authorAssistant": "Assistant",
   "conv.originTitle": "Provider and model used for this message",
@@ -1631,6 +1660,9 @@ const ru: Record<StringKey, string> = {
   "app.noConversationTitle": "Разговор не выбран",
   "app.noConversationText":
     "Выберите разговор в боковой панели или создайте новый кнопкой «Новый разговор».",
+  "app.noSessionTitle": "Сессия не открыта",
+  "app.noSessionText":
+    "Выберите её в «Сессиях» на доке или начните новую сессию.",
   "app.archivedBadge": "В архиве",
   "app.splitPaneAria": "Сплит: {title}",
   "app.paneActions": "Действия для «{title}»",
@@ -1644,6 +1676,30 @@ const ru: Record<StringKey, string> = {
   "app.zenExitTitle": "Выйти из бескнопочного режима чтения (Esc)",
   "app.zenExit": "Выйти из дзена · Esc",
   "app.newConversationDefault": "Новый разговор",
+
+  "dock.aria": "Док",
+  "dock.new": "Новый",
+  "dock.workspace": "Рабочая область",
+  "dock.sessions": "Сессии",
+  "dock.activity": "Активность",
+  "dock.settings": "Настройки",
+  "dock.activityNeedsYou": "Активность, требует внимания: {count}",
+  "dock.sessionsFilter": "Фильтр сессий",
+  "dock.sessionsEmpty": "Сессий пока нет",
+  "dock.sessionsNoMatch": "Нет сессий по этому фильтру",
+  "dock.workspaceNone": "Папка не открыта",
+  "dock.workspaceNoneText":
+    "Агенту нужна папка, в которой он работает. Откройте её, чтобы задать рабочую область.",
+  "dock.workspaceOpen": "Открыть папку…",
+  "dock.workspaceChange": "Сменить папку…",
+  "dock.workspaceRecent": "Недавние",
+  "dock.activityEmpty": "Ничего не выполняется",
+  "dock.activityEmptyText":
+    "Задачи агента и их прогресс появятся здесь, пока они выполняются.",
+  "dock.activityRunning": "Выполняется",
+  "dock.activityQueued": "В очереди",
+  "dock.activityRecent": "Недавние",
+  "dock.activityOpenTasks": "Открыть задачи",
 
   "nav.settings": "Настройки",
   "nav.library": "Библиотека промптов",
@@ -1732,8 +1788,9 @@ const ru: Record<StringKey, string> = {
   "conv.contextTab": "Контекст",
   "conv.messagesAria": "Сообщения",
   "conv.loadingMessages": "Загрузка сообщений",
-  "conv.emptyTitle": "Пока нет сообщений",
-  "conv.emptyText": "Напишите первое сообщение ниже, чтобы начать разговор.",
+  "conv.emptyTitle": "Спросите, спланируйте или передайте задачу",
+  "conv.emptyText":
+    "Опишите результат — агент работает в открытой папке и показывает каждый шаг.",
   "conv.authorYou": "Вы",
   "conv.authorAssistant": "Ассистент",
   "conv.originTitle": "Провайдер и модель, использованные для этого сообщения",

@@ -127,6 +127,10 @@
 @import "./styles/prompts.css" layer(base);
 @import "./styles/importExport.css" layer(base);
 @import "./styles/tabs.css" layer(base);
+/* D-06: the overlay surface behind every Dock destination. Imported after
+   tabs.css so its row/panel rules can re-point the shared row primitive
+   inside the card without touching the shell's own chrome. */
+@import "./styles/dockPanels.css" layer(base);
 @import "./styles/versionControl.css" layer(base);
 @import "./styles/terminal.css" layer(base);
 @import "./styles/activityHealth.css" layer(base);
