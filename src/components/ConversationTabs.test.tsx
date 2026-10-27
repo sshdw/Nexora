@@ -46,12 +46,13 @@ function tabStrip(overrides: Partial<Parameters<typeof ConversationTabs>[0]> = {
     splitId: null,
     onActivate: vi.fn(),
     onClose: vi.fn(),
-    onNewConversation: vi.fn(),
-    creating: false,
     zen: false,
     onToggleZen: vi.fn(),
     splitOpen: false,
     onToggleSplit: vi.fn(),
+    workspaceRoot: null,
+    workspaceLoading: false,
+    onExport: vi.fn(),
     ...overrides,
   };
   const view = render(
@@ -99,6 +100,8 @@ function pane(overrides: Partial<Parameters<typeof ConversationPane>[0]> = {}) {
     workspaceRoot: null,
     workspaceLoading: false,
     secondary: false,
+    zen: false,
+    onToggleZen: vi.fn(),
     ...overrides,
   };
   render(
@@ -154,17 +157,18 @@ describe("exactly one Split control (SYSTEM §4, MAP row 5)", () => {
 });
 
 describe("tab strip grammar (MAP row 4)", () => {
-  it("puts the new-tab button last, with the name the text button had", () => {
-    const { props } = tabStrip();
-    const newTab = screen.getByRole("button", { name: "New conversation" });
-    // Last in DOM order: creation never sits between two open tabs.
-    const focusable = document.querySelectorAll(
-      '.nex-tabstrip button, .nex-tabstrip a[href]',
+  it("carries no create control: New lives in the Dock (D-04)", () => {
+    tabStrip();
+    // The strip used to end in a `+`. The register moved creation to the
+    // Dock's first destination and forbids the duplicate entry point, so
+    // the strip's trailing group is Split + Zen and nothing else.
+    expect(
+      screen.queryByRole("button", { name: "New conversation" }),
+    ).not.toBeInTheDocument();
+    const focusable = Array.from(
+      document.querySelectorAll('.nex-tabstrip button, .nex-tabstrip a[href]'),
     );
-    expect(focusable[focusable.length - 1]).toBe(newTab);
-
-    fireEvent.click(newTab);
-    expect(props.onNewConversation).toHaveBeenCalledTimes(1);
+    expect(focusable[focusable.length - 1]).toHaveTextContent("Zen");
   });
 
   it("marks the active tab with aria-selected and nothing else", () => {
@@ -190,12 +194,13 @@ describe("tab strip grammar (MAP row 4)", () => {
           splitId={null}
           onActivate={vi.fn()}
           onClose={vi.fn()}
-          onNewConversation={vi.fn()}
-          creating={false}
           zen={false}
           onToggleZen={vi.fn()}
           splitOpen={false}
           onToggleSplit={vi.fn()}
+          workspaceRoot={null}
+          workspaceLoading={false}
+          onExport={vi.fn()}
         />
       </LocaleProvider>,
     );
@@ -263,12 +268,11 @@ describe("quiet control tone — no control takes the UA's `buttontext` (Defect 
     expect(restColours).toEqual([]);
   }
 
-  it("covers the tab close, the new-tab `+`, Split and Zen", () => {
+  it("covers the tab close, Split and Zen", () => {
     tabStrip();
     expectQuietControl(
       screen.getByRole("button", { name: "Close Refactor the parser" }),
     );
-    expectQuietControl(screen.getByRole("button", { name: "New conversation" }));
     expectQuietControl(screen.getByRole("button", { name: "Split" }));
     expectQuietControl(screen.getByRole("button", { name: "Zen" }));
   });

@@ -334,8 +334,14 @@ export default function ConversationView({
   // per-row borders). Runs break the chain.
   let prevThreadRole: string | null = null;
 
+  // An empty conversation is not a scrolled thread with a footer: it is the
+  // composer, centred, with one line above it saying what the surface is for
+  // (D-03 / D-07). The class carries that state so the stage can centre the
+  // pair and drop the composer's footer tone.
+  const emptyStage = viewMode === "chat" && !loading && threadItems.length === 0;
+
   return (
-    <div className="nex-main-conversation">
+    <div className={"nex-main-conversation" + (emptyStage ? " is-empty" : "")}>
       <div className="nex-context-tabs">
         <M3SegmentedGroup
           label={t("conv.viewLabel")}

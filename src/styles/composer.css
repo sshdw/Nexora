@@ -273,11 +273,27 @@
    Block only: the shell owns the inline inset, so the bar's first control
    starts on the same edge as the text above it. The bottom padding belongs
    to the shell as well — this row used to carry its own 8px. */
+/* The control row WRAPS. In a split pane the composer column is ~400 px and
+   the row carries five controls; with `nowrap` every item shrank below its
+   own text and the labels painted on top of each other (Chat/Agent under
+   Semi-auto under the model name). Wrapping is the honest failure mode: the
+   row becomes two lines and every control keeps its label and its hit area. */
 .nex-composer-bar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
+  row-gap: 4px;
   padding-block: 2px 0;
+}
+
+/* The spacer only does its job on a row that has room for one line. Once
+   the row wraps, a growing spacer would push the trailing group onto a line
+   of its own and left-align it; at that point the group is simply the second
+   line, and it should start at the leading edge like the first. */
+.nex-composer-bar > .nex-composer-bar-spacer {
+  flex: 1 1 0;
+  min-width: 0;
 }
 
 /* Attach: the round "+". Quiet at rest with a hairline so it
@@ -801,4 +817,97 @@
   border: 1px solid color-mix(in oklch, var(--destructive) 30%, transparent);
   border-radius: var(--radius-md);
   text-align: left;
+}
+/* ============================================================
+   Autonomy as a compact popover (D-03 / O-12)
+
+   The composer used to open with a full autonomy row — a label, a
+   three-segment group and a live explainer sentence — above the field on
+   every Agent-mode screen. That is the row D-03 rejects: it spent a
+   permanent line on a preference most users set once. The preference is
+   still one click away; it now costs one trigger in the control row and
+   nothing at all until it is opened.
+
+   The trigger names the live mode, so the state stays readable without
+   opening anything (brief §12: "one element changes state instead of
+   spawning multiple indicators").
+   ============================================================ */
+
+.nex-composer-autonomy-trigger {
+  gap: 6px;
+  color: var(--muted-foreground);
+  font-size: 0.8125rem;
+}
+
+.nex-composer-autonomy-trigger:hover {
+  color: var(--foreground);
+}
+
+/* The dot is a mode marker, not a status light: three modes, one
+   achromatic dot, filled by the label beside it. No hue (D-08). */
+.nex-composer-autonomy-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.55;
+}
+
+.nex-composer-autonomy-name {
+  white-space: nowrap;
+}
+
+.nex-composer-autonomy-menu {
+  width: 268px;
+  padding: 8px;
+  gap: 6px;
+  border-radius: var(--radius-lg);
+  background: var(--popover);
+  border: 1px solid var(--border);
+}
+
+/* The same segmented primitive, stacked — see `.nex-composer-model-list`
+   for why the list is expressed in grid terms (the primitive's root is a
+   grid with equal column tracks, so a column direction is inert). */
+.nex-composer-autonomy-menu .nex-composer-autonomy.nex-seg {
+  grid-auto-flow: row;
+  grid-auto-columns: minmax(0, 1fr);
+  align-self: stretch;
+  gap: 1px;
+  padding: 2px;
+  border-radius: var(--radius-md);
+  background: transparent;
+}
+
+.nex-composer-autonomy-menu .nex-composer-autonomy.nex-seg button {
+  width: 100%;
+  min-height: 30px;
+  padding: 6px 8px;
+  justify-content: flex-start;
+  border-radius: var(--radius-sm);
+  font-size: 0.8125rem;
+  text-align: left;
+}
+
+/* In the popover the explainer has room to be read, so the one-line clamp
+   it carried in the row is lifted: a sentence cut at "writes still ask
+   first…" explains nothing. */
+.nex-composer-autonomy-menu .nex-autonomy-explain {
+  white-space: normal;
+  overflow: visible;
+  flex: 0 0 auto;
+  padding: 0 2px 2px;
+}
+
+/* The trailing control group — autonomy, model, send — as ONE flex item.
+   In a split pane the bar wraps; three loose items used to split across the
+   break, leaving the model name stranded on the first line and Send alone on
+   the second. As a group it moves together, and `margin-inline-start: auto`
+   right-aligns it on whichever line it lands on. */
+.nex-composer-bar-trailing {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-inline-start: auto;
 }

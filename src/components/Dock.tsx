@@ -26,6 +26,7 @@
 import type { ComponentPropsWithoutRef, ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
+import { useStrings } from "../lib/useLocale";
 import { ActivityIcon, PlusIcon } from "./icons";
 
 type DockPanel = "workspace" | "sessions" | "activity" | "settings";
@@ -187,6 +188,7 @@ function DockButton({
   return (
     <button
       type="button"
+      data-dock-trigger={kind === "panel" ? panel : undefined}
       aria-expanded={kind === "panel" ? expanded : undefined}
       aria-controls={kind === "panel" ? `nex-dock-panel-${panel}` : undefined}
       aria-label={label}
@@ -261,17 +263,20 @@ export default function Dock({
   onNew,
   onPanelToggle,
 }: DockProps) {
+  const { t } = useStrings();
   const isActive = (panel: DockPanel) => activePanel === panel;
   const activityAttention = attentionCount > 0;
+  // The label carries the count as a WORD, not only the dot: the dot is a
+  // static mark and the accessible name is what actually announces it.
   const activityLabel = activityAttention
-    ? `Activity, ${attentionCount} needs you`
-    : "Activity";
+    ? t("dock.activityNeedsYou", { count: attentionCount })
+    : t("dock.activity");
 
   return (
     <nav
       role="navigation"
-      aria-label="Dock"
-      className="fixed left-0 top-1/2 -translate-y-1/2 z-[var(--nex-sys-z-popover)]"
+      aria-label={t("dock.aria")}
+      className="nex-dock fixed left-0 top-1/2 -translate-y-1/2 z-[var(--nex-sys-z-popover)]"
       style={{
         // R4-01: left edge flush, vertically centred; right side rounded ~30 px
         background: "var(--color-surface-elevated)",
@@ -292,8 +297,8 @@ export default function Dock({
         <DockButton
           id="new"
           kind="command"
-          label="New"
-          tooltip="New"
+          label={t("dock.new")}
+          tooltip={t("dock.new")}
           icon={<PlusIcon />}
           onClick={onNew}
         />
@@ -302,8 +307,8 @@ export default function Dock({
           id="workspace"
           kind="panel"
           panel="workspace"
-          label="Workspace"
-          tooltip="Workspace"
+          label={t("dock.workspace")}
+          tooltip={t("dock.workspace")}
           icon={<FolderIcon />}
           isActive={isActive("workspace")}
           onClick={() => onPanelToggle?.("workspace")}
@@ -313,8 +318,8 @@ export default function Dock({
           id="sessions"
           kind="panel"
           panel="sessions"
-          label="Sessions"
-          tooltip="Sessions"
+          label={t("dock.sessions")}
+          tooltip={t("dock.sessions")}
           icon={<SessionsIcon />}
           isActive={isActive("sessions")}
           onClick={() => onPanelToggle?.("sessions")}
@@ -337,8 +342,8 @@ export default function Dock({
           id="settings"
           kind="panel"
           panel="settings"
-          label="Settings"
-          tooltip="Settings"
+          label={t("dock.settings")}
+          tooltip={t("dock.settings")}
           icon={<SlidersIcon />}
           isActive={isActive("settings")}
           onClick={() => onPanelToggle?.("settings")}

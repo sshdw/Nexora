@@ -1320,8 +1320,13 @@ function AgentRunSteps({
               >
                 {t("agent.approve")}
               </M3Button>
+              {/* Deny is a GHOST, not a red button (O-02: "Approve primary,
+                  Deny ghost"). Declining is the safe answer, so it must not
+                  wear the error colour that the brief reserves for states;
+                  one filled control per decision keeps the primary obvious
+                  without making the refusal look dangerous. */}
               <M3Button
-                variant="destructive"
+                variant="quiet"
                 size="sm"
                 onClick={() => onResolveApproval(run.run_id, pending.call_id, false)}
               >

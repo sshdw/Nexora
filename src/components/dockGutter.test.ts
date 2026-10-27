@@ -268,12 +268,14 @@ describe("conversation stage reserves the rail at the container", () => {
 });
 
 describe("thread and composer share one stage box", () => {
-  const containerAt = viewSource.indexOf('<div className="nex-main-conversation">');
+  // The class is a template expression since the empty stage adds `is-empty`,
+  // so the anchor is the quoted class name itself, not the whole attribute.
+  const containerAt = viewSource.indexOf('"nex-main-conversation"');
 
   it("renders the thread and the composer as children of the stage container", () => {
     expect(containerAt).toBeGreaterThan(-1);
     // One stage per view; split panes each render their own.
-    expect([...viewSource.matchAll(/className="nex-main-conversation"/g)]).toHaveLength(1);
+    expect([...viewSource.matchAll(/"nex-main-conversation"/g)]).toHaveLength(1);
 
     const threadAt = viewSource.indexOf('<div className="nex-thread"');
     const composerAt = viewSource.indexOf("<Composer");

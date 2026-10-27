@@ -318,8 +318,15 @@ describe("composer — modes", () => {
     expect(
       within(group).getByRole("radio", { name: "Chat mode — one answer per message" }),
     ).toHaveAttribute("aria-checked", "false");
-    // The Agent pane is on screen, not just labelled: its autonomy row is.
-    expect(screen.getByRole("radiogroup", { name: "Autonomy mode" })).toBeInTheDocument();
+    // Autonomy is reachable from the Agent pane, but it is a popover now
+    // (D-03): the control row carries one trigger naming the live mode, and
+    // the three choices exist only while it is open.
+    expect(
+      screen.getByRole("button", { name: "Autonomy mode" }),
+    ).toHaveTextContent("Semi-auto");
+    expect(
+      screen.queryByRole("radiogroup", { name: "Autonomy mode" }),
+    ).not.toBeInTheDocument();
   });
 
   it("keeps the typed draft through a Chat → Agent round trip, and sends nothing", () => {
@@ -378,15 +385,16 @@ describe("composer — modes", () => {
     expect(onAgentModeChange).toHaveBeenCalledWith(false);
   });
 
-  it("hides the autonomy row in chat mode and shows it in agent mode", () => {
+  it("shows the autonomy trigger in agent mode only, and opens the choices", () => {
     const { rerender, props } = renderComposer({ agentMode: false });
-    expect(screen.queryByRole("radiogroup", { name: "Autonomy mode" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Autonomy mode" })).not.toBeInTheDocument();
 
     rerender(
       <LocaleProvider>
         <Composer {...props} agentMode />
       </LocaleProvider>,
     );
+    fireEvent.click(screen.getByRole("button", { name: "Autonomy mode" }));
     const autonomy = screen.getByRole("radiogroup", { name: "Autonomy mode" });
     expect(within(autonomy).getByRole("radio", { name: "Semi-autonomous" })).toHaveAttribute(
       "aria-checked",
@@ -397,6 +405,7 @@ describe("composer — modes", () => {
   it("dispatches autonomy changes from the store's own value", () => {
     const onAutonomyChange = vi.fn();
     renderComposer({ agentMode: true, onAutonomyChange });
+    fireEvent.click(screen.getByRole("button", { name: "Autonomy mode" }));
     fireEvent.click(screen.getByRole("radio", { name: "Full-auto" }));
     expect(onAutonomyChange).toHaveBeenCalledWith("full_autonomous");
   });
@@ -406,6 +415,7 @@ describe("composer — modes", () => {
     // and can be read at all — under motion it is still typing.
     mockReducedMotion(true);
     renderComposer({ agentMode: true, autonomy: autonomyStub({ mode: "full_autonomous" }) });
+    fireEvent.click(screen.getByRole("button", { name: "Autonomy mode" }));
     expect(
       screen.getByText("Full-auto: the agent runs to the end without stopping."),
     ).toBeInTheDocument();
@@ -415,6 +425,7 @@ describe("composer — modes", () => {
     mockReducedMotion(true);
     const autonomy = autonomyStub({ mode: "supervised" });
     const { rerender, props } = renderComposer({ agentMode: true, autonomy });
+    fireEvent.click(screen.getByRole("button", { name: "Autonomy mode" }));
     expect(
       screen.getByText("Supervised: every tool call waits for your approval."),
     ).toBeInTheDocument();
@@ -457,13 +468,9 @@ describe("composer — attachment policy (R4-02 / G-20)", () => {
     expect(screen.queryByLabelText("Attached files")).not.toBeInTheDocument();
     expect(screen.queryByText("notes.md")).not.toBeInTheDocument();
 
-    // …and the teaching line no longer advertises the missing control.
-    const teach = document.querySelector(".nex-composer-teach");
-    expect(teach).not.toBeNull();
-    expect(teach!.textContent).not.toMatch(/attach/i);
-    const chips = [...teach!.querySelectorAll("kbd")].map((chip) => chip.textContent);
-    expect(chips).toEqual([shortcutKeys("palette.toggle")[0], shortcutKeys("help.show-shortcuts")[0]]);
-    expect(teach!.textContent).toContain("command palette");
+    // …and there is no teaching line left to advertise it: the chip row was
+    // the rejected "teach chips" pattern (D-03) and is gone in both modes.
+    expect(document.querySelector(".nex-composer-teach")).toBeNull();
   });
 });
 
@@ -573,11 +580,12 @@ describe("composer — model picker", () => {
 });
 
 describe("composer — hint row", () => {
-  it("states the composer keys when the composer is ready", () => {
+  it("says nothing under a composer that can send", () => {
+    // The hint row is reserved for the case where it is ACTIONABLE. "Enter
+    // to send" restated what the field does and sat under every screen; a
+    // ready composer now ends at its own border.
     renderComposer({ ready: true });
-    expect(
-      screen.getByText("Enter to send · Shift+Enter for a new line"),
-    ).toBeInTheDocument();
+    expect(document.querySelector(".nex-composer-hint")).toBeNull();
     expect(screen.queryByRole("button", { name: "Open Settings" })).not.toBeInTheDocument();
   });
 
@@ -592,23 +600,22 @@ describe("composer — hint row", () => {
   });
 });
 
-describe("composer — the inline teaching line", () => {
-  it("renders registry key labels, not invented ones", () => {
-    renderComposer({ agentMode: false });
-    const teach = document.querySelector(".nex-composer-teach");
-    expect(teach).not.toBeNull();
-    expect(teach).toHaveAttribute("role", "note");
-    // Every kbd chip that is a KEY comes from the registry.
-    const chips = [...teach!.querySelectorAll("kbd")].map((k) => k.textContent);
-    expect(chips).toEqual([
-      "+",
-      shortcutKeys("palette.toggle")[0],
-      shortcutKeys("help.show-shortcuts")[0],
-    ]);
-    // …and both of those ids really are inventoried.
-    expect(shortcutById("palette.toggle")).toBeDefined();
-    expect(shortcutById("help.show-shortcuts")).toBeDefined();
-    expect(chips).toEqual(["+", "Ctrl+K", "Ctrl+/"]);
+describe("composer — no teaching line (D-03)", () => {
+  // D-03 rejects the composer that opens with a row of teaching chips under
+  // the field: "без наложений placeholder/подсказок/чипов". The row was the
+  // pattern the brief calls teach chips, and it spent a line of the app's
+  // most-used surface on two keyboard shortcuts the help dialog already
+  // documents. What replaces it is nothing — the placeholder is the
+  // affordance, and it is enough.
+
+  it("renders no chip row in either mode, empty or filled", () => {
+    for (const agentMode of [true, false]) {
+      for (const draft of ["", "already typing"]) {
+        const { unmount } = renderComposer({ agentMode, draft });
+        expect(document.querySelector(".nex-composer-teach")).toBeNull();
+        unmount();
+      }
+    }
   });
 
   it("keeps the native placeholder visible as the field's affordance, not as its name", () => {
@@ -623,14 +630,12 @@ describe("composer — the inline teaching line", () => {
     expect(field.getAttribute("placeholder")).not.toBe(field.getAttribute("aria-label"));
   });
 
-  it("gets out of the way once there is a draft", () => {
-    renderComposer({ draft: "already typing" });
-    expect(document.querySelector(".nex-composer-teach")).toBeNull();
-  });
-
-  it("ships a lookup that fails soft for an unregistered id", () => {
-    // The chips above assert two real ids; this is the other half —
-    // the soft failure is a documented degrade, not a crash.
+  it("keeps the shortcut registry as the one source for the help dialog", () => {
+    // The chips are gone, but the registry they read from still owns the
+    // keys — the shortcuts dialog renders from it, so a rebound key has one
+    // place to change.
+    expect(shortcutById("palette.toggle")).toBeDefined();
+    expect(shortcutById("help.show-shortcuts")).toBeDefined();
     expect(shortcutKeys("no.such.shortcut")).toEqual([]);
     expect(SHORTCUTS.some((entry) => entry.id === "no.such.shortcut")).toBe(false);
   });
@@ -691,19 +696,16 @@ describe("composer — the field the user types in (Phase C round 2)", () => {
     }
   });
 
-  it("keeps the teaching legend out of the placeholder's line", () => {
-    // DOM order is the contract the sheet now relies on: the textarea is
-    // FIRST, the legend follows it in flow. A legend before the field, or
-    // an absolutely positioned one after it, would be back over the
-    // placeholder.
+  it("keeps the field's own box empty apart from the field", () => {
+    // Nothing may sit on the placeholder's line. With the chip row gone the
+    // box holds the textarea and nothing else, which is the strongest
+    // version of the same contract.
     renderComposer();
     const field = screen.getByLabelText("Message");
     const box = field.parentElement!;
     expect(box).toHaveClass("nex-composer-field");
     expect(box.firstElementChild).toBe(field);
-    const teach = box.querySelector(".nex-composer-teach");
-    expect(teach).not.toBeNull();
-    expect(teach!.previousElementSibling).toBe(field);
+    expect(box.children).toHaveLength(1);
   });
 });
 
