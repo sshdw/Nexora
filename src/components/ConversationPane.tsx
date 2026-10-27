@@ -52,6 +52,10 @@ export interface ConversationPaneProps {
   /** Chromeless reading mode (its strip home is gone at one session). */
   zen: boolean;
   onToggleZen: () => void;
+  /** Draw the Zen control here. False while the tab strip is on screen: the
+   *  strip carries it, and split view would otherwise show one per pane plus
+   *  one in the strip. */
+  showZen?: boolean;
 }
 
 export default function ConversationPane({
@@ -73,6 +77,7 @@ export default function ConversationPane({
   hideHeader = false,
   zen,
   onToggleZen,
+  showZen = true,
 }: ConversationPaneProps) {
   const { t } = useStrings();
   const isArchived = conversation.status === "archived";
@@ -109,15 +114,17 @@ export default function ConversationPane({
             </M3IconButton>
             {/* Zen lives here only while the tab strip is not on screen
                 (one session): at two or more the strip owns it. */}
-            <M3Button
-              variant="quiet"
-              size="sm"
-              aria-pressed={zen}
-              title={t("tabs.zenTitle")}
-              onClick={onToggleZen}
-            >
-              {t("tabs.zen")}
-            </M3Button>
+            {showZen && (
+              <M3Button
+                variant="quiet"
+                size="sm"
+                aria-pressed={zen}
+                title={t("tabs.zenTitle")}
+                onClick={onToggleZen}
+              >
+                {t("tabs.zen")}
+              </M3Button>
+            )}
           </M3Toolbar>
         </header>
       )}

@@ -250,6 +250,13 @@ export default function Composer({
 
             <span className="nex-composer-bar-spacer" />
 
+            {/* The trailing group is ONE flex item, not three: in a split
+                pane the row wraps, and three loose items split across the
+                break (the model name on line one, Send alone on line two).
+                Wrapped together, the group moves as a unit and keeps its
+                internal rhythm. */}
+            <span className="nex-composer-bar-trailing">
+
             {/* Autonomy is a MODE, not a row of pills under the field (D-03
                 rejects the always-open autonomy row; O-12 puts it in
                 "Settings + compact run meta"). The trigger names the live
@@ -424,7 +431,8 @@ export default function Composer({
                   <ArrowUpIcon aria-hidden="true" />
                 </>
               )}
-            </Button>
+              </Button>
+            </span>
           </div>
         </div>
 

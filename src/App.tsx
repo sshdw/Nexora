@@ -666,6 +666,9 @@ function AppShell() {
   // split view both panes keep their headers: two panes have to be told apart,
   // and each needs its own export.
   const paneHeaderHidden = tabs.openIds.length > 1 && tabs.splitId === null;
+  // The strip carries Zen whenever it is on screen, so the pane header stops
+  // offering a second (and, in split, a third) control for the same mode.
+  const zenInPaneHeader = tabs.openIds.length < 2;
 
   // Live pane content, extracted so Settings/Library overlays render above
   // still-mounted panes (hidden via CSS, never unmounted) instead of
@@ -716,6 +719,7 @@ function AppShell() {
           hideHeader={paneHeaderHidden}
           zen={zen}
           onToggleZen={toggleZen}
+          showZen={zenInPaneHeader}
         />
         <ConversationPane
           conversation={splitConversation}
@@ -735,6 +739,7 @@ function AppShell() {
           secondary
           zen={zen}
           onToggleZen={toggleZen}
+          showZen={zenInPaneHeader}
         />
       </div>
     ) : (

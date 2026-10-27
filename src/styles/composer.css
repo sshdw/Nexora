@@ -273,11 +273,27 @@
    Block only: the shell owns the inline inset, so the bar's first control
    starts on the same edge as the text above it. The bottom padding belongs
    to the shell as well — this row used to carry its own 8px. */
+/* The control row WRAPS. In a split pane the composer column is ~400 px and
+   the row carries five controls; with `nowrap` every item shrank below its
+   own text and the labels painted on top of each other (Chat/Agent under
+   Semi-auto under the model name). Wrapping is the honest failure mode: the
+   row becomes two lines and every control keeps its label and its hit area. */
 .nex-composer-bar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
+  row-gap: 4px;
   padding-block: 2px 0;
+}
+
+/* The spacer only does its job on a row that has room for one line. Once
+   the row wraps, a growing spacer would push the trailing group onto a line
+   of its own and left-align it; at that point the group is simply the second
+   line, and it should start at the leading edge like the first. */
+.nex-composer-bar > .nex-composer-bar-spacer {
+  flex: 1 1 0;
+  min-width: 0;
 }
 
 /* Attach: the round "+". Quiet at rest with a hairline so it
@@ -881,4 +897,17 @@
   overflow: visible;
   flex: 0 0 auto;
   padding: 0 2px 2px;
+}
+
+/* The trailing control group — autonomy, model, send — as ONE flex item.
+   In a split pane the bar wraps; three loose items used to split across the
+   break, leaving the model name stranded on the first line and Send alone on
+   the second. As a group it moves together, and `margin-inline-start: auto`
+   right-aligns it on whichever line it lands on. */
+.nex-composer-bar-trailing {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-inline-start: auto;
 }

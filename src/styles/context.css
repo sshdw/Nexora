@@ -4,13 +4,19 @@
    components.css / conversation.css. All values via tokens.
    ============================================================ */
 
+/* The view switch is CHROME, not a second header. It used to paint its own
+   full-bleed band with a bottom seam directly under the pane header's band,
+   so the stage opened with two stacked strips and 89 px of chrome before a
+   single line of content. It now sits on the canvas with no fill and no
+   seam of its own — the header above already draws the boundary — and keeps
+   only the height its control needs. */
 .nex-context-tabs {
   display: flex;
   align-items: center;
   gap: var(--space-xs);
-  padding: var(--space-xs) var(--space-md);
-  background: var(--color-surface-container);
-  border-bottom: 1px solid var(--color-outline-variant);
+  padding: var(--space-xs) var(--space-md) var(--space-xxs);
+  background: transparent;
+  border-bottom: none;
   /* Full-bleed opt-out of the conversation stage's Dock inset
      (conversation.css, `.nex-main-conversation`). This row is the stage's
      own chrome: its surface band and hairline span the pane edge to edge,
