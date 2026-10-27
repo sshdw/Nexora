@@ -1,681 +1,180 @@
-//! Minimal, generic UI icons (no brand assets).
-//! Generic icons only — not AI/robot imagery. 0.3.0 adds the
-//! conversation-row action set (export/rename/archive/restore/
-//! delete) and the send arrow, all on the same stroke grid.
+//! The app's icon layer — one library, one weight, one size grid.
+//!
+//! Every glyph in the UI comes from Phosphor (`@phosphor-icons/react`) at
+//! `weight="regular"`. The exported names are the names the app already
+//! used (`PlusIcon`, `ArrowUpIcon`, …) so a call site keeps reading the
+//! same word while the whole app changes weight and grid in one place.
+//!
+//! Sizes are the two steps the shell uses: 16 (default) and 20. A
+//! component that needs a different optical size changes the layout, not
+//! the glyph.
+//!
+//! Two shapes legitimately stay custom and live in the block at the
+//! bottom of this file: the context-window ring, whose arc length IS the
+//! data, and the brand mark (which is an image asset, not a glyph).
+//!
+//! `src/components/iconsInvariant.test.ts` scans every other `.tsx` in
+//! `src/` and fails on a raw `<svg>`: this file is the only place a glyph
+//! may be drawn.
 
-import type { ComponentPropsWithoutRef } from "react";
+import type { Icon, IconProps } from "@phosphor-icons/react";
+import {
+  ActivityIcon as PhosphorActivity,
+  Archive,
+  ArrowUp,
+  BookOpen,
+  BoxArrowUp,
+  CaretDown,
+  CircleNotch,
+  FlagPennant,
+  FolderSimple,
+  GearSix,
+  GitBranch,
+  ListChecks,
+  MagnifyingGlass,
+  Paperclip,
+  PencilSimple,
+  Plus,
+  Record,
+  SealCheck,
+  SlidersHorizontal,
+  Square,
+  Stack,
+  Tag,
+  Terminal,
+  Trash,
+  TrayArrowDown,
+  TrayArrowUp,
+  X,
+} from "@phosphor-icons/react";
 
-/** Branch glyph for the sidebar Version Control entry: two commit nodes
- * joined by their branches, on the same 18px stroke grid as the rail set. */
-export function BranchIcon(props: ComponentPropsWithoutRef<"svg">) {
-  return (
-    <svg
-      aria-hidden="true"
-      focusable="false"
-      width="18"
-      height="18"
-      viewBox="0 0 18 18"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      {...props}
-    >
-      <circle cx="5" cy="4.5" r="2" stroke="currentColor" strokeWidth="1.4" />
-      <circle cx="5" cy="13.5" r="2" stroke="currentColor" strokeWidth="1.4" />
-      <circle cx="13" cy="9" r="2" stroke="currentColor" strokeWidth="1.4" />
-      <path
-        d="M5 6.5v5M5 8.5c2.5 0 3.5-.5 6-.5M5 10.5c2.5 0 3.5.5 6 .5"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-        strokeLinejoin="round"
+/** The two glyph sizes the shell allows. */
+export type UiIconSize = 16 | 20;
+
+/** The shared props every exported glyph accepts: SVG props plus the two
+ *  size steps. Weight is fixed by this layer, never by a call site. */
+export type UiIconProps = Omit<IconProps, "weight" | "size" | "ref"> & {
+  size?: UiIconSize;
+};
+
+function uiIcon(Glyph: Icon, displayName: string) {
+  function UiIcon({ size = 16, ...rest }: UiIconProps) {
+    return (
+      <Glyph
+        size={size}
+        weight="regular"
+        color="currentColor"
+        aria-hidden="true"
+        focusable="false"
+        {...rest}
       />
-    </svg>
-  );
+    );
+  }
+  UiIcon.displayName = displayName;
+  return UiIcon;
 }
 
-export function PlusIcon(props: ComponentPropsWithoutRef<"svg">) {
+// ---- the app's existing names, mapped to the closest Phosphor glyph ----
+
+export const PlusIcon = uiIcon(Plus, "PlusIcon");
+export const SearchIcon = uiIcon(MagnifyingGlass, "SearchIcon");
+export const ChevronDownIcon = uiIcon(CaretDown, "ChevronDownIcon");
+export const ArrowUpIcon = uiIcon(ArrowUp, "ArrowUpIcon");
+export const PaperclipIcon = uiIcon(Paperclip, "PaperclipIcon");
+export const CloseIcon = uiIcon(X, "CloseIcon");
+export const SettingsIcon = uiIcon(GearSix, "SettingsIcon");
+export const ActivityIcon = uiIcon(PhosphorActivity, "ActivityIcon");
+export const TerminalIcon = uiIcon(Terminal, "TerminalIcon");
+export const TaskIcon = uiIcon(ListChecks, "TaskIcon");
+export const BranchIcon = uiIcon(GitBranch, "BranchIcon");
+export const BookIcon = uiIcon(BookOpen, "BookIcon");
+export const PencilIcon = uiIcon(PencilSimple, "PencilIcon");
+export const TrashIcon = uiIcon(Trash, "TrashIcon");
+export const ImportIcon = uiIcon(TrayArrowDown, "ImportIcon");
+export const ExportIcon = uiIcon(TrayArrowUp, "ExportIcon");
+export const ArchiveIcon = uiIcon(Archive, "ArchiveIcon");
+export const UnarchiveIcon = uiIcon(BoxArrowUp, "UnarchiveIcon");
+export const IssuesIcon = uiIcon(Record, "IssuesIcon");
+export const DebtIcon = uiIcon(Tag, "DebtIcon");
+export const ReleaseIcon = uiIcon(FlagPennant, "ReleaseIcon");
+export const AuditIcon = uiIcon(SealCheck, "AuditIcon");
+export const LoaderIcon = uiIcon(CircleNotch, "LoaderIcon");
+
+// ---- glyphs the shell gained in Round 5 -------------------------------
+
+/** Stop: the live-run state of the composer's one action button (D2). */
+export const SquareIcon = uiIcon(Square, "SquareIcon");
+/** Workspace folder: the read-only context row above the composer (D3). */
+export const FolderIcon = uiIcon(FolderSimple, "FolderIcon");
+/** Sessions: the Dock's history destination. */
+export const StackIcon = uiIcon(Stack, "StackIcon");
+/** Settings: the Dock's preferences destination. */
+export const SlidersIcon = uiIcon(SlidersHorizontal, "SlidersIcon");
+
+/* ================================================================== */
+/* custom, not from the library                                       */
+/*                                                                    */
+/* The context ring is a DATA drawing, not an icon: the arc length is  */
+/* the usage percentage, so it cannot be swapped for a Phosphor glyph  */
+/* without losing the reading. Everything about it still obeys the     */
+/* layer's contract — 16/20 grid, currentColor for the value, tokens   */
+/* for the track, aria-hidden because the BUTTON carries the name.     */
+/* ================================================================== */
+
+export interface ContextRingIconProps {
+  /** 0–100, or null when the backend reports no token data. */
+  percent: number | null;
+  size?: UiIconSize;
+}
+
+export function ContextRingIcon({ percent, size = 16 }: ContextRingIconProps) {
+  const value =
+    percent !== null && Number.isFinite(percent)
+      ? Math.min(100, Math.max(0, percent))
+      : null;
+  const radius = 6;
+  const circumference = 2 * Math.PI * radius;
   return (
     <svg
       aria-hidden="true"
       focusable="false"
-      width="16"
-      height="16"
+      width={size}
+      height={size}
       viewBox="0 0 16 16"
       fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      {...props}
+      data-state={value === null ? "na" : "value"}
     >
-      <path
-        d="M3 8h10M8 3v10"
-        stroke="currentColor"
+      {/* The track is the control's BOUNDARY, so it must clear 3:1 against
+          the card even when there is no data: `--muted-foreground` measures
+          5.64:1 on the dark card, 7.13:1 on the light card and 5.64:1 in
+          high contrast. `--color-outline-variant` (the previous value) is
+          1.15:1 on dark — a clickable control nobody can see. Dashed when
+          there is no data: an empty solid ring would read as a real 0%, and
+          the dash is what keeps "no data" distinct from "0% used". */}
+      <circle
+        cx="8"
+        cy="8"
+        r={radius}
+        stroke="var(--muted-foreground)"
         strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
+        strokeDasharray={value === null ? "2 2" : undefined}
       />
-    </svg>
-  );
-}
-
-export function SearchIcon(props: ComponentPropsWithoutRef<"svg">) {
-  return (
-    <svg
-      aria-hidden="true"
-      focusable="false"
-      width="16"
-      height="16"
-      viewBox="0 0 16 16"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      {...props}
-    >
-      <path
-        d="M6.5 11.5a5 5 0 100-10 5 5 0 000 10z"
-        stroke="currentColor"
-        strokeWidth="1.3"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M10.5 10.5l2 2"
-        stroke="currentColor"
-        strokeWidth="1.3"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-export function BookIcon(props: ComponentPropsWithoutRef<"svg">) {
-  return (
-    <svg
-      aria-hidden="true"
-      focusable="false"
-      width="18"
-      height="18"
-      viewBox="0 0 18 18"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      {...props}
-    >
-      <path
-        d="M3 3.5h12v11l.9"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M6 5.5v7M9 5.5v7M12 5.5v7"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-      />
-      <path
-        d="M6 12.6l4-4.1 0 9"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-export function SettingsIcon(props: ComponentPropsWithoutRef<"svg">) {
-  return (
-    <svg
-      aria-hidden="true"
-      focusable="false"
-      width="18"
-      height="18"
-      viewBox="0 0 18 18"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      {...props}
-    >
-      <circle cx="9" cy="9" r="2.4" stroke="currentColor" strokeWidth="1.4" />
-      <path
-        d="M9 1.8l1.06 2.02 2.26.37 1.58-1.7 1.62 1.62-1.7 1.58.37 2.26L16.2 9l-2.01 1.06-.37 2.26 1.7 1.58-1.62 1.62-1.58-1.7-2.26.37L9 16.2l-1.06-2.01-2.26-.37-1.58 1.7-1.62-1.62 1.7-1.58-.37-2.26L1.8 9l2.01-1.06.37-2.26-1.7-1.58 1.62-1.62 1.58 1.7 2.26-.37L9 1.8z"
-        stroke="currentColor"
-        strokeWidth="1.2"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-/** Icon for the sidebar "Import conversation" entry (FR-011): an arrow
- * arriving into a tray, matching the 18px stroke style of the other icons. */
-export function ImportIcon(props: ComponentPropsWithoutRef<"svg">) {
-  return (
-    <svg
-      aria-hidden="true"
-      focusable="false"
-      width="18"
-      height="18"
-      viewBox="0 0 18 18"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      {...props}
-    >
-      <path
-        d="M9 2.5v7.5m0 0l3-3m-3 3l-3-3"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M2.5 11.5v2a1.5 1.5 0 001.5 1.5h10a1.5 1.5 0 001.5-1.5v-2"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
-/** Export action: an arrow leaving a tray (mirror of ImportIcon). */
-export function ExportIcon(props: ComponentPropsWithoutRef<"svg">) {
-  return (
-    <svg
-      aria-hidden="true"
-      focusable="false"
-      width="16"
-      height="16"
-      viewBox="0 0 16 16"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      {...props}
-    >
-      <path
-        d="M8 10V2.5m0 0L5.5 5M8 2.5L10.5 5"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M2.5 10.5v2A1.5 1.5 0 004 14h8a1.5 1.5 0 001.5-1.5v-2"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
-/** Rename / edit action: a pencil. */
-export function PencilIcon(props: ComponentPropsWithoutRef<"svg">) {
-  return (
-    <svg
-      aria-hidden="true"
-      focusable="false"
-      width="16"
-      height="16"
-      viewBox="0 0 16 16"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      {...props}
-    >
-      <path
-        d="M11.3 2.4a1.6 1.6 0 012.3 2.3l-8 8L2 13.9l1.2-3.5 8.1-8z"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-/** Archive action: a box with a lid slot. */
-export function ArchiveIcon(props: ComponentPropsWithoutRef<"svg">) {
-  return (
-    <svg
-      aria-hidden="true"
-      focusable="false"
-      width="16"
-      height="16"
-      viewBox="0 0 16 16"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      {...props}
-    >
-      <rect
-        x="2"
-        y="2.5"
-        width="12"
-        height="3.4"
-        rx="1"
-        stroke="currentColor"
-        strokeWidth="1.4"
-      />
-      <path
-        d="M3.4 5.9v6.6A1.5 1.5 0 004.9 14h6.2a1.5 1.5 0 001.5-1.5V5.9"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-      />
-      <path
-        d="M6.4 8.5h3.2"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
-/** Restore action: an archive box with an upward arrow. */
-export function UnarchiveIcon(props: ComponentPropsWithoutRef<"svg">) {
-  return (
-    <svg
-      aria-hidden="true"
-      focusable="false"
-      width="16"
-      height="16"
-      viewBox="0 0 16 16"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      {...props}
-    >
-      <rect
-        x="2"
-        y="2.5"
-        width="12"
-        height="3.4"
-        rx="1"
-        stroke="currentColor"
-        strokeWidth="1.4"
-      />
-      <path
-        d="M3.4 5.9v6.6A1.5 1.5 0 004.9 14h6.2a1.5 1.5 0 001.5-1.5V5.9"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-      />
-      <path
-        d="M8 12V8.8m0 0L6.4 10.4M8 8.8l1.6 1.6"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-/** Delete action: a trash can. */
-export function TrashIcon(props: ComponentPropsWithoutRef<"svg">) {
-  return (
-    <svg
-      aria-hidden="true"
-      focusable="false"
-      width="16"
-      height="16"
-      viewBox="0 0 16 16"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      {...props}
-    >
-      <path
-        d="M2.5 4.5h11M6.5 2.5h3M4 4.5l.7 8.1A1.5 1.5 0 006.2 14h3.6a1.5 1.5 0 001.5-1.4l.7-8.1"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M6.7 7.2v4M9.3 7.2v4"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
-/** Send action: an upward arrow (the composed composer's primary). */
-export function ArrowUpIcon(props: ComponentPropsWithoutRef<"svg">) {
-  return (
-    <svg
-      aria-hidden="true"
-      focusable="false"
-      width="14"
-      height="14"
-      viewBox="0 0 16 16"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      {...props}
-    >
-      <path
-        d="M8 13V3m0 0L3.5 7.5M8 3l4.5 4.5"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-export function PaperclipIcon(props: ComponentPropsWithoutRef<"svg">) {
-  return (
-    <svg
-      aria-hidden="true"
-      focusable="false"
-      width="16"
-      height="16"
-      viewBox="0 0 16 16"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      {...props}
-    >
-      <path
-        d="M13.2 7.6l-4.9 4.9a3.4 3.4 0 01-4.8-4.8l5.3-5.3a2.3 2.3 0 013.2 3.2L6.7 10.9a1.15 1.15 0 01-1.6-1.6l4.5-4.5"
-        stroke="currentColor"
-        strokeWidth="1.3"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-export function CloseIcon(props: ComponentPropsWithoutRef<"svg">) {
-  return (
-    <svg
-      aria-hidden="true"
-      focusable="false"
-      width="12"
-      height="12"
-      viewBox="0 0 16 16"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      {...props}
-    >
-      <path
-        d="M4 4l8 8M12 4l-8 8"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
-/** Disclosure chevron for the composer's mode/model picker trigger (#220). */
-export function ChevronDownIcon(props: ComponentPropsWithoutRef<"svg">) {
-  return (
-    <svg
-      aria-hidden="true"
-      focusable="false"
-      width="12"
-      height="12"
-      viewBox="0 0 16 16"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      {...props}
-    >
-      <path
-        d="M4 6.5l4 4 4-4"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-export function ActivityIcon(props: ComponentPropsWithoutRef<"svg">) {
-  return (
-    <svg
-      aria-hidden="true"
-      focusable="false"
-      width="16"
-      height="16"
-      viewBox="0 0 16 16"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      {...props}
-    >
-      <path
-        d="M2 8h3l2-4.5L10 11l1.5-3H14"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-/** Terminal glyph for the sidebar Terminal entry: a prompt chevron plus
- * input line, on the same 18px stroke grid as the rail set. */
-export function TerminalIcon(props: ComponentPropsWithoutRef<"svg">) {
-  return (
-    <svg
-      aria-hidden="true"
-      focusable="false"
-      width="18"
-      height="18"
-      viewBox="0 0 18 18"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      {...props}
-    >
-      <rect
-        x="2"
-        y="3"
-        width="14"
-        height="12"
-        rx="2"
-        stroke="currentColor"
-        strokeWidth="1.4"
-      />
-      <path
-        d="M5.5 6.5l2.5 2-2.5 2"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M9 10.5h3.5"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
-/** Task-list glyph for the sidebar Tasks entry: two checklist rows with a
- * checked box, on the same 18px stroke grid as the rail set. */
-export function TaskIcon(props: ComponentPropsWithoutRef<"svg">) {
-  return (
-    <svg
-      aria-hidden="true"
-      focusable="false"
-      width="18"
-      height="18"
-      viewBox="0 0 18 18"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      {...props}
-    >
-      <rect
-        x="2.5"
-        y="3"
-        width="4"
-        height="4"
-        rx="1"
-        stroke="currentColor"
-        strokeWidth="1.4"
-      />
-      <path
-        d="M3.6 5l1 1 1.8-2"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <rect
-        x="2.5"
-        y="11"
-        width="4"
-        height="4"
-        rx="1"
-        stroke="currentColor"
-        strokeWidth="1.4"
-      />
-      <path
-        d="M8.5 4.5H15M8.5 13H15"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
-/** Audit glyph for the sidebar Code Audit entry: a magnifier with a check
- * stroke, on the same 18px stroke grid as the rail set. */
-export function AuditIcon(props: ComponentPropsWithoutRef<"svg">) {
-  return (
-    <svg
-      aria-hidden="true"
-      focusable="false"
-      width="18"
-      height="18"
-      viewBox="0 0 18 18"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      {...props}
-    >
-      <circle cx="8" cy="8" r="5" stroke="currentColor" strokeWidth="1.4" />
-      <path
-        d="M11.8 11.8 15.5 15.5"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-      />
-      <path
-        d="M6 8.2l1.4 1.4 2.8-3"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-/** Issues glyph for the sidebar Issues & PRs entry: an issue-ring (circle
- * outline) with a centered dot, on the same 18px stroke grid as the rail
- * set — distinct from the audit magnifier. */
-export function IssuesIcon(props: ComponentPropsWithoutRef<"svg">) {
-  return (
-    <svg
-      aria-hidden="true"
-      focusable="false"
-      width="18"
-      height="18"
-      viewBox="0 0 18 18"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      {...props}
-    >
-      <circle cx="9" cy="9" r="5.5" stroke="currentColor" strokeWidth="1.4" />
-      <circle cx="9" cy="9" r="1.2" fill="currentColor" />
-    </svg>
-  );
-}
-
-/** Debt glyph for the sidebar Debt backlog entry: a tag with a pin dot,
- * on the same 18px stroke grid as the rail set — distinct from the audit
- * magnifier and the issues ring. */
-export function DebtIcon(props: ComponentPropsWithoutRef<"svg">) {
-  return (
-    <svg
-      aria-hidden="true"
-      focusable="false"
-      width="18"
-      height="18"
-      viewBox="0 0 18 18"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      {...props}
-    >
-      <path
-        d="M3 3h6.5L15 8.5a1.4 1.4 0 010 2L9.5 16a1.4 1.4 0 01-2 0L2 10.5V3.8A.8.8 0 012.8 3H3z"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinejoin="round"
-      />
-      <circle cx="6.5" cy="6.5" r="1.2" fill="currentColor" />
-    </svg>
-  );
-}
-
-/** Release glyph for the sidebar Release entry: a pennant flag on a pole
- * (the release ships), on the same 18px stroke grid as the rail set —
- * distinct from the tag, ring, magnifier, and task checkboxes. */
-export function ReleaseIcon(props: ComponentPropsWithoutRef<"svg">) {
-  return (
-    <svg
-      aria-hidden="true"
-      focusable="false"
-      width="18"
-      height="18"
-      viewBox="0 0 18 18"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      {...props}
-    >
-      <path
-        d="M4 2.5v13"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-      />
-      <path
-        d="M4 3.5h8.8L10.4 6l2.4 2.5H4"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-/** Loading spinner glyph (#230 Phase 0): an open ring on the same 16px
- * grid as the action set. The rotation is CSS (`animate-spin` on the
- * consuming ui/spinner), never baked into the glyph — so this is a
- * static shape the reduced-motion gate can freeze while the label text
- * beside it keeps the information. */
-export function LoaderIcon(props: ComponentPropsWithoutRef<"svg">) {
-  return (
-    <svg
-      aria-hidden="true"
-      focusable="false"
-      width="16"
-      height="16"
-      viewBox="0 0 16 16"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      {...props}
-    >
-      <path
-        d="M8 2.25a5.75 5.75 0 1 1-5.75 5.75"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-      />
+      {value !== null && value > 0 && (
+        /* The data mark. `currentColor` is the trigger's `--foreground`
+           (17.14:1 dark, 18.81:1 light, 17.14:1 high contrast), so a known
+           percentage is a bright arc over the quieter boundary — at 100% the
+           arc closes into a full bright ring. */
+        <circle
+          cx="8"
+          cy="8"
+          r={radius}
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeDasharray={`${(value / 100) * circumference} ${circumference}`}
+          transform="rotate(-90 8 8)"
+        />
+      )}
     </svg>
   );
 }

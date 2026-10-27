@@ -9,11 +9,11 @@
 
    Anatomy stolen from the owner-supplied reference: the single
    rounded container; a field whose placeholder says where typing
-   begins, with a teaching line just under it; the round "+" on the
-   left with the mode/model picker beside it; the send action on the
-   right; a hint row under the box; hairline separators and no fills
-   where a line will do. See the PR body for the two deliberate
-   departures.
+   begins; the read-only workspace line above it (D3); the round "+"
+   on the left with the mode/model picker beside it; the context ring
+   left of the model (D4); the one arrow/square action on the right
+   (D2); hairline separators and no fills where a line will do. See the
+   PR body for the two deliberate departures.
 
    TWO MODES, AND AGENT IS THE ONE THE PANE OPENS ON (R4-02).
    `agentMode` is controlled: the pane owns the value and the
@@ -61,15 +61,19 @@
        re-renders from the prop when the write lands.
    ============================================================ */
 
+import { useEffect, useRef } from "react";
+
 import { formatBytes } from "../lib/format";
 import type { Attachment, AutonomyMode } from "../lib/tauri";
 import type { AutonomyStore } from "../lib/useAutonomy";
 import { useStrings } from "../lib/useLocale";
 import ComposerAutonomyHint from "./ComposerAutonomyHint";
+import ContextRing from "./ContextRing";
 import M3Button from "./M3Button";
 import M3IconButton from "./M3IconButton";
 import M3SegmentedGroup from "./M3SegmentedGroup";
 import Tooltip from "./Tooltip";
+import WorkspaceContextRow from "./WorkspaceContextRow";
 import { Button } from "./ui/button";
 import {
   Popover,
@@ -78,7 +82,14 @@ import {
   PopoverTitle,
   PopoverTrigger,
 } from "./ui/popover";
-import { ArrowUpIcon, ChevronDownIcon, CloseIcon, PaperclipIcon, PlusIcon } from "./icons";
+import {
+  ArrowUpIcon,
+  ChevronDownIcon,
+  CloseIcon,
+  PaperclipIcon,
+  PlusIcon,
+  SquareIcon,
+} from "./icons";
 
 export interface ComposerProps {
   /** Current draft (lifted so the Prompt Library can stage text). */
@@ -116,6 +127,21 @@ export interface ComposerProps {
   /** Provider + model are configured, so the composer can send. */
   ready: boolean;
   onOpenSettings: () => void;
+  /** Conversation the context ring reads (`conversationContextStats`). */
+  conversationId: number;
+  /** Monotonic tick from the pane's run events: the ring refreshes when a
+   *  run advances, never on a timer. */
+  contextRevision: string;
+  /** Active run id, or null when no run is live. Drives the one button's
+   *  arrow → square swap (D2). */
+  liveRunId: number | null;
+  /** Stop the live run. The same button becomes Square while it is set. */
+  onStop: () => void;
+  /** Workspace root for the read-only row above the card (D3). */
+  workspaceRoot?: string | null;
+  /** Focus the field when an empty conversation opens (D1). The effect
+   *  never steals focus from a modal or from another field. */
+  autoFocusField?: boolean;
 }
 
 export default function Composer({
@@ -139,13 +165,35 @@ export default function Composer({
   modelError = null,
   ready,
   onOpenSettings,
+  conversationId,
+  contextRevision,
+  liveRunId,
+  onStop,
+  workspaceRoot = null,
+  autoFocusField = false,
 }: ComposerProps) {
   const { t } = useStrings();
   const busy = sending || agentBusy;
+  const live = liveRunId !== null;
+  const fieldRef = useRef<HTMLTextAreaElement>(null);
+  const autoFocusedRef = useRef(false);
+
+  // D1: an empty conversation is the composer, so the caret belongs in the
+  // field. The guard is the whole contract: only a body/no-focus state (or
+  // this field already) may be claimed, and a modal on top always wins.
+  useEffect(() => {
+    if (!autoFocusField || autoFocusedRef.current) return;
+    if (document.querySelector('[role="dialog"][aria-modal="true"]') !== null) return;
+    const active = document.activeElement;
+    if (active !== null && active !== document.body && active !== fieldRef.current) return;
+    fieldRef.current?.focus();
+    autoFocusedRef.current = true;
+  }, [autoFocusField]);
 
   return (
     <div className="nex-composer">
       <div className="nex-composer-inner">
+        <WorkspaceContextRow root={workspaceRoot} />
         <div className="nex-composer-shell">
           {/* Attachments belong to the CHAT path only. An agent run
               cannot carry them (G-20: `start_agent_run` has no
@@ -184,6 +232,7 @@ export default function Composer({
 
           <div className="nex-composer-field">
             <textarea
+              ref={fieldRef}
               className="nex-composer-input"
               rows={1}
               placeholder={t("conv.messagePlaceholder")}
@@ -193,9 +242,12 @@ export default function Composer({
               onChange={(event) => onDraftChange(event.target.value)}
               onKeyDown={(event) => {
                 // shortcut:composer.send (Shift+Enter = shortcut:composer.newline).
+                // D2: Enter never sends while a run is live — the one button is
+                // a stop in that state, and typing a second message mid-run is
+                // not a send.
                 if (event.key === "Enter" && !event.shiftKey) {
                   event.preventDefault();
-                  onSubmit();
+                  if (!live) onSubmit();
                 }
               }}
             />
@@ -250,9 +302,9 @@ export default function Composer({
 
             <span className="nex-composer-bar-spacer" />
 
-            {/* The trailing group is ONE flex item, not three: in a split
-                pane the row wraps, and three loose items split across the
-                break (the model name on line one, Send alone on line two).
+            {/* The trailing group is ONE flex item, not four: in a split
+                pane the row wraps, and loose items split across the break
+                (the model name on line one, Send alone on line two).
                 Wrapped together, the group moves as a unit and keeps its
                 internal rhythm. */}
             <span className="nex-composer-bar-trailing">
@@ -319,6 +371,13 @@ export default function Composer({
                 </PopoverContent>
               </Popover>
             )}
+
+            {/* The context ring sits left of the model trigger — the
+                reference order is ring → model → Send. It is the composer's
+                only reading of the context window, and it reads `n/a` rather
+                than inventing 0%. Inside the trailing group, so the bar still
+                wraps ring+model+Send as one unit in a split pane. */}
+            <ContextRing conversationId={conversationId} revision={contextRevision} />
 
             {/* Model picker. The trigger shows what the provider
                 store holds; picking a row DISPATCHES and waits —
@@ -403,8 +462,12 @@ export default function Composer({
               </PopoverContent>
             </Popover>
 
-            {/* Send. `disabled:border-transparent` is the ONE state token
-                the composer adds: `ui/button`'s default variant ships the
+            {/* Send. ONE button, three states (D2):
+                  idle / armed   ArrowUp in the light fill
+                  run live       Square, same seat, click stops the run
+                  no draft       disabled (never while a run is live)
+                `disabled:border-transparent` is the ONE state token the
+                composer adds: `ui/button`'s default variant ships the
                 theme's disabled recipe as a full 1px hairline
                 (`disabled:border-border`), and a hairline is exactly what
                 makes an inert Send read as an enabled secondary button.
@@ -418,20 +481,21 @@ export default function Composer({
                 instead of stacking with it —
                 src/components/Composer.test.tsx asserts the merge. */}
             <Button
+              size="icon"
               className="nex-composer-send disabled:border-transparent"
-              disabled={!canSend}
-              aria-busy={busy || undefined}
-              onClick={onSubmit}
+              disabled={!live && !canSend}
+              aria-busy={(!live && busy) || undefined}
+              aria-label={live ? t("conv.stopAria") : t("conv.sendAria")}
+              title={live ? t("conv.stopAria") : t("conv.sendAria")}
+              data-state={live ? "stop" : "send"}
+              onClick={live ? onStop : onSubmit}
             >
-              {busy ? (
-                agentMode ? t("conv.running") : t("conv.sending")
+              {live ? (
+                <SquareIcon size={16} />
               ) : (
-                <>
-                  {t("conv.send")}
-                  <ArrowUpIcon aria-hidden="true" />
-                </>
+                <ArrowUpIcon size={20} className="size-5" />
               )}
-              </Button>
+            </Button>
             </span>
           </div>
         </div>

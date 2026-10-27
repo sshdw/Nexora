@@ -97,6 +97,62 @@
   gap: 8px;
 }
 
+/* ---- Workspace context row (D3) ---------------------------------------
+   One read-only line above the card: folder basename + branch. No control,
+   no chevron, no fill. The long-name contract is middle ellipsis: the head
+   is the part CSS truncates, the tail stays fixed, so the end of a folder
+   name is never what disappears. */
+.nex-composer-context {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  min-width: 0;
+  margin: 0;
+  padding-inline: var(--space-xxs);
+  font-size: var(--type-size-label-medium);
+  color: var(--muted-foreground);
+}
+
+.nex-composer-context-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xxs);
+  min-width: 0;
+}
+
+.nex-composer-context-item svg {
+  flex-shrink: 0;
+}
+
+.nex-composer-context-name {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 42ch;
+}
+
+.nex-composer-context-head {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nex-composer-context-tail {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.nex-composer-context-branch {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 32ch;
+}
+
+.nex-composer-context-sep {
+  color: var(--color-on-surface-faint);
+}
+
 /* ---- The one elevated container -------------------------------------
    `--card` sits 0.03 oklch above the canvas (black theme §
    surfaces), which is the whole reason nothing here leans on a
@@ -471,6 +527,58 @@
   border: 1px solid var(--border);
 }
 
+/* Context-window popover (D4). The ring's numbers are the first line; the
+   provider and model are facts below it. No cache/quota/upgrade rows: this
+   product does not have those numbers. */
+.nex-composer-context-menu {
+  width: 260px;
+  padding: 8px;
+  gap: 6px;
+  border-radius: var(--radius-lg);
+  background: var(--popover);
+  border: 1px solid var(--border);
+}
+
+.nex-composer-context-usage {
+  margin: 0;
+  font-size: var(--type-size-label-large);
+  color: var(--foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+.nex-composer-context-facts {
+  display: grid;
+  gap: var(--space-xxs);
+  margin: 0;
+}
+
+.nex-composer-context-fact {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  font-size: var(--type-size-label-medium);
+}
+
+.nex-composer-context-fact dt {
+  color: var(--muted-foreground);
+}
+
+.nex-composer-context-fact dd {
+  margin: 0;
+  color: var(--foreground);
+  text-align: end;
+  overflow-wrap: anywhere;
+}
+
+/* The ring's ink lives in the icon layer: the track is the boundary token
+   (`--muted-foreground`, ≥5.6:1 on the card in every theme) and the value
+   arc is `currentColor`. The trigger therefore owns only the DATA colour;
+   hover feedback is the ghost button's own background wash. */
+.nex-composer-context-trigger {
+  color: var(--foreground);
+}
+
 /* Model list: the same segmented primitive, stacked. The primitive's
    root is a GRID (`grid-auto-flow: column`, equal `1fr` tracks), so a
    vertical list is expressed in grid terms — `flex-direction: column`
@@ -554,12 +662,14 @@
 
 /* ---- Send: the light fill in the composer ---------------------------
    The one light-fill action: `ui/button`'s default variant on
-   `--primary`. Send-to-Cancel during a run is a P4 item, not
-   faked here.
+   `--primary`. Round 5 (D2) makes it ONE button with three states:
+   ArrowUp when idle, Square while a run is live (the click stops the
+   run), and the disabled treatment only when there is no draft and no
+   live run. The swap is state, not a second control.
 
-   ARMED vs UNARMED (Phase C round 4). The two states resolve to these
-   tokens — there is no third, and the difference is a surface flip, not a
-   tone nudge:
+   ARMED vs UNARMED (Phase C round 4, kept). The two send states resolve to
+   these tokens — there is no third, and the difference is a surface flip,
+   not a tone nudge:
 
      armed    border transparent · surface `--primary` · label
               `--primary-foreground`  (16.08:1 on its own surface)
@@ -576,9 +686,15 @@
    (src/index.css CASCADE). Painting the disabled state here would need
    `!important`, which this repo reserves for the motion gate. This rule
    therefore stays geometry-only, and src/components/Composer.test.tsx
-   asserts both that and the resolved class tokens. */
+   asserts both that and the resolved class tokens.
+
+   The 28px floor is explicit: the visual seat is the button's 32px icon
+   size, but a future utility change must not take the hit area below the
+   brief's minimum. */
 .nex-composer-send {
   flex-shrink: 0;
+  min-width: 28px;
+  min-height: 28px;
 }
 
 /* ---- Attachments -------------------------------------------------------- */
@@ -899,10 +1015,10 @@
   padding: 0 2px 2px;
 }
 
-/* The trailing control group — autonomy, model, send — as ONE flex item.
-   In a split pane the bar wraps; three loose items used to split across the
-   break, leaving the model name stranded on the first line and Send alone on
-   the second. As a group it moves together, and `margin-inline-start: auto`
+/* The trailing control group - context ring, autonomy, model, send - as ONE
+   flex item. In a split pane the bar wraps; loose items used to split across
+   the break, leaving the model name stranded on the first line and Send alone
+   on the second. As a group it moves together, and `margin-inline-start: auto`
    right-aligns it on whichever line it lands on. */
 .nex-composer-bar-trailing {
   display: flex;

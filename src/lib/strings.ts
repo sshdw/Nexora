@@ -217,9 +217,6 @@ const en = {
   "conv.contextTab": "Context",
   "conv.messagesAria": "Messages",
   "conv.loadingMessages": "Loading messages",
-  "conv.emptyTitle": "Ask, plan, or hand off a task",
-  "conv.emptyText":
-    "Describe the outcome — the agent works in the folder you open and shows every step it takes.",
   "conv.authorYou": "You",
   "conv.authorAssistant": "Assistant",
   "conv.originTitle": "Provider and model used for this message",
@@ -238,9 +235,14 @@ const en = {
   "conv.agentToggle": "Agent",
   "conv.agentModeAria": "Agent mode",
   "conv.modelTagTitle": "Model used for new messages",
-  "conv.sending": "Sending…",
-  "conv.running": "Running…",
-  "conv.send": "Send",
+  "conv.sendAria": "Send message",
+  "conv.stopAria": "Stop agent run",
+  "conv.workspaceContextAria": "Workspace context",
+  "conv.contextWindow": "Context window",
+  "conv.contextAria": "Context window: {percent}% used",
+  "conv.contextAriaNa": "Context window: n/a",
+  "conv.contextProvider": "Provider",
+  "conv.contextModel": "Model",
   "conv.hintSend": "Enter to send · Shift+Enter for a new line",
   "conv.hintSetup": "Choose a provider and model in Settings to send messages.",
   "conv.openSettings": "Open Settings",
@@ -338,6 +340,10 @@ const en = {
   "agent.summaryNoChanges": "No changes needed",
   "agent.summaryNothing": "Nothing ran",
   "agent.cancelledNote": "nothing ran after the cancel",
+  "agent.workingSteps": "Working… · {steps}",
+  "agent.doneIn": "Done in {steps}",
+  "agent.durationSeconds": "{n}s",
+  "agent.durationMinutes": "{m}m {s}s",
   "agent.errorWhat": "What happened",
   "agent.errorWhatUnknown": "No cause reported; the run stopped before saying why.",
   "agent.errorSurvived": "What survived",
@@ -365,22 +371,6 @@ const en = {
   "agent.ariaHunk": "hunk header",
   "agent.ariaAddedHeader": "added file header",
   "agent.ariaRemovedHeader": "removed file header",
-  // Folded-run summary (brief §13.33). The template is shared by every
-  // bucket; the noun declension is supplied by the call site so RU gets
-  // one/few/many right without a nine-key catalog.
-  "agent.foldCalls": "{n} {unit}",
-  "agent.foldFiles": "{n} {unit}",
-  "agent.foldCommands": "{n} {unit}",
-  "agent.foldSearches": "{n} {unit}",
-  // Accessible names for the fold button: the visible line is the counts
-  // alone, so the name carries the action the control actually performs
-  // (show vs hide) plus the counts it summarizes.
-  // The visible counts live on the ONE summary line above the run
-  // (#230 P3: "Completion = ONE summary line carrying real results
-  // only — no duplicated COMPLETED blocks"). These two names carry
-  // the ACTION alone, so pressing the control still says what it does.
-  "agent.foldShow": "Show run steps",
-  "agent.foldHide": "Hide run steps",
 
   // ---- context panel --------------------------------------------------------------
   "ctx.group": "Conversation context",
@@ -1788,9 +1778,6 @@ const ru: Record<StringKey, string> = {
   "conv.contextTab": "Контекст",
   "conv.messagesAria": "Сообщения",
   "conv.loadingMessages": "Загрузка сообщений",
-  "conv.emptyTitle": "Спросите, спланируйте или передайте задачу",
-  "conv.emptyText":
-    "Опишите результат — агент работает в открытой папке и показывает каждый шаг.",
   "conv.authorYou": "Вы",
   "conv.authorAssistant": "Ассистент",
   "conv.originTitle": "Провайдер и модель, использованные для этого сообщения",
@@ -1805,9 +1792,14 @@ const ru: Record<StringKey, string> = {
   "conv.agentToggle": "Агент",
   "conv.agentModeAria": "Режим агента",
   "conv.modelTagTitle": "Модель для новых сообщений",
-  "conv.sending": "Отправка…",
-  "conv.running": "Выполнение…",
-  "conv.send": "Отправить",
+  "conv.sendAria": "Отправить сообщение",
+  "conv.stopAria": "Остановить запуск агента",
+  "conv.workspaceContextAria": "Контекст рабочей папки",
+  "conv.contextWindow": "Контекстное окно",
+  "conv.contextAria": "Контекстное окно: использовано {percent}%",
+  "conv.contextAriaNa": "Контекстное окно: н/д",
+  "conv.contextProvider": "Провайдер",
+  "conv.contextModel": "Модель",
   "conv.hintSend": "Enter — отправить · Shift+Enter — новая строка",
   "conv.hintSetup": "Чтобы отправлять сообщения, выберите провайдера и модель в настройках.",
   "conv.openSettings": "Открыть настройки",
@@ -1883,6 +1875,10 @@ const ru: Record<StringKey, string> = {
   "agent.summaryNoChanges": "Изменения не нужны",
   "agent.summaryNothing": "Ничего не выполнялось",
   "agent.cancelledNote": "после отмены ничего не выполнялось",
+  "agent.workingSteps": "Работаю… · {steps}",
+  "agent.doneIn": "Готово за {steps}",
+  "agent.durationSeconds": "{n} с",
+  "agent.durationMinutes": "{m} мин {s} с",
   "agent.errorWhat": "Что произошло",
   "agent.errorWhatUnknown": "Причина не сообщена: запуск остановился, не указав почему.",
   "agent.errorSurvived": "Что сохранилось",
@@ -1910,12 +1906,6 @@ const ru: Record<StringKey, string> = {
   "agent.ariaHunk": "заголовок фрагмента",
   "agent.ariaAddedHeader": "заголовок добавленного файла",
   "agent.ariaRemovedHeader": "заголовок удалённого файла",
-  "agent.foldCalls": "{n} {unit}",
-  "agent.foldFiles": "{n} {unit}",
-  "agent.foldCommands": "{n} {unit}",
-  "agent.foldSearches": "{n} {unit}",
-  "agent.foldShow": "Показать шаги запуска",
-  "agent.foldHide": "Скрыть шаги запуска",
 
   "ctx.group": "Контекст разговора",
   "ctx.loading": "Загрузка контекста",

@@ -138,6 +138,12 @@ function composerProps(overrides: Partial<ComposerProps> = {}): ComposerProps {
     modelError: null,
     ready: true,
     onOpenSettings: vi.fn(),
+    conversationId: 1,
+    contextRevision: "",
+    liveRunId: null,
+    onStop: vi.fn(),
+    workspaceRoot: null,
+    autoFocusField: false,
     ...overrides,
   };
 }
@@ -226,16 +232,24 @@ describe("composer — send flow", () => {
     expect(screen.getByLabelText("Message")).toBeDisabled();
   });
 
-  it("names the busy state on the send button", () => {
-    const { rerender, props } = renderComposer({ sending: true, canSend: true, agentMode: false });
-    expect(screen.getByRole("button", { name: "Sending…" })).toHaveAttribute("aria-busy", "true");
+  it("marks the send button busy without changing its send name", () => {
+    const { rerender, props } = renderComposer({
+      sending: true,
+      canSend: false,
+      agentMode: false,
+    });
+    const send = screen.getByRole("button", { name: "Send message" });
+    expect(send).toBeDisabled();
+    expect(send).toHaveAttribute("aria-busy", "true");
 
     rerender(
       <LocaleProvider>
-        <Composer {...props} sending={false} agentBusy agentMode canSend />
+        <Composer {...props} sending={false} agentBusy canSend={false} agentMode />
       </LocaleProvider>,
     );
-    expect(screen.getByRole("button", { name: "Running…" })).toHaveAttribute("aria-busy", "true");
+    const running = screen.getByRole("button", { name: "Send message" });
+    expect(running).toBeDisabled();
+    expect(running).toHaveAttribute("aria-busy", "true");
   });
 
   it("disables attach while sending or while attachments are loading", () => {
@@ -300,6 +314,104 @@ describe("composer — send flow", () => {
     const list = screen.getByLabelText("Attached files");
     expect(within(list).getByText("spec.pdf")).toBeInTheDocument();
     expect(within(list).getByText("4.1 KB")).toBeInTheDocument();
+  });
+});
+
+describe("composer — the one action (D2 / R5-07)", () => {
+  it("is disabled only when the draft is empty and no run is live", () => {
+    const { rerender, props } = renderComposer({ draft: "", canSend: false });
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+
+    rerender(
+      <LocaleProvider>
+        <Composer {...props} draft="hello" canSend />
+      </LocaleProvider>,
+    );
+    expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
+
+    // A live run makes the same button a stop, and a stop is never disabled
+    // by an empty draft: that is the whole point of the third state.
+    rerender(
+      <LocaleProvider>
+        <Composer {...props} draft="" canSend={false} liveRunId={7} />
+      </LocaleProvider>,
+    );
+    const stop = screen.getByRole("button", { name: "Stop agent run" });
+    expect(stop).toBeEnabled();
+    expect(stop).toHaveAttribute("data-state", "stop");
+    expect(stop.tagName).toBe("BUTTON");
+  });
+
+  it("swaps the arrow for the square, and dispatches stop instead of send", () => {
+    const onStop = vi.fn();
+    const { rerender, props } = renderComposer({
+      draft: "hello",
+      canSend: true,
+      liveRunId: 7,
+      onStop,
+    });
+    const stop = screen.getByRole("button", { name: "Stop agent run" });
+    expect(stop).toHaveAttribute("data-state", "stop");
+    fireEvent.click(stop);
+    expect(onStop).toHaveBeenCalledTimes(1);
+    expect(props.onSubmit).not.toHaveBeenCalled();
+
+    rerender(
+      <LocaleProvider>
+        <Composer {...props} liveRunId={null} onStop={onStop} />
+      </LocaleProvider>,
+    );
+    const send = screen.getByRole("button", { name: "Send message" });
+    expect(send).toHaveAttribute("data-state", "send");
+    fireEvent.click(send);
+    expect(props.onSubmit).toHaveBeenCalledTimes(1);
+    expect(onStop).toHaveBeenCalledTimes(1);
+  });
+
+  it("never sends on Enter while a run is live", () => {
+    const { props } = renderComposer({
+      draft: "next message",
+      canSend: false,
+      liveRunId: 7,
+    });
+    fireEvent.keyDown(screen.getByLabelText("Message"), { key: "Enter" });
+    expect(props.onSubmit).not.toHaveBeenCalled();
+  });
+});
+
+describe("composer — context ring placement (D4)", () => {
+  it("puts the ring before the model trigger, inside the one trailing group", () => {
+    const { container } = renderComposer();
+    const trailing = container.querySelector(".nex-composer-bar-trailing");
+    expect(trailing).not.toBeNull();
+
+    const autonomy = screen.getByRole("button", { name: "Autonomy mode" });
+    const ring = screen.getByRole("button", { name: "Context window: n/a" });
+    const model = screen.getByRole("button", { name: "Agent mode and model" });
+    const send = screen.getByRole("button", { name: "Send message" });
+
+    // The group is ONE flex item: ring, model and Send still wrap together
+    // in a split pane. Autonomy keeps its place at the head of the group.
+    expect([...trailing!.children]).toEqual([autonomy, ring, model, send]);
+
+    // Reference order in the row: ring → model → Send.
+    expect(
+      ring.compareDocumentPosition(model) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      model.compareDocumentPosition(send) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("keeps the same order in Chat mode, where autonomy is absent", () => {
+    const { container } = renderComposer({ agentMode: false });
+    const trailing = container.querySelector(".nex-composer-bar-trailing");
+    expect(trailing).not.toBeNull();
+
+    const ring = screen.getByRole("button", { name: "Context window: n/a" });
+    const model = screen.getByRole("button", { name: "Agent mode and model" });
+    const send = screen.getByRole("button", { name: "Send message" });
+    expect([...trailing!.children]).toEqual([ring, model, send]);
   });
 });
 
@@ -1306,5 +1418,71 @@ describe("shared-class scope — the failure strip stays shared", () => {
     }
     expect(composerSheet).toMatch(/\.nex-composer-attachments \.nex-chip/);
     expect(composerSheet).toMatch(/\.nex-composer \.nex-seg button:focus-visible/);
+  });
+});
+
+// D1: the empty screen IS the composer, so the caret belongs in the field
+// when a conversation opens. The guard is the whole contract — an empty
+// screen must never pull focus out of a dialog or away from wherever the
+// reader already is — and the latch keeps it from re-claiming focus on every
+// later render of the same pane.
+describe("composer — empty-screen focus (D1)", () => {
+  it("focuses the field when nothing else holds focus", () => {
+    renderComposer({ autoFocusField: true });
+    expect(screen.getByLabelText("Message")).toHaveFocus();
+  });
+
+  it("never steals focus from another field", () => {
+    const other = document.createElement("input");
+    other.setAttribute("aria-label", "Elsewhere");
+    document.body.append(other);
+    try {
+      other.focus();
+      renderComposer({ autoFocusField: true });
+      expect(other).toHaveFocus();
+      expect(screen.getByLabelText("Message")).not.toHaveFocus();
+    } finally {
+      other.remove();
+    }
+  });
+
+  it("leaves focus to a modal dialog on top", () => {
+    const modal = document.createElement("div");
+    modal.setAttribute("role", "dialog");
+    modal.setAttribute("aria-modal", "true");
+    document.body.append(modal);
+    try {
+      renderComposer({ autoFocusField: true });
+      expect(screen.getByLabelText("Message")).not.toHaveFocus();
+    } finally {
+      modal.remove();
+    }
+  });
+
+  it("claims focus once per pane, not on every later open flag", () => {
+    const { rerender, props } = renderComposer({ autoFocusField: false });
+    const field = screen.getByLabelText("Message");
+    expect(field).not.toHaveFocus();
+
+    rerender(
+      <LocaleProvider>
+        <Composer {...props} autoFocusField />
+      </LocaleProvider>,
+    );
+    expect(field).toHaveFocus();
+
+    // The reader moved on; flipping the flag again must not yank them back.
+    field.blur();
+    rerender(
+      <LocaleProvider>
+        <Composer {...props} autoFocusField={false} />
+      </LocaleProvider>,
+    );
+    rerender(
+      <LocaleProvider>
+        <Composer {...props} autoFocusField />
+      </LocaleProvider>,
+    );
+    expect(field).not.toHaveFocus();
   });
 });

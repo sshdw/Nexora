@@ -23,11 +23,11 @@
 //! is also what the conversation stage reserves, so the two can never
 //! disagree about how much room the rail takes.
 
-import type { ComponentPropsWithoutRef, ReactNode } from "react";
+import type { ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
 import { useStrings } from "../lib/useLocale";
-import { ActivityIcon, PlusIcon } from "./icons";
+import { ActivityIcon, FolderIcon, PlusIcon, SlidersIcon, StackIcon } from "./icons";
 
 type DockPanel = "workspace" | "sessions" | "activity" | "settings";
 
@@ -40,121 +40,6 @@ export interface DockProps {
   onNew?: () => void;
   /** Opens / closes a dock panel. */
   onPanelToggle?: (panel: DockPanel) => void;
-}
-
-/* ------------------------------------------------------------------ */
-/* Local icons (kept inside Dock per ownership boundary — icons.tsx is
-   not touched). 18 px stroke grid, same style as src/components/icons.tsx. */
-/* ------------------------------------------------------------------ */
-
-function FolderIcon(props: ComponentPropsWithoutRef<"svg">) {
-  return (
-    <svg
-      aria-hidden="true"
-      focusable="false"
-      width="18"
-      height="18"
-      viewBox="0 0 18 18"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      {...props}
-    >
-      <path
-        d="M2 6h6l2 2h8a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h4z"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function SessionsIcon(props: ComponentPropsWithoutRef<"svg">) {
-  return (
-    <svg
-      aria-hidden="true"
-      focusable="false"
-      width="18"
-      height="18"
-      viewBox="0 0 18 18"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      {...props}
-    >
-      <rect
-        x="2"
-        y="3"
-        width="14"
-        height="4"
-        rx="0.5"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        fill="none"
-        strokeLinejoin="round"
-      />
-      <rect
-        x="2"
-        y="6"
-        width="14"
-        height="4"
-        rx="0.5"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        fill="none"
-        strokeLinejoin="round"
-      />
-      <rect
-        x="2"
-        y="9"
-        width="14"
-        height="4"
-        rx="0.5"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        fill="none"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function SlidersIcon(props: ComponentPropsWithoutRef<"svg">) {
-  return (
-    <svg
-      aria-hidden="true"
-      focusable="false"
-      width="18"
-      height="18"
-      viewBox="0 0 18 18"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      {...props}
-    >
-      <line
-        x1="4"
-        y1="6"
-        x2="14"
-        y2="6"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-      />
-      <circle cx="4" cy="6" r="1.2" fill="currentColor" />
-      <circle cx="14" cy="6" r="1.2" fill="currentColor" />
-      <line
-        x1="4"
-        y1="12"
-        x2="12"
-        y2="12"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-      />
-      <circle cx="4" cy="12" r="1.2" fill="currentColor" />
-      <circle cx="12" cy="12" r="1.2" fill="currentColor" />
-    </svg>
-  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -320,7 +205,7 @@ export default function Dock({
           panel="sessions"
           label={t("dock.sessions")}
           tooltip={t("dock.sessions")}
-          icon={<SessionsIcon />}
+          icon={<StackIcon />}
           isActive={isActive("sessions")}
           onClick={() => onPanelToggle?.("sessions")}
         />
