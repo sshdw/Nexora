@@ -233,7 +233,7 @@ describe("sessions panel — rename", () => {
     expect(document.activeElement).toBe(elsewhere);
   });
 
-  it("does not poison the next Enter commit after Escape on another row", async () => {
+  it("does not poison the next Enter commit after Escape on another row", () => {
     // Reviewer repro: Esc on Alpha left `skipBlur` set (unmount fires no
     // blur), so renaming Beta + Enter returned early — 0 store calls.
     const { onRename } = renderPanel();
@@ -248,11 +248,16 @@ describe("sessions panel — rename", () => {
     fireEvent.change(input, { target: { value: "Beta renamed" } });
     fireEvent.keyDown(input, { key: "Enter" });
 
-    await waitFor(() => expect(onRename).toHaveBeenCalledTimes(1));
+    // SYNCHRONOUS probe, before any timer runs. On f6e8e33 the guard
+    // swallowed this Enter and left the input mounted; the pending
+    // return-focus timer later blur-committed it, which is exactly how a
+    // waitFor-based assertion passed on the old code.
+    expect(screen.queryByRole("textbox", { name: "Rename conversation" })).toBeNull();
+    expect(onRename).toHaveBeenCalledTimes(1);
     expect(onRename).toHaveBeenCalledWith(2, "Beta renamed");
   });
 
-  it("does not poison the next Enter commit after an empty-title cancel", async () => {
+  it("does not poison the next Enter commit after an empty-title cancel", () => {
     const { onRename } = renderPanel();
     fireEvent.click(action("Alpha thread", "Rename conversation"));
     const empty = screen.getByRole("textbox", { name: "Rename conversation" });
@@ -265,11 +270,13 @@ describe("sessions panel — rename", () => {
     fireEvent.change(input, { target: { value: "Beta renamed" } });
     fireEvent.keyDown(input, { key: "Enter" });
 
-    await waitFor(() => expect(onRename).toHaveBeenCalledTimes(1));
+    // Same synchronous contract: no waitFor, no timer advance.
+    expect(screen.queryByRole("textbox", { name: "Rename conversation" })).toBeNull();
+    expect(onRename).toHaveBeenCalledTimes(1);
     expect(onRename).toHaveBeenCalledWith(2, "Beta renamed");
   });
 
-  it("does not poison the next Enter commit after an unchanged-title cancel", async () => {
+  it("does not poison the next Enter commit after an unchanged-title cancel", () => {
     const { onRename } = renderPanel();
     fireEvent.click(action("Alpha thread", "Rename conversation"));
     const unchanged = screen.getByRole("textbox", { name: "Rename conversation" });
@@ -281,7 +288,9 @@ describe("sessions panel — rename", () => {
     fireEvent.change(input, { target: { value: "Beta renamed" } });
     fireEvent.keyDown(input, { key: "Enter" });
 
-    await waitFor(() => expect(onRename).toHaveBeenCalledTimes(1));
+    // Same synchronous contract: no waitFor, no timer advance.
+    expect(screen.queryByRole("textbox", { name: "Rename conversation" })).toBeNull();
+    expect(onRename).toHaveBeenCalledTimes(1);
     expect(onRename).toHaveBeenCalledWith(2, "Beta renamed");
   });
 });
