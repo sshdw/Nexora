@@ -1,3 +1,5 @@
+> SUPERSEDED 2026-10-19 by `NEXORA-FULL-PLAN.md`. Kept for history. Not authoritative.
+
 # NIGHT-SCOPE 2.0 — Draft (docs only, no implementation)
 
 > Branch: `task/night-scope` (from updated `origin/main`). This file is the ONLY change.

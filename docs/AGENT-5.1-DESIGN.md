@@ -1,3 +1,4 @@
+> SUPERSEDED 2026-10-19 by `NEXORA-2.0-CHANGELOG.md`. Kept for history. Not authoritative.
 # Agent Run Streaming Bridge + Steps Accordion UI — Design (Task 5.1.0)
 
 Status: **design only — no production code, no migrations, no IPC/UI

@@ -17,10 +17,18 @@
 //! into the composer after an offline/network failure — without this hook
 //! owning composer state. Restoration is purely frontend state: it persists
 //! nothing and never touches conversation history (DATABASE.md §7.2).
+//!
+//! One `listen` on `"agent-run-event"`: an agent run persists its final
+//! assistant message before emitting the terminal `finished` frame, so that
+//! frame triggers a `reload()` of the active conversation. Rehydration stays
+//! the source of truth — the persisted list replaces the live one, never
+//! appended locally.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 
 import {
+  type AgentRunEventPayload,
   type CommandError,
   type Message,
   conversationHistory,
@@ -37,8 +45,10 @@ export interface ConversationStore {
   error: CommandError | null;
   /** Whether a send request is in flight. */
   sending: boolean;
-  /** Refresh the message list from the backend. */
-  reload: () => Promise<void>;
+  /** Refresh the message list from the backend. `silent` refreshes in place:
+   * no loading flip and the rendered messages stay while the fetch is in
+   * flight — used when a finished agent run persists its final message. */
+  reload: (options?: { silent?: boolean }) => Promise<void>;
   /** Send `content` with the selected provider/model and refresh history.
    * `attachmentIds` names the draft attachments to link to this message.
    * Resolves with the classified error of a failed send (`null` on success). */
@@ -62,31 +72,39 @@ export function useConversation(conversationId: number | null): ConversationStor
   // messages when B is selected (rapid conversation switching).
   const activeConversationRef = useRef<number | null>(null);
 
-  const reload = useCallback(async (): Promise<void> => {
-    if (conversationId === null) {
-      setMessages([]);
-      return;
-    }
-    const requestedId = conversationId;
-    setLoading(true);
-    setError(null);
-    try {
-      const data = await conversationHistory(requestedId);
-      // Only the history belonging to the currently selected conversation may
-      // update visible state.
-      if (activeConversationRef.current !== requestedId) return;
-      // Replace, never append: reopening/refreshing cannot duplicate messages.
-      setMessages(data);
-    } catch (e) {
-      if (activeConversationRef.current !== requestedId) return;
-      setMessages([]);
-      setError(toCommandError(e));
-    } finally {
-      if (activeConversationRef.current === requestedId) {
-        setLoading(false);
+  const reload = useCallback(
+    async (options?: { silent?: boolean }): Promise<void> => {
+      const silent = options?.silent === true;
+      if (conversationId === null) {
+        setMessages([]);
+        return;
       }
-    }
-  }, [conversationId]);
+      const requestedId = conversationId;
+      // A background refresh must not blank a populated thread: keep the
+      // rendered messages and leave `loading` false while it is in flight.
+      if (!silent) setLoading(true);
+      setError(null);
+      try {
+        const data = await conversationHistory(requestedId);
+        // Only the history belonging to the currently selected conversation may
+        // update visible state.
+        if (activeConversationRef.current !== requestedId) return;
+        // Replace, never append: reopening/refreshing cannot duplicate messages.
+        setMessages(data);
+      } catch (e) {
+        if (activeConversationRef.current !== requestedId) return;
+        // A failed background refresh keeps the rendered thread; the error is
+        // still surfaced. A full reload keeps its existing blank-and-error.
+        if (!silent) setMessages([]);
+        setError(toCommandError(e));
+      } finally {
+        if (!silent && activeConversationRef.current === requestedId) {
+          setLoading(false);
+        }
+      }
+    },
+    [conversationId],
+  );
 
   // Load history whenever the conversation is (re)selected. The ref is updated
   // synchronously here, before the async reload can complete, so any in-flight
@@ -99,6 +117,37 @@ export function useConversation(conversationId: number | null): ConversationStor
       reload();
     }
   }, [conversationId, reload]);
+
+  // A run's terminal frame means its final assistant message is persisted:
+  // re-read the active conversation's history so it appears without a
+  // conversation switch. Foreign-conversation frames are ignored by the same
+  // stale guard `useAgentRun` applies to its run list; `reload()` replaces
+  // the list rather than appending to it.
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+
+    const setup = async (): Promise<void> => {
+      try {
+        const stop = await listen<AgentRunEventPayload>("agent-run-event", (event) => {
+          const payload = event.payload;
+          if (payload.type !== "finished") return;
+          if (payload.event.conversation_id !== activeConversationRef.current) return;
+          void reload({ silent: true });
+        });
+        if (cancelled) stop();
+        else unlisten = stop;
+      } catch {
+        // Listen failed; the thread still rehydrates on conversation switch.
+      }
+    };
+
+    void setup();
+    return () => {
+      cancelled = true;
+      if (unlisten) unlisten();
+    };
+  }, [reload]);
 
   const send = useCallback(
     async (

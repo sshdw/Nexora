@@ -1,15 +1,15 @@
 [package]
 name = "nexora-core"
 version = "0.1.0"
-description = "Shared, interface-free Nexora core: stable error taxonomy + exit-code mapping, three-manifest version parity, allow-listed config keys and validation"
+description = "Shared, interface-free Nexora core: error/exit taxonomy, version parity, allow-listed config, and the SQLite/migration/repository storage foundation"
 license = "MIT"
 authors = ["Nexora Team"]
 edition = "2021"
 
 [dependencies]
-# Phase 1 extracts only rules that are already expressed as data (version
-# strings, key lists, enum taxonomies). JSON parsing is the single capability
-# the desktop's manifest parity check needs; it is not a UI/CLI framework.
+# Phase 1 extracted the data-shaped rules (version strings, key lists, enum
+# taxonomies); phase 2 (#161) adds the storage foundation below. Serde is the
+# stable wire shape, not a UI/CLI framework.
 #
 # HARD RULE (brief §2.3/§2.4): this crate must never depend on Tauri,
 # React, Ratatui or Clap. Those are shell concerns; the desktop adapter
@@ -17,6 +17,13 @@ edition = "2021"
 # never the reverse. `cargo tree` is the enforcement in CI.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Storage foundation (issue #161): the SAME SQLite build the desktop links
+# (`src-tauri/Cargo.toml`). The database bootstrap and migrations are shared,
+# not reimplemented per shell.
+rusqlite = { version = "0.32", features = ["bundled"] }
+# Migration/leadership diagnostics. Not a shell dependency: `log` is a facade
+# with no runtime.
+log = "0.4"
 
 [lints.rust]
 unsafe_code = "forbid"

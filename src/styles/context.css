@@ -4,27 +4,61 @@
    components.css / conversation.css. All values via tokens.
    ============================================================ */
 
+/* The view switch is CHROME, not a second header. It used to paint its own
+   full-bleed band with a bottom seam directly under the pane header's band,
+   so the stage opened with two stacked strips and 89 px of chrome before a
+   single line of content. It now sits on the canvas with no fill and no
+   seam of its own — the header above already draws the boundary — and keeps
+   only the height its control needs. */
 .nex-context-tabs {
   display: flex;
   align-items: center;
-  gap: var(--nex-sys-space-xs);
-  padding: var(--nex-sys-space-xs) var(--nex-sys-space-md);
-  background: var(--nex-sys-color-surface-container);
-  border-bottom: 1px solid var(--nex-sys-color-outline-variant);
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-md) var(--space-xxs);
+  background: transparent;
+  border-bottom: none;
+  /* Full-bleed opt-out of the conversation stage's Dock inset
+     (conversation.css, `.nex-main-conversation`). This row is the stage's
+     own chrome: its surface band and hairline span the pane edge to edge,
+     and it sits above the rail's vertically-centred band, so nothing here
+     is behind the Dock. Cancelling the stage padding keeps the row and its
+     content exactly where they were before the inset — the reserve is for
+     the reading column, not for chrome. */
+  margin-inline: calc(-1 * var(--dock-width));
 }
 
 .nex-context {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: var(--nex-sys-space-lg) var(--nex-sys-space-xl);
+  padding: var(--space-lg) var(--space-xl);
+}
+
+/* ---- Scroll viewport reaches the window edge (R4-01, round 4) ----
+   Same fault as the thread (conversation.css): this is a scroll container
+   inside the stage's Dock inset, so its scrollbar painted at
+   x = width − 60 instead of the window edge. The rail reserves room for
+   content, never for paint, and a scrollbar is paint.
+
+   The mechanism is the thread's, one term longer: the negative inline
+   margin cancels the stage reserve so the border box spans the window,
+   and the width it buys comes back as inline padding so the CONTENT box
+   stays exactly the stage content box. This panel already spent 24px of
+   that padding on its own inset (`--space-xl` above), so the padding here
+   is the reserve PLUS that inset — the arithmetic the thread does not
+   need, because the thread's inline padding was 0. Padding, not a
+   transparent border: a scrollbar is painted in the padding box, so a
+   border would leave it at width − 60 (measured; see the thread rule). */
+.nex-main-conversation > .nex-context {
+  margin-inline: calc(-1 * var(--dock-width));
+  padding-inline: calc(var(--dock-width) + var(--space-xl));
 }
 
 .nex-context-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  column-gap: var(--nex-sys-space-xl);
-  row-gap: var(--nex-sys-space-md);
+  column-gap: var(--space-xl);
+  row-gap: var(--space-md);
   margin: 0;
 }
 
@@ -33,23 +67,23 @@
 }
 
 .nex-context-label {
-  font-size: var(--nex-sys-type-size-body-small);
-  color: var(--nex-sys-color-on-surface-tertiary);
+  font-size: var(--type-size-body-small);
+  color: var(--color-on-surface-tertiary);
 }
 
 .nex-context-value {
-  margin: var(--nex-sys-space-xxs) 0 0;
-  font-size: var(--nex-sys-type-size-body-large);
-  font-weight: var(--nex-sys-type-weight-semibold);
-  color: var(--nex-sys-color-on-surface);
+  margin: var(--space-xxs) 0 0;
+  font-size: var(--type-size-body-large);
+  font-weight: var(--type-weight-semibold);
+  color: var(--color-on-surface);
   overflow-wrap: anywhere;
 }
 
 .nex-context-section-title {
-  margin: var(--nex-sys-space-xl) 0 var(--nex-sys-space-sm);
-  font-size: var(--nex-sys-type-size-body-small);
-  font-weight: var(--nex-sys-type-weight-medium);
-  color: var(--nex-sys-color-on-surface-tertiary);
+  margin: var(--space-xl) 0 var(--space-sm);
+  font-size: var(--type-size-body-small);
+  font-weight: var(--type-weight-medium);
+  color: var(--color-on-surface-tertiary);
 }
 
 /* Breakdown + files sections: semantic grouping wrappers. Children
@@ -66,57 +100,146 @@
   display: flex;
   height: 8px;
   overflow: hidden;
-  border-radius: var(--nex-sys-shape-full);
-  background: var(--nex-sys-color-surface-container-high);
+  border-radius: var(--shape-full);
+  background: var(--color-surface-container-high);
 }
 
-.nex-context-seg {
-  height: 100%;
-}
+/* ---- The breakdown legend is CATEGORICAL, not state. -------------------
+   THE DEFECT (verified #230 P3): these four segments were painted as if
+   they were state signals — user amber (`--nex-sys-color-primary`, which
+   tokens.css:504 resolves to #a9824a dark / #e3c07c light), assistant
+   green (`--nex-sys-color-success`), tools amber AGAIN
+   (`--nex-sys-color-tertiary`, tokens.css:517 — the same #a9824a), other
+   a faint grey. THEME §1 reserves green/red/yellow for genuine state
+   signals; a token-budget split of "who spent the tokens" is decoration
+   wearing a state's clothes. It is the same defect class P2 fixed in the
+   tab tick: an alias whose NAME reads like a role (`primary`) resolving
+   to a hue.
 
+   THE FIX, and why it is this one — two candidates were measured:
+
+     (a) FOUR ACHROMATIC TONE STEPS off the ink token. Rejected on
+         arithmetic, not taste: this panel's own track leaves about 13:1
+         of total luminance range, so four steps that each clear the 3:1
+         non-text floor against their NEIGHBOUR need roughly 27:1. They
+         cannot all fit. Measured on the real dark surface the best
+         spread available (alpha 1 / .72 / .48 / .26 over #27262e) gives
+         step-to-step 1.74 / 1.81 / 1.89 — visible, but a
+         high-contrast or grayscale reader cannot reliably say where
+         "assistant" ends and "tool calls" begins. A chart whose segments
+         you cannot find the edges of is worse than no chart.
+
+     (b) TONE FOR RANK + A STRUCTURAL EDGE BETWEEN SEGMENTS. Chosen.
+         The ink steps still separate the four shares by lightness — the
+         one channel a monochrome system allows — but adjacency is
+         settled by a 1px track-coloured gap, which is the same "borders
+         only where tone fails" rule THEME §2 already states for surfaces.
+         The edge is unambiguous at any contrast and in grayscale, so the
+         tone ladder becomes reinforcement rather than the load-bearer.
+
+   WHY NOT DROP THE ENCODING ENTIRELY? The bar is a proportion chart
+   with four segments of different widths. One tone for all four leaves a
+   reader unable to attribute any share to any category, which is the
+   chart's only job.
+
+   NOT COLOUR-ONLY (SYSTEM §8): colour is not what tells you what a
+   segment is. Each legend entry carries its text label AND its
+   percentage; the bar carries a full-sentence accessible name naming all
+   four shares; and the edge above is a line, not a hue. A reader in
+   grayscale, in high contrast, or with no colour vision at all reads
+   the same four numbers from the same text.
+
+   The ink ladder, measured against this panel's own
+   `surface-container-high` track (sRGB compositing, the method
+   scripts/check-contrast.py uses):
+     dark  #27262e → 13.0:1 · 7.5:1 · 4.1:1 · 2.2:1
+     light #ffffff → 14.0:1 · 5.7:1 · 2.8:1 · 1.7:1
+   The lower rungs sit under 3:1 on purpose and are NOT relied on: they
+   are the "smaller share" end of a rank order, and the edge — not the
+   tone — is what separates one bucket from the next. High contrast
+   below re-spreads the ladder so even the last rung is legible on its
+   own. */
 .nex-context-seg-user {
-  background: var(--nex-sys-color-primary);
+  background: color-mix(in oklch, var(--color-on-surface) 100%, transparent);
 }
 
 .nex-context-seg-assistant {
-  background: var(--nex-sys-color-success);
+  background: color-mix(in oklch, var(--color-on-surface) 72%, transparent);
 }
 
 .nex-context-seg-tools {
-  background: var(--nex-sys-color-tertiary);
+  background: color-mix(in oklch, var(--color-on-surface) 48%, transparent);
 }
 
 .nex-context-seg-other {
-  background: var(--nex-sys-color-on-surface-faint);
+  background: color-mix(in oklch, var(--color-on-surface) 26%, transparent);
+}
+
+/* The structural edge. One track-coloured pixel between neighbours, on
+   the segment's own leading edge so it survives `overflow: hidden` on the
+   bar. Box-shadow rather than a border: the segments are percentage-width
+   flex children, and a border would eat into the share each one reports.
+   The last child keeps its trailing edge so the bar closes cleanly. */
+.nex-context-seg {
+  height: 100%;
+  box-shadow: inset 1px 0 0 0 var(--color-surface-container-high);
+}
+.nex-context-seg:last-child {
+  box-shadow: inset -1px 0 0 0 var(--color-surface-container-high);
+}
+
+/* High contrast: re-spread the ladder rather than scaling the dark one —
+   HC's surfaces and its 3:1 floor are different arithmetic, and the dark
+   ladder's lower rungs were never meant to clear it. The ink itself steps
+   up (HC's on-surface is #faf7f1, not the dark #edeae7) and the track is
+   HC's own, so every rung is legible on its own here. Keyed off the theme
+   ATTRIBUTE — the mechanism tokens.css uses for HC — never a media query,
+   and never `!important`: these are the last declarations on the same
+   specificity, so they win the tie-break by order. */
+:root[data-theme="high-contrast"] .nex-context-seg-user,
+.nex-theme-high-contrast .nex-context-seg-user {
+  background: color-mix(in oklch, var(--color-on-surface) 100%, transparent);
+}
+:root[data-theme="high-contrast"] .nex-context-seg-assistant,
+.nex-theme-high-contrast .nex-context-seg-assistant {
+  background: color-mix(in oklch, var(--color-on-surface) 78%, transparent);
+}
+:root[data-theme="high-contrast"] .nex-context-seg-tools,
+.nex-theme-high-contrast .nex-context-seg-tools {
+  background: color-mix(in oklch, var(--color-on-surface) 58%, transparent);
+}
+:root[data-theme="high-contrast"] .nex-context-seg-other,
+.nex-theme-high-contrast .nex-context-seg-other {
+  background: color-mix(in oklch, var(--color-on-surface) 40%, transparent);
 }
 
 .nex-context-legend {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--nex-sys-space-md);
-  margin: var(--nex-sys-space-sm) 0 0;
+  gap: var(--space-md);
+  margin: var(--space-sm) 0 0;
   padding: 0;
   list-style: none;
-  font-size: var(--nex-sys-type-size-body-small);
-  color: var(--nex-sys-color-on-surface-variant);
+  font-size: var(--type-size-body-small);
+  color: var(--color-on-surface-variant);
 }
 
 .nex-context-legend li {
   display: flex;
   align-items: center;
-  gap: var(--nex-sys-space-xxs);
+  gap: var(--space-xxs);
 }
 
 .nex-context-dot {
   width: 8px;
   height: 8px;
-  border-radius: var(--nex-sys-shape-full);
+  border-radius: var(--shape-full);
 }
 
 .nex-context-file-list {
   display: flex;
   flex-direction: column;
-  gap: var(--nex-sys-space-md);
+  gap: var(--space-md);
   margin: 0;
   padding: 0;
   list-style: none;
@@ -132,5 +255,79 @@
 }
 
 .nex-context-file-header {
-  margin-bottom: var(--nex-sys-space-xs);
+  margin-bottom: var(--space-xs);
+}
+
+/* ---- Budget hairline (MAP row 20, progress.md) --------------------------
+   MAP row 20 lives in THIS sheet, not in conversation.css: the budget is
+   a Context-panel surface, and P3 is where the panel's structure is
+   decided. The block below is the hairline itself; the slider, the value
+   and the reading keep the shadcn-token rules they already had in
+   composer.css (untouched — P4 owns that sheet and those rules still
+   apply), and this rule only ADDS the proportion bar between the control
+   and its reading.
+
+   `progress.md`'s shape, minus its labels: a track, a fill, no text
+   inside. A hairline (2px, THEME §4) rather than the 8px categorical bar
+   above — this is ONE quantity against ONE budget, not four shares of a
+   total, so it must not borrow the four-tone language.
+
+   NO MOTION, deliberately. A fill that grows on its own is fake progress
+   (SYSTEM §8): this width is a persisted number, so it changes exactly
+   when the number changes and never otherwise. The width transition below
+   is the ONLY animation in this block and it resolves to its end frame
+   under the global motion.css gate; it exists so a slider drag reads as
+   one continuous movement rather than a jump per frame. */
+.nex-context-meter {
+  position: relative;
+  block-size: 2px;
+  inline-size: 100%;
+  border-radius: var(--shape-full);
+  background: var(--color-surface-container-high);
+  overflow: hidden;
+}
+
+.nex-context-meter-fill {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  /* The mono theme's ONE fill role: the light fill (src/index.css
+     `--primary`), a light bar on the dark canvas and a dark bar on paper.
+     NOT `--nex-sys-color-primary`, which is still the legacy amber
+     (#a9824a dark / #e3c07c light) — the defect this panel's legend just
+     had. Never `--nex-sys-color-accent-indicator`: that aliases the same
+     amber, and the P2 tab-tick fix is the precedent for staying off it. */
+  background: var(--color-primary);
+  transition: width var(--motion-duration-fast) var(--motion-easing-standard);
+}
+
+/* Over budget: the ONE state tone in this sheet's budget block, matching
+   the `is-over` reading below it (composer.css) and the promise
+   `ctx.budgetHint` makes. `--destructive` is a state role — the mono
+   theme reserves hue for exactly this — and the text beside it says the
+   same thing in words, so the verdict is never colour-only. */
+.nex-context-meter.is-over .nex-context-meter-fill {
+  background: var(--destructive);
+}
+
+/* No persisted token usage: an empty track, not a zero-width fill that
+   reads as "measured, and the answer is nothing".
+   The fill stays MOUNTED at zero width rather than being removed — the
+   inline `width` the component computed remains the single source of the
+   fill's size, and the state is carried by the track's own class. */
+.nex-context-meter.is-empty .nex-context-meter-fill {
+  inline-size: 0;
+}
+
+/* Reduced motion (SYSTEM §7: every animated thing needs a hand-written
+   branch collapsing to the static end state, plus a test). The global
+   motion.css gate would already collapse this duration — the end state is
+   the correct width, so the gate's answer is the right answer — but the
+   branch drops the declaration outright rather than leaving an
+   interpolation that gets scheduled and then cut to 0.01ms. One fewer
+   thing to run at all. */
+@media (prefers-reduced-motion: reduce) {
+  .nex-context-meter-fill {
+    transition: none;
+  }
 }

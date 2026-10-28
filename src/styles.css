@@ -1,27 +1,34 @@
 /* ============================================================
    Nexora Application Shell & Global Layout — 0.3.0 Expressive
-   Visual Reset. Fixed sidebar + main content. Shell planes are
+   Visual Reset. Single-column main content; the edge Dock is a
+   fixed overlay, not a shell column. Shell planes are
    painted from the canvas→elevated→nested→floating tier tokens
    (brief §16): the app frame and the agent workspace share the
-   canvas, the navigation rail steps away from it, and only true
+   canvas, the Dock floats above it, and only true
    overlays reach the floating tier. Borders survive only as the
    shell seam (brief §19). Flat at rest — no shadow on any shell
    plane. Consumes tokens.css exclusively; reusable primitives
    live in components.css.
    ============================================================ */
 
-/* ---- App shell: fixed sidebar + main content ---- */
+/* ---- App shell: single column (Dock is a fixed overlay) ----
+   The navigation rail is gone: App.tsx renders the Dock as a fixed
+   overlay outside this grid, so `.nex-main` is the only in-flow child
+   and a single track is the honest structure. A second column would
+   auto-place `.nex-main` into it and leave an empty `1fr` beside it.
+   The legacy `.nex-app.nex-zen` override in tabs.css now restates this
+   same column and is kept as a harmless no-op. */
 .nex-app {
   display: grid;
-  grid-template-columns: var(--nex-sys-layout-sidebar-width) 1fr;
+  grid-template-columns: 1fr;
   width: 100vw;
   height: 100vh;
-  background: var(--nex-sys-color-surface-canvas);
-  color: var(--nex-sys-color-on-surface);
-  font-family: var(--nex-sys-type-family);
-  font-size: var(--nex-sys-type-size-body-medium);
-  font-weight: var(--nex-sys-type-weight-regular);
-  line-height: var(--nex-sys-type-line-height-normal);
+  background: var(--color-surface-canvas);
+  color: var(--color-on-surface);
+  font-family: var(--type-family);
+  font-size: var(--type-size-body-medium);
+  font-weight: var(--type-weight-regular);
+  line-height: var(--type-line-height-normal);
   overflow: hidden;
 }
 
@@ -29,69 +36,43 @@
    keyboard focus (a11y acceptance: full keyboard operability, visible
    focus). It is a floating layer (fixed, dialog z-step), so it earns
    the floating tier, a floating-tier radius, and the one shadow it is
-   allowed: a small control, not a pill (brief §18/§19). Reduced
-   motion: the global gate collapses the slide to an instant
-   appearance. ---- */
+   allowed while focused: a small control, not a pill (brief §18/§19).
+   The shadow belongs to the focused state only — an always-on shadow
+   would bleed 1px into the viewport at rest, because the chip itself
+   sits fully offscreen. Reduced motion: the global gate collapses the
+   slide and the shadow fade to an instant appearance. ---- */
 .nex-skip-link {
   position: fixed;
-  top: var(--nex-sys-space-sm);
-  left: var(--nex-sys-space-sm);
+  top: var(--space-sm);
+  left: var(--space-sm);
   z-index: var(--nex-sys-z-dialog);
-  padding: var(--nex-sys-space-xs) var(--nex-sys-space-md);
-  border-radius: var(--nex-sys-shape-small);
-  background: var(--nex-sys-color-primary);
-  color: var(--nex-sys-color-on-primary);
-  font-size: var(--nex-sys-type-size-label-large);
-  font-weight: var(--nex-sys-type-weight-emphasized);
+  padding: var(--space-xs) var(--space-md);
+  border-radius: var(--shape-small);
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+  font-size: var(--type-size-label-large);
+  font-weight: var(--type-weight-emphasized);
   text-decoration: none;
-  box-shadow: var(--nex-sys-elevation-level1);
-  transform: translateY(calc(-100% - var(--nex-sys-space-sm)));
-  transition: transform var(--nex-sys-motion-duration-fast)
-    var(--nex-sys-motion-easing-standard);
+  transform: translateY(calc(-100% - var(--space-sm)));
+  transition:
+    transform var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard),
+    box-shadow var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard);
 }
 .nex-skip-link:focus-visible {
   transform: translateY(0);
+  box-shadow: var(--nex-sys-elevation-level1);
 }
 
-/* ---- Sidebar: expanded-rail navigation surface (the elevated tier —
-   one tone step off the canvas so chrome recedes from the content the
-   rail points at; the hairline marks only the shell seam) ---- */
-.nex-sidebar {
-  width: var(--nex-sys-layout-sidebar-width);
-  min-width: var(--nex-sys-layout-sidebar-width);
-  max-width: var(--nex-sys-layout-sidebar-width);
-  background: var(--nex-sys-color-surface-elevated);
-  border-right: 1px solid var(--nex-sys-color-shell-seam);
-  display: flex;
-  flex-direction: column;
-  padding: var(--nex-sys-space-sm) var(--nex-sys-space-xs);
-  gap: var(--nex-sys-space-xs);
-  overflow: hidden;
-}
-
-.nex-sidebar-head {
-  display: flex;
-  flex-direction: column;
-  gap: var(--nex-sys-space-sm);
-  padding: var(--nex-sys-space-xs) var(--nex-sys-space-xs) 0;
-}
-
-/* Brand row: mark + wordmark (identity anchor, top-left). */
-.nex-brand {
-  display: flex;
-  align-items: center;
-  gap: var(--nex-sys-space-xs);
-  padding: var(--nex-sys-space-xxs) 0;
-}
+/* The brand mark: an asset hook, not a paint class — theme.css inverts
+   this image on the light theme through the same name, and NexoraMark's
+   prop surface is fixed. Size now comes from the migrated sidebar's own
+   utility (`size-5`); only the light-theme inversion stays here.
+   #230 Phase 1. */
 .nex-logo {
   width: 22px;
   height: auto;
-}
-.nex-brand-name {
-  font-size: var(--nex-sys-type-size-body-large);
-  font-weight: var(--nex-sys-type-weight-semibold);
-  letter-spacing: 0.01em;
-  color: var(--nex-sys-color-on-surface);
 }
 
 /* ---- Main content area: the canvas itself. It shares the app
@@ -100,7 +81,7 @@
    away from it (brief §16). ---- */
 .nex-main {
   flex: 1 1 auto;
-  background: var(--nex-sys-color-surface-canvas);
+  background: var(--color-surface-canvas);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -113,23 +94,23 @@
 .nex-main-header {
   display: flex;
   align-items: center;
-  gap: var(--nex-sys-space-sm);
-  min-height: var(--nex-sys-layout-header-height);
-  padding: var(--nex-sys-space-xs) var(--nex-sys-space-md);
-  background: var(--nex-sys-color-surface-elevated);
-  border-bottom: 1px solid var(--nex-sys-color-shell-seam);
+  gap: var(--space-sm);
+  min-height: var(--layout-header-height);
+  padding: var(--space-xs) var(--space-md);
+  background: var(--color-surface-elevated);
+  border-bottom: 1px solid var(--color-shell-seam);
 }
 
 .nex-main-title {
   display: flex;
   align-items: center;
-  gap: var(--nex-sys-space-xs);
+  gap: var(--space-xs);
   min-width: 0;
   flex: 1 1 auto;
-  font-size: var(--nex-sys-type-size-title-large);
-  font-weight: var(--nex-sys-type-weight-semibold);
+  font-size: var(--type-size-title-large);
+  font-weight: var(--type-weight-semibold);
   letter-spacing: -0.01em;
-  color: var(--nex-sys-color-on-surface);
+  color: var(--color-on-surface);
 }
 
 .nex-main-title-text {
@@ -150,20 +131,13 @@
    boundary a tone step under-specifies, not a shell seam). */
 .nex-main-title-badge {
   flex-shrink: 0;
-  font-size: var(--nex-sys-type-size-label-medium);
-  font-weight: var(--nex-sys-type-weight-medium);
-  color: var(--nex-sys-color-on-surface-variant);
-  background: var(--nex-sys-color-surface-nested);
-  border: 1px solid var(--nex-sys-color-outline-variant);
-  padding: var(--nex-sys-space-xxxs) 10px;
-  border-radius: var(--nex-sys-shape-full);
-}
-
-.nex-main-header-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--nex-sys-space-xxs);
-  flex-shrink: 0;
+  font-size: var(--type-size-label-medium);
+  font-weight: var(--type-weight-medium);
+  color: var(--color-on-surface-variant);
+  background: var(--color-surface-nested);
+  border: 1px solid var(--color-outline-variant);
+  padding: var(--space-xxxs) 10px;
+  border-radius: var(--shape-full);
 }
 
 .nex-main-body {
@@ -177,19 +151,19 @@
 /* ---- Typography utilities ----
    Size stops map to M3 style roles per the matrix in tokens.css
    (label-small … headline-small). */
-.nex-text-xs { font-size: var(--nex-sys-type-size-label-small); }
-.nex-text-sm { font-size: var(--nex-sys-type-size-body-small); }
-.nex-text-base { font-size: var(--nex-sys-type-size-body-medium); }
-.nex-text-md { font-size: var(--nex-sys-type-size-body-large); }
-.nex-text-lg { font-size: var(--nex-sys-type-size-title-medium); }
+.nex-text-xs { font-size: var(--type-size-label-small); }
+.nex-text-sm { font-size: var(--type-size-body-small); }
+.nex-text-base { font-size: var(--type-size-body-medium); }
+.nex-text-md { font-size: var(--type-size-body-large); }
+.nex-text-lg { font-size: var(--type-size-title-medium); }
 
-.nex-font-regular { font-weight: var(--nex-sys-type-weight-regular); }
-.nex-font-medium { font-weight: var(--nex-sys-type-weight-medium); }
-.nex-font-semibold { font-weight: var(--nex-sys-type-weight-semibold); }
+.nex-font-regular { font-weight: var(--type-weight-regular); }
+.nex-font-medium { font-weight: var(--type-weight-medium); }
+.nex-font-semibold { font-weight: var(--type-weight-semibold); }
 
-.nex-text-primary { color: var(--nex-sys-color-on-surface); }
-.nex-text-secondary { color: var(--nex-sys-color-on-surface-variant); }
-.nex-text-tertiary { color: var(--nex-sys-color-on-surface-tertiary); }
+.nex-text-primary { color: var(--color-on-surface); }
+.nex-text-secondary { color: var(--color-on-surface-variant); }
+.nex-text-tertiary { color: var(--color-on-surface-tertiary); }
 
 .nex-flex-center { display: flex; align-items: center; justify-content: center; }
 
@@ -204,16 +178,16 @@
 .nex-roots {
   display: flex;
   flex-direction: column;
-  gap: var(--nex-sys-space-xxs);
+  gap: var(--space-xxs);
 }
 .nex-roots-panel {
   display: flex;
   flex-direction: column;
-  gap: var(--nex-sys-space-xs);
-  padding: var(--nex-sys-space-xs);
-  background: var(--nex-sys-color-surface-nested);
-  border: 1px solid var(--nex-sys-color-outline-variant);
-  border-radius: var(--nex-sys-shape-medium);
+  gap: var(--space-xs);
+  padding: var(--space-xs);
+  background: var(--color-surface-nested);
+  border: 1px solid var(--color-outline-variant);
+  border-radius: var(--shape-medium);
 }
 .nex-roots-list {
   list-style: none;
@@ -221,48 +195,48 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--nex-sys-space-xxs);
+  gap: var(--space-xxs);
 }
 .nex-roots-row {
   display: flex;
   flex-direction: column;
-  gap: var(--nex-sys-space-xxs);
-  padding: var(--nex-sys-space-xs);
-  border-radius: var(--nex-sys-shape-small);
+  gap: var(--space-xxs);
+  padding: var(--space-xs);
+  border-radius: var(--shape-small);
 }
 .nex-roots-path {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: var(--nex-sys-type-size-body-small);
-  color: var(--nex-sys-color-on-surface);
+  font-size: var(--type-size-body-small);
+  color: var(--color-on-surface);
 }
 .nex-roots-actions {
   display: flex;
-  gap: var(--nex-sys-space-xs);
+  gap: var(--space-xs);
   align-items: center;
 }
 /* Root-kind badge: a compact status pill — a full radius the geometry
    earns (brief §18). */
 .nex-roots-badge {
-  font-size: var(--nex-sys-type-size-label-small);
-  font-weight: var(--nex-sys-type-weight-medium);
-  color: var(--nex-sys-color-on-secondary-container);
-  background: var(--nex-sys-color-secondary-container);
-  border-radius: var(--nex-sys-shape-full);
-  padding: 0 var(--nex-sys-space-xs);
+  font-size: var(--type-size-label-small);
+  font-weight: var(--type-weight-medium);
+  color: var(--color-on-secondary-container);
+  background: var(--color-secondary-container);
+  border-radius: var(--shape-full);
+  padding: 0 var(--space-xs);
 }
 /* Root actions: small-radius controls on the neutral text tier. The
    accent is reserved for active/focus (brief §16), so at rest these
    read as quiet text, not as four amber buttons. */
 .nex-roots-btn {
-  font-size: var(--nex-sys-type-size-label-medium);
-  font-weight: var(--nex-sys-type-weight-medium);
-  color: var(--nex-sys-color-on-surface-variant);
+  font-size: var(--type-size-label-medium);
+  font-weight: var(--type-weight-medium);
+  color: var(--color-on-surface-variant);
   background: transparent;
   border: 1px solid transparent;
-  border-radius: var(--nex-sys-shape-small);
-  padding: var(--nex-sys-space-xxs) var(--nex-sys-space-sm);
+  border-radius: var(--shape-small);
+  padding: var(--space-xxs) var(--space-sm);
   cursor: pointer;
   transition: background-color var(--nex-sys-motion-duration-fast)
       var(--nex-sys-motion-easing-standard),
@@ -271,21 +245,21 @@
       var(--nex-sys-motion-easing-standard);
 }
 .nex-roots-btn:hover:not(:disabled) {
-  background: var(--nex-sys-state-hover);
-  color: var(--nex-sys-color-on-surface);
+  background: var(--state-hover);
+  color: var(--color-on-surface);
 }
 .nex-roots-btn:focus-visible {
-  outline-offset: var(--nex-sys-focus-ring-offset-inset);
+  outline-offset: var(--focus-ring-offset-inset);
 }
 .nex-roots-btn:disabled {
-  opacity: var(--nex-sys-state-disabled-opacity);
+  opacity: var(--state-disabled-opacity);
   cursor: default;
 }
 .nex-roots-btn.is-danger {
-  color: var(--nex-sys-color-error);
+  color: var(--color-error);
 }
 .nex-roots-btn.is-danger:hover:not(:disabled) {
-  background: var(--nex-sys-color-error-container);
+  background: var(--color-error-container);
   border-color: transparent;
 }
 .nex-roots-btn.is-add {
@@ -293,6 +267,6 @@
 }
 .nex-roots-note {
   margin: 0;
-  font-size: var(--nex-sys-type-size-body-small);
-  color: var(--nex-sys-color-on-surface-variant);
+  font-size: var(--type-size-body-small);
+  color: var(--color-on-surface-variant);
 }

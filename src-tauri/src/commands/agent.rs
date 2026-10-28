@@ -560,6 +560,36 @@ pub(crate) fn inspect_run(
     }
 }
 
+/// Read-only live run snapshot for one conversation (G-15): the persisted run
+/// state plus the in-memory park (`paused` / `awaiting_approval` /
+/// `awaiting_budget`) and its pending approval, which `agent_runs.status`
+/// cannot express. This is the approval-recovery contract: after a tab
+/// switch, `WebView` reload, or pane remount the frontend asks this instead of
+/// inferring "waiting for approval" from `status == "running"`.
+///
+/// `None` means "no run to report" (no active run and no persisted row) — the
+/// caller renders no approval affordance rather than inventing one.
+///
+/// # Errors
+///
+/// Returns a classified [`CommandError`] for persistence failures
+/// (`Database`, via the shared mapping). Secret-free by construction: the only
+/// content field is the parked call's `arguments`, already streamed to the
+/// frontend in `approval_requested`.
+#[tauri::command]
+pub(crate) fn inspect_run_live(
+    conversation_id: i64,
+    registry: State<'_, ManagedRegistry>,
+    db: State<'_, Database>,
+) -> Result<Option<crate::application::agent::inspect::LiveRunState>, CommandError> {
+    crate::application::agent::inspect::live_run_state(
+        db.inner(),
+        registry.inner().as_ref(),
+        conversation_id,
+    )
+    .map_err(CommandError::from)
+}
+
 /// Read-only spend dashboard: per-run spend (steps, micro-USD, budget caps,
 /// % used) plus aggregate totals across every persisted run, from the
 /// existing `agent_runs` counters only (no new tables, no new collection).
@@ -1053,8 +1083,10 @@ mod tests {
     #[test]
     fn ipc_args_are_camel_case() {
         let calls = extract_invoke_arg_literals(TAURI_TS);
-        // Non-vacuous: the parser must see the 27 non-agent call sites plus
-        // the 11 agent ones with argument objects (36 + add/remove).
+        // Non-vacuous: `src/lib/tauri.ts` has far more than 38 `invoke(...)`
+        // call sites across every feature module, so clearing this bound
+        // proves the parser actually walked the file (a broken parser yields
+        // zero and would otherwise pass silently).
         assert!(
             calls.len() >= 38,
             "naming-parity parser found only {} invoke calls in src/lib/tauri.ts; \
@@ -1077,7 +1109,7 @@ mod tests {
     /// no missing key.
     #[test]
     fn agent_command_arg_keys_match_rust_params() {
-        const AGENT_COMMANDS: [(&str, &[&str]); 16] = [
+        const AGENT_COMMANDS: [(&str, &[&str]); 17] = [
             (
                 "start_agent_run",
                 &["conversationId", "content", "provider", "model"],
@@ -1092,6 +1124,7 @@ mod tests {
             ("list_agent_steps", &["runId"]),
             ("get_agent_step_observation", &["stepId"]),
             ("inspect_run", &["runId"]),
+            ("inspect_run_live", &["conversationId"]),
             ("spend_dashboard", &["runId"]),
             ("activity_feed", &["limit"]),
             ("agent_set_mode", &["runId", "mode"]),

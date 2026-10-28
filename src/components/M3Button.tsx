@@ -17,8 +17,10 @@
 //!                 NEXORA ADAPTATION: destructive never idles filled)
 //!
 //! `expressive` is retained for API compatibility: the press
-//! feedback it used to add is now the base button's own active
-//! translate, so no extra class is emitted and no caller changes.
+//! feedback it used to add is now the base button's own global
+//! press (scale(0.985), 90ms in / instant out — NEXORA-THEME.md
+//! §6, held in the vendored `ui/button` base string), so no extra
+//! class is emitted and no caller changes.
 //!
 //! Loading disables the control, sets `aria-busy` and shows the
 //! inline spinner beside the label — the label keeps the
@@ -80,8 +82,9 @@ export default function M3Button({
   const busy = disabled || loading;
   // `expressive` is accepted for API compatibility and deliberately has
   // no effect: the press feedback it used to add is now the base
-  // button's own active translate. Referenced here so the linter does
-  // not flag the destructured prop, and never forwarded to the DOM.
+  // button's own global press scale (see the module note). Referenced
+  // here so the linter does not flag the destructured prop, and never
+  // forwarded to the DOM.
   void expressive;
   if (import.meta.env.DEV && filled && variant !== "destructive") {
     console.warn(

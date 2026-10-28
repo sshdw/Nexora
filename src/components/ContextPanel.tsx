@@ -1,20 +1,38 @@
-//! Read-only Context panel: per-conversation token/cost breakdown stats +
-//! changed-files diff list (no agent behavior change), plus the
-//! context-budget slider (#220).
+//! Context panel — a MODE, not furniture (MAP row 20).
 //!
-//! Presentational over the existing IPC wrappers: stats come from the new
+//! Presentational over the existing IPC wrappers: stats come from the
 //! `conversation_context_stats` command; diffs are grouped client-side from
 //! the already-persisted `write_file` step observations (`list_agent_runs` /
 //! `list_agent_steps`). Diff rendering reuses the existing `DiffView`
 //! classifier from `AgentRunSteps` — no new diff engine.
 //!
-//! The ONE control in this panel is the budget slider, and its value is real
-//! rather than decorative: it is persisted (src/lib/useContextBudget.ts) and
-//! the reading under it — tokens used against tokens budgeted — is computed
-//! from that same number, so moving the thumb changes what the panel says.
-//! It is built on the Radix primitive through shadcn's recipe
-//! (src/components/ui/slider.tsx) and paints only shadcn semantic tokens;
-//! nothing else in this panel was restyled.
+//! #230 P3 — three changes, all contract-driven:
+//!
+//!  1. BUDGET HAIRLINE + READOUT (MAP row 20, `progress.md`). The panel's
+//!     one control is the budget slider, and its value is real rather than
+//!     decorative: it is persisted (src/lib/useContextBudget.ts) and the
+//!     reading under it — tokens used against tokens budgeted — is computed
+//!     from that same number, so moving the thumb changes what the panel
+//!     says. The hairline is that reading drawn as a proportion: a filled
+//!     track at the used share, never a generic spinner and never a bar that
+//!     animates on its own. Its accessible name carries the two numbers, so
+//!     the proportion is never visual-only.
+//!
+//!  2. COST ON HOVER (SYSTEM §8 "cost on hover … details without permanent
+//!     clutter"). Total cost was a permanent label/value cell among sixteen
+//!     others. It is now the budget readout's `title` — one hover away, not
+//!     a permanent row — and the SAME sentence is in the hairline's
+//!     accessible name, so the detail is never hover-only for a keyboard or
+//!     screen-reader user. The slider's own description is left exactly as
+//!     it was: it describes the budget, and the cost is not part of what the
+//!     budget IS.
+//!
+//!  3. THE BREAKDOWN LEGEND IS NO LONGER HUE (THEME §1). The four segments
+//!     are CATEGORICAL data (who spent the tokens), not state, so they may
+//!     not be painted as if they were. They now read as four tone steps off
+//!     the achromatic ink ladder (see context.css), which survives grayscale
+//!     and high-contrast, and each legend entry keeps its text label and its
+//!     percentage — the meaning never rides on colour alone (SYSTEM §8).
 
 import { useEffect, useId, useState } from "react";
 
@@ -202,6 +220,45 @@ export default function ContextPanel({ conversationId }: { conversationId: numbe
   // `>` and not `>=`: landing exactly ON the budget is using it all,
   // not exceeding it. No token data means no verdict either way.
   const overBudget = budgetUsed !== null && budgetUsed > budget;
+  // The hairline's fill share, clamped to the track: a bar never draws
+  // past its own end, and the moment there is no reading to show it stays
+  // EMPTY rather than animating or guessing a value (SYSTEM §8, no fake
+  // progress). Over budget it pins at 100% and the readout below — not the
+  // bar — carries the over-budget verdict.
+  const budgetShare =
+    budgetUsed === null || budget <= 0 ? 0 : Math.min(100, (budgetUsed / budget) * 100);
+
+  // A ROW IS A FACT, and a row of "n/a" is not one. The token counters only
+  // exist once a provider has reported usage (`has_token_data`); before that
+  // they used to occupy five cells saying nothing, which pushed the two rows
+  // that DO carry information off the fold. Absent data is now absent rows
+  // (D-02: "Не показывать cost/changes/test results, если данных нет"), and
+  // the budget readout below already explains the absence in words.
+  const tokenRows: Array<{ label: string; value: string; title?: string }> =
+    stats.has_token_data
+      ? [
+          {
+            label: t("ctx.labelTotalTokens"),
+            value: formatTokens(stats.total_tokens, true),
+          },
+          {
+            label: t("ctx.labelInputTokens"),
+            value: formatTokens(stats.input_tokens, true),
+          },
+          {
+            label: t("ctx.labelOutputTokens"),
+            value: formatTokens(stats.output_tokens, true),
+          },
+          {
+            label: t("ctx.labelReasoningTokens"),
+            value: formatTokens(stats.reasoning_tokens, true),
+          },
+          {
+            label: t("ctx.labelCacheTokens"),
+            value: `${formatCount(stats.cache_read_tokens)} / ${formatCount(stats.cache_write_tokens)}`,
+          },
+        ]
+      : [];
 
   const rows: Array<{ label: string; value: string; title?: string }> = [
     { label: t("ctx.labelSession"), value: stats.title },
@@ -212,40 +269,20 @@ export default function ContextPanel({ conversationId }: { conversationId: numbe
     },
     { label: t("ctx.labelModel"), value: stats.model ?? t("common.na") },
     { label: t("ctx.labelContextLimit"), value: formatCount(stats.context_limit) },
-    { label: t("ctx.labelTotalTokens"), value: formatTokens(stats.total_tokens, stats.has_token_data) },
     {
       label: t("ctx.labelUsage"),
       value: `${stats.usage_percent.toFixed(0)}%`,
     },
-    {
-      label: t("ctx.labelInputTokens"),
-      value: formatTokens(stats.input_tokens, stats.has_token_data),
-      title: stats.has_token_data ? undefined : t("ctx.noTokenData"),
-    },
-    {
-      label: t("ctx.labelOutputTokens"),
-      value: formatTokens(stats.output_tokens, stats.has_token_data),
-      title: stats.has_token_data ? undefined : t("ctx.noTokenData"),
-    },
-    {
-      label: t("ctx.labelReasoningTokens"),
-      value: formatTokens(stats.reasoning_tokens, stats.has_token_data),
-      title: stats.has_token_data ? undefined : t("ctx.noTokenData"),
-    },
-    {
-      label: t("ctx.labelCacheTokens"),
-      value:
-        stats.has_token_data
-          ? `${formatCount(stats.cache_read_tokens)} / ${formatCount(stats.cache_write_tokens)}`
-          : t("common.na"),
-      title: stats.has_token_data ? undefined : t("ctx.noTokenData"),
-    },
+    ...tokenRows,
     { label: t("ctx.labelUserMessages"), value: formatCount(stats.user_message_count) },
     { label: t("ctx.labelAssistantMessages"), value: formatCount(stats.assistant_message_count) },
-    { label: t("ctx.labelTotalCost"), value: formatCost(stats.total_cost_micro_usd) },
     { label: t("ctx.labelSessionCreated"), value: formatDateTime(stats.created_at) },
     { label: t("ctx.labelLastActivity"), value: formatDateTime(stats.updated_at) },
   ];
+  // Cost rides on the budget readout and the hairline's accessible name,
+  // not on a sixteenth permanent row (SYSTEM §8: "Cost on hover … details
+  // without permanent clutter", and never hover-ONLY).
+  const cost = formatCost(stats.total_cost_micro_usd);
 
   return (
     <div className="nex-context nex-view-enter" role="group" aria-label={t("ctx.group")}>
@@ -330,15 +367,49 @@ export default function ContextPanel({ conversationId }: { conversationId: numbe
             {t("ctx.budgetTokens", { n: formatCount(budget) })}
           </span>
         </div>
+        {/* The budget HAIRLINE (MAP row 20, `progress.md`): the readout
+            above drawn as a proportion. One filled track, no labels
+            inside it, no self-animation — it is a static measurement of a
+            persisted number that only changes when the number changes.
+            The numbers live in the accessible name AND in the line below,
+            so the proportion is never visual-only. */}
+        <div
+          className={
+            "nex-context-meter" +
+            (overBudget ? " is-over" : "") +
+            (budgetUsed === null ? " is-empty" : "")
+          }
+          role="img"
+          /* Both numbers AND the cost, in the element's accessible name —
+             which is what keeps cost-on-hover from being hover-ONLY
+             (SYSTEM §8). The visible `title` on the reading below is the
+             mouse affordance for the same sentence. */
+          aria-label={
+            (budgetUsed === null
+              ? t("ctx.noTokenData")
+              : t("ctx.budgetMeterAria", {
+                  used: formatCount(budgetUsed),
+                  budget: formatCount(budget),
+                })) +
+            ". " +
+            t("ctx.totalCostTitle", { cost })
+          }
+        >
+          <span className="nex-context-meter-fill" style={{ width: `${budgetShare}%` }} />
+        </div>
         {/* The live reading. Over budget it is announced as a status
             (the value changed under a control that was already there)
             and it takes the destructive tone — which is what the hint
-            below promises, so the hint has to be true or be deleted. */}
+            below promises, so the hint has to be true or be deleted.
+            Cost rides on this line's `title` (MAP row 20, "cost-on-hover")
+            and in the hairline's accessible name above, so the detail is
+            never hover-only. */}
         <p
           className={
             "nex-context-budget-reading" + (overBudget ? " is-over" : "")
           }
           role={overBudget ? "status" : undefined}
+          title={t("ctx.totalCostTitle", { cost })}
         >
           {budgetUsed === null
             ? t("ctx.noTokenData")

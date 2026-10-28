@@ -8,18 +8,41 @@
    and the one light fill (send). Everything else recedes.
 
    Anatomy stolen from the owner-supplied reference: the single
-   rounded container; a placeholder that TEACHES the shortcuts
-   inline; the round "+" on the left with the mode/model picker
-   beside it; the send action on the right; a hint row under
-   the box; hairline separators and no fills where a line will
-   do. See the PR body for the two deliberate departures.
+   rounded container; a field whose placeholder says where typing
+   begins; the read-only workspace line above it (D3); the round "+"
+   on the left with the mode/model picker beside it; the context ring
+   left of the model (D4); the one arrow/square action on the right
+   (D2); hairline separators and no fills where a line will do. See the
+   PR body for the two deliberate departures.
 
-   THE PLACEHOLDER. The textarea keeps its real `placeholder`
-   attribute (the no-JS and AT fallback), and a sibling
-   `aria-hidden` line paints over it with the same surface
-   colour, so what a user reads is the teaching line while the
-   accessible name stays exactly what it was: `conv.messageAria`
-   on the field itself.
+   TWO MODES, AND AGENT IS THE ONE THE PANE OPENS ON (R4-02).
+   `agentMode` is controlled: the pane owns the value and the
+   composer only dispatches `onAgentModeChange`. There is no
+   second default here — one owner, one truth.
+
+   NO ATTACHMENTS IN AGENT MODE (R4-02 / G-20). `start_agent_run`
+   cannot carry attachments yet, so while Agent is the mode the
+   "+" control, the attached-file chips and the "+ attach files"
+   teaching chip are ABSENT — not disabled, not greyed. A disabled
+   control promises "later"; only an absent one promises nothing.
+   The draft itself survives the switch untouched: switching modes
+   is not a send, and a send is the only thing that clears it.
+
+   THE PLACEHOLDER IS THE AFFORDANCE. The textarea keeps its real
+   `placeholder` attribute and it is what a user SEES: the field has no
+   chrome of its own (the shell is the control), so the placeholder is
+   the only thing that says where typing begins. Because it carries that
+   whole job it is a sentence that says what to do
+   (`conv.messagePlaceholder`), not a bare noun: "Message" read as a form
+   label above the caret rather than as an invitation (visual QA, Phase C
+   round 4). The accessible name stays the short noun `conv.messageAria`
+   — a name names the control; repeating the instruction as the name
+   makes AT announce the same sentence twice. The teaching line is a
+   quiet row BELOW the editable line, in flow — it used to be an opaque
+   `--card` overlay sitting on the placeholder's own line, which left an
+   empty composer looking like a stack of chrome with no field at all
+   (visual QA, Phase C round 2). Nothing is painted over the
+   placeholder.
 
    THE SHORTCUT CHIPS ARE NOT INVENTED. `palette.toggle` and
    `help.show-shortcuts` are read out of src/lib/shortcuts.ts —
@@ -38,17 +61,19 @@
        re-renders from the prop when the write lands.
    ============================================================ */
 
+import { useEffect, useRef } from "react";
+
 import { formatBytes } from "../lib/format";
-import { shortcutKeys } from "../lib/shortcuts";
 import type { Attachment, AutonomyMode } from "../lib/tauri";
-import type { StringKey } from "../lib/strings";
 import type { AutonomyStore } from "../lib/useAutonomy";
 import { useStrings } from "../lib/useLocale";
 import ComposerAutonomyHint from "./ComposerAutonomyHint";
+import ContextRing from "./ContextRing";
 import M3Button from "./M3Button";
 import M3IconButton from "./M3IconButton";
 import M3SegmentedGroup from "./M3SegmentedGroup";
 import Tooltip from "./Tooltip";
+import WorkspaceContextRow from "./WorkspaceContextRow";
 import { Button } from "./ui/button";
 import {
   Popover,
@@ -57,25 +82,14 @@ import {
   PopoverTitle,
   PopoverTrigger,
 } from "./ui/popover";
-import { ArrowUpIcon, ChevronDownIcon, CloseIcon, PaperclipIcon, PlusIcon } from "./icons";
-
-/** One chip in the teaching line. `shortcut` chips take their key
- *  label from the registry at render time; `glyph` chips are a
- *  literal on-screen control, never a key. */
-type TeachChip =
-  | { kind: "glyph"; glyph: string; label: StringKey }
-  | { kind: "shortcut"; id: string; label: StringKey };
-
-/** What the empty field teaches. Deliberately NOT the Enter /
- *  Shift+Enter pair: those are the composer hint row's job and
- *  are already stated there (conv.hintSend). What a placeholder
- *  is for — and what the reference uses it for — is the things
- *  you cannot see from the field you are looking at. */
-const TEACH_CHIPS: readonly TeachChip[] = [
-  { kind: "glyph", glyph: "+", label: "conv.chipAttach" },
-  { kind: "shortcut", id: "palette.toggle", label: "conv.chipPalette" },
-  { kind: "shortcut", id: "help.show-shortcuts", label: "conv.chipShortcuts" },
-];
+import {
+  ArrowUpIcon,
+  ChevronDownIcon,
+  CloseIcon,
+  PaperclipIcon,
+  PlusIcon,
+  SquareIcon,
+} from "./icons";
 
 export interface ComposerProps {
   /** Current draft (lifted so the Prompt Library can stage text). */
@@ -113,6 +127,21 @@ export interface ComposerProps {
   /** Provider + model are configured, so the composer can send. */
   ready: boolean;
   onOpenSettings: () => void;
+  /** Conversation the context ring reads (`conversationContextStats`). */
+  conversationId: number;
+  /** Monotonic tick from the pane's run events: the ring refreshes when a
+   *  run advances, never on a timer. */
+  contextRevision: string;
+  /** Active run id, or null when no run is live. Drives the one button's
+   *  arrow → square swap (D2). */
+  liveRunId: number | null;
+  /** Stop the live run. The same button becomes Square while it is set. */
+  onStop: () => void;
+  /** Workspace root for the read-only row above the card (D3). */
+  workspaceRoot?: string | null;
+  /** Focus the field when an empty conversation opens (D1). The effect
+   *  never steals focus from a modal or from another field. */
+  autoFocusField?: boolean;
 }
 
 export default function Composer({
@@ -136,47 +165,43 @@ export default function Composer({
   modelError = null,
   ready,
   onOpenSettings,
+  conversationId,
+  contextRevision,
+  liveRunId,
+  onStop,
+  workspaceRoot = null,
+  autoFocusField = false,
 }: ComposerProps) {
   const { t } = useStrings();
   const busy = sending || agentBusy;
+  const live = liveRunId !== null;
+  const fieldRef = useRef<HTMLTextAreaElement>(null);
+  const autoFocusedRef = useRef(false);
+
+  // D1: an empty conversation is the composer, so the caret belongs in the
+  // field. The guard is the whole contract: only a body/no-focus state (or
+  // this field already) may be claimed, and a modal on top always wins.
+  useEffect(() => {
+    if (!autoFocusField || autoFocusedRef.current) return;
+    if (document.querySelector('[role="dialog"][aria-modal="true"]') !== null) return;
+    const active = document.activeElement;
+    if (active !== null && active !== document.body && active !== fieldRef.current) return;
+    fieldRef.current?.focus();
+    autoFocusedRef.current = true;
+  }, [autoFocusField]);
 
   return (
     <div className="nex-composer">
       <div className="nex-composer-inner">
-        {agentMode && (
-          <div className="nex-agent-autonomy" role="group" aria-label={t("conv.autonomyAria")}>
-            <span className="nex-agent-autonomy-label">{t("conv.autonomyLabel")}</span>
-            <M3SegmentedGroup
-              className="nex-composer-autonomy"
-              label={t("conv.autonomyAria")}
-              semantics="radio"
-              value={autonomy.mode}
-              onChange={(mode) => onAutonomyChange(mode)}
-              options={[
-                { value: "supervised", label: t("conv.autonomySupervised") },
-                {
-                  value: "semi_autonomous",
-                  label: t("conv.autonomySemi"),
-                  ariaLabel: t("conv.autonomySemiAria"),
-                },
-                { value: "full_autonomous", label: t("conv.autonomyFull") },
-              ]}
-            />
-            <ComposerAutonomyHint
-              mode={autonomy.mode}
-              text={
-                autonomy.mode === "supervised"
-                  ? t("conv.autonomyExplainSupervised")
-                  : autonomy.mode === "semi_autonomous"
-                    ? t("conv.autonomyExplainSemi")
-                    : t("conv.autonomyExplainFull")
-              }
-            />
-          </div>
-        )}
-
+        <WorkspaceContextRow root={workspaceRoot} />
         <div className="nex-composer-shell">
-          {attachments.length > 0 && (
+          {/* Attachments belong to the CHAT path only. An agent run
+              cannot carry them (G-20: `start_agent_run` has no
+              attachment parameter), so neither the draft chips nor
+              the attach control render in Agent mode: showing a file
+              the run would silently drop is a promise the backend
+              cannot keep. */}
+          {!agentMode && attachments.length > 0 && (
             <ul className="nex-composer-attachments" aria-label={t("conv.attachedFiles")}>
               {attachments.map((attachment) => (
                 <li key={attachment.id} className="nex-chip">
@@ -207,6 +232,7 @@ export default function Composer({
 
           <div className="nex-composer-field">
             <textarea
+              ref={fieldRef}
               className="nex-composer-input"
               rows={1}
               placeholder={t("conv.messagePlaceholder")}
@@ -216,42 +242,35 @@ export default function Composer({
               onChange={(event) => onDraftChange(event.target.value)}
               onKeyDown={(event) => {
                 // shortcut:composer.send (Shift+Enter = shortcut:composer.newline).
+                // D2: Enter never sends while a run is live — the one button is
+                // a stop in that state, and typing a second message mid-run is
+                // not a send.
                 if (event.key === "Enter" && !event.shiftKey) {
                   event.preventDefault();
-                  onSubmit();
+                  if (!live) onSubmit();
                 }
               }}
             />
-            {draft === "" && (
-              <span className="nex-composer-teach" aria-hidden="true">
-                {TEACH_CHIPS.map((chip, index) => {
-                  const keys = chip.kind === "shortcut" ? shortcutKeys(chip.id) : [];
-                  return (
-                    <span key={chip.kind === "shortcut" ? chip.id : chip.glyph}>
-                      {index > 0 && <span className="nex-composer-teach-sep"> · </span>}
-                      <kbd>{chip.kind === "glyph" ? chip.glyph : (keys[0] ?? "")}</kbd>{" "}
-                      {t(chip.label)}
-                    </span>
-                  );
-                })}
-              </span>
-            )}
           </div>
 
           <div className="nex-composer-bar">
-            <Tooltip label={t("conv.addFile")}>
-              <Button
-                variant="ghost"
-                size="icon-lg"
-                className="nex-composer-attach rounded-full"
-                aria-label={t("conv.addFile")}
-                title={t("conv.addFile")}
-                disabled={busy || attachmentsBusy}
-                onClick={onPickFiles}
-              >
-                <PlusIcon />
-              </Button>
-            </Tooltip>
+            {/* Chat only: absent (not disabled) in Agent mode — see the
+                attachment note at the top of this file. */}
+            {!agentMode && (
+              <Tooltip label={t("conv.addFile")}>
+                <Button
+                  variant="ghost"
+                  size="icon-lg"
+                  className="nex-composer-attach rounded-full"
+                  aria-label={t("conv.addFile")}
+                  title={t("conv.addFile")}
+                  disabled={busy || attachmentsBusy}
+                  onClick={onPickFiles}
+                >
+                  <PlusIcon />
+                </Button>
+              </Tooltip>
+            )}
 
             {/* The two primary modes, as pills: same segmented
                 primitive and the same radio semantics as every
@@ -283,12 +302,104 @@ export default function Composer({
 
             <span className="nex-composer-bar-spacer" />
 
+            {/* The trailing group is ONE flex item, not four: in a split
+                pane the row wraps, and loose items split across the break
+                (the model name on line one, Send alone on line two).
+                Wrapped together, the group moves as a unit and keeps its
+                internal rhythm. */}
+            <span className="nex-composer-bar-trailing">
+
+            {/* Autonomy is a MODE, not a row of pills under the field (D-03
+                rejects the always-open autonomy row; O-12 puts it in
+                "Settings + compact run meta"). The trigger names the live
+                mode in one word and the three choices plus their explainer
+                live behind it, so the composer keeps one control row and the
+                sentence that explains a mode is only on screen while the
+                user is choosing one. */}
+            {agentMode && (
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="nex-composer-autonomy-trigger"
+                    aria-label={t("conv.autonomyAria")}
+                    title={t("conv.autonomyLabel")}
+                  >
+                    <span className="nex-composer-autonomy-dot" aria-hidden="true" />
+                    <span className="nex-composer-autonomy-name">
+                      {autonomy.mode === "supervised"
+                        ? t("conv.autonomySupervised")
+                        : autonomy.mode === "semi_autonomous"
+                          ? t("conv.autonomySemi")
+                          : t("conv.autonomyFull")}
+                    </span>
+                    <ChevronDownIcon />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent align="end" side="top" sideOffset={8} className="nex-composer-autonomy-menu">
+                  <PopoverHeader>
+                    <PopoverTitle>{t("conv.autonomyLabel")}</PopoverTitle>
+                  </PopoverHeader>
+                  <M3SegmentedGroup
+                    className="nex-composer-autonomy"
+                    label={t("conv.autonomyAria")}
+                    semantics="radio"
+                    indicator={false}
+                    value={autonomy.mode}
+                    onChange={(mode) => onAutonomyChange(mode)}
+                    options={[
+                      { value: "supervised", label: t("conv.autonomySupervised") },
+                      {
+                        value: "semi_autonomous",
+                        label: t("conv.autonomySemi"),
+                        ariaLabel: t("conv.autonomySemiAria"),
+                      },
+                      { value: "full_autonomous", label: t("conv.autonomyFull") },
+                    ]}
+                  />
+                  <ComposerAutonomyHint
+                    mode={autonomy.mode}
+                    text={
+                      autonomy.mode === "supervised"
+                        ? t("conv.autonomyExplainSupervised")
+                        : autonomy.mode === "semi_autonomous"
+                          ? t("conv.autonomyExplainSemi")
+                          : t("conv.autonomyExplainFull")
+                    }
+                  />
+                </PopoverContent>
+              </Popover>
+            )}
+
+            {/* The context ring sits left of the model trigger — the
+                reference order is ring → model → Send. It is the composer's
+                only reading of the context window, and it reads `n/a` rather
+                than inventing 0%. Inside the trailing group, so the bar still
+                wraps ring+model+Send as one unit in a split pane. */}
+            <ContextRing conversationId={conversationId} revision={contextRevision} />
+
             {/* Model picker. The trigger shows what the provider
                 store holds; picking a row DISPATCHES and waits —
                 the label changes when the store says so. No
                 tooltip on it: the trigger already carries the
                 model in text, and a bubble repeating it is noise
-                (the icon-only attach beside it does get one). */}
+                (the icon-only attach beside it does get one).
+
+                THE FULL ID IS THE TITLE (Phase C round 4). The
+                visible label renders in full for every id in the
+                catalog (`.nex-composer-model-name` is capped at
+                50ch, the longest one), but the trigger can still
+                shrink on a card narrower than the bar's budget —
+                and a mid-token ellipsis on `…-super-…` hides the
+                variant, which is the part that names the model.
+                `title` is therefore the full id whenever one is
+                selected: it is the hover read AND the accessible
+                description, so AT never gets the cut string. With
+                no model selected the title stays the explanation
+                (there is no id to carry). The accessible NAME is
+                left alone — it says what the control is
+                ("Agent mode and model"), not which model is in it. */}
             <Popover>
               <PopoverTrigger asChild>
                 <Button
@@ -296,7 +407,7 @@ export default function Composer({
                   size="sm"
                   className="nex-composer-model-trigger"
                   aria-label={t("conv.modePickerAria")}
-                  title={t("conv.modelTagTitle")}
+                  title={selectedModel ?? t("conv.modelTagTitle")}
                 >
                   <span
                     className={
@@ -319,6 +430,12 @@ export default function Composer({
                 <PopoverHeader>
                   <PopoverTitle>{t("conv.modelSection")}</PopoverTitle>
                 </PopoverHeader>
+                {/* A vertical list of options: the primitive is laid
+                    out as rows here (composer.css re-flows its grid
+                    from columns to rows) and `indicator={false}`
+                    keeps a pill from sliding across rows, where a
+                    slide means nothing. The selected row keeps its
+                    own wash and leading tick. */}
                 {models.length === 0 ? (
                   <p className="nex-composer-model-empty">{t("conv.modelNone")}</p>
                 ) : (
@@ -326,6 +443,7 @@ export default function Composer({
                     className="nex-composer-model-list"
                     label={t("conv.modelSection")}
                     semantics="radio"
+                    indicator={false}
                     value={selectedModel}
                     onChange={(model) => onSelectModel(model)}
                     options={models.map((model) => ({ value: model, label: model }))}
@@ -344,29 +462,49 @@ export default function Composer({
               </PopoverContent>
             </Popover>
 
+            {/* Send. ONE button, three states (D2):
+                  idle / armed   ArrowUp in the light fill
+                  run live       Square, same seat, click stops the run
+                  no draft       disabled (never while a run is live)
+                `disabled:border-transparent` is the ONE state token the
+                composer adds: `ui/button`'s default variant ships the
+                theme's disabled recipe as a full 1px hairline
+                (`disabled:border-border`), and a hairline is exactly what
+                makes an inert Send read as an enabled secondary button.
+                THEME §1's disabled hairline is therefore dropped for this
+                control only — muted label and no fill stay. It has to be a
+                utility here rather than a rule in composer.css: that sheet
+                is `layer(base)` and a Tailwind utility outranks it at any
+                specificity, so only `!important` (reserved for the motion
+                gate) could win from the sheet. `cn` runs tailwind-merge, so
+                this class replaces the variant's `disabled:border-border`
+                instead of stacking with it —
+                src/components/Composer.test.tsx asserts the merge. */}
             <Button
-              className="nex-composer-send"
-              disabled={!canSend}
-              aria-busy={busy || undefined}
-              onClick={onSubmit}
+              size="icon"
+              className="nex-composer-send disabled:border-transparent"
+              disabled={!live && !canSend}
+              aria-busy={(!live && busy) || undefined}
+              aria-label={live ? t("conv.stopAria") : t("conv.sendAria")}
+              title={live ? t("conv.stopAria") : t("conv.sendAria")}
+              data-state={live ? "stop" : "send"}
+              onClick={live ? onStop : onSubmit}
             >
-              {busy ? (
-                agentMode ? t("conv.running") : t("conv.sending")
+              {live ? (
+                <SquareIcon size={16} />
               ) : (
-                <>
-                  {t("conv.send")}
-                  <ArrowUpIcon aria-hidden="true" />
-                </>
+                <ArrowUpIcon size={20} className="size-5" />
               )}
             </Button>
+            </span>
           </div>
         </div>
 
-        {ready ? (
-          <p className="nex-composer-hint">
-            <span className="nex-composer-shortcut">{t("conv.hintSend")}</span>
-          </p>
-        ) : (
+        {/* A hint row is only worth its line when it is ACTIONABLE. "Enter
+            to send" restated what the field already does and sat under the
+            composer on every screen; the setup hint is the one case where
+            the composer cannot work and says what to do about it. */}
+        {!ready && (
           <p className="nex-composer-hint">
             <span className="nex-composer-shortcut">{t("conv.hintSetup")} </span>
             <M3Button variant="quiet" size="sm" onClick={onOpenSettings}>

@@ -32,7 +32,7 @@ export interface ShortcutsDialogProps {
 export default function ShortcutsDialog({ onClose }: ShortcutsDialogProps) {
   const { locale, t } = useStrings();
   return (
-    <ModalShell title={t("shortcuts.title")} onClose={onClose}>
+    <ModalShell title={t("shortcuts.title")} onClose={onClose} sheet>
       <div className="nex-shortcuts nex-pop-enter">
         <ul className="nex-shortcuts-groups">
           {SHORTCUT_GROUPS.map((group) => (

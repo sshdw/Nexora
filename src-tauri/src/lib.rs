@@ -5,38 +5,6 @@ mod infrastructure;
 
 use tauri::Manager;
 
-/// Sweep orphaned 'running' agent runs from crashed sessions to 'error' at
-/// startup (Task 5.2, DP-8): only `status='running'` rows are touched; all
-/// other statuses and row counts untouched.
-fn sweep_orphaned_agent_runs(db: &infrastructure::database::Database) {
-    let swept = crate::infrastructure::repository::agent_runs::AgentRunRepository::new(db)
-        .fail_orphaned_running_runs("run interrupted by application shutdown")
-        .unwrap_or_else(|err| {
-            log::warn!("orphaned run sweep failed: {err}");
-            0
-        });
-    if swept > 0 {
-        log::info!("swept {swept} orphaned agent runs to error");
-    }
-}
-
-/// Sweep orphaned `running` tasks/steps from crashed sessions to `failed` at
-/// startup (NEX-TASK-001): without it a quit mid-task bricks the task
-/// forever (`spawn_task_run`/`update_task`/`delete_task` all refuse while
-/// `status='running'`). Only `status='running'` rows are touched; all other
-/// statuses and row counts untouched.
-fn sweep_orphaned_task_runs(db: &infrastructure::database::Database) {
-    let swept = crate::infrastructure::repository::agent_tasks::AgentTaskRepository::new(db)
-        .fail_orphaned_running_tasks("task interrupted by application shutdown")
-        .unwrap_or_else(|err| {
-            log::warn!("orphaned task sweep failed: {err}");
-            0
-        });
-    if swept > 0 {
-        log::info!("swept {swept} orphaned agent tasks to failed");
-    }
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 /// Run the Tauri desktop application.
 ///
@@ -137,6 +105,7 @@ pub fn run() {
             commands::agent::list_agent_steps,
             commands::agent::get_agent_step_observation,
             commands::agent::inspect_run,
+            commands::agent::inspect_run_live,
             commands::agent::spend_dashboard,
             commands::agent::activity_feed,
             commands::agent::add_permission_rule,
@@ -180,14 +149,27 @@ pub fn run() {
             commands::privacy::privacy_wipe,
         ])
         .setup(|app| {
-            // Locate the per-user application data directory and ensure it
-            // exists before opening the database file.
-            let db_dir = app.path().app_data_dir()?;
-            std::fs::create_dir_all(&db_dir)?;
-            let db_path = db_dir.join("nexora.db");
+            // One resolver for both shells (issue #161): the app-data rule
+            // used by the CLI is the rule used here, never a guessed path.
+            let db_path = nexora_core::storage::app_data::database_path().ok_or_else(|| {
+                std::io::Error::other(
+                    "the app-data directory is not defined for this platform",
+                )
+            })?;
+            let db_dir = db_path
+                .parent()
+                .ok_or_else(|| std::io::Error::other("the database path has no parent"))?;
+            std::fs::create_dir_all(db_dir)?;
+
+            // Instance lease first (issue #161): only the first live process
+            // may sweep orphaned runs/tasks. A second window shares the lease
+            // and leaves the first one's in-flight rows alone.
+            let mut lease =
+                nexora_core::storage::lifecycle::InstanceLease::acquire(&db_path)?;
 
             // Open the database, apply pragmas, and run pending migrations
-            // (ROADMAP.md Phase 0; DATABASE.md §3–§5).
+            // (ROADMAP.md Phase 0; DATABASE.md §3–§5). Migration leadership
+            // is cross-process; a busy peer past the 5s budget fails honestly.
             let opened = infrastructure::database::open(&db_path).map_err(|err| {
                 log::error!("sqlite initialization failed: {err}");
                 err
@@ -195,7 +177,25 @@ pub fn run() {
             // Store the single connection as shared application state so it
             // outlives setup() and remains available for the application's
             // lifetime (ROADMAP.md Phase 0; Tauri managed state).
-            app.manage(infrastructure::database::Database::new(opened));
+            let db = infrastructure::database::Database::new(opened);
+            match nexora_core::storage::lifecycle::sweep_orphans(&db, &lease) {
+                Ok(report) if report.skipped_live_instance => {
+                    log::info!("another Nexora instance is live; orphan sweep skipped");
+                }
+                Ok(report) => {
+                    if report.runs > 0 {
+                        log::info!("swept {} orphaned agent runs to error", report.runs);
+                    }
+                    if report.tasks > 0 {
+                        log::info!("swept {} orphaned agent tasks to failed", report.tasks);
+                    }
+                }
+                Err(err) => log::warn!("orphaned run sweep failed: {err}"),
+            }
+            lease.become_shared()?;
+            app.manage(db);
+            // Keep the shared lease alive for the whole process lifetime.
+            app.manage(lease);
             // Hold the active-run registry as managed state (Task 5.1): an
             // `Arc` so the agent IPC commands can clone an owned handle into
             // `spawn_blocking` and the spawned run threads.
@@ -225,8 +225,6 @@ pub fn run() {
             // and record the applied schema version; startup fails loudly if it
             // is not (DATABASE.md §4–§5).
             let db = app.state::<infrastructure::database::Database>();
-            sweep_orphaned_agent_runs(&db);
-            sweep_orphaned_task_runs(&db);
             let conn = db.lock()?;
             let version: i64 = conn.query_row(
                 "SELECT COALESCE(MAX(version), 0) FROM schema_version",

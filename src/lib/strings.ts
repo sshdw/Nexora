@@ -71,6 +71,9 @@ const en = {
   "app.noConversationTitle": "No conversation selected",
   "app.noConversationText":
     "Choose a conversation from the sidebar, or create one with New Conversation.",
+  "app.noSessionTitle": "No session open",
+  "app.noSessionText":
+    "Pick one from Sessions in the Dock, or start a new session.",
   "app.archivedBadge": "Archived",
   "app.splitPaneAria": "Split: {title}",
   "app.paneActions": "Actions for {title}",
@@ -84,6 +87,31 @@ const en = {
   "app.zenExitTitle": "Exit chromeless reading mode (Esc)",
   "app.zenExit": "Exit zen · Esc",
   "app.newConversationDefault": "New Conversation",
+
+  // ---- Dock panels (D-06: the shell's only navigation) ---------------------
+  "dock.aria": "Dock",
+  "dock.new": "New",
+  "dock.workspace": "Workspace",
+  "dock.sessions": "Sessions",
+  "dock.activity": "Activity",
+  "dock.settings": "Settings",
+  "dock.activityNeedsYou": "Activity, {count} needs you",
+  "dock.sessionsFilter": "Filter sessions",
+  "dock.sessionsEmpty": "No sessions yet",
+  "dock.sessionsNoMatch": "No sessions match that filter",
+  "dock.workspaceNone": "No folder open",
+  "dock.workspaceNoneText":
+    "Agent runs need a folder to work in. Open one to give the agent a workspace.",
+  "dock.workspaceOpen": "Open folder…",
+  "dock.workspaceChange": "Change folder…",
+  "dock.workspaceRecent": "Recent",
+  "dock.activityEmpty": "Nothing running",
+  "dock.activityEmptyText":
+    "Queued agent tasks and their progress appear here while they run.",
+  "dock.activityRunning": "Running",
+  "dock.activityQueued": "Queued",
+  "dock.activityRecent": "Recent",
+  "dock.activityOpenTasks": "Open tasks",
 
   // ---- sidebar nav ---------------------------------------------------------
   "nav.settings": "Settings",
@@ -178,13 +206,17 @@ const en = {
   "empty.text": "Your conversations will appear here.",
 
   // ---- conversation / composer (ConversationView.tsx) ---------------------------
-  "conv.viewLabel": "Conversation view",
-  "conv.chatTab": "Chat",
+  // Defect B (round-4 visual QA): this switch and the composer's mode switch
+  // both said "Chat" in the same chip grammar, one above the other. The stage
+  // VIEW is now "Conversation" / "Context"; the composer's mode pair keeps
+  // `conv.modeChat` / `conv.agentToggle` byte-identical ("Chat" / "Agent").
+  // The group's own name is not "Conversation view" any more for the same
+  // reason in the a11y tree: it would repeat the option it contains.
+  "conv.viewLabel": "Pane content",
+  "conv.chatTab": "Conversation",
   "conv.contextTab": "Context",
   "conv.messagesAria": "Messages",
   "conv.loadingMessages": "Loading messages",
-  "conv.emptyTitle": "No messages yet",
-  "conv.emptyText": "Write your first message below to start the conversation.",
   "conv.authorYou": "You",
   "conv.authorAssistant": "Assistant",
   "conv.originTitle": "Provider and model used for this message",
@@ -192,16 +224,25 @@ const en = {
   "conv.agentWorking": "Agent is working",
   "conv.attachedFiles": "Attached files",
   "conv.removeFile": "Remove {name}",
-  "conv.messagePlaceholder": "Message",
+  // The field has no chrome of its own (the shell is the control), so the
+  // placeholder IS the affordance and has to say what to do. "Message" was a
+  // bare noun and read as a form label. The accessible name stays a short
+  // noun: a name names the control, it does not repeat the instruction.
+  "conv.messagePlaceholder": "Ask anything, or describe a task",
   "conv.messageAria": "Message",
   "conv.addFile": "Add file",
-  "conv.agentToggleTitle": "Stream steps via the agent (opt-in)",
+  "conv.agentToggleTitle": "Switch between Chat and Agent mode",
   "conv.agentToggle": "Agent",
   "conv.agentModeAria": "Agent mode",
   "conv.modelTagTitle": "Model used for new messages",
-  "conv.sending": "Sending…",
-  "conv.running": "Running…",
-  "conv.send": "Send",
+  "conv.sendAria": "Send message",
+  "conv.stopAria": "Stop agent run",
+  "conv.workspaceContextAria": "Workspace context",
+  "conv.contextWindow": "Context window",
+  "conv.contextAria": "Context window: {percent}% used",
+  "conv.contextAriaNa": "Context window: n/a",
+  "conv.contextProvider": "Provider",
+  "conv.contextModel": "Model",
   "conv.hintSend": "Enter to send · Shift+Enter for a new line",
   "conv.hintSetup": "Choose a provider and model in Settings to send messages.",
   "conv.openSettings": "Open Settings",
@@ -255,9 +296,63 @@ const en = {
   "agent.approvalExpiresInMin": "Expires in {n} min",
   "agent.approvalExpired": "Approval expired — the run was cancelled.",
   "agent.approvalElapsed": "Approval window elapsed — the run is being cancelled.",
-  "agent.kindModelTurn": "Model turn",
-  "agent.kindToolCall": "Tool call",
+  // `model_turn` reads as a human state, not the backend's row name
+  // (#230 P3, MAP row 8: "states human-readable"). The row itself is
+  // collapsed by default — the raw narration is the model's monologue
+  // and only opens on request.
+  "agent.kindModelTurn": "Thought",
+  // `agent.kindToolCall` was deleted with the kind label it labelled: a
+  // tool call now names itself with its own VERB (Read / Wrote / Ran), so
+  // "Tool call" beside "read_file" was two names for one fact — the exact
+  // duplication the step grammar replaced.
   "agent.kindApproval": "Approval · {tool}",
+  // One past-tense verb per tool family, so a folded row reads
+  // "Read src/db.rs" instead of "read_file src/db.rs" (MAP row 8:
+  // action → file → change → verification). An unrecognised tool
+  // falls back to its own `tool_name` rather than inventing a verb.
+  "agent.actRead": "Read",
+  "agent.actWrite": "Wrote",
+  "agent.actEdit": "Edited",
+  "agent.actSearch": "Searched",
+  "agent.actList": "Listed",
+  "agent.actRun": "Ran",
+  "agent.actTool": "Called",
+  "agent.pathTitle": "Full path",
+  "agent.queryTitle": "Full query",
+  "agent.commandTitle": "Full command",
+  "agent.diffCounts": "+{added} −{removed}",
+  "agent.diffCountsTitle": "{added} lines added, {removed} lines removed",
+  "agent.noChangesAria": "No changed lines in this diff",
+  // Verification — the step's persisted status as a word, never a hue.
+  "agent.verifyOk": "ok",
+  "agent.verifyFailed": "failed",
+  "agent.verifyDenied": "denied",
+  "agent.verifyCancelled": "cancelled",
+  "agent.verifyRunning": "running",
+  // Repeated calls grouped behind one expandable line. `{n}` is supplied by
+  // `tp(locale, "toolCalls", n)`, which already carries the declensed noun —
+  // the template adds only the target, or it reads "3 tool calls calls to…".
+  "agent.repeatedCalls": "×{n}",
+  "agent.repeatedShow": "Show {n} to {target}",
+  "agent.repeatedHide": "Hide {n} to {target}",
+  // The ONE terminal line: status word + the real results, once.
+  "agent.summaryCommands": "{n} {unit}",
+  "agent.summaryNoChanges": "No changes needed",
+  "agent.summaryNothing": "Nothing ran",
+  "agent.cancelledNote": "nothing ran after the cancel",
+  "agent.workingSteps": "Working… · {steps}",
+  "agent.doneIn": "Done in {steps}",
+  "agent.durationSeconds": "{n}s",
+  "agent.durationMinutes": "{m}m {s}s",
+  "agent.errorWhat": "What happened",
+  "agent.errorWhatUnknown": "No cause reported; the run stopped before saying why.",
+  "agent.errorSurvived": "What survived",
+  "agent.errorNext": "Next",
+  "agent.errorSurvivedNone": "Nothing was saved from this run.",
+  "agent.errorNextRetry": "Send the message again to retry.",
+  "agent.errorNextSpend": "Raise the spend limit in Settings, then run again.",
+  "agent.errorNextGeneric": "Send the message again to retry.",
+  "agent.runStarting": "Starting…",
   "agent.toolArgs": "Tool arguments",
   "agent.noOutput": "No output",
   "agent.noChanges": "No changes",
@@ -276,18 +371,6 @@ const en = {
   "agent.ariaHunk": "hunk header",
   "agent.ariaAddedHeader": "added file header",
   "agent.ariaRemovedHeader": "removed file header",
-  // Folded-run summary (brief §13.33). The template is shared by every
-  // bucket; the noun declension is supplied by the call site so RU gets
-  // one/few/many right without a nine-key catalog.
-  "agent.foldCalls": "{n} {unit}",
-  "agent.foldFiles": "{n} {unit}",
-  "agent.foldCommands": "{n} {unit}",
-  "agent.foldSearches": "{n} {unit}",
-  // Accessible names for the fold button: the visible line is the counts
-  // alone, so the name carries the action the control actually performs
-  // (show vs hide) plus the counts it summarizes.
-  "agent.foldShow": "Show run steps ({counts})",
-  "agent.foldHide": "Hide run steps ({counts})",
 
   // ---- context panel --------------------------------------------------------------
   "ctx.group": "Conversation context",
@@ -329,6 +412,11 @@ const en = {
   "ctx.budgetUsed": "{used} of {budget} tokens used",
   "ctx.budgetExceeded": "Over budget — past {budget} tokens.",
   "ctx.budgetSaveFailed": "Could not save the context budget.",
+  // #230 P3 (MAP row 20): the hairline's accessible name, and the cost
+  // detail that rides on the readout instead of taking a permanent row.
+  // Both numbers, always spelled out — the proportion is never visual-only.
+  "ctx.budgetMeterAria": "{used} of {budget} budgeted tokens used",
+  "ctx.totalCostTitle": "Total cost {cost}",
 
   // ---- settings ----------------------------------------------------------------------
   "settings.title": "Settings",
@@ -1371,6 +1459,8 @@ const enPlural = {
   groups: { one: "{n} group", few: "{n} groups", many: "{n} groups" },
   runs: { one: "{n} run", few: "{n} runs", many: "{n} runs" },
   steps: { one: "{n} step", few: "{n} steps", many: "{n} steps" },
+  toolCalls: { one: "{n} tool call", few: "{n} tool calls", many: "{n} tool calls" },
+  changedFiles: { one: "{n} file changed", few: "{n} files changed", many: "{n} files changed" },
   models: { one: "{n} model", few: "{n} models", many: "{n} models" },
   commits: { one: "{n} recent commit", few: "{n} recent commits", many: "{n} recent commits" },
 } as const;
@@ -1387,6 +1477,8 @@ const ruPlural: PluralTable = {
   groups: { one: "{n} группа", few: "{n} группы", many: "{n} групп" },
   runs: { one: "{n} запуск", few: "{n} запуска", many: "{n} запусков" },
   steps: { one: "{n} шаг", few: "{n} шага", many: "{n} шагов" },
+  toolCalls: { one: "{n} вызов инструмента", few: "{n} вызова инструментов", many: "{n} вызовов инструментов" },
+  changedFiles: { one: "{n} файл изменён", few: "{n} файла изменено", many: "{n} файлов изменено" },
   models: { one: "{n} модель", few: "{n} модели", many: "{n} моделей" },
   commits: { one: "{n} недавний коммит", few: "{n} недавних коммита", many: "{n} недавних коммитов" },
 };
@@ -1558,6 +1650,9 @@ const ru: Record<StringKey, string> = {
   "app.noConversationTitle": "Разговор не выбран",
   "app.noConversationText":
     "Выберите разговор в боковой панели или создайте новый кнопкой «Новый разговор».",
+  "app.noSessionTitle": "Сессия не открыта",
+  "app.noSessionText":
+    "Выберите её в «Сессиях» на доке или начните новую сессию.",
   "app.archivedBadge": "В архиве",
   "app.splitPaneAria": "Сплит: {title}",
   "app.paneActions": "Действия для «{title}»",
@@ -1571,6 +1666,30 @@ const ru: Record<StringKey, string> = {
   "app.zenExitTitle": "Выйти из бескнопочного режима чтения (Esc)",
   "app.zenExit": "Выйти из дзена · Esc",
   "app.newConversationDefault": "Новый разговор",
+
+  "dock.aria": "Док",
+  "dock.new": "Новый",
+  "dock.workspace": "Рабочая область",
+  "dock.sessions": "Сессии",
+  "dock.activity": "Активность",
+  "dock.settings": "Настройки",
+  "dock.activityNeedsYou": "Активность, требует внимания: {count}",
+  "dock.sessionsFilter": "Фильтр сессий",
+  "dock.sessionsEmpty": "Сессий пока нет",
+  "dock.sessionsNoMatch": "Нет сессий по этому фильтру",
+  "dock.workspaceNone": "Папка не открыта",
+  "dock.workspaceNoneText":
+    "Агенту нужна папка, в которой он работает. Откройте её, чтобы задать рабочую область.",
+  "dock.workspaceOpen": "Открыть папку…",
+  "dock.workspaceChange": "Сменить папку…",
+  "dock.workspaceRecent": "Недавние",
+  "dock.activityEmpty": "Ничего не выполняется",
+  "dock.activityEmptyText":
+    "Задачи агента и их прогресс появятся здесь, пока они выполняются.",
+  "dock.activityRunning": "Выполняется",
+  "dock.activityQueued": "В очереди",
+  "dock.activityRecent": "Недавние",
+  "dock.activityOpenTasks": "Открыть задачи",
 
   "nav.settings": "Настройки",
   "nav.library": "Библиотека промптов",
@@ -1654,13 +1773,11 @@ const ru: Record<StringKey, string> = {
   "empty.title": "Пока нет разговоров",
   "empty.text": "Ваши разговоры появятся здесь.",
 
-  "conv.viewLabel": "Вид разговора",
-  "conv.chatTab": "Чат",
+  "conv.viewLabel": "Содержимое панели",
+  "conv.chatTab": "Диалог",
   "conv.contextTab": "Контекст",
   "conv.messagesAria": "Сообщения",
   "conv.loadingMessages": "Загрузка сообщений",
-  "conv.emptyTitle": "Пока нет сообщений",
-  "conv.emptyText": "Напишите первое сообщение ниже, чтобы начать разговор.",
   "conv.authorYou": "Вы",
   "conv.authorAssistant": "Ассистент",
   "conv.originTitle": "Провайдер и модель, использованные для этого сообщения",
@@ -1668,16 +1785,21 @@ const ru: Record<StringKey, string> = {
   "conv.agentWorking": "Агент работает",
   "conv.attachedFiles": "Прикреплённые файлы",
   "conv.removeFile": "Убрать {name}",
-  "conv.messagePlaceholder": "Сообщение",
+  "conv.messagePlaceholder": "Спросите что угодно или опишите задачу",
   "conv.messageAria": "Сообщение",
   "conv.addFile": "Прикрепить файл",
-  "conv.agentToggleTitle": "Стримить шаги через агента (опционально)",
+  "conv.agentToggleTitle": "Переключение между режимами «Чат» и «Агент»",
   "conv.agentToggle": "Агент",
   "conv.agentModeAria": "Режим агента",
   "conv.modelTagTitle": "Модель для новых сообщений",
-  "conv.sending": "Отправка…",
-  "conv.running": "Выполнение…",
-  "conv.send": "Отправить",
+  "conv.sendAria": "Отправить сообщение",
+  "conv.stopAria": "Остановить запуск агента",
+  "conv.workspaceContextAria": "Контекст рабочей папки",
+  "conv.contextWindow": "Контекстное окно",
+  "conv.contextAria": "Контекстное окно: использовано {percent}%",
+  "conv.contextAriaNa": "Контекстное окно: н/д",
+  "conv.contextProvider": "Провайдер",
+  "conv.contextModel": "Модель",
   "conv.hintSend": "Enter — отправить · Shift+Enter — новая строка",
   "conv.hintSetup": "Чтобы отправлять сообщения, выберите провайдера и модель в настройках.",
   "conv.openSettings": "Открыть настройки",
@@ -1726,9 +1848,46 @@ const ru: Record<StringKey, string> = {
   "agent.approvalExpiresInMin": "Истекает через {n} мин",
   "agent.approvalExpired": "Время подтверждения истекло — запуск отменён.",
   "agent.approvalElapsed": "Время ожидания истекло — запуск отменяется.",
-  "agent.kindModelTurn": "Ход модели",
-  "agent.kindToolCall": "Вызов инструмента",
+  "agent.kindModelTurn": "Размышление",
   "agent.kindApproval": "Подтверждение · {tool}",
+  "agent.actRead": "Прочитал",
+  "agent.actWrite": "Записал",
+  "agent.actEdit": "Изменил",
+  "agent.actSearch": "Искал",
+  "agent.actList": "Показал",
+  "agent.actRun": "Выполнил",
+  "agent.actTool": "Вызвал",
+  "agent.pathTitle": "Полный путь",
+  "agent.queryTitle": "Полный запрос",
+  "agent.commandTitle": "Полная команда",
+  "agent.diffCounts": "+{added} −{removed}",
+  "agent.diffCountsTitle": "добавлено строк: {added}, удалено: {removed}",
+  "agent.noChangesAria": "В этом диффе нет изменённых строк",
+  "agent.verifyOk": "ок",
+  "agent.verifyFailed": "ошибка",
+  "agent.verifyDenied": "запрещено",
+  "agent.verifyCancelled": "отменено",
+  "agent.verifyRunning": "выполняется",
+  "agent.repeatedCalls": "×{n}",
+  "agent.repeatedShow": "Показать {n}: {target}",
+  "agent.repeatedHide": "Скрыть {n}: {target}",
+  "agent.summaryCommands": "{n} {unit}",
+  "agent.summaryNoChanges": "Изменения не нужны",
+  "agent.summaryNothing": "Ничего не выполнялось",
+  "agent.cancelledNote": "после отмены ничего не выполнялось",
+  "agent.workingSteps": "Работаю… · {steps}",
+  "agent.doneIn": "Готово за {steps}",
+  "agent.durationSeconds": "{n} с",
+  "agent.durationMinutes": "{m} мин {s} с",
+  "agent.errorWhat": "Что произошло",
+  "agent.errorWhatUnknown": "Причина не сообщена: запуск остановился, не указав почему.",
+  "agent.errorSurvived": "Что сохранилось",
+  "agent.errorNext": "Что делать",
+  "agent.errorSurvivedNone": "Из этого запуска ничего не сохранилось.",
+  "agent.errorNextRetry": "Отправьте сообщение ещё раз.",
+  "agent.errorNextSpend": "Поднимите лимит трат в настройках и запустите снова.",
+  "agent.errorNextGeneric": "Отправьте сообщение ещё раз.",
+  "agent.runStarting": "Запуск…",
   "agent.toolArgs": "Аргументы инструмента",
   "agent.noOutput": "Нет вывода",
   "agent.noChanges": "Нет изменений",
@@ -1747,12 +1906,6 @@ const ru: Record<StringKey, string> = {
   "agent.ariaHunk": "заголовок фрагмента",
   "agent.ariaAddedHeader": "заголовок добавленного файла",
   "agent.ariaRemovedHeader": "заголовок удалённого файла",
-  "agent.foldCalls": "{n} {unit}",
-  "agent.foldFiles": "{n} {unit}",
-  "agent.foldCommands": "{n} {unit}",
-  "agent.foldSearches": "{n} {unit}",
-  "agent.foldShow": "Показать шаги запуска ({counts})",
-  "agent.foldHide": "Скрыть шаги запуска ({counts})",
 
   "ctx.group": "Контекст разговора",
   "ctx.loading": "Загрузка контекста",
@@ -1791,6 +1944,8 @@ const ru: Record<StringKey, string> = {
   "ctx.budgetUsed": "использовано {used} из {budget} токенов",
   "ctx.budgetExceeded": "Бюджет превышен — больше {budget} токенов.",
   "ctx.budgetSaveFailed": "Не удалось сохранить бюджет контекста.",
+  "ctx.budgetMeterAria": "использовано {used} из {budget} токенов бюджета",
+  "ctx.totalCostTitle": "Итоговая стоимость {cost}",
 
   "settings.title": "Настройки",
   "settings.subtitle": "Настройки этого устройства. Всё хранится локально.",

@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import { contrastOnWash, contrastOver, contrastRatio, parseOklch, type Oklch } from "./test/color";
 import { readRepoFile } from "./test/readRepoFile";
+import { PARITY_CASES } from "./test/parityMap";
 
 import { Button } from "./components/ui/button";
 
@@ -44,6 +45,8 @@ const componentSources: Record<string, string> = {
   textarea: readRepoFile("src/components/ui/textarea.tsx"),
   nativeSelect: readRepoFile("src/components/ui/native-select.tsx"),
   spinner: readRepoFile("src/components/ui/spinner.tsx"),
+  // #230 Phase 1: the sidebar conversation list's loading placeholder.
+  skeleton: readRepoFile("src/components/ui/skeleton.tsx"),
 };
 
 /**
@@ -146,27 +149,156 @@ const mapping = themeMapping();
 const themeKeys = new Set(mapping.keys());
 
 /**
- * Vars this file references that the theme does not own: none.
+ * Vars this file references that the theme does not own.
  *
  * Phase 0 aliased `--font-sans` at the merged token stack
  * (`--nex-sys-type-family`, declared by src/styles/tokens.css)
- * because the app adopted no typeface of its own. #235 wires
- * Inter/Cascadia Code instead (NEXORA-THEME.md §3), so both font
+ * because the app adopted no typeface of its own. #235 wired
+ * Inter/Cascadia Code; R4-11 makes Geist primary and keeps those
+ * two as fallbacks (NEXORA-THEME.md §3), so both font
  * keys now resolve to `--font-sans` / `--font-mono` declared in
  * the theme blocks below — the map is empty, kept so the next
  * external reference has a named place to be justified rather
  * than a deny-list to hide in.
+ *
+ * #230 Phase 2 adds the three motion tokens ui/button.tsx reaches
+ * for the global press (NEXORA-THEME.md §6): the state-fade it
+ * already inherited from Tailwind's `transition-all`, plus the
+ * press duration and scale. They resolve in src/styles/motion.css,
+ * which owns motion the way tokens.css owns space/type — `:root`,
+ * not a theme block, and not `@theme inline`. Each entry names its
+ * real home so the next reader can go and check it.
  */
-const externalVars = new Map<string, string>([]);
+const externalVars = new Map<string, string>([
+  ["--nex-sys-motion-duration-fast", "src/styles/motion.css :root"],
+  ["--nex-sys-motion-duration-press", "src/styles/motion.css :root"],
+  ["--nex-sys-motion-scale-press", "src/styles/motion.css :root"],
+]);
 
 /**
- * Theme vars that are NOT colours: the shape step and the two
- * font stacks. The achromatic sweep below parses every other
- * defined var as OKLCH, so these are named here rather than
- * skipped silently — an unparseable colour would otherwise pass
- * by looking like a font.
+ * Theme vars that are NOT colours: the shape step, the two
+ * font stacks, and the chrome row height. The achromatic sweep
+ * below parses every other defined var as OKLCH, so these are
+ * named here rather than skipped silently — an unparseable colour
+ * would otherwise pass by looking like a font.
+ *
+ * `--chrome-height` is layout, not paint: THEME §6 freezes the tab
+ * strip and pane header at 40px (issue #262), and it lives in the
+ * default theme block because a length is theme-independent — the
+ * light block inherits it from `:root`.
  */
-const NON_COLOUR_VARS = new Set(["--radius", "--font-sans", "--font-mono"]);
+const NON_COLOUR_VARS = new Set([
+  "--radius",
+  "--font-sans",
+  "--font-mono",
+  "--chrome-height",
+  /* The edge Dock rail width (plan §5.2). A length, theme-independent:
+     Dock.tsx sizes itself from it and the conversation stage reserves it,
+     so it needs the same exemption from the okLCH sweep. */
+  "--dock-width",
+  /* #230 Phase 6: the legacy-format tokens relocated from tokens.css into
+     src/index.css. They keep their legacy hex/rgba/px literals (not oklch())
+     so the per-(theme, token) parity test can compare resolved literals as
+     strings. They are therefore outside the okLCH achromatic sweep. */
+  "--color-accent-indicator",
+  "--color-error",
+  "--color-error-container",
+  "--color-error-filled",
+  "--color-error-outline",
+  "--color-inverse-on-surface",
+  "--color-inverse-surface",
+  "--color-on-error",
+  "--color-on-error-container",
+  "--color-on-primary",
+  "--color-on-primary-container",
+  "--color-on-secondary-container",
+  "--color-on-success-container",
+  "--color-on-surface",
+  "--color-on-surface-faint",
+  "--color-on-surface-tertiary",
+  "--color-on-surface-variant",
+  "--color-outline",
+  "--color-outline-variant",
+  "--color-primary",
+  "--color-primary-container",
+  "--color-primary-hover",
+  "--color-scrim",
+  "--color-secondary-container",
+  "--color-shell-seam",
+  "--color-success",
+  "--color-success-container",
+  "--color-surface-canvas",
+  "--color-surface-container",
+  "--color-surface-container-high",
+  "--color-surface-container-highest",
+  "--color-surface-container-low",
+  "--color-surface-container-lowest",
+  "--color-surface-elevated",
+  "--color-surface-floating",
+  "--color-surface-nested",
+  "--focus-ring-offset-inset",
+  "--layout-content-max",
+  "--layout-header-height",
+  "--layout-measure-max",
+  "--layout-sidebar-width",
+  "--nav-indicator-height",
+  "--nav-indicator-width",
+  "--nex-sys-elevation-level1",
+  "--nex-sys-elevation-level2",
+  "--nex-sys-z-dialog",
+  "--nex-sys-z-popover",
+  "--nex-sys-z-snackbar",
+  "--nex-sys-z-tooltip",
+  "--scrollbar-thumb",
+  "--scrollbar-thumb-hover",
+  "--shape-extra-small",
+  "--shape-full",
+  "--shape-large",
+  "--shape-large-increased",
+  "--shape-medium",
+  "--shape-none",
+  "--shape-pill",
+  "--shape-small",
+  "--space-2xl",
+  "--space-lg",
+  "--space-md",
+  "--space-sm",
+  "--space-xl",
+  "--space-xs",
+  "--space-xxs",
+  "--space-xxxs",
+  "--state-disabled-opacity",
+  "--state-dragged-opacity",
+  "--state-focus-opacity",
+  "--state-hover",
+  "--state-hover-opacity",
+  "--state-inverse-hover",
+  "--state-inverse-pressed",
+  "--state-pressed",
+  "--state-pressed-opacity",
+  "--state-selected",
+  "--state-selected-opacity",
+  "--type-family",
+  "--type-family-mono",
+  "--type-line-height-normal",
+  "--type-line-height-relaxed",
+  "--type-line-height-tight",
+  "--type-size-body-large",
+  "--type-size-body-medium",
+  "--type-size-body-small",
+  "--type-size-headline-small",
+  "--type-size-label-large",
+  "--type-size-label-medium",
+  "--type-size-label-small",
+  "--type-size-title-large",
+  "--type-size-title-medium",
+  "--type-size-title-small",
+  "--type-tracking-body-small",
+  "--type-weight-emphasized",
+  "--type-weight-medium",
+  "--type-weight-regular",
+  "--type-weight-semibold",
+]);
 
 /** `ring-offset-<colour>` resolves like `bg-<colour>`: Tailwind
  *  paints the offset from `--color-<colour>`, while
@@ -392,11 +524,19 @@ describe("black theme — variable coverage", () => {
     // tokens directly, including `--radius-md` from `@theme inline`
     // and, in arbitrary-value utilities, the raw paint vars. A typo
     // there renders as an invisible border, not an error.
+    //
+    // `externalVars` counts here for the same reason it counts in the
+    // index.css test above: a var declared in one of the merged
+    // sheets (#230 Phase 2 — the press tokens, which live in
+    // motion.css because that is where motion is declared) resolves
+    // exactly as well as one the theme blocks happen to own.
     const missing: string[] = [];
     for (const [name, source] of Object.entries(componentSources)) {
       for (const match of source.matchAll(/var\(\s*(--[a-z0-9-]+)/gi)) {
         const target = match[1];
-        if (darkDefined.has(target) || themeKeys.has(target)) continue;
+        if (darkDefined.has(target) || themeKeys.has(target) || externalVars.has(target)) {
+          continue;
+        }
         missing.push(`${name}: ${target}`);
       }
     }
@@ -414,6 +554,7 @@ describe("black theme — variable coverage", () => {
       "button",
       "input",
       "nativeSelect",
+      "skeleton",
       "spinner",
       "textType",
       "textarea",
@@ -475,6 +616,13 @@ describe("black theme — variable coverage", () => {
     // prop — so what is pinned there is that the scan SEES the file,
     // not what it happens to find in it today.
     expect(classTokens(componentSources.textType)).toContain("inline-block");
+
+    // Same for the #230 Phase 1 skeleton: its one colour utility has to
+    // route through a defined var like any other copied component, and
+    // the pulse it declares must be the Tailwind utility the global
+    // reduced-motion gate already collapses.
+    expect(colourUtilities(componentSources.skeleton)).toEqual(["bg-accent"]);
+    expect(classTokens(componentSources.skeleton)).toContain("animate-pulse");
   });
 
   it("routes every colour utility a copied component uses through a defined var", () => {
@@ -641,6 +789,104 @@ describe("cascade — the merged sheets load inside a layer", () => {
       (match) => match[1],
     );
     expect(entries).toEqual(["./index.css"]);
+  });
+
+  /* ----------------------------------------------------------
+     The OTHER direction of the same contract (Defect A,
+     round-4 visual QA).
+
+     A bare `<button>` takes the UA's `color: buttontext`, and with
+     no `color-scheme` on the themed roots that is BLACK here —
+     measured on the tab strip's elevated bar, where the close ×,
+     the `+`, Split and Zen painted as embossing. The answer has to
+     be a LAYERED fallback: too weak to beat a variant's own
+     `text-*` utility, strong enough to beat the UA. Those two
+     facts are what these pins hold down — the rule's layer, its
+     absence of `!important` (important declarations invert the
+     layer order), and the utilities it must lose to.
+     ---------------------------------------------------------- */
+
+  /** Body of the top-level `@layer base { … }` block in
+   *  src/index.css. Brace-matched, because `ruleBody`'s `\n}` scan
+   *  stops at the first nested rule's closing brace. */
+  function baseLayerBlock(): string {
+    const start = cssCode.indexOf("@layer base {");
+    if (start === -1) throw new Error("src/index.css: no top-level `@layer base` block");
+    let depth = 0;
+    for (let index = cssCode.indexOf("{", start); index < cssCode.length; index += 1) {
+      if (cssCode[index] === "{") depth += 1;
+      else if (cssCode[index] === "}") {
+        depth -= 1;
+        if (depth === 0) return cssCode.slice(start, index + 1);
+      }
+    }
+    throw new Error("src/index.css: unbalanced `@layer base` block");
+  }
+
+  it("answers the UA's `buttontext` from inside layer(base), by token", () => {
+    const block = baseLayerBlock();
+    // The rule itself: one declaration, one token. A raw colour here
+    // would be a fourth theme's worth of paint nobody reviewed.
+    expect(block).toMatch(
+      /button\s*\{\s*color:\s*var\(--color-on-surface-variant\);\s*\}/,
+    );
+    // No `!important`. For important declarations the EARLIER layer
+    // wins, so an important colour in `base` would cross the layers in
+    // the wrong direction and beat every `text-*` utility on every
+    // variant — motion.css is the one place allowed to do that.
+    expect(block).not.toMatch(/!important/);
+    // …and the rest of src/index.css declares no button colour at all.
+    // An unlayered `button { color }` here would out-rank the utilities
+    // by Cascade L5 (normal declarations) exactly as the old unlayered
+    // sheet imports did, repainting filled buttons quiet grey.
+    expect(cssCode.replace(block, "")).not.toMatch(/\bbutton\b[^{};]*\{/);
+    // The token it names resolves in both theme blocks.
+    expect(definedVars(DARK_BLOCK).has("--color-on-surface-variant")).toBe(true);
+    expect(definedVars(LIGHT_BLOCK).has("--color-on-surface-variant")).toBe(true);
+  });
+
+  it("keeps the element reset free of tone, so this stays the only fallback", () => {
+    // src/styles/theme.css says so in its own header ("element resets
+    // never invent a tone"). Asserted as a declaration, because the
+    // tempting one-line fix — adding `color` to that reset — would put
+    // the same fallback in a sheet whose whole job is geometry, and the
+    // next reader would find two sources for one role.
+    const reset = /button\s*\{([\s\S]*?)\}/.exec(
+      readRepoFile("src/styles/theme.css").replace(/\/\*[\s\S]*?\*\//g, ""),
+    )?.[1] ?? "";
+    expect(reset).toMatch(/font-family:\s*inherit/);
+    expect(reset).not.toMatch(/(?:^|;)\s*color\s*:/);
+  });
+
+  it("still lets a variant's own text utility outrank that fallback", () => {
+    // The mechanism, spelled out: `base` comes BEFORE `utilities` in
+    // the order declared once at the top of src/index.css, so a normal
+    // `text-*` utility wins no matter how specific the fallback is.
+    const order = (/@layer\s+([^;]+);/.exec(cssCode)?.[1] ?? "")
+      .split(",")
+      .map((layer) => layer.trim());
+    expect(order).toEqual(["theme", "base", "components", "utilities"]);
+    expect(order.indexOf("utilities")).toBeGreaterThan(order.indexOf("base"));
+
+    // And the utilities that have to win are still declared, per
+    // variant: filled, secondary, destructive and link paint at rest;
+    // ghost paints on hover (that is the strip's brighten).
+    const button = readRepoFile("src/components/ui/button.tsx");
+    for (const utility of [
+      "text-primary-foreground",
+      "text-secondary-foreground",
+      "text-destructive",
+      "text-primary",
+      "hover:text-foreground",
+    ]) {
+      expect(`${utility}: ${button.includes(utility)}`).toBe(`${utility}: true`);
+    }
+    // The ghost variant has no rest `text-*` at all — which is exactly
+    // why the fallback exists, and why adding one to it instead (the
+    // other tempting fix) would be a second mechanism for one tone.
+    const ghost = /ghost:\s*"([^"]*)"/.exec(button)?.[1] ?? "";
+    expect(ghost).toContain("hover:text-foreground");
+    expect(ghost).not.toMatch(/(?:^|\s)text-/);
   });
 });
 
@@ -841,4 +1087,93 @@ describe("black theme — direction", () => {
     expect(css).not.toMatch(/^\.dark \{/m);
     expect(css).not.toMatch(/^\.light \{/m);
   });
+});
+
+/* ----------------------------------------------------------
+   Parity — the tokens.css relocation (#230 Phase 6).
+
+   Every `--nex-sys-*` name that still has a var() caller was
+   relocated to src/index.css as a flat twin (prefix stripped) or,
+   for elevation / z, kept canonical and moved here. VALUES do not
+   change: resolve(newName, theme) must equal the base literal the
+   old name resolved to in the BASE commit's tokens.css, for every
+   theme (dark, light, high-contrast).
+
+   PARITY_CASES is committed test data (src/test/parityMap.ts),
+   generated by resolving the BASE tokens.css per theme. Names are
+   not compared — only resolved literals.
+   ---------------------------------------------------------- */
+describe("parity — tokens.css relocation (#230 Phase 6)", () => {
+  const css = readRepoFile("src/index.css").replace(/\/\*[\s\S]*?\*\//g, "");
+
+  function ruleBody(selector: RegExp, label: string): string {
+    // The selector may be followed by comma-separated co-selectors across
+    // lines before the opening brace (e.g. the high-contrast block), so
+    // allow anything between the selector name and `{`.
+    const match = new RegExp(selector.source + '[\\s\\S]*?\\{([\\s\\S]*?)\\n\\}').exec(css);
+    if (!match) throw new Error(`src/index.css: no block matching ${label}`);
+    return match[1];
+  }
+
+  function defsOf(body: string): Map<string, string> {
+    const out = new Map<string, string>();
+    for (const m of body.matchAll(/(--[a-z0-9-]+)\s*:\s*([\s\S]*?);/gi)) out.set(m[1], m[2].trim());
+    return out;
+  }
+
+  const DARK_BLOCK = ruleBody(/:root,\s*:root\[data-theme="dark"\]/, "dark/default theme block");
+  const LIGHT_BLOCK = ruleBody(/:root\[data-theme="light"\]/, "light theme block");
+  const HC_BLOCK = ruleBody(/:root\[data-theme="high-contrast"\]/, "high-contrast theme block");
+
+  const darkDefs = defsOf(DARK_BLOCK);
+  const lightDefs = new Map(darkDefs);
+  for (const [k, v] of defsOf(LIGHT_BLOCK)) lightDefs.set(k, v);
+  const hcDefs = new Map(darkDefs);
+  for (const [k, v] of defsOf(HC_BLOCK)) hcDefs.set(k, v);
+
+  const THEMES: Array<{ label: string; key: "dark" | "light" | "hc"; defs: Map<string, string> }> = [
+    { label: "dark/default", key: "dark", defs: darkDefs },
+    { label: "light", key: "light", defs: lightDefs },
+    { label: "high-contrast", key: "hc", defs: hcDefs },
+  ];
+
+  /** Follow `var()` chains recursively, like the browser does. */
+  function resolve(value: string, defs: Map<string, string>, seen = new Set<string>()): string {
+    return value.replace(
+      /var\(\s*(--[a-z0-9-]+)(?:\s*,\s*([\s\S]*?))?\s*\)/g,
+      (match, name, fallback) => {
+        if (seen.has(name)) return fallback || "";
+        const def = defs.get(name);
+        if (def === undefined) return fallback || match;
+        seen.add(name);
+        const resolved = resolve(def, defs, seen);
+        seen.delete(name);
+        return resolved;
+      },
+    );
+  }
+
+  it("covers every old name that still has a var() caller, and every target exists", () => {
+    // Sanity on the committed data: no duplicate new names, every case
+    // has a base literal for all three themes.
+    const news = PARITY_CASES.map((c) => c.new);
+    expect([...new Set(news)].length).toBe(news.length);
+    for (const c of PARITY_CASES) {
+      expect(c.dark).toBeDefined();
+      expect(c.light).toBeDefined();
+      expect(c.hc).toBeDefined();
+    }
+  });
+
+  const norm = (s: string) => s.replace(/\s+/g, " ").trim();
+  for (const c of PARITY_CASES) {
+    for (const theme of THEMES) {
+      it(`${c.old} -> ${c.new} resolves to the base literal in the ${theme.label} theme`, () => {
+        const value = theme.defs.get(c.new);
+        expect(value, `${c.new} is not defined in the ${theme.label} theme block`).toBeDefined();
+        const resolved = resolve(value!, theme.defs);
+        expect(norm(resolved)).toBe(norm(c[theme.key]));
+      });
+    }
+  }
 });

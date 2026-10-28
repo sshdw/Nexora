@@ -18,7 +18,7 @@
 //! hooks, the send guards, the draft and the error surfaces, and hands
 //! the composer a plain set of callbacks.
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 
 import { formatRelativeTime } from "../lib/format";
@@ -42,7 +42,6 @@ import ContextPanel from "./ContextPanel";
 import { useStrings } from "../lib/useLocale";
 import M3LoadingIndicator from "./M3LoadingIndicator";
 import M3SegmentedGroup from "./M3SegmentedGroup";
-import NexoraMark from "./NexoraMark";
 
 export interface ConversationViewProps {
   conversationId: number;
@@ -72,6 +71,9 @@ export interface ConversationViewProps {
   draft: string;
   /** Replace the composer draft (FR-007 "Use" insertion). */
   setDraft: (value: string) => void;
+  /** Effective workspace root, for the composer's read-only context row
+   *  (D3). Null renders nothing. */
+  workspaceRoot?: string | null;
 }
 
 export default function ConversationView({
@@ -86,6 +88,7 @@ export default function ConversationView({
   onMessageSent,
   draft,
   setDraft,
+  workspaceRoot = null,
 }: ConversationViewProps) {
   const { locale, t } = useStrings();
   const { messages, loading, error, sending, send } = useConversation(conversationId);
@@ -98,7 +101,9 @@ export default function ConversationView({
     refresh: refreshAttachments,
   } = useAttachments(conversationId);
   const { runs, reload: reloadAgent, expandStep, collapseStep } = useAgentRun(conversationId);
-  const [agentMode, setAgentMode] = useState<boolean>(false);
+  // R4-02: the pane opens in Agent mode. Chat is still one click away on
+  // the composer's pills, and the choice is pane state for the session.
+  const [agentMode, setAgentMode] = useState<boolean>(true);
   const [viewMode, setViewMode] = useState<"chat" | "context">("chat");
   const [agentBusy, setAgentBusy] = useState<boolean>(false);
   const [agentError, setAgentError] = useState<string | null>(null);
@@ -132,9 +137,39 @@ export default function ConversationView({
   }, [conversationId, messages]);
 
   const ready = selectedProvider !== null && selectedModel !== null;
-  const hasActiveRun = runs.some((r) => r.status === "running" || r.status === "paused" || r.status === "budget_exhausted");
+  const activeRun =
+    runs.find(
+      (r) =>
+        r.status === "running" ||
+        r.status === "paused" ||
+        r.status === "budget_exhausted",
+    ) ?? null;
+  const liveRunId = activeRun?.run_id ?? null;
+  const hasActiveRun = activeRun !== null;
   const canSend =
     ready && draft.trim() !== "" && !sending && !attachmentsBusy && !agentBusy && !hasActiveRun;
+
+  // D4: the context ring refreshes on conversation change (the pane is keyed
+  // by conversation id) and whenever the run store OR the message store
+  // advances. A content signature, not a timer and not an effect: a step
+  // frame, a status flip or a newly persisted message changes the string, an
+  // unrelated render does not. Messages contribute their count and newest id,
+  // not their text: a re-render with the same history keeps the string (no
+  // refetch), while a persisted user/assistant row changes it. Counting the
+  // text would refetch on every streamed chunk; counting nothing at all is
+  // the Chat-mode bug this replaces.
+  const contextRevision = useMemo(() => {
+    const runSignature = runs
+      .map(
+        (run) =>
+          `${run.run_id}:${run.status}:${run.finished_at ?? ""}:${run.steps
+            .map((step) => `${step.seq}:${step.status ?? ""}`)
+            .join(",")}`,
+      )
+      .join("|");
+    const newest = messages[messages.length - 1];
+    return `${messages.length}:${newest?.id ?? ""}::${runSignature}`;
+  }, [messages, runs]);
 
   // Keep the newest message in view as history loads and responses arrive.
   useEffect(() => {
@@ -150,6 +185,11 @@ export default function ConversationView({
       setAgentError(e instanceof Error ? e.message : String(e));
     }
   }, []);
+
+  // D2: the composer's one button becomes a stop while a run is live.
+  const handleStop = useCallback(() => {
+    if (activeRun !== null) void handleAgentCancel(activeRun.run_id);
+  }, [activeRun, handleAgentCancel]);
 
   const handleAgentPause = useCallback(async (runId: number) => {
     setAgentError(null);
@@ -333,8 +373,15 @@ export default function ConversationView({
   // per-row borders). Runs break the chain.
   let prevThreadRole: string | null = null;
 
+  // An empty conversation is not a scrolled thread with a footer: it IS the
+  // composer, centred, with nothing above it (D1). The class carries that
+  // state so the stage can centre the card and drop the composer's footer
+  // tone. The composer also takes focus in this state, guarded so a modal or
+  // another field is never robbed.
+  const emptyStage = viewMode === "chat" && !loading && threadItems.length === 0;
+
   return (
-    <div className="nex-main-conversation">
+    <div className={"nex-main-conversation" + (emptyStage ? " is-empty" : "")}>
       <div className="nex-context-tabs">
         <M3SegmentedGroup
           label={t("conv.viewLabel")}
@@ -354,16 +401,6 @@ export default function ConversationView({
       <div className="nex-thread" ref={threadRef} role="log" aria-label={t("conv.messagesAria")}>
         {loading ? (
           <M3LoadingIndicator label={t("conv.loadingMessages")} />
-        ) : threadItems.length === 0 ? (
-          <div className="nex-conversation-placeholder nex-empty-enter">
-            <span className="nex-conversation-empty-mark-wrap" aria-hidden="true">
-              <NexoraMark className="nex-conversation-empty-mark" width={26} height={26} />
-            </span>
-            <h2 className="nex-conversation-empty-title">{t("conv.emptyTitle")}</h2>
-            <p className="nex-conversation-empty-text">
-              {t("conv.emptyText")}
-            </p>
-          </div>
         ) : (
           threadItems.map((item) => {
             if (item.kind === "run") {
@@ -482,6 +519,12 @@ export default function ConversationView({
         modelError={modelError}
         ready={ready}
         onOpenSettings={onOpenSettings}
+        conversationId={conversationId}
+        contextRevision={contextRevision}
+        liveRunId={liveRunId}
+        onStop={handleStop}
+        workspaceRoot={workspaceRoot}
+        autoFocusField={emptyStage}
       />
         </>
       )}

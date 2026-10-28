@@ -6,22 +6,22 @@
 
 .nex-kanban {
   display: flex;
-  gap: var(--nex-sys-space-md);
+  gap: var(--space-md);
   align-items: flex-start;
   overflow-x: auto;
-  padding: var(--nex-sys-space-sm) 0;
+  padding: var(--space-sm) 0;
 }
 
 .nex-kanban-column {
   flex: 1 1 0;
-  min-width: calc(var(--nex-sys-space-xl) * 8);
+  min-width: calc(var(--space-xl) * 8);
   display: flex;
   flex-direction: column;
-  gap: var(--nex-sys-space-xs);
-  background: var(--nex-sys-color-surface-container-low);
-  border: 1px solid var(--nex-sys-color-outline-variant);
-  border-radius: var(--nex-sys-shape-medium);
-  padding: var(--nex-sys-space-sm);
+  gap: var(--space-xs);
+  background: var(--color-surface-container-low);
+  border: 1px solid var(--color-outline-variant);
+  border-radius: var(--shape-medium);
+  padding: var(--space-sm);
 }
 
 .nex-kanban-column.is-drop-target {
@@ -36,61 +36,61 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--nex-sys-space-xs);
-  font-size: var(--nex-sys-type-size-label-large);
-  font-weight: var(--nex-sys-type-weight-emphasized);
-  color: var(--nex-sys-color-on-surface);
+  gap: var(--space-xs);
+  font-size: var(--type-size-label-large);
+  font-weight: var(--type-weight-emphasized);
+  color: var(--color-on-surface);
 }
 
 .nex-kanban-card {
   display: flex;
   flex-direction: column;
-  gap: var(--nex-sys-space-xs);
-  background: var(--nex-sys-color-surface-container);
-  border: 1px solid var(--nex-sys-color-outline-variant);
-  border-radius: var(--nex-sys-shape-small);
-  padding: var(--nex-sys-space-xs) var(--nex-sys-space-sm);
+  gap: var(--space-xs);
+  background: var(--color-surface-container);
+  border: 1px solid var(--color-outline-variant);
+  border-radius: var(--shape-small);
+  padding: var(--space-xs) var(--space-sm);
 }
 
 .nex-kanban-card-title {
-  font-size: var(--nex-sys-type-size-body-medium);
-  color: var(--nex-sys-color-on-surface);
+  font-size: var(--type-size-body-medium);
+  color: var(--color-on-surface);
   overflow-wrap: anywhere;
 }
 
 .nex-kanban-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--nex-sys-space-xxs);
+  gap: var(--space-xxs);
 }
 
 .nex-kanban-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--nex-sys-space-xxs);
+  gap: var(--space-xxs);
 }
 
 .nex-kanban-note {
-  font-size: var(--nex-sys-type-size-label-small);
-  color: var(--nex-sys-color-on-surface-variant);
+  font-size: var(--type-size-label-small);
+  color: var(--color-on-surface-variant);
 }
 
 .nex-kanban-denied {
   display: flex;
   flex-direction: column;
-  gap: var(--nex-sys-space-xxs);
-  background: var(--nex-sys-color-error-container);
-  color: var(--nex-sys-color-on-error-container);
-  border: 1px solid var(--nex-sys-color-error-outline);
-  border-radius: var(--nex-sys-shape-small);
-  padding: var(--nex-sys-space-xxs) var(--nex-sys-space-xs);
-  font-size: var(--nex-sys-type-size-label-small);
+  gap: var(--space-xxs);
+  background: var(--color-error-container);
+  color: var(--color-on-error-container);
+  border: 1px solid var(--color-error-outline);
+  border-radius: var(--shape-small);
+  padding: var(--space-xxs) var(--space-xs);
+  font-size: var(--type-size-label-small);
   overflow-wrap: anywhere;
 }
 
 .nex-kanban-empty {
-  font-size: var(--nex-sys-type-size-body-small);
-  color: var(--nex-sys-color-on-surface-variant);
+  font-size: var(--type-size-body-small);
+  color: var(--color-on-surface-variant);
 }
 
 /* ---- Task step list (TaskPanel run detail): quiet ordered steps
@@ -100,7 +100,7 @@
 .nex-task-steps {
   display: flex;
   flex-direction: column;
-  gap: var(--nex-sys-space-xxs);
+  gap: var(--space-xxs);
   margin: 0;
   padding: 0;
   list-style: none;
@@ -109,10 +109,10 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--nex-sys-space-xxs) var(--nex-sys-space-xs);
+  gap: var(--space-xxs) var(--space-xs);
   min-width: 0;
-  font-size: var(--nex-sys-type-size-body-small);
-  color: var(--nex-sys-color-on-surface);
+  font-size: var(--type-size-body-small);
+  color: var(--color-on-surface);
 }
 .nex-task-step > span {
   min-width: 0;
