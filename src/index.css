@@ -42,9 +42,10 @@
 
    Also deliberately absent: any font import. shadcn's preset
    ships its own typeface; adopting it would re-letter every
-   already-merged surface. `--font-sans` below therefore
-   aliases the system stack that src/styles/tokens.css already
-   declares rather than naming a family nothing loads.
+   already-merged surface. `--font-sans` below therefore names
+   the owner-decided face — Geist, registered from
+   src/main.tsx, with the system stack after it — rather than
+   shadcn's preset family.
 
    ---- CASCADE: why the legacy sheets are imported HERE ----
 
@@ -126,6 +127,10 @@
 @import "./styles/prompts.css" layer(base);
 @import "./styles/importExport.css" layer(base);
 @import "./styles/tabs.css" layer(base);
+/* D-06: the overlay surface behind every Dock destination. Imported after
+   tabs.css so its row/panel rules can re-point the shared row primitive
+   inside the card without touching the shell's own chrome. */
+@import "./styles/dockPanels.css" layer(base);
 @import "./styles/versionControl.css" layer(base);
 @import "./styles/terminal.css" layer(base);
 @import "./styles/activityHealth.css" layer(base);
@@ -160,10 +165,10 @@
    theme blocks rather than carried as a second source of truth.
    ---------------------------------------------------------- */
 @theme inline {
-    /* The stack's font family is the system stack the merged
-       tokens already declare. Naming shadcn's preset face here
-       would point at a family nothing loads (and silently
-       re-letter every merged surface through `font-sans`). */
+    /* These keys alias the theme blocks' own stacks (Geist first,
+       Inter/Cascadia Code as fallbacks). Naming shadcn's preset
+       face here would point at a family nothing loads (and
+       silently re-letter every merged surface through `font-sans`). */
     --font-sans: var(--font-sans);
     --font-mono: var(--font-mono);
     --color-ring: var(--ring);
@@ -194,6 +199,59 @@
     --radius-2xl: calc(var(--radius) * 1.8);
     --radius-3xl: calc(var(--radius) * 2.2);
     --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+/* ============================================================
+   CONTROL TEXT — the UA's `buttontext` default, answered in
+   `layer(base)` (issue: round-4 visual QA, Defect A).
+
+   The defect, stated as the browser sees it: a `<button>` that
+   declares no colour of its own takes the UA's
+   `color: buttontext`. This app sets `color-scheme` NOWHERE on the
+   themed roots — the only one in the tree lives in the
+   high-contrast block — so the UA resolves `buttontext` against a
+   LIGHT scheme and every such control paints near-black.
+   Nothing else supplied a tone: src/styles/theme.css's element
+   reset deliberately declares no colour ("element resets never
+   invent a tone"), and shadcn's `ghost` variant names only
+   `hover:text-foreground`, no rest value. So on the tab strip's
+   `--color-surface-elevated` bar the tab close ×, the `+`, Split
+   and Zen, and the pane header's export glyph had no colour to
+   paint with at all — they read as embossing, not as controls.
+
+   WHY THIS LAYER, and not an unlayered rule or a colour on the
+   ghost variant: `base` sits BELOW `utilities` in the order
+   declared at the top of this file, so this rule is a FALLBACK BY
+   CONSTRUCTION. Every variant's own `text-*` utility
+   (`text-primary-foreground` on the filled default,
+   `text-secondary-foreground`, `text-destructive`, `text-primary`
+   on link) and every state utility (`hover:text-foreground` on
+   ghost, `disabled:text-muted-foreground` on the filled default)
+   is a normal declaration in the utilities layer, so it outranks
+   this one no matter how specific it is. An UNLAYERED rule here
+   would have beaten all of them — repainting filled buttons with
+   quiet grey on the light fill — which is the trap this placement
+   avoids.
+
+   NO `!important`: for important declarations the EARLIER layer
+   wins, so an important colour in `base` would cross the layers the
+   wrong way and beat the utilities. src/styles/motion.css is the
+   one place that trick is allowed (its reduced-motion gate), and
+   it is pinned as the only one.
+
+   The value is the sheet's quiet text role — the same token the tab
+   strip's own labels use (src/styles/tabs.css, `.nex-tab`), so the
+   action group and the tabs read as one tone tier, and it flips
+   with the theme (dark / light / high-contrast all define it). The
+   brighten on hover stays where it already was: each ghost
+   variant's `hover:text-foreground` utility. Class-scoped legacy
+   rules (`.nex-btn { color: inherit }`) still win over this type
+   selector, so the un-migrated buttons are untouched.
+   ============================================================ */
+@layer base {
+  button {
+    color: var(--color-on-surface-variant);
+  }
 }
 
 /* ============================================================
@@ -228,9 +286,10 @@
      text       muted ladder — `foreground` for content, and
                 `muted-foreground` for everything secondary. No
                 coloured chrome, no gradients, no glows
-     type       Inter for UI (cyrillic first-class), Cascadia Code
+     type       Geist for UI (cyrillic first-class), Geist Mono
                 for code/paths/commands/ids/model names only —
-                `--font-sans` / `--font-mono` below
+                `--font-sans` / `--font-mono` below; Inter and
+                Cascadia Code stay loaded as fallbacks
 
    Direction (owner pivot 2026-10-13, SUPERSEDED 2026-10-15 by
    the mono decision above — history, not paint: the canvas /
@@ -376,12 +435,14 @@
        CSS) — the token is the colour only. */
     --ring: oklch(1 0 0 / 80%);
 
-    /* Type. Inter for UI (cyrillic first-class), Cascadia Code
-       for code/paths/commands/ids/model names only. System tails
-       cover CJK/Arabic/Hebrew — too heavy to bundle, fallback is
-       honest. Loaded from @fontsource in src/main.tsx. */
-    --font-sans: "Inter Variable", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans", sans-serif;
-    --font-mono: "Cascadia Code", Consolas, "SF Mono", Menlo, monospace;
+    /* Type. Geist is the primary UI face (cyrillic first-class),
+       Geist Mono for code/paths/commands/ids/model names only;
+       Inter and Cascadia Code remain loaded as fallbacks. System
+       tails cover CJK/Arabic/Hebrew — too heavy to bundle, fallback
+       is honest. All four faces load from @fontsource in
+       src/main.tsx. */
+    --font-sans: "Geist Variable", "Inter Variable", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans", sans-serif;
+    --font-mono: "Geist Mono Variable", "Cascadia Code", Consolas, "SF Mono", Menlo, monospace;
 
     /* One shape scale. `--radius` is the step shadcn's
        `rounded-md` utilities resolve from, and it is set to the
@@ -486,11 +547,14 @@
     /* Focus */
     --focus-ring-offset-inset: -1px;
 
-    /* Type */
-    --type-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-      "Helvetica Neue", Arial, sans-serif;
-    --type-family-mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo,
-      Consolas, monospace;
+    /* Type. Geist is the primary face for the whole shell
+       (`--type-family` feeds `.nex-app { font-family }`); the legacy
+       system tail stays after it so a missing webfont still lands on
+       a readable stack rather than a synthesised serif. Inter and
+       Cascadia Code remain loaded in src/main.tsx as the
+       `--font-sans` / `--font-mono` fallbacks. */
+    --type-family: "Geist Variable", "Inter Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --type-family-mono: "Geist Mono Variable", ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
     --type-size-label-small: 11px;
     --type-size-label-medium: 12px;
     --type-size-label-large: 14px;
@@ -535,6 +599,12 @@
     --layout-measure-max: 760px;
     --layout-header-height: 52px;
     --layout-content-max: 680px;
+    /* The edge Dock rail's width (R4-01; plan §5.2 sanctions the token).
+       ONE source of truth for the rail: Dock.tsx measures itself from it,
+       and the conversation stage reserves it symmetrically so the reading
+       column can never run under the rail. 60px is the fixed rail width,
+       not a spacing step — it lives here so no component spells it. */
+    --dock-width: 60px;
 
     /* Nav */
     --nav-indicator-width: 3px;
@@ -605,8 +675,8 @@
     --input: oklch(0.18 0.004 264 / 18%);
     --ring: oklch(0.165 0.006 286 / 80%);
 
-    --font-sans: "Inter Variable", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans", sans-serif;
-    --font-mono: "Cascadia Code", Consolas, "SF Mono", Menlo, monospace;
+    --font-sans: "Geist Variable", "Inter Variable", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans", sans-serif;
+    --font-mono: "Geist Mono Variable", "Cascadia Code", Consolas, "SF Mono", Menlo, monospace;
 
     /* ============================================================
        Light-theme overrides of the relocated legacy tokens (#230

@@ -12,7 +12,9 @@
 //! approval waits.
 
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use serde::Serialize;
 
 use crate::application::agent::control::CancellationToken;
 use crate::application::execution::ToolCall;
@@ -121,6 +123,47 @@ struct PendingApproval {
     tool_name: String,
     /// Session-sticky group key for the pending call (M1-core).
     group_key: Option<String>,
+    /// The call's arguments, verbatim. Already streamed to the frontend in
+    /// `approval_requested`, so echoing them on the live snapshot (G-15)
+    /// discloses nothing new.
+    arguments: String,
+    /// Unix seconds at which the pending entry was created: the anchor the
+    /// live snapshot derives its `expires_at` window from.
+    requested_at: i64,
+}
+
+/// Read-only snapshot of a parked approval (G-15): the live-run inspector's
+/// only source of truth for "waiting for approval", since the persisted
+/// `agent_runs.status` column stays `running` while a run is parked.
+///
+/// Secret-free by construction apart from `arguments`, which is the exact
+/// payload the frontend already received on `approval_requested` (needed to
+/// re-render the approval card after a tab switch or `WebView` reload).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) struct PendingApprovalSnapshot {
+    /// `ToolCall.id` of the parked call (the key `respond` resolves).
+    pub call_id: String,
+    /// Tool name of the parked call.
+    pub name: String,
+    /// Tool-call arguments, verbatim (see the type docs).
+    pub arguments: String,
+    /// Park deadline in whole seconds ([`ApprovalGate::timeout`]).
+    pub timeout_secs: u64,
+    /// Unix seconds when the park started.
+    pub requested_at: i64,
+    /// Unix seconds when the park deadline elapses (`requested_at` + timeout).
+    pub expires_at: i64,
+}
+
+/// Current Unix time in whole seconds; `0` if the clock is before the epoch
+/// (never a panic on a mis-set system clock).
+fn now_unix_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)
+        })
 }
 
 #[derive(Debug)]
@@ -312,6 +355,8 @@ impl ApprovalGate {
                     decision: None,
                     tool_name: call.name.clone(),
                     group_key,
+                    arguments: call.arguments.clone(),
+                    requested_at: now_unix_secs(),
                 });
             }
         }
@@ -374,6 +419,8 @@ impl ApprovalGate {
                         decision: None,
                         tool_name: call.name.clone(),
                         group_key: None,
+                        arguments: call.arguments.clone(),
+                        requested_at: now_unix_secs(),
                     });
                 }
             }
@@ -488,6 +535,30 @@ impl ApprovalGate {
             } else {
                 None
             }
+        })
+    }
+
+    /// Read-only snapshot of the parked approval for the live-run inspector
+    /// (G-15). Returns `None` when nothing is pending, and also when a
+    /// decision is already recorded but not yet consumed by the park loop:
+    /// a resolved park is never reported as still awaiting approval.
+    #[must_use]
+    pub(crate) fn pending_snapshot(&self) -> Option<PendingApprovalSnapshot> {
+        let state = self.lock_state();
+        let pending = state.pending.as_ref()?;
+        if pending.decision.is_some() {
+            return None;
+        }
+        let timeout_secs = state.timeout.as_secs();
+        Some(PendingApprovalSnapshot {
+            call_id: pending.id.clone(),
+            name: pending.tool_name.clone(),
+            arguments: pending.arguments.clone(),
+            timeout_secs,
+            requested_at: pending.requested_at,
+            expires_at: pending
+                .requested_at
+                .saturating_add(i64::try_from(timeout_secs).unwrap_or(i64::MAX)),
         })
     }
 
@@ -971,6 +1042,90 @@ mod tests {
             cancelled.park_until_resolved(&call),
             Err(ParkEnd::Cancelled)
         );
+    }
+
+    #[test]
+    fn pending_snapshot_is_none_without_a_pending_approval() {
+        let gate = ApprovalGate::new(AutonomyMode::Supervised);
+        assert_eq!(gate.pending_snapshot(), None);
+        // The auto-approved fast path never creates a pending entry at all.
+        gate.set_mode(AutonomyMode::FullAutonomous);
+        let call = tool_call("auto", "read_file");
+        assert_eq!(
+            gate.request_approval(&call).expect("auto approved"),
+            ApprovalDecision::Approved
+        );
+        assert_eq!(gate.pending_snapshot(), None);
+    }
+
+    #[test]
+    fn pending_snapshot_reports_the_parked_call_and_deadline_window() {
+        let gate =
+            ApprovalGate::new(AutonomyMode::Supervised).with_timeout(Duration::from_mins(10));
+        let mut call = tool_call("snap-1", "write_file");
+        call.arguments = r#"{"path":"notes.md"}"#.to_string();
+        gate.prepare_pending_with_group(&call, Some("coding:write_file:docs".to_string()));
+
+        let snapshot = gate.pending_snapshot().expect("parked call is visible");
+        assert_eq!(snapshot.call_id, "snap-1");
+        assert_eq!(snapshot.name, "write_file");
+        assert_eq!(snapshot.arguments, r#"{"path":"notes.md"}"#);
+        assert_eq!(snapshot.timeout_secs, gate.timeout().as_secs());
+        assert_eq!(
+            snapshot.expires_at,
+            snapshot
+                .requested_at
+                .saturating_add(i64::try_from(snapshot.timeout_secs).expect("timeout fits in i64"))
+        );
+        // The anchor is real wall-clock seconds, never a placeholder zero.
+        assert!(
+            snapshot.requested_at > 0,
+            "requested_at must be a Unix-seconds stamp"
+        );
+    }
+
+    #[test]
+    fn pending_snapshot_is_none_once_a_decision_is_recorded() {
+        let gate = ApprovalGate::new(AutonomyMode::Supervised);
+        let call = tool_call("resolved-1", "write_file");
+        gate.prepare_pending(&call);
+        assert!(
+            gate.pending_snapshot().is_some(),
+            "prepared park is visible"
+        );
+        assert!(gate.respond("resolved-1", ApprovalDecision::Approved));
+        assert_eq!(
+            gate.pending_snapshot(),
+            None,
+            "a resolved-before-consume park must never read as awaiting approval"
+        );
+        // The entry itself survives until the park loop consumes it; only the
+        // snapshot hides it, so a late caller is never misled either way.
+        assert!(gate.has_any_pending());
+    }
+
+    #[test]
+    fn pending_snapshot_keeps_the_early_prepared_anchor_and_arguments() {
+        let gate =
+            ApprovalGate::new(AutonomyMode::Supervised).with_timeout(Duration::from_mins(10));
+        let mut call = tool_call("reuse-1", "write_file");
+        call.arguments = r#"{"path":"reuse.md"}"#.to_string();
+        gate.prepare_pending(&call);
+        let prepared = gate.pending_snapshot().expect("prepared entry visible");
+
+        // The park must reuse the early-prepared entry instead of replacing
+        // it, so the arguments and the requested-at anchor survive.
+        let gate2 = gate.clone();
+        let parked_call = call.clone();
+        let handle = thread::spawn(move || gate2.request_approval(&parked_call).expect("approved"));
+        wait_until_parked(&gate, "reuse-1");
+        let reused = gate.pending_snapshot().expect("still visible while parked");
+        assert_eq!(reused.arguments, prepared.arguments);
+        assert_eq!(reused.requested_at, prepared.requested_at);
+
+        assert!(gate.respond("reuse-1", ApprovalDecision::Approved));
+        assert_eq!(handle.join().expect("join"), ApprovalDecision::Approved);
+        assert_eq!(gate.pending_snapshot(), None);
     }
 
     #[test]

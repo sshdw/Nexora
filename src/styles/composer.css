@@ -97,13 +97,96 @@
   gap: 8px;
 }
 
+/* ---- Workspace context row (D3) ---------------------------------------
+   One read-only line above the card: folder basename + branch. No control,
+   no chevron, no fill. The long-name contract is middle ellipsis: the head
+   is the part CSS truncates, the tail stays fixed, so the end of a folder
+   name is never what disappears. */
+.nex-composer-context {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  min-width: 0;
+  margin: 0;
+  padding-inline: var(--space-xxs);
+  font-size: var(--type-size-label-medium);
+  color: var(--muted-foreground);
+}
+
+.nex-composer-context-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xxs);
+  min-width: 0;
+}
+
+.nex-composer-context-item svg {
+  flex-shrink: 0;
+}
+
+.nex-composer-context-name {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 42ch;
+}
+
+.nex-composer-context-head {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nex-composer-context-tail {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.nex-composer-context-branch {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 32ch;
+}
+
+.nex-composer-context-sep {
+  color: var(--color-on-surface-faint);
+}
+
 /* ---- The one elevated container -------------------------------------
    `--card` sits 0.03 oklch above the canvas (black theme §
    surfaces), which is the whole reason nothing here leans on a
-   shadow for separation. */
+   shadow for separation.
+
+   ONE INNER INSET, ON THE CONTAINER (Phase C round 4). The card's
+   four rows used to each spell their own horizontal padding — the
+   autonomy row 2px, the field 14px, the teaching row 14px, the bar
+   8px — so one card had three different left edges (measured on the
+   round-4 frame: 3.2 / 16 / 8.8 CSS px from the card's own border).
+   The inset now lives HERE, once, and every row inside the shell
+   inherits it because none of them declares a horizontal padding of
+   its own. `--space-md` equals the composer region's own inline
+   padding (`.nex-composer`, above), so the card's BORDER lines up
+   with the hint row under it; the card's TEXT sits one inset further
+   in (frame 01: border 275, hint ink 279, text ink 296 PNG px). Two
+   independent 16px values that happen to be equal — do not merge
+   them into one.
+
+   `--space-sm` on the block axis: the autonomy track used to start
+   flush against the card's top border (0px — the round-4 frame has
+   the border at y=773 and the track at y=774), and the bar's own
+   bottom padding was the only thing keeping Send off the bottom
+   edge. The container owns both now.
+
+   A row that genuinely needs to break the inset would be a
+   full-bleed separator or a scroll area; there is none in this
+   card, and a second horizontal padding anywhere below is the
+   regression this rule exists to prevent
+   (src/components/Composer.test.tsx asserts it). */
 .nex-composer-shell {
   display: flex;
   flex-direction: column;
+  padding: var(--space-sm) var(--space-md);
   border-radius: var(--radius-2xl);
   background: var(--card);
   border: 1px solid var(--border);
@@ -117,9 +200,31 @@
   border-color: color-mix(in oklch, var(--ring) 55%, transparent);
 }
 
-/* ---- Field + inline shortcut teaching --------------------------------- */
+/* ---- Field + inline shortcut teaching ---------------------------------
+   STACKED, NEVER OVERLAID. The field is a column: the editable line
+   first, the teaching legend under it, both in normal flow.
+
+   Why this changed (visual QA, Phase C round 2): the legend used to be
+   absolutely positioned at the textarea's FIRST text line and filled
+   with `--card`, so it painted OVER the native placeholder. The field
+   itself has no chrome — transparent background, no border, because the
+   shell is the control — which makes the placeholder the only thing
+   marking where typing begins. Under an opaque legend an empty composer
+   read as a band of chrome with no field at all: no placeholder, no
+   caret, nothing, under copy that says "write your first message
+   below". Nothing may be painted over the placeholder; the legend sits
+   below it. src/components/Composer.test.tsx pins both the stacking and
+   the absence of an absolute / opaque legend. */
 .nex-composer-field {
-  position: relative;
+  display: flex;
+  flex-direction: column;
+  /* The legend's row is RESERVED, so the card keeps its height when the
+     draft hides the legend on the first keystroke: a 26px collapse there
+     would move this card's top edge — and the thread above it — at
+     exactly the moment typing starts. 40px editable line + 26px legend
+     strip (0.8125rem × 1.5 line-height + 6px bottom padding, both set on
+     `.nex-composer-teach` below). */
+  min-height: 66px;
 }
 
 /* `.nex-composer-shell` is what scopes these: the field class is
@@ -133,7 +238,27 @@
   resize: none;
   min-height: 40px;
   max-height: 160px;
-  padding: 12px 14px 4px;
+  /* BLOCK ONLY, AND THE INLINE HALF EXPLICITLY DROPPED. The shell owns the
+     inline inset (see the container rule above), so this field adds none:
+     its text has to start on the same edge as the autonomy row, the
+     teaching row and the bar.
+
+     `padding-inline: 0` is not redundant with `padding-block` — it is the
+     whole point. `.nex-composer-input` is a SHARED class, and its rule in
+     conversation.css:35 declares `padding: var(--space-sm) var(--space-md)
+     var(--space-xxs)`. A block-only override here wins the block axis and
+     leaves that 16px inline padding standing, which double-counts the
+     shell's own 16px: measured on the round-5 frame, the placeholder's ink
+     sat at 318 PNG while the teaching row's `Ctrl+K` border sat at 296 and
+     the shared content edge is 296 — 22 PNG ≈ 17.6 CSS of phantom indent,
+     the one ragged edge left in the card. Reset it here, explicitly, so the
+     field's inline start is 0 *by declaration* rather than by inheritance
+     accident. The Version Control commit box keeps the shared padding: this
+     rule only reaches fields inside the composer shell.
+     src/components/Composer.test.tsx resolves both rules and asserts the
+     resulting inline start is the same as the rows that declare nothing. */
+  padding-block: 12px 4px;
+  padding-inline: 0;
   border: none;
   border-radius: var(--radius-2xl);
   background: transparent;
@@ -162,28 +287,24 @@
   outline: none;
 }
 
-/* The teaching line. It stands in for the placeholder, so it
-   paints the composer's own surface colour — which is what
-   occludes the native placeholder underneath it, leaving the
-   attribute in place as the no-JS / AT fallback.
-   `aria-hidden`: every key it shows is announced by the
-   hint row's description instead. */
+/* The teaching line: a quiet row under the editable line, in flow.
+   Paint only — no background (it must never occlude the placeholder
+   above it), no absolute inset, and no `max-height` clamp: a narrow
+   window wraps the line to two rows instead of cutting a key off.
+   `pointer-events: none` because none of it is a control — every key
+   it names is dispatched by the shortcut registry, and the hint row
+   under the composer describes them for AT. */
 .nex-composer-teach {
-  position: absolute;
-  top: 12px;
-  left: 14px;
-  right: 14px;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  background: var(--card);
+  /* Block only — the shell owns the inline inset. */
+  padding-block: 0 6px;
   color: var(--muted-foreground);
   font-size: 0.8125rem;
   line-height: 1.5;
   pointer-events: none;
-  overflow: hidden;
-  max-height: 22px;
 }
 
 /* A key chip: hairline + the nested surface tone, mono, dim.
@@ -204,12 +325,31 @@
   opacity: 0.5;
 }
 
-/* ---- Bottom control row ------------------------------------------------ */
+/* ---- Bottom control row ------------------------------------------------
+   Block only: the shell owns the inline inset, so the bar's first control
+   starts on the same edge as the text above it. The bottom padding belongs
+   to the shell as well — this row used to carry its own 8px. */
+/* The control row WRAPS. In a split pane the composer column is ~400 px and
+   the row carries five controls; with `nowrap` every item shrank below its
+   own text and the labels painted on top of each other (Chat/Agent under
+   Semi-auto under the model name). Wrapping is the honest failure mode: the
+   row becomes two lines and every control keeps its label and its hit area. */
 .nex-composer-bar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
-  padding: 2px 8px 8px 8px;
+  row-gap: 4px;
+  padding-block: 2px 0;
+}
+
+/* The spacer only does its job on a row that has room for one line. Once
+   the row wraps, a growing spacer would push the trailing group onto a line
+   of its own and left-align it; at that point the group is simply the second
+   line, and it should start at the leading edge like the first. */
+.nex-composer-bar > .nex-composer-bar-spacer {
+  flex: 1 1 0;
+  min-width: 0;
 }
 
 /* Attach: the round "+". Quiet at rest with a hairline so it
@@ -267,20 +407,27 @@
   gap: 6px;
   min-height: 28px;
   padding: 4px 10px;
-  border-radius: calc(var(--radius-lg) - 2px);
   font-size: 0.8125rem;
   color: var(--muted-foreground);
   transition: background-color var(--motion-duration-fast) var(--motion-easing-standard),
     color var(--motion-duration-fast) var(--motion-easing-standard);
 }
 
-.nex-composer-pills.nex-seg button:hover {
+/* Hover is for the segment the pill is NOT under: painting `--accent`
+   on the selected one would cover the shared indicator and read as
+   "nothing is selected" for as long as the pointer rests on it. */
+.nex-composer-pills.nex-seg button:hover:not(.is-active) {
   background: var(--accent);
   color: var(--foreground);
 }
 
+/* Selection is the pill's fill now, not the segment's. The primitive
+   paints ONE shared indicator behind the selected segment; a
+   `background` here would paint a second, opaque pill on top of it
+   (same tone, different radius), hiding the slide and stacking two
+   shapes where the sheet promises one. What is left is what the pill
+   cannot carry: the label tone and the weight. */
 .nex-composer-pills.nex-seg button.is-active {
-  background: var(--background);
   color: var(--foreground);
   font-weight: 500;
 }
@@ -300,13 +447,59 @@
   background: var(--tick);
 }
 
-/* ---- Mode / model picker ---------------------------------------------- */
+/* ---- Mode / model picker ----------------------------------------------
+   The model id is the one piece of state the composer exists to show, so
+   it may be quiet — it may not be invisible.
+
+   It carried NO colour of its own, and a `<button>` is not a plain
+   inheriting box: the UA's `button { color: buttontext }` applies to the
+   element itself and therefore BEATS the light colour inherited from the
+   shell. No `color-scheme` is declared, so `buttontext` resolves to black
+   and the id painted ~#000 on `--card` (~#101012): about 1.1:1, the
+   dimmest string in the composer — dimmer than an UNSELECTED Chat pill.
+   Measured on the real frame (docs/proof/round4/phase-c/
+   01-agent-1200x800-dark.png): the brightest pixel inside the label is
+   the card tone itself, and the label is only readable when the popover
+   is open, because the ghost variant's `aria-expanded:text-foreground`
+   is the one thing that gives it a colour.
+
+   `--muted-foreground` is the composer's metadata tone and the quiet
+   secondary token this surface already uses for every other secondary
+   string (unselected Chat / Agent, the autonomy label, the explainer,
+   the teaching legend). On `--card` it is 5.64:1 (ledger,
+   src/index.css) — quiet, and readable. Hover and open still lift the
+   trigger to `--foreground` through the ghost variant's utilities,
+   which outrank this layer. */
 .nex-composer-model-trigger {
-  max-width: 220px;
+  /* No `max-width` here any more (it was 220px). The cap belonged to the
+     LABEL's own measure, not to the button: see `.nex-composer-model-name`
+     below. `min-width: 0` stays so a card narrower than the bar's budget
+     still shrinks the label into an ellipsis instead of pushing Send out. */
   min-width: 0;
+  color: var(--muted-foreground);
 }
 
 .nex-composer-model-name {
+  /* 50ch — the longest model id in the catalogs today
+     (`nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free`, 50 characters),
+     so a real id always renders in full. `ch` is the advance of one glyph of
+     the element's own (monospace) face, so 50ch is 50 characters in Geist
+     Mono and in every fallback mono face — the measure follows the font
+     instead of guessing at pixels.
+
+     Why the change (Phase C round 4): the 220px cap on the trigger cut
+     `nvidia/nemotron-3-super-120b-a12b` to `nvidia/nemotron-3-super-…` at
+     both proof sizes, and the truncated part is the VARIANT — the only part
+     that identifies the model. The bar has the room: at 1024 the card is
+     760px, the shell's inset leaves 726px, and the widest possible label
+     (360px) + chevron + padding (396px) + Send (77px) + the mode pills
+     (73px) + three 6px gaps = 564px, leaving 162px for the spacer (Agent
+     mode, no attach control). The ellipsis stays as a ceiling for an id
+     longer than the catalog, never as the normal read.
+     src/components/Composer.test.tsx pins the 50ch against the Rust
+     catalogs, so a longer id added there fails the test rather than
+     silently truncating on screen. */
+  max-width: 50ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -334,11 +527,69 @@
   border: 1px solid var(--border);
 }
 
-/* Model list: the same segmented primitive, stacked. Rows are
-   quiet; the picked one carries a neutral wash plus the one
+/* Context-window popover (D4). The ring's numbers are the first line; the
+   provider and model are facts below it. No cache/quota/upgrade rows: this
+   product does not have those numbers. */
+.nex-composer-context-menu {
+  width: 260px;
+  padding: 8px;
+  gap: 6px;
+  border-radius: var(--radius-lg);
+  background: var(--popover);
+  border: 1px solid var(--border);
+}
+
+.nex-composer-context-usage {
+  margin: 0;
+  font-size: var(--type-size-label-large);
+  color: var(--foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+.nex-composer-context-facts {
+  display: grid;
+  gap: var(--space-xxs);
+  margin: 0;
+}
+
+.nex-composer-context-fact {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  font-size: var(--type-size-label-medium);
+}
+
+.nex-composer-context-fact dt {
+  color: var(--muted-foreground);
+}
+
+.nex-composer-context-fact dd {
+  margin: 0;
+  color: var(--foreground);
+  text-align: end;
+  overflow-wrap: anywhere;
+}
+
+/* The ring's ink lives in the icon layer: the track is the boundary token
+   (`--muted-foreground`, ≥5.6:1 on the card in every theme) and the value
+   arc is `currentColor`. The trigger therefore owns only the DATA colour;
+   hover feedback is the ghost button's own background wash. */
+.nex-composer-context-trigger {
+  color: var(--foreground);
+}
+
+/* Model list: the same segmented primitive, stacked. The primitive's
+   root is a GRID (`grid-auto-flow: column`, equal `1fr` tracks), so a
+   vertical list is expressed in grid terms — `flex-direction: column`
+   was inert on it and left the rows side by side. The component is
+   rendered with `indicator={false}`: a slide between rows means
+   nothing, and the pill would paint over a row instead of under one.
+   Rows are quiet; the picked one carries a neutral wash plus the one
    thin light tick on its leading edge. */
 .nex-composer-model-list.nex-seg {
-  flex-direction: column;
+  grid-auto-flow: row;
+  grid-auto-columns: minmax(0, 1fr);
   align-self: stretch;
   gap: 1px;
   max-height: 240px;
@@ -401,19 +652,56 @@
   border-top: 1px solid var(--border);
 }
 
+/* Same UA default as the trigger above: this bare ghost button sets no
+   colour of its own, so it would paint in `buttontext` black too. Scoped
+   by the footer class so no other surface picks the rule up; hover still
+   lifts it to `--foreground` through the ghost variant's utility. */
+.nex-composer-model-footer button {
+  color: var(--muted-foreground);
+}
+
 /* ---- Send: the light fill in the composer ---------------------------
    The one light-fill action: `ui/button`'s default variant on
-   `--primary`. Send-to-Cancel during a run is a P4 item, not
-   faked here. */
+   `--primary`. Round 5 (D2) makes it ONE button with three states:
+   ArrowUp when idle, Square while a run is live (the click stops the
+   run), and the disabled treatment only when there is no draft and no
+   live run. The swap is state, not a second control.
+
+   ARMED vs UNARMED (Phase C round 4, kept). The two send states resolve to
+   these tokens — there is no third, and the difference is a surface flip,
+   not a tone nudge:
+
+     armed    border transparent · surface `--primary` · label
+              `--primary-foreground`  (16.08:1 on its own surface)
+     unarmed  border transparent · surface transparent (the card shows
+              through) · label `--muted-foreground`  (5.64:1 on `--card`)
+
+   The unarmed state is the vendored button's own disabled treatment minus
+   ONE thing: THEME §1's disabled hairline (`disabled:border-border`). A full
+   1px boundary is secondary-button grammar, so on an empty draft Send read
+   as an enabled secondary action next to the quiet model id (round-4
+   frame). That one divergence is stated where it is made — on the className
+   in src/components/Composer.tsx — and not here, because this sheet is in
+   `layer(base)` and a Tailwind utility outranks it whatever the specificity
+   (src/index.css CASCADE). Painting the disabled state here would need
+   `!important`, which this repo reserves for the motion gate. This rule
+   therefore stays geometry-only, and src/components/Composer.test.tsx
+   asserts both that and the resolved class tokens.
+
+   The 28px floor is explicit: the visual seat is the button's 32px icon
+   size, but a future utility change must not take the hit area below the
+   brief's minimum. */
 .nex-composer-send {
   flex-shrink: 0;
+  min-width: 28px;
+  min-height: 28px;
 }
 
 /* ---- Attachments -------------------------------------------------------- */
 .nex-composer-attachments {
   list-style: none;
   margin: 0;
-  padding: 10px 10px 0;
+  /* No padding at all: the shell's inset is the chips' left edge. */
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
@@ -457,13 +745,15 @@
   font-size: 0.6875rem;
 }
 
-/* ---- Autonomy row (agent mode only) ----------------------------------- */
+/* ---- Autonomy row (agent mode only) -----------------------------------
+   No padding of its own: the shell's inline inset is the row's left edge
+   (Phase C round 4 — this row used to start 2px in while the field started
+   14px in, inside the same card). */
 .nex-agent-autonomy {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
-  padding: 0 2px;
 }
 
 .nex-agent-autonomy-label {
@@ -485,22 +775,36 @@
 .nex-composer-autonomy.nex-seg button {
   min-height: 28px;
   padding: 4px 10px;
-  border-radius: calc(var(--radius-lg) - 2px);
   font-size: 0.8125rem;
   color: var(--muted-foreground);
   transition: background-color var(--motion-duration-fast) var(--motion-easing-standard),
     color var(--motion-duration-fast) var(--motion-easing-standard);
 }
 
-.nex-composer-autonomy.nex-seg button:hover {
+.nex-composer-autonomy.nex-seg button:hover:not(.is-active) {
   background: var(--accent);
   color: var(--foreground);
 }
 
 .nex-composer-autonomy.nex-seg button.is-active {
-  background: var(--background);
   color: var(--foreground);
   font-weight: 500;
+}
+
+/* The shared indicator is the selected fill, so the segment must not
+   draw a second one over it. The pill occupies exactly the selected
+   segment's seat — the primitive measures that seat with
+   `getBoundingClientRect` and publishes `--seg-indicator-x` /
+   `--seg-indicator-w` on the group — so the two shapes must resolve to
+   the same corners. That is ONE property: the primitive's
+   `--seg-radius`, which `components.css` consumes on the segment and on
+   the pill alike. Re-pointed here, for the two groups whose seats are
+   larger than the primitive's `--radius-sm`. Neither shape declares a
+   `border-radius` of its own: a pill-only radius is exactly how the
+   pill drifted off its segment in Phase C (G-18). */
+.nex-composer-pills.nex-seg,
+.nex-composer-autonomy.nex-seg {
+  --seg-radius: calc(var(--radius-lg) - 2px);
 }
 
 /* ---- Autonomy explainer (the animated line) ---------------------------
@@ -629,4 +933,97 @@
   border: 1px solid color-mix(in oklch, var(--destructive) 30%, transparent);
   border-radius: var(--radius-md);
   text-align: left;
+}
+/* ============================================================
+   Autonomy as a compact popover (D-03 / O-12)
+
+   The composer used to open with a full autonomy row — a label, a
+   three-segment group and a live explainer sentence — above the field on
+   every Agent-mode screen. That is the row D-03 rejects: it spent a
+   permanent line on a preference most users set once. The preference is
+   still one click away; it now costs one trigger in the control row and
+   nothing at all until it is opened.
+
+   The trigger names the live mode, so the state stays readable without
+   opening anything (brief §12: "one element changes state instead of
+   spawning multiple indicators").
+   ============================================================ */
+
+.nex-composer-autonomy-trigger {
+  gap: 6px;
+  color: var(--muted-foreground);
+  font-size: 0.8125rem;
+}
+
+.nex-composer-autonomy-trigger:hover {
+  color: var(--foreground);
+}
+
+/* The dot is a mode marker, not a status light: three modes, one
+   achromatic dot, filled by the label beside it. No hue (D-08). */
+.nex-composer-autonomy-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.55;
+}
+
+.nex-composer-autonomy-name {
+  white-space: nowrap;
+}
+
+.nex-composer-autonomy-menu {
+  width: 268px;
+  padding: 8px;
+  gap: 6px;
+  border-radius: var(--radius-lg);
+  background: var(--popover);
+  border: 1px solid var(--border);
+}
+
+/* The same segmented primitive, stacked — see `.nex-composer-model-list`
+   for why the list is expressed in grid terms (the primitive's root is a
+   grid with equal column tracks, so a column direction is inert). */
+.nex-composer-autonomy-menu .nex-composer-autonomy.nex-seg {
+  grid-auto-flow: row;
+  grid-auto-columns: minmax(0, 1fr);
+  align-self: stretch;
+  gap: 1px;
+  padding: 2px;
+  border-radius: var(--radius-md);
+  background: transparent;
+}
+
+.nex-composer-autonomy-menu .nex-composer-autonomy.nex-seg button {
+  width: 100%;
+  min-height: 30px;
+  padding: 6px 8px;
+  justify-content: flex-start;
+  border-radius: var(--radius-sm);
+  font-size: 0.8125rem;
+  text-align: left;
+}
+
+/* In the popover the explainer has room to be read, so the one-line clamp
+   it carried in the row is lifted: a sentence cut at "writes still ask
+   first…" explains nothing. */
+.nex-composer-autonomy-menu .nex-autonomy-explain {
+  white-space: normal;
+  overflow: visible;
+  flex: 0 0 auto;
+  padding: 0 2px 2px;
+}
+
+/* The trailing control group - context ring, autonomy, model, send - as ONE
+   flex item. In a split pane the bar wraps; loose items used to split across
+   the break, leaving the model name stranded on the first line and Send alone
+   on the second. As a group it moves together, and `margin-inline-start: auto`
+   right-aligns it on whichever line it lands on. */
+.nex-composer-bar-trailing {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-inline-start: auto;
 }

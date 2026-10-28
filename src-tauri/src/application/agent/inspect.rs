@@ -45,12 +45,27 @@
 //! never an error. A missing run row is the only failure, surfaced as
 //! `Ok(None)` by [`inspect_persisted_run`] so the command layer can map it to
 //! its secret-free not-found error.
+//!
+//! # Live run state (G-15)
+//!
+//! [`live_run_state`] answers a different question: what does the *live* run
+//! in this conversation look like right now, including parks the persisted row
+//! cannot express? `agent_runs.status` stays `running` while a run waits at
+//! the approval gate, at the step budget, or on a user pause, so
+//! `pending_approval` is read from the registry's in-memory
+//! [`PendingApprovalSnapshot`](super::approval::PendingApprovalSnapshot) —
+//! never inferred from `status == "running"`. The function is read-only (no
+//! row is written and the park is not consumed) and the snapshot is honest by
+//! omission: no active run and no persisted row yields `Ok(None)` rather than
+//! an invented state.
 
 use serde::Serialize;
 
+use super::approval::PendingApprovalSnapshot;
 use super::governance::{AuditEntry, AuditLog, RunBudget};
 use super::lifecycle::RunState;
 use super::pipeline::Pipeline;
+use super::registry::AgentRunRegistry;
 use super::self_audit::SelfAuditReport;
 use super::snapshots::SnapshotStore;
 use crate::infrastructure::database::{Database, DatabaseError};
@@ -162,6 +177,36 @@ pub(crate) struct RunInspection {
     pub started_at: i64,
     /// Termination timestamp, Unix seconds (`None` while active).
     pub finished_at: Option<i64>,
+}
+
+/// Read-only live state of the conversation's run (G-15): the persisted row
+/// plus the in-memory park that the row cannot express.
+///
+/// `parked_reason` is fixed vocabulary (`"none"`, `"paused"`,
+/// `"awaiting_approval"`, `"awaiting_budget"`). `pending_approval` is
+/// non-`null` only when the gate really holds an unresolved park — it is never
+/// inferred from `status == "running"`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) struct LiveRunState {
+    /// `agent_runs.id` of the reported run.
+    pub run_id: i64,
+    /// Persisted `agent_runs.status`, verbatim (`"running"` while the run is
+    /// active, including while it is parked).
+    pub status: String,
+    /// Why the live run is not progressing (`"none"` when it is not parked).
+    pub parked_reason: &'static str,
+    /// The unresolved parked approval, if any.
+    pub pending_approval: Option<PendingApprovalSnapshot>,
+    /// Start timestamp, Unix seconds (`None` when no row is readable).
+    pub started_at: Option<i64>,
+    /// Termination timestamp, Unix seconds (`None` while active).
+    pub finished_at: Option<i64>,
+    /// `seq` of the last recorded step of an active run (`None` when the run
+    /// is not active or has no steps yet).
+    pub current_step_seq: Option<i64>,
+    /// Tool name of that step (`None` when it names none, e.g. a model turn).
+    pub current_step_tool: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -354,14 +399,87 @@ pub(crate) fn inspect_persisted_run(
     )))
 }
 
+/// Aggregate the live run state of one conversation (G-15).
+///
+/// Sources, in order of authority:
+/// - the registry's [`AgentRunRegistry::live_run_snapshot`] decides *which*
+///   run is reported (the active one) and supplies `parked_reason` +
+///   `pending_approval`, which exist only in memory;
+/// - the persisted `agent_runs` row supplies `status`, `started_at`, and
+///   `finished_at`;
+/// - the persisted `agent_steps` rows supply the active run's current step.
+///
+/// With no active run the newest persisted row (`started_at` DESC) is
+/// reported unparked (`"none"`), and with no row at all the answer is
+/// `Ok(None)` — an honest "no run", never an invented one. `current_step_*`
+/// stays `None` for a non-active run: a terminal run has no current step.
+///
+/// Read-only: nothing is written and no park is consumed.
+///
+/// # Errors
+///
+/// Returns [`DatabaseError`] when the run-row or step-list read fails.
+pub(crate) fn live_run_state(
+    db: &Database,
+    registry: &AgentRunRegistry,
+    conversation_id: i64,
+) -> Result<Option<LiveRunState>, DatabaseError> {
+    let persisted = super::service::list_runs_for_conversation(db, conversation_id)?;
+    let live = registry.live_run_snapshot(conversation_id);
+
+    let (run_id, parked_reason, pending_approval) = match live.as_ref() {
+        Some(snapshot) => (
+            snapshot.run_id,
+            snapshot.parked_reason,
+            snapshot.pending_approval.clone(),
+        ),
+        None => match persisted.first() {
+            Some(run) => (run.id, "none", None),
+            // No active run and nothing persisted: report nothing rather than
+            // fabricating a state the backend cannot substantiate.
+            None => return Ok(None),
+        },
+    };
+
+    // The active run's row may not be readable yet (registration precedes the
+    // insert completing), in which case `running` is the only honest status.
+    let row = persisted.iter().find(|run| run.id == run_id);
+    let status = row.map_or_else(|| "running".to_string(), |run| run.status.clone());
+
+    let (current_step_seq, current_step_tool) = if live.is_some() {
+        let steps = AgentRunRepository::new(db).list_steps(run_id)?;
+        match steps.last() {
+            Some(step) => (Some(step.seq), step.tool_name.clone()),
+            None => (None, None),
+        }
+    } else {
+        (None, None)
+    };
+
+    Ok(Some(LiveRunState {
+        run_id,
+        status,
+        parked_reason,
+        pending_approval,
+        started_at: row.map(|run| run.started_at),
+        finished_at: row.and_then(|run| run.finished_at),
+        current_step_seq,
+        current_step_tool,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
+    use super::super::approval::{ApprovalGate, AutonomyMode};
+    use super::super::control::RunControl;
     use super::super::governance::{AuditEvent, AuditLog, GateOutcome, RunBudget};
     use super::super::lifecycle::RunState;
     use super::super::pipeline::Pipeline;
+    use super::super::registry::ActiveAgentRun;
     use super::super::self_audit::{audit_run, GateDecision};
     use super::super::snapshots::{RunPosition, SnapshotStore};
     use super::*;
+    use crate::application::execution::ToolCall;
     use crate::infrastructure::database::in_memory_database;
 
     const SECRET_SENTINELS: [&str; 6] = [
@@ -847,5 +965,265 @@ mod tests {
         // failure without echoing the value.
         assert_eq!(persisted_state("transcended"), "error");
         assert_eq!(persisted_state("sk-live-hostile"), "error");
+    }
+
+    // ---- Live run state (G-15) -----------------------------------------
+
+    fn live_fixture() -> (Database, i64) {
+        let db = in_memory_database();
+        let conversation_id = crate::application::conversations::ConversationService::new(&db)
+            .create("live")
+            .expect("create conversation");
+        (db, conversation_id)
+    }
+
+    fn register_live_run(
+        registry: &AgentRunRegistry,
+        run_id: i64,
+        conversation_id: i64,
+    ) -> (ApprovalGate, RunControl) {
+        let gate = ApprovalGate::new(AutonomyMode::Supervised);
+        let control = RunControl::new();
+        registry.register(
+            run_id,
+            ActiveAgentRun {
+                conversation_id,
+                control: control.clone(),
+                gate: gate.clone(),
+            },
+        );
+        (gate, control)
+    }
+
+    fn live_call(id: &str, name: &str, arguments: &str) -> ToolCall {
+        ToolCall {
+            id: id.to_string(),
+            name: name.to_string(),
+            arguments: arguments.to_string(),
+            thought_signature: None,
+        }
+    }
+
+    #[test]
+    fn live_run_state_dto_serializes_snake_case() {
+        let view = LiveRunState {
+            run_id: 11,
+            status: "running".to_string(),
+            parked_reason: "awaiting_approval",
+            pending_approval: Some(PendingApprovalSnapshot {
+                call_id: "call-1".to_string(),
+                name: "write_file".to_string(),
+                arguments: "{}".to_string(),
+                timeout_secs: 600,
+                requested_at: 1_700_000_000,
+                expires_at: 1_700_000_600,
+            }),
+            started_at: Some(1_699_999_000),
+            finished_at: None,
+            current_step_seq: Some(4),
+            current_step_tool: Some("write_file".to_string()),
+        };
+        let raw = serde_json::to_string(&view).expect("serialize live state");
+        for key in [
+            "run_id",
+            "status",
+            "parked_reason",
+            "pending_approval",
+            "started_at",
+            "finished_at",
+            "current_step_seq",
+            "current_step_tool",
+            "call_id",
+            "name",
+            "arguments",
+            "timeout_secs",
+            "requested_at",
+            "expires_at",
+        ] {
+            assert!(raw.contains(key), "payload keeps {key}, got {raw}");
+        }
+        for camel in [
+            "runId",
+            "parkedReason",
+            "pendingApproval",
+            "startedAt",
+            "finishedAt",
+            "currentStepSeq",
+            "currentStepTool",
+            "callId",
+            "timeoutSecs",
+            "requestedAt",
+            "expiresAt",
+        ] {
+            assert!(
+                !raw.contains(camel),
+                "payload must not use camelCase {camel}, got {raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn live_run_state_is_none_without_any_run() {
+        let (db, conversation_id) = live_fixture();
+        let registry = AgentRunRegistry::default();
+        assert_eq!(
+            live_run_state(&db, &registry, conversation_id).expect("read succeeds"),
+            None,
+            "no active run and no persisted row must yield an honest None"
+        );
+    }
+
+    #[test]
+    fn live_run_state_reports_the_newest_persisted_run_when_none_is_active() {
+        let (db, conversation_id) = live_fixture();
+        let repo = AgentRunRepository::new(&db);
+        let run_id = repo
+            .create_run(Some(conversation_id), "m", "supervised")
+            .expect("create run");
+        repo.append_step(
+            run_id,
+            1,
+            "model_turn",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("model turn");
+        repo.finalize_run(run_id, "completed", Some("done"), None, None, None)
+            .expect("finalize");
+
+        let registry = AgentRunRegistry::default();
+        let view = live_run_state(&db, &registry, conversation_id)
+            .expect("read succeeds")
+            .expect("run exists");
+        assert_eq!(view.run_id, run_id);
+        assert_eq!(view.status, "completed");
+        assert_eq!(view.parked_reason, "none");
+        assert_eq!(view.pending_approval, None);
+        assert!(view.started_at.is_some());
+        assert!(view.finished_at.is_some());
+        // A terminal run has no "current" step.
+        assert_eq!(view.current_step_seq, None);
+        assert_eq!(view.current_step_tool, None);
+    }
+
+    #[test]
+    fn live_run_state_merges_the_active_park_with_row_and_current_step() {
+        let (db, conversation_id) = live_fixture();
+        let repo = AgentRunRepository::new(&db);
+        let run_id = repo
+            .create_run(Some(conversation_id), "m", "supervised")
+            .expect("create run");
+        repo.append_step(
+            run_id,
+            1,
+            "model_turn",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("model turn");
+        repo.append_step(
+            run_id,
+            2,
+            "tool_call",
+            Some("write_file"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("tool call");
+
+        let registry = AgentRunRegistry::default();
+        let (gate, _control) = register_live_run(&registry, run_id, conversation_id);
+        let call = live_call("live-1", "write_file", r#"{"path":"notes.md"}"#);
+        gate.prepare_pending_with_group(&call, Some("coding:write_file:docs".to_string()));
+
+        let view = live_run_state(&db, &registry, conversation_id)
+            .expect("read succeeds")
+            .expect("run exists");
+        assert_eq!(view.run_id, run_id);
+        // The persisted row still says `running` while parked — the park is
+        // reported only by `parked_reason` / `pending_approval`.
+        assert_eq!(view.status, "running");
+        assert_eq!(view.parked_reason, "awaiting_approval");
+        let pending = view.pending_approval.expect("park is reported");
+        assert_eq!(pending.call_id, "live-1");
+        assert_eq!(pending.name, "write_file");
+        assert_eq!(pending.arguments, r#"{"path":"notes.md"}"#);
+        assert_eq!(view.current_step_seq, Some(2));
+        assert_eq!(view.current_step_tool.as_deref(), Some("write_file"));
+    }
+
+    #[test]
+    fn live_run_state_reports_running_when_the_active_row_is_not_readable_yet() {
+        // Registration precedes (or races) the persisted insert: the only
+        // honest status for a live run without a readable row is `running`.
+        let (db, conversation_id) = live_fixture();
+        let registry = AgentRunRegistry::default();
+        let (_gate, _control) = register_live_run(&registry, 4242, conversation_id);
+        let view = live_run_state(&db, &registry, conversation_id)
+            .expect("read succeeds")
+            .expect("active run is reported");
+        assert_eq!(view.run_id, 4242);
+        assert_eq!(view.status, "running");
+        assert_eq!(view.parked_reason, "none");
+        assert_eq!(view.started_at, None);
+        assert_eq!(view.finished_at, None);
+        assert_eq!(view.current_step_seq, None);
+        assert_eq!(view.current_step_tool, None);
+    }
+
+    #[test]
+    fn live_run_state_snapshot_is_secret_free_for_a_benign_call() {
+        // The DTO's only content field is `arguments`, which the frontend
+        // already received on `approval_requested`. Even so, a benign call
+        // must never drag in a credential sentinel through any field.
+        let (db, conversation_id) = live_fixture();
+        let repo = AgentRunRepository::new(&db);
+        let run_id = repo
+            .create_run(Some(conversation_id), "m", "supervised")
+            .expect("create run");
+        let registry = AgentRunRegistry::default();
+        let (gate, _control) = register_live_run(&registry, run_id, conversation_id);
+        gate.prepare_pending(&live_call(
+            "benign-1",
+            "read_file",
+            r#"{"path":"notes.md"}"#,
+        ));
+
+        let view = live_run_state(&db, &registry, conversation_id)
+            .expect("read succeeds")
+            .expect("run exists");
+        let raw = serde_json::to_string(&view).expect("serialize live state");
+        for sentinel in ["sk-", "credential", "api_key"] {
+            assert!(
+                !raw.to_lowercase().contains(sentinel),
+                "live snapshot must stay secret-free, found {sentinel:?} in {raw}"
+            );
+        }
+        // The benign arguments do render — that is the contract (approval
+        // card re-render after a reload), not a leak.
+        assert!(raw.contains("notes.md"), "benign arguments render: {raw}");
     }
 }

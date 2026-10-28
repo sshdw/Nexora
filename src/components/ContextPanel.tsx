@@ -228,6 +228,38 @@ export default function ContextPanel({ conversationId }: { conversationId: numbe
   const budgetShare =
     budgetUsed === null || budget <= 0 ? 0 : Math.min(100, (budgetUsed / budget) * 100);
 
+  // A ROW IS A FACT, and a row of "n/a" is not one. The token counters only
+  // exist once a provider has reported usage (`has_token_data`); before that
+  // they used to occupy five cells saying nothing, which pushed the two rows
+  // that DO carry information off the fold. Absent data is now absent rows
+  // (D-02: "Не показывать cost/changes/test results, если данных нет"), and
+  // the budget readout below already explains the absence in words.
+  const tokenRows: Array<{ label: string; value: string; title?: string }> =
+    stats.has_token_data
+      ? [
+          {
+            label: t("ctx.labelTotalTokens"),
+            value: formatTokens(stats.total_tokens, true),
+          },
+          {
+            label: t("ctx.labelInputTokens"),
+            value: formatTokens(stats.input_tokens, true),
+          },
+          {
+            label: t("ctx.labelOutputTokens"),
+            value: formatTokens(stats.output_tokens, true),
+          },
+          {
+            label: t("ctx.labelReasoningTokens"),
+            value: formatTokens(stats.reasoning_tokens, true),
+          },
+          {
+            label: t("ctx.labelCacheTokens"),
+            value: `${formatCount(stats.cache_read_tokens)} / ${formatCount(stats.cache_write_tokens)}`,
+          },
+        ]
+      : [];
+
   const rows: Array<{ label: string; value: string; title?: string }> = [
     { label: t("ctx.labelSession"), value: stats.title },
     { label: t("ctx.labelMessages"), value: formatCount(stats.message_count) },
@@ -237,34 +269,11 @@ export default function ContextPanel({ conversationId }: { conversationId: numbe
     },
     { label: t("ctx.labelModel"), value: stats.model ?? t("common.na") },
     { label: t("ctx.labelContextLimit"), value: formatCount(stats.context_limit) },
-    { label: t("ctx.labelTotalTokens"), value: formatTokens(stats.total_tokens, stats.has_token_data) },
     {
       label: t("ctx.labelUsage"),
       value: `${stats.usage_percent.toFixed(0)}%`,
     },
-    {
-      label: t("ctx.labelInputTokens"),
-      value: formatTokens(stats.input_tokens, stats.has_token_data),
-      title: stats.has_token_data ? undefined : t("ctx.noTokenData"),
-    },
-    {
-      label: t("ctx.labelOutputTokens"),
-      value: formatTokens(stats.output_tokens, stats.has_token_data),
-      title: stats.has_token_data ? undefined : t("ctx.noTokenData"),
-    },
-    {
-      label: t("ctx.labelReasoningTokens"),
-      value: formatTokens(stats.reasoning_tokens, stats.has_token_data),
-      title: stats.has_token_data ? undefined : t("ctx.noTokenData"),
-    },
-    {
-      label: t("ctx.labelCacheTokens"),
-      value:
-        stats.has_token_data
-          ? `${formatCount(stats.cache_read_tokens)} / ${formatCount(stats.cache_write_tokens)}`
-          : t("common.na"),
-      title: stats.has_token_data ? undefined : t("ctx.noTokenData"),
-    },
+    ...tokenRows,
     { label: t("ctx.labelUserMessages"), value: formatCount(stats.user_message_count) },
     { label: t("ctx.labelAssistantMessages"), value: formatCount(stats.assistant_message_count) },
     { label: t("ctx.labelSessionCreated"), value: formatDateTime(stats.created_at) },
