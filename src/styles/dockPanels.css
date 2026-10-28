@@ -140,12 +140,17 @@
   text-align: start;
 }
 
+/* Row states are OPAQUE tone steps, not the translucent `--state-*`
+   overlays: the action group (below) paints its own plate over the
+   row's trailing edge, and a translucent plate stacked on a
+   translucent row would composite twice and read as a smudge. Opaque
+   tokens let the plate match the row exactly in every state. */
 .nex-sessions-row:hover {
-  background: var(--state-hover);
+  background: var(--color-surface-container-high);
 }
 
 .nex-sessions-row:active {
-  background: var(--state-pressed);
+  background: var(--color-surface-container-highest);
 }
 
 .nex-sessions-row:focus-visible {
@@ -154,7 +159,11 @@
 }
 
 .nex-sessions-row.is-current {
-  background: var(--state-selected);
+  background: var(--color-surface-container-highest);
+}
+
+.nex-sessions-row.is-current:hover {
+  background: var(--color-surface-container-highest);
 }
 
 .nex-sessions-row.is-current::before {
@@ -257,28 +266,95 @@
   padding-inline: var(--space-xxs);
 }
 
-/* ---- Workspace ---- */
-.nex-workspace-panel {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-xs);
-  min-height: 0;
-  flex: 1 1 auto;
-  overflow-y: auto;
-  padding: var(--space-xs);
+/* ---- Session row actions (R6-06) ----
+   The row is a button and the actions are a SIBLING group pinned to
+   the item's trailing edge: buttons cannot nest, and keeping them
+   apart means the row's press target is never confused with
+   archive/delete. The group OVERLAYS the row (absolute, so the title
+   never reflows while the pointer moves down the list) and paints the
+   row's own tone as a plate, because the three glyph buttons are ghost
+   at rest — without it the title would run under them.
+
+   Reveal is `opacity` + `pointer-events`, never `display` or
+   `visibility`: a visibility-hidden subtree is not focusable, which
+   is exactly how the old pointer-only reveal lost the actions for
+   keyboard users. Every button stays in the tab order, focusing one
+   reveals the group (`:focus-within`), and Tab from a row lands in
+   its own actions. */
+.nex-sessions-item {
+  position: relative;
 }
 
-.nex-workspace-current {
-  padding: var(--space-xs);
+.nex-sessions-row-actions {
+  position: absolute;
+  top: 50%;
+  inset-inline-end: var(--space-xxs);
+  transform: translateY(-50%);
+  padding-inline-start: var(--space-xxs);
+  border-radius: var(--shape-extra-small);
+  background: var(--color-surface-floating);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--motion-duration-fast) var(--motion-easing-standard),
+    background-color var(--motion-duration-fast) var(--motion-easing-standard);
+}
+
+/* Three 28px buttons at zero gap: the plate claims ~88px of a 260px
+   row, so every pixel of separation counts. The glyphs themselves are
+   the separation — M3IconButton's hit area is already padded. */
+.nex-sessions-actions {
+  gap: 0;
+}
+
+/* Plate tone follows the row it sits on. Order matters: the hover rule
+   comes after the resting tone and the current-row rule after that, so
+   a current row that is also hovered keeps the selected step. */
+.nex-sessions-item:hover .nex-sessions-row-actions {
+  background: var(--color-surface-container-high);
+}
+
+.nex-sessions-item:has(.nex-sessions-row.is-current) .nex-sessions-row-actions {
+  background: var(--color-surface-container-highest);
+}
+
+.nex-sessions-item:hover .nex-sessions-row-actions,
+.nex-sessions-item:focus-within .nex-sessions-row-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Rename replaces the row in place: the input is the same height as
+   the two-line row it replaces, so the list does not jump when a title
+   is edited. The row steps to the nested tone while it is editable —
+   the one state where the row is an input, not a destination. */
+.nex-sessions-row.is-renaming {
+  background: var(--color-surface-container-low);
+}
+
+.nex-sessions-rename-input {
+  width: 100%;
+  height: 28px;
+  padding: 0 var(--space-xs);
+  border: 1px solid var(--color-outline-variant);
   border-radius: var(--shape-extra-small);
   background: var(--color-surface-canvas);
+  color: var(--color-on-surface);
+  font-family: inherit;
+  font-size: var(--type-size-body-small);
+  font-weight: var(--type-weight-medium);
 }
 
-.nex-workspace-current.is-empty {
-  background: transparent;
-  padding: var(--space-xxs) var(--space-xs) 0;
+.nex-sessions-rename-input:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
 }
 
+/* ---- Workspace ----
+   The Workspace panel and its destination were deleted in R6-03: the
+   composer's context row owns choosing a folder now. One class stayed
+   because another surface shares it — ActivityPanel renders its empty-state
+   line with `.nex-workspace-name` (a pre-existing cross-use, not a
+   leftover of this panel). */
 .nex-workspace-name {
   margin: 0;
   font-size: var(--type-size-body-large);
@@ -287,33 +363,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.nex-workspace-path {
-  margin: var(--space-xxxs) 0 0;
-  font-family: var(--type-family-mono);
-  font-size: var(--type-size-label-medium);
-  color: var(--color-on-surface-variant);
-  /* Paths are the one place a mid-word break is honest: the value is a
-     string, not prose. Two lines is enough for any realistic root. */
-  overflow-wrap: anywhere;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.nex-workspace-action {
-  align-self: flex-start;
-}
-
-.nex-workspace-row-path {
-  font-family: var(--type-family-mono);
-  font-size: var(--type-size-label-medium);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  display: block;
 }
 
 /* ---- Activity ---- */

@@ -1,12 +1,12 @@
 /* ============================================================
-   Nexora Conversation Tabs + Pane header + Split + Zen
+   Nexora Conversation Tabs + Pane header + Split
    #230 Phase 2 — MAP rows 4-6, NEXORA-COMPONENT-MAP.md is the
    approval, NEXORA-DESIGN-SYSTEM.md §4 the shell contract.
 
    Migrated into this one sheet (the old per-panel rules are
    gone): the docked tab strip (first row of .nex-main), the
-   per-pane header (title, workspace chip, export), the split
-   grid and chromeless zen mode.
+   per-pane header (title, workspace chip, export) and the split
+   grid. Zen's rules were deleted with the mode (R6-04).
 
    Tab grammar (MAP row 4, tabs.md `variant="line"`): quiet
    TEXT rows — no pill, no wash, no accent-coloured label. The
@@ -53,9 +53,9 @@
   scrollbar-width: thin;
 }
 
-/* ---- Action group: Split · Zen · `+`, one quiet tier.
+/* ---- Action group: Export · Split, one quiet tier.
 
-   Their colour is NOT declared here. All three are the `quiet`
+   Their colour is NOT declared here. Both are the `quiet`
    variant (M3Button → ghost, M3IconButton → ghost), so their rest
    tone is the ONE base-layer control-text fallback in src/index.css
    — `button { color: var(--color-on-surface-variant) }` — the same
@@ -63,9 +63,12 @@
    strip read as one tone tier instead of two. Until that rule
    existed these controls had no colour at all and fell through to
    the UA's `buttontext`: near-black on this bar, i.e. invisible
-   (round-4 visual QA, Defect A). The hover brighten is the ghost
-   variant's own `hover:text-foreground` utility, a utilities-layer
-   declaration that outranks the fallback by layer order.
+   (round-4 visual QA, Defect A). R6-08 now declares `color-scheme`,
+   but the fallback stays: a variant's own `text-*` is still the
+   only thing allowed to colour a control. The hover brighten is the
+   ghost variant's own `hover:text-foreground` utility, a
+   utilities-layer declaration that outranks the fallback by layer
+   order.
 
    Restating the tone here would be a second source of truth for one
    role, and paneChrome.test.ts fails on it. ---- */
@@ -340,47 +343,3 @@
   display: none;
 }
 
-/* ---- Zen: chromeless reading mode. The app grid collapses to a
-   single column; sidebar, tab strip, and pane headers are removed
-   from layout (display:none keeps tab order clean — nothing hidden
-   stays focusable). The floating exit control is the single way
-   back besides Esc, pinned to the dialog z-step. ---- */
-.nex-app.nex-zen {
-  grid-template-columns: 1fr;
-}
-
-.nex-app.nex-zen [data-slot="sidebar"],
-.nex-app.nex-zen .nex-tabstrip,
-.nex-app.nex-zen .nex-pane-header {
-  display: none;
-}
-
-.nex-app.nex-zen .nex-main {
-  background: var(--color-surface-canvas);
-}
-
-/* ---- Zen-from-split: the split grid stays mounted and collapses to one
-   column; the secondary pane hides via chrome-visibility CSS (same
-   technique as the zen header rules above) so both ConversationView
-   instances survive entering/exiting zen. ---- */
-.nex-app.nex-zen .nex-split {
-  grid-template-columns: 1fr;
-}
-
-.nex-app.nex-zen .nex-pane--secondary {
-  display: none;
-}
-
-/* Floating zen exit: a fixed control on the dialog z-step, so it earns
-   the floating tier, a floating-tier radius (small — it is a control,
-   not a status), and the one shadow a floating layer is allowed. */
-.nex-zen-exit {
-  position: fixed;
-  top: var(--space-sm);
-  right: var(--space-sm);
-  z-index: var(--nex-sys-z-dialog);
-  background: var(--color-surface-floating);
-  border: 1px solid var(--color-outline-variant);
-  border-radius: var(--shape-small);
-  box-shadow: var(--nex-sys-elevation-level1);
-}

@@ -1,26 +1,64 @@
-//! Context-window ring + popover (D4).
+//! Context-window ring + popover (D4 / R6-05).
 //!
 //! The one hard rule: `has_token_data: false` is a REAL state, not zero. The
-//! ring shows a dashed track and every number reads `n/a`; it never estimates
-//! tokens, cache hit rate or quota. These pins cover that state (including a
-//! failed fetch, which degrades to the same honest n/a), the value state's
-//! numbers, and the compact formatter the popover depends on.
+//! ring shows a solid boundary track and every number reads `n/a`; it never
+//! estimates tokens, cache hit rate or quota. These pins cover that state
+//! (including a failed fetch, which degrades to the same honest n/a), the
+//! value state's numbers, the panel the popover now carries, and the compact
+//! formatter the popover depends on.
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ConversationContextStats } from "../lib/tauri";
 import { LocaleProvider } from "../lib/useLocale";
 import ContextRing, { formatCompactTokens } from "./ContextRing";
 
-const { mockStats } = vi.hoisted(() => ({ mockStats: vi.fn() }));
+const { mockStats, listAgentRuns, listAgentSteps, getAgentStepObservation } = vi.hoisted(
+  () => ({
+    mockStats: vi.fn(),
+    listAgentRuns: vi.fn(),
+    listAgentSteps: vi.fn(),
+    getAgentStepObservation: vi.fn(),
+  }),
+);
 
-vi.mock("../lib/tauri", () => ({ conversationContextStats: mockStats }));
+vi.mock("../lib/tauri", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/tauri")>()),
+  conversationContextStats: mockStats,
+  listAgentRuns,
+  listAgentSteps,
+  getAgentStepObservation,
+}));
 
 afterEach(cleanup);
 
+// Radix's Slider (inside the popover's context panel) measures its thumb
+// with a ResizeObserver, which jsdom does not implement.
+beforeAll(() => {
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    },
+  );
+});
+
+afterAll(() => {
+  vi.unstubAllGlobals();
+});
+
 beforeEach(() => {
   mockStats.mockReset();
+  listAgentRuns.mockReset();
+  listAgentSteps.mockReset();
+  getAgentStepObservation.mockReset();
+  listAgentRuns.mockResolvedValue([]);
+  listAgentSteps.mockResolvedValue([]);
+  getAgentStepObservation.mockResolvedValue("");
+  window.localStorage.clear();
 });
 
 function stats(overrides: Partial<ConversationContextStats> = {}): ConversationContextStats {
@@ -60,7 +98,7 @@ function renderRing() {
 }
 
 describe("context ring — no token data", () => {
-  it("reads n/a and draws a dashed track, never a zero percent", async () => {
+  it("reads n/a and draws a solid empty track, never a zero percent", async () => {
     mockStats.mockResolvedValue(stats({ has_token_data: false, usage_percent: 0, total_tokens: 0 }));
     const { container } = renderRing();
     const trigger = await screen.findByRole("button", { name: "Context window: n/a" });
@@ -73,8 +111,9 @@ describe("context ring — no token data", () => {
     // token that clears 3:1 on the card in every theme.
     expect(track).toHaveAttribute("stroke", "var(--muted-foreground)");
     expect(track?.getAttribute("stroke")).toMatch(/^var\(--[a-z-]+\)$/);
-    expect(track).toHaveAttribute("stroke-dasharray", "2 2");
-    // No value arc: an empty solid ring would read as a real 0%.
+    // R6-09: a dashed track read as a loading spinner. The empty state is a
+    // present-but-empty ring, and the absent value arc is what says so.
+    expect(track).not.toHaveAttribute("stroke-dasharray");
     expect(svg?.querySelectorAll("circle")).toHaveLength(1);
   });
 
@@ -90,7 +129,10 @@ describe("context ring — no token data", () => {
     renderRing();
     const trigger = await screen.findByRole("button", { name: "Context window: n/a" });
     fireEvent.click(trigger);
-    expect(screen.getByText("n/a")).toBeInTheDocument();
+    // The usage line and the panel's own reading both say n/a; neither
+    // invents a zero.
+    expect(screen.getAllByText("n/a").length).toBeGreaterThan(0);
+    expect(screen.getByRole("slider", { name: "Context budget" })).toBeInTheDocument();
   });
 });
 
@@ -126,6 +168,39 @@ describe("context ring — value", () => {
     renderRing();
     fireEvent.click(await screen.findByRole("button", { name: "Context window: 6% used" }));
     expect(screen.getByText("openai")).toBeInTheDocument();
+  });
+});
+
+describe("context ring — the panel it carries (R6-05)", () => {
+  it("fetches the stats once, however often the popover opens", async () => {
+    mockStats.mockResolvedValue(stats());
+    renderRing();
+    const trigger = await screen.findByRole("button", { name: "Context window: 6% used" });
+    expect(mockStats).toHaveBeenCalledTimes(1);
+    fireEvent.click(trigger);
+    // The body receives the stats as a prop; it never asks again.
+    expect(mockStats).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("slider", { name: "Context budget" })).toBeInTheDocument();
+  });
+
+  it("reads runs only while the popover is open", async () => {
+    mockStats.mockResolvedValue(stats());
+    renderRing();
+    await screen.findByRole("button", { name: "Context window: 6% used" });
+    // Closed content is unmounted by Radix, so a reader who never opens the
+    // ring never pays for runs → steps → diffs.
+    expect(listAgentRuns).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Context window: 6% used" }));
+    await waitFor(() => expect(listAgentRuns).toHaveBeenCalledWith(7));
+  });
+
+  it("carries the context budget control into the popover", async () => {
+    mockStats.mockResolvedValue(stats());
+    renderRing();
+    fireEvent.click(await screen.findByRole("button", { name: "Context window: 6% used" }));
+    expect(screen.getByRole("slider", { name: "Context budget" })).toBeInTheDocument();
+    expect(screen.getByText("Context budget")).toBeInTheDocument();
   });
 });
 

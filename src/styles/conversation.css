@@ -222,9 +222,7 @@
      Scope is this box only. The tab strip and the pane header live
      OUTSIDE `.nex-main-conversation` and stay full-bleed — they sit above
      the rail's vertical band (owner scope: conversation stage only). The
-     stage's own chrome row, `.nex-context-tabs`, opts back out in
-     context.css so it keeps its full-bleed band; the composer band opts
-     out in the rule directly below. */
+     composer band opts out in the rule directly below. */
   padding-inline: var(--dock-width);
 }
 
@@ -257,11 +255,10 @@
         where the 760px column is clamped by the stage box
         (`margin-inline` alone would let the column cross x = 60 there).
 
-   Same mechanism as `.nex-context-tabs` in context.css (a negative
-   inline margin cancels the reserve), one step finer: the chrome row's
-   content is console chrome that lives above the rail's vertical band,
-   so it keeps only step 1 and its content returns to the pane edge. A
-   band that carries the reading column takes both steps and keeps its
+   The one opt-out left is this band: the stage's chrome row that used to
+   need it (`.nex-context-tabs`) was deleted with the view switch (R6-05),
+   so a negative inline margin here has no sibling to keep in step with.
+   A band that carries the reading column takes both steps and keeps its
    content reserved.
 
    Sweep result (ConversationView's direct children): this is the ONLY

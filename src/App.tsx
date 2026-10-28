@@ -10,13 +10,11 @@ import DebtPanel from "./components/DebtPanel";
 import Dock from "./components/Dock";
 import DockPanel, { type DockPanelId } from "./components/DockPanel";
 import SessionsPanel from "./components/SessionsPanel";
-import WorkspacePanel from "./components/WorkspacePanel";
 import DocsPanel from "./components/DocsPanel";
 import EmptyState from "./components/EmptyState";
 import ReleasePanel from "./components/ReleasePanel";
 import { ExportModal, ImportModal } from "./components/ImportExportModals";
 import IssuesPanel from "./components/IssuesPanel";
-import M3Button from "./components/M3Button";
 import { NavigationProvider, type Navigation } from "./components/NavigationContext";
 import NexoraMark from "./components/NexoraMark";
 import OnboardingFlow from "./components/OnboardingFlow";
@@ -43,7 +41,6 @@ import {
   COMBO_TAB_NEXT_TAB,
   COMBO_TAB_PREV_PAGEDUP,
   COMBO_TASKS_OPEN,
-  COMBO_ZEN_TOGGLE,
   matchesAnyCombo,
   matchesCombo,
 } from "./lib/shortcuts";
@@ -118,9 +115,6 @@ function AppShell() {
   // and the conversation header, so either surface's change reflects in the
   // other immediately (no mirrors, no focus-resync).
   const autonomy = useAutonomy();
-  // Zen reading mode: chromeless (sidebar + tab strip + pane headers hidden
-  // via .nex-zen), Esc exits. Session-only, like tab state.
-  const [zen, setZen] = useState(false);
   // Command palette (Ctrl+K): launcher over the registry in lib/commands.ts.
   const [paletteOpen, setPaletteOpen] = useState(false);
   // Shortcuts help dialog (Ctrl+/): grouped table over lib/shortcuts.ts.
@@ -136,7 +130,6 @@ function AppShell() {
   // A palette-chosen command runs after the palette unmounts (see the
   // deferred-run effect below), so focus moves land on live targets.
   const [pendingPaletteRun, setPendingPaletteRun] = useState<(() => void) | null>(null);
-  const mainRef = useRef<HTMLDivElement>(null);
 
   const draftFor = useCallback(
     (id: number) => drafts[id] ?? "",
@@ -270,7 +263,7 @@ function AppShell() {
   // were dead ends and the shell had no way back to a closed conversation.
   const [dockPanel, setDockPanel] = useState<DockPanelId | null>(null);
   const handlePanelToggle = useCallback(
-    (panel: "workspace" | "sessions" | "activity" | "settings") => {
+    (panel: "sessions" | "activity" | "settings") => {
       if (panel === "settings") {
         setDockPanel(null);
         router.openSettings();
@@ -317,10 +310,6 @@ function AppShell() {
     if (other !== undefined) tabs.openInSplit(other);
   }, [tabs]);
 
-  const toggleZen = useCallback(() => {
-    setZen((prev) => !prev);
-  }, []);
-
   // Language switch (Settings appearance segmented control + palette
   // command): a straight EN<->RU toggle, persisted per device.
   const toggleLanguage = useCallback(() => {
@@ -349,26 +338,12 @@ function AppShell() {
     router.openSettings();
   }, [router]);
 
-  // Entering zen keeps focus in content (the main landmark); leaving zen
-  // returns focus to the active tab so keyboard users resume where they
-  // were. Reduced-motion users get the same instant chrome swap — zen never
-  // animates, only toggles visibility.
-  useEffect(() => {
-    if (zen) {
-      mainRef.current?.focus();
-    } else {
-      document
-        .querySelector<HTMLElement>(".nex-tab.is-active .nex-tab-label")
-        ?.focus();
-    }
-  }, [zen]);
-
-  // Global tab/split/zen shortcuts (full map documented in
+  // Global tab/split shortcuts (full map documented in
   // useConversationTabs.ts). Guarded: typing targets (inputs, textareas,
   // selects, contentEditable, rename fields) keep their keys — only the
   // window-level combos below are intercepted, and none collides with the
   // existing unmodified keys (composer Enter, rename/modal/toolbar Escape,
-  // segmented arrows). An open dialog owns Escape, so zen yields to modals.
+  // segmented arrows).
   useEffect(() => {
     const isTypingTarget = (target: EventTarget | null) => {
       if (!(target instanceof HTMLElement)) return false;
@@ -376,15 +351,7 @@ function AppShell() {
       const tag = target.tagName;
       return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
     };
-    const dialogOpen = () => document.querySelector('[role="dialog"]') !== null;
-
     const onKeyDown = (event: KeyboardEvent) => {
-      // shortcut:zen.exit — an open dialog owns Escape, so zen yields.
-      if (event.key === "Escape" && zen && !dialogOpen()) {
-        event.preventDefault();
-        setZen(false);
-        return;
-      }
       // Tab mutations surface the conversation: same overlay-exit contract
       // as clicking a tab or sidebar row (Settings/Library/VCS never sit
       // above a switched tab) — see router.closeAll.
@@ -416,8 +383,8 @@ function AppShell() {
         }
       }
       if (event.altKey && !event.ctrlKey && !event.metaKey) {
-        // Non-character shortcuts run even from typing targets: Alt+W/S/Z
-        // produce no text in inputs, so close/split/zen never steal composer
+        // Non-character shortcuts run even from typing targets: Alt+W/S
+        // produce no text in inputs, so close/split never steal composer
         // input. Alt+digits stay guarded — they can compose characters on
         // some layouts, so the typing-target check still owns that branch.
         // shortcut:tabs.close-active
@@ -429,10 +396,6 @@ function AppShell() {
           // shortcut:layout.split
           event.preventDefault();
           handleToggleSplit();
-        } else if (matchesCombo(event, COMBO_ZEN_TOGGLE)) {
-          // shortcut:layout.zen
-          event.preventDefault();
-          if (!dialogOpen()) toggleZen();
         } else {
           if (isTypingTarget(event.target)) return;
           // shortcut:tabs.jump — range match (position math lives here);
@@ -449,7 +412,7 @@ function AppShell() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [zen, tabs, handleToggleSplit, toggleZen, router]);
+  }, [tabs, handleToggleSplit, router]);
 
   // Command-palette toggle (shortcut:palette.toggle — Ctrl+K, with Ctrl+P
   // as a collision-free alias: the existing Ctrl map owns only
@@ -585,7 +548,6 @@ function AppShell() {
             if (tabs.activeId !== null) tabs.close(tabs.activeId);
           },
           toggleSplit: handleToggleSplit,
-          toggleZen,
           showShortcuts: () => setShortcutsOpen(true),
           toggleLanguage,
           addWorkspaceRoot: () => void workspace.addRootFolder(),
@@ -605,7 +567,6 @@ function AppShell() {
       focusComposer,
       tabs,
       handleToggleSplit,
-      toggleZen,
       toggleLanguage,
       replayOnboarding,
       workspace,
@@ -651,24 +612,15 @@ function AppShell() {
   // A prompt can only be staged when a conversation is open.
   const hasActiveConversation = activeConversation != null;
   const showOverlays = router.hasOverlay;
-  // The split grid stays mounted in zen (the secondary pane hides via
-  // .nex-zen CSS, same technique as the zen chrome rules) so both
-  // ConversationView instances survive entering/exiting zen. Split
-  // open/close itself still remounts panes (tree position changes between
-  // single-pane and grid) — accepted: toggling split is an explicit layout
-  // change, not a transient overlay.
   const splitVisible =
     !showOverlays && tabs.splitId !== null && splitConversation !== undefined;
 
   // D-04 / C-02: at two or more open sessions the strip owns identity AND the
-  // session actions (workspace chip, export, Zen), so the pane header is not
+  // session actions (workspace chip, export), so the pane header is not
   // rendered at all — one row instead of two rows saying the same thing. In
   // split view both panes keep their headers: two panes have to be told apart,
   // and each needs its own export.
   const paneHeaderHidden = tabs.openIds.length > 1 && tabs.splitId === null;
-  // The strip carries Zen whenever it is on screen, so the pane header stops
-  // offering a second (and, in split, a third) control for the same mode.
-  const zenInPaneHeader = tabs.openIds.length < 2;
 
   // Live pane content, extracted so Settings/Library overlays render above
   // still-mounted panes (hidden via CSS, never unmounted) instead of
@@ -713,13 +665,9 @@ function AppShell() {
           onOpenSettings={openDefaultSettings}
           onMessageSent={() => void reload()}
           onExport={setExportTargetId}
-          workspaceRoot={workspace.root}
-          workspaceLoading={workspace.loading}
+          workspace={workspace}
           secondary={false}
           hideHeader={paneHeaderHidden}
-          zen={zen}
-          onToggleZen={toggleZen}
-          showZen={zenInPaneHeader}
         />
         <ConversationPane
           conversation={splitConversation}
@@ -734,12 +682,8 @@ function AppShell() {
           onOpenSettings={openDefaultSettings}
           onMessageSent={() => void reload()}
           onExport={setExportTargetId}
-          workspaceRoot={workspace.root}
-          workspaceLoading={workspace.loading}
+          workspace={workspace}
           secondary
-          zen={zen}
-          onToggleZen={toggleZen}
-          showZen={zenInPaneHeader}
         />
       </div>
     ) : (
@@ -756,12 +700,9 @@ function AppShell() {
         onOpenSettings={openDefaultSettings}
         onMessageSent={() => void reload()}
         onExport={setExportTargetId}
-        workspaceRoot={workspace.root}
-        workspaceLoading={workspace.loading}
+        workspace={workspace}
         secondary={false}
         hideHeader={paneHeaderHidden}
-        zen={zen}
-        onToggleZen={toggleZen}
       />
     );
 
@@ -813,7 +754,7 @@ function AppShell() {
 
   return (
     <SnackbarProvider>
-    <div className={"nex-app" + (zen ? " nex-zen" : "")}>
+    <div className="nex-app">
       <a className="nex-skip-link" href="#nex-main-content">
         {t("app.skipLink")}
       </a>
@@ -844,17 +785,13 @@ function AppShell() {
             conversations={conversations}
             loading={loading}
             activeId={tabs.activeId}
+            busy={working}
             onOpen={handleSelect}
+            onRename={rename}
+            onArchive={archive}
+            onRestore={restore}
+            onDelete={remove}
           />
-        </DockPanel>
-      )}
-      {!showOverlays && dockPanel === "workspace" && (
-        <DockPanel
-          id="workspace"
-          title={t("dock.workspace")}
-          onClose={closeDockPanel}
-        >
-          <WorkspacePanel workspace={workspace} />
         </DockPanel>
       )}
       {!showOverlays && dockPanel === "activity" && (
@@ -872,8 +809,8 @@ function AppShell() {
           />
         </DockPanel>
       )}
-      <div className="nex-main" id="nex-main-content" tabIndex={-1} ref={mainRef}>
-        {!zen && !showOverlays && (
+      <div className="nex-main" id="nex-main-content" tabIndex={-1}>
+        {!showOverlays && (
           <ConversationTabs
             tabs={tabs.openIds.map(resolveTab)}
             activeId={tabs.activeId}
@@ -883,8 +820,6 @@ function AppShell() {
               router.closeAll();
             }}
             onClose={tabs.close}
-            zen={zen}
-            onToggleZen={toggleZen}
             splitOpen={tabs.splitId !== null}
             onToggleSplit={handleToggleSplit}
             workspaceRoot={workspace.root}
@@ -963,27 +898,6 @@ function AppShell() {
           conversationContent
         )}
       </div>
-      {/* Polite announcement of zen enter/exit: the chrome swap is instant
-          with no visual transition, so screen-reader users get the mode
-          change (plus how to leave) here; focus moves alongside (see the
-          zen effect above). */}
-      <div className="nex-sr-only" aria-live="polite">
-        {zen
-          ? t("app.zenOn")
-          : t("app.zenOff")}
-      </div>
-      {zen && (
-        <div className="nex-zen-exit">
-          <M3Button
-            variant="quiet"
-            size="sm"
-            onClick={toggleZen}
-            title={t("app.zenExitTitle")}
-          >
-            {t("app.zenExit")}
-          </M3Button>
-        </div>
-      )}
       {exportTargetId !== null &&
         (() => {
           const target = conversations.find((c) => c.id === exportTargetId);

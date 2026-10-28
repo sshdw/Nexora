@@ -35,7 +35,6 @@ const DEPS_STUB = {
   tabPrev: () => {},
   tabCloseActive: () => {},
   toggleSplit: () => {},
-  toggleZen: () => {},
   showShortcuts: () => {},
   toggleLanguage: () => {},
   addWorkspaceRoot: () => {},

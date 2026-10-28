@@ -5,6 +5,12 @@
 //! used (`PlusIcon`, `ArrowUpIcon`, …) so a call site keeps reading the
 //! same word while the whole app changes weight and grid in one place.
 //!
+//! ONE DOCUMENTED EXCEPTION: `StopIcon` is filled. At 16 px a hollow
+//! square reads as a checkbox, not as "stop the run", so the stop glyph
+//! is the single filled icon in the product (R6-01). It is built through
+//! `filledIcon` below, and `iconsInvariant.test.ts` pins that the fill
+//! weight appears exactly once, in that helper.
+//!
 //! Sizes are the two steps the shell uses: 16 (default) and 20. A
 //! component that needs a different optical size changes the layout, not
 //! the glyph.
@@ -25,6 +31,7 @@ import {
   BookOpen,
   BoxArrowUp,
   CaretDown,
+  Check,
   CircleNotch,
   FlagPennant,
   FolderSimple,
@@ -74,6 +81,24 @@ function uiIcon(Glyph: Icon, displayName: string) {
   return UiIcon;
 }
 
+/** The ONE filled glyph (see the module header): `StopIcon` only. */
+function filledIcon(Glyph: Icon, displayName: string) {
+  function FilledIcon({ size = 16, ...rest }: UiIconProps) {
+    return (
+      <Glyph
+        size={size}
+        weight="fill"
+        color="currentColor"
+        aria-hidden="true"
+        focusable="false"
+        {...rest}
+      />
+    );
+  }
+  FilledIcon.displayName = displayName;
+  return FilledIcon;
+}
+
 // ---- the app's existing names, mapped to the closest Phosphor glyph ----
 
 export const PlusIcon = uiIcon(Plus, "PlusIcon");
@@ -102,14 +127,21 @@ export const LoaderIcon = uiIcon(CircleNotch, "LoaderIcon");
 
 // ---- glyphs the shell gained in Round 5 -------------------------------
 
-/** Stop: the live-run state of the composer's one action button (D2). */
-export const SquareIcon = uiIcon(Square, "SquareIcon");
-/** Workspace folder: the read-only context row above the composer (D3). */
+/** Stop: the live-run state of the composer's one action button (D2).
+ *  FILLED — the one documented weight exception (R6-01): a hollow square
+ *  at 16 px reads as a checkbox, and this glyph means "stop". */
+export const StopIcon = filledIcon(Square, "StopIcon");
+/** Workspace folder: the composer's workspace control (D3 / R6-03). */
 export const FolderIcon = uiIcon(FolderSimple, "FolderIcon");
 /** Sessions: the Dock's history destination. */
 export const StackIcon = uiIcon(Stack, "StackIcon");
 /** Settings: the Dock's preferences destination. */
 export const SlidersIcon = uiIcon(SlidersHorizontal, "SlidersIcon");
+
+// ---- glyphs the shell gained in Round 6 -------------------------------
+
+/** Selected row in the model picker (R6-02). */
+export const CheckIcon = uiIcon(Check, "CheckIcon");
 
 /* ================================================================== */
 /* custom, not from the library                                       */
@@ -148,16 +180,19 @@ export function ContextRingIcon({ percent, size = 16 }: ContextRingIconProps) {
           the card even when there is no data: `--muted-foreground` measures
           5.64:1 on the dark card, 7.13:1 on the light card and 5.64:1 in
           high contrast. `--color-outline-variant` (the previous value) is
-          1.15:1 on dark — a clickable control nobody can see. Dashed when
-          there is no data: an empty solid ring would read as a real 0%, and
-          the dash is what keeps "no data" distinct from "0% used". */}
+          1.15:1 on dark — a clickable control nobody can see.
+
+          SOLID, never dashed (R6-09). A dashed ring reads as a loading
+          spinner; the empty state is a present-but-empty ring, and the
+          VALUE arc is what makes a known percentage differ from it. With
+          no data there is no arc, so the ring stays visibly empty rather
+          than pretending to be 0%. */}
       <circle
         cx="8"
         cy="8"
         r={radius}
         stroke="var(--muted-foreground)"
         strokeWidth="1.5"
-        strokeDasharray={value === null ? "2 2" : undefined}
       />
       {value !== null && value > 0 && (
         /* The data mark. `currentColor` is the trigger's `--foreground`

@@ -24,8 +24,7 @@
 //!
 //! Collision analysis (2026-10-03, full grep over src/**/*.tsx):
 //!   - Escape is owned by exactly one context at a time (open dialog >
-//!     floating toolbar > rename input > settings search > zen mode), and
-//!     zen explicitly yields to dialogs (App.tsx) — no conflict.
+//!     floating toolbar > rename input > settings search), and no conflict.
 //!   - Enter is likewise context-scoped (composer / rename / prompt title /
 //!     settings fields / palette run / settings search) — no conflict.
 //!   - Arrows/Home/End are scoped to the focused widget (segmented group,
@@ -131,7 +130,6 @@ export const COMBO_TAB_NEXT_PAGEDOWN: ShortcutCombo = { key: "PageDown", ctrl: t
 export const COMBO_TAB_PREV_PAGEDUP: ShortcutCombo = { key: "PageUp", ctrl: true, ...NO_META, shift: "any" };
 export const COMBO_TAB_CLOSE: ShortcutCombo = { key: "w", ctrl: false, alt: true, meta: false, shift: "any", ci: true };
 export const COMBO_SPLIT_TOGGLE: ShortcutCombo = { key: "s", ctrl: false, alt: true, meta: false, shift: "any", ci: true };
-export const COMBO_ZEN_TOGGLE: ShortcutCombo = { key: "z", ctrl: false, alt: true, meta: false, shift: "any", ci: true };
 export const COMBO_PALETTE_K: ShortcutCombo = { key: "k", ctrl: true, alt: false, meta: false, shift: "any", ci: true };
 export const COMBO_PALETTE_P: ShortcutCombo = { key: "p", ctrl: true, alt: false, meta: false, shift: "any", ci: true };
 /** Alt+1..Alt+9 are matched by range, not by combo (position math lives in
@@ -224,23 +222,6 @@ export const SHORTCUTS: readonly ShortcutEntry[] = [
     description: "Toggle split pane",
     source: "App.tsx:434-437 (Alt+S branch)",
     combos: [COMBO_SPLIT_TOGGLE],
-  },
-  {
-    id: "layout.zen",
-    keys: ["Alt+Z"],
-    group: "Layout",
-    scope: "Global, typing targets included (yields to open dialogs)",
-    description: "Toggle zen reading mode",
-    source: "App.tsx:438-441 (Alt+Z branch)",
-    combos: [COMBO_ZEN_TOGGLE],
-  },
-  {
-    id: "zen.exit",
-    keys: ["Esc"],
-    group: "Layout",
-    scope: "Zen mode with no dialog open (dialogs own Esc)",
-    description: "Exit zen reading mode",
-    source: "App.tsx:393-398 (zen Esc branch)",
   },
   // Composer.
   {

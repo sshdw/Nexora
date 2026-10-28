@@ -795,15 +795,17 @@ describe("cascade — the merged sheets load inside a layer", () => {
      The OTHER direction of the same contract (Defect A,
      round-4 visual QA).
 
-     A bare `<button>` takes the UA's `color: buttontext`, and with
-     no `color-scheme` on the themed roots that is BLACK here —
-     measured on the tab strip's elevated bar, where the close ×,
-     the `+`, Split and Zen painted as embossing. The answer has to
-     be a LAYERED fallback: too weak to beat a variant's own
-     `text-*` utility, strong enough to beat the UA. Those two
-     facts are what these pins hold down — the rule's layer, its
-     absence of `!important` (important declarations invert the
-     layer order), and the utilities it must lose to.
+     A bare `<button>` takes the UA's `color: buttontext`, and before
+     R6-08 declared `color-scheme` on the themed roots that resolved
+     to BLACK here — measured on the tab strip's elevated bar, where
+     the close ×, the `+` and Split painted as embossing. (The scheme
+     is declared now; the fallback stays because a variant's own
+     `text-*` is still the only thing allowed to colour a control.)
+     The answer has to be a LAYERED fallback: too weak to beat a
+     variant's own `text-*` utility, strong enough to beat the UA.
+     Those two facts are what these pins hold down — the rule's
+     layer, its absence of `!important` (important declarations
+     invert the layer order), and the utilities it must lose to.
      ---------------------------------------------------------- */
 
   /** Body of the top-level `@layer base { … }` block in
@@ -845,8 +847,56 @@ describe("cascade — the merged sheets load inside a layer", () => {
     expect(definedVars(LIGHT_BLOCK).has("--color-on-surface-variant")).toBe(true);
   });
 
-  it("keeps the element reset free of tone, so this stays the only fallback", () => {
-    // src/styles/theme.css says so in its own header ("element resets
+  /* ----------------------------------------------------------
+     R6-08: the UA's own surfaces — scrollbars, form controls,
+     system colours — are painted from `color-scheme`, and before
+     this round the themed roots declared none. The UA therefore
+     assumed a light scheme and painted a light scrollbar trough on
+     the dark composer (the model picker's horizontal bar) and on
+     the Sessions panel. R6-02/R6-06 fixed the layout symptoms;
+     these pins hold down the ROOT cause.
+     ---------------------------------------------------------- */
+
+  it("answers the UA's scheme on every themed root", () => {
+    expect(DARK_BLOCK).toMatch(/(?:^|[;{\s])color-scheme:\s*dark;/);
+    expect(LIGHT_BLOCK).toMatch(/(?:^|[;{\s])color-scheme:\s*light;/);
+    // High contrast is dark-based: it must not fall back to the UA's light.
+    const highContrast =
+      /:root\[data-theme="high-contrast"\],\s*\.nex-theme-high-contrast\s*\{([\s\S]*?)\n\}/.exec(
+        cssCode,
+      )?.[1] ?? "";
+    expect(highContrast).toMatch(/(?:^|[;{\s])color-scheme:\s*dark;/);
+  });
+
+  it("paints every scrollbar from the theme's own thumb tokens", () => {
+    const at = cssCode.indexOf("*::-webkit-scrollbar");
+    expect(at, "no scrollbar block in src/index.css").toBeGreaterThan(-1);
+    const scrollbarRules = cssCode.slice(at, at + 1200);
+    expect(scrollbarRules).toContain("*::-webkit-scrollbar-thumb");
+    expect(scrollbarRules).toContain("background: var(--scrollbar-thumb)");
+    expect(scrollbarRules).toContain("background: var(--scrollbar-thumb-hover)");
+    // No raw colour in the scrollbar paint: it follows the theme.
+    expect(scrollbarRules).not.toMatch(/#[0-9a-f]{3,8}\b/i);
+    expect(scrollbarRules).not.toMatch(/\brgba?\(/);
+  });
+
+  it("names the shell's scroll containers, so none falls back to the platform bar", () => {
+    const at = cssCode.indexOf("*::-webkit-scrollbar");
+    expect(at).toBeGreaterThan(-1);
+    const block = cssCode.slice(at, at + 1200);
+    for (const selector of [
+      ".nex-thread",
+      ".nex-sessions-scroll",
+      ".nex-composer-model-list",
+      ".nex-context",
+    ]) {
+      expect(block, selector).toContain(selector);
+    }
+    expect(block).toContain("scrollbar-width: thin");
+    expect(block).toContain("scrollbar-color: var(--scrollbar-thumb) transparent");
+  });
+
+  it("keeps the element reset free of tone, so this stays the only fallback", () => {    // src/styles/theme.css says so in its own header ("element resets
     // never invent a tone"). Asserted as a declaration, because the
     // tempting one-line fix — adding `color` to that reset — would put
     // the same fallback in a sheet whose whole job is geometry, and the

@@ -104,7 +104,6 @@ export interface PaletteDeps {
   tabPrev: () => void;
   tabCloseActive: () => void;
   toggleSplit: () => void;
-  toggleZen: () => void;
   showShortcuts: () => void;
   /** Flip the interface language EN <-> RU (Settings appearance owns it). */
   toggleLanguage: () => void;
@@ -270,13 +269,6 @@ export function buildCommands(deps: PaletteDeps, locale: Locale = "en"): Palette
       section: tabs,
       keywords: ["split", "side by side", "pane", "two", "compare", "divide"],
       run: deps.toggleSplit,
-    },
-    {
-      id: "tabs.zen",
-      title: tr(locale, "palette.cmd.tabs_zen"),
-      section: tabs,
-      keywords: ["zen", "focus", "chromeless", "reading", "distraction", "fullscreen"],
-      run: deps.toggleZen,
     },
     {
       id: "help.show-shortcuts",

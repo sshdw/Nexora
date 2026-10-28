@@ -36,12 +36,11 @@ import type { AutonomyStore } from "../lib/useAutonomy";
 import { useAgentRun } from "../lib/useAgentRun";
 import { useAttachments } from "../lib/useAttachments";
 import { useConversation } from "../lib/useConversation";
+import type { WorkspaceStore } from "../lib/useWorkspace";
 import AgentRunSteps from "./AgentRunSteps";
 import Composer from "./Composer";
-import ContextPanel from "./ContextPanel";
 import { useStrings } from "../lib/useLocale";
 import M3LoadingIndicator from "./M3LoadingIndicator";
-import M3SegmentedGroup from "./M3SegmentedGroup";
 
 export interface ConversationViewProps {
   conversationId: number;
@@ -71,9 +70,9 @@ export interface ConversationViewProps {
   draft: string;
   /** Replace the composer draft (FR-007 "Use" insertion). */
   setDraft: (value: string) => void;
-  /** Effective workspace root, for the composer's read-only context row
-   *  (D3). Null renders nothing. */
-  workspaceRoot?: string | null;
+  /** Effective workspace store, for the composer's workspace control
+   *  (D3 / R6-03). */
+  workspace: WorkspaceStore;
 }
 
 export default function ConversationView({
@@ -88,7 +87,7 @@ export default function ConversationView({
   onMessageSent,
   draft,
   setDraft,
-  workspaceRoot = null,
+  workspace,
 }: ConversationViewProps) {
   const { locale, t } = useStrings();
   const { messages, loading, error, sending, send } = useConversation(conversationId);
@@ -104,7 +103,6 @@ export default function ConversationView({
   // R4-02: the pane opens in Agent mode. Chat is still one click away on
   // the composer's pills, and the choice is pane state for the session.
   const [agentMode, setAgentMode] = useState<boolean>(true);
-  const [viewMode, setViewMode] = useState<"chat" | "context">("chat");
   const [agentBusy, setAgentBusy] = useState<boolean>(false);
   const [agentError, setAgentError] = useState<string | null>(null);
   const threadRef = useRef<HTMLDivElement>(null);
@@ -378,26 +376,10 @@ export default function ConversationView({
   // state so the stage can centre the card and drop the composer's footer
   // tone. The composer also takes focus in this state, guarded so a modal or
   // another field is never robbed.
-  const emptyStage = viewMode === "chat" && !loading && threadItems.length === 0;
+  const emptyStage = !loading && threadItems.length === 0;
 
   return (
     <div className={"nex-main-conversation" + (emptyStage ? " is-empty" : "")}>
-      <div className="nex-context-tabs">
-        <M3SegmentedGroup
-          label={t("conv.viewLabel")}
-          semantics="tabs"
-          value={viewMode}
-          onChange={setViewMode}
-          options={[
-            { value: "chat", label: t("conv.chatTab") },
-            { value: "context", label: t("conv.contextTab") },
-          ]}
-        />
-      </div>
-      {viewMode === "context" ? (
-        <ContextPanel conversationId={conversationId} />
-      ) : (
-        <>
       <div className="nex-thread" ref={threadRef} role="log" aria-label={t("conv.messagesAria")}>
         {loading ? (
           <M3LoadingIndicator label={t("conv.loadingMessages")} />
@@ -523,11 +505,9 @@ export default function ConversationView({
         contextRevision={contextRevision}
         liveRunId={liveRunId}
         onStop={handleStop}
-        workspaceRoot={workspaceRoot}
+        workspace={workspace}
         autoFocusField={emptyStage}
       />
-        </>
-      )}
     </div>
   );
 }

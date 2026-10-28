@@ -207,17 +207,23 @@
 
    The defect, stated as the browser sees it: a `<button>` that
    declares no colour of its own takes the UA's
-   `color: buttontext`. This app sets `color-scheme` NOWHERE on the
-   themed roots — the only one in the tree lives in the
-   high-contrast block — so the UA resolves `buttontext` against a
-   LIGHT scheme and every such control paints near-black.
+   `color: buttontext`. At the time this rule shipped the app set
+   `color-scheme` nowhere on the themed roots, so the UA resolved
+   `buttontext` against a LIGHT scheme and every such control painted
+   near-black. R6-08 closes that hole at the source: every themed root
+   now declares its own scheme (dark / light / high-contrast, see the
+   theme blocks below), so the UA's default controls follow the theme
+   too. This fallback still owns the app's QUIET tone — `buttontext`
+   is a platform colour, not the mono theme's secondary ink — and it
+   stays layered so every variant's own `text-*` utility wins.
    Nothing else supplied a tone: src/styles/theme.css's element
    reset deliberately declares no colour ("element resets never
    invent a tone"), and shadcn's `ghost` variant names only
    `hover:text-foreground`, no rest value. So on the tab strip's
-   `--color-surface-elevated` bar the tab close ×, the `+`, Split
-   and Zen, and the pane header's export glyph had no colour to
-   paint with at all — they read as embossing, not as controls.
+   `--color-surface-elevated` bar the tab close ×, the `+` and Split,
+   and the pane header's export glyph had no colour to paint with at
+   all — they read as embossing, not as controls. (The strip's Zen
+   control was deleted in R6-04.)
 
    WHY THIS LAYER, and not an unlayered rule or a colour on the
    ghost variant: `base` sits BELOW `utilities` in the order
@@ -374,6 +380,12 @@
    ============================================================ */
 :root,
 :root[data-theme="dark"] {
+    /* R6-08: the UA paints its own scrollbars, form controls and
+       system colours from this. Without it the UA assumed a LIGHT
+       scheme and painted a light scrollbar trough on the dark
+       composer (the model picker's horizontal bar). */
+    color-scheme: dark;
+
     --background: oklch(0.145 0.004 264);
     --foreground: oklch(0.965 0.003 264);
 
@@ -637,6 +649,9 @@
    attribute, alongside its `.nex-theme-light` class hook). It was
    `.light`, a class nothing ever sets, so the block was dead. */
 :root[data-theme="light"] {
+    /* R6-08: the light root answers the UA in kind. */
+    color-scheme: light;
+
     --background: oklch(0.99 0.002 264);
     --foreground: oklch(0.18 0.004 264);
 
@@ -814,6 +829,52 @@
    utilities so their explicitly-set colours never fight this. */
 ::selection {
     background-color: color-mix(in oklch, var(--primary) 25%, transparent);
+}
+
+/* ============================================================
+   SCROLLBARS — one role, from the theme's own tokens (R6-08).
+
+   The shell owns four scroll containers: the thread, the Sessions
+   panel, the model picker and the context popover. Until this block
+   they were left to the UA, which paints its bar from `color-scheme`
+   — and on the model picker that produced a LIGHT horizontal
+   scrollbar on a dark popover (the structural overflow bug R6-02
+   fixes at the layout, and this rule fixes at the paint).
+
+   The global fallback covers anything else that scrolls (a panel
+   list, a diff block) so no surface falls back to the platform's
+   bar; the four named containers also ask for `scrollbar-width:
+   thin`, which is the only cross-engine width control. Both colours
+   are the existing `--scrollbar-thumb*` pair, declared per theme
+   above — no raw colour, no per-sheet copy. High contrast keeps its
+   stronger thumb because it overrides the same two tokens.
+   ============================================================ */
+@layer base {
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: var(--radius);
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background: var(--scrollbar-thumb-hover);
+  }
+
+  .nex-thread,
+  .nex-sessions-scroll,
+  .nex-composer-model-list,
+  .nex-context {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) transparent;
+  }
 }
 
 /* ----------------------------------------------------------

@@ -1,12 +1,17 @@
-//! Context panel — a MODE, not furniture (MAP row 20).
+//! Context popover body — what the removed Conversation/Context switch used
+//! to show (R6-05).
 //!
-//! Presentational over the existing IPC wrappers: stats come from the
-//! `conversation_context_stats` command; diffs are grouped client-side from
-//! the already-persisted `write_file` step observations (`list_agent_runs` /
-//! `list_agent_steps`). Diff rendering reuses the existing `DiffView`
-//! classifier from `AgentRunSteps` — no new diff engine.
+//! The stage no longer has a second view: the context ring's popover owns
+//! this body. The ring already fetched `conversation_context_stats`, so the
+//! stats arrive as a prop and this component never asks for them again —
+//! one fetch, one reading. The heavy part (runs → steps → diffs) is loaded
+//! HERE, on mount, and Radix unmounts popover content while it is closed, so
+//! that work happens only while the popover is open. No timers.
 //!
-//! #230 P3 — three changes, all contract-driven:
+//! Diff rendering reuses the existing `DiffView` classifier from
+//! `AgentRunSteps` — no new diff engine.
+//!
+//! #230 P3 — the budget block's three decisions are unchanged:
 //!
 //!  1. BUDGET HAIRLINE + READOUT (MAP row 20, `progress.md`). The panel's
 //!     one control is the budget slider, and its value is real rather than
@@ -19,25 +24,21 @@
 //!     the proportion is never visual-only.
 //!
 //!  2. COST ON HOVER (SYSTEM §8 "cost on hover … details without permanent
-//!     clutter"). Total cost was a permanent label/value cell among sixteen
-//!     others. It is now the budget readout's `title` — one hover away, not
-//!     a permanent row — and the SAME sentence is in the hairline's
-//!     accessible name, so the detail is never hover-only for a keyboard or
-//!     screen-reader user. The slider's own description is left exactly as
-//!     it was: it describes the budget, and the cost is not part of what the
-//!     budget IS.
+//!     clutter"). Total cost is the budget readout's `title` — one hover
+//!     away, not a permanent row — and the SAME sentence is in the
+//!     hairline's accessible name, so the detail is never hover-only for a
+//!     keyboard or screen-reader user.
 //!
 //!  3. THE BREAKDOWN LEGEND IS NO LONGER HUE (THEME §1). The four segments
 //!     are CATEGORICAL data (who spent the tokens), not state, so they may
-//!     not be painted as if they were. They now read as four tone steps off
-//!     the achromatic ink ladder (see context.css), which survives grayscale
-//!     and high-contrast, and each legend entry keeps its text label and its
+//!     not be painted as if they were. They read as four tone steps off the
+//!     achromatic ink ladder (see context.css), which survives grayscale and
+//!     high-contrast, and each legend entry keeps its text label and its
 //!     percentage — the meaning never rides on colour alone (SYSTEM §8).
 
 import { useEffect, useId, useState } from "react";
 
 import {
-  conversationContextStats,
   getAgentStepObservation,
   listAgentRuns,
   listAgentSteps,
@@ -61,6 +62,12 @@ export interface ChangedFile {
   observation: string;
   runId: number;
   seq: number;
+}
+
+export interface ContextPanelProps {
+  conversationId: number;
+  /** The ring's already-fetched stats. `null` = the fetch failed. */
+  stats: ConversationContextStats | null;
 }
 
 function parseWritePath(args: string | null): string | null {
@@ -99,30 +106,28 @@ function formatDateTime(ts: number): string {
   });
 }
 
-export default function ContextPanel({ conversationId }: { conversationId: number }) {
+export default function ContextPanel({ conversationId, stats }: ContextPanelProps) {
   const { t } = useStrings();
-  const [stats, setStats] = useState<ConversationContextStats | null>(null);
   const [files, setFiles] = useState<ChangedFile[]>([]);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [error, setError] = useState<string | null>(null);
+  const [filesLoading, setFilesLoading] = useState<boolean>(true);
+  const [filesError, setFilesError] = useState<string | null>(null);
   // #220: the budget slider's own state (persisted, clamped) — read
   // by the panel's usage reading below, so the control is wired to
   // something real rather than sitting there looking adjustable.
   const budgetStore = useContextBudget();
   const hintId = useId();
 
+  // The heavy half: runs → write_file steps → full diffs. Mounted only
+  // while the ring popover is open (Radix unmounts closed content), so a
+  // reader who never opens the ring never pays for this read.
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
-    setError(null);
-    setStats(null);
+    setFilesLoading(true);
+    setFilesError(null);
     setFiles([]);
 
     const load = async () => {
       try {
-        const data = await conversationContextStats(conversationId);
-        if (cancelled) return;
-        setStats(data);
         const runs = await listAgentRuns(conversationId);
         if (cancelled) return;
         // First pass over previews only: elect the winning step per path
@@ -142,7 +147,9 @@ export default function ContextPanel({ conversationId }: { conversationId: numbe
           for (const step of steps) {
             if (step.kind !== "tool_call" || step.tool_name !== "write_file") continue;
             if (!step.observation) continue;
-            const path = parseWritePath(step.arguments) ?? tr(getLocale(), "ctx.runStepFallback", { run: run.id, seq: step.seq });
+            const path =
+              parseWritePath(step.arguments) ??
+              tr(getLocale(), "ctx.runStepFallback", { run: run.id, seq: step.seq });
             const prev = winners.get(path);
             if (!prev || step.seq >= prev.seq) {
               winners.set(path, {
@@ -160,7 +167,7 @@ export default function ContextPanel({ conversationId }: { conversationId: numbe
         // needs the full diff, fetched on demand per winning write_file step
         // (best-effort — a failed fetch still renders the preview, whose
         // marker says honestly that it was cut).
-        const files = await Promise.all(
+        const loaded = await Promise.all(
           [...winners.values()].map(async (win) => {
             let observation = win.preview;
             try {
@@ -175,14 +182,14 @@ export default function ContextPanel({ conversationId }: { conversationId: numbe
         );
         if (cancelled) return;
         setFiles(
-          files
+          loaded
             .map(({ path, observation, runId, seq }) => ({ path, observation, runId, seq }))
             .sort((a, b) => a.path.localeCompare(b.path)),
         );
       } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+        if (!cancelled) setFilesError(e instanceof Error ? e.message : String(e));
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) setFilesLoading(false);
       }
     };
 
@@ -192,15 +199,11 @@ export default function ContextPanel({ conversationId }: { conversationId: numbe
     };
   }, [conversationId]);
 
-  if (loading) {
-    return <M3LoadingIndicator label={t("ctx.loading")} />;
-  }
-
-  if (error || !stats) {
+  if (stats === null) {
     return (
-      <div className="nex-composer-error nex-fade-in" role="alert">
-        {error ?? t("ctx.unavailable")}
-      </div>
+      <p className="nex-composer-error nex-fade-in" role="alert">
+        {t("ctx.unavailable")}
+      </p>
     );
   }
 
@@ -285,7 +288,7 @@ export default function ContextPanel({ conversationId }: { conversationId: numbe
   const cost = formatCost(stats.total_cost_micro_usd);
 
   return (
-    <div className="nex-context nex-view-enter" role="group" aria-label={t("ctx.group")}>
+    <div className="nex-context" role="group" aria-label={t("ctx.group")}>
       <dl className="nex-context-grid">
         {rows.map((row) => (
           <div key={row.label} className="nex-context-cell">
@@ -405,9 +408,7 @@ export default function ContextPanel({ conversationId }: { conversationId: numbe
             and in the hairline's accessible name above, so the detail is
             never hover-only. */}
         <p
-          className={
-            "nex-context-budget-reading" + (overBudget ? " is-over" : "")
-          }
+          className={"nex-context-budget-reading" + (overBudget ? " is-over" : "")}
           role={overBudget ? "status" : undefined}
           title={t("ctx.totalCostTitle", { cost })}
         >
@@ -434,7 +435,13 @@ export default function ContextPanel({ conversationId }: { conversationId: numbe
         <h3 className="nex-context-section-title">
           {t("vcs.changedTitle", { n: files.length })}
         </h3>
-        {files.length === 0 ? (
+        {filesLoading ? (
+          <M3LoadingIndicator label={t("ctx.loadingFiles")} size="sm" />
+        ) : filesError !== null ? (
+          <p className="nex-composer-error" role="alert">
+            {filesError}
+          </p>
+        ) : files.length === 0 ? (
           <p className="nex-agent-empty">{t("ctx.noFiles")}</p>
         ) : (
           <ul className="nex-context-file-list">

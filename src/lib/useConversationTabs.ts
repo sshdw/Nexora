@@ -22,10 +22,10 @@
 //!   Alt+W ....................... close the active tab
 //!   Alt+S ....................... toggle split (opens the most-recent other
 //!                                 tab when closed, closes the pane when open)
-//!   Alt+Z ....................... toggle zen reading mode (Esc exits; Esc is
-//!                                 already the dismiss key for modals,
-//!                                 toolbars and rename inputs, so zen yields
-//!                                 to any open dialog — see App.tsx)
+//!
+//! Alt+Z (zen) is gone (R6-04): the mode was a chromeless restatement of the
+//! stage with no separate product behind it, so the shortcut, the state and
+//! the CSS all went with it.
 //!
 //! Deferred (documented, not implemented): drag-and-drop tab reorder and
 //! persistence across restart. Persistence was evaluated against the existing

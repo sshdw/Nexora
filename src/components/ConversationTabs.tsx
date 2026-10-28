@@ -56,8 +56,6 @@ export interface ConversationTabsProps {
   splitId: number | null;
   onActivate: (id: number) => void;
   onClose: (id: number) => void;
-  zen: boolean;
-  onToggleZen: () => void;
   splitOpen: boolean;
   onToggleSplit: () => void;
   /** Session-scoped actions that live here while the pane header is hidden
@@ -74,8 +72,6 @@ export default function ConversationTabs({
   splitId,
   onActivate,
   onClose,
-  zen,
-  onToggleZen,
   splitOpen,
   onToggleSplit,
   workspaceRoot,
@@ -224,15 +220,6 @@ export default function ConversationTabs({
           title={t("tabs.splitTitle")}
         >
           {splitOpen ? t("app.splitClose") : t("app.split")}
-        </M3Button>
-        <M3Button
-          variant="quiet"
-          size="sm"
-          onClick={onToggleZen}
-          aria-pressed={zen}
-          title={t("tabs.zenTitle")}
-        >
-          {t("tabs.zen")}
         </M3Button>
       </div>
     </div>

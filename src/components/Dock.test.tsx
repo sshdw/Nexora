@@ -37,26 +37,40 @@ describe("dock — shell", () => {
     expect(nav).toBeInTheDocument();
   });
 
-  it("renders New → Workspace → Sessions → Activity → Settings", () => {
+  it("renders New → Sessions → Activity → Settings, and no Workspace", () => {
     renderDock();
     expect(screen.getByRole("button", { name: "New" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Workspace" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Sessions" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Activity" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Settings" })).toBeInTheDocument();
+    // R6-03/R6-07: the workspace picker lives in the composer now, so the
+    // Dock destination is gone — absent, not disabled.
+    expect(screen.queryByRole("button", { name: "Workspace" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Zen" })).toBeNull();
+  });
+
+  it("draws every Dock glyph on the 20 step", () => {
+    // R6-09: the rail's glyphs were optically small against the 44px seat.
+    renderDock();
+    for (const name of ["New", "Sessions", "Activity", "Settings"]) {
+      const svg = screen.getByRole("button", { name }).querySelector("svg");
+      expect(svg, `${name} has no glyph`).not.toBeNull();
+      expect(svg).toHaveAttribute("width", "20");
+      expect(svg).toHaveAttribute("height", "20");
+    }
   });
 });
 
 describe("dock — panel buttons", () => {
   it("exposes aria-expanded / aria-controls on panel buttons", () => {
-    renderDock({ activePanel: "workspace" });
-    const ws = screen.getByRole("button", { name: "Workspace" });
-    expect(ws).toHaveAttribute("aria-expanded", "true");
-    expect(ws).toHaveAttribute("aria-controls", "nex-dock-panel-workspace");
-
+    renderDock({ activePanel: "sessions" });
     const ses = screen.getByRole("button", { name: "Sessions" });
-    expect(ses).toHaveAttribute("aria-expanded", "false");
+    expect(ses).toHaveAttribute("aria-expanded", "true");
     expect(ses).toHaveAttribute("aria-controls", "nex-dock-panel-sessions");
+
+    const activity = screen.getByRole("button", { name: "Activity" });
+    expect(activity).toHaveAttribute("aria-expanded", "false");
+    expect(activity).toHaveAttribute("aria-controls", "nex-dock-panel-activity");
   });
 
   it("omits aria-expanded / aria-controls from the New command button", () => {
@@ -97,16 +111,16 @@ describe("dock — attention dot", () => {
 describe("dock — tooltip", () => {
   it("renders the tooltip bubble, hidden by default", () => {
     renderDock();
-    const btn = screen.getByRole("button", { name: "Workspace" });
+    const btn = screen.getByRole("button", { name: "Sessions" });
     const tooltip = btn.querySelector('span[class*="opacity-0"]');
     expect(tooltip).not.toBeNull();
     expect(tooltip).toHaveClass("opacity-0");
-    expect(tooltip).toHaveTextContent("Workspace");
+    expect(tooltip).toHaveTextContent("Sessions");
   });
 
   it("declares the group-hover / group-focus-within reveal classes", () => {
     renderDock();
-    const btn = screen.getByRole("button", { name: "Workspace" });
+    const btn = screen.getByRole("button", { name: "Sessions" });
     const tooltip = btn.querySelector('span[class*="opacity-0"]');
     expect(tooltip).toHaveClass("group-hover/dock-btn:opacity-100");
     expect(tooltip).toHaveClass("group-focus-within/dock-btn:opacity-100");

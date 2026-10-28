@@ -27,6 +27,7 @@ import ConversationTabs, { type TabEntry } from "./ConversationTabs";
 import WorkspaceChip from "./WorkspaceChip";
 import type { AutonomyStore } from "../lib/useAutonomy";
 import type { Conversation } from "../lib/tauri";
+import type { WorkspaceStore } from "../lib/useWorkspace";
 
 // The pane's content is not under test here (thread/composer are P3/P4
 // surfaces) — stubbing it keeps this suite on the header and the strip.
@@ -46,8 +47,6 @@ function tabStrip(overrides: Partial<Parameters<typeof ConversationTabs>[0]> = {
     splitId: null,
     onActivate: vi.fn(),
     onClose: vi.fn(),
-    zen: false,
-    onToggleZen: vi.fn(),
     splitOpen: false,
     onToggleSplit: vi.fn(),
     workspaceRoot: null,
@@ -83,6 +82,24 @@ const autonomy = {
   dailyUsd: 0,
 } as unknown as AutonomyStore;
 
+function workspaceStub(overrides: Partial<WorkspaceStore> = {}): WorkspaceStore {
+  return {
+    root: null,
+    recent: [],
+    roots: [],
+    loading: false,
+    saving: false,
+    error: null,
+    reload: vi.fn(async () => {}),
+    pickFolder: vi.fn(async () => null),
+    selectRecent: vi.fn(async () => null),
+    addRootFolder: vi.fn(async () => null),
+    addRoot: vi.fn(async () => null),
+    removeRoot: vi.fn(async () => null),
+    ...overrides,
+  };
+}
+
 function pane(overrides: Partial<Parameters<typeof ConversationPane>[0]> = {}) {
   const props = {
     conversation: conversation(),
@@ -97,11 +114,8 @@ function pane(overrides: Partial<Parameters<typeof ConversationPane>[0]> = {}) {
     onOpenSettings: vi.fn(),
     onMessageSent: vi.fn(),
     onExport: vi.fn(),
-    workspaceRoot: null,
-    workspaceLoading: false,
+    workspace: workspaceStub(),
     secondary: false,
-    zen: false,
-    onToggleZen: vi.fn(),
     ...overrides,
   };
   render(
@@ -161,14 +175,17 @@ describe("tab strip grammar (MAP row 4)", () => {
     tabStrip();
     // The strip used to end in a `+`. The register moved creation to the
     // Dock's first destination and forbids the duplicate entry point, so
-    // the strip's trailing group is Split + Zen and nothing else.
+    // the strip's trailing group is Export + Split and nothing else.
     expect(
       screen.queryByRole("button", { name: "New conversation" }),
     ).not.toBeInTheDocument();
+    // Zen is deleted outright (R6-04): no control, no leftover tab-strip
+    // affordance.
+    expect(screen.queryByRole("button", { name: "Zen" })).toBeNull();
     const focusable = Array.from(
       document.querySelectorAll('.nex-tabstrip button, .nex-tabstrip a[href]'),
     );
-    expect(focusable[focusable.length - 1]).toHaveTextContent("Zen");
+    expect(focusable[focusable.length - 1]).toHaveTextContent("Split");
   });
 
   it("marks the active tab with aria-selected and nothing else", () => {
@@ -194,8 +211,6 @@ describe("tab strip grammar (MAP row 4)", () => {
           splitId={null}
           onActivate={vi.fn()}
           onClose={vi.fn()}
-          zen={false}
-          onToggleZen={vi.fn()}
           splitOpen={false}
           onToggleSplit={vi.fn()}
           workspaceRoot={null}
@@ -241,11 +256,11 @@ describe("quiet control tone — no control takes the UA's `buttontext` (Defect 
    *
    *  What this pins, and why it is the contract rather than a class-name
    *  snapshot: a `<button>` with no colour of its own takes the UA's
-   *  `color: buttontext`, and with no `color-scheme` on the themed roots
-   *  that resolved to BLACK — the tab close ×, the `+`, Split, Zen and
+   *  `color: buttontext`, and before R6-08 (no `color-scheme` on the themed
+   *  roots) that resolved to BLACK — the tab close ×, the `+`, Split and
    *  the pane header's export glyph were invisible on the strip's
    *  elevated bar (measured on real Tauri frames). `ghost` is the variant
-   *  all five use (M3Button `quiet` → ghost, M3IconButton → ghost), and
+   *  all four use (M3Button `quiet` → ghost, M3IconButton → ghost), and
    *  it declares NO rest `text-*` — that absence is the bug's mechanism.
    *  Their rest tone now comes from the one base-layer fallback in
    *  src/index.css; the hover brighten from the utility asserted below.
@@ -268,13 +283,12 @@ describe("quiet control tone — no control takes the UA's `buttontext` (Defect 
     expect(restColours).toEqual([]);
   }
 
-  it("covers the tab close, Split and Zen", () => {
+  it("covers the tab close and Split", () => {
     tabStrip();
     expectQuietControl(
       screen.getByRole("button", { name: "Close Refactor the parser" }),
     );
     expectQuietControl(screen.getByRole("button", { name: "Split" }));
-    expectQuietControl(screen.getByRole("button", { name: "Zen" }));
   });
 
   it("covers the pane header's export control", () => {
