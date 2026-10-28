@@ -168,6 +168,7 @@ export default function SessionsPanel({
               >
                 <M3IconButton
                   size="sm"
+                  tooltipPortal
                   label={t("list.actionRename")}
                   disabled={busy}
                   onClick={() => beginRename(conversation)}
@@ -177,6 +178,7 @@ export default function SessionsPanel({
                 {isArchived ? (
                   <M3IconButton
                     size="sm"
+                    tooltipPortal
                     label={t("list.actionRestore")}
                     disabled={busy}
                     onClick={() => void onRestore(conversation.id)}
@@ -186,6 +188,7 @@ export default function SessionsPanel({
                 ) : (
                   <M3IconButton
                     size="sm"
+                    tooltipPortal
                     label={t("list.actionArchive")}
                     disabled={busy}
                     onClick={() => void onArchive(conversation.id)}
@@ -195,6 +198,7 @@ export default function SessionsPanel({
                 )}
                 <M3IconButton
                   size="sm"
+                  tooltipPortal
                   danger
                   label={t("list.actionDelete")}
                   disabled={busy}

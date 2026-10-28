@@ -274,7 +274,9 @@ export default function ContextPanel({ conversationId, stats }: ContextPanelProp
     { label: t("ctx.labelContextLimit"), value: formatCount(stats.context_limit) },
     {
       label: t("ctx.labelUsage"),
-      value: `${stats.usage_percent.toFixed(0)}%`,
+      value: stats.has_token_data
+        ? `${stats.usage_percent.toFixed(0)}%`
+        : t("common.na"),
     },
     ...tokenRows,
     { label: t("ctx.labelUserMessages"), value: formatCount(stats.user_message_count) },
@@ -300,54 +302,62 @@ export default function ContextPanel({ conversationId, stats }: ContextPanelProp
         ))}
       </dl>
 
-      <section className="nex-context-breakdown" aria-label={t("ctx.breakdown")}>
-        <h3 className="nex-context-section-title">{t("ctx.breakdown")}</h3>
-        <div
-          className="nex-context-bar"
-          role="img"
-          aria-label={t("ctx.breakdownAria", {
-            u: pct(user).toFixed(1),
-            a: pct(assistant).toFixed(1),
-            t: pct(tools).toFixed(1),
-            o: pct(other).toFixed(1),
-          })}
-        >
-          <span
-            className="nex-context-seg nex-context-seg-user"
-            style={{ width: `${pct(user)}%` }}
-          />
-          <span
-            className="nex-context-seg nex-context-seg-assistant"
-            style={{ width: `${pct(assistant)}%` }}
-          />
-          <span
-            className="nex-context-seg nex-context-seg-tools"
-            style={{ width: `${pct(tools)}%` }}
-          />
-          <span
-            className="nex-context-seg nex-context-seg-other"
-            style={{ width: `${pct(other)}%` }}
-          />
-        </div>
-        <ul className="nex-context-legend">
-          <li>
-            <span className="nex-context-dot nex-context-seg-user" aria-hidden="true" />
-            {t("ctx.legendUser")} {pct(user).toFixed(1)}%
-          </li>
-          <li>
-            <span className="nex-context-dot nex-context-seg-assistant" aria-hidden="true" />
-            {t("ctx.legendAssistant")} {pct(assistant).toFixed(1)}%
-          </li>
-          <li>
-            <span className="nex-context-dot nex-context-seg-tools" aria-hidden="true" />
-            {t("ctx.legendTools")} {pct(tools).toFixed(1)}%
-          </li>
-          <li>
-            <span className="nex-context-dot nex-context-seg-other" aria-hidden="true" />
-            {t("ctx.legendOther")} {pct(other).toFixed(1)}%
-          </li>
-        </ul>
-      </section>
+      {/* R5-01 stays binding in the popover: `has_token_data: false` is a
+          real state, not zero. Without a usage reading the four percentage
+          rows would all say 0% — a measurement the backend never made — so
+          the breakdown is absent rather than fabricated. The budget block
+          below still explains the absence in words, and the changed-files
+          list is independent of token accounting. */}
+      {stats.has_token_data && (
+        <section className="nex-context-breakdown" aria-label={t("ctx.breakdown")}>
+          <h3 className="nex-context-section-title">{t("ctx.breakdown")}</h3>
+          <div
+            className="nex-context-bar"
+            role="img"
+            aria-label={t("ctx.breakdownAria", {
+              u: pct(user).toFixed(1),
+              a: pct(assistant).toFixed(1),
+              t: pct(tools).toFixed(1),
+              o: pct(other).toFixed(1),
+            })}
+          >
+            <span
+              className="nex-context-seg nex-context-seg-user"
+              style={{ width: `${pct(user)}%` }}
+            />
+            <span
+              className="nex-context-seg nex-context-seg-assistant"
+              style={{ width: `${pct(assistant)}%` }}
+            />
+            <span
+              className="nex-context-seg nex-context-seg-tools"
+              style={{ width: `${pct(tools)}%` }}
+            />
+            <span
+              className="nex-context-seg nex-context-seg-other"
+              style={{ width: `${pct(other)}%` }}
+            />
+          </div>
+          <ul className="nex-context-legend">
+            <li>
+              <span className="nex-context-dot nex-context-seg-user" aria-hidden="true" />
+              {t("ctx.legendUser")} {pct(user).toFixed(1)}%
+            </li>
+            <li>
+              <span className="nex-context-dot nex-context-seg-assistant" aria-hidden="true" />
+              {t("ctx.legendAssistant")} {pct(assistant).toFixed(1)}%
+            </li>
+            <li>
+              <span className="nex-context-dot nex-context-seg-tools" aria-hidden="true" />
+              {t("ctx.legendTools")} {pct(tools).toFixed(1)}%
+            </li>
+            <li>
+              <span className="nex-context-dot nex-context-seg-other" aria-hidden="true" />
+              {t("ctx.legendOther")} {pct(other).toFixed(1)}%
+            </li>
+          </ul>
+        </section>
+      )}
 
       <section className="nex-context-budget" aria-labelledby={`${hintId}-title`}>
         <h3 className="nex-context-section-title" id={`${hintId}-title`}>

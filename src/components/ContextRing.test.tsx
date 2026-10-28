@@ -132,6 +132,9 @@ describe("context ring — no token data", () => {
     // The usage line and the panel's own reading both say n/a; neither
     // invents a zero.
     expect(screen.getAllByText("n/a").length).toBeGreaterThan(0);
+    expect(screen.queryByText("0%")).toBeNull();
+    expect(screen.queryByText("0.0%")).toBeNull();
+    expect(screen.queryByRole("region", { name: "Context breakdown" })).toBeNull();
     expect(screen.getByRole("slider", { name: "Context budget" })).toBeInTheDocument();
   });
 });

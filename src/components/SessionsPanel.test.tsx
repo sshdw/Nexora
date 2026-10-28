@@ -332,4 +332,28 @@ describe("sessions panel — action reveal", () => {
     expect(reveal.slice(0, reveal.indexOf("}"))).toMatch(/opacity:\s*1/);
     expect(reveal).toContain(".nex-sessions-item:focus-within .nex-sessions-row-actions");
   });
+
+  it("portals row-action tooltips out of the scroll container", () => {
+    // Real capture: the always-mounted, centered bubble of the last action
+    // extended to x=394 inside a 272 px scroller, so `scrollWidth` was 313
+    // and the panel grew a horizontal bar even with the tooltip hidden.
+    const { container } = renderPanel();
+    const scroll = container.querySelector(".nex-sessions-scroll");
+    expect(scroll).not.toBeNull();
+    expect(scroll?.querySelector('[data-slot="tooltip-bubble"]')).toBeNull();
+
+    const bubbles = [...document.body.querySelectorAll('[data-slot="tooltip-bubble"]')];
+    expect(bubbles.length).toBeGreaterThan(0);
+    expect(bubbles.some((bubble) => bubble.textContent === "Rename conversation")).toBe(
+      true,
+    );
+
+    // Second guard: the sheet refuses sideways overflow even if a future
+    // always-mounted child tries to widen the list again.
+    const sheet = readRepoFile("src/styles/dockPanels.css");
+    const start = sheet.indexOf(".nex-sessions-scroll {");
+    expect(start).toBeGreaterThan(-1);
+    const body = sheet.slice(start, sheet.indexOf("}", start));
+    expect(body).toMatch(/overflow-x:\s*hidden/);
+  });
 });

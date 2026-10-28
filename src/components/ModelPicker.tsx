@@ -22,6 +22,7 @@
 
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 
+import { useComposerPopoverLayout } from "../lib/composerPopover";
 import { useStrings } from "../lib/useLocale";
 import { Button } from "./ui/button";
 import {
@@ -58,6 +59,7 @@ export default function ModelPicker({
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const layout = useComposerPopoverLayout();
   const listId = useId();
   const optionId = (index: number): string => `${listId}-option-${index}`;
 
@@ -76,6 +78,9 @@ export default function ModelPicker({
   }, [open, filtered, selectedModel]);
 
   const handleOpenChange = (next: boolean) => {
+    // Measure before the content mounts, so the first paint already has the
+    // card-relative offset and height cap (R6-02 defect fix).
+    if (next) layout.measure();
     setOpen(next);
     if (!next) setQuery("");
   };
@@ -133,6 +138,7 @@ export default function ModelPicker({
     <Popover open={open} onOpenChange={handleOpenChange}>
       <PopoverTrigger asChild>
         <Button
+          ref={layout.triggerRef}
           variant="ghost"
           size="sm"
           className="nex-composer-model-trigger"
@@ -154,9 +160,10 @@ export default function ModelPicker({
       <PopoverContent
         align="end"
         side="top"
-        sideOffset={8}
+        sideOffset={layout.sideOffset}
         collisionPadding={8}
         className="nex-composer-model-menu"
+        style={layout.maxHeight === undefined ? undefined : { maxHeight: layout.maxHeight }}
         onOpenAutoFocus={(event) => {
           if (!noModels) {
             event.preventDefault();

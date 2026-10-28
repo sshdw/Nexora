@@ -12,39 +12,54 @@
 .nex-context {
   display: flex;
   flex-direction: column;
-  gap: var(--space-sm);
+  flex: 1 1 auto;
+  gap: var(--space-xs);
   min-width: 0;
+  min-height: 0;
   padding: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
+/* One column of label/value ROWS, not the stage's two-column stat grid:
+   at 340 px the old grid spent half its width on a second column and
+   pushed the budget and files below the fold. Each row still carries the
+   same definition pair; the value may wrap. */
 .nex-context-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  column-gap: var(--space-md);
-  row-gap: var(--space-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xxs);
   margin: 0;
 }
 
 .nex-context-cell {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-sm);
   min-width: 0;
 }
 
 .nex-context-label {
-  font-size: var(--type-size-body-small);
+  flex: 0 0 auto;
+  font-size: var(--type-size-label-medium);
   color: var(--color-on-surface-tertiary);
 }
 
 .nex-context-value {
-  margin: var(--space-xxs) 0 0;
-  font-size: var(--type-size-body-large);
+  margin: 0;
+  min-width: 0;
+  font-size: var(--type-size-body-small);
   font-weight: var(--type-weight-semibold);
   color: var(--color-on-surface);
+  text-align: end;
   overflow-wrap: anywhere;
 }
 
 .nex-context-section-title {
-  margin: var(--space-sm) 0 var(--space-xs);
-  font-size: var(--type-size-body-small);
+  margin: var(--space-xxs) 0;
+  font-size: var(--type-size-label-medium);
   font-weight: var(--type-weight-medium);
   color: var(--color-on-surface-tertiary);
 }
@@ -179,11 +194,11 @@
 .nex-context-legend {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-md);
-  margin: var(--space-sm) 0 0;
+  gap: var(--space-xs);
+  margin: var(--space-xs) 0 0;
   padding: 0;
   list-style: none;
-  font-size: var(--type-size-body-small);
+  font-size: var(--type-size-label-medium);
   color: var(--color-on-surface-variant);
 }
 
@@ -202,7 +217,7 @@
 .nex-context-file-list {
   display: flex;
   flex-direction: column;
-  gap: var(--space-md);
+  gap: var(--space-sm);
   margin: 0;
   padding: 0;
   list-style: none;

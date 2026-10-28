@@ -841,7 +841,7 @@ describe("cascade — the merged sheets load inside a layer", () => {
     // An unlayered `button { color }` here would out-rank the utilities
     // by Cascade L5 (normal declarations) exactly as the old unlayered
     // sheet imports did, repainting filled buttons quiet grey.
-    expect(cssCode.replace(block, "")).not.toMatch(/\bbutton\b[^{};]*\{/);
+    expect(cssCode.replace(block, "")).not.toMatch(/(?:^|[^-\w])button\b[^{};]*\{/m);
     // The token it names resolves in both theme blocks.
     expect(definedVars(DARK_BLOCK).has("--color-on-surface-variant")).toBe(true);
     expect(definedVars(LIGHT_BLOCK).has("--color-on-surface-variant")).toBe(true);
@@ -880,10 +880,14 @@ describe("cascade — the merged sheets load inside a layer", () => {
     expect(scrollbarRules).not.toMatch(/\brgba?\(/);
   });
 
-  it("names the shell's scroll containers, so none falls back to the platform bar", () => {
+  it("keeps the webkit bar authoritative on the four scroll containers", () => {
+    // WebView2/Chromium only: `scrollbar-width` or `scrollbar-color` on
+    // these selectors would switch the element to the NATIVE bar path and
+    // make every `::-webkit-scrollbar*` rule inert — including the hidden
+    // arrow buttons. The webkit rules are the one paint path.
     const at = cssCode.indexOf("*::-webkit-scrollbar");
     expect(at).toBeGreaterThan(-1);
-    const block = cssCode.slice(at, at + 1200);
+    const block = cssCode.slice(at, at + 1800);
     for (const selector of [
       ".nex-thread",
       ".nex-sessions-scroll",
@@ -892,8 +896,69 @@ describe("cascade — the merged sheets load inside a layer", () => {
     ]) {
       expect(block, selector).toContain(selector);
     }
-    expect(block).toContain("scrollbar-width: thin");
-    expect(block).toContain("scrollbar-color: var(--scrollbar-thumb) transparent");
+
+    const rule =
+      /\.nex-thread,\s*\.nex-sessions-scroll,\s*\.nex-composer-model-list,\s*\.nex-context\s*\{([\s\S]*?)\n\s*\}/.exec(
+        block,
+      )?.[1] ?? "";
+    expect(rule).toContain("scrollbar-gutter: stable");
+    expect(rule).not.toMatch(/scrollbar-width\s*:/);
+    expect(rule).not.toMatch(/scrollbar-color\s*:/);
+
+    expect(block).toMatch(/\*::-webkit-scrollbar\s*\{[^}]*width:\s*10px/);
+    expect(block).toMatch(
+      /\*::-webkit-scrollbar-button\s*\{\s*display:\s*none;\s*\}/,
+    );
+  });
+
+  it("removes the platform's scrollbar buttons and leaves the corner transparent", () => {
+    // The captured Sessions bar still painted the UA's up/down arrows on a
+    // styled WebKit bar. The shell owns the whole bar, so both are reset.
+    const at = cssCode.indexOf("*::-webkit-scrollbar");
+    const block = cssCode.slice(at, at + 1800);
+    expect(block).toMatch(
+      /\*::-webkit-scrollbar-button\s*\{\s*display:\s*none;\s*\}/,
+    );
+    expect(block).toMatch(
+      /\*::-webkit-scrollbar-corner\s*\{\s*background:\s*transparent;\s*\}/,
+    );
+  });
+
+  it("keeps the scrollbar thumb a visible step, not the old 0.12 smudge", () => {
+    // Token-level, not a pixel test: the dark thumb's alpha is the value
+    // that made the bar read as a smudge (~1.4:1) on the floating panel.
+    const dark = definedVars(DARK_BLOCK);
+    expect(dark.get("--scrollbar-thumb")).toBe("rgba(255, 255, 255, 0.3)");
+    expect(dark.get("--scrollbar-thumb-hover")).toBe(
+      "rgba(255, 255, 255, 0.45)",
+    );
+    expect(dark.get("--scrollbar-thumb")).not.toContain("0.12");
+
+    const light = definedVars(LIGHT_BLOCK);
+    expect(light.get("--scrollbar-thumb")).toBe("rgba(0, 0, 0, 0.45)");
+    expect(light.get("--scrollbar-thumb-hover")).toBe("rgba(0, 0, 0, 0.6)");
+
+    // High contrast keeps its stronger pair.
+    const highContrast =
+      /:root\[data-theme="high-contrast"\],\s*\.nex-theme-high-contrast\s*\{([\s\S]*?)\n\}/.exec(
+        cssCode,
+      )?.[1] ?? "";
+    const hc = definedVars(highContrast);
+    expect(hc.get("--scrollbar-thumb")).toBe("rgba(255, 255, 255, 0.35)");
+    expect(hc.get("--scrollbar-thumb-hover")).toBe("rgba(255, 255, 255, 0.5)");
+  });
+
+  it("reserves the scrollbar gutter in every container that can show a vertical bar", () => {
+    // The context popover's right-hand values sat under the bar
+    // ("New Conversation" in the capture). A stable gutter keeps the
+    // content lane clear in the thread, Sessions, model list and context.
+    const at = cssCode.indexOf("*::-webkit-scrollbar");
+    const block = cssCode.slice(at, at + 1800);
+    const rule =
+      /\.nex-thread,\s*\.nex-sessions-scroll,\s*\.nex-composer-model-list,\s*\.nex-context\s*\{([\s\S]*?)\n\s*\}/.exec(
+        block,
+      )?.[1] ?? "";
+    expect(rule).toContain("scrollbar-gutter: stable");
   });
 
   it("keeps the element reset free of tone, so this stays the only fallback", () => {    // src/styles/theme.css says so in its own header ("element resets

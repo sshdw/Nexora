@@ -113,6 +113,14 @@
   display: flex;
   align-items: center;
   gap: var(--space-xs);
+  /* R6-03 defect fix: the row is a flex CHILD of `.nex-composer-inner`,
+     whose default `align-items: stretch` made this button 760 px wide.
+     The chevron then sat at the card's trailing edge, reading as a
+     control for the whole card. Shrink to the label; the left padding
+     still puts the folder glyph on the composer's text axis, and the
+     popover stays anchored to this row (`align="start"`). */
+  align-self: flex-start;
+  max-width: 100%;
   min-width: 0;
   margin: 0;
   padding: 0 calc(var(--space-md) + 1px);
@@ -147,7 +155,9 @@
 }
 
 .nex-composer-context-chevron {
-  margin-inline-start: var(--space-xxs);
+  /* The flex `gap` is the few pixels between branch text and chevron;
+     no auto margin may push it away from the label. */
+  margin-inline-start: 0;
   opacity: 0.7;
 }
 
@@ -722,8 +732,11 @@
   /* The structural half of R6-02: the old segmented root was an
      `inline-grid` whose implicit column resolved to max-content, so the
      list grew past the popover and the UA painted a horizontal bar. The
-     list below is a block list and this box refuses sideways overflow. */
+     list below is a block list and this box refuses sideways overflow.
+     If the card-relative height cap is shorter than the menu, the menu
+     scrolls rather than leaving the viewport. */
   overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .nex-composer-model-search {
@@ -771,7 +784,10 @@
 }
 
 /* Context-window popover (D4 / R6-05). It carries the stats the stage's
-   Context view used to show, so it is taller and scrolls as one body. */
+   Context view used to show. The component caps its height to the space
+   above the composer card (the inline max-height measured on open); this
+   fallback is only for a measurement that could not run. The body scrolls
+   inside the popover, so the header and the usage summary stay put. */
 .nex-composer-context-menu {
   width: 340px;
   max-width: min(340px, calc(100vw - 2 * var(--space-xl)));
@@ -781,8 +797,7 @@
   border-radius: var(--radius-lg);
   background: var(--popover);
   border: 1px solid var(--border);
-  overflow-x: hidden;
-  overflow-y: auto;
+  overflow: hidden;
 }
 
 .nex-composer-context-usage {

@@ -20,6 +20,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GitInfo } from "../lib/tauri";
 import { LocaleProvider } from "../lib/useLocale";
 import type { WorkspaceStore } from "../lib/useWorkspace";
+import { readRepoFile } from "../test/readRepoFile";
 import WorkspaceContextRow, {
   splitForMiddleEllipsis,
   workspaceFolderName,
@@ -122,6 +123,25 @@ describe("workspace context row — the trigger", () => {
     await screen.findByText("notes");
     expect(detached.container.querySelector(".nex-composer-context-branch")).toBeNull();
     expect(detached.container.querySelector(".nex-composer-context-sep")).toBeNull();
+  });
+
+  it("sizes the trigger to its label so the chevron cannot drift to the card edge", () => {
+    const sheet = readRepoFile("src/styles/composer.css");
+    const start = sheet.indexOf(".nex-composer-context {");
+    expect(start, ".nex-composer-context has no rule").toBeGreaterThan(-1);
+    const body = sheet.slice(start, sheet.indexOf("}", start));
+    // The parent is a stretching flex column; without `align-self` the
+    // button filled the 760 px card and the chevron sat at its far edge.
+    expect(body).toMatch(/align-self:\s*flex-start/);
+    expect(body).toMatch(/max-width:\s*100%/);
+
+    const chevronStart = sheet.indexOf(".nex-composer-context-chevron {");
+    expect(chevronStart).toBeGreaterThan(-1);
+    const chevron = sheet.slice(chevronStart, sheet.indexOf("}", chevronStart));
+    // The flex `gap` owns the few pixels after the branch text; an auto
+    // margin would push the chevron away from the label again.
+    expect(chevron).not.toMatch(/margin-inline-start:\s*auto/);
+    expect(chevron).toMatch(/margin-inline-start:\s*0/);
   });
 });
 

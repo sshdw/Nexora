@@ -19,6 +19,7 @@
 
 import { useEffect, useState } from "react";
 
+import { useComposerPopoverLayout } from "../lib/composerPopover";
 import {
   conversationContextStats,
   type ConversationContextStats,
@@ -55,6 +56,7 @@ export function formatCompactTokens(value: number): string {
 export default function ContextRing({ conversationId, revision }: ContextRingProps) {
   const { t } = useStrings();
   const [stats, setStats] = useState<ConversationContextStats | null>(null);
+  const layout = useComposerPopoverLayout();
 
   useEffect(() => {
     let cancelled = false;
@@ -80,9 +82,16 @@ export default function ContextRing({ conversationId, revision }: ContextRingPro
     : t("conv.contextAriaNa");
 
   return (
-    <Popover>
+    <Popover
+      onOpenChange={(next) => {
+        // Measure before the body mounts: the offset is from the card's top
+        // edge, and the height cap is the space above it (R6-05 defect fix).
+        if (next) layout.measure();
+      }}
+    >
       <PopoverTrigger asChild>
         <Button
+          ref={layout.triggerRef}
           variant="ghost"
           size="icon-sm"
           className="nex-composer-context-trigger"
@@ -96,9 +105,10 @@ export default function ContextRing({ conversationId, revision }: ContextRingPro
       <PopoverContent
         align="end"
         side="top"
-        sideOffset={8}
+        sideOffset={layout.sideOffset}
         collisionPadding={8}
         className="nex-composer-context-menu"
+        style={layout.maxHeight === undefined ? undefined : { maxHeight: layout.maxHeight }}
       >
         <PopoverHeader>
           <PopoverTitle>{t("conv.contextWindow")}</PopoverTitle>

@@ -33,6 +33,7 @@ vi.mock("../lib/tauri", async (importOriginal) => ({
 
 import ContextPanel from "./ContextPanel";
 import { CONTEXT_BUDGET_KEY } from "../lib/useContextBudget";
+import { readRepoFile } from "../test/readRepoFile";
 
 function stats(overrides: Partial<ConversationContextStats> = {}): ConversationContextStats {
   return {
@@ -265,6 +266,39 @@ describe("context panel — budget slider", () => {
     const slider = await screen.findByRole("slider", { name: "Context budget" });
     expect(slider).toHaveAttribute("aria-valuenow", "128000");
     expect(screen.getByText("No persisted token usage")).toBeInTheDocument();
+  });
+
+  it("never prints 0% when the backend has no token data", async () => {
+    // Real capture: the ring said n/a, but this body printed Usage 0% and
+    // four 0.0% breakdown rows. R5-01: absent data is absent, not zero.
+    await renderPanel({ has_token_data: false, total_tokens: 0, usage_percent: 0 });
+
+    const usage = screen.getByText("Usage");
+    expect(usage.parentElement).toHaveTextContent("n/a");
+    expect(screen.queryByText("0%")).toBeNull();
+    expect(screen.queryByText("0.0%")).toBeNull();
+    // The breakdown is hidden outright; a bar of four zeros is a fabricated
+    // measurement. The budget control and the changed-files list stay.
+    expect(
+      screen.queryByRole("region", { name: "Context breakdown" }),
+    ).toBeNull();
+    expect(screen.getByRole("slider", { name: "Context budget" })).toBeInTheDocument();
+    expect(await screen.findByText("No file changes recorded.")).toBeInTheDocument();
+  });
+
+  it("keeps the popover body one compact column", () => {
+    // The stage's two-column stat grid does not fit a 340 px popover; it
+    // also pushed the budget and files below the fold.
+    const sheet = readRepoFile("src/styles/context.css");
+    const gridStart = sheet.indexOf(".nex-context-grid {");
+    expect(gridStart).toBeGreaterThan(-1);
+    const grid = sheet.slice(gridStart, sheet.indexOf("}", gridStart));
+    expect(grid).toMatch(/flex-direction:\s*column/);
+    expect(grid).not.toMatch(/grid-template-columns/);
+
+    const valueStart = sheet.indexOf(".nex-context-value {");
+    const value = sheet.slice(valueStart, sheet.indexOf("}", valueStart));
+    expect(value).toMatch(/font-size:\s*var\(--type-size-body-small\)/);
   });
 });
 
