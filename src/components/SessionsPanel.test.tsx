@@ -232,6 +232,58 @@ describe("sessions panel — rename", () => {
     await waitFor(() => expect(onRename).toHaveBeenCalledWith(1, "Blurred thread"));
     expect(document.activeElement).toBe(elsewhere);
   });
+
+  it("does not poison the next Enter commit after Escape on another row", async () => {
+    // Reviewer repro: Esc on Alpha left `skipBlur` set (unmount fires no
+    // blur), so renaming Beta + Enter returned early — 0 store calls.
+    const { onRename } = renderPanel();
+    fireEvent.click(action("Alpha thread", "Rename conversation"));
+    const abandoned = screen.getByRole("textbox", { name: "Rename conversation" });
+    fireEvent.change(abandoned, { target: { value: "Discarded title" } });
+    fireEvent.keyDown(abandoned, { key: "Escape" });
+    expect(onRename).not.toHaveBeenCalled();
+
+    fireEvent.click(action("Beta thread", "Rename conversation"));
+    const input = screen.getByRole("textbox", { name: "Rename conversation" });
+    fireEvent.change(input, { target: { value: "Beta renamed" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => expect(onRename).toHaveBeenCalledTimes(1));
+    expect(onRename).toHaveBeenCalledWith(2, "Beta renamed");
+  });
+
+  it("does not poison the next Enter commit after an empty-title cancel", async () => {
+    const { onRename } = renderPanel();
+    fireEvent.click(action("Alpha thread", "Rename conversation"));
+    const empty = screen.getByRole("textbox", { name: "Rename conversation" });
+    fireEvent.change(empty, { target: { value: "   " } });
+    fireEvent.keyDown(empty, { key: "Enter" });
+    expect(onRename).not.toHaveBeenCalled();
+
+    fireEvent.click(action("Beta thread", "Rename conversation"));
+    const input = screen.getByRole("textbox", { name: "Rename conversation" });
+    fireEvent.change(input, { target: { value: "Beta renamed" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => expect(onRename).toHaveBeenCalledTimes(1));
+    expect(onRename).toHaveBeenCalledWith(2, "Beta renamed");
+  });
+
+  it("does not poison the next Enter commit after an unchanged-title cancel", async () => {
+    const { onRename } = renderPanel();
+    fireEvent.click(action("Alpha thread", "Rename conversation"));
+    const unchanged = screen.getByRole("textbox", { name: "Rename conversation" });
+    fireEvent.keyDown(unchanged, { key: "Enter" });
+    expect(onRename).not.toHaveBeenCalled();
+
+    fireEvent.click(action("Beta thread", "Rename conversation"));
+    const input = screen.getByRole("textbox", { name: "Rename conversation" });
+    fireEvent.change(input, { target: { value: "Beta renamed" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => expect(onRename).toHaveBeenCalledTimes(1));
+    expect(onRename).toHaveBeenCalledWith(2, "Beta renamed");
+  });
 });
 
 describe("sessions panel — archive and restore", () => {

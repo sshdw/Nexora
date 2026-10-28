@@ -81,12 +81,18 @@ export default function SessionsPanel({
   };
 
   const beginRename = (conversation: Conversation) => {
+    // Entering is always a clean start. The old cancel path left the guard
+    // set because unmounting the input fires no blur, so the NEXT Enter
+    // commit returned early and never called `onRename`.
+    skipBlur.current = false;
     setRenameDraft(conversation.title);
     setRenamingId(conversation.id);
   };
 
   const cancelRename = (id: number, restoreFocus = true) => {
-    skipBlur.current = true;
+    // Cancel is an exit path with no blur to consume the guard: clear it
+    // here, so a later rename starts unarmed.
+    skipBlur.current = false;
     setRenamingId(null);
     setRenameDraft("");
     if (restoreFocus) returnFocus(id);
@@ -102,6 +108,10 @@ export default function SessionsPanel({
       cancelRename(conversation.id, restoreFocus);
       return;
     }
+    // Enter unmounts the input; arm the guard so the unmount blur (if the
+    // platform fires one) cannot commit the same title twice. A blur commit
+    // does not arm it — the blur IS the exit event.
+    if (restoreFocus) skipBlur.current = true;
     setRenamingId(null);
     setRenameDraft("");
     await onRename(conversation.id, next);
