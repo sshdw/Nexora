@@ -105,6 +105,7 @@ pub fn run() {
             commands::agent::list_agent_steps,
             commands::agent::get_agent_step_observation,
             commands::agent::inspect_run,
+            commands::agent::inspect_run_live,
             commands::agent::spend_dashboard,
             commands::agent::activity_feed,
             commands::agent::add_permission_rule,

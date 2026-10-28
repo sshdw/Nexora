@@ -109,6 +109,11 @@ function renderRun(run: AgentRunView, props: Partial<Omit<AgentRunStepsProps, "r
   };
 }
 
+/** The run's one line — a disclosure button whenever the run has steps, a
+ * static status span when it has none (D6). */
+const disclosure = (c: HTMLElement): HTMLElement | null =>
+  c.querySelector(".nex-agent-run-disclosure");
+
 const rail = (c: HTMLElement): Element | null => c.querySelector(".nex-agent-spine");
 const pulse = (c: HTMLElement): Element | null => c.querySelector(".nex-agent-spine-pulse");
 const connectors = (c: HTMLElement): Element[] => [...c.querySelectorAll(".nex-agent-step-slot")];
@@ -401,51 +406,56 @@ describe("tool group folding (brief 13.33)", () => {
     expect(toolCalls.filter((step) => step.tool_name === "search_files")).toHaveLength(1);
   });
 
-  it("collapses a finished long run into one summary and restores the same rows in order", () => {
+  it("collapses a finished long run into one line and restores the same rows in order", () => {
     const { container, rerenderRun } = renderRun(longRun());
 
-    const summary = screen.getByRole("button", { name: "Show run steps" });
-    expect(summary).toHaveAttribute("aria-expanded", "false");
-    // The counts now live on the ONE summary line, exactly once:
-    // "1 file changed · 1 command · 5 tool calls".
-    expect(
-      container.querySelector(".nex-agent-run-summary")?.textContent,
-    ).toBe("1 file changed · 1 command · 5 tool calls");
-    // Two COMPLETED blocks cannot render: exactly one summary element.
-    expect(container.querySelectorAll(".nex-agent-run-summary")).toHaveLength(1);
+    const line = screen.getByRole("button", { name: /Done in 7 steps/ });
+    expect(line).toHaveAttribute("aria-expanded", "false");
+    // The one line says the outcome and the step count — not a second
+    // summary block above a card.
+    expect(line).toHaveTextContent("Done in 7 steps");
+    expect(container.querySelector(".nex-agent-run-summary")).toBeNull();
     // The rows are hidden, never unmounted: the same objects stay in the tree.
     expect(container.querySelector(".nex-agent-timeline")).toHaveAttribute("hidden");
     expect(rows(container)).toHaveLength(7);
 
     const before = rows(container);
-    fireEvent.click(summary);
-    expect(summary).toHaveAttribute("aria-expanded", "true");
-    expect(summary).toHaveAttribute("aria-controls", "nex-agent-timeline-7");
+    fireEvent.click(line);
+    expect(line).toHaveAttribute("aria-expanded", "true");
+    expect(line).toHaveAttribute("aria-controls", "nex-agent-timeline-7");
     expect(container.querySelector(".nex-agent-timeline")).not.toHaveAttribute("hidden");
+    // The real results are counted once, in the expanded detail row.
+    expect(
+      container.querySelector(".nex-agent-run-summary")?.textContent,
+    ).toBe("1 file changed · 1 command · 5 tool calls");
+    expect(container.querySelectorAll(".nex-agent-run-summary")).toHaveLength(1);
     const after = rows(container);
     // Same seq order, and the very same element instances — which is what
     // preserves each row's own open/closed state across the round trip.
     expect(after.map(seqOf)).toEqual(["#1", "#2", "#3", "#4", "#5", "#6", "#7"]);
     expect(after[2]).toBe(before[2]);
 
-    fireEvent.click(summary);
+    fireEvent.click(line);
     const collapsed = rows(container);
     expect(collapsed.map(seqOf)).toEqual(after.map(seqOf));
     expect(collapsed[0]).toBe(after[0]);
 
     // A re-render mid-fold (every step frame does exactly this in the app)
-    // keeps the folded state and the summary.
+    // keeps the folded state and the one line.
     rerenderRun(longRun());
     expect(container.querySelector(".nex-agent-timeline")).toHaveAttribute("hidden");
-    expect(screen.getByRole("button", { name: "Show run steps" })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: /Done in 7 steps/ })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
   });
 
   it("restores a row's own open state after the fold round trip", () => {
     const { container } = renderRun(longRun());
-    const summary = screen.getByRole("button", { name: "Show run steps" });
+    const line = screen.getByRole("button", { name: /Done in 7 steps/ });
 
-    fireEvent.click(summary);
-    expect(summary).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(line);
+    expect(line).toHaveAttribute("aria-expanded", "true");
     // A read row names itself by its verb now ("Read"), not the tool id.
     const readRows = screen.getAllByRole("button", { name: /Read/ });
     expect(readRows).toHaveLength(2);
@@ -453,9 +463,9 @@ describe("tool group folding (brief 13.33)", () => {
     expect(readRows[0]).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("group", { name: "Tool arguments" })).toBeInTheDocument();
 
-    fireEvent.click(summary);
+    fireEvent.click(line);
     expect(container.querySelector(".nex-agent-timeline")).toHaveAttribute("hidden");
-    fireEvent.click(summary);
+    fireEvent.click(line);
     expect(container.querySelector(".nex-agent-timeline")).not.toHaveAttribute("hidden");
 
     const reopened = screen.getAllByRole("button", { name: /Read/ });
@@ -542,7 +552,8 @@ describe("tool group folding (brief 13.33)", () => {
         ],
       }),
     );
-    expect(screen.queryByRole("button", { name: "Show run steps" })).toBeNull();
+    // Not foldable: the line is a disclosure that starts OPEN.
+    expect(disclosure(ruled.container)).toHaveAttribute("aria-expanded", "true");
     expect(ruled.container.querySelector(".nex-agent-timeline")).not.toHaveAttribute("hidden");
     ruled.unmount();
   });
@@ -567,7 +578,7 @@ describe("tool group folding (brief 13.33)", () => {
         ],
       }),
     );
-    expect(screen.getByRole("button", { name: "Show run steps" })).toBeInTheDocument();
+    expect(disclosure(granted.container)).toHaveAttribute("aria-expanded", "false");
     expect(granted.container.querySelector(".nex-agent-timeline")).toHaveAttribute("hidden");
     granted.unmount();
 
@@ -582,7 +593,7 @@ describe("tool group folding (brief 13.33)", () => {
         ],
       }),
     );
-    expect(screen.queryByRole("button", { name: "Show run steps" })).toBeNull();
+    expect(disclosure(outstanding.container)).toHaveAttribute("aria-expanded", "true");
     expect(outstanding.container.querySelector(".nex-agent-timeline")).not.toHaveAttribute("hidden");
   });
 
@@ -591,7 +602,7 @@ describe("tool group folding (brief 13.33)", () => {
     // still offers Continue, so "where it ran out" is the question the user
     // is about to ask. Folding it would answer with a count.
     const exhausted = renderRun(longRun({ status: "budget_exhausted" }));
-    expect(screen.queryByRole("button", { name: "Show run steps" })).toBeNull();
+    expect(disclosure(exhausted.container)).toHaveAttribute("aria-expanded", "true");
     expect(exhausted.container.querySelector(".nex-agent-timeline")).not.toHaveAttribute("hidden");
     expect(screen.getByRole("button", { name: "Continue" })).toBeInTheDocument();
     exhausted.unmount();
@@ -599,23 +610,25 @@ describe("tool group folding (brief 13.33)", () => {
     // The same long, clean, terminal run without the budget stop does fold —
     // so the exclusion is the status and not the length.
     const completed = renderRun(longRun({ status: "completed" }));
-    expect(screen.getByRole("button", { name: "Show run steps" })).toBeInTheDocument();
+    expect(disclosure(completed.container)).toHaveAttribute("aria-expanded", "false");
     expect(completed.container.querySelector(".nex-agent-timeline")).toHaveAttribute("hidden");
   });
 
-  it("names the fold button for what it does and owns the timeline it hides", () => {
+  it("makes the one line the disclosure and gives it the timeline it hides", () => {
     const en = renderRun(longRun());
     const timeline = en.container.querySelector(".nex-agent-timeline");
-    const summary = screen.getByRole("button", { name: "Show run steps" });
-    // The visible line says what the control DOES (show/hide), not the counts —
-    // the counts live on the ONE summary line above the run.
+    // The line's accessible name IS the outcome — there is no separate
+    // "Show run steps" control any more (D6).
+    const line = screen.getByRole("button", { name: /Done in 7 steps/ });
+    expect(line).toBe(disclosure(en.container));
     expect(timeline).toHaveAttribute("id", "nex-agent-timeline-7");
-    expect(summary).toHaveAttribute("aria-controls", "nex-agent-timeline-7");
-    expect(summary).toHaveTextContent("Show run steps");
+    expect(line).toHaveAttribute("aria-controls", "nex-agent-timeline-7");
+    expect(line).toHaveAttribute("aria-expanded", "false");
 
-    fireEvent.click(summary);
-    expect(screen.getByRole("button", { name: "Hide run steps" })).toBe(summary);
-    expect(summary).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(line);
+    expect(line).toHaveAttribute("aria-expanded", "true");
+    // The name does not swap to "Hide…": the line always states the run.
+    expect(line).toHaveTextContent("Done in 7 steps");
     expect(en.container.querySelector(".nex-agent-timeline")).not.toHaveAttribute("hidden");
 
     const stored = window.localStorage.getItem(LOCALE_KEY);
@@ -627,9 +640,10 @@ describe("tool group folding (brief 13.33)", () => {
       // the uniqueness above is meant to rule out.
       en.unmount();
       const ru = renderRun(longRun());
-      expect(
-        screen.getByRole("button", { name: "Показать шаги запуска" }),
-      ).toHaveAttribute("aria-controls", "nex-agent-timeline-7");
+      expect(screen.getByRole("button", { name: /Готово за 7 шагов/ })).toHaveAttribute(
+        "aria-controls",
+        "nex-agent-timeline-7",
+      );
       expect(ru.container.querySelectorAll("#nex-agent-timeline-7")).toHaveLength(1);
       ru.unmount();
     } finally {
@@ -638,21 +652,25 @@ describe("tool group folding (brief 13.33)", () => {
     }
   });
 
-  it("declines the fold summary in EN and RU", () => {
+  it("states the run once in EN and RU, never a second summary block", () => {
     const stored = window.localStorage.getItem(LOCALE_KEY);
     window.localStorage.setItem(LOCALE_KEY, "ru");
     try {
-      // RU: the fold button carries the action only — never the counts.
+      // RU: the line states the outcome and the step count, once.
       const ru = renderRun(longRun());
-      const ruButton = screen.getByRole("button", { name: "Показать шаги запуска" });
-      expect(ruButton).toHaveTextContent("Показать шаги запуска");
-      // The counts live on the ONE summary line, once.
-      expect(
-        ru.container.querySelector(".nex-agent-run-summary")?.textContent,
-      ).toBe("1 файл изменён · 1 команда · 5 вызовов инструментов");
+      const ruLine = screen.getByRole("button", { name: /Готово за 7 шагов/ });
+      expect(ruLine).toHaveTextContent("Готово за 7 шагов");
+      // No summary block while folded…
+      expect(ru.container.querySelector(".nex-agent-run-summary")).toBeNull();
+      // …and exactly one when expanded.
+      fireEvent.click(ruLine);
+      expect(ru.container.querySelectorAll(".nex-agent-run-summary")).toHaveLength(1);
+      expect(ru.container.querySelector(".nex-agent-run-summary")?.textContent).toBe(
+        "1 файл изменён · 1 команда · 5 вызовов инструментов",
+      );
       ru.unmount();
 
-      // 6 steps, 5 tool calls, 4 of them file tools.
+      // 6 steps, 5 tool calls, 2 of them file writers.
       const many = renderRun(
         runView({
           status: "completed",
@@ -666,20 +684,18 @@ describe("tool group folding (brief 13.33)", () => {
           ],
         }),
       );
-      expect(screen.getByRole("button", { name: "Показать шаги запуска" })).toBeInTheDocument();
-      expect(
-        many.container.querySelector(".nex-agent-run-summary")?.textContent,
-      ).toBe("2 файла изменено · 1 команда · 5 вызовов инструментов");
+      const manyLine = screen.getByRole("button", { name: /Готово за 6 шагов/ });
+      expect(manyLine).toHaveTextContent("Готово за 6 шагов");
+      fireEvent.click(manyLine);
+      expect(many.container.querySelector(".nex-agent-run-summary")?.textContent).toBe(
+        "2 файла изменено · 1 команда · 5 вызовов инструментов",
+      );
       many.unmount();
 
       window.localStorage.removeItem(LOCALE_KEY);
       renderRun(longRun());
-      expect(screen.getByRole("button", { name: "Show run steps" })).toBeInTheDocument();
-      expect(
-        screen.getByRole("button", { name: "Show run steps" }).querySelector(
-          ".nex-agent-fold-label",
-        )?.textContent,
-      ).toBe("Show run steps");
+      const enLine = screen.getByRole("button", { name: /Done in 7 steps/ });
+      expect(enLine).toHaveTextContent("Done in 7 steps");
     } finally {
       if (stored === null) window.localStorage.removeItem(LOCALE_KEY);
       else window.localStorage.setItem(LOCALE_KEY, stored);

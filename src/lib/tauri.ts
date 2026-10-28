@@ -754,6 +754,47 @@ export function inspectRun(runId: number): Promise<RunInspection> {
   return invoke<RunInspection>("inspect_run", { runId });
 }
 
+/**
+ * One parked approval (G-15 live snapshot). `arguments` is the exact payload
+ * already delivered on `approval_requested`, so re-rendering the approval card
+ * after a tab switch or WebView reload discloses nothing new.
+ */
+export interface PendingApprovalView {
+  call_id: string;
+  name: string;
+  arguments: string;
+  timeout_secs: number;
+  requested_at: number;
+  expires_at: number;
+}
+
+/**
+ * Live state of a conversation's run (G-15). `parked_reason` is fixed
+ * vocabulary; `pending_approval` is non-null only when the backend gate really
+ * holds an unresolved park — it is never inferred from `status === "running"`.
+ */
+export interface LiveRunState {
+  run_id: number;
+  status: string;
+  parked_reason: "none" | "paused" | "awaiting_approval" | "awaiting_budget";
+  pending_approval: PendingApprovalView | null;
+  started_at: number | null;
+  finished_at: number | null;
+  current_step_seq: number | null;
+  current_step_tool: string | null;
+}
+
+/**
+ * Read the live run snapshot for one conversation via `inspect_run_live`.
+ * `null` means "no run to report" (no active run and no persisted row), so the
+ * caller renders no approval affordance instead of inventing one.
+ */
+export function inspectRunLive(
+  conversationId: number,
+): Promise<LiveRunState | null> {
+  return invoke<LiveRunState | null>("inspect_run_live", { conversationId });
+}
+
 // ---- Spend dashboard (read-only) --------------------------------------
 // Per-run spend (steps, micro-USD, budget caps, % used) plus aggregate
 // totals across every persisted run, from the existing `agent_runs`

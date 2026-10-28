@@ -1,25 +1,26 @@
 /* ============================================================
    Nexora Application Shell & Global Layout — 0.3.0 Expressive
-   Visual Reset. Fixed sidebar + main content. Shell planes are
+   Visual Reset. Single-column main content; the edge Dock is a
+   fixed overlay, not a shell column. Shell planes are
    painted from the canvas→elevated→nested→floating tier tokens
    (brief §16): the app frame and the agent workspace share the
-   canvas, the navigation rail steps away from it, and only true
+   canvas, the Dock floats above it, and only true
    overlays reach the floating tier. Borders survive only as the
    shell seam (brief §19). Flat at rest — no shadow on any shell
    plane. Consumes tokens.css exclusively; reusable primitives
    live in components.css.
    ============================================================ */
 
-/* ---- App shell: fixed sidebar + main content ----
-   #230 Phase 1: the rail's own column is `auto` instead of the M3E
-   `--nex-sys-layout-sidebar-width` (280px). The migrated sidebar
-   declares its width once, on itself — `w-64` = 256px, the THEME §4
-   band as normalized by THEME §6 — so pinning the same number here
-   would be a second source of truth that can only drift. `auto`
-   resolves the column to the rail's own box. */
+/* ---- App shell: single column (Dock is a fixed overlay) ----
+   The navigation rail is gone: App.tsx renders the Dock as a fixed
+   overlay outside this grid, so `.nex-main` is the only in-flow child
+   and a single track is the honest structure. A second column would
+   auto-place `.nex-main` into it and leave an empty `1fr` beside it.
+   The legacy `.nex-app.nex-zen` override in tabs.css now restates this
+   same column and is kept as a harmless no-op. */
 .nex-app {
   display: grid;
-  grid-template-columns: auto 1fr;
+  grid-template-columns: 1fr;
   width: 100vw;
   height: 100vh;
   background: var(--color-surface-canvas);
@@ -35,9 +36,11 @@
    keyboard focus (a11y acceptance: full keyboard operability, visible
    focus). It is a floating layer (fixed, dialog z-step), so it earns
    the floating tier, a floating-tier radius, and the one shadow it is
-   allowed: a small control, not a pill (brief §18/§19). Reduced
-   motion: the global gate collapses the slide to an instant
-   appearance. ---- */
+   allowed while focused: a small control, not a pill (brief §18/§19).
+   The shadow belongs to the focused state only — an always-on shadow
+   would bleed 1px into the viewport at rest, because the chip itself
+   sits fully offscreen. Reduced motion: the global gate collapses the
+   slide and the shadow fade to an instant appearance. ---- */
 .nex-skip-link {
   position: fixed;
   top: var(--space-sm);
@@ -50,13 +53,16 @@
   font-size: var(--type-size-label-large);
   font-weight: var(--type-weight-emphasized);
   text-decoration: none;
-  box-shadow: var(--nex-sys-elevation-level1);
   transform: translateY(calc(-100% - var(--space-sm)));
-  transition: transform var(--nex-sys-motion-duration-fast)
-    var(--nex-sys-motion-easing-standard);
+  transition:
+    transform var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard),
+    box-shadow var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard);
 }
 .nex-skip-link:focus-visible {
   transform: translateY(0);
+  box-shadow: var(--nex-sys-elevation-level1);
 }
 
 /* The brand mark: an asset hook, not a paint class — theme.css inverts

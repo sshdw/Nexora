@@ -1,0 +1,349 @@
+/* ============================================================
+   Dock panels — the overlay surface behind every Dock destination
+   (D-06 / §6.2 / R4-01).
+
+   One card, three occupants (Sessions / Workspace / Activity). The
+   rail is edge-attached, so the card anchors to the rail's right
+   edge one spacing step away and centres with it: the pair reads as
+   one object, and neither the thread nor the composer moves while it
+   is open (D-06 forbids the shift).
+
+   Surfaces: the floating tier, because this IS a floating layer —
+   the one place the brief allows a shadow (§19). No blur, no glass
+   (D-09), no permanent glow.
+   ============================================================ */
+
+.nex-dock-panel {
+  position: fixed;
+  left: calc(var(--dock-width) + var(--space-sm));
+  top: 50%;
+  width: 300px;
+  max-height: min(440px, calc(100vh - 2 * var(--space-2xl)));
+  display: flex;
+  flex-direction: column;
+  background: var(--color-surface-floating);
+  border: 1px solid var(--color-outline-variant);
+  border-radius: var(--shape-medium);
+  box-shadow: var(--nex-sys-elevation-level1);
+  z-index: var(--nex-sys-z-popover);
+  overflow: hidden;
+  transform: translateY(-50%);
+  animation: nex-dock-panel-in var(--motion-duration-short3, 150ms)
+    var(--motion-easing-standard, cubic-bezier(0.2, 0, 0, 1)) both;
+}
+
+@keyframes nex-dock-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(-50%) translateX(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(-50%) translateX(0);
+  }
+}
+
+/* ---- Header: title, quiet count, close ---- */
+.nex-dock-panel-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  flex: none;
+  min-height: 40px;
+  padding: 0 var(--space-xs) 0 var(--space-md);
+  border-bottom: 1px solid var(--color-outline-variant);
+}
+
+.nex-dock-panel-title {
+  font-size: var(--type-size-body-small);
+  font-weight: var(--type-weight-medium);
+  color: var(--color-on-surface);
+  margin: 0;
+  white-space: nowrap;
+}
+
+.nex-dock-panel-meta {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--type-size-label-medium);
+  color: var(--color-on-surface-variant);
+  text-align: end;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* When there is no meta the title takes the free space instead. */
+.nex-dock-panel-title + .nex-dock-panel-close {
+  margin-inline-start: auto;
+}
+
+.nex-dock-panel-close {
+  flex: none;
+}
+
+/* ---- Body ---- */
+.nex-dock-panel-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-xs);
+}
+
+.nex-dock-panel-group {
+  margin: var(--space-xs) var(--space-xs) var(--space-xxs);
+  font-size: var(--type-size-label-medium);
+  color: var(--color-on-surface-variant);
+}
+
+.nex-dock-panel-note {
+  margin: var(--space-xs);
+  font-size: var(--type-size-body-small);
+  color: var(--color-on-surface-variant);
+  line-height: var(--type-line-height-normal);
+}
+
+.nex-dock-panel-note.is-error {
+  color: var(--color-error);
+}
+
+.nex-dock-panel-footer {
+  flex: none;
+  display: flex;
+  justify-content: flex-end;
+  padding-top: var(--space-xs);
+  margin-top: var(--space-xs);
+  border-top: 1px solid var(--color-outline-variant);
+}
+
+/* ---- Row list (shared by Sessions, Workspace recents, Activity) ----
+   Rows are the whole surface of the panel, so they carry the panel's
+   only interactive states: hover, focus-visible, and "this is the
+   conversation you are in" — a tone step plus a 2 px tick, never hue
+   (D-08). */
+.nex-sessions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.nex-sessions-row {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  width: 100%;
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--shape-extra-small);
+  color: var(--color-on-surface);
+  text-align: start;
+}
+
+.nex-sessions-row:hover {
+  background: var(--state-hover);
+}
+
+.nex-sessions-row:active {
+  background: var(--state-pressed);
+}
+
+.nex-sessions-row:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
+.nex-sessions-row.is-current {
+  background: var(--state-selected);
+}
+
+.nex-sessions-row.is-current::before {
+  content: "";
+  position: absolute;
+  inset-block: var(--space-xs);
+  inset-inline-start: 0;
+  width: 2px;
+  border-radius: var(--shape-full);
+  background: var(--tick);
+}
+
+/* A task without a conversation has nothing to open: it is a statement,
+   so it must not look pressable. */
+.nex-sessions-row.is-static {
+  cursor: default;
+}
+
+.nex-sessions-row.is-static:hover {
+  background: transparent;
+}
+
+.nex-sessions-row-title {
+  font-size: var(--type-size-body-small);
+  font-weight: var(--type-weight-medium);
+  color: var(--color-on-surface);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nex-sessions-row-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xxs);
+  font-size: var(--type-size-label-medium);
+  color: var(--color-on-surface-variant);
+  min-width: 0;
+}
+
+/* ---- Sessions ---- */
+.nex-sessions {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.nex-sessions-search {
+  position: relative;
+  flex: none;
+  padding: 0 var(--space-xs) var(--space-xs);
+}
+
+.nex-sessions-search-icon {
+  position: absolute;
+  left: calc(var(--space-xs) + 8px);
+  top: 50%;
+  transform: translateY(-50%);
+  width: 14px;
+  height: 14px;
+  color: var(--color-on-surface-variant);
+  pointer-events: none;
+}
+
+.nex-sessions-search-input {
+  width: 100%;
+  height: 30px;
+  padding: 0 var(--space-xs) 0 28px;
+  border-radius: var(--shape-extra-small);
+  border: 1px solid var(--color-outline-variant);
+  background: var(--color-surface-canvas);
+  color: var(--color-on-surface);
+  font-family: inherit;
+  font-size: var(--type-size-body-small);
+}
+
+.nex-sessions-search-input::placeholder {
+  color: var(--color-on-surface-variant);
+}
+
+/* `type="search"` is the right semantics, but the UA's own clear button is
+   a blue glyph — the one chromatic thing the monochrome chrome would inherit
+   from the platform. The field is filtered by typing, and Escape/select-all
+   still clear it. */
+.nex-sessions-search-input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.nex-sessions-search-input:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+.nex-sessions-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-inline: var(--space-xxs);
+}
+
+/* ---- Workspace ---- */
+.nex-workspace-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: var(--space-xs);
+}
+
+.nex-workspace-current {
+  padding: var(--space-xs);
+  border-radius: var(--shape-extra-small);
+  background: var(--color-surface-canvas);
+}
+
+.nex-workspace-current.is-empty {
+  background: transparent;
+  padding: var(--space-xxs) var(--space-xs) 0;
+}
+
+.nex-workspace-name {
+  margin: 0;
+  font-size: var(--type-size-body-large);
+  font-weight: var(--type-weight-medium);
+  color: var(--color-on-surface);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nex-workspace-path {
+  margin: var(--space-xxxs) 0 0;
+  font-family: var(--type-family-mono);
+  font-size: var(--type-size-label-medium);
+  color: var(--color-on-surface-variant);
+  /* Paths are the one place a mid-word break is honest: the value is a
+     string, not prose. Two lines is enough for any realistic root. */
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.nex-workspace-action {
+  align-self: flex-start;
+}
+
+.nex-workspace-row-path {
+  font-family: var(--type-family-mono);
+  font-size: var(--type-size-label-medium);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: block;
+}
+
+/* ---- Activity ---- */
+.nex-activity-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.nex-activity-status {
+  font-weight: var(--type-weight-medium);
+}
+
+/* Status words carry their own text, so the tone is reinforcement, not
+   the signal (D-08: colour is never the only cue). */
+.nex-activity-status.is-running {
+  color: var(--color-on-surface);
+}
+
+.nex-activity-status.is-completed {
+  color: var(--color-success);
+}
+
+.nex-activity-status.is-failed {
+  color: var(--color-error);
+}
+
+.nex-activity-meta {
+  margin-inline-start: auto;
+  color: var(--color-on-surface-variant);
+  font-variant-numeric: tabular-nums;
+}

@@ -4,13 +4,27 @@
    components.css / conversation.css. All values via tokens.
    ============================================================ */
 
+/* The view switch is CHROME, not a second header. It used to paint its own
+   full-bleed band with a bottom seam directly under the pane header's band,
+   so the stage opened with two stacked strips and 89 px of chrome before a
+   single line of content. It now sits on the canvas with no fill and no
+   seam of its own — the header above already draws the boundary — and keeps
+   only the height its control needs. */
 .nex-context-tabs {
   display: flex;
   align-items: center;
   gap: var(--space-xs);
-  padding: var(--space-xs) var(--space-md);
-  background: var(--color-surface-container);
-  border-bottom: 1px solid var(--color-outline-variant);
+  padding: var(--space-xs) var(--space-md) var(--space-xxs);
+  background: transparent;
+  border-bottom: none;
+  /* Full-bleed opt-out of the conversation stage's Dock inset
+     (conversation.css, `.nex-main-conversation`). This row is the stage's
+     own chrome: its surface band and hairline span the pane edge to edge,
+     and it sits above the rail's vertically-centred band, so nothing here
+     is behind the Dock. Cancelling the stage padding keeps the row and its
+     content exactly where they were before the inset — the reserve is for
+     the reading column, not for chrome. */
+  margin-inline: calc(-1 * var(--dock-width));
 }
 
 .nex-context {
@@ -18,6 +32,26 @@
   min-height: 0;
   overflow-y: auto;
   padding: var(--space-lg) var(--space-xl);
+}
+
+/* ---- Scroll viewport reaches the window edge (R4-01, round 4) ----
+   Same fault as the thread (conversation.css): this is a scroll container
+   inside the stage's Dock inset, so its scrollbar painted at
+   x = width − 60 instead of the window edge. The rail reserves room for
+   content, never for paint, and a scrollbar is paint.
+
+   The mechanism is the thread's, one term longer: the negative inline
+   margin cancels the stage reserve so the border box spans the window,
+   and the width it buys comes back as inline padding so the CONTENT box
+   stays exactly the stage content box. This panel already spent 24px of
+   that padding on its own inset (`--space-xl` above), so the padding here
+   is the reserve PLUS that inset — the arithmetic the thread does not
+   need, because the thread's inline padding was 0. Padding, not a
+   transparent border: a scrollbar is painted in the padding box, so a
+   border would leave it at width − 60 (measured; see the thread rule). */
+.nex-main-conversation > .nex-context {
+  margin-inline: calc(-1 * var(--dock-width));
+  padding-inline: calc(var(--dock-width) + var(--space-xl));
 }
 
 .nex-context-grid {
