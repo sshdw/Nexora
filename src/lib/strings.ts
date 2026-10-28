@@ -71,6 +71,9 @@ const en = {
   "app.noConversationTitle": "No conversation selected",
   "app.noConversationText":
     "Choose a conversation from the sidebar, or create one with New Conversation.",
+  "app.noSessionTitle": "No session open",
+  "app.noSessionText":
+    "Pick one from Sessions in the Dock, or start a new session.",
   "app.archivedBadge": "Archived",
   "app.splitPaneAria": "Split: {title}",
   "app.paneActions": "Actions for {title}",
@@ -84,6 +87,31 @@ const en = {
   "app.zenExitTitle": "Exit chromeless reading mode (Esc)",
   "app.zenExit": "Exit zen · Esc",
   "app.newConversationDefault": "New Conversation",
+
+  // ---- Dock panels (D-06: the shell's only navigation) ---------------------
+  "dock.aria": "Dock",
+  "dock.new": "New",
+  "dock.workspace": "Workspace",
+  "dock.sessions": "Sessions",
+  "dock.activity": "Activity",
+  "dock.settings": "Settings",
+  "dock.activityNeedsYou": "Activity, {count} needs you",
+  "dock.sessionsFilter": "Filter sessions",
+  "dock.sessionsEmpty": "No sessions yet",
+  "dock.sessionsNoMatch": "No sessions match that filter",
+  "dock.workspaceNone": "No folder open",
+  "dock.workspaceNoneText":
+    "Agent runs need a folder to work in. Open one to give the agent a workspace.",
+  "dock.workspaceOpen": "Open folder…",
+  "dock.workspaceChange": "Change folder…",
+  "dock.workspaceRecent": "Recent",
+  "dock.activityEmpty": "Nothing running",
+  "dock.activityEmptyText":
+    "Queued agent tasks and their progress appear here while they run.",
+  "dock.activityRunning": "Running",
+  "dock.activityQueued": "Queued",
+  "dock.activityRecent": "Recent",
+  "dock.activityOpenTasks": "Open tasks",
 
   // ---- sidebar nav ---------------------------------------------------------
   "nav.settings": "Settings",
@@ -178,13 +206,17 @@ const en = {
   "empty.text": "Your conversations will appear here.",
 
   // ---- conversation / composer (ConversationView.tsx) ---------------------------
-  "conv.viewLabel": "Conversation view",
-  "conv.chatTab": "Chat",
+  // Defect B (round-4 visual QA): this switch and the composer's mode switch
+  // both said "Chat" in the same chip grammar, one above the other. The stage
+  // VIEW is now "Conversation" / "Context"; the composer's mode pair keeps
+  // `conv.modeChat` / `conv.agentToggle` byte-identical ("Chat" / "Agent").
+  // The group's own name is not "Conversation view" any more for the same
+  // reason in the a11y tree: it would repeat the option it contains.
+  "conv.viewLabel": "Pane content",
+  "conv.chatTab": "Conversation",
   "conv.contextTab": "Context",
   "conv.messagesAria": "Messages",
   "conv.loadingMessages": "Loading messages",
-  "conv.emptyTitle": "No messages yet",
-  "conv.emptyText": "Write your first message below to start the conversation.",
   "conv.authorYou": "You",
   "conv.authorAssistant": "Assistant",
   "conv.originTitle": "Provider and model used for this message",
@@ -192,16 +224,25 @@ const en = {
   "conv.agentWorking": "Agent is working",
   "conv.attachedFiles": "Attached files",
   "conv.removeFile": "Remove {name}",
-  "conv.messagePlaceholder": "Message",
+  // The field has no chrome of its own (the shell is the control), so the
+  // placeholder IS the affordance and has to say what to do. "Message" was a
+  // bare noun and read as a form label. The accessible name stays a short
+  // noun: a name names the control, it does not repeat the instruction.
+  "conv.messagePlaceholder": "Ask anything, or describe a task",
   "conv.messageAria": "Message",
   "conv.addFile": "Add file",
-  "conv.agentToggleTitle": "Stream steps via the agent (opt-in)",
+  "conv.agentToggleTitle": "Switch between Chat and Agent mode",
   "conv.agentToggle": "Agent",
   "conv.agentModeAria": "Agent mode",
   "conv.modelTagTitle": "Model used for new messages",
-  "conv.sending": "Sending…",
-  "conv.running": "Running…",
-  "conv.send": "Send",
+  "conv.sendAria": "Send message",
+  "conv.stopAria": "Stop agent run",
+  "conv.workspaceContextAria": "Workspace context",
+  "conv.contextWindow": "Context window",
+  "conv.contextAria": "Context window: {percent}% used",
+  "conv.contextAriaNa": "Context window: n/a",
+  "conv.contextProvider": "Provider",
+  "conv.contextModel": "Model",
   "conv.hintSend": "Enter to send · Shift+Enter for a new line",
   "conv.hintSetup": "Choose a provider and model in Settings to send messages.",
   "conv.openSettings": "Open Settings",
@@ -299,6 +340,10 @@ const en = {
   "agent.summaryNoChanges": "No changes needed",
   "agent.summaryNothing": "Nothing ran",
   "agent.cancelledNote": "nothing ran after the cancel",
+  "agent.workingSteps": "Working… · {steps}",
+  "agent.doneIn": "Done in {steps}",
+  "agent.durationSeconds": "{n}s",
+  "agent.durationMinutes": "{m}m {s}s",
   "agent.errorWhat": "What happened",
   "agent.errorWhatUnknown": "No cause reported; the run stopped before saying why.",
   "agent.errorSurvived": "What survived",
@@ -326,22 +371,6 @@ const en = {
   "agent.ariaHunk": "hunk header",
   "agent.ariaAddedHeader": "added file header",
   "agent.ariaRemovedHeader": "removed file header",
-  // Folded-run summary (brief §13.33). The template is shared by every
-  // bucket; the noun declension is supplied by the call site so RU gets
-  // one/few/many right without a nine-key catalog.
-  "agent.foldCalls": "{n} {unit}",
-  "agent.foldFiles": "{n} {unit}",
-  "agent.foldCommands": "{n} {unit}",
-  "agent.foldSearches": "{n} {unit}",
-  // Accessible names for the fold button: the visible line is the counts
-  // alone, so the name carries the action the control actually performs
-  // (show vs hide) plus the counts it summarizes.
-  // The visible counts live on the ONE summary line above the run
-  // (#230 P3: "Completion = ONE summary line carrying real results
-  // only — no duplicated COMPLETED blocks"). These two names carry
-  // the ACTION alone, so pressing the control still says what it does.
-  "agent.foldShow": "Show run steps",
-  "agent.foldHide": "Hide run steps",
 
   // ---- context panel --------------------------------------------------------------
   "ctx.group": "Conversation context",
@@ -1621,6 +1650,9 @@ const ru: Record<StringKey, string> = {
   "app.noConversationTitle": "Разговор не выбран",
   "app.noConversationText":
     "Выберите разговор в боковой панели или создайте новый кнопкой «Новый разговор».",
+  "app.noSessionTitle": "Сессия не открыта",
+  "app.noSessionText":
+    "Выберите её в «Сессиях» на доке или начните новую сессию.",
   "app.archivedBadge": "В архиве",
   "app.splitPaneAria": "Сплит: {title}",
   "app.paneActions": "Действия для «{title}»",
@@ -1634,6 +1666,30 @@ const ru: Record<StringKey, string> = {
   "app.zenExitTitle": "Выйти из бескнопочного режима чтения (Esc)",
   "app.zenExit": "Выйти из дзена · Esc",
   "app.newConversationDefault": "Новый разговор",
+
+  "dock.aria": "Док",
+  "dock.new": "Новый",
+  "dock.workspace": "Рабочая область",
+  "dock.sessions": "Сессии",
+  "dock.activity": "Активность",
+  "dock.settings": "Настройки",
+  "dock.activityNeedsYou": "Активность, требует внимания: {count}",
+  "dock.sessionsFilter": "Фильтр сессий",
+  "dock.sessionsEmpty": "Сессий пока нет",
+  "dock.sessionsNoMatch": "Нет сессий по этому фильтру",
+  "dock.workspaceNone": "Папка не открыта",
+  "dock.workspaceNoneText":
+    "Агенту нужна папка, в которой он работает. Откройте её, чтобы задать рабочую область.",
+  "dock.workspaceOpen": "Открыть папку…",
+  "dock.workspaceChange": "Сменить папку…",
+  "dock.workspaceRecent": "Недавние",
+  "dock.activityEmpty": "Ничего не выполняется",
+  "dock.activityEmptyText":
+    "Задачи агента и их прогресс появятся здесь, пока они выполняются.",
+  "dock.activityRunning": "Выполняется",
+  "dock.activityQueued": "В очереди",
+  "dock.activityRecent": "Недавние",
+  "dock.activityOpenTasks": "Открыть задачи",
 
   "nav.settings": "Настройки",
   "nav.library": "Библиотека промптов",
@@ -1717,13 +1773,11 @@ const ru: Record<StringKey, string> = {
   "empty.title": "Пока нет разговоров",
   "empty.text": "Ваши разговоры появятся здесь.",
 
-  "conv.viewLabel": "Вид разговора",
-  "conv.chatTab": "Чат",
+  "conv.viewLabel": "Содержимое панели",
+  "conv.chatTab": "Диалог",
   "conv.contextTab": "Контекст",
   "conv.messagesAria": "Сообщения",
   "conv.loadingMessages": "Загрузка сообщений",
-  "conv.emptyTitle": "Пока нет сообщений",
-  "conv.emptyText": "Напишите первое сообщение ниже, чтобы начать разговор.",
   "conv.authorYou": "Вы",
   "conv.authorAssistant": "Ассистент",
   "conv.originTitle": "Провайдер и модель, использованные для этого сообщения",
@@ -1731,16 +1785,21 @@ const ru: Record<StringKey, string> = {
   "conv.agentWorking": "Агент работает",
   "conv.attachedFiles": "Прикреплённые файлы",
   "conv.removeFile": "Убрать {name}",
-  "conv.messagePlaceholder": "Сообщение",
+  "conv.messagePlaceholder": "Спросите что угодно или опишите задачу",
   "conv.messageAria": "Сообщение",
   "conv.addFile": "Прикрепить файл",
-  "conv.agentToggleTitle": "Стримить шаги через агента (опционально)",
+  "conv.agentToggleTitle": "Переключение между режимами «Чат» и «Агент»",
   "conv.agentToggle": "Агент",
   "conv.agentModeAria": "Режим агента",
   "conv.modelTagTitle": "Модель для новых сообщений",
-  "conv.sending": "Отправка…",
-  "conv.running": "Выполнение…",
-  "conv.send": "Отправить",
+  "conv.sendAria": "Отправить сообщение",
+  "conv.stopAria": "Остановить запуск агента",
+  "conv.workspaceContextAria": "Контекст рабочей папки",
+  "conv.contextWindow": "Контекстное окно",
+  "conv.contextAria": "Контекстное окно: использовано {percent}%",
+  "conv.contextAriaNa": "Контекстное окно: н/д",
+  "conv.contextProvider": "Провайдер",
+  "conv.contextModel": "Модель",
   "conv.hintSend": "Enter — отправить · Shift+Enter — новая строка",
   "conv.hintSetup": "Чтобы отправлять сообщения, выберите провайдера и модель в настройках.",
   "conv.openSettings": "Открыть настройки",
@@ -1816,6 +1875,10 @@ const ru: Record<StringKey, string> = {
   "agent.summaryNoChanges": "Изменения не нужны",
   "agent.summaryNothing": "Ничего не выполнялось",
   "agent.cancelledNote": "после отмены ничего не выполнялось",
+  "agent.workingSteps": "Работаю… · {steps}",
+  "agent.doneIn": "Готово за {steps}",
+  "agent.durationSeconds": "{n} с",
+  "agent.durationMinutes": "{m} мин {s} с",
   "agent.errorWhat": "Что произошло",
   "agent.errorWhatUnknown": "Причина не сообщена: запуск остановился, не указав почему.",
   "agent.errorSurvived": "Что сохранилось",
@@ -1843,12 +1906,6 @@ const ru: Record<StringKey, string> = {
   "agent.ariaHunk": "заголовок фрагмента",
   "agent.ariaAddedHeader": "заголовок добавленного файла",
   "agent.ariaRemovedHeader": "заголовок удалённого файла",
-  "agent.foldCalls": "{n} {unit}",
-  "agent.foldFiles": "{n} {unit}",
-  "agent.foldCommands": "{n} {unit}",
-  "agent.foldSearches": "{n} {unit}",
-  "agent.foldShow": "Показать шаги запуска",
-  "agent.foldHide": "Скрыть шаги запуска",
 
   "ctx.group": "Контекст разговора",
   "ctx.loading": "Загрузка контекста",

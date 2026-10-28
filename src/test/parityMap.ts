@@ -3,6 +3,8 @@
 // base resolved literal per (theme, token) from the BASE commit's tokens.css.
 // Every old name that still has a var() caller has a mapping; every target
 // exists in src/index.css. Values are the resolved literals, not names.
+// Exception (owner decision R4-11): the two `--type-family*` rows are the
+// post-rebrand values — see the inline note beside them.
 export const PARITY_CASES = [
   { old: "--nex-sys-color-accent-indicator", new: "--color-accent-indicator", dark: "#c9a66b", light: "#a9824a", hc: "#e3c07c" },
   { old: "--nex-sys-color-error", new: "--color-error", dark: "#c98375", light: "#a8503f", hc: "#e09a8b" },
@@ -78,8 +80,13 @@ export const PARITY_CASES = [
   { old: "--nex-sys-state-pressed-opacity", new: "--state-pressed-opacity", dark: "0.12", light: "0.12", hc: "0.12" },
   { old: "--nex-sys-state-selected", new: "--state-selected", dark: "rgba(255, 255, 255, 0.1)", light: "rgba(0, 0, 0, 0.1)", hc: "rgba(255, 255, 255, 0.18)" },
   { old: "--nex-sys-state-selected-opacity", new: "--state-selected-opacity", dark: "0.1", light: "0.1", hc: "0.1" },
-  { old: "--nex-sys-type-family", new: "--type-family", dark: "-apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto,\n    \"Helvetica Neue\", Arial, sans-serif", light: "-apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto,\n    \"Helvetica Neue\", Arial, sans-serif", hc: "-apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto,\n    \"Helvetica Neue\", Arial, sans-serif" },
-  { old: "--nex-sys-type-family-mono", new: "--type-family-mono", dark: "ui-monospace, \"SF Mono\", \"Cascadia Code\", Menlo,\n    Consolas, monospace", light: "ui-monospace, \"SF Mono\", \"Cascadia Code\", Menlo,\n    Consolas, monospace", hc: "ui-monospace, \"SF Mono\", \"Cascadia Code\", Menlo,\n    Consolas, monospace" },
+  // R4-11 (Phase B): `--type-family*` are the two rows where the VALUE
+  // moved after the relocation — the Geist rebrand repoints the shell
+  // stack. The base literals below are the post-R4-11 resolved values,
+  // identical in all three themes; every other row is still the BASE
+  // tokens.css literal.
+  { old: "--nex-sys-type-family", new: "--type-family", dark: "\"Geist Variable\", \"Inter Variable\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, sans-serif", light: "\"Geist Variable\", \"Inter Variable\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, sans-serif", hc: "\"Geist Variable\", \"Inter Variable\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, sans-serif" },
+  { old: "--nex-sys-type-family-mono", new: "--type-family-mono", dark: "\"Geist Mono Variable\", ui-monospace, \"SF Mono\", \"Cascadia Code\", Menlo, Consolas, monospace", light: "\"Geist Mono Variable\", ui-monospace, \"SF Mono\", \"Cascadia Code\", Menlo, Consolas, monospace", hc: "\"Geist Mono Variable\", ui-monospace, \"SF Mono\", \"Cascadia Code\", Menlo, Consolas, monospace" },
   { old: "--nex-sys-type-line-height-normal", new: "--type-line-height-normal", dark: "1.5", light: "1.5", hc: "1.5" },
   { old: "--nex-sys-type-line-height-relaxed", new: "--type-line-height-relaxed", dark: "1.65", light: "1.65", hc: "1.65" },
   { old: "--nex-sys-type-line-height-tight", new: "--type-line-height-tight", dark: "1.25", light: "1.25", hc: "1.25" },

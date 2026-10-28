@@ -2,13 +2,10 @@
 //!
 //! Design notes (binding for later phases):
 //!
-//! - The app-data directory rules MIRROR the desktop backend: Tauri v2
-//!   `app.path().app_data_dir()` for the identifier `com.nexora.app`
-//!   (`src-tauri/tauri.conf.json`) holding the `nexora.db` file
-//!   (`src-tauri/src/lib.rs` setup). There is exactly one path scheme —
-//!   [`resolve_app_data_dir`] reimplements Tauri's per-OS join using only
-//!   `std::env`, because the CLI must not depend on `src-tauri` as a
-//!   library (issue #159).
+//! - The app-data directory comes from `nexora_core::storage::app_data`, the
+//!   SAME resolver the desktop startup uses (issue #161). There is exactly
+//!   one path scheme and one database filename in the workspace; the CLI
+//!   never guesses either.
 //! - The migrations readout is a READ-ONLY `MAX(schema_version)` query over
 //!   a `SQLITE_OPEN_READ_ONLY` handle — the stub never creates, writes, or
 //!   migrates the database.
@@ -30,14 +27,9 @@
 
 use std::path::PathBuf;
 
+use nexora_core::storage::app_data;
 use nexora_core::version::ManifestVersions;
 use rusqlite::OpenFlags;
-
-/// Desktop app-data identifier (`src-tauri/tauri.conf.json`).
-const APP_IDENTIFIER: &str = "com.nexora.app";
-
-/// Desktop database file name (`src-tauri/src/lib.rs` setup).
-const DB_FILE_NAME: &str = "nexora.db";
 
 /// Keyring service namespace shared with the desktop credential store.
 const KEYRING_SERVICE: &str = "nexora";
@@ -49,78 +41,6 @@ const KEYRING_PROBE_ACCOUNT: &str = "__nexora_doctor_probe__";
 const BUILD_RUSTC_VERSION: &str = env!("NEXORA_BUILD_RUSTC_VERSION");
 const BUILD_CARGO_VERSION: &str = env!("NEXORA_BUILD_CARGO_VERSION");
 const BUILD_TARGET: &str = env!("NEXORA_BUILD_TARGET");
-
-/// OS flavour for app-data resolution (mirrors Tauri's per-OS branches).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Platform {
-    Linux,
-    Macos,
-    Windows,
-}
-
-impl Platform {
-    fn current() -> Option<Self> {
-        match std::env::consts::OS {
-            "linux" => Some(Self::Linux),
-            "macos" => Some(Self::Macos),
-            "windows" => Some(Self::Windows),
-            _ => None,
-        }
-    }
-}
-
-/// Resolve the desktop app-data directory using the same rules Tauri v2
-/// applies for [`APP_IDENTIFIER`]:
-///
-/// - Linux: `$XDG_DATA_HOME/<id>`, else `$HOME/.local/share/<id>`;
-/// - macOS: `$HOME/Library/Application Support/<id>`;
-/// - Windows: `%APPDATA%\<id>`.
-///
-/// Inputs are explicit parameters (instead of reading the environment
-/// directly) so every branch is unit-testable on any host. Returns `None`
-/// when the required base directory is unknown.
-fn resolve_app_data_dir_with(
-    platform: Platform,
-    home: Option<&str>,
-    xdg_data_home: Option<&str>,
-    appdata: Option<&str>,
-) -> Option<PathBuf> {
-    match platform {
-        Platform::Linux => {
-            if let Some(xdg) = xdg_data_home.filter(|value| !value.is_empty()) {
-                Some(PathBuf::from(xdg).join(APP_IDENTIFIER))
-            } else {
-                home.filter(|value| !value.is_empty()).map(|value| {
-                    PathBuf::from(value)
-                        .join(".local/share")
-                        .join(APP_IDENTIFIER)
-                })
-            }
-        }
-        Platform::Macos => home.filter(|value| !value.is_empty()).map(|value| {
-            PathBuf::from(value)
-                .join("Library/Application Support")
-                .join(APP_IDENTIFIER)
-        }),
-        Platform::Windows => appdata
-            .filter(|value| !value.is_empty())
-            .map(|value| PathBuf::from(value).join(APP_IDENTIFIER)),
-    }
-}
-
-/// Resolve the desktop app-data directory from the process environment.
-fn resolve_app_data_dir() -> Option<PathBuf> {
-    let platform = Platform::current()?;
-    let home = std::env::var("HOME").ok();
-    let xdg_data_home = std::env::var("XDG_DATA_HOME").ok();
-    let appdata = std::env::var("APPDATA").ok();
-    resolve_app_data_dir_with(
-        platform,
-        home.as_deref(),
-        xdg_data_home.as_deref(),
-        appdata.as_deref(),
-    )
-}
 
 /// Migrations-state readout: `MAX(schema_version)` over a read-only handle.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -178,7 +98,7 @@ fn probe_keyring() -> KeyringStatus {
 
 /// Read-only inspection of the desktop database. Never creates files.
 fn inspect_database(app_data_dir: Option<&PathBuf>) -> DatabaseState {
-    let db_path = app_data_dir.map(|dir| dir.join(DB_FILE_NAME));
+    let db_path = app_data_dir.map(|dir| dir.join(app_data::DB_FILE_NAME));
     let Some(db_path) = db_path else {
         return DatabaseState::NotFound;
     };
@@ -252,7 +172,7 @@ fn find_manifest_root(start: &std::path::Path) -> Option<PathBuf> {
 /// Collect the doctor facts. Performs no network I/O, opens no TUI, and
 /// writes nothing to disk.
 pub(crate) fn collect() -> DoctorReport {
-    let app_data_dir = resolve_app_data_dir();
+    let app_data_dir = app_data::app_data_dir();
     let app_data_dir_exists = app_data_dir
         .as_ref()
         .is_some_and(|dir| std::fs::metadata(dir).is_ok_and(|meta| meta.is_dir()));
@@ -354,64 +274,6 @@ mod tests {
             database: DatabaseState::NotFound,
             keyring: KeyringStatus::Unavailable,
         }
-    }
-
-    #[test]
-    fn linux_prefers_xdg_data_home() {
-        assert_eq!(
-            resolve_app_data_dir_with(
-                Platform::Linux,
-                Some("/home/alice"),
-                Some("/data/xdg"),
-                None
-            ),
-            Some(PathBuf::from("/data/xdg").join(APP_IDENTIFIER))
-        );
-    }
-
-    #[test]
-    fn linux_falls_back_to_home_local_share() {
-        assert_eq!(
-            resolve_app_data_dir_with(Platform::Linux, Some("/home/alice"), None, None),
-            Some(PathBuf::from("/home/alice/.local/share").join(APP_IDENTIFIER))
-        );
-    }
-
-    #[test]
-    fn linux_empty_xdg_falls_back_to_home() {
-        assert_eq!(
-            resolve_app_data_dir_with(Platform::Linux, Some("/home/alice"), Some(""), None),
-            Some(PathBuf::from("/home/alice/.local/share").join(APP_IDENTIFIER))
-        );
-    }
-
-    #[test]
-    fn linux_without_home_is_unknown() {
-        assert_eq!(
-            resolve_app_data_dir_with(Platform::Linux, None, None, None),
-            None
-        );
-    }
-
-    #[test]
-    fn macos_uses_library_application_support() {
-        assert_eq!(
-            resolve_app_data_dir_with(Platform::Macos, Some("/Users/alice"), None, None),
-            Some(PathBuf::from("/Users/alice/Library/Application Support").join(APP_IDENTIFIER))
-        );
-    }
-
-    #[test]
-    fn windows_uses_roaming_appdata() {
-        assert_eq!(
-            resolve_app_data_dir_with(
-                Platform::Windows,
-                None,
-                None,
-                Some("C:\\Users\\alice\\AppData\\Roaming")
-            ),
-            Some(PathBuf::from("C:\\Users\\alice\\AppData\\Roaming").join(APP_IDENTIFIER))
-        );
     }
 
     #[test]

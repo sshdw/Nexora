@@ -53,6 +53,22 @@
   scrollbar-width: thin;
 }
 
+/* ---- Action group: Split · Zen · `+`, one quiet tier.
+
+   Their colour is NOT declared here. All three are the `quiet`
+   variant (M3Button → ghost, M3IconButton → ghost), so their rest
+   tone is the ONE base-layer control-text fallback in src/index.css
+   — `button { color: var(--color-on-surface-variant) }` — the same
+   role the tab labels above paint with, which is what makes the
+   strip read as one tone tier instead of two. Until that rule
+   existed these controls had no colour at all and fell through to
+   the UA's `buttontext`: near-black on this bar, i.e. invisible
+   (round-4 visual QA, Defect A). The hover brighten is the ghost
+   variant's own `hover:text-foreground` utility, a utilities-layer
+   declaration that outranks the fallback by layer order.
+
+   Restating the tone here would be a second source of truth for one
+   role, and paneChrome.test.ts fails on it. ---- */
 .nex-tabstrip-actions {
   display: flex;
   align-items: center;

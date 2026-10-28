@@ -32,6 +32,9 @@
 //! - [`config`] — the closed allow-list of writable settings keys and their
 //!   validation, so a setting written from the terminal is accepted, rejected,
 //!   and *worded* exactly as it would be from the window.
+//! - [`storage`] — the single `SQLite` bootstrap (pragmas, migrations, poisoned
+//!   lock recovery), the app-data resolver both shells use, and the shared
+//!   repository foundation plus the run/task repositories (issue #161).
 //!
 //! **Not** contained: business logic. Provider registries, routing-profile and
 //! MCP-server parsing, agent execution, storage, and the database all stay with
@@ -41,10 +44,10 @@
 //!
 //! ## Dependency rule (enforced, not aspirational)
 //!
-//! This crate must never depend on Tauri, React, Ratatui, or Clap. Its only
-//! dependency is `serde`/`serde_json`, needed for manifest parsing and for the
-//! stable wire shape of the error taxonomy. `cargo tree -p nexora-core` in CI
-//! is the check; see the phase-1 PR body.
+//! This crate must never depend on Tauri, React, Ratatui, or Clap. Its
+//! dependencies are `serde`/`serde_json` (stable wire shapes), plus
+//! `rusqlite` and `log` for the storage foundation. `cargo tree -p
+//! nexora-core` in CI is the check.
 //!
 //! ## Secret hygiene
 //!
@@ -58,6 +61,7 @@
 
 pub mod config;
 pub mod error;
+pub mod storage;
 pub mod version;
 
 pub use error::{CoreError, CoreErrorKind, ExitCode, EXIT_CODE_TABLE_VERSION};

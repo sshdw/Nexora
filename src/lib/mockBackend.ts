@@ -125,6 +125,68 @@ const settings = new Map<string, string>([
 let mockWorkspaceRoot = "C:\\mock\\workspace";
 let mockWorkspaceRecent: string[] = ["C:\\mock\\workspace"];
 
+// ---- Agent task queue (DEV-ONLY mirror of `agent_tasks`) ----
+// One row per state the Activity panel groups by, plus the backing steps
+// TaskPanel lists. Ids and shapes follow src/lib/tauri.ts exactly.
+const mockTasks = [
+  {
+    id: 1,
+    title: "Migrate the settings store to the mono theme",
+    description: "Replace the legacy M3E tokens in settings.css.",
+    status: "running" as const,
+    conversation_id: 1,
+    provider: MOCK_DEFAULT_PROVIDER,
+    model: MOCK_DEFAULT_MODEL,
+    max_steps: 6,
+    current_step: 3,
+    total_steps: 5,
+    report: null,
+    run_id: null,
+    created_at: hoursAgo(2),
+    updated_at: hoursAgo(0),
+  },
+  {
+    id: 2,
+    title: "Audit the diff viewer for horizontal overflow",
+    description: null,
+    status: "pending" as const,
+    conversation_id: 2,
+    provider: MOCK_DEFAULT_PROVIDER,
+    model: MOCK_DEFAULT_MODEL,
+    max_steps: 4,
+    current_step: 0,
+    total_steps: 4,
+    report: null,
+    run_id: null,
+    created_at: hoursAgo(6),
+    updated_at: hoursAgo(5),
+  },
+  {
+    id: 3,
+    title: "Document the approval recovery contract",
+    description: null,
+    status: "completed" as const,
+    conversation_id: 1,
+    provider: MOCK_DEFAULT_PROVIDER,
+    model: MOCK_DEFAULT_MODEL,
+    max_steps: 3,
+    current_step: 3,
+    total_steps: 3,
+    report: "Written to docs/.",
+    run_id: null,
+    created_at: hoursAgo(30),
+    updated_at: hoursAgo(28),
+  },
+];
+
+const mockTaskSteps = [
+  { id: 1, task_id: 1, seq: 1, title: "Read settings.css", status: "completed" as const, result: null, run_id: null, started_at: hoursAgo(2), finished_at: hoursAgo(2) + 30 },
+  { id: 2, task_id: 1, seq: 2, title: "Map legacy tokens", status: "completed" as const, result: null, run_id: null, started_at: hoursAgo(2) + 60, finished_at: hoursAgo(2) + 90 },
+  { id: 3, task_id: 1, seq: 3, title: "Rewrite the token block", status: "running" as const, result: null, run_id: null, started_at: hoursAgo(1), finished_at: null },
+  { id: 4, task_id: 1, seq: 4, title: "Verify contrast pairs", status: "pending" as const, result: null, run_id: null, started_at: hoursAgo(1), finished_at: null },
+  { id: 5, task_id: 1, seq: 5, title: "Run the theme test", status: "pending" as const, result: null, run_id: null, started_at: hoursAgo(1), finished_at: null },
+];
+
 const attachments: Array<{
   id: number;
   conversation_id: number;
@@ -502,6 +564,43 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
     }
     case "list_workspace_recent":
       return [...mockWorkspaceRecent];
+    // Registry view (roots_list / roots_add / roots_remove). The mock kept
+    // only the 1.3.0 root + MRU ring, so a DEV run failed the whole workspace
+    // load with "unhandled command roots_list" — which made the Workspace
+    // panel show its error state instead of its content. Mirror the backend
+    // contract (active root first) so visual QA exercises the real shape.
+    case "roots_list":
+      return {
+        active: mockWorkspaceRoot,
+        roots: [mockWorkspaceRoot, ...mockWorkspaceRecent.filter((p) => p !== mockWorkspaceRoot)],
+      };
+    case "roots_add": {
+      const path = String(args.path ?? "").trim();
+      if (!path) throw { kind: "invalidInput", message: "invalid workspace root: path must not be empty" };
+      mockWorkspaceRoot = path;
+      mockWorkspaceRecent = [path, ...mockWorkspaceRecent.filter((p) => p !== path)].slice(0, 5);
+      return {
+        active: mockWorkspaceRoot,
+        roots: [mockWorkspaceRoot, ...mockWorkspaceRecent.filter((p) => p !== mockWorkspaceRoot)],
+      };
+    }
+    case "roots_remove": {
+      const path = String(args.path ?? "");
+      mockWorkspaceRecent = mockWorkspaceRecent.filter((p) => p !== path);
+      if (mockWorkspaceRoot === path) mockWorkspaceRoot = mockWorkspaceRecent[0] ?? mockWorkspaceRoot;
+      return {
+        active: mockWorkspaceRoot,
+        roots: [mockWorkspaceRoot, ...mockWorkspaceRecent.filter((p) => p !== mockWorkspaceRoot)],
+      };
+    }
+    // ---- Agent task queue (G-03) ----
+    // The queue is the Activity panel's only honest feed, so the mock needs
+    // rows for it (and for TaskPanel, which had none either). Three states,
+    // one per section the panel groups by.
+    case "list_tasks":
+      return [...mockTasks].sort((a, b) => b.updated_at - a.updated_at);
+    case "list_task_steps":
+      return mockTaskSteps.filter((step) => step.task_id === Number(args.taskId));
     // ---- Agent runs (Task 5.1/5.2) ----
     case "start_agent_run": {
       const conversationId = Number(requireArg(args, "start_agent_run", "conversationId"));
