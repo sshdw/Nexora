@@ -261,7 +261,7 @@ describe("thread + context sheets — reduced motion (SYSTEM §7)", () => {
 
   it("collapses every colour-only transition on these sheets to instant", () => {
     // `.nex-agent-step-header`, `.nex-agent-step-target` and
-    // `.nex-agent-fold` all carry a colour transition. The gate would
+    // `.nex-agent-run-disclosure` all carry a colour transition. The gate would
     // already resolve those correctly — but the branch drops the
     // declaration outright, so nothing is even scheduled. Asserted because
     // a `transition` added without a matching branch is invisible in jsdom.
@@ -271,7 +271,7 @@ describe("thread + context sheets — reduced motion (SYSTEM §7)", () => {
     for (const sel of [
       ".nex-agent-step-header",
       ".nex-agent-step-target",
-      ".nex-agent-fold",
+      ".nex-agent-run-disclosure",
     ]) {
       expect(
         reducedMotionSelectors(conversation),
@@ -302,23 +302,19 @@ describe("thread + context sheets — reduced motion (SYSTEM §7)", () => {
       .flatMap((chunk) => chunk.split(",").map((s) => s.trim()))
       .filter((s) => s.startsWith(".nex-agent") || s.startsWith(".nex-message") || s.startsWith(".nex-context"));
     const branches = reducedMotionSelectors(conversationThread).join(" ");
-    // The two exemptions are NOT "left alone" — they are the two animations
-    // whose END FRAME IS THE INFORMATION, which is the gate's own contract
-    // (motion.test.tsx pins that the gate holds the end frame). Both are
-    // named here so the exemption list is visible in the diff rather than
-    // hidden in a regex:
+    // The one exemption is NOT "left alone" — it is the animation whose END
+    // FRAME IS THE INFORMATION, which is the gate's own contract
+    // (motion.test.tsx pins that the gate holds the end frame). Named here so
+    // the exemption list is visible in the diff rather than hidden in a regex:
     //
     //   .nex-message-enter  — a one-shot entrance whose `to` is
     //     opacity 1 / translateY(0). Collapsed, it resolves to "the message
     //     has arrived", which is the entire content of the animation. The
     //     global gate's `animation-fill-mode: forwards` is what makes that
     //     true, and motion.test.tsx:105 pins that declaration exists.
-    //   .nex-conversation-placeholder — the same `.nex-empty-enter`
-    //     one-shot entrance the shared empty-state rule already owns, and
-    //     which P0 restyled; it inherits the identical end frame.
     //
     // Everything else must have its own branch, or the list must say why.
-    const GATE_RESOLVES = [".nex-message-enter", ".nex-conversation-placeholder"];
+    const GATE_RESOLVES = [".nex-message-enter"];
     for (const selector of new Set(animated)) {
       const base = selector.replace(/::?[a-z-]+(\([^)]*\))?$/, "");
       expect(
@@ -342,6 +338,9 @@ describe("thread + context sheets — the classes P3 removed", () => {
       ".nex-agent-step-status",
       ".nex-conversation-empty-mark",
       ".nex-conversation-empty-mark-wrap",
+      ".nex-conversation-placeholder",
+      ".nex-conversation-empty-title",
+      ".nex-conversation-empty-text",
     ]) {
       expect(conversation, `${dead} has no class emitting it any more`).not.toMatch(
         new RegExp(`\\${dead}\\b`),

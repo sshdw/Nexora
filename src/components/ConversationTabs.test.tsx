@@ -46,12 +46,13 @@ function tabStrip(overrides: Partial<Parameters<typeof ConversationTabs>[0]> = {
     splitId: null,
     onActivate: vi.fn(),
     onClose: vi.fn(),
-    onNewConversation: vi.fn(),
-    creating: false,
     zen: false,
     onToggleZen: vi.fn(),
     splitOpen: false,
     onToggleSplit: vi.fn(),
+    workspaceRoot: null,
+    workspaceLoading: false,
+    onExport: vi.fn(),
     ...overrides,
   };
   const view = render(
@@ -99,6 +100,8 @@ function pane(overrides: Partial<Parameters<typeof ConversationPane>[0]> = {}) {
     workspaceRoot: null,
     workspaceLoading: false,
     secondary: false,
+    zen: false,
+    onToggleZen: vi.fn(),
     ...overrides,
   };
   render(
@@ -154,17 +157,18 @@ describe("exactly one Split control (SYSTEM §4, MAP row 5)", () => {
 });
 
 describe("tab strip grammar (MAP row 4)", () => {
-  it("puts the new-tab button last, with the name the text button had", () => {
-    const { props } = tabStrip();
-    const newTab = screen.getByRole("button", { name: "New conversation" });
-    // Last in DOM order: creation never sits between two open tabs.
-    const focusable = document.querySelectorAll(
-      '.nex-tabstrip button, .nex-tabstrip a[href]',
+  it("carries no create control: New lives in the Dock (D-04)", () => {
+    tabStrip();
+    // The strip used to end in a `+`. The register moved creation to the
+    // Dock's first destination and forbids the duplicate entry point, so
+    // the strip's trailing group is Split + Zen and nothing else.
+    expect(
+      screen.queryByRole("button", { name: "New conversation" }),
+    ).not.toBeInTheDocument();
+    const focusable = Array.from(
+      document.querySelectorAll('.nex-tabstrip button, .nex-tabstrip a[href]'),
     );
-    expect(focusable[focusable.length - 1]).toBe(newTab);
-
-    fireEvent.click(newTab);
-    expect(props.onNewConversation).toHaveBeenCalledTimes(1);
+    expect(focusable[focusable.length - 1]).toHaveTextContent("Zen");
   });
 
   it("marks the active tab with aria-selected and nothing else", () => {
@@ -190,12 +194,13 @@ describe("tab strip grammar (MAP row 4)", () => {
           splitId={null}
           onActivate={vi.fn()}
           onClose={vi.fn()}
-          onNewConversation={vi.fn()}
-          creating={false}
           zen={false}
           onToggleZen={vi.fn()}
           splitOpen={false}
           onToggleSplit={vi.fn()}
+          workspaceRoot={null}
+          workspaceLoading={false}
+          onExport={vi.fn()}
         />
       </LocaleProvider>,
     );
@@ -227,6 +232,66 @@ describe("tab strip grammar (MAP row 4)", () => {
     tabStrip({ splitId: 2 });
     const splitTab = screen.getAllByRole("tab")[1]!;
     expect(splitTab).toHaveAccessibleName("Обзор миграции схемы (open in split pane)");
+  });
+});
+
+describe("quiet control tone — no control takes the UA's `buttontext` (Defect A)", () => {
+  /** One strip/pane-header control: ghost at rest, brightening through
+   *  the variant's own utility.
+   *
+   *  What this pins, and why it is the contract rather than a class-name
+   *  snapshot: a `<button>` with no colour of its own takes the UA's
+   *  `color: buttontext`, and with no `color-scheme` on the themed roots
+   *  that resolved to BLACK — the tab close ×, the `+`, Split, Zen and
+   *  the pane header's export glyph were invisible on the strip's
+   *  elevated bar (measured on real Tauri frames). `ghost` is the variant
+   *  all five use (M3Button `quiet` → ghost, M3IconButton → ghost), and
+   *  it declares NO rest `text-*` — that absence is the bug's mechanism.
+   *  Their rest tone now comes from the one base-layer fallback in
+   *  src/index.css; the hover brighten from the utility asserted below.
+   *  theme.test.ts pins the fallback's layer and its non-`!important`
+   *  shape, which is what keeps a variant's own `text-*` on top. */
+  function expectQuietControl(control: HTMLElement) {
+    expect(control).toHaveAttribute("data-variant", "ghost");
+    const classes = control.className.split(/\s+/).filter(Boolean);
+    // The brighten rides the existing variant utility, not new CSS.
+    expect(classes).toContain("hover:text-foreground");
+    // No REST colour utility. (`text-sm` on the base string is the type
+    // scale, not a colour — it is filtered by name below.) If a colour
+    // ever lands here, the control has stopped using the fallback and the
+    // reasoning above stops holding.
+    const restColours = classes.filter((token) =>
+      /^text-(?:foreground|background|card-foreground|popover-foreground|primary|primary-foreground|secondary-foreground|muted-foreground|accent-foreground|destructive|tick|ring|border|input)$/.test(
+        token,
+      ),
+    );
+    expect(restColours).toEqual([]);
+  }
+
+  it("covers the tab close, Split and Zen", () => {
+    tabStrip();
+    expectQuietControl(
+      screen.getByRole("button", { name: "Close Refactor the parser" }),
+    );
+    expectQuietControl(screen.getByRole("button", { name: "Split" }));
+    expectQuietControl(screen.getByRole("button", { name: "Zen" }));
+  });
+
+  it("covers the pane header's export control", () => {
+    pane();
+    expectQuietControl(screen.getByRole("button", { name: /export/i }));
+  });
+
+  it("leaves the tab label a plain button on its own token, not a ghost", () => {
+    // The tab row was never UA-coloured: `.nex-tab-label` declares
+    // `color: inherit` and `.nex-tab` owns the token (a class rule, so
+    // it out-ranks the base `button` type selector). Asserted so the
+    // new fallback cannot be read as "every button in the strip is a
+    // ghost now" — the tabs keep their own two-signal grammar.
+    tabStrip();
+    const tab = screen.getAllByRole("tab")[0]!;
+    expect(tab).not.toHaveAttribute("data-variant");
+    expect(tab.className).toBe("nex-tab-label");
   });
 });
 

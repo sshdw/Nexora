@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
-use super::approval::{ApprovalDecision, ApprovalGate, AutonomyMode};
+use super::approval::{ApprovalDecision, ApprovalGate, AutonomyMode, PendingApprovalSnapshot};
 use super::control::RunControl;
 
 // ---------------------------------------------------------------------------
@@ -56,6 +56,24 @@ pub(crate) enum ResolveOutcome {
     RunNotActive,
     /// The run is active but has no pending approval for that `call_id`.
     NoPendingApproval,
+}
+
+/// Read-only snapshot of the active run in one conversation (G-15): the
+/// in-memory half of the live-run state contract. The persisted
+/// `agent_runs.status` column stays `running` for a paused, approval-parked,
+/// or budget-parked run, so `parked_reason` and `pending_approval` are only
+/// knowable from here.
+#[derive(Debug, Clone)]
+pub(crate) struct LiveRunSnapshot {
+    /// `agent_runs.id` of the active run.
+    pub run_id: i64,
+    /// The conversation the active run belongs to.
+    pub conversation_id: i64,
+    /// Why the run is not progressing: `"awaiting_approval"`,
+    /// `"awaiting_budget"`, `"paused"`, or `"none"` (fixed vocabulary).
+    pub parked_reason: &'static str,
+    /// The parked approval, when the gate has one that is not yet resolved.
+    pub pending_approval: Option<PendingApprovalSnapshot>,
 }
 
 impl AgentRunRegistry {
@@ -313,6 +331,46 @@ impl AgentRunRegistry {
         entry.gate.pending_info(call_id)
     }
 
+    /// Read-only live snapshot of the active run in `conversation_id` (G-15).
+    ///
+    /// DP-4 guarantees at most one active run per conversation, so the lookup
+    /// is unambiguous. `parked_reason` reports the first observable park in
+    /// priority order: a gate approval, the step-budget boundary, a user
+    /// pause, else `"none"`. Returns `None` when no run is active.
+    ///
+    /// The runs map guard is dropped before the gate/control reads: each of
+    /// those takes its own lock, and nesting them inside the map would let a
+    /// parked run's resolution path contend with the registry sweep.
+    #[must_use]
+    pub(crate) fn live_run_snapshot(&self, conversation_id: i64) -> Option<LiveRunSnapshot> {
+        let (run_id, entry) = {
+            let runs = self
+                .runs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let (run_id, entry) = runs
+                .iter()
+                .find(|(_, entry)| entry.conversation_id == conversation_id)?;
+            (*run_id, entry.clone())
+        };
+        let pending_approval = entry.gate.pending_snapshot();
+        let parked_reason = if pending_approval.is_some() {
+            "awaiting_approval"
+        } else if entry.control.is_budget_parked() {
+            "awaiting_budget"
+        } else if entry.control.pause_pending() {
+            "paused"
+        } else {
+            "none"
+        };
+        Some(LiveRunSnapshot {
+            run_id,
+            conversation_id,
+            parked_reason,
+            pending_approval,
+        })
+    }
+
     /// Grant additional iterations to a budget-parked (or running) run.
     /// Returns `false` when the run is not active.
     #[must_use]
@@ -413,7 +471,7 @@ impl AgentRunRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn registry_set_mode_pause_resume_happy_and_unknown() {
@@ -601,5 +659,138 @@ mod tests {
             !control2.token().is_shutdown(),
             "plain cancel must not mark the shutdown origin"
         );
+    }
+
+    fn live_tool_call(
+        id: &str,
+        name: &str,
+        arguments: &str,
+    ) -> crate::application::execution::ToolCall {
+        crate::application::execution::ToolCall {
+            id: id.to_string(),
+            name: name.to_string(),
+            arguments: arguments.to_string(),
+            thought_signature: None,
+        }
+    }
+
+    #[test]
+    fn live_run_snapshot_is_none_for_an_unknown_conversation() {
+        let reg = AgentRunRegistry::default();
+        assert_eq!(reg.live_run_snapshot(9999).map(|s| s.run_id), None);
+        // A run registered for a different conversation is not reported for
+        // this one either.
+        reg.register(
+            501,
+            ActiveAgentRun {
+                conversation_id: 1,
+                control: RunControl::new(),
+                gate: ApprovalGate::new(AutonomyMode::Supervised),
+            },
+        );
+        assert!(reg.live_run_snapshot(2).is_none());
+    }
+
+    #[test]
+    fn live_run_snapshot_reports_no_park_for_a_registered_run() {
+        let gate = ApprovalGate::new(AutonomyMode::Supervised);
+        let control = RunControl::new();
+        let reg = AgentRunRegistry::default();
+        reg.register(
+            502,
+            ActiveAgentRun {
+                conversation_id: 3,
+                control,
+                gate,
+            },
+        );
+        let snapshot = reg.live_run_snapshot(3).expect("run is active");
+        assert_eq!(snapshot.run_id, 502);
+        assert_eq!(snapshot.conversation_id, 3);
+        assert_eq!(snapshot.parked_reason, "none");
+        assert_eq!(snapshot.pending_approval, None);
+    }
+
+    #[test]
+    fn live_run_snapshot_reports_awaiting_approval_with_the_pending_call() {
+        let gate = ApprovalGate::new(AutonomyMode::Supervised);
+        let reg = AgentRunRegistry::default();
+        reg.register(
+            503,
+            ActiveAgentRun {
+                conversation_id: 4,
+                control: RunControl::new(),
+                gate: gate.clone(),
+            },
+        );
+        let call = live_tool_call("live-approval", "write_file", r#"{"path":"a.md"}"#);
+        gate.prepare_pending_with_group(&call, Some("coding:write_file:docs".to_string()));
+
+        let snapshot = reg.live_run_snapshot(4).expect("run is active");
+        assert_eq!(snapshot.parked_reason, "awaiting_approval");
+        let pending = snapshot.pending_approval.expect("approval is reported");
+        assert_eq!(pending.call_id, "live-approval");
+        assert_eq!(pending.name, "write_file");
+        assert_eq!(pending.arguments, r#"{"path":"a.md"}"#);
+        assert_eq!(
+            pending.expires_at,
+            pending
+                .requested_at
+                .saturating_add(i64::try_from(pending.timeout_secs).expect("timeout fits in i64"))
+        );
+    }
+
+    #[test]
+    fn live_run_snapshot_reports_paused_without_a_pending_approval() {
+        let control = RunControl::new();
+        let reg = AgentRunRegistry::default();
+        reg.register(
+            504,
+            ActiveAgentRun {
+                conversation_id: 5,
+                control: control.clone(),
+                gate: ApprovalGate::new(AutonomyMode::Supervised),
+            },
+        );
+        control.pause();
+        let snapshot = reg.live_run_snapshot(5).expect("run is active");
+        assert_eq!(snapshot.parked_reason, "paused");
+        assert_eq!(snapshot.pending_approval, None);
+    }
+
+    #[test]
+    fn live_run_snapshot_reports_awaiting_budget() {
+        let control = RunControl::new();
+        let reg = AgentRunRegistry::default();
+        reg.register(
+            505,
+            ActiveAgentRun {
+                conversation_id: 6,
+                control: control.clone(),
+                gate: ApprovalGate::new(AutonomyMode::Supervised),
+            },
+        );
+        // Drive the real park predicate instead of mutating internals: a
+        // worker thread waits for an allowance above the steps it already
+        // took (base 0, taken 1), which is exactly the budget-parked state.
+        let parked = control.clone();
+        let handle = std::thread::spawn(move || parked.wait_for_allowance(0, 1));
+        let start = Instant::now();
+        while !control.is_budget_parked() {
+            assert!(
+                start.elapsed() < Duration::from_secs(2),
+                "worker never reached the budget boundary"
+            );
+            std::thread::yield_now();
+        }
+
+        let snapshot = reg.live_run_snapshot(6).expect("run is active");
+        assert_eq!(snapshot.parked_reason, "awaiting_budget");
+        assert_eq!(snapshot.pending_approval, None);
+
+        // Unblock the worker (allowance 2 > taken 1) and join it.
+        control.extend_steps(2);
+        assert!(handle.join().expect("worker thread joins"));
+        assert!(!control.is_budget_parked());
     }
 }

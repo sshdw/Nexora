@@ -13,6 +13,7 @@
 //! and App.tsx passes none of them here.
 
 import ConversationView from "./ConversationView";
+import M3Button from "./M3Button";
 import M3IconButton from "./M3IconButton";
 import M3Toolbar from "./M3Toolbar";
 import WorkspaceChip from "./WorkspaceChip";
@@ -44,6 +45,17 @@ export interface ConversationPaneProps {
   workspaceLoading: boolean;
   /** Secondary (split) pane: marked apart from the primary one. */
   secondary: boolean;
+  /** The tab strip above owns the session's identity and its actions
+   *  (D-04), so this pane renders no header at all. False in split view,
+   *  where two panes need to be told apart and each needs its own actions. */
+  hideHeader?: boolean;
+  /** Chromeless reading mode (its strip home is gone at one session). */
+  zen: boolean;
+  onToggleZen: () => void;
+  /** Draw the Zen control here. False while the tab strip is on screen: the
+   *  strip carries it, and split view would otherwise show one per pane plus
+   *  one in the strip. */
+  showZen?: boolean;
 }
 
 export default function ConversationPane({
@@ -62,6 +74,10 @@ export default function ConversationPane({
   workspaceRoot,
   workspaceLoading,
   secondary,
+  hideHeader = false,
+  zen,
+  onToggleZen,
+  showZen = true,
 }: ConversationPaneProps) {
   const { t } = useStrings();
   const isArchived = conversation.status === "archived";
@@ -70,33 +86,48 @@ export default function ConversationPane({
       className={"nex-pane" + (secondary ? " nex-pane--secondary" : "")}
       aria-label={secondary ? t("app.splitPaneAria", { title: conversation.title }) : conversation.title}
     >
-      <header className="nex-pane-header">
-        <h2 className="nex-main-title">
-          <span className="nex-main-title-text">{conversation.title}</span>
-          {isArchived && (
-            <span className="nex-main-title-badge">
-              {t("app.archivedBadge")}
-            </span>
-          )}
-        </h2>
-        {/* separator.md, vertical: the hairline between the title group
-            and the trailing controls (MAP row 5). Decorative — it
-            carries no text, so it is hidden from assistive tech rather
-            than announced. */}
-        <span className="nex-pane-header-separator" aria-hidden="true" />
-        <M3Toolbar
-          label={t("app.paneActions", { title: conversation.title })}
-          className="nex-main-header-actions"
-        >
-          <WorkspaceChip root={workspaceRoot} loading={workspaceLoading} />
-          <M3IconButton
-            label={t("app.exportConversation")}
-            onClick={() => onExport(conversation.id)}
+      {!hideHeader && (
+        <header className="nex-pane-header">
+          <h2 className="nex-main-title">
+            <span className="nex-main-title-text">{conversation.title}</span>
+            {isArchived && (
+              <span className="nex-main-title-badge">
+                {t("app.archivedBadge")}
+              </span>
+            )}
+          </h2>
+          {/* separator.md, vertical: the hairline between the title group
+              and the trailing controls (MAP row 5). Decorative — it
+              carries no text, so it is hidden from assistive tech rather
+              than announced. */}
+          <span className="nex-pane-header-separator" aria-hidden="true" />
+          <M3Toolbar
+            label={t("app.paneActions", { title: conversation.title })}
+            className="nex-main-header-actions"
           >
-            <ExportIcon />
-          </M3IconButton>
-        </M3Toolbar>
-      </header>
+            <WorkspaceChip root={workspaceRoot} loading={workspaceLoading} />
+            <M3IconButton
+              label={t("app.exportConversation")}
+              onClick={() => onExport(conversation.id)}
+            >
+              <ExportIcon />
+            </M3IconButton>
+            {/* Zen lives here only while the tab strip is not on screen
+                (one session): at two or more the strip owns it. */}
+            {showZen && (
+              <M3Button
+                variant="quiet"
+                size="sm"
+                aria-pressed={zen}
+                title={t("tabs.zenTitle")}
+                onClick={onToggleZen}
+              >
+                {t("tabs.zen")}
+              </M3Button>
+            )}
+          </M3Toolbar>
+        </header>
+      )}
       <div className="nex-pane-body">
         {/* Keyed by conversation id: each pane owns independent hook state
             (messages, attachments, agent runs, scroll position) so the two
@@ -115,6 +146,7 @@ export default function ConversationPane({
           onMessageSent={onMessageSent}
           draft={draft}
           setDraft={setDraft}
+          workspaceRoot={workspaceRoot}
         />
       </div>
     </section>

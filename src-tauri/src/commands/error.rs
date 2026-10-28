@@ -40,7 +40,6 @@ use crate::application::repo_audit::RepoAuditError;
 use crate::application::search::SearchError;
 use crate::application::system::SystemError;
 use crate::application::version_control::{CommitMessageError, VersionControlError};
-use crate::infrastructure::database::DatabaseError;
 use crate::infrastructure::providers::credentials::CredentialError;
 
 /// Stable, secret-free error categories the frontend can branch on.
@@ -56,26 +55,6 @@ pub(crate) use nexora_core::error::CoreErrorKind as ErrorKind;
 /// below remain here — mapping this application's classified errors into the
 /// taxonomy is business logic and did not move.
 pub(crate) use nexora_core::error::CoreError as CommandError;
-
-/// Curated, secret-free message for an unclassified `SQLite` failure. The raw
-/// rusqlite detail is deliberately neither surfaced (the frontend text below
-/// is fixed) nor logged (NEX-SEC-011: the raw detail can carry SQL text and
-/// bound values): the log records only the fixed failure tag.
-impl From<DatabaseError> for CommandError {
-    fn from(err: DatabaseError) -> Self {
-        let tag = match &err {
-            DatabaseError::Sqlite(_) => "sqlite",
-            DatabaseError::SchemaTooNew { .. } => "schema_too_new",
-            DatabaseError::Lock(_) => "lock",
-            DatabaseError::SchemaGap { .. } => "schema_gap",
-        };
-        log::error!("command failed with database error (kind: {tag})");
-        Self::new(
-            ErrorKind::Database,
-            "a database operation failed; no data was changed".to_string(),
-        )
-    }
-}
 
 impl From<CredentialError> for CommandError {
     fn from(err: CredentialError) -> Self {

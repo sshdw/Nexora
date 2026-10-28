@@ -21,20 +21,28 @@
 //! ONE Split entry point (SYSTEM §4, MAP row 5): it lives HERE and only
 //! here. The pane header used to render a second one — a duplicate
 //! control for one action, reachable from two places per pane, so a
-//! split of two panes offered four identical buttons. The pane header
-//! keeps title + workspace chip + export (`ConversationPane.tsx`).
+//! split of two panes offered four identical buttons.
 //!
-//! Trailing actions, in order: Split (the single opener), Zen, then the
-//! `+` new-tab button at the very end — MAP row 4 pins the `+` there, so
-//! creation is the last thing in the row and never sits between two
-//! open tabs.
+//! TWO OR MORE SESSIONS ONLY (D-04 / C-02). The register settles the
+//! duplication this row used to carry: at one open session the strip is
+//! not rendered at all and the pane header owns the title; at two or more
+//! the strip owns switching and the pane header drops its title (it keeps
+//! the workspace chip and export). Rendering a single "tab" with its own
+//! close × above an identical title was the same fact stated twice, 40 px
+//! apart.
+//!
+//! The `+` is gone (D-04: "no `+` (New in Dock)"): creation is the Dock's
+//! first destination and is reachable from every screen, so a second
+//! create control inside the strip was a duplicate entry point for the one
+//! action that already has the most prominent home.
 
 import { useEffect, useRef } from "react";
 
 import M3Button from "./M3Button";
 import M3IconButton from "./M3IconButton";
+import WorkspaceChip from "./WorkspaceChip";
 import { useStrings } from "../lib/useLocale";
-import { CloseIcon, PlusIcon } from "./icons";
+import { CloseIcon, ExportIcon } from "./icons";
 
 export interface TabEntry {
   id: number;
@@ -48,12 +56,16 @@ export interface ConversationTabsProps {
   splitId: number | null;
   onActivate: (id: number) => void;
   onClose: (id: number) => void;
-  onNewConversation: () => void;
-  creating: boolean;
   zen: boolean;
   onToggleZen: () => void;
   splitOpen: boolean;
   onToggleSplit: () => void;
+  /** Session-scoped actions that live here while the pane header is hidden
+   *  (two or more sessions, no split): the workspace chip and export act on
+   *  the ACTIVE session, which is the one this row names. */
+  workspaceRoot: string | null;
+  workspaceLoading: boolean;
+  onExport: (id: number) => void;
 }
 
 export default function ConversationTabs({
@@ -62,12 +74,13 @@ export default function ConversationTabs({
   splitId,
   onActivate,
   onClose,
-  onNewConversation,
-  creating,
   zen,
   onToggleZen,
   splitOpen,
   onToggleSplit,
+  workspaceRoot,
+  workspaceLoading,
+  onExport,
 }: ConversationTabsProps) {
   const { t } = useStrings();
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -88,7 +101,8 @@ export default function ConversationTabs({
     }
   }, [tabIdentity, activeId]);
 
-  if (tabs.length === 0) return null;
+  // One session is not a tab set (D-04): the pane header already names it.
+  if (tabs.length < 2) return null;
 
   const focusTab = (index: number) => {
     const count = tabs.length;
@@ -192,6 +206,15 @@ export default function ConversationTabs({
         })}
       </div>
       <div className="nex-tabstrip-actions">
+        <WorkspaceChip root={workspaceRoot} loading={workspaceLoading} />
+        {activeId !== null && (
+          <M3IconButton
+            label={t("app.exportConversation")}
+            onClick={() => onExport(activeId)}
+          >
+            <ExportIcon />
+          </M3IconButton>
+        )}
         <M3Button
           variant="quiet"
           size="sm"
@@ -211,17 +234,6 @@ export default function ConversationTabs({
         >
           {t("tabs.zen")}
         </M3Button>
-        {/* `+` last (MAP row 4). The ghost icon button carries the same
-            name the text button had, as its accessible name and tooltip —
-            no new copy, and an icon-only control never loses its label. */}
-        <M3IconButton
-          size="sm"
-          label={t("tabs.newTitle")}
-          onClick={onNewConversation}
-          disabled={creating}
-        >
-          <PlusIcon />
-        </M3IconButton>
       </div>
     </div>
   );
