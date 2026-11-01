@@ -1,6 +1,6 @@
 //! Dock panel shell — the overlay surface a Dock destination opens (R4-01/D-06).
 //!
-//! The Dock is the only navigation in the shell, so every one of its five
+//! The Dock is the only navigation in the shell, so every one of its four
 //! destinations has to lead somewhere. This is the shared surface those
 //! destinations open into: a 300 px overlay card that floats beside the rail
 //! and never moves the thread or the composer (D-06: "панель открывается
@@ -28,7 +28,7 @@ import { useStrings } from "../lib/useLocale";
 import M3IconButton from "./M3IconButton";
 import { CloseIcon } from "./icons";
 
-export type DockPanelId = "workspace" | "sessions" | "activity" | "settings";
+export type DockPanelId = "sessions" | "activity" | "settings";
 
 export interface DockPanelProps {
   /** Which destination this panel belongs to (drives ids + focus return). */

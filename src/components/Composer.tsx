@@ -66,12 +66,14 @@ import { useEffect, useRef } from "react";
 import { formatBytes } from "../lib/format";
 import type { Attachment, AutonomyMode } from "../lib/tauri";
 import type { AutonomyStore } from "../lib/useAutonomy";
+import type { WorkspaceStore } from "../lib/useWorkspace";
 import { useStrings } from "../lib/useLocale";
 import ComposerAutonomyHint from "./ComposerAutonomyHint";
 import ContextRing from "./ContextRing";
 import M3Button from "./M3Button";
 import M3IconButton from "./M3IconButton";
 import M3SegmentedGroup from "./M3SegmentedGroup";
+import ModelPicker from "./ModelPicker";
 import Tooltip from "./Tooltip";
 import WorkspaceContextRow from "./WorkspaceContextRow";
 import { Button } from "./ui/button";
@@ -88,7 +90,7 @@ import {
   CloseIcon,
   PaperclipIcon,
   PlusIcon,
-  SquareIcon,
+  StopIcon,
 } from "./icons";
 
 export interface ComposerProps {
@@ -137,8 +139,8 @@ export interface ComposerProps {
   liveRunId: number | null;
   /** Stop the live run. The same button becomes Square while it is set. */
   onStop: () => void;
-  /** Workspace root for the read-only row above the card (D3). */
-  workspaceRoot?: string | null;
+  /** Workspace store for the control row above the card (D3 / R6-03). */
+  workspace: WorkspaceStore;
   /** Focus the field when an empty conversation opens (D1). The effect
    *  never steals focus from a modal or from another field. */
   autoFocusField?: boolean;
@@ -169,7 +171,7 @@ export default function Composer({
   contextRevision,
   liveRunId,
   onStop,
-  workspaceRoot = null,
+  workspace,
   autoFocusField = false,
 }: ComposerProps) {
   const { t } = useStrings();
@@ -193,7 +195,7 @@ export default function Composer({
   return (
     <div className="nex-composer">
       <div className="nex-composer-inner">
-        <WorkspaceContextRow root={workspaceRoot} />
+        <WorkspaceContextRow workspace={workspace} />
         <div className="nex-composer-shell">
           {/* Attachments belong to the CHAT path only. An agent run
               cannot carry them (G-20: `start_agent_run` has no
@@ -379,119 +381,52 @@ export default function Composer({
                 wraps ring+model+Send as one unit in a split pane. */}
             <ContextRing conversationId={conversationId} revision={contextRevision} />
 
-            {/* Model picker. The trigger shows what the provider
-                store holds; picking a row DISPATCHES and waits —
-                the label changes when the store says so. No
-                tooltip on it: the trigger already carries the
-                model in text, and a bubble repeating it is noise
-                (the icon-only attach beside it does get one).
+            {/* Model picker (R6-02). A real searchable listbox now: the
+                segmented primitive's inline-grid root resolved its implicit
+                column to max-content and grew wider than the popover, which
+                is where the UA's horizontal bar came from. The picker owns
+                its own search + keyboard contract; this component only
+                dispatches the choice. */}
+            <ModelPicker
+              selectedModel={selectedModel}
+              models={models}
+              onSelectModel={onSelectModel}
+              modelError={modelError}
+              onOpenSettings={onOpenSettings}
+            />
 
-                THE FULL ID IS THE TITLE (Phase C round 4). The
-                visible label renders in full for every id in the
-                catalog (`.nex-composer-model-name` is capped at
-                50ch, the longest one), but the trigger can still
-                shrink on a card narrower than the bar's budget —
-                and a mid-token ellipsis on `…-super-…` hides the
-                variant, which is the part that names the model.
-                `title` is therefore the full id whenever one is
-                selected: it is the hover read AND the accessible
-                description, so AT never gets the cut string. With
-                no model selected the title stays the explanation
-                (there is no id to carry). The accessible NAME is
-                left alone — it says what the control is
-                ("Agent mode and model"), not which model is in it. */}
-            <Popover>
-              <PopoverTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="nex-composer-model-trigger"
-                  aria-label={t("conv.modePickerAria")}
-                  title={selectedModel ?? t("conv.modelTagTitle")}
-                >
-                  <span
-                    className={
-                      selectedModel === null
-                        ? "nex-composer-model-name is-placeholder"
-                        : "nex-composer-model-name"
-                    }
-                  >
-                    {selectedModel ?? t("conv.modelNone")}
-                  </span>
-                  <ChevronDownIcon />
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent
-                align="end"
-                side="top"
-                sideOffset={8}
-                className="nex-composer-model-menu"
-              >
-                <PopoverHeader>
-                  <PopoverTitle>{t("conv.modelSection")}</PopoverTitle>
-                </PopoverHeader>
-                {/* A vertical list of options: the primitive is laid
-                    out as rows here (composer.css re-flows its grid
-                    from columns to rows) and `indicator={false}`
-                    keeps a pill from sliding across rows, where a
-                    slide means nothing. The selected row keeps its
-                    own wash and leading tick. */}
-                {models.length === 0 ? (
-                  <p className="nex-composer-model-empty">{t("conv.modelNone")}</p>
-                ) : (
-                  <M3SegmentedGroup
-                    className="nex-composer-model-list"
-                    label={t("conv.modelSection")}
-                    semantics="radio"
-                    indicator={false}
-                    value={selectedModel}
-                    onChange={(model) => onSelectModel(model)}
-                    options={models.map((model) => ({ value: model, label: model }))}
-                  />
-                )}
-                {modelError && (
-                  <p className="nex-composer-model-empty" role="alert">
-                    {modelError || t("conv.modelSwitchFailed")}
-                  </p>
-                )}
-                <div className="nex-composer-model-footer">
-                  <Button variant="ghost" size="xs" onClick={onOpenSettings}>
-                    {t("conv.modelOpenSettings")}
-                  </Button>
-                </div>
-              </PopoverContent>
-            </Popover>
-
-            {/* Send. ONE button, three states (D2):
-                  idle / armed   ArrowUp in the light fill
-                  run live       Square, same seat, click stops the run
-                  no draft       disabled (never while a run is live)
-                `disabled:border-transparent` is the ONE state token the
+            {/* Send. ONE button, ONE geometry, three states (R6-01):
+                  idle   muted plate + arrow (no draft, no run)
+                  armed  light plate + arrow
+                  stop   light plate + FILLED square, click stops the run
+                The plate is always painted: an arrow floating on the card
+                was the Round 5 finding. `disabled:border-transparent` and
+                the disabled fill utilities are the only state tokens the
                 composer adds: `ui/button`'s default variant ships the
-                theme's disabled recipe as a full 1px hairline
-                (`disabled:border-border`), and a hairline is exactly what
-                makes an inert Send read as an enabled secondary button.
-                THEME §1's disabled hairline is therefore dropped for this
-                control only — muted label and no fill stay. It has to be a
-                utility here rather than a rule in composer.css: that sheet
-                is `layer(base)` and a Tailwind utility outranks it at any
-                specificity, so only `!important` (reserved for the motion
-                gate) could win from the sheet. `cn` runs tailwind-merge, so
-                this class replaces the variant's `disabled:border-border`
-                instead of stacking with it —
+                theme's disabled recipe as a full hairline and no fill, and
+                a hairline is exactly what makes an inert Send read as an
+                enabled secondary button. `cn` runs tailwind-merge, so the
+                classes below replace the variant's disabled utilities
+                instead of stacking with them —
                 src/components/Composer.test.tsx asserts the merge. */}
             <Button
               size="icon"
-              className="nex-composer-send disabled:border-transparent"
+              variant="default"
+              className={
+                "nex-composer-send disabled:border-transparent " +
+                (live || canSend
+                  ? "bg-primary text-primary-foreground hover:bg-primary-hover active:bg-primary-pressed"
+                  : "bg-secondary text-muted-foreground disabled:bg-secondary disabled:text-muted-foreground disabled:opacity-100")
+              }
               disabled={!live && !canSend}
               aria-busy={(!live && busy) || undefined}
               aria-label={live ? t("conv.stopAria") : t("conv.sendAria")}
               title={live ? t("conv.stopAria") : t("conv.sendAria")}
-              data-state={live ? "stop" : "send"}
+              data-state={live ? "stop" : canSend ? "armed" : "idle"}
               onClick={live ? onStop : onSubmit}
             >
               {live ? (
-                <SquareIcon size={16} />
+                <StopIcon size={16} />
               ) : (
                 <ArrowUpIcon size={20} className="size-5" />
               )}

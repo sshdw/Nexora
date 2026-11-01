@@ -1,7 +1,11 @@
 //! Edge-attached Dock — Round 4 (R4-01 / R4-07 / R4-09).
 //!
 //! A vertical icon-only rail glued to the left edge of the window:
-//! New → Workspace → Sessions → Activity → separator → Settings.
+//! New → Sessions → Activity → separator → Settings.
+//!
+//! R6-03 removed the Workspace destination: the workspace picker now lives
+//! in the composer's context row, so a second entry point in the rail would
+//! duplicate one action. R6-04 did not add Zen here.
 //!
 //! Geometry (R4-01): left edge flush (`left: 0`), width 60 px (60–64 range),
 //! content height ≈ 253 px (240–270 range), vertically centred in the window,
@@ -27,9 +31,9 @@ import type { ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
 import { useStrings } from "../lib/useLocale";
-import { ActivityIcon, FolderIcon, PlusIcon, SlidersIcon, StackIcon } from "./icons";
+import { ActivityIcon, PlusIcon, SlidersIcon, StackIcon } from "./icons";
 
-type DockPanel = "workspace" | "sessions" | "activity" | "settings";
+type DockPanel = "sessions" | "activity" | "settings";
 
 export interface DockProps {
   /** Panel currently open; drives `active` fill + `aria-expanded`. */
@@ -106,23 +110,28 @@ function DockButton({
         />
       )}
       {/* Tooltip bubble: overlay surface, outside the capsule (paints to the
-          right of the button), hover/focus reveal, not clipped. */}
-      <span
-        aria-hidden="true"
-        className={cn(
-          "absolute left-full top-1/2 -translate-y-1/2 translate-x-[var(--space-xxs)]",
-          "z-[var(--nex-sys-z-tooltip)] pointer-events-none",
-          "bg-[var(--color-surface-floating)] border border-[var(--color-outline-variant)] rounded-[var(--shape-small)]",
-          "px-[var(--space-xs)] py-[var(--space-xxs)]",
-          "text-[var(--color-popover-foreground)] text-sm font-medium whitespace-nowrap",
-          "opacity-0 transition-opacity",
-          "[transition-duration:var(--motion-duration-short2)]",
-          "[transition-timing-function:var(--motion-easing-standard)]",
-          "group-hover/dock-btn:opacity-100 group-focus-within/dock-btn:opacity-100"
-        )}
-      >
-        {tooltip}
-      </span>
+          right of the button), hover/focus reveal, not clipped. It is
+          absent while the panel is expanded: the panel itself paints over
+          that space, and a focus-retained trigger would leave a clipped
+          "S" chip at the panel's left edge. */}
+      {!expanded && (
+        <span
+          aria-hidden="true"
+          className={cn(
+            "absolute left-full top-1/2 -translate-y-1/2 translate-x-[var(--space-xxs)]",
+            "z-[var(--nex-sys-z-tooltip)] pointer-events-none",
+            "bg-[var(--color-surface-floating)] border border-[var(--color-outline-variant)] rounded-[var(--shape-small)]",
+            "px-[var(--space-xs)] py-[var(--space-xxs)]",
+            "text-[var(--color-popover-foreground)] text-sm font-medium whitespace-nowrap",
+            "opacity-0 transition-opacity",
+            "[transition-duration:var(--motion-duration-short2)]",
+            "[transition-timing-function:var(--motion-easing-standard)]",
+            "group-hover/dock-btn:opacity-100 group-focus-within/dock-btn:opacity-100"
+          )}
+        >
+          {tooltip}
+        </span>
+      )}
     </button>
   );
 }
@@ -184,19 +193,8 @@ export default function Dock({
           kind="command"
           label={t("dock.new")}
           tooltip={t("dock.new")}
-          icon={<PlusIcon />}
+          icon={<PlusIcon size={20} />}
           onClick={onNew}
-        />
-        {/* Workspace — panel */}
-        <DockButton
-          id="workspace"
-          kind="panel"
-          panel="workspace"
-          label={t("dock.workspace")}
-          tooltip={t("dock.workspace")}
-          icon={<FolderIcon />}
-          isActive={isActive("workspace")}
-          onClick={() => onPanelToggle?.("workspace")}
         />
         {/* Sessions — panel */}
         <DockButton
@@ -205,7 +203,7 @@ export default function Dock({
           panel="sessions"
           label={t("dock.sessions")}
           tooltip={t("dock.sessions")}
-          icon={<StackIcon />}
+          icon={<StackIcon size={20} />}
           isActive={isActive("sessions")}
           onClick={() => onPanelToggle?.("sessions")}
         />
@@ -216,7 +214,7 @@ export default function Dock({
           panel="activity"
           label={activityLabel}
           tooltip={activityLabel}
-          icon={<ActivityIcon />}
+          icon={<ActivityIcon size={20} />}
           isActive={isActive("activity")}
           hasAttention={activityAttention}
           onClick={() => onPanelToggle?.("activity")}
@@ -229,7 +227,7 @@ export default function Dock({
           panel="settings"
           label={t("dock.settings")}
           tooltip={t("dock.settings")}
-          icon={<SlidersIcon />}
+          icon={<SlidersIcon size={20} />}
           isActive={isActive("settings")}
           onClick={() => onPanelToggle?.("settings")}
         />

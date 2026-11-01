@@ -32,8 +32,8 @@ import { useStrings } from "../lib/useLocale";
 // (NEXORA-DESIGN-SYSTEM.md §1) — never a colour, radius or duration.
 //
 // TWO hooks survive the migration on purpose, and neither is a paint class:
-//   `data-slot="sidebar"` — src/styles/tabs.css hides the rail in Zen mode
-//     through this selector (that sheet is Phase 2's), so the hook travels
+//   `data-slot="sidebar"` — the rail's structural hook (Zen, the one rule
+//     that used it as a selector, was deleted in R6-04), so the hook travels
 //     with the surface instead of leaving a `nex-*` class behind.
 //   `nex-logo` on the mark — theme.css inverts the brand asset on the light
 //     theme through that class; NexoraMark's prop surface is fixed, so the

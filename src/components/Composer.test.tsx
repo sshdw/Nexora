@@ -34,7 +34,7 @@
 //! before/after screenshots are in the PR body; no timing
 //! assertions anywhere (repo policy).
 
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -46,6 +46,7 @@ import { REDUCED_MOTION_QUERY } from "../lib/useReducedMotion";
 import type { AutonomyStore } from "../lib/useAutonomy";
 import type { Attachment } from "../lib/tauri";
 import { LocaleProvider } from "../lib/useLocale";
+import type { WorkspaceStore } from "../lib/useWorkspace";
 import ComposerAutonomyHint from "./ComposerAutonomyHint";
 import Composer, { type ComposerProps } from "./Composer";
 import TextType from "./TextType";
@@ -99,6 +100,26 @@ function autonomyStub(overrides: Partial<AutonomyStore> = {}): AutonomyStore {
   };
 }
 
+/** The composer only reads the workspace store through the context row; a
+ *  root-less store is the honest default for a send-flow test. */
+function workspaceStub(overrides: Partial<WorkspaceStore> = {}): WorkspaceStore {
+  return {
+    root: null,
+    recent: [],
+    roots: [],
+    loading: false,
+    saving: false,
+    error: null,
+    reload: vi.fn(async () => {}),
+    pickFolder: vi.fn(async () => null),
+    selectRecent: vi.fn(async () => null),
+    addRootFolder: vi.fn(async () => null),
+    addRoot: vi.fn(async () => null),
+    removeRoot: vi.fn(async () => null),
+    ...overrides,
+  };
+}
+
 function attachmentStub(overrides: Partial<Attachment> = {}): Attachment {
   return {
     id: 1,
@@ -142,7 +163,7 @@ function composerProps(overrides: Partial<ComposerProps> = {}): ComposerProps {
     contextRevision: "",
     liveRunId: null,
     onStop: vi.fn(),
-    workspaceRoot: null,
+    workspace: workspaceStub(),
     autoFocusField: false,
     ...overrides,
   };
@@ -362,10 +383,46 @@ describe("composer — the one action (D2 / R5-07)", () => {
       </LocaleProvider>,
     );
     const send = screen.getByRole("button", { name: "Send message" });
-    expect(send).toHaveAttribute("data-state", "send");
+    expect(send).toHaveAttribute("data-state", "armed");
     fireEvent.click(send);
     expect(props.onSubmit).toHaveBeenCalledTimes(1);
     expect(onStop).toHaveBeenCalledTimes(1);
+  });
+
+  it("paints a plate in all three states, and only the plate and glyph change", () => {
+    // R6-01: the arrow used to hang on the composer's own background — the
+    // Round 5 finding. One geometry, three paints: idle is the muted plate,
+    // armed and stop are the light one, and stop's glyph is filled.
+    const { rerender, props } = renderComposer({ draft: "", canSend: false });
+    const idle = screen.getByRole("button", { name: "Send message" });
+    expect(idle).toHaveAttribute("data-state", "idle");
+    expect(idle).toBeDisabled();
+    expect(idle.className).toContain("bg-secondary");
+
+    rerender(
+      <LocaleProvider>
+        <Composer {...props} draft="hello" canSend />
+      </LocaleProvider>,
+    );
+    const armed = screen.getByRole("button", { name: "Send message" });
+    expect(armed).toHaveAttribute("data-state", "armed");
+    expect(armed.className).toContain("bg-primary");
+    expect(armed.className).not.toContain("bg-secondary");
+
+    rerender(
+      <LocaleProvider>
+        <Composer {...props} draft="hello" canSend liveRunId={7} />
+      </LocaleProvider>,
+    );
+    const stop = screen.getByRole("button", { name: "Stop agent run" });
+    expect(stop).toHaveAttribute("data-state", "stop");
+    expect(stop.className).toContain("bg-primary");
+    // The stop square is the one filled glyph in the composer; the arrow
+    // beside it is a stroke glyph. Filled = no `fill="none"`.
+    const glyph = stop.querySelector("svg");
+    expect(glyph).not.toBeNull();
+    expect(glyph).not.toHaveAttribute("fill", "none");
+    expect(glyph).toHaveAttribute("fill", "currentColor");
   });
 
   it("never sends on Enter while a run is live", () => {
@@ -471,13 +528,12 @@ describe("composer — modes", () => {
     expect(agent).toHaveAttribute("aria-checked", "false");
   });
 
-  it("keeps its visible mode labels as Chat / Agent — only the view switch was renamed", () => {
+  it("keeps its visible mode labels as Chat / Agent", () => {
     // Defect B (round-4 visual QA): the stage's view chip and these two
     // mode pills both read "Chat" in the same chip grammar, one above
-    // the other. THE VIEW SWITCH was renamed (Conversation | Context,
-    // src/lib/viewSwitchLabels.test.ts); this pair is byte-identical to
-    // what shipped, and that is what makes the two switches tell apart
-    // on one screen.
+    // the other. THE VIEW SWITCH is gone now (R6-05) — the context ring's
+    // popover carries what the second view showed — and this pair stays
+    // byte-identical to what shipped.
     renderComposer({ agentMode: false });
     const group = screen.getByRole("radiogroup", { name: "Agent mode" });
     const labels = within(group)
@@ -485,6 +541,15 @@ describe("composer — modes", () => {
       .map((radio) => radio.textContent);
     expect(labels).toEqual(["Chat", "Agent"]);
     expect(within(group).queryByText("Conversation")).toBeNull();
+
+    // Byte-identical in both locales, hard-coded rather than read back from
+    // the catalog: a sweep that renamed one key and not the other would keep
+    // a key-to-key comparison green. (The stage's own view switch, whose
+    // labels this pair used to have to tell apart, is gone — R6-05.)
+    expect(tr("en", "conv.modeChat")).toBe("Chat");
+    expect(tr("en", "conv.agentToggle")).toBe("Agent");
+    expect(tr("ru", "conv.modeChat")).toBe("Чат");
+    expect(tr("ru", "conv.agentToggle")).toBe("Агент");
   });
 
   it("switches agent mode from the pills", () => {
@@ -586,69 +651,113 @@ describe("composer — attachment policy (R4-02 / G-20)", () => {
   });
 });
 
-describe("composer — model picker", () => {
-  it("shows the store's model and opens a list of the provider's models", () => {
+describe("composer — model picker (R6-02)", () => {
+  const trigger = () => screen.getByRole("button", { name: "Agent mode and model" });
+  const openPicker = () => fireEvent.click(trigger());
+  const list = () => screen.getByRole("listbox", { name: "Model" });
+  const search = () => screen.getByRole("searchbox", { name: "Search models" });
+
+  it("shows the store's model and opens a real listbox with the provider's models", () => {
     renderComposer({ selectedModel: "gemini-3.6-flash" });
-    const trigger = screen.getByRole("button", { name: "Agent mode and model" });
-    expect(trigger).toHaveTextContent("gemini-3.6-flash");
+    expect(trigger()).toHaveTextContent("gemini-3.6-flash");
 
-    fireEvent.click(trigger);
-    const list = screen.getByRole("radiogroup", { name: "Model" });
-    expect(within(list).getByRole("radio", { name: "gemini-3.6-flash" })).toHaveAttribute(
-      "aria-checked",
-      "true",
-    );
-    expect(within(list).getByRole("radio", { name: "gemini-3.1-pro-preview" })).toHaveAttribute(
-      "aria-checked",
-      "false",
-    );
+    openPicker();
+    const options = within(list()).getAllByRole("option");
+    expect(options.map((option) => option.textContent)).toEqual([
+      "gemini-3.6-flash",
+      "gemini-3.1-pro-preview",
+    ]);
+    expect(options[0]).toHaveAttribute("aria-selected", "true");
+    expect(options[1]).toHaveAttribute("aria-selected", "false");
+    // The selected row carries the one check; the other row does not.
+    expect(options[0]?.querySelector(".nex-composer-model-option-check")).not.toBeNull();
+    expect(options[1]?.querySelector(".nex-composer-model-option-check")).toBeNull();
   });
 
-  it("draws the model list as rows, with no pill to slide between them", () => {
+  it("filters the list as the query is typed, case-insensitively", () => {
     renderComposer();
-    fireEvent.click(screen.getByRole("button", { name: "Agent mode and model" }));
-    const list = screen.getByRole("radiogroup", { name: "Model" });
+    openPicker();
+    expect(search()).toHaveFocus();
 
-    // The primitive's grid root, re-flowed to rows by composer.css.
-    expect(list).toHaveClass("nex-seg", "nex-composer-model-list");
-    // `indicator={false}` — no decorative pill is emitted at all, so
-    // nothing can slide across a vertical list.
-    expect(list.querySelector(".nex-seg-indicator")).toBeNull();
-
-    const rows = within(list).getAllByRole("radio");
-    expect(rows).toHaveLength(2);
-    for (const row of rows) {
-      expect(row.parentElement).toBe(list);
-    }
-    // Selection stays legible without the pill: the active row says so.
-    expect(rows[0]).toHaveAttribute("aria-checked", "true");
-    expect(rows[0]).toHaveClass("is-active");
-    expect(rows[1]).not.toHaveClass("is-active");
-
-    // The mode group next door still carries the shared pill: the
-    // opt-out is local to the list, not a global disable.
-    expect(document.querySelector(".nex-composer-pills .nex-seg-indicator")).not.toBeNull();
+    fireEvent.change(search(), { target: { value: "PRO" } });
+    const options = within(list()).getAllByRole("option");
+    expect(options).toHaveLength(1);
+    expect(options[0]).toHaveTextContent("gemini-3.1-pro-preview");
   });
 
-  it("dispatches the picked model and keeps no copy of the selection", () => {
+  it("distinguishes an empty catalog from an empty search", () => {
+    renderComposer({ models: [] });
+    openPicker();
+    expect(screen.getByText("No models configured")).toBeInTheDocument();
+    // Nothing to search when there is nothing to list.
+    expect(screen.queryByRole("searchbox", { name: "Search models" })).toBeNull();
+  });
+
+  it("says the search matched nothing without claiming the catalog is empty", () => {
+    renderComposer();
+    openPicker();
+    fireEvent.change(search(), { target: { value: "no such model" } });
+    expect(screen.getByText("No models match your search")).toBeInTheDocument();
+    expect(screen.queryByText("No models configured")).toBeNull();
+    expect(screen.queryByRole("listbox")).toBeNull();
+  });
+
+  it("moves the active row with the arrow keys and Home/End", () => {
+    renderComposer({ models: ["a-model", "b-model", "c-model"] });
+    openPicker();
+    const options = within(list()).getAllByRole("option");
+    expect(search()).toHaveAttribute("aria-activedescendant", options[0]!.id);
+
+    fireEvent.keyDown(search(), { key: "ArrowDown" });
+    expect(search()).toHaveAttribute("aria-activedescendant", options[1]!.id);
+    expect(options[1]).toHaveAttribute("data-active", "true");
+
+    fireEvent.keyDown(search(), { key: "End" });
+    expect(search()).toHaveAttribute("aria-activedescendant", options[2]!.id);
+
+    fireEvent.keyDown(search(), { key: "ArrowDown" });
+    // Wraps, so the list never traps the cursor at an edge.
+    expect(search()).toHaveAttribute("aria-activedescendant", options[0]!.id);
+
+    fireEvent.keyDown(search(), { key: "Home" });
+    expect(search()).toHaveAttribute("aria-activedescendant", options[0]!.id);
+    fireEvent.keyDown(search(), { key: "ArrowUp" });
+    expect(search()).toHaveAttribute("aria-activedescendant", options[2]!.id);
+  });
+
+  it("picks the active row on Enter and closes", async () => {
     const onSelectModel = vi.fn();
     renderComposer({ onSelectModel });
-    fireEvent.click(screen.getByRole("button", { name: "Agent mode and model" }));
-    fireEvent.click(screen.getByRole("radio", { name: "gemini-3.1-pro-preview" }));
+    openPicker();
+    fireEvent.keyDown(search(), { key: "ArrowDown" });
+    fireEvent.keyDown(search(), { key: "Enter" });
 
-    // Dispatch only: the trigger still shows what the store holds,
-    // because the store has not answered yet.
     expect(onSelectModel).toHaveBeenCalledWith("gemini-3.1-pro-preview");
-    expect(screen.getByRole("button", { name: "Agent mode and model" })).toHaveTextContent(
-      "gemini-3.6-flash",
-    );
+    await waitFor(() => expect(screen.queryByRole("listbox")).toBeNull());
+  });
+
+  it("closes on Escape without picking", async () => {
+    const onSelectModel = vi.fn();
+    renderComposer({ onSelectModel });
+    openPicker();
+    fireEvent.keyDown(search(), { key: "Escape" });
+    expect(onSelectModel).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.queryByRole("listbox")).toBeNull());
+  });
+
+  it("dispatches the clicked model and keeps no copy of the selection", () => {
+    const onSelectModel = vi.fn();
+    renderComposer({ onSelectModel });
+    openPicker();
+    fireEvent.click(screen.getByRole("option", { name: "gemini-3.1-pro-preview" }));
+
+    expect(onSelectModel).toHaveBeenCalledWith("gemini-3.1-pro-preview");
+    expect(trigger()).toHaveTextContent("gemini-3.6-flash");
   });
 
   it("says so plainly when no model is selected", () => {
     renderComposer({ selectedModel: null, models: [] });
-    expect(screen.getByRole("button", { name: "Agent mode and model" })).toHaveTextContent(
-      "No model selected",
-    );
+    expect(trigger()).toHaveTextContent("No model selected");
   });
 
   it("renders a long id in full and keeps it as the trigger's title", () => {
@@ -658,36 +767,56 @@ describe("composer — model picker", () => {
     // the sheet's measure (asserted below) is what keeps it on one line.
     const id = "nvidia/nemotron-3-super-120b-a12b";
     renderComposer({ selectedModel: id });
-    const trigger = screen.getByRole("button", { name: "Agent mode and model" });
-    const label = trigger.querySelector(".nex-composer-model-name");
+    const label = trigger().querySelector(".nex-composer-model-name");
 
     expect(label).not.toBeNull();
     expect(label!.textContent).toBe(id);
     // The full id is also the hover read AND the accessible description, so
     // even a shrunken box never leaves AT with the elided string.
-    expect(trigger).toHaveAttribute("title", id);
+    expect(trigger()).toHaveAttribute("title", id);
   });
 
   it("falls back to the explanatory title only when there is no id to carry", () => {
     renderComposer({ selectedModel: null, models: [] });
-    expect(screen.getByRole("button", { name: "Agent mode and model" })).toHaveAttribute(
-      "title",
-      "Model used for new messages",
-    );
+    expect(trigger()).toHaveAttribute("title", "Model used for new messages");
   });
 
-  it("surfaces a model-selection failure", () => {
+  it("surfaces a model-selection failure inside the picker", () => {
     renderComposer({ modelError: "provider unreachable" });
-    fireEvent.click(screen.getByRole("button", { name: "Agent mode and model" }));
+    openPicker();
     expect(screen.getByRole("alert")).toHaveTextContent("provider unreachable");
   });
 
   it("offers provider settings from the picker", () => {
     const onOpenSettings = vi.fn();
     renderComposer({ onOpenSettings });
-    fireEvent.click(screen.getByRole("button", { name: "Agent mode and model" }));
+    openPicker();
     fireEvent.click(screen.getByRole("button", { name: "Provider settings" }));
     expect(onOpenSettings).toHaveBeenCalled();
+  });
+
+  it("wraps long ids instead of widening the popover", () => {
+    // The Round 5 bug: the segmented root was an `inline-grid` child of
+    // `.nex-seg`, its implicit column resolved to max-content, and the list
+    // grew past the popover — the UA's horizontal bar. The structural fix
+    // is a block list plus `overflow-x: hidden`, and rows that wrap.
+    const sheet = readRepoFile("src/styles/composer.css").replace(
+      /\/\*[\s\S]*?\*\//g,
+      "",
+    );
+    const menu = /\.nex-composer-model-menu\s*\{([\s\S]*?)\n\}/.exec(sheet)?.[1] ?? "";
+    expect(menu).toContain("overflow-x: hidden");
+
+    const listBlock = /\.nex-composer-model-list\s*\{([\s\S]*?)\n\}/.exec(sheet)?.[1] ?? "";
+    expect(listBlock).toContain("overflow-x: hidden");
+    expect(listBlock).toContain("flex-direction: column");
+
+    const option = /\.nex-composer-model-option-name\s*\{([\s\S]*?)\n\}/.exec(sheet)?.[1] ?? "";
+    expect(option).toContain("overflow-wrap: anywhere");
+
+    // No `.nex-seg` re-point survives: the list is a plain listbox now, so
+    // the primitive's inline-grid root cannot come back through this hook.
+    expect(sheet).not.toMatch(/\.nex-composer-model-list\.nex-seg/);
   });
 });
 
@@ -867,15 +996,19 @@ describe("composer — the field's affordance (Phase C round 4)", () => {
   });
 });
 
-describe("composer — Send's two states (Phase C round 4)", () => {
+describe("composer — Send's three states (R6-01)", () => {
   // The states are compared as TOKENS, not by eye. `ui/button` ships the
   // theme's disabled recipe as a full 1px hairline (`disabled:border-border`),
   // and a hairline is secondary-button grammar: on an empty draft Send read
   // as an enabled secondary action. The composer replaces that one utility
   // on the className (it cannot be done from composer.css — that sheet is
   // `layer(base)`, and a Tailwind utility outranks it at any specificity).
+  //
+  // R6-01: idle is no longer unfilled — the arrow used to hang on the
+  // composer's own background. It sits on the muted plate now; the light
+  // plate is armed and stop, and stop swaps the arrow for a filled square.
   const BORDER_TOKENS = ["border-transparent", "border-border"] as const;
-  const SURFACE_TOKENS = ["bg-transparent", "bg-primary"] as const;
+  const SURFACE_TOKENS = ["bg-transparent", "bg-primary", "bg-secondary"] as const;
   const LABEL_TOKENS = ["text-muted-foreground", "text-primary-foreground"] as const;
 
   /** The token that actually paints one property in one state, resolved the
@@ -908,7 +1041,7 @@ describe("composer — Send's two states (Phase C round 4)", () => {
     };
   }
 
-  it("is unbordered and unfilled on an empty draft, and the light fill when armed", () => {
+  it("paints the muted plate on an empty draft, and the light fill when armed", () => {
     const { rerender, props } = renderComposer({ draft: "", canSend: false });
     const unarmed = screen.getByRole("button", { name: /Send/ });
     expect(unarmed).toBeDisabled();
@@ -920,9 +1053,9 @@ describe("composer — Send's two states (Phase C round 4)", () => {
 
     const unarmedPaint = paint(unarmed.className, true);
     expect(unarmedPaint).toEqual({
-      // No boundary, no fill, the theme's quiet text tier (5.64:1 on --card).
+      // No boundary, the muted plate, the theme's quiet text tier.
       border: "border-transparent",
-      surface: "bg-transparent",
+      surface: "bg-secondary",
       label: "text-muted-foreground",
     });
 
@@ -1084,13 +1217,38 @@ describe("composer sheet — theme linkage (src/styles/composer.css)", () => {
     }
   });
 
-  it("stacks the model list in grid flow, never in the inert flex-direction", () => {
-    // The primitive's root is a grid (equal `1fr` column tracks), so
-    // `flex-direction: column` did nothing and the rows stayed side by
-    // side. A vertical list has to be expressed in grid terms.
-    const block = ruleBody(".nex-composer-model-list.nex-seg");
-    expect(block).toContain("grid-auto-flow: row");
-    expect(block).not.toContain("flex-direction");
+  it("keeps the mode groups on the segmented primitive, never the model list", () => {
+    // R6-02: the model list stopped being a segmented group. Its
+    // `inline-grid` root resolved its implicit column to max-content and
+    // grew past the popover. The two MODE groups still use the primitive,
+    // so the opt-out is local to the list (pinned in its own describe).
+    for (const hook of ["nex-composer-pills", "nex-composer-autonomy"]) {
+      expect(code).toMatch(new RegExp(`\\.${hook}\\.nex-seg`));
+    }
+    expect(code).not.toMatch(/\.nex-composer-model-list\.nex-seg/);
+  });
+
+  it("lets each popover sheet own its width", () => {
+    // The primitive used to ship `w-72`, and a utilities-layer width
+    // outranks every `layer(base)` width — so all three composer popovers
+    // silently rendered at 288px while their sheets said 300/320/340. The
+    // primitive now carries no width; these are the declarations that
+    // actually paint.
+    const primitive = readRepoFile("src/components/ui/popover.tsx").replace(
+      /\/\*[\s\S]*?\*\//g,
+      "",
+    );
+    expect(primitive).not.toMatch(/\bw-72\b/);
+    for (const [selector, width] of [
+      [".nex-composer-model-menu", "300px"],
+      [".nex-composer-workspace-menu", "320px"],
+      [".nex-composer-context-menu", "340px"],
+    ] as const) {
+      const start = code.indexOf(`${selector} {`);
+      expect(start, `${selector} has no rule`).toBeGreaterThan(-1);
+      const block = code.slice(start, code.indexOf("}", start));
+      expect(block, selector).toContain(`width: ${width}`);
+    }
   });
 
   it("leaves the selected segment's fill to the one shared pill", () => {
@@ -1412,8 +1570,10 @@ describe("shared-class scope — the failure strip stays shared", () => {
     // `.nex-seg` and `.nex-chip` are shared with every other
     // surface, so the composer can only re-point them through a
     // selector that cannot match anywhere else. Both carry a second
-    // class for exactly that reason.
-    for (const hook of ["nex-composer-pills", "nex-composer-autonomy", "nex-composer-model-list"]) {
+    // class for exactly that reason. The model list is NOT in this
+    // set any more: it is a plain listbox (R6-02), not a segmented
+    // primitive, so there is no `.nex-seg` there to re-point.
+    for (const hook of ["nex-composer-pills", "nex-composer-autonomy"]) {
       expect(composerSheet).toMatch(new RegExp(`\\.${hook}\\.nex-seg`));
     }
     expect(composerSheet).toMatch(/\.nex-composer-attachments \.nex-chip/);

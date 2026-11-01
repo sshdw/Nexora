@@ -795,15 +795,17 @@ describe("cascade — the merged sheets load inside a layer", () => {
      The OTHER direction of the same contract (Defect A,
      round-4 visual QA).
 
-     A bare `<button>` takes the UA's `color: buttontext`, and with
-     no `color-scheme` on the themed roots that is BLACK here —
-     measured on the tab strip's elevated bar, where the close ×,
-     the `+`, Split and Zen painted as embossing. The answer has to
-     be a LAYERED fallback: too weak to beat a variant's own
-     `text-*` utility, strong enough to beat the UA. Those two
-     facts are what these pins hold down — the rule's layer, its
-     absence of `!important` (important declarations invert the
-     layer order), and the utilities it must lose to.
+     A bare `<button>` takes the UA's `color: buttontext`, and before
+     R6-08 declared `color-scheme` on the themed roots that resolved
+     to BLACK here — measured on the tab strip's elevated bar, where
+     the close ×, the `+` and Split painted as embossing. (The scheme
+     is declared now; the fallback stays because a variant's own
+     `text-*` is still the only thing allowed to colour a control.)
+     The answer has to be a LAYERED fallback: too weak to beat a
+     variant's own `text-*` utility, strong enough to beat the UA.
+     Those two facts are what these pins hold down — the rule's
+     layer, its absence of `!important` (important declarations
+     invert the layer order), and the utilities it must lose to.
      ---------------------------------------------------------- */
 
   /** Body of the top-level `@layer base { … }` block in
@@ -839,14 +841,127 @@ describe("cascade — the merged sheets load inside a layer", () => {
     // An unlayered `button { color }` here would out-rank the utilities
     // by Cascade L5 (normal declarations) exactly as the old unlayered
     // sheet imports did, repainting filled buttons quiet grey.
-    expect(cssCode.replace(block, "")).not.toMatch(/\bbutton\b[^{};]*\{/);
+    expect(cssCode.replace(block, "")).not.toMatch(/(?:^|[^-\w])button\b[^{};]*\{/m);
     // The token it names resolves in both theme blocks.
     expect(definedVars(DARK_BLOCK).has("--color-on-surface-variant")).toBe(true);
     expect(definedVars(LIGHT_BLOCK).has("--color-on-surface-variant")).toBe(true);
   });
 
-  it("keeps the element reset free of tone, so this stays the only fallback", () => {
-    // src/styles/theme.css says so in its own header ("element resets
+  /* ----------------------------------------------------------
+     R6-08: the UA's own surfaces — scrollbars, form controls,
+     system colours — are painted from `color-scheme`, and before
+     this round the themed roots declared none. The UA therefore
+     assumed a light scheme and painted a light scrollbar trough on
+     the dark composer (the model picker's horizontal bar) and on
+     the Sessions panel. R6-02/R6-06 fixed the layout symptoms;
+     these pins hold down the ROOT cause.
+     ---------------------------------------------------------- */
+
+  it("answers the UA's scheme on every themed root", () => {
+    expect(DARK_BLOCK).toMatch(/(?:^|[;{\s])color-scheme:\s*dark;/);
+    expect(LIGHT_BLOCK).toMatch(/(?:^|[;{\s])color-scheme:\s*light;/);
+    // High contrast is dark-based: it must not fall back to the UA's light.
+    const highContrast =
+      /:root\[data-theme="high-contrast"\],\s*\.nex-theme-high-contrast\s*\{([\s\S]*?)\n\}/.exec(
+        cssCode,
+      )?.[1] ?? "";
+    expect(highContrast).toMatch(/(?:^|[;{\s])color-scheme:\s*dark;/);
+  });
+
+  it("paints every scrollbar from the theme's own thumb tokens", () => {
+    const at = cssCode.indexOf("*::-webkit-scrollbar");
+    expect(at, "no scrollbar block in src/index.css").toBeGreaterThan(-1);
+    const scrollbarRules = cssCode.slice(at, at + 1200);
+    expect(scrollbarRules).toContain("*::-webkit-scrollbar-thumb");
+    expect(scrollbarRules).toContain("background: var(--scrollbar-thumb)");
+    expect(scrollbarRules).toContain("background: var(--scrollbar-thumb-hover)");
+    // No raw colour in the scrollbar paint: it follows the theme.
+    expect(scrollbarRules).not.toMatch(/#[0-9a-f]{3,8}\b/i);
+    expect(scrollbarRules).not.toMatch(/\brgba?\(/);
+  });
+
+  it("keeps the webkit bar authoritative on the four scroll containers", () => {
+    // WebView2/Chromium only: `scrollbar-width` or `scrollbar-color` on
+    // these selectors would switch the element to the NATIVE bar path and
+    // make every `::-webkit-scrollbar*` rule inert — including the hidden
+    // arrow buttons. The webkit rules are the one paint path.
+    const at = cssCode.indexOf("*::-webkit-scrollbar");
+    expect(at).toBeGreaterThan(-1);
+    const block = cssCode.slice(at, at + 1800);
+    for (const selector of [
+      ".nex-thread",
+      ".nex-sessions-scroll",
+      ".nex-composer-model-list",
+      ".nex-context",
+    ]) {
+      expect(block, selector).toContain(selector);
+    }
+
+    const rule =
+      /\.nex-thread,\s*\.nex-sessions-scroll,\s*\.nex-composer-model-list,\s*\.nex-context\s*\{([\s\S]*?)\n\s*\}/.exec(
+        block,
+      )?.[1] ?? "";
+    expect(rule).toContain("scrollbar-gutter: stable");
+    expect(rule).not.toMatch(/scrollbar-width\s*:/);
+    expect(rule).not.toMatch(/scrollbar-color\s*:/);
+
+    expect(block).toMatch(/\*::-webkit-scrollbar\s*\{[^}]*width:\s*10px/);
+    expect(block).toMatch(
+      /\*::-webkit-scrollbar-button\s*\{\s*display:\s*none;\s*\}/,
+    );
+  });
+
+  it("removes the platform's scrollbar buttons and leaves the corner transparent", () => {
+    // The captured Sessions bar still painted the UA's up/down arrows on a
+    // styled WebKit bar. The shell owns the whole bar, so both are reset.
+    const at = cssCode.indexOf("*::-webkit-scrollbar");
+    const block = cssCode.slice(at, at + 1800);
+    expect(block).toMatch(
+      /\*::-webkit-scrollbar-button\s*\{\s*display:\s*none;\s*\}/,
+    );
+    expect(block).toMatch(
+      /\*::-webkit-scrollbar-corner\s*\{\s*background:\s*transparent;\s*\}/,
+    );
+  });
+
+  it("keeps the scrollbar thumb a visible step, not the old 0.12 smudge", () => {
+    // Token-level, not a pixel test: the dark thumb's alpha is the value
+    // that made the bar read as a smudge (~1.4:1) on the floating panel.
+    const dark = definedVars(DARK_BLOCK);
+    expect(dark.get("--scrollbar-thumb")).toBe("rgba(255, 255, 255, 0.3)");
+    expect(dark.get("--scrollbar-thumb-hover")).toBe(
+      "rgba(255, 255, 255, 0.45)",
+    );
+    expect(dark.get("--scrollbar-thumb")).not.toContain("0.12");
+
+    const light = definedVars(LIGHT_BLOCK);
+    expect(light.get("--scrollbar-thumb")).toBe("rgba(0, 0, 0, 0.45)");
+    expect(light.get("--scrollbar-thumb-hover")).toBe("rgba(0, 0, 0, 0.6)");
+
+    // High contrast keeps its stronger pair.
+    const highContrast =
+      /:root\[data-theme="high-contrast"\],\s*\.nex-theme-high-contrast\s*\{([\s\S]*?)\n\}/.exec(
+        cssCode,
+      )?.[1] ?? "";
+    const hc = definedVars(highContrast);
+    expect(hc.get("--scrollbar-thumb")).toBe("rgba(255, 255, 255, 0.35)");
+    expect(hc.get("--scrollbar-thumb-hover")).toBe("rgba(255, 255, 255, 0.5)");
+  });
+
+  it("reserves the scrollbar gutter in every container that can show a vertical bar", () => {
+    // The context popover's right-hand values sat under the bar
+    // ("New Conversation" in the capture). A stable gutter keeps the
+    // content lane clear in the thread, Sessions, model list and context.
+    const at = cssCode.indexOf("*::-webkit-scrollbar");
+    const block = cssCode.slice(at, at + 1800);
+    const rule =
+      /\.nex-thread,\s*\.nex-sessions-scroll,\s*\.nex-composer-model-list,\s*\.nex-context\s*\{([\s\S]*?)\n\s*\}/.exec(
+        block,
+      )?.[1] ?? "";
+    expect(rule).toContain("scrollbar-gutter: stable");
+  });
+
+  it("keeps the element reset free of tone, so this stays the only fallback", () => {    // src/styles/theme.css says so in its own header ("element resets
     // never invent a tone"). Asserted as a declaration, because the
     // tempting one-line fix — adding `color` to that reset — would put
     // the same fallback in a sheet whose whole job is geometry, and the

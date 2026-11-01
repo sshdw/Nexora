@@ -9,17 +9,19 @@
 //!
 //! #230 Phase 2 dropped the header's own Split control (SYSTEM §4: ONE
 //! Split entry point — the tab strip owns it; the header keeps title +
-//! workspace chip + export only). The props it needed went with it,
-//! and App.tsx passes none of them here.
+//! export only). R6-03 moved the workspace identity to the composer's
+//! control row, and R6-04 deleted Zen, so the header is now title + export.
+//!
+//! The workspace store is threaded to `ConversationView` for that control;
+//! the pane header no longer repeats the folder as a read-only chip.
 
 import ConversationView from "./ConversationView";
-import M3Button from "./M3Button";
 import M3IconButton from "./M3IconButton";
 import M3Toolbar from "./M3Toolbar";
-import WorkspaceChip from "./WorkspaceChip";
 import { ExportIcon } from "./icons";
 import type { Conversation } from "../lib/tauri";
 import type { AutonomyStore } from "../lib/useAutonomy";
+import type { WorkspaceStore } from "../lib/useWorkspace";
 import { useStrings } from "../lib/useLocale";
 
 export interface ConversationPaneProps {
@@ -41,21 +43,14 @@ export interface ConversationPaneProps {
   onOpenSettings: () => void;
   onMessageSent: () => void;
   onExport: (id: number) => void;
-  workspaceRoot: string | null;
-  workspaceLoading: boolean;
+  /** Workspace store for the composer's control row (R6-03). */
+  workspace: WorkspaceStore;
   /** Secondary (split) pane: marked apart from the primary one. */
   secondary: boolean;
   /** The tab strip above owns the session's identity and its actions
    *  (D-04), so this pane renders no header at all. False in split view,
    *  where two panes need to be told apart and each needs its own actions. */
   hideHeader?: boolean;
-  /** Chromeless reading mode (its strip home is gone at one session). */
-  zen: boolean;
-  onToggleZen: () => void;
-  /** Draw the Zen control here. False while the tab strip is on screen: the
-   *  strip carries it, and split view would otherwise show one per pane plus
-   *  one in the strip. */
-  showZen?: boolean;
 }
 
 export default function ConversationPane({
@@ -71,19 +66,15 @@ export default function ConversationPane({
   onOpenSettings,
   onMessageSent,
   onExport,
-  workspaceRoot,
-  workspaceLoading,
+  workspace,
   secondary,
   hideHeader = false,
-  zen,
-  onToggleZen,
-  showZen = true,
 }: ConversationPaneProps) {
   const { t } = useStrings();
   const isArchived = conversation.status === "archived";
   return (
     <section
-      className={"nex-pane" + (secondary ? " nex-pane--secondary" : "")}
+      className="nex-pane"
       aria-label={secondary ? t("app.splitPaneAria", { title: conversation.title }) : conversation.title}
     >
       {!hideHeader && (
@@ -105,26 +96,12 @@ export default function ConversationPane({
             label={t("app.paneActions", { title: conversation.title })}
             className="nex-main-header-actions"
           >
-            <WorkspaceChip root={workspaceRoot} loading={workspaceLoading} />
             <M3IconButton
               label={t("app.exportConversation")}
               onClick={() => onExport(conversation.id)}
             >
               <ExportIcon />
             </M3IconButton>
-            {/* Zen lives here only while the tab strip is not on screen
-                (one session): at two or more the strip owns it. */}
-            {showZen && (
-              <M3Button
-                variant="quiet"
-                size="sm"
-                aria-pressed={zen}
-                title={t("tabs.zenTitle")}
-                onClick={onToggleZen}
-              >
-                {t("tabs.zen")}
-              </M3Button>
-            )}
           </M3Toolbar>
         </header>
       )}
@@ -146,7 +123,7 @@ export default function ConversationPane({
           onMessageSent={onMessageSent}
           draft={draft}
           setDraft={setDraft}
-          workspaceRoot={workspaceRoot}
+          workspace={workspace}
         />
       </div>
     </section>

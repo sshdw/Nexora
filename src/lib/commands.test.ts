@@ -36,7 +36,6 @@ function depsStub(overrides: Partial<PaletteDeps> = {}): PaletteDeps {
     tabPrev: vi.fn(),
     tabCloseActive: vi.fn(),
     toggleSplit: vi.fn(),
-    toggleZen: vi.fn(),
     showShortcuts: vi.fn(),
     toggleLanguage: vi.fn(),
     addWorkspaceRoot: vi.fn(),

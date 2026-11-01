@@ -1,4 +1,4 @@
-//! Sessions panel — the shell's history destination (D-06 / §6.5).
+//! Sessions panel — the shell's history destination (D-06 / §6.5 / R6-06).
 //!
 //! Why this exists at all: the shell has no sidebar and tabs are not
 //! persisted, so without this panel a conversation that is not already open
@@ -12,29 +12,57 @@
 //! the backend's full-text `search` command covers message bodies, and a
 //! title filter that silently pretended to search bodies would be the kind of
 //! half-truth the brief's data-honesty rule forbids.
+//!
+//! R6-06 restores the row actions the old sidebar had and the panel lost:
+//! rename (inline, Enter/Esc, empty rejected, focus returned), archive /
+//! restore, and permanent delete. Delete asks in-app first through
+//! `ConfirmDialog` and then calls the store's existing `remove`, whose native
+//! OS prompt is the second gate (NEX-SEC-004) — no new backend path.
+//!
+//! Actions are revealed by `opacity`, never `display`/`visibility`: every
+//! button stays in the tab order, and focusing one reveals the group.
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 
 import { formatRelativeTime } from "../lib/format";
 import type { Conversation } from "../lib/tauri";
 import { useStrings } from "../lib/useLocale";
-import { SearchIcon } from "./icons";
+import ConfirmDialog from "./ConfirmDialog";
+import M3IconButton from "./M3IconButton";
+import M3Toolbar from "./M3Toolbar";
+import { ArchiveIcon, PencilIcon, SearchIcon, TrashIcon, UnarchiveIcon } from "./icons";
 
 export interface SessionsPanelProps {
   conversations: readonly Conversation[];
   loading: boolean;
   activeId: number | null;
+  /** A rename/archive/restore/delete is in flight. */
+  busy?: boolean;
   onOpen: (id: number) => void;
+  onRename: (id: number, title: string) => Promise<boolean>;
+  onArchive: (id: number) => Promise<boolean>;
+  onRestore: (id: number) => Promise<boolean>;
+  onDelete: (id: number) => Promise<boolean>;
 }
 
 export default function SessionsPanel({
   conversations,
   loading,
   activeId,
+  busy = false,
   onOpen,
+  onRename,
+  onArchive,
+  onRestore,
+  onDelete,
 }: SessionsPanelProps) {
   const { t, locale } = useStrings();
   const [query, setQuery] = useState("");
+  const [renamingId, setRenamingId] = useState<number | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const [pendingDelete, setPendingDelete] = useState<Conversation | null>(null);
+  const rowRefs = useRef(new Map<number, HTMLButtonElement>());
+  const skipBlur = useRef(false);
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -48,23 +76,153 @@ export default function SessionsPanel({
   const active = filtered.filter((c) => c.status === "active");
   const archived = filtered.filter((c) => c.status !== "active");
 
-  const row = (conversation: Conversation) => (
-    <li key={conversation.id}>
-      <button
-        type="button"
-        className={
-          "nex-sessions-row" + (conversation.id === activeId ? " is-current" : "")
-        }
-        aria-current={conversation.id === activeId ? "true" : undefined}
-        onClick={() => onOpen(conversation.id)}
-      >
-        <span className="nex-sessions-row-title">{conversation.title}</span>
-        <span className="nex-sessions-row-meta">
-          {formatRelativeTime(conversation.updated_at, locale)}
-        </span>
-      </button>
-    </li>
-  );
+  const returnFocus = (id: number) => {
+    window.setTimeout(() => rowRefs.current.get(id)?.focus(), 0);
+  };
+
+  const beginRename = (conversation: Conversation) => {
+    // Entering is always a clean start. The old cancel path left the guard
+    // set because unmounting the input fires no blur, so the NEXT Enter
+    // commit returned early and never called `onRename`.
+    skipBlur.current = false;
+    setRenameDraft(conversation.title);
+    setRenamingId(conversation.id);
+  };
+
+  const cancelRename = (id: number, restoreFocus = true) => {
+    // Cancel is an exit path with no blur to consume the guard: clear it
+    // here, so a later rename starts unarmed.
+    skipBlur.current = false;
+    setRenamingId(null);
+    setRenameDraft("");
+    if (restoreFocus) returnFocus(id);
+  };
+
+  const commitRename = async (conversation: Conversation, restoreFocus: boolean) => {
+    if (skipBlur.current) {
+      skipBlur.current = false;
+      return;
+    }
+    const next = renameDraft.trim();
+    if (next === "" || next === conversation.title) {
+      cancelRename(conversation.id, restoreFocus);
+      return;
+    }
+    // Enter unmounts the input; arm the guard so the unmount blur (if the
+    // platform fires one) cannot commit the same title twice. A blur commit
+    // does not arm it — the blur IS the exit event.
+    if (restoreFocus) skipBlur.current = true;
+    setRenamingId(null);
+    setRenameDraft("");
+    await onRename(conversation.id, next);
+    // Enter returns the reader to the row they just edited. Blur does NOT:
+    // the blur happened because they clicked somewhere else, and pulling
+    // focus back would steal it from the thing they aimed at.
+    if (restoreFocus) returnFocus(conversation.id);
+  };
+
+  const row = (conversation: Conversation) => {
+    const isCurrent = conversation.id === activeId;
+    const isArchived = conversation.status !== "active";
+    const renaming = renamingId === conversation.id;
+
+    return (
+      <li key={conversation.id} className="nex-sessions-item">
+        {renaming ? (
+          <div className="nex-sessions-row is-renaming">
+            <input
+              className="nex-sessions-rename-input"
+              value={renameDraft}
+              aria-label={t("list.renameAria")}
+              autoFocus
+              onChange={(event) => setRenameDraft(event.target.value)}
+              onBlur={() => void commitRename(conversation, false)}
+              onKeyDown={(event) => {
+                // shortcut:rename.commit / shortcut:rename.cancel.
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  void commitRename(conversation, true);
+                } else if (event.key === "Escape") {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  cancelRename(conversation.id);
+                }
+              }}
+            />
+          </div>
+        ) : (
+          <>
+            <button
+              type="button"
+              ref={(element) => {
+                if (element === null) rowRefs.current.delete(conversation.id);
+                else rowRefs.current.set(conversation.id, element);
+              }}
+              className={
+                "nex-sessions-row" + (isCurrent ? " is-current" : "")
+              }
+              aria-current={isCurrent ? "true" : undefined}
+              onClick={() => onOpen(conversation.id)}
+            >
+              <span className="nex-sessions-row-title" title={conversation.title}>
+                {conversation.title}
+              </span>
+              <span className="nex-sessions-row-meta">
+                {formatRelativeTime(conversation.updated_at, locale)}
+              </span>
+            </button>
+            <div className="nex-sessions-row-actions">
+              <M3Toolbar
+                label={t("list.itemActions", { title: conversation.title })}
+                className="nex-sessions-actions"
+              >
+                <M3IconButton
+                  size="sm"
+                  tooltipPortal
+                  label={t("list.actionRename")}
+                  disabled={busy}
+                  onClick={() => beginRename(conversation)}
+                >
+                  <PencilIcon />
+                </M3IconButton>
+                {isArchived ? (
+                  <M3IconButton
+                    size="sm"
+                    tooltipPortal
+                    label={t("list.actionRestore")}
+                    disabled={busy}
+                    onClick={() => void onRestore(conversation.id)}
+                  >
+                    <UnarchiveIcon />
+                  </M3IconButton>
+                ) : (
+                  <M3IconButton
+                    size="sm"
+                    tooltipPortal
+                    label={t("list.actionArchive")}
+                    disabled={busy}
+                    onClick={() => void onArchive(conversation.id)}
+                  >
+                    <ArchiveIcon />
+                  </M3IconButton>
+                )}
+                <M3IconButton
+                  size="sm"
+                  tooltipPortal
+                  danger
+                  label={t("list.actionDelete")}
+                  disabled={busy}
+                  onClick={() => setPendingDelete(conversation)}
+                >
+                  <TrashIcon />
+                </M3IconButton>
+              </M3Toolbar>
+            </div>
+          </>
+        )}
+      </li>
+    );
+  };
 
   return (
     <div className="nex-sessions">
@@ -102,6 +260,22 @@ export default function SessionsPanel({
             </>
           )}
         </div>
+      )}
+
+      {pendingDelete !== null && (
+        <ConfirmDialog
+          title={t("dock.sessionsDeleteTitle")}
+          body={t("dock.sessionsDeleteBody", { title: pendingDelete.title })}
+          confirmLabel={t("dock.sessionsDeleteConfirm")}
+          danger
+          busy={busy}
+          onConfirm={() => {
+            const id = pendingDelete.id;
+            setPendingDelete(null);
+            void onDelete(id);
+          }}
+          onCancel={() => setPendingDelete(null)}
+        />
       )}
     </div>
   );

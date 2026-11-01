@@ -97,20 +97,68 @@
   gap: 8px;
 }
 
-/* ---- Workspace context row (D3) ---------------------------------------
-   One read-only line above the card: folder basename + branch. No control,
-   no chevron, no fill. The long-name contract is middle ellipsis: the head
-   is the part CSS truncates, the tail stays fixed, so the end of a folder
-   name is never what disappears. */
+/* ---- Workspace control row (D3 / R6-03) -------------------------------
+   One line above the card and the only workspace picker left: the Dock's
+   Workspace destination and its panel are gone, so this row is a real
+   control now (folder + branch + chevron). It aligns to the composer's
+   TEXT, not to the card's outer edge (R6-09): the shell's border (1px)
+   plus its inline inset (`--space-md`) is the text's start, and the row
+   repeats that one value so the folder glyph sits on the same axis as
+   the first character of the message field.
+
+   The long-name contract is still middle ellipsis: the head is the part
+   CSS truncates, the tail stays fixed, so the end of a folder name is
+   never what disappears. */
 .nex-composer-context {
   display: flex;
   align-items: center;
   gap: var(--space-xs);
+  /* R6-03 defect fix: the row is a flex CHILD of `.nex-composer-inner`,
+     whose default `align-items: stretch` made this button 760 px wide.
+     The chevron then sat at the card's trailing edge, reading as a
+     control for the whole card. Shrink to the label; the left padding
+     still puts the folder glyph on the composer's text axis, and the
+     popover stays anchored to this row (`align="start"`). */
+  align-self: flex-start;
+  max-width: 100%;
   min-width: 0;
   margin: 0;
-  padding-inline: var(--space-xxs);
-  font-size: var(--type-size-label-medium);
+  padding: 0 calc(var(--space-md) + 1px);
+  border: none;
+  background: transparent;
   color: var(--muted-foreground);
+  font-family: var(--font-sans);
+  font-size: var(--type-size-label-medium);
+  text-align: start;
+  cursor: pointer;
+}
+
+.nex-composer-context:hover {
+  color: var(--foreground);
+}
+
+.nex-composer-context:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.nex-composer-context svg {
+  flex-shrink: 0;
+}
+
+.nex-composer-context-none {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nex-composer-context-chevron {
+  /* The flex `gap` is the few pixels between branch text and chevron;
+     no auto margin may push it away from the label. */
+  margin-inline-start: 0;
+  opacity: 0.7;
 }
 
 .nex-composer-context-item {
@@ -118,10 +166,6 @@
   align-items: center;
   gap: var(--space-xxs);
   min-width: 0;
-}
-
-.nex-composer-context-item svg {
-  flex-shrink: 0;
 }
 
 .nex-composer-context-name {
@@ -151,6 +195,165 @@
 
 .nex-composer-context-sep {
   color: var(--color-on-surface-faint);
+}
+
+/* ---- Workspace menu (R6-03) -------------------------------------------
+   The popover body. Three honest groups — the current root, the 5-entry
+   MRU, and the registered-root registry — plus the one `Choose folder…`
+   action. Every row is a button; the registry rows carry their own
+   unregister control, which never deletes a directory. */
+.nex-composer-workspace-menu {
+  width: 320px;
+  max-width: min(320px, calc(100vw - 2 * var(--space-xl)));
+  padding: 8px;
+  gap: 6px;
+  border-radius: var(--radius-lg);
+  background: var(--popover);
+  border: 1px solid var(--border);
+}
+
+.nex-workspace-menu-current {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-xs);
+  padding: var(--space-xs);
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+}
+
+.nex-workspace-menu-check {
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: var(--tick);
+}
+
+.nex-workspace-menu-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.nex-workspace-menu-group {
+  margin: 4px 4px 0;
+  font-size: 0.6875rem;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+.nex-workspace-menu-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.nex-workspace-menu-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  text-align: start;
+  cursor: pointer;
+}
+
+.nex-workspace-menu-row:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--foreground);
+}
+
+.nex-workspace-menu-row:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
+.nex-workspace-menu-row:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.nex-workspace-menu-row svg {
+  flex-shrink: 0;
+}
+
+.nex-workspace-menu-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 1px;
+}
+
+.nex-workspace-menu-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.75rem;
+  color: var(--foreground);
+}
+
+.nex-workspace-menu-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  color: var(--muted-foreground);
+}
+
+.nex-workspace-menu-root {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.nex-workspace-menu-root .nex-workspace-menu-row {
+  flex: 1 1 auto;
+}
+
+.nex-workspace-menu-choose {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  width: 100%;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--foreground);
+  font-size: 0.75rem;
+  text-align: start;
+  cursor: pointer;
+}
+
+.nex-workspace-menu-choose:hover:not(:disabled) {
+  background: var(--accent);
+}
+
+.nex-workspace-menu-choose:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
+.nex-workspace-menu-choose:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.nex-workspace-menu-hint {
+  margin: 0;
+  padding: 0 4px 2px;
+  font-size: 0.6875rem;
+  color: var(--muted-foreground);
 }
 
 /* ---- The one elevated container -------------------------------------
@@ -519,24 +722,82 @@
    separated by the same hairline. The trigger's own
    open-state ring comes from the primitive. */
 .nex-composer-model-menu {
-  width: 260px;
+  width: 300px;
+  max-width: min(300px, calc(100vw - 2 * var(--space-xl)));
   padding: 8px;
   gap: 6px;
   border-radius: var(--radius-lg);
   background: var(--popover);
   border: 1px solid var(--border);
+  /* The structural half of R6-02: the old segmented root was an
+     `inline-grid` whose implicit column resolved to max-content, so the
+     list grew past the popover and the UA painted a horizontal bar. The
+     list below is a block list and this box refuses sideways overflow.
+     If the card-relative height cap is shorter than the menu, the menu
+     scrolls rather than leaving the viewport. */
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
-/* Context-window popover (D4). The ring's numbers are the first line; the
-   provider and model are facts below it. No cache/quota/upgrade rows: this
-   product does not have those numbers. */
+.nex-composer-model-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.nex-composer-model-search-icon {
+  position: absolute;
+  inset-inline-start: 8px;
+  width: 14px;
+  height: 14px;
+  color: var(--muted-foreground);
+  pointer-events: none;
+}
+
+.nex-composer-model-search input {
+  width: 100%;
+  height: 30px;
+  padding: 0 8px 0 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: 0.75rem;
+}
+
+.nex-composer-model-search input::placeholder {
+  color: var(--muted-foreground);
+}
+
+/* `type="search"` is the right semantics, but the UA's own clear button is
+   a light platform glyph on the dark popover. The field is filtered by
+   typing and Escape closes the popover, so the control is not needed. */
+.nex-composer-model-search input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.nex-composer-model-search input:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+/* Context-window popover (D4 / R6-05). It carries the stats the stage's
+   Context view used to show. The component caps its height to the space
+   above the composer card (the inline max-height measured on open); this
+   fallback is only for a measurement that could not run. The body scrolls
+   inside the popover, so the header and the usage summary stay put. */
 .nex-composer-context-menu {
-  width: 260px;
+  width: 340px;
+  max-width: min(340px, calc(100vw - 2 * var(--space-xl)));
+  max-height: min(560px, calc(100vh - 2 * var(--space-2xl)));
   padding: 8px;
   gap: 6px;
   border-radius: var(--radius-lg);
   background: var(--popover);
   border: 1px solid var(--border);
+  overflow: hidden;
 }
 
 .nex-composer-context-usage {
@@ -544,31 +805,6 @@
   font-size: var(--type-size-label-large);
   color: var(--foreground);
   font-variant-numeric: tabular-nums;
-}
-
-.nex-composer-context-facts {
-  display: grid;
-  gap: var(--space-xxs);
-  margin: 0;
-}
-
-.nex-composer-context-fact {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--space-sm);
-  font-size: var(--type-size-label-medium);
-}
-
-.nex-composer-context-fact dt {
-  color: var(--muted-foreground);
-}
-
-.nex-composer-context-fact dd {
-  margin: 0;
-  color: var(--foreground);
-  text-align: end;
-  overflow-wrap: anywhere;
 }
 
 /* The ring's ink lives in the icon layer: the track is the boundary token
@@ -579,64 +815,60 @@
   color: var(--foreground);
 }
 
-/* Model list: the same segmented primitive, stacked. The primitive's
-   root is a GRID (`grid-auto-flow: column`, equal `1fr` tracks), so a
-   vertical list is expressed in grid terms — `flex-direction: column`
-   was inert on it and left the rows side by side. The component is
-   rendered with `indicator={false}`: a slide between rows means
-   nothing, and the pill would paint over a row instead of under one.
-   Rows are quiet; the picked one carries a neutral wash plus the one
-   thin light tick on its leading edge. */
-.nex-composer-model-list.nex-seg {
-  grid-auto-flow: row;
-  grid-auto-columns: minmax(0, 1fr);
-  align-self: stretch;
+/* Model list (R6-02): a real listbox, not the segmented primitive. Rows
+   wrap long ids instead of truncating them, so the row is always whole;
+   the selected row keeps the one light check, and the active row (the
+   keyboard cursor) gets the neutral wash. `overflow-x: hidden` is the
+   structural fix — a long id must wrap, never widen the popover. */
+.nex-composer-model-list {
+  display: flex;
+  flex-direction: column;
   gap: 1px;
   max-height: 240px;
+  overflow-x: hidden;
   overflow-y: auto;
+  margin: 0;
   padding: 2px;
-  border-radius: var(--radius-md);
-  background: transparent;
+  list-style: none;
 }
 
-.nex-composer-model-list.nex-seg button {
+.nex-composer-model-option {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
   width: 100%;
+  min-width: 0;
   min-height: 30px;
   padding: 6px 8px;
   border-radius: var(--radius-sm);
+  color: var(--muted-foreground);
   font-family: var(--font-mono);
   font-size: 0.75rem;
-  text-align: left;
-  color: var(--muted-foreground);
+  text-align: start;
+  cursor: pointer;
 }
 
-.nex-composer-model-list.nex-seg button:hover {
+.nex-composer-model-option:hover,
+.nex-composer-model-option[data-active="true"] {
   background: var(--accent);
   color: var(--foreground);
 }
 
-.nex-composer-model-list.nex-seg button.is-active {
-  position: relative;
-  background: var(--accent);
+.nex-composer-model-option[aria-selected="true"] {
   color: var(--foreground);
-  font-weight: 400;
 }
 
-/* The tick. Width 2px, full row height, the light fill at 70%
-   (`--tick`) — the only bright mark in the menu. */
-.nex-composer-model-list.nex-seg button.is-active::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 4px;
-  bottom: 4px;
-  width: 2px;
-  border-radius: var(--radius-3xl);
-  background: var(--tick);
+.nex-composer-model-option-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.nex-composer-model-option-check {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--tick);
 }
 
 .nex-composer-model-empty {

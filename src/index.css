@@ -207,17 +207,23 @@
 
    The defect, stated as the browser sees it: a `<button>` that
    declares no colour of its own takes the UA's
-   `color: buttontext`. This app sets `color-scheme` NOWHERE on the
-   themed roots — the only one in the tree lives in the
-   high-contrast block — so the UA resolves `buttontext` against a
-   LIGHT scheme and every such control paints near-black.
+   `color: buttontext`. At the time this rule shipped the app set
+   `color-scheme` nowhere on the themed roots, so the UA resolved
+   `buttontext` against a LIGHT scheme and every such control painted
+   near-black. R6-08 closes that hole at the source: every themed root
+   now declares its own scheme (dark / light / high-contrast, see the
+   theme blocks below), so the UA's default controls follow the theme
+   too. This fallback still owns the app's QUIET tone — `buttontext`
+   is a platform colour, not the mono theme's secondary ink — and it
+   stays layered so every variant's own `text-*` utility wins.
    Nothing else supplied a tone: src/styles/theme.css's element
    reset deliberately declares no colour ("element resets never
    invent a tone"), and shadcn's `ghost` variant names only
    `hover:text-foreground`, no rest value. So on the tab strip's
-   `--color-surface-elevated` bar the tab close ×, the `+`, Split
-   and Zen, and the pane header's export glyph had no colour to
-   paint with at all — they read as embossing, not as controls.
+   `--color-surface-elevated` bar the tab close ×, the `+` and Split,
+   and the pane header's export glyph had no colour to paint with at
+   all — they read as embossing, not as controls. (The strip's Zen
+   control was deleted in R6-04.)
 
    WHY THIS LAYER, and not an unlayered rule or a colour on the
    ghost variant: `base` sits BELOW `utilities` in the order
@@ -374,6 +380,12 @@
    ============================================================ */
 :root,
 :root[data-theme="dark"] {
+    /* R6-08: the UA paints its own scrollbars, form controls and
+       system colours from this. Without it the UA assumed a LIGHT
+       scheme and painted a light scrollbar trough on the dark
+       composer (the model picker's horizontal bar). */
+    color-scheme: dark;
+
     --background: oklch(0.145 0.004 264);
     --foreground: oklch(0.965 0.003 264);
 
@@ -540,9 +552,11 @@
     --state-inverse-pressed: rgba(39, 38, 46, 0.12);
     --state-disabled-opacity: 0.5;
 
-    /* Scrollbar */
-    --scrollbar-thumb: rgba(255, 255, 255, 0.12);
-    --scrollbar-thumb-hover: rgba(255, 255, 255, 0.2);
+    /* Scrollbar. R6-08 follow-up: 0.12/0.2 read as a smudge (~1.4:1)
+       on the floating panel. 0.30/0.45 is a visible control step:
+       2.67:1 rest / 4.23–4.53:1 hover over the dark surfaces. */
+    --scrollbar-thumb: rgba(255, 255, 255, 0.3);
+    --scrollbar-thumb-hover: rgba(255, 255, 255, 0.45);
 
     /* Focus */
     --focus-ring-offset-inset: -1px;
@@ -637,6 +651,9 @@
    attribute, alongside its `.nex-theme-light` class hook). It was
    `.light`, a class nothing ever sets, so the block was dead. */
 :root[data-theme="light"] {
+    /* R6-08: the light root answers the UA in kind. */
+    color-scheme: light;
+
     --background: oklch(0.99 0.002 264);
     --foreground: oklch(0.18 0.004 264);
 
@@ -731,9 +748,11 @@
     --state-inverse-hover: rgba(247, 245, 242, 0.08);
     --state-inverse-pressed: rgba(247, 245, 242, 0.12);
 
-    /* Scrollbar */
-    --scrollbar-thumb: rgba(0, 0, 0, 0.2);
-    --scrollbar-thumb-hover: rgba(0, 0, 0, 0.3);
+    /* Scrollbar. Light needs the 3:1 non-text control floor: 0.45 is
+       3.36:1 on white (0.30 was 2.12:1), and 0.60 is 5.74:1 on hover.
+       Dark keeps 0.30/0.45 (2.67:1 / 4.23–4.53:1 over its surfaces). */
+    --scrollbar-thumb: rgba(0, 0, 0, 0.45);
+    --scrollbar-thumb-hover: rgba(0, 0, 0, 0.6);
 
     /* Canonical elevation — stays `--nex-sys-*` */
     --nex-sys-elevation-level1: 0 4px 16px rgba(0, 0, 0, 0.1),
@@ -814,6 +833,73 @@
    utilities so their explicitly-set colours never fight this. */
 ::selection {
     background-color: color-mix(in oklch, var(--primary) 25%, transparent);
+}
+
+/* ============================================================
+   SCROLLBARS — one role, from the theme's own tokens (R6-08).
+
+   The shell owns four scroll containers: the thread, the Sessions
+   panel, the model picker and the context popover. Until this block
+   they were left to the UA, which paints its bar from `color-scheme`
+   — and on the model picker that produced a LIGHT horizontal
+   scrollbar on a dark popover (the structural overflow bug R6-02
+   fixes at the layout, and this rule fixes at the paint).
+
+   The global fallback covers anything else that scrolls (a panel
+   list, a diff block) so no surface falls back to the platform's
+   bar. This app runs only in WebView2/Chromium, so the
+   `::-webkit-scrollbar*` pseudo-elements are the ONE paint path:
+   `::-webkit-scrollbar { width: 10px }` is the thin width and
+   `::-webkit-scrollbar-button { display: none }` removes the platform
+   arrows. The standard `scrollbar-width` / `scrollbar-color` pair must
+   stay ABSENT from the named containers: in Chromium they switch the
+   element to the native bar path and make every `::-webkit-scrollbar*`
+   rule inert, which is exactly how the arrows survived the first fix.
+   Both colours are the existing `--scrollbar-thumb*` pair, declared
+   per theme above — no raw colour, no per-sheet copy. High contrast
+   keeps its stronger thumb because it overrides the same two tokens.
+   ============================================================ */
+@layer base {
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  /* R6-08 follow-up: the UA still paints its up/down arrow buttons on a
+     styled WebKit bar. The shell owns the whole bar, so the platform
+     buttons are removed and the corner is left transparent. */
+  *::-webkit-scrollbar-button {
+    display: none;
+  }
+
+  *::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: var(--radius);
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background: var(--scrollbar-thumb-hover);
+  }
+
+  .nex-thread,
+  .nex-sessions-scroll,
+  .nex-composer-model-list,
+  .nex-context {
+    /* No `scrollbar-width` / `scrollbar-color` here: either one would
+       switch Chromium to the native bar and disable the webkit rules
+       above (including the hidden arrow buttons). Reserve the bar's
+       lane so a right-hand value never sits under it (the context
+       popover's "New Conversation" was the captured case). */
+    scrollbar-gutter: stable;
+  }
 }
 
 /* ----------------------------------------------------------

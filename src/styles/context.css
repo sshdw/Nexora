@@ -2,86 +2,70 @@
    Context panel — read-only per-conversation stats + diff list.
    Layout only; primitives (.nex-tag, .nex-agent-diff*) come from
    components.css / conversation.css. All values via tokens.
+
+   R6-05: this body now lives INSIDE the context ring's popover in the
+   composer, not in a stage view. It therefore carries no full-bleed
+   scroll viewport of its own — the popover owns the scroll — and its
+   spacing is tuned for a 340 px column.
    ============================================================ */
 
-/* The view switch is CHROME, not a second header. It used to paint its own
-   full-bleed band with a bottom seam directly under the pane header's band,
-   so the stage opened with two stacked strips and 89 px of chrome before a
-   single line of content. It now sits on the canvas with no fill and no
-   seam of its own — the header above already draws the boundary — and keeps
-   only the height its control needs. */
-.nex-context-tabs {
-  display: flex;
-  align-items: center;
-  gap: var(--space-xs);
-  padding: var(--space-xs) var(--space-md) var(--space-xxs);
-  background: transparent;
-  border-bottom: none;
-  /* Full-bleed opt-out of the conversation stage's Dock inset
-     (conversation.css, `.nex-main-conversation`). This row is the stage's
-     own chrome: its surface band and hairline span the pane edge to edge,
-     and it sits above the rail's vertically-centred band, so nothing here
-     is behind the Dock. Cancelling the stage padding keeps the row and its
-     content exactly where they were before the inset — the reserve is for
-     the reading column, not for chrome. */
-  margin-inline: calc(-1 * var(--dock-width));
-}
-
 .nex-context {
+  display: flex;
+  flex-direction: column;
   flex: 1 1 auto;
+  gap: var(--space-xs);
+  min-width: 0;
   min-height: 0;
+  padding: 0;
+  /* The scrolling body needs its own end padding: the budget card is the
+     last block, and its 12 px border/corners must scroll fully clear of
+     the popover's clipped bottom edge. The extra 6 px inline-end keeps
+     the scrollbar's lane off the right-hand values. */
+  padding-block-end: var(--space-lg);
+  padding-inline-end: 6px;
+  overflow-x: hidden;
   overflow-y: auto;
-  padding: var(--space-lg) var(--space-xl);
+  overscroll-behavior: contain;
 }
 
-/* ---- Scroll viewport reaches the window edge (R4-01, round 4) ----
-   Same fault as the thread (conversation.css): this is a scroll container
-   inside the stage's Dock inset, so its scrollbar painted at
-   x = width − 60 instead of the window edge. The rail reserves room for
-   content, never for paint, and a scrollbar is paint.
-
-   The mechanism is the thread's, one term longer: the negative inline
-   margin cancels the stage reserve so the border box spans the window,
-   and the width it buys comes back as inline padding so the CONTENT box
-   stays exactly the stage content box. This panel already spent 24px of
-   that padding on its own inset (`--space-xl` above), so the padding here
-   is the reserve PLUS that inset — the arithmetic the thread does not
-   need, because the thread's inline padding was 0. Padding, not a
-   transparent border: a scrollbar is painted in the padding box, so a
-   border would leave it at width − 60 (measured; see the thread rule). */
-.nex-main-conversation > .nex-context {
-  margin-inline: calc(-1 * var(--dock-width));
-  padding-inline: calc(var(--dock-width) + var(--space-xl));
-}
-
+/* One column of label/value ROWS, not the stage's two-column stat grid:
+   at 340 px the old grid spent half its width on a second column and
+   pushed the budget and files below the fold. Each row still carries the
+   same definition pair; the value may wrap. */
 .nex-context-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  column-gap: var(--space-xl);
-  row-gap: var(--space-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xxs);
   margin: 0;
 }
 
 .nex-context-cell {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-sm);
   min-width: 0;
 }
 
 .nex-context-label {
-  font-size: var(--type-size-body-small);
+  flex: 0 0 auto;
+  font-size: var(--type-size-label-medium);
   color: var(--color-on-surface-tertiary);
 }
 
 .nex-context-value {
-  margin: var(--space-xxs) 0 0;
-  font-size: var(--type-size-body-large);
+  margin: 0;
+  min-width: 0;
+  font-size: var(--type-size-body-small);
   font-weight: var(--type-weight-semibold);
   color: var(--color-on-surface);
+  text-align: end;
   overflow-wrap: anywhere;
 }
 
 .nex-context-section-title {
-  margin: var(--space-xl) 0 var(--space-sm);
-  font-size: var(--type-size-body-small);
+  margin: var(--space-xxs) 0;
+  font-size: var(--type-size-label-medium);
   font-weight: var(--type-weight-medium);
   color: var(--color-on-surface-tertiary);
 }
@@ -216,11 +200,11 @@
 .nex-context-legend {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-md);
-  margin: var(--space-sm) 0 0;
+  gap: var(--space-xs);
+  margin: var(--space-xs) 0 0;
   padding: 0;
   list-style: none;
-  font-size: var(--type-size-body-small);
+  font-size: var(--type-size-label-medium);
   color: var(--color-on-surface-variant);
 }
 
@@ -239,7 +223,7 @@
 .nex-context-file-list {
   display: flex;
   flex-direction: column;
-  gap: var(--space-md);
+  gap: var(--space-sm);
   margin: 0;
   padding: 0;
   list-style: none;

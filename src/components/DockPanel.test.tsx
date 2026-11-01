@@ -10,6 +10,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { LocaleProvider } from "../lib/useLocale";
+import { readRepoFile } from "../test/readRepoFile";
 import DockPanel, { type DockPanelProps } from "./DockPanel";
 
 afterEach(cleanup);
@@ -146,5 +147,35 @@ describe("dock panel — focus", () => {
     } finally {
       trigger.remove();
     }
+  });
+});
+
+describe("dock panel — floating material", () => {
+  function rule(selector: string): string {
+    const sheet = readRepoFile("src/styles/dockPanels.css");
+    const start = sheet.indexOf(`${selector} {`);
+    expect(start, `${selector} has no rule`).toBeGreaterThan(-1);
+    return sheet.slice(start, sheet.indexOf("}", start));
+  }
+
+  it("paints the same surface and border as every composer popover", () => {
+    // Same layer, one material: the panel used `--color-surface-floating`
+    // while every composer popover painted `--popover`, so two floating
+    // surfaces read as two different materials.
+    const panel = rule(".nex-dock-panel");
+    expect(panel).toMatch(/background:\s*var\(--popover\)/);
+    expect(panel).toMatch(/border:\s*1px solid var\(--border\)/);
+    // The elevation tier is unchanged by the material swap.
+    expect(panel).toMatch(/box-shadow:\s*var\(--nex-sys-elevation-level1\)/);
+  });
+
+  it("pins the close button to the trailing edge regardless of the meta slot", () => {
+    // "Sessions ×" sat at the left because the old `title + close` adjacent
+    // selector never matched once the meta element sat between them.
+    const close = rule(".nex-dock-panel-close");
+    expect(close).toMatch(/margin-inline-start:\s*auto/);
+    expect(readRepoFile("src/styles/dockPanels.css")).not.toMatch(
+      /\.nex-dock-panel-title\s*\+\s*\.nex-dock-panel-close/,
+    );
   });
 });

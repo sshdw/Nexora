@@ -21,6 +21,7 @@ import type {
 } from "../lib/useAgentRun";
 import type { ConversationContextStats, Message } from "../lib/tauri";
 import type { AutonomyStore } from "../lib/useAutonomy";
+import type { WorkspaceStore } from "../lib/useWorkspace";
 import { LOCALE_KEY, LocaleProvider } from "../lib/useLocale";
 import ConversationView from "./ConversationView";
 
@@ -147,6 +148,23 @@ function autonomyStub(): AutonomyStore {
   };
 }
 
+function workspaceStub(): WorkspaceStore {
+  return {
+    root: null,
+    recent: [],
+    roots: [],
+    loading: false,
+    saving: false,
+    error: null,
+    reload: vi.fn(async () => {}),
+    pickFolder: vi.fn(async () => null),
+    selectRecent: vi.fn(async () => null),
+    addRootFolder: vi.fn(async () => null),
+    addRoot: vi.fn(async () => null),
+    removeRoot: vi.fn(async () => null),
+  };
+}
+
 function pane() {
   return (
     <LocaleProvider>
@@ -161,6 +179,7 @@ function pane() {
         onOpenSettings={() => {}}
         draft=""
         setDraft={() => {}}
+        workspace={workspaceStub()}
       />
     </LocaleProvider>
   );

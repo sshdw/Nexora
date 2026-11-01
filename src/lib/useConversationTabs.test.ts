@@ -1,7 +1,7 @@
 //! Store-identity + behavior pins for `useConversationTabs` (NEX-FE-002).
 //!
 //! The returned store object must keep a stable reference across renders
-//! that change no tab state — App's tab/split/zen keydown effect and the
+//! that change no tab state — App's tab/split keydown effect and the
 //! palette-registry memo both depend on it, and a fresh literal every
 //! render tore the listener down and rebuilt the registry on every
 //! keystroke render. No timing assertions (policy).

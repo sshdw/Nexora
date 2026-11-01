@@ -20,6 +20,8 @@ export interface M3IconButtonProps
   size?: "sm" | "md" | "lg";
   /** Error tone on hover/focus only (never idle colour). */
   danger?: boolean;
+  /** Portal the tooltip to `document.body` (use inside scroll containers). */
+  tooltipPortal?: boolean;
   children: ReactNode;
 }
 
@@ -29,6 +31,7 @@ export default function M3IconButton({
   label,
   size = "md",
   danger = false,
+  tooltipPortal = false,
   className = "",
   children,
   type = "button",
@@ -41,7 +44,7 @@ export default function M3IconButton({
     .filter(Boolean)
     .join(" ");
   return (
-    <Tooltip label={label}>
+    <Tooltip label={label} portal={tooltipPortal}>
       <Button
         type={type}
         variant="ghost"

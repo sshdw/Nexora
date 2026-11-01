@@ -112,18 +112,32 @@ describe("icon layer — rendered contract", () => {
     expect(svg).toHaveAttribute("height", "20");
   });
 
-  it("draws the context ring as data: dashed with no value, an arc with one", () => {
+  it("draws the context ring as data: an empty solid track, an arc with a value", () => {
     const empty = render(createElement(ContextRingIcon, { percent: null }));
     const emptySvg = empty.container.querySelector("svg");
     expect(emptySvg).toHaveAttribute("data-state", "na");
     expect(emptySvg?.querySelectorAll("circle")).toHaveLength(1);
-    expect(emptySvg?.querySelector("circle")).toHaveAttribute("stroke-dasharray", "2 2");
+    // R6-09: the empty state is a PRESENT but empty ring, not a spinner.
+    // A dash pattern on the track is what made it read as loading.
+    expect(emptySvg?.querySelector("circle")).not.toHaveAttribute("stroke-dasharray");
     empty.unmount();
 
     const half = render(createElement(ContextRingIcon, { percent: 50 }));
     const halfSvg = half.container.querySelector("svg");
     expect(halfSvg).toHaveAttribute("data-state", "value");
     expect(halfSvg?.querySelectorAll("circle")).toHaveLength(2);
+  });
+
+  it("keeps the filled weight to the one documented exception", () => {
+    // `StopIcon` is filled because a hollow square at 16 px reads as a
+    // checkbox; every other glyph is `regular`. The helper is the only
+    // place `weight="fill"` may appear, and only StopIcon may call it.
+    const source = readRepoFile(ICON_LAYER);
+    expect(source.match(/weight="fill"/g) ?? []).toHaveLength(1);
+    expect(source.match(/filledIcon\(/g) ?? []).toHaveLength(2); // helper + StopIcon
+    expect(source).toMatch(/export const StopIcon = filledIcon\(Square, "StopIcon"\)/);
+    // A call site cannot ask for the filled weight: the props omit it.
+    expect(source).toMatch(/Omit<IconProps, "weight" \| "size" \| "ref">/);
   });
 
   it("clamps a percentage that arrives out of range", () => {

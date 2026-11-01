@@ -150,11 +150,9 @@ const indexSheet = code("src/index.css");
 const stageSheet = code("src/styles/conversation.css");
 const composerSheet = code("src/styles/composer.css");
 const tabsSheet = code("src/styles/tabs.css");
-const contextSheet = code("src/styles/context.css");
 const shellSheet = code("src/styles.css");
 const dockSource = readRepoFile("src/components/Dock.tsx");
 const viewSource = readRepoFile("src/components/ConversationView.tsx");
-const contextSource = readRepoFile("src/components/ContextPanel.tsx");
 const composerSource = readRepoFile("src/components/Composer.tsx");
 
 /** `<div` / `</div>` nesting depth at a source index. The JSX in
@@ -251,16 +249,10 @@ describe("conversation stage reserves the rail at the container", () => {
   });
 
   it("keeps the stage's own chrome row full-bleed", () => {
-    // `.nex-context-tabs` sits above the rail's vertical band and its
-    // surface band must still span the pane, so it cancels the stage inset.
-    const tabs = ruleBody(contextSheet, ".nex-context-tabs");
-    expect(declaration(tabs, "margin-inline")).toBe("calc(-1 * var(--dock-width))");
-    expect(resolveInline(declaration(tabs, "margin-inline") ?? "")).toBe(`calc(-1 * ${RAIL_WIDTH})`);
-  });
-
-  it("does not reach the tab strip or the pane header", () => {
-    // Owner scope: the inset is the conversation stage's only. The chrome
-    // rows keep their full-width placement.
+    // The stage's chrome row is gone with the view switch (R6-05): the
+    // pane header and the composer band are the only chrome left, and
+    // neither is a stage child. The tab strip is a shell row, not a
+    // stage row, so it must not reach for the stage's reserve.
     expect(tabsSheet).not.toMatch(/--dock-width/);
     expect(shellSheet).not.toMatch(/--dock-width/);
   });
@@ -368,13 +360,6 @@ describe("stage sweep — no surface may be left ending at the inset", () => {
     note: string;
   }> = [
     {
-      root: "nex-context-tabs",
-      sheet: contextSheet,
-      selector: ".nex-context-tabs",
-      kind: "band",
-      note: "stage chrome row: tone band + hairline, above the rail's vertical band",
-    },
-    {
       root: "nex-composer",
       sheet: stageSheet,
       selector: ".nex-main-conversation > .nex-composer",
@@ -387,13 +372,6 @@ describe("stage sweep — no surface may be left ending at the inset", () => {
       selector: ".nex-main-conversation > .nex-thread",
       kind: "scroll",
       note: "scroll viewport: paints no tone, but its scrollbar is paint",
-    },
-    {
-      root: "nex-context",
-      sheet: contextSheet,
-      selector: ".nex-main-conversation > .nex-context",
-      kind: "scroll",
-      note: "context scroller: no band, scrollbar is paint",
     },
     {
       root: "nex-composer-strip-error",
@@ -415,7 +393,6 @@ describe("stage sweep — no surface may be left ending at the inset", () => {
       if (divDepthAt(match.index ?? 0) === 1) roots.add(match[1] ?? "");
     }
     const components: Array<[string, string, string]> = [
-      ["<ContextPanel", contextSource, "nex-context"],
       ["<Composer", composerSource, "nex-composer"],
     ];
     for (const [tag, source, root] of components) {
@@ -469,19 +446,9 @@ describe("stage sweep — no surface may be left ending at the inset", () => {
     expect(declaration(ruleBody(stageSheet, ".nex-main-conversation > .nex-thread"), "padding-inline")).toBe(
       stageInset,
     );
-    // The context panel already spent `--space-xl` of inline padding, so it
-    // gets the reserve PLUS its own inset — otherwise the panel's content
-    // would move by that inset.
-    expect(
-      declaration(ruleBody(contextSheet, ".nex-main-conversation > .nex-context"), "padding-inline"),
-    ).toBe(`calc(${stageInset} + var(--space-xl))`);
   });
 
   it("keeps the reading column reserved inside a full-bleed band", () => {
-    // Chrome that sits above the rail's vertical band returns to the pane
-    // edge (round 1, unchanged): margin only, no compensating border.
-    const tabs = ruleBody(contextSheet, ".nex-context-tabs");
-    expect(declaration(tabs, "border-inline")).toBeUndefined();
     // The band that CARRIES the reading column keeps the content box: the
     // transparent border spends exactly the width the margin bought.
     const band = ruleBody(stageSheet, ".nex-main-conversation > .nex-composer");
@@ -513,11 +480,6 @@ describe("stage sweep — no surface may be left ending at the inset", () => {
     expect(declaration(thread, "background")).toBeUndefined();
     expect(declaration(thread, "border-top")).toBeUndefined();
     expect(declaration(thread, "border-bottom")).toBeUndefined();
-
-    const context = ruleBody(contextSheet, ".nex-context");
-    expect(declaration(context, "background")).toBeUndefined();
-    expect(declaration(context, "border-top")).toBeUndefined();
-    expect(declaration(context, "border-bottom")).toBeUndefined();
 
     // A card: it does paint, but its edge is bounded and centred, so the
     // inset is where its content belongs — it neither stretches nor bleeds.

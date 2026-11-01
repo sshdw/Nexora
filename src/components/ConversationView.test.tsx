@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { tr } from "../lib/strings";
 import type { AutonomyStore } from "../lib/useAutonomy";
+import type { WorkspaceStore } from "../lib/useWorkspace";
 import { LOCALE_KEY, LocaleProvider } from "../lib/useLocale";
 import ConversationView from "./ConversationView";
 
@@ -68,6 +69,23 @@ function autonomyStub(overrides: Partial<AutonomyStore> = {}): AutonomyStore {
   };
 }
 
+function workspaceStub(): WorkspaceStore {
+  return {
+    root: null,
+    recent: [],
+    roots: [],
+    loading: false,
+    saving: false,
+    error: null,
+    reload: vi.fn(async () => {}),
+    pickFolder: vi.fn(async () => null),
+    selectRecent: vi.fn(async () => null),
+    addRootFolder: vi.fn(async () => null),
+    addRoot: vi.fn(async () => null),
+    removeRoot: vi.fn(async () => null),
+  };
+}
+
 /** The pane wired the way App wires it, with the two props a test may vary
  *  (the lifted draft, so a re-render can be provoked without remounting). */
 function pane(draft = "") {
@@ -84,6 +102,7 @@ function pane(draft = "") {
         onOpenSettings={() => {}}
         draft={draft}
         setDraft={() => {}}
+        workspace={workspaceStub()}
       />
     </LocaleProvider>
   );

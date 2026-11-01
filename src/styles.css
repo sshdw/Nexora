@@ -15,9 +15,7 @@
    The navigation rail is gone: App.tsx renders the Dock as a fixed
    overlay outside this grid, so `.nex-main` is the only in-flow child
    and a single track is the honest structure. A second column would
-   auto-place `.nex-main` into it and leave an empty `1fr` beside it.
-   The legacy `.nex-app.nex-zen` override in tabs.css now restates this
-   same column and is kept as a harmless no-op. */
+   auto-place `.nex-main` into it and leave an empty `1fr` beside it. */
 .nex-app {
   display: grid;
   grid-template-columns: 1fr;

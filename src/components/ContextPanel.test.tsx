@@ -1,13 +1,13 @@
-//! Context panel's budget slider (#220) — the control, not the paint.
+//! Context popover body (R6-05) — the control, not the paint.
 //!
-//! jsdom computes no cascade, so what is pinned here is everything
-//! that makes the slider a real control rather than a styled bar:
-//! the ARIA contract Radix gives it, the value it renders, the fact
-//! that moving it changes the panel's own reading (the whole reason
-//! it exists), and that the value persists.
+//! The body used to be the stage's second view; it is the context ring's
+//! popover now, and it receives the stats the ring already fetched. These
+//! pins cover the budget slider's ARIA contract and reading, the hairline,
+//! the changed-files section, and the one-fetch rule: the panel must never
+//! ask `conversation_context_stats` a second time.
 //!
-//! The rail's paint lives in src/components/ui/slider.tsx and
-//! src/styles/composer.css; the tokens those files use are asserted
+//! jsdom computes no cascade, so the paint lives in src/styles/composer.css
+//! and src/components/ui/slider.tsx; the tokens those files use are asserted
 //! in src/components/Composer.test.tsx.
 
 import { cleanup, render, screen } from "@testing-library/react";
@@ -15,21 +15,25 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import type { ConversationContextStats } from "../lib/tauri";
 
-const { conversationContextStats, listAgentRuns, listAgentSteps } = vi.hoisted(() => ({
-  conversationContextStats: vi.fn(),
-  listAgentRuns: vi.fn(),
-  listAgentSteps: vi.fn(),
-}));
+const { conversationContextStats, listAgentRuns, listAgentSteps, getAgentStepObservation } =
+  vi.hoisted(() => ({
+    conversationContextStats: vi.fn(),
+    listAgentRuns: vi.fn(),
+    listAgentSteps: vi.fn(),
+    getAgentStepObservation: vi.fn(),
+  }));
 
 vi.mock("../lib/tauri", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/tauri")>()),
   conversationContextStats,
   listAgentRuns,
   listAgentSteps,
+  getAgentStepObservation,
 }));
 
 import ContextPanel from "./ContextPanel";
 import { CONTEXT_BUDGET_KEY } from "../lib/useContextBudget";
+import { readRepoFile } from "../test/readRepoFile";
 
 function stats(overrides: Partial<ConversationContextStats> = {}): ConversationContextStats {
   return {
@@ -80,9 +84,9 @@ afterAll(() => {
 });
 
 beforeEach(() => {
-  conversationContextStats.mockResolvedValue(stats());
   listAgentRuns.mockResolvedValue([]);
   listAgentSteps.mockResolvedValue([]);
+  getAgentStepObservation.mockResolvedValue("");
   window.localStorage.clear();
 });
 
@@ -91,11 +95,11 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-/** Render the panel and wait past its loading indicator. */
-async function renderPanel() {
-  const view = render(<ContextPanel conversationId={1} />);
-  // The panel renders a loading indicator until the stats land; the
-  // slider is what proves the panel got there.
+/** Render the body with the ring's already-fetched stats. */
+async function renderPanel(overrides: Partial<ConversationContextStats> = {}) {
+  const view = render(<ContextPanel conversationId={1} stats={stats(overrides)} />);
+  // The changed-files section settles asynchronously; the slider is what
+  // proves the body rendered.
   await screen.findByRole("slider", { name: "Context budget" });
   return view;
 }
@@ -154,8 +158,7 @@ describe("context panel — budget slider", () => {
   });
 
   it("leaves the hairline empty when there is no usage to measure", async () => {
-    conversationContextStats.mockResolvedValue(stats({ has_token_data: false, total_tokens: 0 }));
-    await renderPanel();
+    await renderPanel({ has_token_data: false, total_tokens: 0 });
     // An empty track, not a zero-width fill: the two say different
     // things ("nothing measured" vs "measured, and it is nothing"). The
     // fill stays mounted at zero width — the component's computed width is
@@ -170,8 +173,7 @@ describe("context panel — budget slider", () => {
   });
 
   it("puts cost on the reading and in the meter, never hover-only", async () => {
-    conversationContextStats.mockResolvedValue(stats({ total_cost_micro_usd: 1_234_567 }));
-    await renderPanel();
+    await renderPanel({ total_cost_micro_usd: 1_234_567 });
     // The mouse affordance…
     expect(screen.getByText("32 000 of 128 000 tokens used")).toHaveAttribute(
       "title",
@@ -254,17 +256,173 @@ describe("context panel — budget slider", () => {
 
   it("gives no verdict when there is no usage to measure", async () => {
     window.localStorage.setItem(CONTEXT_BUDGET_KEY, "8000");
-    conversationContextStats.mockResolvedValue(stats({ has_token_data: false, total_tokens: 0 }));
-    await renderPanel();
+    await renderPanel({ has_token_data: false, total_tokens: 0 });
     expect(screen.getByText("No persisted token usage")).toBeInTheDocument();
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
   it("says so when there is no persisted token usage to measure", async () => {
-    conversationContextStats.mockResolvedValue(stats({ has_token_data: false, total_tokens: 0 }));
-    await renderPanel();
+    await renderPanel({ has_token_data: false, total_tokens: 0 });
     const slider = await screen.findByRole("slider", { name: "Context budget" });
     expect(slider).toHaveAttribute("aria-valuenow", "128000");
     expect(screen.getByText("No persisted token usage")).toBeInTheDocument();
+  });
+
+  it("never prints 0% when the backend has no token data", async () => {
+    // Real capture: the ring said n/a, but this body printed Usage 0% and
+    // four 0.0% breakdown rows. R5-01: absent data is absent, not zero.
+    await renderPanel({ has_token_data: false, total_tokens: 0, usage_percent: 0 });
+
+    const usage = screen.getByText("Usage");
+    expect(usage.parentElement).toHaveTextContent("n/a");
+    expect(screen.queryByText("0%")).toBeNull();
+    expect(screen.queryByText("0.0%")).toBeNull();
+    // The breakdown is hidden outright; a bar of four zeros is a fabricated
+    // measurement. The budget control and the changed-files list stay.
+    expect(
+      screen.queryByRole("region", { name: "Context breakdown" }),
+    ).toBeNull();
+    expect(screen.getByRole("slider", { name: "Context budget" })).toBeInTheDocument();
+    expect(await screen.findByText("No file changes recorded.")).toBeInTheDocument();
+  });
+
+  it("keeps the popover body one compact column", () => {
+    // The stage's two-column stat grid does not fit a 340 px popover; it
+    // also pushed the budget and files below the fold.
+    const sheet = readRepoFile("src/styles/context.css");
+    const gridStart = sheet.indexOf(".nex-context-grid {");
+    expect(gridStart).toBeGreaterThan(-1);
+    const grid = sheet.slice(gridStart, sheet.indexOf("}", gridStart));
+    expect(grid).toMatch(/flex-direction:\s*column/);
+    expect(grid).not.toMatch(/grid-template-columns/);
+
+    const valueStart = sheet.indexOf(".nex-context-value {");
+    const value = sheet.slice(valueStart, sheet.indexOf("}", valueStart));
+    expect(value).toMatch(/font-size:\s*var\(--type-size-body-small\)/);
+  });
+
+  it("reserves body padding so the budget card scrolls clear of the clipped edge", () => {
+    // The budget card is the last block; without end padding its bottom
+    // border is cut by the popover's clipped edge. The extra inline-end lane
+    // keeps the scrollbar off the right-hand values.
+    const sheet = readRepoFile("src/styles/context.css");
+    const start = sheet.indexOf(".nex-context {");
+    expect(start).toBeGreaterThan(-1);
+    const body = sheet.slice(start, sheet.indexOf("}", start));
+    expect(body).toMatch(/padding-block-end:\s*var\(--space-lg\)/);
+    expect(body).toMatch(/padding-inline-end:\s*6px/);
+    expect(body).toMatch(/overflow-y:\s*auto/);
+  });
+});
+
+describe("context popover — the ring's stats, not a second fetch", () => {
+  it("says the stats are unavailable when the ring's fetch failed", () => {
+    render(<ContextPanel conversationId={1} stats={null} />);
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Context stats are unavailable.",
+    );
+    // No control without data: the budget slider is not a placeholder.
+    expect(screen.queryByRole("slider", { name: "Context budget" })).toBeNull();
+  });
+
+  it("never asks the backend for the stats the ring already fetched", async () => {
+    await renderPanel();
+    expect(conversationContextStats).not.toHaveBeenCalled();
+  });
+
+  it("carries every reading the old Context view showed", async () => {
+    await renderPanel();
+    for (const value of [
+      "Designing the composer",
+      "Gemini",
+      "gemini-3.6-flash",
+      "128 000",
+      "25%",
+      "32 000",
+      "20 000",
+      "12 000",
+      "3",
+    ]) {
+      expect(screen.getAllByText(value).length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("context popover — changed files", () => {
+  function run(id: number): import("../lib/tauri").AgentRun {
+    return {
+      id,
+      conversation_id: 1,
+      model: "gemini-3.6-flash",
+      mode: "agent",
+      status: "completed",
+      started_at: 1_700_000_000,
+      finished_at: 1_700_000_100,
+      total_steps: 2,
+      final_content: null,
+      error: null,
+      spent_micro_usd: null,
+      limit_micro_usd: null,
+    };
+  }
+
+  function step(overrides: Partial<import("../lib/tauri").AgentStep> = {}) {
+    return {
+      id: 1,
+      run_id: 1,
+      seq: 1,
+      kind: "tool_call",
+      tool_name: "write_file",
+      arguments: JSON.stringify({ path: "src/App.tsx" }),
+      observation: "@@ -1 +1 @@\n-old\n+new",
+      observation_len: 24,
+      observation_truncated: false,
+      status: "completed",
+      started_at: 1_700_000_010,
+      duration_ms: 5,
+      rule_id: null,
+      group_key: null,
+      decided_by: null,
+      input_tokens: null,
+      output_tokens: null,
+      ...overrides,
+    };
+  }
+
+  it("lists the winning write per path with its diff", async () => {
+    listAgentRuns.mockResolvedValue([run(1)]);
+    listAgentSteps.mockResolvedValue([
+      step({ id: 1, seq: 1 }),
+      // A later write to the same path wins — one row per file, not per step.
+      step({ id: 2, seq: 4, observation: "@@ -1 +1 @@\n-old\n+newer" }),
+    ]);
+    getAgentStepObservation.mockResolvedValue("@@ -1 +1 @@\n-old\n+newer");
+
+    await renderPanel();
+    await screen.findByText("src/App.tsx");
+    expect(screen.getAllByText("src/App.tsx")).toHaveLength(1);
+    expect(getAgentStepObservation).toHaveBeenCalledWith(2);
+    expect(getAgentStepObservation).toHaveBeenCalledTimes(1);
+  });
+
+  it("says there are no recorded changes instead of drawing an empty list", async () => {
+    listAgentRuns.mockResolvedValue([]);
+    await renderPanel();
+    expect(await screen.findByText("No file changes recorded.")).toBeInTheDocument();
+  });
+
+  it("keeps the preview when the full diff cannot be fetched", async () => {
+    listAgentRuns.mockResolvedValue([run(1)]);
+    listAgentSteps.mockResolvedValue([step()]);
+    getAgentStepObservation.mockRejectedValue(new Error("gone"));
+
+    await renderPanel();
+    expect(await screen.findByText("src/App.tsx")).toBeInTheDocument();
+  });
+
+  it("surfaces a failed run read in words", async () => {
+    listAgentRuns.mockRejectedValue(new Error("database is locked"));
+    await renderPanel();
+    expect(await screen.findByRole("alert")).toHaveTextContent("database is locked");
   });
 });
