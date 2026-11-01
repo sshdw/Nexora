@@ -1,0 +1,40 @@
+# cargo-deny configuration — advisories gate ONLY (SEC-06).
+#
+# Scope: `cargo deny --manifest-path Cargo.toml check advisories` resolves to
+# this file (cargo-deny looks for deny.toml next to the root manifest, then
+# walks up) and scans the root workspace lockfile (Cargo.lock) — i.e.
+# crates/nexora-core and apps/nexora-cli — against the RustSec advisory
+# database. Any matched, non-ignored advisory is a hard error; the only
+# configurable lint level in this schema is `yanked`, which is raised from
+# the default `warn` to `deny`.
+#
+# This file exists separately from src-tauri/deny.toml because the root
+# workspace and src-tauri are two workspaces by design (root Cargo.toml has
+# `exclude = ["src-tauri"]`, separate lockfiles), so each manifest is checked
+# against its own config. Keep the two files in sync unless a workspace
+# genuinely needs different policy.
+#
+# Deliberately NOT configured here: [licenses] and [bans]. Those encode
+# owner policy (which licenses are acceptable, which crates may not be
+# duplicated) and are a later owner decision. When they are added, they
+# must not weaken the advisory gate below.
+#
+# Keys are limited to the documented current schema: `version = 2` selects
+# the current advisories config format, where vulnerability/unmaintained/
+# unsound handling is built in (severity reported from CVSS) and is not a
+# config knob.
+
+[advisories]
+version = 2
+yanked = "deny"
+# Unmaintained transitives: ignored (never vulnerabilities) until upstream replaces them.
+# The root lockfile has no proc-macro-error, so RUSTSEC-2024-0370 is only ignored in
+# src-tauri/deny.toml; everything else is kept in sync between the two files.
+ignore = [
+    # unmaintained, no vulnerability, transitive via zbus 5.x (keyring -> zbus-secret-service-keyring-store -> secret-service) — revisit when upstream replaces it
+    "RUSTSEC-2026-0370",
+    # unmaintained, no vulnerability, transitive via zbus 5.x / zbus_macros 5.x (keyring -> zbus-secret-service-keyring-store -> secret-service) — revisit when upstream replaces it
+    "RUSTSEC-2026-0371",
+    # unmaintained, no vulnerability, transitive via zvariant 5.x <- zbus 5.x (keyring -> zbus-secret-service-keyring-store -> secret-service) — revisit when upstream replaces it
+    "RUSTSEC-2026-0372",
+]

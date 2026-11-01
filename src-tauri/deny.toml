@@ -1,0 +1,38 @@
+# cargo-deny configuration — advisories gate ONLY (SEC-06).
+#
+# Scope: `cargo deny --manifest-path src-tauri/Cargo.toml check advisories`
+# resolves to this file (cargo-deny looks for deny.toml next to the manifest,
+# then walks up). It scans src-tauri/Cargo.lock against the RustSec advisory
+# database. That is the automated supply-chain gate SEC-06 calls for: the
+# desktop binary statically embeds vendored libgit2 (git2/libgit2-sys) and
+# bundled SQLite (libsqlite3-sys) C code, so an advisory against those
+# crates — or anything else in the lockfile — fails CI instead of riding in
+# unnoticed. Any matched, non-ignored advisory is a hard error; the only
+# configurable lint level in this schema is `yanked`, which is raised from
+# the default `warn` to `deny`.
+#
+# Deliberately NOT configured here: [licenses] and [bans]. Those encode
+# owner policy (which licenses are acceptable, which crates may not be
+# duplicated) and are a later owner decision. When they are added, they
+# must not weaken the advisory gate below.
+#
+# Keys are limited to the documented current schema: `version = 2` selects
+# the current advisories config format, where vulnerability/unmaintained/
+# unsound handling is built in (severity reported from CVSS) and is not a
+# config knob. No [licenses]/[bans]/[sources] sections exist yet, so no
+# top-level behavior is overridden.
+
+[advisories]
+version = 2
+yanked = "deny"
+# Unmaintained transitives: ignored (never vulnerabilities) until upstream replaces them.
+ignore = [
+    # unmaintained, no vulnerability, transitive via glib-macros 0.18.5 / gtk3-macros 0.18.2 (tauri gtk stack) — revisit when upstream replaces it
+    "RUSTSEC-2024-0370",
+    # unmaintained, no vulnerability, transitive via zbus 5.x (keyring -> zbus-secret-service-keyring-store -> secret-service) — revisit when upstream replaces it
+    "RUSTSEC-2026-0370",
+    # unmaintained, no vulnerability, transitive via zbus 5.x / zbus_macros 5.x (keyring -> zbus-secret-service-keyring-store -> secret-service) — revisit when upstream replaces it
+    "RUSTSEC-2026-0371",
+    # unmaintained, no vulnerability, transitive via zvariant 5.x <- zbus 5.x (keyring -> zbus-secret-service-keyring-store -> secret-service) — revisit when upstream replaces it
+    "RUSTSEC-2026-0372",
+]
