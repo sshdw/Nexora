@@ -217,21 +217,6 @@
   flex: 1 1 auto;
 }
 
-/* The list is taller than the panel: fade the last 24 px into the panel's
-   own surface so a half-row reads as "more below", and reserve the same
-   amount of scroll padding so the last row can clear the fade. The fade is
-   paint only — it never intercepts a pointer. */
-.nex-sessions::after {
-  content: "";
-  position: absolute;
-  inset-inline: 0;
-  inset-block-end: 0;
-  height: var(--space-xl);
-  background: linear-gradient(to top, var(--popover), transparent);
-  pointer-events: none;
-  z-index: 1;
-}
-
 .nex-sessions-search {
   position: relative;
   flex: none;
@@ -286,6 +271,21 @@
   overflow-y: auto;
   padding-inline: var(--space-xxs);
   padding-block-end: var(--space-xl);
+}
+
+/* The Sessions list is taller than the panel: the last 24 px dissolve so a
+   half-row reads as "more below", and the padding above reserves matching
+   room so the last row can scroll clear of the fade. The ramp is an alpha
+   mask on the scroller, not the old painted overlay: the theme bans gradient
+   paint, and a mask paints nothing — it only erases, and adding no element,
+   it never intercepts a pointer. Scoped past the shared rule: the Activity
+   scroller uses the same class but never carried the fade. */
+.nex-sessions .nex-sessions-scroll {
+  /* Stops are alpha-only (match-source masks read the alpha channel), so the
+     achromatic keywords carry no theme colour and the height is the space
+     token. The -webkit- alias keeps older WebView2 builds fading. */
+  -webkit-mask-image: linear-gradient(to bottom, black calc(100% - var(--space-xl)), transparent); /* design-lint-disable gradient-hero — mask erases, it never paints */
+  mask-image: linear-gradient(to bottom, black calc(100% - var(--space-xl)), transparent);
 }
 
 /* ---- Session row actions (R6-06) ----

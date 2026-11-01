@@ -396,17 +396,23 @@ describe("sessions panel — action reveal", () => {
 
   it("fades the viewport's bottom edge into the panel surface", () => {
     // A row sliced by the panel's bottom edge reads as a rendering bug unless
-    // the edge itself says "more below". The fade is paint only, ends on the
-    // panel's own surface token, and never intercepts a pointer.
+    // the edge itself says "more below". The old overlay painted a background
+    // gradient — NEXORA-THEME.md §2 bans gradient declarations — so the fade
+    // is now an alpha mask on the scroller: it erases content instead of
+    // painting anything over it, and adds no element that could intercept a
+    // pointer.
     const sheet = readRepoFile("src/styles/dockPanels.css");
-    const start = sheet.indexOf(".nex-sessions::after {");
-    expect(start, ".nex-sessions::after has no rule").toBeGreaterThan(-1);
+    expect(sheet, "the painted fade overlay still exists").not.toContain(
+      ".nex-sessions::after",
+    );
+    // The mask is the sheet's only ramp — nothing is painted with a gradient.
+    expect(sheet).not.toMatch(/background:[^;]*gradient/);
+    const start = sheet.indexOf(".nex-sessions .nex-sessions-scroll {");
+    expect(start, "sessions scroll mask rule is missing").toBeGreaterThan(-1);
     const body = sheet.slice(start, sheet.indexOf("}", start));
     expect(body).toMatch(
-      /background:\s*linear-gradient\(to top, var\(--popover\), transparent\)/,
+      /mask-image:\s*linear-gradient\(to bottom, black calc\(100% - var\(--space-xl\)\), transparent\)/,
     );
-    expect(body).toMatch(/pointer-events:\s*none/);
-    expect(body).toMatch(/height:\s*var\(--space-xl\)/);
   });
 
   it("reserves scroll padding so the last row clears the fade", () => {
