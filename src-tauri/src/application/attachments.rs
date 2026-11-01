@@ -1148,31 +1148,45 @@ mod tests {
     }
 
     /// The blocklist predicate must fire for a sensitive path under the
-    /// fabricated home (or anywhere, for the dot-directory rule).
-    fn sensitive(home: Option<&Path>, path: &str) -> bool {
-        is_sensitive_profile_path(home, Path::new(path))
+    /// fabricated home (or anywhere, for the dot-directory rule). Paths are
+    /// passed as `Path`/`PathBuf` values, not raw string literals: on Unix a
+    /// Windows-shaped literal like `r"D:\repo\.ssh"` parses as ONE relative
+    /// component, so only component-built paths behave identically on every
+    /// OS. Windows-only literals (drive letters, `\` separators) are gated
+    /// behind `#[cfg(windows)]` at their call sites.
+    fn sensitive(home: Option<&Path>, path: impl AsRef<Path>) -> bool {
+        is_sensitive_profile_path(home, path.as_ref())
     }
 
     #[test]
     fn sensitive_path_blocklist_rejects_the_ssh_store() {
         let home = Path::new(fabricated_home());
+        assert!(sensitive(Some(home), home.join(".ssh").join("id_rsa")));
+        // The dot-directory rule is home-independent: any root, any casing.
+        // Built from components so it parses identically on every OS.
         assert!(sensitive(
             Some(home),
-            &format!("{}/.ssh/id_rsa", fabricated_home())
+            PathBuf::from("repo").join(".SSH").join("known_hosts"),
         ));
-        // The dot-directory rule is home-independent: any drive, any user,
-        // either separator, any casing.
-        assert!(sensitive(Some(home), r"D:\repo\.ssh\known_hosts"));
         assert!(sensitive(Some(home), "/etc/dropbear/.SSH/authorized_keys"));
+        // Drive-letter literal with `\` separators: only tokenizes into
+        // components on Windows, so it is meaningless on Unix.
+        #[cfg(windows)]
+        assert!(sensitive(Some(home), r"D:\repo\.ssh\known_hosts"));
     }
 
     #[test]
     fn sensitive_path_blocklist_rejects_the_aws_store() {
         let home = Path::new(fabricated_home());
+        assert!(sensitive(Some(home), home.join(".aws").join("credentials"),));
+        // Case-insensitive dot-component match, root-independent, on every OS.
         assert!(sensitive(
             Some(home),
-            &format!("{}/.aws/credentials", fabricated_home())
+            PathBuf::from("work").join(".AWS").join("config"),
         ));
+        // Drive-letter literal with `\` separators: only tokenizes into
+        // components on Windows, so it is meaningless on Unix.
+        #[cfg(windows)]
         assert!(sensitive(Some(home), r"E:\work\.AWS\config"));
     }
 
@@ -1181,18 +1195,32 @@ mod tests {
         let home = Path::new(fabricated_home());
         assert!(sensitive(
             Some(home),
-            &format!("{}/.gnupg/pubring.kbx", fabricated_home())
+            home.join(".gnupg").join("pubring.kbx"),
         ));
+        // Casing of the sensitive component does not matter under the home
+        // root (on Windows the fabricated home itself differs in case).
+        assert!(sensitive(
+            Some(home),
+            home.join(".GNUPG").join("secring.gpg")
+        ));
+        // Drive-letter literal with `\` separators: only tokenizes into
+        // components on Windows, so it is meaningless on Unix.
+        #[cfg(windows)]
         assert!(sensitive(Some(home), r"C:\Users\tester\.GNUPG\secring.gpg"));
     }
 
     #[test]
     fn sensitive_path_blocklist_rejects_the_kube_config() {
         let home = Path::new(fabricated_home());
+        assert!(sensitive(Some(home), home.join(".kube").join("config")));
+        // Case-insensitive dot-component match, root-independent, on every OS.
         assert!(sensitive(
             Some(home),
-            &format!("{}/.kube/config", fabricated_home())
+            PathBuf::from("ops").join(".KUBE").join("admin.conf"),
         ));
+        // Drive-letter literal with `\` separators: only tokenizes into
+        // components on Windows, so it is meaningless on Unix.
+        #[cfg(windows)]
         assert!(sensitive(Some(home), r"D:\ops\.KUBE\admin.conf"));
     }
 
@@ -1201,14 +1229,14 @@ mod tests {
         let home = Path::new(fabricated_home());
         assert!(sensitive(
             Some(home),
-            &format!(
+            format!(
                 "{}/AppData/Local/Google/Chrome/User Data/Default/Cookies",
                 fabricated_home()
             ),
         ));
         assert!(sensitive(
             Some(home),
-            &format!(
+            format!(
                 "{}/.config/google-chrome/Default/Cookies",
                 fabricated_home()
             ),
@@ -1220,14 +1248,14 @@ mod tests {
         let home = Path::new(fabricated_home());
         assert!(sensitive(
             Some(home),
-            &format!(
+            format!(
                 "{}/AppData/Local/Chromium/User Data/Default/Cookies",
                 fabricated_home()
             ),
         ));
         assert!(sensitive(
             Some(home),
-            &format!("{}/.config/chromium/Default/Cookies", fabricated_home()),
+            format!("{}/.config/chromium/Default/Cookies", fabricated_home()),
         ));
     }
 
@@ -1236,14 +1264,14 @@ mod tests {
         let home = Path::new(fabricated_home());
         assert!(sensitive(
             Some(home),
-            &format!(
+            format!(
                 "{}/AppData/Local/Microsoft/Edge/User Data/Default/Login Data",
                 fabricated_home()
             ),
         ));
         assert!(sensitive(
             Some(home),
-            &format!(
+            format!(
                 "{}/.config/microsoft-edge/Default/Cookies",
                 fabricated_home()
             ),
@@ -1255,14 +1283,14 @@ mod tests {
         let home = Path::new(fabricated_home());
         assert!(sensitive(
             Some(home),
-            &format!(
+            format!(
                 "{}/AppData/Roaming/Mozilla/Firefox/Profiles/abc.default/logins.json",
                 fabricated_home()
             ),
         ));
         assert!(sensitive(
             Some(home),
-            &format!(
+            format!(
                 "{}/.mozilla/firefox/abc.default/logins.json",
                 fabricated_home()
             ),
@@ -1270,7 +1298,7 @@ mod tests {
         // The snap-packaged layout is part of the Firefox family.
         assert!(sensitive(
             Some(home),
-            &format!(
+            format!(
                 "{}/snap/firefox/common/.mozilla/firefox/abc.default/logins.json",
                 fabricated_home()
             ),
@@ -1284,30 +1312,57 @@ mod tests {
         // the `Users` tree out of the system blocklist).
         assert!(!sensitive(
             Some(home),
-            &format!("{}/Documents/notes.txt", fabricated_home())
+            format!("{}/Documents/notes.txt", fabricated_home())
         ));
         assert!(!sensitive(
             Some(home),
-            &format!("{}/AppData/Local/Temp/scratch.txt", fabricated_home())
+            format!("{}/AppData/Local/Temp/scratch.txt", fabricated_home())
         ));
         // Near-misses of the dot rule are not sensitive components.
         assert!(!sensitive(
             Some(home),
-            &format!("{}/.sshx/id_backup", fabricated_home())
+            format!("{}/.sshx/id_backup", fabricated_home())
         ));
         assert!(!sensitive(
             Some(home),
-            &format!("{}/src/aws_client.rs", fabricated_home())
+            format!("{}/src/aws_client.rs", fabricated_home())
         ));
         // A browser-profile shape outside the current user's home does not
         // match the home-relative rule (the dot-directory rule still applies
-        // wherever a `.ssh`-style component appears).
+        // wherever a `.ssh`-style component appears). Built from components
+        // so it parses identically on every OS.
+        assert!(!sensitive(
+            Some(home),
+            PathBuf::from("OtherUsers")
+                .join("Elsewhere")
+                .join("AppData")
+                .join("Local")
+                .join("Google")
+                .join("Chrome")
+                .join("User Data")
+                .join("Cookies"),
+        ));
+        // Drive-letter literal with `\` separators: only tokenizes into
+        // components on Windows, so it is meaningless on Unix.
+        #[cfg(windows)]
         assert!(!sensitive(
             Some(home),
             r"D:\OtherUsers\Elsewhere\AppData\Local\Google\Chrome\User Data\Cookies",
         ));
         // Without a resolvable home, only the dot rule fires.
+        assert!(sensitive(
+            None,
+            PathBuf::from("any").join(".ssh").join("id_rsa"),
+        ));
+        assert!(!sensitive(
+            None,
+            PathBuf::from("any").join("Documents").join("notes.txt"),
+        ));
+        // Drive-letter literals with `\` separators: only tokenizes into
+        // components on Windows, so they are meaningless on Unix.
+        #[cfg(windows)]
         assert!(sensitive(None, r"C:\any\.ssh\id_rsa"));
+        #[cfg(windows)]
         assert!(!sensitive(None, r"C:\any\Documents\notes.txt"));
     }
 
