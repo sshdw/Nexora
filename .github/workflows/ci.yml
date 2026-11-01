@@ -217,3 +217,38 @@ jobs:
 
       - name: Run stub --help/--version/doctor
         run: cargo run -p nexora-cli -- --help && cargo run -p nexora-cli -- --version && cargo run -p nexora-cli -- doctor
+
+  deny:
+    name: deny
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # cargo-deny shells out to `cargo` for `cargo metadata`; the toolchain
+      # flavor does not matter, this just guarantees one exists the same way
+      # the other Rust jobs get theirs.
+      - name: Install baseline Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+
+      # SEC-06: the desktop binary statically embeds vendored libgit2 and
+      # bundled SQLite C code with no advisory gate; this scans both lockfiles
+      # against the RustSec advisory DB. Advisories ONLY — [licenses]/[bans]
+      # are an owner policy decision deliberately deferred (see the deny.toml
+      # headers). Two manifests on purpose: the root workspace excludes
+      # `src-tauri` (root Cargo.toml `exclude = ["src-tauri"]`, separate
+      # lockfiles), so each manifest is checked against its own deny.toml,
+      # which cargo-deny resolves next to the manifest and walks up from
+      # there: src-tauri/Cargo.toml -> src-tauri/deny.toml, root Cargo.toml
+      # -> deny.toml at the repo root.
+      - name: cargo deny check advisories (src-tauri)
+        run: cargo deny --manifest-path src-tauri/Cargo.toml check advisories
+
+      - name: cargo deny check advisories (root workspace)
+        run: cargo deny --manifest-path Cargo.toml check advisories
