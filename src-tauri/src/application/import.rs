@@ -43,19 +43,23 @@
 //! secret value (ARCHITECTURE.md §9, §11).
 
 use std::collections::{BTreeMap, HashSet};
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use super::export::{EXPORT_FORMAT, EXPORT_VERSION, SETUP_FORMAT, SETUP_VERSION};
+use super::export::{
+    ALLOWED_EXPORT_EXTENSIONS, EXPORT_FORMAT, EXPORT_VERSION, SETUP_FORMAT, SETUP_VERSION,
+};
 use super::flags::{is_known_flag_setting, parse_global_bool};
 use super::routing::{
     is_valid_custom_model_id, RoutingProfile, AGENT_PROFILE_KEY, CHAT_PROFILE_KEY,
 };
 use super::settings::SettingsService;
 use super::workspace::{
-    parse_recent, parse_registry, WORKSPACE_RECENT_KEY, WORKSPACE_RECENT_MAX, WORKSPACE_ROOTS_KEY,
-    WORKSPACE_ROOT_KEY, WORKSPACE_ROOT_MAX_LEN,
+    is_drive_root, is_system_file_path, is_unc_path, parse_recent, parse_registry, strip_verbatim,
+    WORKSPACE_RECENT_KEY, WORKSPACE_RECENT_MAX, WORKSPACE_ROOTS_KEY, WORKSPACE_ROOT_KEY,
+    WORKSPACE_ROOT_MAX_LEN,
 };
 use crate::application::agent::injection::contains_secret;
 use crate::infrastructure::database::{Database, DatabaseError};
@@ -302,6 +306,106 @@ fn classify_error(err: serde_json::Error) -> ImportError {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Backend-side document read (SEC-01)
+// ---------------------------------------------------------------------------
+
+/// Read the conversation import document at `raw_path` backend-side (SEC-01).
+///
+/// The renderer no longer reads picked files through the `fs` plugin — it
+/// hands the dialog-picked absolute path to `import_conversation` and this
+/// module reads the bytes with the same containment discipline as the export
+/// write side (`super::export::validate_export_path`): fixed-vocabulary
+/// refusal before any read for empty / null-byte / overlong / non-`.json` /
+/// UNC / protected-system / drive-root paths, then canonicalization (which
+/// doubles as the existence check), a regular-file check, and a metadata
+/// size cap ([`MAX_IMPORT_JSON_BYTES`]) enforced **before** the read, so an
+/// oversized document is never pulled into memory. The canonical form is
+/// what is read, so a symlinked path resolves to its target first. The
+/// post-write swap backstop of the export side guards a write; a read's
+/// content is fully re-validated by [`ImportService::import`] regardless, so
+/// no extra post-read check is needed.
+///
+/// Errors stay fixed vocabulary and secret-free: the picked path is never
+/// echoed.
+///
+/// # Errors
+///
+/// Returns [`ImportError::InvalidData`] for every rejected path or failed
+/// read.
+pub(crate) fn read_import_document(raw_path: &str) -> Result<String> {
+    let trimmed = raw_path.trim();
+    if trimmed.is_empty() {
+        return Err(ImportError::InvalidData(
+            "import path must not be empty".to_string(),
+        ));
+    }
+    if trimmed.contains('\0') {
+        return Err(ImportError::InvalidData(
+            "import path contains a null byte".to_string(),
+        ));
+    }
+    if trimmed.len() > WORKSPACE_ROOT_MAX_LEN {
+        return Err(ImportError::InvalidData(
+            "import path exceeds the length limit".to_string(),
+        ));
+    }
+    let path = Path::new(trimmed);
+    // The import document is the read twin of the `.json`-only export
+    // artifact: the same allowlist applies.
+    let allowed = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            ALLOWED_EXPORT_EXTENSIONS
+                .iter()
+                .any(|candidate| extension.eq_ignore_ascii_case(candidate))
+        });
+    if !allowed {
+        return Err(ImportError::InvalidData(
+            "only .json import documents are allowed".to_string(),
+        ));
+    }
+    if is_unc_path(path) {
+        return Err(ImportError::InvalidData(
+            "UNC network paths are not allowed".to_string(),
+        ));
+    }
+    if is_system_file_path(path) {
+        return Err(ImportError::InvalidData(
+            "a protected system location is not allowed".to_string(),
+        ));
+    }
+    if is_drive_root(path) {
+        return Err(ImportError::InvalidData(
+            "a drive root is not allowed".to_string(),
+        ));
+    }
+    let canonical = std::fs::canonicalize(path)
+        .map_err(|_| ImportError::InvalidData("the import document does not exist".to_string()))?;
+    let canonical = strip_verbatim(canonical);
+    if is_unc_path(&canonical) {
+        return Err(ImportError::InvalidData(
+            "UNC network paths are not allowed".to_string(),
+        ));
+    }
+    if !canonical.is_file() {
+        return Err(ImportError::InvalidData(
+            "the import document is not a regular file".to_string(),
+        ));
+    }
+    let size = std::fs::metadata(&canonical)
+        .map_err(|_| ImportError::InvalidData("the import document could not be read".to_string()))?
+        .len();
+    if usize::try_from(size).unwrap_or(usize::MAX) > MAX_IMPORT_JSON_BYTES {
+        return Err(ImportError::InvalidData(
+            "import document exceeds the 16 MiB size limit".to_string(),
+        ));
+    }
+    std::fs::read_to_string(&canonical)
+        .map_err(|_| ImportError::InvalidData("the import document could not be read".to_string()))
+}
+
 /// Application-layer service that imports conversations from Phase 8.1 JSON
 /// documents (FR-011).
 ///
@@ -388,6 +492,23 @@ impl<'a> ImportService<'a> {
             Ok(conversation_id)
         })?;
         Ok(conversation_id)
+    }
+
+    /// Import a conversation from the JSON document at `raw_path`
+    /// (FR-011; SEC-01): the document is read backend-side by
+    /// [`read_import_document`] (extension allowlist, path containment, size
+    /// cap) and then runs through the same decode / validate / transactional
+    /// insert flow as [`Self::import`].
+    ///
+    /// Returns the new conversation's id.
+    ///
+    /// # Errors
+    ///
+    /// Returns every [`ImportError`] of [`read_import_document`] and
+    /// [`Self::import`].
+    pub(crate) fn import_from_file(&self, raw_path: &str) -> Result<i64> {
+        let json = read_import_document(raw_path)?;
+        self.import(&json)
     }
 
     /// Resolve which exported `provider_id` values reference an existing local
@@ -1720,12 +1841,16 @@ mod tests {
     }
 
     #[test]
-    fn frontend_file_read_capability_carries_an_explicit_scope() {
-        // NEX-SEC-012: `fs:allow-read-text-file` must never be granted bare
-        // (unrestricted frontend reads). The capability pins an explicit
-        // `$HOME` scope for the read command plus a matching global
-        // `fs:scope` backstop, so user-picked imports/attachments outside the
-        // home tree are denied instead of silently readable.
+    fn frontend_capability_has_no_home_read_scope_nor_opener() {
+        // SEC-01 (NEX-SEC-012 closed): the `fs` plugin carries **no read
+        // scope at all**. The former `$HOME` / `$HOME/**/*` pair
+        // (`fs:allow-read-text-file` + `fs:scope`) is gone — the import
+        // document is read backend-side (`read_import_document`) and the
+        // attachment size is derived server-side, so no renderer JS reads
+        // the home tree through the `fs` plugin. Only `fs:allow-stat`
+        // remains (a stat needs no path scope beyond the picked file).
+        // SEC-08: the `opener` grant is gone too, so renderer JS cannot ask
+        // the OS to open URLs or handlers.
         const CAPABILITY: &str = include_str!("../../capabilities/default.json");
         let document: serde_json::Value =
             serde_json::from_str(CAPABILITY).expect("capability is valid JSON");
@@ -1733,39 +1858,24 @@ mod tests {
             .get("permissions")
             .and_then(serde_json::Value::as_array)
             .expect("permissions array present");
-        assert!(
-            !permissions
-                .iter()
-                .any(|entry| entry == "fs:allow-read-text-file"),
-            "the bare unscoped read-text-file permission must be gone"
-        );
-        let scopes: Vec<&serde_json::Value> = permissions
-            .iter()
-            .filter(|entry| entry.get("identifier") == Some(&serde_json::json!("fs:scope")))
-            .collect();
-        assert_eq!(scopes.len(), 1, "exactly one global fs:scope entry");
-        for identifier in ["fs:allow-read-text-file", "fs:scope"] {
-            let entry = permissions
-                .iter()
-                .find(|entry| entry.get("identifier") == Some(&serde_json::json!(identifier)))
-                .unwrap_or_else(|| panic!("{identifier} entry present"));
-            let allow = entry
-                .get("allow")
-                .and_then(serde_json::Value::as_array)
-                .unwrap_or_else(|| panic!("{identifier} carries an allow list"));
-            assert!(!allow.is_empty(), "{identifier} scope must not be empty");
+        for forbidden in [
+            "fs:allow-read-text-file",
+            "fs:scope",
+            "fs:allow-read",
+            "opener:default",
+        ] {
             assert!(
-                allow
-                    .iter()
-                    .any(|rule| rule.get("path") == Some(&serde_json::json!("$HOME/**/*"))),
-                "{identifier} scope must pin the home tree, got {allow:?}"
-            );
-            let rendered = serde_json::to_string(entry).expect("serialize entry");
-            assert!(
-                !rendered.contains('*') || rendered.contains("$HOME"),
-                "{identifier} globs must stay inside the home tree, got {rendered:?}"
+                !permissions.iter().any(|entry| entry == forbidden
+                    || entry.get("identifier") == Some(&serde_json::json!(forbidden))),
+                "the {forbidden} grant must be gone"
             );
         }
+        // No `$HOME` scope survives anywhere in the capability file.
+        let rendered = serde_json::to_string(&document).expect("serialize capability");
+        assert!(
+            !rendered.contains("$HOME"),
+            "no home-tree scope may remain in the capability file: {rendered:?}"
+        );
     }
 
     #[test]
@@ -1998,6 +2108,24 @@ mod setup_import_tests {
 
     fn setup_db() -> Database {
         in_memory_database()
+    }
+
+    /// [`SetupExportService::serialize_setup`] with a freshly minted
+    /// `export_setup` id (each export consumes a single-use id, so every
+    /// confirmed call mints its own).
+    fn serialize_setup_confirmed(
+        service: &SetupExportService<'_>,
+    ) -> crate::application::export::Result<String> {
+        let registry = crate::application::confirmations::ConfirmationRegistry::new();
+        let id = registry
+            .request(
+                crate::application::confirmations::SCOPE_EXPORT,
+                &crate::application::confirmations::ConfirmationTarget::new(
+                    crate::application::confirmations::OP_EXPORT_SETUP,
+                ),
+            )
+            .expect("mint export confirmation");
+        service.serialize_setup(&id, &registry)
     }
 
     /// Assert `rendered` echoes none of the hostile sentinels (case-insensitive).
@@ -2440,9 +2568,8 @@ mod setup_import_tests {
         settings
             .write(MCP_SERVERS_KEY, Some(&mcp.to_json().expect("encode mcp")))
             .expect("seed mcp");
-        let first = SetupExportService::new(&db)
-            .serialize_setup()
-            .expect("export succeeds");
+        let first =
+            serialize_setup_confirmed(&SetupExportService::new(&db)).expect("export succeeds");
 
         // Import into a fresh database, then export again: stable.
         let fresh = setup_db();
@@ -2452,8 +2579,7 @@ mod setup_import_tests {
         assert!(report.skipped.is_empty());
         assert!(report.denied.is_empty());
         assert!(!report.imported.is_empty());
-        let second = SetupExportService::new(&fresh)
-            .serialize_setup()
+        let second = serialize_setup_confirmed(&SetupExportService::new(&fresh))
             .expect("re-export succeeds");
         assert_eq!(first, second, "export → import must round-trip cleanly");
     }
@@ -2598,5 +2724,131 @@ mod setup_import_tests {
                 .is_empty(),
             "denied documents write nothing"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Backend-side document read (SEC-01)
+    // -----------------------------------------------------------------------
+
+    /// Write a unique temporary `.json` import document carrying `contents`
+    /// and return its path. The read path canonicalizes, so callers compare
+    /// outcomes, not raw paths.
+    fn temp_json_document(contents: &str) -> std::path::PathBuf {
+        static DOCS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let id = DOCS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "nexora-import-doc-{}-{nanos}-{id}.json",
+            std::process::id()
+        ));
+        std::fs::write(&path, contents).expect("write temp import document");
+        path
+    }
+
+    #[test]
+    fn import_from_file_imports_a_real_backend_read_document() {
+        let db = setup_db();
+        let id = 11;
+        let json = serde_json::json!({
+            "format": "nexora-conversation",
+            "version": 1,
+            "conversation": {
+                "id": id,
+                "title": "Planning",
+                "status": "active",
+                "created_at": 1000,
+                "updated_at": 1000,
+            },
+            "messages": [{
+                "id": 1,
+                "conversation_id": id,
+                "role": "user",
+                "content": "read backend-side",
+                "provider_id": null,
+                "model_name": null,
+                "created_at": 1,
+            }],
+        })
+        .to_string();
+        let path = temp_json_document(&json);
+
+        let new_id = ImportService::new(&db)
+            .import_from_file(path.to_string_lossy().as_ref())
+            .expect("backend-side import succeeds");
+        let contents: Vec<String> = MessageRepository::new(&db)
+            .list_by_conversation(new_id)
+            .expect("list messages")
+            .into_iter()
+            .map(|m| m.content)
+            .collect();
+        assert_eq!(contents, vec!["read backend-side"]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn import_read_rejects_non_json_paths_without_echoing_them() {
+        // Extension allowlist fires before any read.
+        let text_path = {
+            let path = temp_json_document("{}");
+            let renamed = path.with_extension("txt");
+            std::fs::rename(&path, &renamed).expect("rename to .txt");
+            renamed
+        };
+        let err = read_import_document(text_path.to_string_lossy().as_ref())
+            .expect_err("non-json must be refused");
+        match err {
+            ImportError::InvalidData(reason) => {
+                assert_eq!(reason, "only .json import documents are allowed");
+                assert!(
+                    !reason.contains("nexora-import-doc"),
+                    "the picked path must never echo: {reason:?}"
+                );
+            }
+            other => panic!("expected InvalidData, got {other:?}"),
+        }
+        let _ = std::fs::remove_file(&text_path);
+
+        // Empty and missing paths refuse with fixed vocabulary too.
+        let err = read_import_document("").expect_err("empty path");
+        assert!(
+            matches!(err, ImportError::InvalidData(ref reason) if reason == "import path must not be empty")
+        );
+        let missing = std::env::temp_dir().join("nexora-import-missing-9f3c2a1e.json");
+        let _ = std::fs::remove_file(&missing);
+        let err =
+            read_import_document(missing.to_string_lossy().as_ref()).expect_err("missing document");
+        assert!(matches!(
+            err,
+            ImportError::InvalidData(ref reason) if reason == "the import document does not exist"
+        ));
+        assert!(
+            !format!("{err}").contains("nexora-import-missing"),
+            "the missing path must never echo: {err:?}"
+        );
+    }
+
+    #[test]
+    fn import_read_enforces_the_size_cap_before_reading() {
+        // Sparse file: the logical size trips the metadata gate without
+        // writing 16 MiB — and without ever reading the bytes.
+        let path = temp_json_document("{}");
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("open sparse document");
+        file.set_len(u64::try_from(MAX_IMPORT_JSON_BYTES + 1).expect("cap fits"))
+            .expect("sparse size");
+        drop(file);
+
+        let err = read_import_document(path.to_string_lossy().as_ref())
+            .expect_err("oversized document must be refused");
+        assert!(matches!(
+            err,
+            ImportError::InvalidData(ref reason) if reason == "import document exceeds the 16 MiB size limit"
+        ));
+        let _ = std::fs::remove_file(&path);
     }
 }

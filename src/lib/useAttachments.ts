@@ -7,7 +7,9 @@
 //! conversation changes or after any mutation, so UI state can never drift
 //! from persisted state. Only metadata is handled here — no file content is
 //! read or uploaded; the local path stays backend bookkeeping and is never
-//! rendered.
+//! rendered. The file size is derived BACKEND-side from the picked file's own
+//! metadata (SEC-01): the renderer forwards the picked path only and holds no
+//! `fs` plugin grant to stat the file itself.
 //!
 //! Picker cancellation (`open` resolving to `null`) is a normal outcome, not
 //! an error. Every failure path surfaces the backend's classified
@@ -16,7 +18,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { open } from "@tauri-apps/plugin-dialog";
-import { stat } from "@tauri-apps/plugin-fs";
 
 import { guessMimeType } from "./format";
 import {
@@ -96,22 +97,10 @@ export function useAttachments(conversationId: number | null): AttachmentsStore 
     try {
       for (const filePath of paths) {
         const fileName = baseName(filePath);
-        // File size is optional metadata (DATABASE.md §7.4): stat when the
-        // backend can see the picked file, otherwise persist without it.
-        let sizeBytes: number | null = null;
-        try {
-          const meta = await stat(filePath);
-          sizeBytes = meta.size;
-        } catch {
-          sizeBytes = null;
-        }
-        await attachFile(
-          conversationId,
-          fileName,
-          filePath,
-          sizeBytes,
-          guessMimeType(fileName),
-        );
+        // SEC-01: the size is derived backend-side from the picked file's own
+        // metadata and arrives in the persisted row (reloaded via refresh()
+        // below) — the webview never stats the file.
+        await attachFile(conversationId, fileName, filePath, guessMimeType(fileName));
       }
       // The backend is the source of truth: reload the whole draft list so
       // the visible order/ids match the persisted rows.

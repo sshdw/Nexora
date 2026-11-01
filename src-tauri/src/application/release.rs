@@ -12,15 +12,20 @@
 //!   an error), a missing backup directory yields no snapshot (never an
 //!   error). The checklist badges render from these facts; nothing here is
 //!   hand-waved, and nothing is persisted (no new tables).
-//! - [`file_issue_with`] files one GitHub issue from caller-confirmed input
-//!   through the user's own `gh` CLI (`gh issue create --title … --body …`,
-//!   `cwd` = workspace root so the repo resolves itself). Auth stays with the
-//!   CLI: this module never accepts, stores, logs, or echoes a token — the
-//!   only values reaching the subprocess are the title/body strings plus the
-//!   fixed `GH_PROMPT_DISABLED=1` env (so a non-signed-in CLI fails fast with
-//!   a classified error instead of opening an interactive prompt on a null
-//!   stdin). The body follows the fixed EN `Location / Problem / Fix / Verify`
-//!   template built by [`build_issue_body`].
+//! - [`file_issue_with`] files one GitHub issue from validated input through
+//!   the user's own `gh` CLI (`gh issue create --title … --body …`,
+//!   `cwd` = workspace root so the repo resolves itself). Filing is gated
+//!   server-side (SEC-03): the caller must supply a live single-use
+//!   confirmation id minted in the `release` scope by the
+//!   `request_confirmation` command, which only mints after the user accepts
+//!   a blocking native OS dialog ([`require_issue_confirmation`]). Auth
+//!   stays with the CLI: this module never accepts, stores, logs, or echoes a
+//!   token — the only values reaching the subprocess are the title/body
+//!   strings plus the fixed `GH_PROMPT_DISABLED=1` env (so a non-signed-in
+//!   CLI fails fast with a classified error instead of opening an interactive
+//!   prompt on a null stdin). The body follows the fixed EN
+//!   `Location / Problem / Fix / Verify` template built by
+//!   [`build_issue_body`].
 //! - Manifest parsing is stdlib-only by the same binding as the dependency
 //!   inventory ([`crate::application::dep_inventory`]): the two JSON manifests
 //!   parse through `serde_json` (already a dependency), `Cargo.toml` reads
@@ -37,6 +42,9 @@ use std::process::{Command, Stdio};
 
 use serde::Serialize;
 
+use crate::application::confirmations::{
+    ConfirmationRegistry, ConfirmationTarget, OP_CREATE_ISSUE, SCOPE_RELEASE,
+};
 use crate::infrastructure::database::{Database, DatabaseError, MIGRATIONS};
 
 /// Manifest version caps and the three-manifest parity rule now live in the
@@ -98,7 +106,8 @@ pub(crate) enum ReleaseError {
     /// Caller-supplied issue input was rejected (fixed message, never echoes
     /// the rejected value).
     InvalidInput { message: String },
-    /// The filing was invoked without the required explicit confirmation.
+    /// The filing was invoked without a live single-use confirmation id
+    /// minted for the release scope (SEC-03).
     Unconfirmed,
     /// The `gh` CLI binary could not be started (missing from `PATH`).
     GhMissing,
@@ -300,27 +309,22 @@ pub(crate) fn parse_gh_version(output: &str) -> Option<String> {
 // Validation
 // ---------------------------------------------------------------------------
 
-/// Validate caller-supplied issue input. The `confirmed` flag carries the
-/// destructive-action confirmation pattern (bare IPC callers cannot file):
-/// `false` refuses with [`ReleaseError::Unconfirmed`]. Length caps mirror
+/// Validate caller-supplied issue input. Length caps mirror
 /// the debt backlog; messages are fixed vocabulary and never echo the
-/// rejected value.
+/// rejected value. Confirmation is a separate gate
+/// ([`require_issue_confirmation`]): validating first means an invalid call
+/// never burns the user's single-use id (the `terminal_run` precedent).
 ///
 /// # Errors
 ///
-/// Returns [`ReleaseError::Unconfirmed`] without confirmation, or
-/// [`ReleaseError::InvalidInput`] for an empty/over-long title, an unknown
-/// source, or over-long location/detail.
+/// Returns [`ReleaseError::InvalidInput`] for an empty/over-long title, an
+/// unknown source, or over-long location/detail.
 pub(crate) fn validate_issue_input(
     title: &str,
     location: Option<&str>,
     detail: Option<&str>,
     source: &str,
-    confirmed: bool,
 ) -> Result<IssueInput, ReleaseError> {
-    if !confirmed {
-        return Err(ReleaseError::Unconfirmed);
-    }
     let title_len = title.chars().count();
     if title.trim().is_empty() || title_len > MAX_ISSUE_TITLE_CHARS {
         return Err(ReleaseError::InvalidInput {
@@ -348,6 +352,34 @@ pub(crate) fn validate_issue_input(
         detail: detail.map(str::to_string),
         source: source.to_string(),
     })
+}
+
+/// Consume the single-use confirmation id for issue filing (SEC-03).
+///
+/// `confirmation_id` must be a live id minted for [`OP_CREATE_ISSUE`] in the
+/// `release` scope by the `request_confirmation` command — which only mints
+/// after the user accepts a **blocking native OS dialog**. The consume is
+/// atomic: forged, expired, reused, cross-scope, and different-operation ids
+/// refuse with [`ReleaseError::Unconfirmed`] and nothing is filed. Call this
+/// after [`validate_issue_input`] so an invalid call never burns the id, and
+/// immediately before [`file_issue_with`].
+///
+/// # Errors
+///
+/// Returns [`ReleaseError::Unconfirmed`] for every refused id.
+pub(crate) fn require_issue_confirmation(
+    confirmations: &ConfirmationRegistry,
+    confirmation_id: &str,
+) -> Result<(), ReleaseError> {
+    if confirmations.consume(
+        SCOPE_RELEASE,
+        confirmation_id,
+        &ConfirmationTarget::new(OP_CREATE_ISSUE),
+    ) {
+        Ok(())
+    } else {
+        Err(ReleaseError::Unconfirmed)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -677,31 +709,49 @@ mod tests {
 
     #[test]
     fn issue_input_validation_rejects_without_echo() {
-        // Unconfirmed callers cannot file, even with valid input.
-        let err = validate_issue_input("t", None, None, "debt", false)
-            .expect_err("unconfirmed must refuse");
-        assert!(
-            matches!(err, ReleaseError::Unconfirmed),
-            "unconfirmed must refuse, got {err}"
-        );
         // Empty titles and unknown sources refuse with fixed text.
-        let err = validate_issue_input("", None, None, "debt", true).expect_err("empty refuses");
+        let err = validate_issue_input("", None, None, "debt").expect_err("empty refuses");
         assert!(matches!(err, ReleaseError::InvalidInput { .. }));
-        let err = validate_issue_input("t", None, None, "carrier-pigeon", true)
-            .expect_err("source refuses");
+        let err =
+            validate_issue_input("t", None, None, "carrier-pigeon").expect_err("source refuses");
         assert!(matches!(err, ReleaseError::InvalidInput { .. }));
         assert_secret_free(&err.to_string());
         // Over-long values refuse; in-cap values pass through.
         let long = "x".repeat(MAX_ISSUE_TITLE_CHARS + 1);
-        assert!(validate_issue_input(&long, None, None, "debt", true).is_err());
-        let input = validate_issue_input("Fix it", Some("a.rs:1"), Some("d"), "audit", true)
+        assert!(validate_issue_input(&long, None, None, "debt").is_err());
+        let input = validate_issue_input("Fix it", Some("a.rs:1"), Some("d"), "audit")
             .expect("valid input passes");
         assert_eq!(input.source, "audit");
     }
 
     #[test]
+    fn issue_filing_needs_a_server_verified_confirmation_id() {
+        // Forged ids refuse: the gate is the server-side registry, never a
+        // caller-supplied flag.
+        let err = require_issue_confirmation(&ConfirmationRegistry::new(), "forged-id")
+            .expect_err("forged id must refuse");
+        assert!(matches!(err, ReleaseError::Unconfirmed));
+        assert_eq!(
+            err.to_string(),
+            "explicit confirmation is required before filing a GitHub issue"
+        );
+        assert_secret_free(&err.to_string());
+        // A live single-use id minted for the exact operation consumes once;
+        // a replay refuses.
+        let registry = ConfirmationRegistry::new();
+        let id = registry
+            .request(SCOPE_RELEASE, &ConfirmationTarget::new(OP_CREATE_ISSUE))
+            .expect("mint confirmation id");
+        require_issue_confirmation(&registry, &id).expect("minted id authorizes filing");
+        assert!(matches!(
+            require_issue_confirmation(&registry, &id),
+            Err(ReleaseError::Unconfirmed)
+        ));
+    }
+
+    #[test]
     fn missing_gh_binary_fails_honestly() {
-        let input = validate_issue_input("Fix it", None, None, "debt", true).expect("valid");
+        let input = validate_issue_input("Fix it", None, None, "debt").expect("valid");
         let err = file_issue_with(
             Path::new("."),
             "nexora-definitely-absent-gh-binary",

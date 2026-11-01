@@ -10,8 +10,9 @@
 //! Command-shape decision (one feature area, THREE commands — the allowed
 //! maximum): `privacy_status` (surface inventory + ledger aggregates),
 //! `privacy_export` (the same aggregates as copy/download JSON), and
-//! `privacy_wipe` (user-confirmed delete behind the `confirmed` flag, the
-//! `refactor_apply` precedent). Recording needs no command: the service's
+//! `privacy_wipe` (delete behind a single-use `confirmation_id` minted by
+//! `request_confirmation`, the server-side destructive-action gate, SEC-03).
+//! Recording needs no command: the service's
 //! best-effort [`crate::application::privacy::record`] is called from the
 //! existing egress / usage points after success.
 //!
@@ -26,6 +27,7 @@
 
 use tauri::State;
 
+use crate::application::confirmations::ManagedConfirmations;
 use crate::application::privacy::{LedgerExport, PrivacyStatus, WipeResult};
 use crate::infrastructure::database::Database;
 
@@ -45,14 +47,19 @@ pub(crate) fn privacy_export(db: State<'_, Database>) -> Result<LedgerExport, Co
     crate::application::privacy::export_ledger(db.inner()).map_err(CommandError::from)
 }
 
-/// Wipe every ledger row. Refuses without `confirmed = true` (the panel
-/// sends confirmation only from its explicit confirm step).
+/// Wipe every ledger row. Requires a live single-use `confirmation_id`
+/// minted for `privacy_wipe` in the `privacy` scope by
+/// `request_confirmation` — which only mints after the user accepts a
+/// blocking native OS dialog (SEC-03). Forged, expired, reused, cross-scope,
+/// and different-operation ids refuse and delete nothing.
 #[tauri::command]
 pub(crate) fn privacy_wipe(
-    confirmed: bool,
+    confirmation_id: String,
     db: State<'_, Database>,
+    confirmations: State<'_, ManagedConfirmations>,
 ) -> Result<WipeResult, CommandError> {
-    crate::application::privacy::wipe(db.inner(), confirmed).map_err(CommandError::from)
+    crate::application::privacy::wipe(db.inner(), confirmation_id.as_str(), confirmations.inner())
+        .map_err(CommandError::from)
 }
 
 #[cfg(test)]

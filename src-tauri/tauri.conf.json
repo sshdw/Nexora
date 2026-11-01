@@ -27,8 +27,8 @@
         "script-src": "'self'",
         "style-src": "'self'",
         "connect-src": "ipc: http://ipc.localhost",
-        "img-src": "'self' asset: http://asset.localhost blob: data:",
-        "font-src": "'self' data:",
+        "img-src": "'self'",
+        "font-src": "'self'",
         "object-src": "'none'",
         "base-uri": "'self'"
       },

@@ -17,17 +17,17 @@
 //!   workspace root, with the same guards as the read path (lexical path
 //!   validation, workspace-prefix check, symlink-ancestor backstop,
 //!   fixed-vocabulary [`VersionControlError`]).
-//! - Every write requires an explicit per-call `confirmed` flag and refuses
-//!   with [`VersionControlError::Unconfirmed`] without it. **This flag is
-//!   renderer-attested, NOT a Rust-side user-presence proof**: any IPC caller
-//!   passes `confirmed: true` in a single call. It is honest UX (the panel
-//!   requires an explicit confirm press) but it is not the server-side
-//!   confirmation gate, which mints a single-use id only after the user
-//!   accepts a blocking native OS dialog — see
-//!   [`ConfirmationRegistry`](crate::application::confirmations::ConfirmationRegistry)
-//!   for the coverage split. Migration of these writes to the mint-and-consume
-//!   flow is an open audit item; until then, do not describe the git write
-//!   paths as server-verified.
+//! - Every write requires a live single-use confirmation id minted in the
+//!   `version_control` scope by the `request_confirmation` command — which
+//!   only mints after the user accepts a **blocking native OS dialog** — and
+//!   bound to the exact operation being performed ([`OP_GIT_STAGE`] /
+//!   [`OP_GIT_UNSTAGE`] / [`OP_GIT_COMMIT`] / [`OP_GIT_PUSH`]). The id is
+//!   consumed atomically on first use; forged, expired, reused, cross-scope,
+//!   and different-operation ids refuse with
+//!   [`VersionControlError::Unconfirmed`] before git is touched. This is the
+//!   server-side confirmation gate (SEC-03), the same shape as the terminal
+//!   and data-management paths — no caller-supplied boolean exists on these
+//!   paths anymore.
 //! - Push is never forced: the push path builds a plain
 //!   `refs/heads/<branch>:refs/heads/<branch>` refspec with no `+` prefix and
 //!   no `--force` flag exists anywhere in this module (a test asserts the
@@ -49,6 +49,10 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::application::agent::tools::is_within_workspace;
+use crate::application::confirmations::{
+    ConfirmationRegistry, ConfirmationTarget, OP_GIT_COMMIT, OP_GIT_PUSH, OP_GIT_STAGE,
+    OP_GIT_UNSTAGE, SCOPE_VERSION_CONTROL,
+};
 use crate::application::execution::{AiMessage, AiRequest, AiRole, RequestError};
 use crate::application::workspace::strip_verbatim;
 use crate::infrastructure::database::Database;
@@ -871,12 +875,26 @@ pub(crate) fn git_file_diff(
 // Guarded write operations: stage / unstage / commit / push
 // ---------------------------------------------------------------------------
 
-/// Require the explicit per-call confirmation flag for a write. Direct IPC
-/// commands cannot park on the agent [`ApprovalGate`](crate::application::agent::approval::ApprovalGate)
-/// (no run, no park, no autonomy mode), so writes reuse the destructive-action
-/// confirmation pattern: `confirmed: false` refuses without touching git.
-fn require_confirmed(confirmed: bool) -> Result<(), VersionControlError> {
-    if confirmed {
+/// Consume the single-use confirmation id for one guarded write (SEC-03).
+///
+/// Direct IPC commands cannot park on the agent
+/// [`ApprovalGate`](crate::application::agent::approval::ApprovalGate) (no
+/// run, no park, no autonomy mode), so the writes reuse the destructive-action
+/// confirmation gate: `confirmation_id` must be a live single-use id minted
+/// in the `version_control` scope by `request_confirmation` — which only
+/// mints after the user accepts a blocking native OS dialog — and bound to
+/// `operation`. The consume is atomic: forged, expired, reused, cross-scope,
+/// and different-operation ids refuse without touching git.
+fn require_confirmation(
+    confirmations: &ConfirmationRegistry,
+    confirmation_id: &str,
+    operation: &str,
+) -> Result<(), VersionControlError> {
+    if confirmations.consume(
+        SCOPE_VERSION_CONTROL,
+        confirmation_id,
+        &ConfirmationTarget::new(operation),
+    ) {
         Ok(())
     } else {
         Err(VersionControlError::Unconfirmed)
@@ -894,15 +912,19 @@ fn clean_stage_paths(raw_paths: &[String]) -> Result<Vec<PathBuf>, VersionContro
 
 /// Stage `raw_paths` (repository-relative) into the index.
 ///
-/// Returns the number of paths staged. Requires `confirmed`; refuses empty
-/// and overlong batches and any path that escapes the repository workdir
-/// (same guards as the read path). Unmatched pathspecs fail instead of
-/// silently staging nothing (`CHECK_PATHSPEC`), so stale or mistyped
-/// paths surface as an error while the count still reflects the batch.
+/// Returns the number of paths staged. Requires `confirmation_id` — a live
+/// single-use id minted for [`OP_GIT_STAGE`] in the `version_control` scope
+/// (see [`require_confirmation`]); the id is consumed only after the batch
+/// and path guards pass, so a malformed call costs the user nothing (the
+/// `terminal_run` precedent). Refuses empty and overlong batches and any
+/// path that escapes the repository workdir (same guards as the read path).
+/// Unmatched pathspecs fail instead of silently staging nothing
+/// (`CHECK_PATHSPEC`), so stale or mistyped paths surface as an error while
+/// the count still reflects the batch.
 ///
 /// # Errors
 ///
-/// Returns [`VersionControlError::Unconfirmed`] without confirmation,
+/// Returns [`VersionControlError::Unconfirmed`] for a refused confirmation,
 /// [`VersionControlError::InvalidPath`] for a bad batch or an escaping path,
 /// [`VersionControlError::GitFailed`] when staging fails (including an
 /// unmatched pathspec); see [`open_workspace_repo`] for the remaining
@@ -910,15 +932,16 @@ fn clean_stage_paths(raw_paths: &[String]) -> Result<Vec<PathBuf>, VersionContro
 pub(crate) fn git_stage(
     workspace_root: &Path,
     raw_paths: &[String],
-    confirmed: bool,
+    confirmation_id: &str,
+    confirmations: &ConfirmationRegistry,
 ) -> Result<usize, VersionControlError> {
-    require_confirmed(confirmed)?;
     let (_, repo) = open_workspace_repo(workspace_root)?;
     let canon_repo = canonical_workdir(&repo)?;
     let rels = clean_stage_paths(raw_paths)?;
     for rel in &rels {
         assert_within_repo(&canon_repo, rel)?;
     }
+    require_confirmation(confirmations, confirmation_id, OP_GIT_STAGE)?;
     let mut index = repo.index().map_err(|_| VersionControlError::GitFailed)?;
     index
         .add_all(rels.iter(), git2::IndexAddOption::CHECK_PATHSPEC, None)
@@ -930,8 +953,9 @@ pub(crate) fn git_stage(
 /// Unstage `raw_paths` (repository-relative): reset the index entries to
 /// `HEAD` (or drop them when `HEAD` is unborn).
 ///
-/// Returns the number of paths unstaged. Requires `confirmed`; same path
-/// guards as [`git_stage`]. Unstaging a path with no staged change is a
+/// Returns the number of paths unstaged. Requires `confirmation_id` minted
+/// for [`OP_GIT_UNSTAGE`]; same path guards and consume-after-validation
+/// order as [`git_stage`]. Unstaging a path with no staged change is a
 /// successful no-op.
 ///
 /// # Errors
@@ -940,15 +964,16 @@ pub(crate) fn git_stage(
 pub(crate) fn git_unstage(
     workspace_root: &Path,
     raw_paths: &[String],
-    confirmed: bool,
+    confirmation_id: &str,
+    confirmations: &ConfirmationRegistry,
 ) -> Result<usize, VersionControlError> {
-    require_confirmed(confirmed)?;
     let (_, repo) = open_workspace_repo(workspace_root)?;
     let canon_repo = canonical_workdir(&repo)?;
     let rels = clean_stage_paths(raw_paths)?;
     for rel in &rels {
         assert_within_repo(&canon_repo, rel)?;
     }
+    require_confirmation(confirmations, confirmation_id, OP_GIT_UNSTAGE)?;
     if let Some(head) = repo.head().ok().and_then(|head| head.peel_to_commit().ok()) {
         let object = head.into_object();
         repo.reset_default(Some(&object), rels.iter())
@@ -1031,22 +1056,24 @@ pub(crate) fn is_conventional_message(message: &str) -> bool {
 ///
 /// The author comes from the local git config only
 /// ([`git2::Repository::signature`]): this path never amends another author.
-/// Requires `confirmed`; empty commits (a tree identical to `HEAD`, or
-/// nothing staged on an unborn `HEAD`) refuse with
-/// [`VersionControlError::GitFailed`].
+/// Requires `confirmation_id` minted for [`OP_GIT_COMMIT`]; the message is
+/// validated before the id is consumed, so a malformed message costs the user
+/// nothing. Empty commits (a tree identical to `HEAD`, or nothing staged on
+/// an unborn `HEAD`) refuse with [`VersionControlError::GitFailed`].
 ///
 /// # Errors
 ///
-/// Returns [`VersionControlError::Unconfirmed`] without confirmation,
+/// Returns [`VersionControlError::Unconfirmed`] for a refused confirmation,
 /// [`VersionControlError::InvalidMessage`] for a bad message; see
 /// [`open_workspace_repo`] for the remaining failures.
 pub(crate) fn git_commit(
     workspace_root: &Path,
     raw_message: &str,
-    confirmed: bool,
+    confirmation_id: &str,
+    confirmations: &ConfirmationRegistry,
 ) -> Result<String, VersionControlError> {
-    require_confirmed(confirmed)?;
     let message = validate_commit_message(raw_message)?;
+    require_confirmation(confirmations, confirmation_id, OP_GIT_COMMIT)?;
     let (_, repo) = open_workspace_repo(workspace_root)?;
     let mut index = repo.index().map_err(|_| VersionControlError::GitFailed)?;
     let tree_id = index
@@ -1094,18 +1121,19 @@ pub(crate) fn git_commit(
 ///
 /// # Errors
 ///
-/// Returns [`VersionControlError::Unconfirmed`] without confirmation,
+/// Returns [`VersionControlError::Unconfirmed`] for a refused confirmation,
 /// [`VersionControlError::InvalidRemote`] for a non-allowlisted remote; see
 /// [`open_workspace_repo`] for the remaining failures.
 pub(crate) fn git_push(
     workspace_root: &Path,
     remote_name: &str,
-    confirmed: bool,
+    confirmation_id: &str,
+    confirmations: &ConfirmationRegistry,
 ) -> Result<(), VersionControlError> {
-    require_confirmed(confirmed)?;
     if remote_name != ALLOWED_PUSH_REMOTE {
         return Err(VersionControlError::InvalidRemote);
     }
+    require_confirmation(confirmations, confirmation_id, OP_GIT_PUSH)?;
     let (_, repo) = open_workspace_repo(workspace_root)?;
     let branch = current_branch(&repo).ok_or(VersionControlError::GitFailed)?;
     let mut remote = repo
@@ -1895,33 +1923,97 @@ mod tests {
             .expect("set test email");
     }
 
+    /// Mint one fresh single-use id for `operation` (each guarded write
+    /// consumes its id atomically, so every confirmed call mints its own).
+    /// Returns the id together with the registry that must consume it.
+    fn mint(operation: &'static str) -> (String, ConfirmationRegistry) {
+        let registry = ConfirmationRegistry::new();
+        let id = registry
+            .request(SCOPE_VERSION_CONTROL, &ConfirmationTarget::new(operation))
+            .expect("mint confirmation id");
+        (id, registry)
+    }
+
+    /// [`git_stage`] with a freshly minted [`OP_GIT_STAGE`] id.
+    fn stage(dir: &Path, paths: &[String]) -> Result<usize, VersionControlError> {
+        let (id, confirmations) = mint(OP_GIT_STAGE);
+        git_stage(dir, paths, &id, &confirmations)
+    }
+
+    /// [`git_unstage`] with a freshly minted [`OP_GIT_UNSTAGE`] id.
+    fn unstage(dir: &Path, paths: &[String]) -> Result<usize, VersionControlError> {
+        let (id, confirmations) = mint(OP_GIT_UNSTAGE);
+        git_unstage(dir, paths, &id, &confirmations)
+    }
+
+    /// [`git_commit`] with a freshly minted [`OP_GIT_COMMIT`] id.
+    fn commit(dir: &Path, message: &str) -> Result<String, VersionControlError> {
+        let (id, confirmations) = mint(OP_GIT_COMMIT);
+        git_commit(dir, message, &id, &confirmations)
+    }
+
+    /// [`git_push`] with a freshly minted [`OP_GIT_PUSH`] id.
+    fn push(dir: &Path, remote: &str) -> Result<(), VersionControlError> {
+        let (id, confirmations) = mint(OP_GIT_PUSH);
+        git_push(dir, remote, &id, &confirmations)
+    }
+
     #[test]
-    fn writes_require_explicit_confirmation() {
+    fn writes_require_a_server_verified_confirmation_id() {
         let dir = temp_root();
         let repo = init_repo(&dir);
         local_identity(&repo);
         std::fs::write(dir.join("note.txt"), "hello").expect("seed file");
+        // Forged ids refuse without touching git: the gate is the server-side
+        // registry, never a caller-supplied flag.
         assert_eq!(
-            git_stage(&dir, &["note.txt".to_string()], false).expect_err("stage needs confirm"),
+            git_stage(
+                &dir,
+                &["note.txt".to_string()],
+                "forged-id",
+                &ConfirmationRegistry::new(),
+            )
+            .expect_err("stage needs a minted id"),
             VersionControlError::Unconfirmed
         );
         assert_eq!(
-            git_unstage(&dir, &["note.txt".to_string()], false).expect_err("unstage needs confirm"),
+            git_unstage(
+                &dir,
+                &["note.txt".to_string()],
+                "forged-id",
+                &ConfirmationRegistry::new(),
+            )
+            .expect_err("unstage needs a minted id"),
             VersionControlError::Unconfirmed
         );
         assert_eq!(
-            git_commit(&dir, "feat(test): add note", false).expect_err("commit needs confirm"),
+            git_commit(
+                &dir,
+                "feat(test): add note",
+                "forged-id",
+                &ConfirmationRegistry::new(),
+            )
+            .expect_err("commit needs a minted id"),
             VersionControlError::Unconfirmed
         );
         assert_eq!(
-            git_push(&dir, "origin", false).expect_err("push needs confirm"),
+            git_push(&dir, "origin", "forged-id", &ConfirmationRegistry::new(),)
+                .expect_err("push needs a minted id"),
+            VersionControlError::Unconfirmed
+        );
+        // An id minted for one operation cannot drive a sibling write: the
+        // binding covers the exact operation.
+        let (stage_id, confirmations) = mint(OP_GIT_STAGE);
+        assert_eq!(
+            git_commit(&dir, "feat(test): add note", &stage_id, &confirmations)
+                .expect_err("a stage id must not authorize a commit"),
             VersionControlError::Unconfirmed
         );
         assert_eq!(
             format!("{}", VersionControlError::Unconfirmed),
             "explicit confirmation is required before this git write can run"
         );
-        // Nothing was staged behind the refusal.
+        // Nothing was staged behind the refusals.
         let info = git_info(&dir, None).expect("info reads");
         assert!(info.files.iter().all(|file| file.status == "untracked"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1935,13 +2027,13 @@ mod tests {
         std::fs::write(dir.join("note.txt"), "hello changed").expect("modify");
         std::fs::write(dir.join("new.txt"), "new").expect("seed untracked");
 
-        let staged = git_stage(&dir, &["note.txt".to_string(), "new.txt".to_string()], true)
-            .expect("stage reads");
+        let staged =
+            stage(&dir, &["note.txt".to_string(), "new.txt".to_string()]).expect("stage reads");
         assert_eq!(staged, 2);
         let info = git_info(&dir, None).expect("info reads");
         assert!(info.files.iter().all(|file| file.status == "staged"));
 
-        let unstaged = git_unstage(&dir, &["note.txt".to_string()], true).expect("unstage");
+        let unstaged = unstage(&dir, &["note.txt".to_string()]).expect("unstage");
         assert_eq!(unstaged, 1);
         let info = git_info(&dir, None).expect("info reads after unstage");
         let statuses: std::collections::HashMap<&str, &str> = info
@@ -1959,19 +2051,18 @@ mod tests {
         let dir = temp_root();
         let _repo = init_repo(&dir);
         for raw in ["../evil.txt", ".git/config", ""] {
-            let err = git_stage(&dir, &[raw.to_string()], true).expect_err("escaping stage denied");
+            let err = stage(&dir, &[raw.to_string()]).expect_err("escaping stage denied");
             assert_eq!(err, VersionControlError::InvalidPath);
-            let err =
-                git_unstage(&dir, &[raw.to_string()], true).expect_err("escaping unstage denied");
+            let err = unstage(&dir, &[raw.to_string()]).expect_err("escaping unstage denied");
             assert_eq!(err, VersionControlError::InvalidPath);
         }
         // Empty and overlong batches refuse without touching git.
-        let err = git_stage(&dir, &[], true).expect_err("empty batch denied");
+        let err = stage(&dir, &[]).expect_err("empty batch denied");
         assert_eq!(err, VersionControlError::InvalidPath);
         let big: Vec<String> = (0..=MAX_STAGE_PATHS)
             .map(|i| format!("f-{i}.txt"))
             .collect();
-        let err = git_stage(&dir, &big, true).expect_err("overlong batch denied");
+        let err = stage(&dir, &big).expect_err("overlong batch denied");
         assert_eq!(err, VersionControlError::InvalidPath);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1992,7 +2083,7 @@ mod tests {
             let _ = std::fs::remove_dir_all(&outside);
             return;
         }
-        let err = git_stage(&dir, &["link/secret.txt".to_string()], true)
+        let err = stage(&dir, &["link/secret.txt".to_string()])
             .expect_err("escaping stage must be denied");
         assert_eq!(err, VersionControlError::InvalidPath);
         let _ = std::fs::remove_dir_all(&dir);
@@ -2005,7 +2096,7 @@ mod tests {
         let repo = init_repo(&dir);
         local_identity(&repo);
         std::fs::write(dir.join("note.txt"), "hello").expect("seed file");
-        git_stage(&dir, &["note.txt".to_string()], true).expect("stage");
+        stage(&dir, &["note.txt".to_string()]).expect("stage");
 
         // Shape validation runs before any tree comparison, so these refuse
         // regardless of staged state.
@@ -2015,7 +2106,7 @@ mod tests {
             "x".repeat(MAX_COMMIT_MESSAGE_LEN + 1).as_str(),
             format!("feat(test): {}", "s".repeat(MAX_COMMIT_SUBJECT_LEN)).as_str(),
         ] {
-            let err = git_commit(&dir, bad, true).expect_err("bad message must be denied");
+            let err = commit(&dir, bad).expect_err("bad message must be denied");
             assert_eq!(err, VersionControlError::InvalidMessage, "input: {bad:?}");
         }
         assert_eq!(
@@ -2026,14 +2117,13 @@ mod tests {
         // Well-formed but non-conventional messages still commit:
         // conventional shape is enforced only on the AI path (sanitize),
         // never as a commit gate.
-        let loose = git_commit(&dir, "first version", true).expect("loose message commits");
+        let loose = commit(&dir, "first version").expect("loose message commits");
         assert_eq!(loose.len(), 40);
 
         std::fs::write(dir.join("note.txt"), "hello again").expect("modify again");
-        git_stage(&dir, &["note.txt".to_string()], true).expect("stage again");
+        stage(&dir, &["note.txt".to_string()]).expect("stage again");
 
-        let hash = git_commit(&dir, "feat(test): add note\n\nFirst test note.", true)
-            .expect("valid commit");
+        let hash = commit(&dir, "feat(test): add note\n\nFirst test note.").expect("valid commit");
         assert_eq!(hash.len(), 40);
         let info = git_info(&dir, None).expect("info reads");
         assert!(info.files.is_empty());
@@ -2044,8 +2134,8 @@ mod tests {
         assert_eq!(info.commits[0].hash, hash);
 
         // Committing with nothing staged refuses (no empty commits).
-        let err = git_commit(&dir, "fix(test): nothing staged", true)
-            .expect_err("empty commit must be denied");
+        let err =
+            commit(&dir, "fix(test): nothing staged").expect_err("empty commit must be denied");
         assert_eq!(err, VersionControlError::GitFailed);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2055,8 +2145,8 @@ mod tests {
         let dir = temp_root();
         let repo = init_repo(&dir);
         local_identity(&repo);
-        let err = git_commit(&dir, "feat(test): empty tree", true)
-            .expect_err("unborn empty commit must be denied");
+        let err =
+            commit(&dir, "feat(test): empty tree").expect_err("unborn empty commit must be denied");
         assert_eq!(err, VersionControlError::GitFailed);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2068,7 +2158,7 @@ mod tests {
         local_identity(&repo);
         // Non-allowlisted remotes refuse before any repository is touched.
         for remote in ["upstream", "fork", "https://example.com/r.git", ""] {
-            let err = git_push(&dir, remote, true).expect_err("non-origin push denied");
+            let err = push(&dir, remote).expect_err("non-origin push denied");
             assert_eq!(
                 err,
                 VersionControlError::InvalidRemote,
@@ -2088,7 +2178,7 @@ mod tests {
         commit_file(&repo, "note.txt", b"hello", "add note");
         // `commit_file` stages through the index directly; commit the same
         // way the service would to keep the workdir state realistic.
-        git_push(&dir, "origin", true).expect("push to local origin");
+        push(&dir, "origin").expect("push to local origin");
         let bare = git2::Repository::open_bare(&bare_dir).expect("open bare");
         let local_oid = repo
             .head()
@@ -2122,7 +2212,7 @@ mod tests {
                 .expect("clone pushes first");
         }
         commit_file(&repo, "diverged.txt", b"diverged", "diverge local");
-        let err = git_push(&dir, "origin", true).expect_err("diverged push must fail");
+        let err = push(&dir, "origin").expect_err("diverged push must fail");
         assert_eq!(err, VersionControlError::GitFailed);
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&bare_dir);
@@ -2142,7 +2232,7 @@ mod tests {
             .expect("test commit")
             .id();
         repo.set_head_detached(oid).expect("detach test head");
-        let err = git_push(&dir, "origin", true).expect_err("detached push denied");
+        let err = push(&dir, "origin").expect_err("detached push denied");
         assert_eq!(err, VersionControlError::GitFailed);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2248,8 +2338,7 @@ mod tests {
         let _repo = init_repo(&dir);
         // A traversal-shaped batch carrying a secret-looking payload still
         // fails with fixed vocabulary that echoes nothing.
-        let err =
-            git_stage(&dir, &[format!("../{SENTINEL}.txt")], true).expect_err("traversal denied");
+        let err = stage(&dir, &[format!("../{SENTINEL}.txt")]).expect_err("traversal denied");
         assert!(!format!("{err}").contains(SENTINEL));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2265,7 +2354,7 @@ mod tests {
         assert!(!truncated);
 
         std::fs::write(dir.join("note.txt"), "line one\nline two\n").expect("modify");
-        git_stage(&dir, &["note.txt".to_string()], true).expect("stage");
+        stage(&dir, &["note.txt".to_string()]).expect("stage");
         let (summary, truncated) = staged_diff_summary(&dir).expect("summary reads");
         assert!(!truncated);
         assert!(summary.contains("note.txt"), "summary: {summary}");

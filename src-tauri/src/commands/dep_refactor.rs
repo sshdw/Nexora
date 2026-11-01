@@ -14,8 +14,9 @@
 //! `dep_inventory` batches the cargo + npm tables in a single round trip
 //! because the panel always renders them together (the same batching rationale
 //! as `git_info`); `refactor_apply` stays separate because it carries
-//! per-apply arguments (path, line range, finding kind, explicit
-//! confirmation) and mutates exactly one file range per call. There is no
+//! per-apply arguments (path, line range, finding kind) and mutates exactly
+//! one file range per call. It also carries a `confirmation_id` minted by
+//! `request_confirmation` (the server-side gate, SEC-03). There is no
 //! install/update/remove path anywhere in this slice — the inventory is
 //! read-only, and the apply allowlist covers confirmed dead-code removals
 //! only (see [`crate::application::refactor_apply`] for the never-applied
@@ -28,6 +29,7 @@
 
 use tauri::{AppHandle, Manager};
 
+use crate::application::confirmations::ManagedConfirmations;
 use crate::application::dep_inventory::DepInventory;
 use crate::application::refactor_apply::RefactorApplyResult;
 use crate::application::workspace::resolve_workspace_root;
@@ -73,11 +75,13 @@ pub(crate) async fn dep_inventory(app: AppHandle) -> Result<DepInventory, Comman
 
 /// Apply one confirmed dead-code removal: delete workspace-relative `.rs`
 /// lines `[start_line, end_line]` (1-based, inclusive) for a finding of an
-/// allowlisted kind. The backend re-verifies every guard (confirmation,
-/// kind, git-repo presence, tracked-clean file, range, `pub `-declaration
-/// line) before writing; the file was clean beforehand, so `git checkout --
-/// <path>` reverts. Unsafe kinds, unconfirmed calls, and non-git workspaces
-/// refuse with classified errors.
+/// allowlisted kind. The backend re-verifies every guard (kind, git-repo
+/// presence, tracked-clean file, range, `pub `-declaration line) before
+/// writing and consumes the single-use `confirmation_id` — minted for
+/// `refactor_apply` in the `refactor` scope by `request_confirmation`
+/// (SEC-03) — only immediately before the write; the file was clean
+/// beforehand, so `git checkout -- <path>` reverts. Unsafe kinds, refused
+/// confirmations, and non-git workspaces refuse with classified errors.
 ///
 /// Runs on the blocking pool like [`dep_inventory`]: the backend re-reads
 /// the file plus git state, so a synchronous command would run on the main
@@ -88,7 +92,7 @@ pub(crate) async fn refactor_apply(
     start_line: usize,
     end_line: usize,
     kind: String,
-    confirmed: bool,
+    confirmation_id: String,
     app: AppHandle,
 ) -> Result<RefactorApplyResult, CommandError> {
     let handle = app.clone();
@@ -96,13 +100,15 @@ pub(crate) async fn refactor_apply(
         let fallback = default_root(&handle)?;
         let db = handle.state::<Database>();
         let root = resolve_workspace_root(db.inner(), &fallback);
+        let confirmations = handle.state::<ManagedConfirmations>();
         crate::application::refactor_apply::refactor_apply(
             &root,
             path.as_str(),
             start_line,
             end_line,
             kind.as_str(),
-            confirmed,
+            confirmation_id.as_str(),
+            confirmations.inner(),
         )
         .map_err(CommandError::from)
     })
@@ -287,13 +293,23 @@ mod tests {
         let result = boundary::through_boundary({
             let root = root.clone();
             move || {
+                let registry = crate::application::confirmations::ConfirmationRegistry::new();
+                let id = registry
+                    .request(
+                        crate::application::confirmations::SCOPE_REFACTOR,
+                        &crate::application::confirmations::ConfirmationTarget::new(
+                            crate::application::confirmations::OP_REFACTOR_APPLY,
+                        ),
+                    )
+                    .expect("mint confirmation id");
                 crate::application::refactor_apply::refactor_apply(
                     &root,
                     "src/lib.rs",
                     4,
                     4,
                     "dead-code-candidate",
-                    true,
+                    &id,
+                    &registry,
                 )
             }
         })

@@ -35,13 +35,14 @@
 //!   unmodified (`git2` status empty), so the post-apply `git diff` is
 //!   exactly this apply — reversibility proof. Dirty, untracked, or ignored
 //!   files refuse with [`RefactorApplyError::UncleanFile`].
-//! - Explicit user confirm: `confirmed: false` refuses without touching the
-//!   filesystem ([`RefactorApplyError::Unconfirmed`]). That flag is
-//!   **renderer-attested, not a Rust-side user-presence proof** — any IPC
-//!   caller passes `confirmed: true` in one call, so this path is honest UX
-//!   but not the server-side confirmation gate (native dialog + operation
-//!   binding, `application/confirmations.rs`). Migrating it is an open audit
-//!   item.
+//! - Server-side confirmation (SEC-03): the apply requires a live single-use
+//!   id minted in the `refactor` scope by the `request_confirmation` command
+//!   — which only mints after the user accepts a blocking native OS dialog —
+//!   bound to [`OP_REFACTOR_APPLY`]. The id is consumed atomically only after
+//!   every guard passes, immediately before the write; forged, expired,
+//!   reused, cross-scope, and different-operation ids refuse with
+//!   [`RefactorApplyError::Unconfirmed`] without touching the filesystem
+//!   (the same gate shape as the terminal and data-management paths).
 //! - Declaration-line check: the first removed line must trim-start to
 //!   `pub ` (a public-item declaration — the dead-code candidate shape), or
 //!   the apply refuses with [`RefactorApplyError::ContentMismatch`]. The
@@ -65,6 +66,9 @@ use std::path::{Component, Path, PathBuf};
 use serde::Serialize;
 
 use crate::application::agent::tools::is_within_workspace;
+use crate::application::confirmations::{
+    ConfirmationRegistry, ConfirmationTarget, OP_REFACTOR_APPLY, SCOPE_REFACTOR,
+};
 use crate::application::workspace::strip_verbatim;
 
 /// The only finding kinds this path may apply, in frontend display order.
@@ -239,10 +243,13 @@ fn splice_lines(lines: &[String], start: usize, end: usize) -> (String, String) 
 /// lines `[start_line, end_line]` (1-based, inclusive) for a finding of an
 /// [`APPLIABLE_KINDS`] kind.
 ///
-/// Preconditions (in order): explicit `confirmed`, allowlisted `kind`, valid
-/// Rust path inside a non-bare enclosing git repository, tracked-and-clean
-/// file, usable range, and a `pub `-declaration first line. The file is
-/// re-read after the write for the verification flag.
+/// Preconditions (in order): allowlisted `kind`, valid Rust path inside a
+/// non-bare enclosing git repository, tracked-and-clean file, usable range,
+/// a `pub `-declaration first line, and finally a live single-use
+/// `confirmation_id` minted for [`OP_REFACTOR_APPLY`] in the `refactor`
+/// scope (SEC-03) — consumed atomically immediately before the write, so a
+/// refused apply never burns the user's approval. The file is re-read after
+/// the write for the verification flag.
 ///
 /// # Errors
 ///
@@ -254,11 +261,9 @@ pub(crate) fn refactor_apply(
     start_line: usize,
     end_line: usize,
     kind: &str,
-    confirmed: bool,
+    confirmation_id: &str,
+    confirmations: &ConfirmationRegistry,
 ) -> Result<RefactorApplyResult, RefactorApplyError> {
-    if !confirmed {
-        return Err(RefactorApplyError::Unconfirmed);
-    }
     if !APPLIABLE_KINDS.contains(&kind) {
         return Err(RefactorApplyError::UnsafeKind);
     }
@@ -329,6 +334,16 @@ pub(crate) fn refactor_apply(
     let first = lines[start_line - 1].trim_start();
     if !first.starts_with("pub ") {
         return Err(RefactorApplyError::ContentMismatch);
+    }
+    // Every guard passed: consume the single-use id immediately before the
+    // write, so refusals never cost the user their approval (the
+    // `terminal_run` precedent). From here the apply runs.
+    if !confirmations.consume(
+        SCOPE_REFACTOR,
+        confirmation_id,
+        &ConfirmationTarget::new(OP_REFACTOR_APPLY),
+    ) {
+        return Err(RefactorApplyError::Unconfirmed);
     }
     let (removed, kept) = splice_lines(&lines, start_line, end_line);
     let mut next = kept;
@@ -404,15 +419,20 @@ mod tests {
         .expect("commits");
     }
 
+    /// [`refactor_apply`] with a freshly minted [`OP_REFACTOR_APPLY`] id
+    /// (each apply consumes its single-use id, so every call mints its own).
     fn apply(
         root: &Path,
         path: &str,
         start: usize,
         end: usize,
         kind: &str,
-        confirmed: bool,
     ) -> Result<RefactorApplyResult, RefactorApplyError> {
-        refactor_apply(root, path, start, end, kind, confirmed)
+        let registry = ConfirmationRegistry::new();
+        let id = registry
+            .request(SCOPE_REFACTOR, &ConfirmationTarget::new(OP_REFACTOR_APPLY))
+            .expect("mint confirmation id");
+        refactor_apply(root, path, start, end, kind, &id, &registry)
     }
 
     /// Stage `rels` (repository-relative) and commit on top of HEAD, for
@@ -451,7 +471,7 @@ mod tests {
     fn outside_git_refuses_cleanly() {
         let root = test_root();
         std::fs::write(root.join("lonely.rs"), "pub fn lonely() {}\n").expect("writes");
-        let err = apply(&root, "lonely.rs", 1, 1, "dead-code-candidate", true)
+        let err = apply(&root, "lonely.rs", 1, 1, "dead-code-candidate")
             .expect_err("outside git must refuse");
         assert_eq!(err, RefactorApplyError::NotARepository);
         assert!(
@@ -476,12 +496,40 @@ mod tests {
             "suspicious-clone",
             "invented-kind",
         ] {
-            let err =
-                apply(&root, "src/lib.rs", 2, 2, kind, true).expect_err("unsafe kinds must refuse");
+            let err = apply(&root, "src/lib.rs", 2, 2, kind).expect_err("unsafe kinds must refuse");
             assert_eq!(err, RefactorApplyError::UnsafeKind, "kind {kind:?}");
         }
-        let err = apply(&root, "src/lib.rs", 2, 2, "dead-code-candidate", false)
-            .expect_err("unconfirmed must refuse");
+        // Forged ids refuse: the gate is the server-side registry, never a
+        // caller-supplied flag.
+        let err = refactor_apply(
+            &root,
+            "src/lib.rs",
+            2,
+            2,
+            "dead-code-candidate",
+            "forged-id",
+            &ConfirmationRegistry::new(),
+        )
+        .expect_err("forged id must refuse");
+        assert_eq!(err, RefactorApplyError::Unconfirmed);
+        // An id minted for another area's operation cannot drive an apply.
+        let registry = ConfirmationRegistry::new();
+        let foreign = registry
+            .request(
+                crate::application::confirmations::SCOPE_VERSION_CONTROL,
+                &ConfirmationTarget::new(crate::application::confirmations::OP_GIT_STAGE),
+            )
+            .expect("mint foreign id");
+        let err = refactor_apply(
+            &root,
+            "src/lib.rs",
+            2,
+            2,
+            "dead-code-candidate",
+            &foreign,
+            &registry,
+        )
+        .expect_err("a foreign id must refuse");
         assert_eq!(err, RefactorApplyError::Unconfirmed);
         let content = std::fs::read_to_string(root.join("src/lib.rs")).expect("reads");
         assert_eq!(
@@ -504,7 +552,7 @@ mod tests {
             "src/lib.rs ",
         ] {
             let trimmed_ok = path == "src/lib.rs ";
-            let outcome = apply(&root, path, 1, 1, "dead-code-candidate", true);
+            let outcome = apply(&root, path, 1, 1, "dead-code-candidate");
             if trimmed_ok {
                 // Trailing whitespace trims to a valid path — but line 1 is
                 // the doc comment, so it must refuse on content instead.
@@ -532,11 +580,11 @@ mod tests {
             "/// Entry.\npub fn orphaned() {}\n// dirty\n",
         )
         .expect("dirties");
-        let err = apply(&root, "src/lib.rs", 2, 2, "dead-code-candidate", true)
+        let err = apply(&root, "src/lib.rs", 2, 2, "dead-code-candidate")
             .expect_err("dirty files must refuse");
         assert_eq!(err, RefactorApplyError::UncleanFile);
         std::fs::write(root.join("src/fresh.rs"), "pub fn fresh() {}\n").expect("writes");
-        let err = apply(&root, "src/fresh.rs", 1, 1, "dead-code-candidate", true)
+        let err = apply(&root, "src/fresh.rs", 1, 1, "dead-code-candidate")
             .expect_err("untracked files must refuse");
         assert_eq!(err, RefactorApplyError::UncleanFile);
         with_cleanup(&root);
@@ -552,7 +600,7 @@ mod tests {
         );
         // Zero, inverted, past-the-end, and over-cap ranges.
         for (start, end) in [(0, 1), (3, 2), (1, 99), (1, MAX_APPLY_LINES + 1)] {
-            let err = apply(&root, "src/lib.rs", start, end, "dead-code-candidate", true)
+            let err = apply(&root, "src/lib.rs", start, end, "dead-code-candidate")
                 .expect_err("bad ranges must refuse");
             assert_eq!(
                 err,
@@ -562,7 +610,7 @@ mod tests {
         }
         // Doc-comment and private lines are not public declarations.
         for line in [1, 3] {
-            let err = apply(&root, "src/lib.rs", line, line, "dead-code-candidate", true)
+            let err = apply(&root, "src/lib.rs", line, line, "dead-code-candidate")
                 .expect_err("non-pub lines must refuse");
             assert_eq!(err, RefactorApplyError::ContentMismatch, "line {line}");
         }
@@ -594,7 +642,7 @@ mod tests {
         }
         git2::Repository::init(&root).expect("repo inits");
         commit_paths(&root, &[link_rel], "commit a symlink");
-        let err = apply(&root, link_rel, 1, 1, "dead-code-candidate", true)
+        let err = apply(&root, link_rel, 1, 1, "dead-code-candidate")
             .expect_err("a committed symlink must refuse");
         assert_eq!(err, RefactorApplyError::InvalidPath);
         let content = std::fs::read_to_string(&secret).expect("outside target reads");
@@ -625,7 +673,7 @@ mod tests {
         )
         .expect("test file writes");
         commit_paths(&root, &["sub/src/lib.rs"], "commit the workspace file");
-        let result = apply(&workspace, "src/lib.rs", 4, 4, "dead-code-candidate", true)
+        let result = apply(&workspace, "src/lib.rs", 4, 4, "dead-code-candidate")
             .expect("the subdir-workspace apply runs");
         assert_eq!(result.path, "src/lib.rs");
         assert_eq!(result.removed_lines, 1);
@@ -652,7 +700,7 @@ mod tests {
             "src/lib.rs",
             "/// Kept entry.\npub fn kept() {}\n/// Orphaned entry.\npub fn orphaned() {}\n",
         );
-        let result = apply(&root, "src/lib.rs", 4, 4, "dead-code-candidate", true)
+        let result = apply(&root, "src/lib.rs", 4, 4, "dead-code-candidate")
             .expect("the confirmed apply runs");
         assert_eq!(result.path, "src/lib.rs");
         assert_eq!(result.removed_lines, 1);

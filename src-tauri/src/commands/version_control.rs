@@ -16,22 +16,28 @@
 //! no reason to fetch all of them up front). The timeline detail loads one
 //! historical commit's unified diff lazily through `git_commit_diff` (same
 //! cap shape). The four writes stay separate —
-//! `git_stage` / `git_unstage` take a path batch plus an explicit
-//! `confirmed` flag, `git_commit` takes the validated message plus
-//! `confirmed` and returns the new hash, `git_push` takes the allowlisted
-//! remote name plus `confirmed` — because each carries different arguments
-//! and the panel invokes them independently. `git_generate_commit_message`
-//! takes the provider/model names and runs the blocking AI round trip on the
-//! blocking pool (like `send_message`); `git_explain_commit` takes a commit
-//! hash plus the provider/model names and explains that commit the same way
-//! (like `terminal_explain`: copy-only result, never auto-applied).
+//! `git_stage` / `git_unstage` take a path batch, `git_commit` takes the
+//! validated message and returns the new hash, `git_push` takes the
+//! allowlisted remote name — because each carries different arguments and
+//! the panel invokes them independently. Every write additionally carries a
+//! `confirmation_id` minted by `request_confirmation` (see the approval-gate
+//! note). `git_generate_commit_message` takes the provider/model names and
+//! runs the blocking AI round trip on the blocking pool (like
+//! `send_message`); `git_explain_commit` takes a commit hash plus the
+//! provider/model names and explains that commit the same way (like
+//! `terminal_explain`: copy-only result, never auto-applied).
 //!
 //! Approval-gate note: the agent `ApprovalGate` parks live agent tool calls
 //! and cannot apply to direct IPC commands (no run, no park, no autonomy
-//! mode). Writes therefore reuse the destructive-action confirmation pattern:
-//! every write refuses with `ConfirmationRequired` unless its per-call
-//! `confirmed` flag is `true` — the same gate shape as data management,
-//! not a parallel mechanism.
+//! mode). Writes therefore reuse the destructive-action confirmation gate:
+//! each requires a live single-use `confirmation_id` minted in the
+//! `version_control` scope by `request_confirmation` — which only mints
+//! after the user accepts a blocking native OS dialog — and bound to the
+//! exact operation. The application layer consumes the id atomically before
+//! git is touched; forged, expired, reused, cross-scope, and
+//! different-operation ids refuse with `ConfirmationRequired` (SEC-03), the
+//! same gate shape as the terminal and data-management paths, not a parallel
+//! mechanism.
 
 // Tauri command handlers must take ownership of their deserialized
 // arguments: serde cannot borrow into the wire payload, so passing by
@@ -40,6 +46,7 @@
 
 use tauri::{AppHandle, Manager};
 
+use crate::application::confirmations::ManagedConfirmations;
 use crate::application::version_control::{
     CommitExplainError, CommitExplanation, GeneratedCommitMessage, GitCommitDiff, GitFileDiff,
     GitInfo,
@@ -144,14 +151,15 @@ pub(crate) async fn git_commit_diff(
 }
 
 /// Stage `paths` (repository-relative) into the index, returning how many
-/// were staged. Refuses with `ConfirmationRequired` unless `confirmed` is
-/// `true`; escaping paths fail with a fixed-vocabulary error.
+/// were staged. Requires `confirmation_id` minted for `git_stage` in the
+/// `version_control` scope (SEC-03); escaping paths fail with a
+/// fixed-vocabulary error.
 ///
 /// Runs on the blocking pool like [`git_info`].
 #[tauri::command]
 pub(crate) async fn git_stage(
     paths: Vec<String>,
-    confirmed: bool,
+    confirmation_id: String,
     app: AppHandle,
 ) -> Result<usize, CommandError> {
     let handle = app.clone();
@@ -159,8 +167,14 @@ pub(crate) async fn git_stage(
         let fallback = default_root(&handle)?;
         let db = handle.state::<Database>();
         let root = resolve_workspace_root(db.inner(), &fallback);
-        crate::application::version_control::git_stage(&root, &paths, confirmed)
-            .map_err(CommandError::from)
+        let confirmations = handle.state::<ManagedConfirmations>();
+        crate::application::version_control::git_stage(
+            &root,
+            &paths,
+            confirmation_id.as_str(),
+            confirmations.inner(),
+        )
+        .map_err(CommandError::from)
     })
     .await;
     match outcome {
@@ -173,13 +187,14 @@ pub(crate) async fn git_stage(
 }
 
 /// Unstage `paths` (repository-relative) back to `HEAD`, returning how many
-/// were unstaged. Same confirmation and path guards as [`git_stage`].
+/// were unstaged. Same confirmation and path guards as [`git_stage`] (the id
+/// is minted for `git_unstage`).
 ///
 /// Runs on the blocking pool like [`git_info`].
 #[tauri::command]
 pub(crate) async fn git_unstage(
     paths: Vec<String>,
-    confirmed: bool,
+    confirmation_id: String,
     app: AppHandle,
 ) -> Result<usize, CommandError> {
     let handle = app.clone();
@@ -187,8 +202,14 @@ pub(crate) async fn git_unstage(
         let fallback = default_root(&handle)?;
         let db = handle.state::<Database>();
         let root = resolve_workspace_root(db.inner(), &fallback);
-        crate::application::version_control::git_unstage(&root, &paths, confirmed)
-            .map_err(CommandError::from)
+        let confirmations = handle.state::<ManagedConfirmations>();
+        crate::application::version_control::git_unstage(
+            &root,
+            &paths,
+            confirmation_id.as_str(),
+            confirmations.inner(),
+        )
+        .map_err(CommandError::from)
     })
     .await;
     match outcome {
@@ -202,14 +223,14 @@ pub(crate) async fn git_unstage(
 
 /// Commit the staged index with `message`, returning the new commit hash.
 /// The message is validated backend-side (non-empty, bounded, usable subject
-/// line); the author comes from the local git config only. Refuses with
-/// `ConfirmationRequired` unless `confirmed` is `true`.
+/// line); the author comes from the local git config only. Requires
+/// `confirmation_id` minted for `git_commit` (SEC-03).
 ///
 /// Runs on the blocking pool like [`git_info`].
 #[tauri::command]
 pub(crate) async fn git_commit(
     message: String,
-    confirmed: bool,
+    confirmation_id: String,
     app: AppHandle,
 ) -> Result<String, CommandError> {
     let handle = app.clone();
@@ -217,8 +238,14 @@ pub(crate) async fn git_commit(
         let fallback = default_root(&handle)?;
         let db = handle.state::<Database>();
         let root = resolve_workspace_root(db.inner(), &fallback);
-        crate::application::version_control::git_commit(&root, message.as_str(), confirmed)
-            .map_err(CommandError::from)
+        let confirmations = handle.state::<ManagedConfirmations>();
+        crate::application::version_control::git_commit(
+            &root,
+            message.as_str(),
+            confirmation_id.as_str(),
+            confirmations.inner(),
+        )
+        .map_err(CommandError::from)
     })
     .await;
     match outcome {
@@ -232,15 +259,15 @@ pub(crate) async fn git_commit(
 
 /// Push the current branch to `remote` (only `"origin"` is accepted).
 /// Never forced: the backend builds a plain fast-forward refspec and no force
-/// flag exists on the path. Refuses with `ConfirmationRequired` unless
-/// `confirmed` is `true`.
+/// flag exists on the path. Requires `confirmation_id` minted for `git_push`
+/// (SEC-03).
 ///
 /// Runs on the blocking pool like [`git_info`]; the network round trip must
 /// never sit on the main thread.
 #[tauri::command]
 pub(crate) async fn git_push(
     remote: String,
-    confirmed: bool,
+    confirmation_id: String,
     app: AppHandle,
 ) -> Result<(), CommandError> {
     let handle = app.clone();
@@ -248,8 +275,14 @@ pub(crate) async fn git_push(
         let fallback = default_root(&handle)?;
         let db = handle.state::<Database>();
         let root = resolve_workspace_root(db.inner(), &fallback);
-        crate::application::version_control::git_push(&root, remote.as_str(), confirmed)
-            .map_err(CommandError::from)
+        let confirmations = handle.state::<ManagedConfirmations>();
+        crate::application::version_control::git_push(
+            &root,
+            remote.as_str(),
+            confirmation_id.as_str(),
+            confirmations.inner(),
+        )
+        .map_err(CommandError::from)
     })
     .await;
     match outcome {
@@ -378,6 +411,25 @@ impl From<CommitExplainError> for CommandError {
 mod tests {
     use super::*;
     use crate::application::version_control;
+
+    /// Mint one fresh single-use id for a version-control write (each write
+    /// consumes its id atomically, so every confirmed call mints its own).
+    /// The returned registry is the one that must consume it.
+    fn mint_write(
+        operation: &'static str,
+    ) -> (
+        String,
+        crate::application::confirmations::ConfirmationRegistry,
+    ) {
+        use crate::application::confirmations::{
+            ConfirmationRegistry, ConfirmationTarget, SCOPE_VERSION_CONTROL,
+        };
+        let registry = ConfirmationRegistry::new();
+        let id = registry
+            .request(SCOPE_VERSION_CONTROL, &ConfirmationTarget::new(operation))
+            .expect("mint confirmation id");
+        (id, registry)
+    }
 
     fn safe_message(err: &CommandError) -> bool {
         const SECRET_SENTINELS: [&str; 4] = ["sk-", "secret", "credential", "api_key"];
@@ -624,28 +676,44 @@ mod tests {
 
         let staged = boundary::through_boundary({
             let dir = dir.clone();
-            move || version_control::git_stage(&dir, &["note.txt".to_string()], true)
+            move || {
+                let (id, confirmations) =
+                    mint_write(crate::application::confirmations::OP_GIT_STAGE);
+                version_control::git_stage(&dir, &["note.txt".to_string()], &id, &confirmations)
+            }
         })
         .expect("git_stage succeeds through the boundary");
         assert_eq!(staged, 1);
 
         let unstaged = boundary::through_boundary({
             let dir = dir.clone();
-            move || version_control::git_unstage(&dir, &["note.txt".to_string()], true)
+            move || {
+                let (id, confirmations) =
+                    mint_write(crate::application::confirmations::OP_GIT_UNSTAGE);
+                version_control::git_unstage(&dir, &["note.txt".to_string()], &id, &confirmations)
+            }
         })
         .expect("git_unstage succeeds through the boundary");
         assert_eq!(unstaged, 1);
 
         let restaged = boundary::through_boundary({
             let dir = dir.clone();
-            move || version_control::git_stage(&dir, &["note.txt".to_string()], true)
+            move || {
+                let (id, confirmations) =
+                    mint_write(crate::application::confirmations::OP_GIT_STAGE);
+                version_control::git_stage(&dir, &["note.txt".to_string()], &id, &confirmations)
+            }
         })
         .expect("git_stage succeeds through the boundary");
         assert_eq!(restaged, 1);
 
         let hash = boundary::through_boundary({
             let dir = dir.clone();
-            move || version_control::git_commit(&dir, "test: add note", true)
+            move || {
+                let (id, confirmations) =
+                    mint_write(crate::application::confirmations::OP_GIT_COMMIT);
+                version_control::git_commit(&dir, "test: add note", &id, &confirmations)
+            }
         })
         .expect("git_commit succeeds through the boundary");
         assert!(!hash.is_empty(), "the commit returns its hash");
@@ -677,7 +745,11 @@ mod tests {
 
         boundary::through_boundary({
             let dir = dir.clone();
-            move || version_control::git_push(&dir, "origin", true)
+            move || {
+                let (id, confirmations) =
+                    mint_write(crate::application::confirmations::OP_GIT_PUSH);
+                version_control::git_push(&dir, "origin", &id, &confirmations)
+            }
         })
         .expect("git_push succeeds through the boundary");
 

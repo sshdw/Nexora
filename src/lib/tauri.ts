@@ -234,17 +234,37 @@ export function deleteSetting(key: string): Promise<void> {
 // The native dialog is the single, honest confirmation. Rejections mean the
 // user cancelled at the native dialog and NOTHING ran.
 
-/** Scope a minted confirmation id is bound to. Ids never cross scopes. */
-export type ConfirmationScope = "terminal" | "data_management";
+/** Scope a minted confirmation id is bound to. Ids never cross scopes. The
+ * set mirrors the Rust `scope_of` allowlist (`application/confirmations.rs`)
+ * exactly: `terminal`, `data_management`, `version_control`, `refactor`,
+ * `privacy`, `release`, `export`. */
+export type ConfirmationScope =
+  | "terminal"
+  | "data_management"
+  | "version_control"
+  | "refactor"
+  | "privacy"
+  | "release"
+  | "export";
 
-/** Operation identities for the row-scoped / clear-all data-management
- * paths. These literals must match the Rust `OP_*` constants
- * (`application/confirmations.rs`) exactly — the backend binds the id to them
- * and recomputes that binding on consume, so a drift refuses every call. A
+/** Operation identities for the confirmation-gated destructive paths. These
+ * literals must match the Rust `OP_*` constants (`application/
+ * confirmations.rs`) exactly — the backend binds the id to them and
+ * recomputes that binding on consume, so a drift refuses every call. A
  * source check in `commands/confirmations.rs` pins them. */
 const OP_DELETE_PROMPT = "delete_prompt";
 const OP_DELETE_CONVERSATION = "delete_conversation";
 const OP_CLEAR_ALL_DATA = "clear_application_data";
+const OP_GIT_STAGE = "git_stage";
+const OP_GIT_UNSTAGE = "git_unstage";
+const OP_GIT_COMMIT = "git_commit";
+const OP_GIT_PUSH = "git_push";
+const OP_REFACTOR_APPLY = "refactor_apply";
+const OP_PRIVACY_WIPE = "privacy_wipe";
+const OP_CREATE_ISSUE = "create_issue_for_finding";
+const OP_EXPORT_CONVERSATION_TO_FILE = "export_conversation_to_file";
+const OP_EXPORT_SETUP = "export_setup";
+const OP_EXPORT_SETUP_TO_FILE = "export_setup_to_file";
 
 /** Request one single-use confirmation id for `operation` via
  * `request_confirmation`.
@@ -258,7 +278,8 @@ const OP_CLEAR_ALL_DATA = "clear_application_data";
  * @param scope Confirmation scope the id is bound to.
  * @param operation Operation identity (command text, or an `OP_*` literal).
  * @param target Optional extra binding: workspace-relative `cwd` for terminal
- * runs and the affected row id for row-scoped deletes.
+ * runs, the affected row id for row-scoped deletes, and the exported
+ * conversation's id for the conversation-scoped export operations.
  */
 export function requestConfirmation(
   scope: ConfirmationScope,
@@ -379,17 +400,36 @@ export async function deleteConversationPermanently(id: number): Promise<void> {
 
 /** Export one conversation to the JSON document at `path` via
  * `export_conversation_to_file`. Read-only against the database; the
- * document preserves persisted message order (FR-010). */
-export function exportConversationToFile(id: number, path: string): Promise<void> {
-  return invoke<void>("export_conversation_to_file", { conversationId: id, path });
+ * document preserves persisted message order (FR-010).
+ *
+ * SEC-03: the backend consumes a live single-use confirmation id minted for
+ * `export_conversation_to_file` in the `export` scope, bound to this exact
+ * conversation row — this wrapper mints it through the blocking native OS
+ * dialog first, so cancelling at the dialog rejects and writes nothing. */
+export async function exportConversationToFile(id: number, path: string): Promise<void> {
+  const confirmationId = await requestConfirmation(
+    "export",
+    OP_EXPORT_CONVERSATION_TO_FILE,
+    { targetId: id },
+  );
+  return invoke<void>("export_conversation_to_file", {
+    conversationId: id,
+    path,
+    confirmationId,
+  });
 }
 
-/** Import one conversation from an exported JSON document string via
- * `import_conversation`; returns the schema-assigned id of the newly created
- * conversation (FR-011). The backend inserts atomically — validation failure
- * leaves no partial rows behind. */
-export function importConversation(json: string): Promise<number> {
-  return invoke<number>("import_conversation", { json });
+/** Import one conversation from the `.json` export document at the
+ * dialog-picked absolute `path` via `import_conversation`; returns the
+ * schema-assigned id of the newly created conversation (FR-011).
+ *
+ * SEC-01: the document is read BACKEND-side (`.json`-only allowlist, path
+ * containment, and the 16 MiB cap fire before any byte is read) — the
+ * renderer passes the picked path, never file content, and holds no `fs`
+ * plugin grant to read it itself. The backend inserts atomically —
+ * validation failure leaves no partial rows behind. */
+export function importConversation(path: string): Promise<number> {
+  return invoke<number>("import_conversation", { path });
 }
 
 // ---- Setup import/export (WS-E.2) --------------------------------------
@@ -431,14 +471,25 @@ export function importMcpServers(json: string): Promise<SetupImportReport> {
 }
 
 /** Export the current Nexora setup (settings plus routing profiles and
- * feature flags) to its portable JSON document. */
-export function exportSetup(): Promise<string> {
-  return invoke<string>("export_setup");
+ * feature flags) to its portable JSON document.
+ *
+ * SEC-03: the backend consumes a live single-use confirmation id minted for
+ * `export_setup` in the `export` scope — this wrapper mints it through the
+ * blocking native OS dialog first, so cancelling at the dialog rejects and
+ * nothing is serialized. */
+export async function exportSetup(): Promise<string> {
+  const confirmationId = await requestConfirmation("export", OP_EXPORT_SETUP);
+  return invoke<string>("export_setup", { confirmationId });
 }
 
-/** Export the current Nexora setup to the JSON document at `path`. */
-export function exportSetupToFile(path: string): Promise<void> {
-  return invoke<void>("export_setup_to_file", { path });
+/** Export the current Nexora setup to the JSON document at `path`.
+ *
+ * SEC-03: same gate as `exportSetup`, with the id minted for
+ * `export_setup_to_file`; the destination is never overwritten (the backend
+ * refuses an existing file). */
+export async function exportSetupToFile(path: string): Promise<void> {
+  const confirmationId = await requestConfirmation("export", OP_EXPORT_SETUP_TO_FILE);
+  return invoke<void>("export_setup_to_file", { path, confirmationId });
 }
 
 /** Import a portable Nexora setup document; returns the per-key report. */
@@ -463,19 +514,23 @@ export interface Attachment {
 
 /** Attach a local-file reference to the conversation as a draft attachment via
  * the existing `attach_file` command (FR-008). No content is uploaded; only
- * metadata (name, path, size, media type) is persisted locally. */
+ * metadata (name, path, size, media type) is persisted locally.
+ *
+ * SEC-01: the file size is derived BACKEND-side from the picked file's own
+ * metadata and returned in the persisted `Attachment` row — the renderer
+ * supplies only the dialog-picked `filePath`, the display `fileName`, and the
+ * optional `mimeType` hint, and holds no `fs` plugin grant to stat the file
+ * itself. */
 export function attachFile(
   conversationId: number,
   fileName: string,
   filePath: string,
-  fileSizeBytes: number | null,
   mimeType: string | null,
 ): Promise<Attachment> {
   return invoke<Attachment>("attach_file", {
     conversationId,
     fileName,
     filePath,
-    fileSizeBytes,
     mimeType,
   });
 }
@@ -1364,29 +1419,40 @@ export function gitCommitDiff(hash: string): Promise<GitCommitDiff> {
 }
 
 /** Stage `paths` (repository-relative) into the index via `git_stage`.
- * Returns how many were staged. The wrapper always passes the explicit
- * per-call confirmation the backend requires for writes. */
-export function gitStage(paths: string[]): Promise<number> {
-  return invoke<number>("git_stage", { paths, confirmed: true });
+ * Returns how many were staged.
+ *
+ * SEC-03: the backend consumes a live single-use confirmation id minted for
+ * `git_stage` in the `version_control` scope — this wrapper mints it through
+ * the blocking native OS dialog first, so cancelling at the dialog rejects
+ * and stages nothing (no caller-supplied boolean exists on this path). */
+export async function gitStage(paths: string[]): Promise<number> {
+  const confirmationId = await requestConfirmation("version_control", OP_GIT_STAGE);
+  return invoke<number>("git_stage", { paths, confirmationId });
 }
 
 /** Unstage `paths` (repository-relative) back to `HEAD` via `git_unstage`.
- * Returns how many were unstaged; confirmed like `gitStage`. */
-export function gitUnstage(paths: string[]): Promise<number> {
-  return invoke<number>("git_unstage", { paths, confirmed: true });
+ * Returns how many were unstaged; confirmed like `gitStage` (the id is
+ * minted for `git_unstage`, so a stage id cannot authorize it). */
+export async function gitUnstage(paths: string[]): Promise<number> {
+  const confirmationId = await requestConfirmation("version_control", OP_GIT_UNSTAGE);
+  return invoke<number>("git_unstage", { paths, confirmationId });
 }
 
 /** Commit the staged index with `message` via `git_commit`. Returns the new
  * commit hash. The backend validates the message and refuses without the
- * explicit confirmation this wrapper always passes. */
-export function gitCommit(message: string): Promise<string> {
-  return invoke<string>("git_commit", { message, confirmed: true });
+ * confirmation id this wrapper mints through the native OS dialog (SEC-03,
+ * same gate as `gitStage`). */
+export async function gitCommit(message: string): Promise<string> {
+  const confirmationId = await requestConfirmation("version_control", OP_GIT_COMMIT);
+  return invoke<string>("git_commit", { message, confirmationId });
 }
 
 /** Push the current branch to `origin` via `git_push` (never forced; only
- * `origin` is accepted backend-side). Confirmed like `gitStage`. */
-export function gitPush(): Promise<void> {
-  return invoke<void>("git_push", { remote: "origin", confirmed: true });
+ * `origin` is accepted backend-side). Confirmed like `gitStage` — the id is
+ * minted for `git_push` specifically. */
+export async function gitPush(): Promise<void> {
+  const confirmationId = await requestConfirmation("version_control", OP_GIT_PUSH);
+  return invoke<void>("git_push", { remote: "origin", confirmationId });
 }
 
 /** AI-generated commit message for the staged changes
@@ -1883,21 +1949,26 @@ export interface RefactorApplyResult {
   verified: boolean;
 }
 
-/** Apply one confirmed dead-code removal via `refactor_apply`. The wrapper
- * always passes the explicit per-call confirmation the backend requires
- * for writes — ticking the panel's confirmation box IS the approval. */
-export function refactorApply(
+/** Apply one confirmed dead-code removal via `refactor_apply`.
+ *
+ * SEC-03: the backend consumes a live single-use confirmation id minted for
+ * `refactor_apply` in the `refactor` scope — this wrapper mints it through
+ * the blocking native OS dialog before the write. The panel's in-app
+ * confirmation tick stays as the pre-gate UX, but the approval the backend
+ * verifies is the native dialog, never a caller-supplied boolean. */
+export async function refactorApply(
   path: string,
   startLine: number,
   endLine: number,
   kind: string,
 ): Promise<RefactorApplyResult> {
+  const confirmationId = await requestConfirmation("refactor", OP_REFACTOR_APPLY);
   return invoke<RefactorApplyResult>("refactor_apply", {
     path,
     startLine,
     endLine,
     kind,
-    confirmed: true,
+    confirmationId,
   });
 }
 
@@ -2056,14 +2127,16 @@ export function snapshotDatabase(): Promise<SnapshotInfo> {
 // pending), the newest pre-update snapshot presence, and the local `gh` CLI
 // probe. Read-only and network-free; no new tables. The update signal stays
 // on `update_check` (it needs the network) — the panel calls both.
-// `create_issue_for_finding` files one caller-confirmed issue through the
+// `create_issue_for_finding` files one user-confirmed issue through the
 // user's own `gh` CLI (`gh issue create` with `cwd` = workspace root, so the
 // repo resolves itself). Auth stays in the CLI: no token ever crosses IPC —
-// only the confirmed title/location/detail/source strings travel, and only
-// title/body strings reach the subprocess as argv. The per-call `confirmed`
-// flag carries the destructive-action confirmation pattern (bare IPC callers
-// cannot file). Payloads stay snake_case like every other backend struct;
-// command args are camelCase (`debtId` style) like every other command.
+// only the title/location/detail/source strings travel, and only
+// title/body strings reach the subprocess as argv. The destructive-action
+// confirmation is the same mint-and-consume gate as the other writes (SEC-03):
+// the wrapper mints a single-use `release`-scope id through the blocking
+// native OS dialog and the backend consumes it before `gh` runs — bare IPC
+// callers cannot file. Payloads stay snake_case like every other backend
+// struct; command args are camelCase (`debtId` style) like every other command.
 
 /** Newest pre-update snapshot: file name (never the path) plus size. */
 export interface ReleaseSnapshot {
@@ -2102,21 +2175,24 @@ export interface CreatedIssue {
   number: number;
 }
 
-/** File one caller-confirmed issue via `create_issue_for_finding`.
- * `confirmed` must be true (the dialog owns the confirmation UX). */
-export function createIssueForFinding(
+/** File one user-confirmed issue via `create_issue_for_finding`.
+ *
+ * SEC-03: the confirmation is the blocking native OS dialog this wrapper
+ * raises (minting a single-use `release`-scope id bound to
+ * `create_issue_for_finding`) — there is no caller-supplied boolean. */
+export async function createIssueForFinding(
   title: string,
   source: IssueSource,
-  confirmed: boolean,
   location?: string | null,
   detail?: string | null,
 ): Promise<CreatedIssue> {
+  const confirmationId = await requestConfirmation("release", OP_CREATE_ISSUE);
   return invoke<CreatedIssue>("create_issue_for_finding", {
     title,
     location: location ?? null,
     detail: detail ?? null,
     source,
-    confirmed,
+    confirmationId,
   });
 }
 
@@ -2124,7 +2200,8 @@ export function createIssueForFinding(
 // Three commands behind the health panel's Privacy section:
 // `privacy_status` (every egress surface with its live state + the ledger
 // aggregates), `privacy_export` (the same aggregates as copy/download JSON),
-// and `privacy_wipe` (user-confirmed delete behind `confirmed`). Payloads
+// and `privacy_wipe` (user-confirmed delete behind the mint-and-consume
+// confirmation gate, SEC-03). Payloads
 // stay snake_case like every other backend struct. There is no telemetry
 // upload anywhere: the ledger never leaves the machine except through the
 // user's own copy/download of this export.
@@ -2179,7 +2256,13 @@ export function privacyExport(): Promise<LedgerExport> {
   return invoke<LedgerExport>("privacy_export");
 }
 
-/** Wipe every ledger row via `privacy_wipe` (needs `confirmed: true`). */
-export function privacyWipe(confirmed: boolean): Promise<WipeResult> {
-  return invoke<WipeResult>("privacy_wipe", { confirmed });
+/** Wipe every ledger row via `privacy_wipe`.
+ *
+ * SEC-03: the confirmation is the blocking native OS dialog this wrapper
+ * raises (minting a single-use `privacy`-scope id bound to `privacy_wipe`) —
+ * there is no caller-supplied boolean. Cancelling at the dialog rejects and
+ * deletes nothing. */
+export async function privacyWipe(): Promise<WipeResult> {
+  const confirmationId = await requestConfirmation("privacy", OP_PRIVACY_WIPE);
+  return invoke<WipeResult>("privacy_wipe", { confirmationId });
 }

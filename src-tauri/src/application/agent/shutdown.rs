@@ -519,9 +519,33 @@ mod tests {
             .expect("start");
             run_ids.push(run_id);
         }
-        for run_id in &run_ids {
-            wait_for_approval_park(&rx, *run_id);
+        // Drain once for both runs: the two park frames interleave in one
+        // channel, and the per-run `wait_for_approval_park` discards
+        // non-matching frames, so a sibling's `ApprovalRequested` consumed
+        // while waiting for the first run would make the second wait hang
+        // on an idle channel and time out. One combined drain leaves only
+        // when every run has parked (the same interleave the `Finished`
+        // drain below already guards).
+        let mut unparked: Vec<i64> = run_ids.clone();
+        for _ in 0..2000 {
+            if unparked.is_empty() {
+                break;
+            }
+            match rx.recv_timeout(Duration::from_secs(10)) {
+                Ok(RunFrame::Governance {
+                    run_id,
+                    event: AgentRunEvent::ApprovalRequested { .. },
+                }) => {
+                    unparked.retain(|id| *id != run_id);
+                }
+                Ok(_) => {}
+                Err(_) => break,
+            }
         }
+        assert!(
+            unparked.is_empty(),
+            "every run must park for approval before shutdown, missing {unparked:?}"
+        );
 
         let summary = shutdown_agent_subsystem(&agent, &tasks, &terminal, TEST_SHUTDOWN_BOUND);
 

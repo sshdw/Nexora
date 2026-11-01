@@ -406,8 +406,19 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
     case "request_confirmation": {
       // DEV-ONLY mock: every scope mints the same canned id, and the
       // destructive cases below accept any non-empty id (production mints
-      // unguessable single-use ids backend-side — see NEX-SEC-004).
-      if (args.scope !== "terminal" && args.scope !== "data_management") {
+      // unguessable single-use ids backend-side — see NEX-SEC-004). The
+      // allowlist mirrors the Rust `scope_of` set, now including the SF-03
+      // scopes (version_control / refactor / privacy / release / export).
+      const mockScopes = [
+        "terminal",
+        "data_management",
+        "version_control",
+        "refactor",
+        "privacy",
+        "release",
+        "export",
+      ];
+      if (!mockScopes.includes(String(args.scope))) {
         fail("Mock backend: unknown confirmation scope.");
       }
       return "mock-confirmation-id";
@@ -471,9 +482,11 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
     case "export_conversation_to_file":
       return null;
     case "import_conversation": {
-      try {
-        JSON.parse(String(args.json));
-      } catch {
+      // SEC-01 wire shape: the command carries the dialog-picked `path` (the
+      // backend reads the document itself); the mock cannot read files, so it
+      // validates the path shape and imports the canned conversation.
+      const pickedPath = String(args.path ?? "");
+      if (!pickedPath.endsWith(".json")) {
         fail("Unsupported file.");
       }
       const id = nextConversationId++;
@@ -488,6 +501,9 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
       return id;
     }
     case "attach_file": {
+      // SEC-01 wire shape: no size argument exists — production derives the
+      // size backend-side from the picked file's own metadata. The mock
+      // stands in with a fixed canned size so visual QA still renders one.
       const id = nextAttachmentId++;
       attachments.push({
         id,
@@ -495,7 +511,7 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
         message_id: null,
         file_name: String(args.fileName ?? args.file_name),
         file_path: String(args.filePath ?? args.file_path),
-        file_size_bytes: typeof (args.fileSizeBytes ?? args.file_size_bytes) === "number" ? (args.fileSizeBytes ?? args.file_size_bytes) as number : null,
+        file_size_bytes: 1024,
         mime_type: typeof (args.mimeType ?? args.mime_type) === "string" ? (args.mimeType ?? args.mime_type) as string : null,
       });
       return attachments[attachments.length - 1];
