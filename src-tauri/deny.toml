@@ -25,3 +25,14 @@
 [advisories]
 version = 2
 yanked = "deny"
+# Unmaintained transitives: ignored (never vulnerabilities) until upstream replaces them.
+ignore = [
+    # unmaintained, no vulnerability, transitive via glib-macros 0.18.5 / gtk3-macros 0.18.2 (tauri gtk stack) — revisit when upstream replaces it
+    "RUSTSEC-2024-0370",
+    # unmaintained, no vulnerability, transitive via zbus 5.x (keyring -> zbus-secret-service-keyring-store -> secret-service) — revisit when upstream replaces it
+    "RUSTSEC-2026-0370",
+    # unmaintained, no vulnerability, transitive via zbus 5.x / zbus_macros 5.x (keyring -> zbus-secret-service-keyring-store -> secret-service) — revisit when upstream replaces it
+    "RUSTSEC-2026-0371",
+    # unmaintained, no vulnerability, transitive via zvariant 5.x <- zbus 5.x (keyring -> zbus-secret-service-keyring-store -> secret-service) — revisit when upstream replaces it
+    "RUSTSEC-2026-0372",
+]
