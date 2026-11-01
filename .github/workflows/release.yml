@@ -1,7 +1,8 @@
 name: release
 
-# Tag-triggered release: builds the Windows bundle via tauri-action and
-# attaches it to a DRAFT GitHub Release. Drafts never publish by accident;
+# Tag-triggered release: gates the tag ref first (ADD-06), then builds the
+# Windows bundle via tauri-action and attaches it to a DRAFT GitHub Release
+# together with SHA256 checksums (ADD-12). Drafts never publish by accident;
 # the owner reviews the draft and publishes manually. CI never creates tags.
 #
 # OVERLAP NOTE (for the owner to reconcile): build.yml (from the local-only
@@ -16,6 +17,8 @@ name: release
 # duplication, drop `tags: ["v*"]` from build.yml's push trigger (keeping its
 # main + workflow_run triggers) and let this workflow own tag releases — or,
 # equivalently, rewire this file to `on: release: types: [published]`.
+# (Owner decision pending — both triggers stay as they are, so the double
+# Windows build cost remains until the owner rules.)
 
 on:
   push:
@@ -34,8 +37,113 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # ADD-06 (05-ADD-FOR-2.0.0 §3.2 Gap B, RD-10): a tag push used to run zero
+  # gates — ci.yml fires on main + PRs only, so the draft-release artifact
+  # was built ungated. The three gate jobs below run the CI gate commands on
+  # the tag ref and `publish-release` needs all of them, so a failing gate
+  # leaves no artifact. Commands mirror ci.yml verbatim (fmt / clippy /
+  # cargo test / npm test / tsc) so the two gates cannot drift; eslint and
+  # the vite build stay CI-only — ADD-06 scopes the tag gate to fmt +
+  # clippy + cargo test + vitest/tsc.
+  gate-fmt:
+    name: 'gate: fmt'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install baseline Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Resolve pinned toolchain (src-tauri/rust-toolchain.toml)
+        working-directory: src-tauri
+        run: |
+          rustup component add rustfmt
+          rustfmt --version
+
+      - name: cargo fmt --check
+        working-directory: src-tauri
+        run: cargo fmt --all -- --check
+
+  gate-rust:
+    name: 'gate: rust (clippy + test)'
+    runs-on: ubuntu-latest
+    # Same per-job budget ci.yml gives its Linux rust leg (ci.yml:69).
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            pkg-config \
+            mold
+
+      - name: Install baseline Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Resolve pinned toolchain (src-tauri/rust-toolchain.toml)
+        working-directory: src-tauri
+        run: |
+          rustup component add clippy
+          rustc --version
+          cargo clippy --version
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri->target
+          shared-key: ${{ runner.os }}-cargo
+
+      - name: Set mold RUSTFLAGS (Linux only)
+        run: echo "RUSTFLAGS=-C link-arg=-fuse-ld=mold" >> $GITHUB_ENV
+
+      - name: cargo clippy
+        working-directory: src-tauri
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: cargo test
+        working-directory: src-tauri
+        run: cargo test
+
+  gate-frontend:
+    name: 'gate: frontend (vitest + tsc)'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: npm test
+        run: npm test
+
+      - name: npx tsc --noEmit
+        run: npx tsc --noEmit
+
   publish-release:
     name: publish release
+    # ADD-06: the bundle is produced only after every gate above passed.
+    needs: [gate-fmt, gate-rust, gate-frontend]
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
@@ -61,12 +169,59 @@ jobs:
         run: npm ci
 
       - name: Build bundle and draft release
+        id: tauri
         uses: tauri-apps/tauri-action@v0
+        # ADD-07, plumbing only — the signing-READY shape, not live signing:
+        # the two updater secrets are passed through to the tauri build so
+        # signing activates automatically once the owner adds them. With a
+        # secret absent the expression resolves to an empty string, which is
+        # inert today because the bundler only reads these vars when updater
+        # artifacts are enabled — and `bundle.createUpdaterArtifacts` is NOT
+        # set in src-tauri/tauri.conf.json (verified absent; deliberately
+        # left unset until the owner acts). Still missing before signing is
+        # live (owner steps, in order; no public key is invented here):
+        #   1. generate the updater keypair once, e.g.
+        #      `npx @tauri-apps/cli signer generate -w ~/.tauri/nexora.key`
+        #      — never commit the private key or paste it into the repo;
+        #   2. store the repo secrets `TAURI_SIGNING_PRIVATE_KEY` (the key
+        #      body) and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (its password);
+        #   3. set `bundle.createUpdaterArtifacts: true` in
+        #      src-tauri/tauri.conf.json — from then on this step signs
+        #      updater artifacts with no further workflow edits.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ inputs.tag || github.ref_name }}
           releaseName: 'Nexora ${{ github.ref_name }}'
           releaseBody: 'See CHANGELOG.md for the release notes.'
           releaseDraft: true
           prerelease: false
+
+      # ADD-12: publish SHA256 checksums next to the installers so the draft
+      # release carries its own integrity reference. The hashes cover the
+      # bundle artifacts tauri-action just produced (NSIS setup .exe + .msi
+      # for `targets: "all"` on Windows) and land on the release via the
+      # action's upload-URL output — `gh release upload` cannot reliably
+      # target a DRAFT release by tag, but the raw upload URL works.
+      - name: Generate SHA256 checksums
+        shell: bash
+        run: |
+          cd src-tauri/target/release/bundle
+          find . -type f \( -name '*.exe' -o -name '*.msi' \) -print0 \
+            | sort -z \
+            | xargs -0 -r sha256sum > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Attach SHA256SUMS.txt to the draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          upload_url='${{ steps.tauri.outputs.releaseUploadUrl }}'
+          upload_url="${upload_url%\{*}?name=SHA256SUMS.txt"
+          gh api --method POST \
+            -H "Content-Type: application/octet-stream" \
+            "$upload_url" \
+            --input src-tauri/target/release/bundle/SHA256SUMS.txt

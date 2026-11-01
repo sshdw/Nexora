@@ -1,6 +1,6 @@
 [package]
 name = "nexora-core"
-version = "0.1.0"
+version = "2.0.0"
 description = "Shared, interface-free Nexora core: error/exit taxonomy, version parity, allow-listed config, and the SQLite/migration/repository storage foundation"
 license = "MIT"
 authors = ["Nexora Team"]

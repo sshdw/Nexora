@@ -49,6 +49,7 @@
 //! inherited); there is no auto-fix and no re-run (no POST anywhere on this
 //! path).
 
+use std::cmp::Ordering;
 use std::path::Path;
 use std::time::Duration;
 
@@ -1116,15 +1117,16 @@ pub(crate) fn list_actions(workspace_root: &Path) -> Result<GhActionsResponse, G
 ///
 /// A repository with no releases (404 on the endpoint) resolves to
 /// `latest_tag: None` with `update_available: false` — never an error dump.
-/// The version comparison is an exact normalized-tag compare (a leading `v`
-/// is ignored): `update_available` is true when the latest tag differs from
-/// the running build, so pre-release/downgrade nuances stay the user's
-/// judgment call on GitHub, not the panel's.
+/// The version comparison is a semver compare on the normalized tags (a
+/// leading `v` is ignored): `update_available` is true only when the latest
+/// release is a strictly higher version than the running build, so a
+/// downgrade or a re-run of the same version is never announced as an
+/// update (SEC-04).
 ///
 /// One update check: the resolved repo, the running build, the latest
-/// release (when the repo publishes any), the exact-tag verdict, and the
-/// rate-limit snapshot. The token is borrowed for the header only and never
-/// stored or echoed.
+/// release (when the repo publishes any), the newer-version verdict, and
+/// the rate-limit snapshot. The token is borrowed for the header only and
+/// never stored or echoed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct UpdateCheck {
     pub owner: String,
@@ -1170,11 +1172,121 @@ fn normalize_tag(tag: &str) -> String {
         .to_string()
 }
 
-/// Whether `latest` names a different build than `current` (exact
-/// normalized-tag compare — not semver: anything but equality is the user's
-/// call on GitHub).
+/// One parsed release version: `major.minor.patch` plus the optional
+/// pre-release suffix. Build metadata (after `+`) is accepted on input and
+/// dropped — it never affects precedence (semver §10).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReleaseVersion {
+    major: u64,
+    minor: u64,
+    patch: u64,
+    prerelease: Option<String>,
+}
+
+/// Parse the version forms release tags actually produce here
+/// (`2.0.0`; `v2.0.0` once [`normalize_tag`] has stripped the leading
+/// `v`/`V`), with optional `-rc.1`-style pre-releases and ignored
+/// `+build` metadata. Returns `None` for anything else — the caller then
+/// refuses to announce an update rather than guessing an ordering for a
+/// tag it cannot read.
+fn parse_release_version(version: &str) -> Option<ReleaseVersion> {
+    let version = match version.split_once('+') {
+        Some((core, _)) => core,
+        None => version,
+    };
+    let (core, prerelease) = match version.split_once('-') {
+        Some((core, pre)) => (core, Some(pre)),
+        None => (version, None),
+    };
+    let mut numbers = core.split('.');
+    let major = numbers.next()?.parse::<u64>().ok()?;
+    let minor = numbers.next()?.parse::<u64>().ok()?;
+    let patch = numbers.next()?.parse::<u64>().ok()?;
+    if numbers.next().is_some() {
+        return None;
+    }
+    let prerelease = match prerelease {
+        Some(pre) if pre.is_empty() || !valid_prerelease(pre) => return None,
+        Some(pre) => Some(pre.to_string()),
+        None => None,
+    };
+    Some(ReleaseVersion {
+        major,
+        minor,
+        patch,
+        prerelease,
+    })
+}
+
+/// A pre-release is dot-separated identifiers of `[0-9A-Za-z-]`, numeric
+/// identifiers without leading zeros (semver §9). A malformed pre-release
+/// poisons the whole version: parse fails, nothing is announced.
+fn valid_prerelease(pre: &str) -> bool {
+    pre.split('.').all(|id| {
+        let numeric_leading_zero =
+            id.len() > 1 && id.starts_with('0') && id.bytes().all(|b| b.is_ascii_digit());
+        !id.is_empty()
+            && !numeric_leading_zero
+            && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    })
+}
+
+/// Semver §11 precedence: numeric major/minor/patch compare first, then a
+/// version WITHOUT a pre-release outranks one WITH it, and two
+/// pre-releases compare identifier by identifier (numeric identifiers rank
+/// below alphanumeric ones and compare numerically, alphanumerics compare
+/// in ASCII order; a longer identifier list wins once the shared prefix is
+/// equal).
+fn compare_release_versions(a: &ReleaseVersion, b: &ReleaseVersion) -> Ordering {
+    a.major
+        .cmp(&b.major)
+        .then(a.minor.cmp(&b.minor))
+        .then(a.patch.cmp(&b.patch))
+        .then_with(|| match (&a.prerelease, &b.prerelease) {
+            (None, None) => Ordering::Equal,
+            (None, Some(_)) => Ordering::Greater,
+            (Some(_), None) => Ordering::Less,
+            (Some(left), Some(right)) => compare_prereleases(left, right),
+        })
+}
+
+/// Compare two pre-release strings (`rc.1` vs `rc.2`, `1` vs `alpha`).
+fn compare_prereleases(left: &str, right: &str) -> Ordering {
+    let mut left_ids = left.split('.');
+    let mut right_ids = right.split('.');
+    loop {
+        let ordering = match (left_ids.next(), right_ids.next()) {
+            (Some(l), Some(r)) => match (l.parse::<u64>(), r.parse::<u64>()) {
+                (Ok(l), Ok(r)) => l.cmp(&r),
+                (Ok(_), Err(_)) => Ordering::Less,
+                (Err(_), Ok(_)) => Ordering::Greater,
+                (Err(_), Err(_)) => l.cmp(r),
+            },
+            (None, None) => return Ordering::Equal,
+            (Some(_), None) => return Ordering::Greater,
+            (None, Some(_)) => return Ordering::Less,
+        };
+        if ordering != Ordering::Equal {
+            return ordering;
+        }
+    }
+}
+
+/// Whether `latest` is a strictly higher semver release than `current`.
+/// SEC-04: the previous exact normalized-tag compare flagged ANY tag
+/// difference as an update, so a downgrade was announced as one — an equal
+/// or lower version must never be. Both sides go through [`normalize_tag`]
+/// then [`parse_release_version`]; a side that does not parse (this repo's
+/// tags are `vMAJOR.MINOR.PATCH`, per `.git/refs/tags`) refuses to
+/// announce rather than guess an ordering.
 fn tag_is_newer(current: &str, latest: &str) -> bool {
-    normalize_tag(current) != normalize_tag(latest)
+    let (Some(current), Some(latest)) = (
+        parse_release_version(&normalize_tag(current)),
+        parse_release_version(&normalize_tag(latest)),
+    ) else {
+        return false;
+    };
+    compare_release_versions(&latest, &current) == Ordering::Greater
 }
 
 /// Keep only `https://github.com/` release URLs; anything else (an API
@@ -2145,15 +2257,50 @@ mod tests {
     }
 
     #[test]
-    fn update_tag_compare_ignores_a_leading_v_only() {
+    fn update_tag_compare_orders_semver_not_exact_tags() {
+        // Tag forms this repo's release flow produces (refs/tags:
+        // v0.1.0 .. v1.5.0): `vMAJOR.MINOR.PATCH`; normalize_tag strips one
+        // leading `v`/`V` before the semver parse.
         assert_eq!(normalize_tag("v1.5.0"), "1.5.0");
         assert_eq!(normalize_tag("V1.5.0"), "1.5.0");
         assert_eq!(normalize_tag("  v1.5.0  "), "1.5.0");
         assert_eq!(normalize_tag("1.5.0"), "1.5.0");
+        // Equal version (tagged or not) is never an update.
         assert!(!tag_is_newer("1.5.0", "v1.5.0"));
         assert!(!tag_is_newer("1.5.0", "1.5.0"));
+        // A strictly higher semver is an update, on every component.
         assert!(tag_is_newer("1.5.0", "v1.6.0"));
-        assert!(tag_is_newer("1.5.0", "1.5.0-rc"));
+        assert!(tag_is_newer("1.5.0", "v2.0.0"));
+        assert!(tag_is_newer("2.0.0", "v2.0.1"));
+    }
+
+    #[test]
+    fn update_tag_compare_rejects_downgrades_and_unparseable_tags() {
+        // SEC-04: the exact-tag compare announced any difference as an
+        // update, so moving the user to an older build was labelled
+        // "update available". Downgrades and equal versions are refused.
+        assert!(
+            !tag_is_newer("2.0.0", "v1.5.0"),
+            "a downgrade is not an update"
+        );
+        assert!(!tag_is_newer("2.0.0", "1.9.9"));
+        assert!(!tag_is_newer("2.0.0", "v2.0.0"));
+        // Pre-releases of the current version are OLDER (semver §11: a
+        // release outranks its own pre-release); a pre-release of a future
+        // version is a real update, and pre-release identifiers order
+        // numerically (rc.2 > rc.1) and below alphanumerics (1 < alpha).
+        assert!(!tag_is_newer("2.0.0", "v2.0.0-rc.1"));
+        assert!(!tag_is_newer("2.0.0", "v2.0.0-rc.2"));
+        assert!(tag_is_newer("2.0.0", "v2.1.0-rc.1"));
+        assert!(tag_is_newer("2.0.0-rc.1", "v2.0.0"));
+        assert!(tag_is_newer("2.0.0-rc.1", "v2.0.0-rc.2"));
+        assert!(tag_is_newer("2.0.0-1", "v2.0.0-alpha"));
+        // Non-semver tags (never produced by this repo's release flow) are
+        // refused instead of guessed into an ordering.
+        assert!(!tag_is_newer("2.0.0", "nightly"));
+        assert!(!tag_is_newer("2.0.0", "v2"));
+        assert!(!tag_is_newer("2.0.0", "v2.0.0-"));
+        assert!(!tag_is_newer("2.0.0", "2.0.0.1"));
     }
 
     #[test]
