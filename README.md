@@ -8,7 +8,7 @@
 
 Nexora is a desktop app for people who work with AI all day and do not want their work living on someone else's server. It runs on Tauri v2 with a React 19 frontend and a Rust backend; every conversation, prompt, attachment, and setting lives in a single SQLite file on your disk. There are no accounts, no sync service, and no telemetry — the network is touched only when you send a request to a provider you configured yourself.
 
-Latest release: **v1.5.0** — see [releases](https://github.com/sshdw/Nexora/releases/latest) and the [changelog](CHANGELOG.md). Version 2.0 (visual rebuild) is in development on `main`.
+Latest release: **v2.0.0** — see [releases](https://github.com/sshdw/Nexora/releases/latest) and the [changelog](CHANGELOG.md).
 
 ---
 
@@ -120,7 +120,7 @@ And the project history:
 
 ## Roadmap
 
-- **2.0 — visual rebuild: in progress on `main`.** Tracked in the [2.0 milestone](https://github.com/sshdw/Nexora/milestone/1).
+- **2.0 — visual rebuild: released as v2.0.0.** Tracked in the [2.0 milestone](https://github.com/sshdw/Nexora/milestone/1).
 - **2.1 — CLI: next.** A command-line companion in the same repository. Tracked in the [2.1 milestone](https://github.com/sshdw/Nexora/milestone/2); design brief in [docs/NEXORA-CLI-DESIGN-BRIEF.md](docs/NEXORA-CLI-DESIGN-BRIEF.md).
 
 Out of scope by design: cloud sync, user accounts, collaboration, mobile/web clients, and a plugin system.

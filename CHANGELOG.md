@@ -7,37 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- **Providers — local health probe (WS-A.5)**: new `provider_health` Tauri
-  command reporting a per-provider verdict (`healthy` / `degraded` /
-  `unreachable` / `unknown`) with credential/config presence booleans and a
-  `last_checked` Unix-seconds timestamp. The probe is local-only (no network):
-  it composes the existing credential-presence and configuration lookups with
-  a registry lookup, and carries no secret value.
-- **Providers — model routing profiles (WS-A.5)**: ordered provider→model
-  preference lists with per-task defaults (chat vs agent) persisted through
-  the existing settings store (`routing.profile.chat`,
-  `routing.profile.agent`; no new tables). Resolution returns the first entry
-  passing `recommended_models` gating (`require_tools` aware) with no
-  cross-provider fallback beyond the explicit profile order.
-
-### Changed
-
-- **Docs — context windows + capability fallback policy (WS-D.5)**: new
-  `docs/CONTEXT-WINDOWS.md` documenting the enforced conservative windows
-  (13 mapped IDs; lite/unverified Gemini clamped to 128k until live-verified),
-  proactive compaction (0.8 threshold + 20k reserve, distinct
-  `ContextExhausted` terminal signal), section budgets (10/15/15/35/25),
-  capability gating with no cross-provider fallback, compat fallback rules
-  (empty model list by design, `supports_tools` toggle, custom IDs
-  pass-through for chat / fail-closed for agent), and the pricing-estimates
-  disclaimer. Docs-only; no behavior change.
-
 ## [2.0.0] - 2026-10-11
 
 ### Added
 
+- **Providers — model context limits + proactive compaction (#57, #58)**:
+  per-model context windows (13 mapped IDs) resolved at run spawn; proactive
+  compaction live in production; distinct `ContextExhausted` terminal state.
+- **Providers — runtime core (#66)**: model capabilities resolved response-side
+  (no network), `recommended_models` gating with no cross-provider fallback.
+- **Providers — custom OpenAI-compatible endpoints (#67)**: first-class custom
+  endpoint configuration with URL validation, keyring-only credentials,
+  capability-gated tool calling, and a distinct `InvalidModel` error for
+  malformed model IDs.
+- **Providers — local health probe + routing profiles (WS-A.5, #69)**: a
+  `provider_health` Tauri command reporting a per-provider verdict (`healthy`
+  / `degraded` / `unreachable` / `unknown`) with credential/config presence
+  booleans and a `last_checked` Unix-seconds timestamp. The probe is
+  local-only (no network) and carries no secret value. Ordered provider→model
+  routing profiles with per-task defaults (chat vs agent) persist through the
+  existing settings store (`routing.profile.chat`, `routing.profile.agent`;
+  no new tables); resolution returns the first entry passing
+  `recommended_models` gating with no cross-provider fallback beyond the
+  explicit profile order.
+- **Repo tooling — audit, test drafts, dependency refactor (#104–#106)**:
+  repository audit scanners with a `repo_audit` command and Audit panel,
+  test draft generation, and dependency inventory with an allow-listed
+  refactor-apply path.
+- **GitHub — issues/PRs + Actions panels (#107, #108)**: read-only issue and
+  pull-request lists, and an Actions tab with lazy log tails and
+  create-fix-task.
+- **Diagnostics, update discovery, privacy ledger (#109, #110)**: diagnostics
+  bundle export; an in-app update check that only discovers newer releases
+  and links out (never downloads); privacy status/export/wipe backed by a
+  counts-only ledger.
+- **GitHub — runners detection (#111)**: runners panel for the repository.
+- **Workspace — debt backlog, Kanban + locks, docs panel, release checklist
+  (#143–#146)**: debt items (schema v10), a Kanban board with TTL task locks
+  (schema v11, steal/heartbeat, lock-guarded moves), a docs panel with a
+  verified-rows manifest, and a release checklist panel with a token-free
+  issue-file dialog.
+- **CLI — 2.1 groundwork (#227, #161)**: phase-1 spine of the command-line
+  companion merged as the workspace member `apps/nexora-cli`; not part of the
+  desktop 2.0.0 installers.
 - **Agent — run lifecycle state machine + I/O contracts (#70)**: explicit
   run states with a pinned transition table and backend I/O contracts
   (observe-only wiring, no behavior change).
@@ -76,14 +88,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Docs — context windows + capability fallback policy (#84)**: new
-  `docs/CONTEXT-WINDOWS.md` documenting the enforced conservative windows,
-  proactive compaction, section budgets, capability gating with no
-  cross-provider fallback, and compat fallback rules. Docs-only.
+- **Docs — context windows + capability fallback policy (#84, WS-D.5)**: new
+  `docs/CONTEXT-WINDOWS.md` documenting the enforced conservative windows
+  (13 mapped IDs; lite/unverified Gemini clamped to 128k until live-verified
+  — raised to 1M after live verification, see #85), proactive compaction
+  (0.8 threshold + 20k reserve, distinct `ContextExhausted` terminal signal),
+  section budgets (10/15/15/35/25), capability gating with no cross-provider
+  fallback, compat fallback rules (empty model list by design,
+  `supports_tools` toggle, custom IDs pass-through for chat / fail-closed for
+  agent), and the pricing-estimates disclaimer. Docs-only; no behavior change.
+- **Docs — spec sync (#129/#203)**: SRS moves agent runs into Goals
+  (unattended automation stays out of scope); ARCHITECTURE matched to the
+  codebase; DATABASE documents schema v12–v14.
+- **UI — visual rebuild (#218–#220, #230 phases P0–P6)**: legacy visual layer
+  replaced panel-by-panel — Tailwind + shadcn stack, black monochrome token
+  set in `src/index.css` with the approved mono visual language and frozen
+  radii scale, per-panel stylesheets, reduced-motion honored throughout;
+  `tokens.css` removed in P6. Navigation trimmed to Chat/Search/Git/Tasks/
+  Settings with the remaining panels kept in code behind the trim (hidden,
+  not deleted); composer overhauled.
+- **UI — Dock shell (R4–R6)**: the sidebar/tabs shell replaced by a dock-based
+  shell with sessions and context panels and composer popover refinements.
+- **Providers — unified HTTP retry/error classification (#68)**: one shared
+  error table across providers — Retry-After hint (30s cap), 402
+  PaymentRequired mapping, sanitized-URL logging — and one retry policy
+  (max 3 + jitter).
+
+### Removed
+
+- **UI — terminal panel (#219)**: the terminal surface was removed from the
+  shell outright in the 2026-10-13 pivot; the terminal backend commands are
+  retained.
 
 ### Fixed
 
 - **UI — a11y audit fixes (#97)**.
+- **Agent — park deadline (#171, #200; closes #119)**: every approval park
+  carries a configurable deadline (10 min default) with an honest timeout
+  outcome, claim release, and a reduced-motion-safe countdown in the UI.
+- **Import — bounds + monotonic timestamps (#173; closes #120)**: hard byte
+  cap and future-skew guard (now+300s) on import; monotonic `updated_at`
+  triggers on three tables (migration v12).
+- **DB — cross-column invariants (#175; closes #123)**: composite FK for
+  attachments, counter/lifecycle CHECKs, finalize recompute (migration v13).
+- **Agent — bounded tool output (#177; closes #134)**: bounded 2K previews
+  with byte lengths in event frames; full observation fetchable on demand via
+  `get_agent_step_observation`.
+- **Agent — per-turn token usage (#178; closes #125)**: `agent_steps` token
+  columns (migration v14), single-source context windows, honest NULL sums,
+  honest billing split.
+- **Agent — graceful shutdown (#180; closes #126)**: JoinHandle retention, 5s
+  shutdown coordinator, CloseRequested handling, honest shutdown vocabulary.
+- **IPC — async commands (#184; closes #121)**: 22 Tauri commands moved to
+  async + `spawn_blocking`.
+- **UI — search dropdown (#228)**: the panel appears only on results with an
+  inline spinner — no loading-only dropdown.
+
+### Security
+
+- **Agent — spend guard enforced in release builds (#166; closes #116)**:
+  usage is estimated when the provider reports none, every turn accumulates,
+  and free-model IDs bill $0.
+- **Security — server-side confirmation dialog (#167; closes #118)**: the
+  native OS dialog is the single trust anchor for sensitive operations, with
+  single-use operation ids; ungated twins removed.
+- **Security — tool I/O redaction at persistence (#168; closes #117)**:
+  secrets scrubbed and length-bounded at `RunRecorder::insert_step` (step
+  text, IPC events, logs).
+- **Agent — workspace file-tool path hardening (#64, #65)**: symlink-escape
+  checks with layered parent re-verification across read/write/edit/list/
+  search; permission-path coverage for all six tools.
+- **Agent — injection false-positive reduction (#182, #198; closes #124)**:
+  structural-only mimicry scan, single system prompt under Supervised,
+  Deny-wins.
+- **Agent — hardening batch (#206; closes #137)**: export guard on both
+  layers, unconditional SEC-007 hold, DB gap check before migrations,
+  per-turn tool cap.
 
 ## [1.5.0] - 2026-09-26
 
