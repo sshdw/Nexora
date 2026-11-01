@@ -41,14 +41,16 @@ describe("composer popover — offset from the card", () => {
 });
 
 describe("composer popover — height cap", () => {
-  it("caps the body to the space above the card, leaving the gap and viewport padding", () => {
-    // 379 - 8 (card gap) - 8 (viewport top) = 363.
-    expect(popoverMaxHeightFromCard(379)).toBe(363);
-    expect(popoverMaxHeightFromCard(800)).toBe(784);
+  it("caps the body to the space between the app header and the card", () => {
+    // 1200×800 capture: card top 379, tab strip bottom 56.
+    // 379 - 56 - 8 (card gap) - 8 (header padding) = 307.
+    expect(popoverMaxHeightFromCard(379, 56)).toBe(307);
+    expect(popoverMaxHeightFromCard(800, 56)).toBe(728);
   });
 
   it("never returns a negative height", () => {
-    expect(popoverMaxHeightFromCard(4)).toBe(0);
-    expect(popoverMaxHeightFromCard(Number.NaN)).toBe(0);
+    expect(popoverMaxHeightFromCard(4, 0)).toBe(0);
+    expect(popoverMaxHeightFromCard(Number.NaN, 56)).toBe(0);
+    expect(popoverMaxHeightFromCard(379, Number.NaN)).toBe(0);
   });
 });

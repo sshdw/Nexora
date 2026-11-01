@@ -300,6 +300,19 @@ describe("context panel — budget slider", () => {
     const value = sheet.slice(valueStart, sheet.indexOf("}", valueStart));
     expect(value).toMatch(/font-size:\s*var\(--type-size-body-small\)/);
   });
+
+  it("reserves body padding so the budget card scrolls clear of the clipped edge", () => {
+    // The budget card is the last block; without end padding its bottom
+    // border is cut by the popover's clipped edge. The extra inline-end lane
+    // keeps the scrollbar off the right-hand values.
+    const sheet = readRepoFile("src/styles/context.css");
+    const start = sheet.indexOf(".nex-context {");
+    expect(start).toBeGreaterThan(-1);
+    const body = sheet.slice(start, sheet.indexOf("}", start));
+    expect(body).toMatch(/padding-block-end:\s*var\(--space-lg\)/);
+    expect(body).toMatch(/padding-inline-end:\s*6px/);
+    expect(body).toMatch(/overflow-y:\s*auto/);
+  });
 });
 
 describe("context popover — the ring's stats, not a second fetch", () => {

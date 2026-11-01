@@ -394,6 +394,29 @@ describe("sessions panel — action reveal", () => {
     expect(reveal).toContain(".nex-sessions-item:focus-within .nex-sessions-row-actions");
   });
 
+  it("fades the viewport's bottom edge into the panel surface", () => {
+    // A row sliced by the panel's bottom edge reads as a rendering bug unless
+    // the edge itself says "more below". The fade is paint only, ends on the
+    // panel's own surface token, and never intercepts a pointer.
+    const sheet = readRepoFile("src/styles/dockPanels.css");
+    const start = sheet.indexOf(".nex-sessions::after {");
+    expect(start, ".nex-sessions::after has no rule").toBeGreaterThan(-1);
+    const body = sheet.slice(start, sheet.indexOf("}", start));
+    expect(body).toMatch(
+      /background:\s*linear-gradient\(to top, var\(--popover\), transparent\)/,
+    );
+    expect(body).toMatch(/pointer-events:\s*none/);
+    expect(body).toMatch(/height:\s*var\(--space-xl\)/);
+  });
+
+  it("reserves scroll padding so the last row clears the fade", () => {
+    const sheet = readRepoFile("src/styles/dockPanels.css");
+    const start = sheet.indexOf(".nex-sessions-scroll {");
+    expect(start).toBeGreaterThan(-1);
+    const body = sheet.slice(start, sheet.indexOf("}", start));
+    expect(body).toMatch(/padding-block-end:\s*var\(--space-xl\)/);
+  });
+
   it("portals row-action tooltips out of the scroll container", () => {
     // Real capture: the always-mounted, centered bubble of the last action
     // extended to x=394 inside a 272 px scroller, so `scrollWidth` was 313

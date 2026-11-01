@@ -72,6 +72,22 @@ export function splitForMiddleEllipsis(
   ];
 }
 
+/** Recent paths that are not the current root and not already in the
+ *  registered-roots registry. A path registered as a workspace must not
+ *  appear twice in the same menu; the Recent section simply disappears
+ *  when this returns nothing. */
+export function recentWithoutRegistered(
+  recent: readonly string[],
+  roots: readonly string[],
+  root: string | null,
+  limit = 5,
+): string[] {
+  const registered = new Set(roots);
+  return recent
+    .filter((path) => path !== root && !registered.has(path))
+    .slice(0, limit);
+}
+
 function FolderName({ path }: { path: string }) {
   const name = workspaceFolderName(path);
   const [head, tail] = splitForMiddleEllipsis(name);
@@ -119,7 +135,7 @@ export default function WorkspaceContextRow({ workspace }: WorkspaceContextRowPr
   }, [root]);
 
   const disabled = loading || saving;
-  const recentOthers = recent.filter((path) => path !== root).slice(0, 5);
+  const recentOthers = recentWithoutRegistered(recent, roots, root);
   const registryOthers = roots.filter((path) => path !== root);
 
   const chooseFolder = async () => {

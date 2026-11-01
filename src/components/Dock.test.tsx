@@ -125,6 +125,19 @@ describe("dock — tooltip", () => {
     expect(tooltip).toHaveClass("group-hover/dock-btn:opacity-100");
     expect(tooltip).toHaveClass("group-focus-within/dock-btn:opacity-100");
   });
+
+  it("does not render the tooltip bubble while its panel is expanded", () => {
+    // Clicking Sessions keeps focus on the trigger; the panel paints over
+    // the bubble's lane, which left a clipped "S" chip at its left edge.
+    renderDock({ activePanel: "sessions" });
+    const btn = screen.getByRole("button", { name: "Sessions" });
+    expect(btn).toHaveAttribute("aria-expanded", "true");
+    expect(btn.querySelector('span[class*="opacity-0"]')).toBeNull();
+
+    // The other panel triggers keep their tooltip until they expand.
+    const activity = screen.getByRole("button", { name: "Activity" });
+    expect(activity.querySelector('span[class*="opacity-0"]')).not.toBeNull();
+  });
 });
 
 describe("dock — reduced-motion gate", () => {

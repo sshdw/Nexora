@@ -16,9 +16,10 @@
 //!   triggerTop - sideOffset = cardTop - gap
 //!
 //! Attachments and wrapped rows move `triggerTop`, so the offset follows
-//! them. The same measurement caps the popover's height to the space above
-//! the card (`cardTop - gap - viewportPadding`), which is what keeps the
-//! context body from leaving the viewport; the body itself scrolls.
+//! them. The same measurement caps the popover's height to the space
+//! between the app header and the card (`cardTop - headerBottom - 16`),
+//! which is what keeps the context body from covering the header or the
+//! budget card; the body itself scrolls.
 //!
 //! jsdom measures no layout, so the pure functions below are unit-tested
 //! with the real captured numbers; the hook only supplies the rectangles.
@@ -45,15 +46,20 @@ export function popoverOffsetFromCard(
 
 /**
  * Maximum content height that still leaves `gap` above the card and
- * `padding` at the viewport's top edge.
+ * `padding` below the app header:
+ *
+ *   cardTop - headerBottom - gap - padding
+ *
+ * At 1200×800 (card top 379, tab strip bottom 56) that is 307 px.
  */
 export function popoverMaxHeightFromCard(
   cardTop: number,
+  headerBottom: number,
   gap: number = COMPOSER_POPOVER_GAP,
   padding: number = COMPOSER_POPOVER_VIEWPORT_PADDING,
 ): number {
-  if (!Number.isFinite(cardTop)) return 0;
-  return Math.max(0, cardTop - gap - padding);
+  if (!Number.isFinite(cardTop) || !Number.isFinite(headerBottom)) return 0;
+  return Math.max(0, cardTop - headerBottom - gap - padding);
 }
 
 export interface ComposerPopoverLayout {
@@ -88,8 +94,11 @@ export function useComposerPopoverLayout(): ComposerPopoverLayout {
     // zero-height popover. In the app the card always has a real box.
     if (cardRect.width === 0 && cardRect.height === 0) return;
 
+    const header = document.querySelector<HTMLElement>(".nex-tabstrip");
+    const headerBottom = header?.getBoundingClientRect().bottom ?? 0;
+
     setSideOffset(popoverOffsetFromCard(triggerRect.top, cardRect.top));
-    setMaxHeight(popoverMaxHeightFromCard(cardRect.top));
+    setMaxHeight(popoverMaxHeightFromCard(cardRect.top, headerBottom));
   };
 
   return { triggerRef, sideOffset, maxHeight, measure };

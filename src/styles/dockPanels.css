@@ -8,9 +8,9 @@
    one object, and neither the thread nor the composer moves while it
    is open (D-06 forbids the shift).
 
-   Surfaces: the floating tier, because this IS a floating layer —
-   the one place the brief allows a shadow (§19). No blur, no glass
-   (D-09), no permanent glow.
+   Surfaces: the popover tier, because this IS a floating layer — the
+   same material and border as every composer popover, so one layer
+   reads as one material. No blur, no glass (D-09), no permanent glow.
    ============================================================ */
 
 .nex-dock-panel {
@@ -21,8 +21,8 @@
   max-height: min(440px, calc(100vh - 2 * var(--space-2xl)));
   display: flex;
   flex-direction: column;
-  background: var(--color-surface-floating);
-  border: 1px solid var(--color-outline-variant);
+  background: var(--popover);
+  border: 1px solid var(--border);
   border-radius: var(--shape-medium);
   box-shadow: var(--nex-sys-elevation-level1);
   z-index: var(--nex-sys-z-popover);
@@ -55,10 +55,14 @@
 }
 
 .nex-dock-panel-title {
+  flex: 0 1 auto;
+  min-width: 0;
   font-size: var(--type-size-body-small);
   font-weight: var(--type-weight-medium);
   color: var(--color-on-surface);
   margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -73,13 +77,13 @@
   white-space: nowrap;
 }
 
-/* When there is no meta the title takes the free space instead. */
-.nex-dock-panel-title + .nex-dock-panel-close {
-  margin-inline-start: auto;
-}
-
+/* The close button owns the trailing edge whether or not a meta slot sits
+   between it and the title. The old `title + close` adjacent selector
+   missed whenever `meta` was present, leaving "Sessions ×" at the left
+   with the panel's free space to its right. */
 .nex-dock-panel-close {
   flex: none;
+  margin-inline-start: auto;
 }
 
 /* ---- Body ---- */
@@ -206,10 +210,26 @@
 
 /* ---- Sessions ---- */
 .nex-sessions {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-height: 0;
   flex: 1 1 auto;
+}
+
+/* The list is taller than the panel: fade the last 24 px into the panel's
+   own surface so a half-row reads as "more below", and reserve the same
+   amount of scroll padding so the last row can clear the fade. The fade is
+   paint only — it never intercepts a pointer. */
+.nex-sessions::after {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  inset-block-end: 0;
+  height: var(--space-xl);
+  background: linear-gradient(to top, var(--popover), transparent);
+  pointer-events: none;
+  z-index: 1;
 }
 
 .nex-sessions-search {
@@ -265,6 +285,7 @@
   overflow-x: hidden;
   overflow-y: auto;
   padding-inline: var(--space-xxs);
+  padding-block-end: var(--space-xl);
 }
 
 /* ---- Session row actions (R6-06) ----
@@ -293,7 +314,7 @@
   transform: translateY(-50%);
   padding-inline-start: var(--space-xxs);
   border-radius: var(--shape-extra-small);
-  background: var(--color-surface-floating);
+  background: var(--popover);
   opacity: 0;
   pointer-events: none;
   transition: opacity var(--motion-duration-fast) var(--motion-easing-standard),

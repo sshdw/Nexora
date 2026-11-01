@@ -17,6 +17,12 @@
   min-width: 0;
   min-height: 0;
   padding: 0;
+  /* The scrolling body needs its own end padding: the budget card is the
+     last block, and its 12 px border/corners must scroll fully clear of
+     the popover's clipped bottom edge. The extra 6 px inline-end keeps
+     the scrollbar's lane off the right-hand values. */
+  padding-block-end: var(--space-lg);
+  padding-inline-end: 6px;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;

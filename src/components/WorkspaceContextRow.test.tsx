@@ -22,6 +22,7 @@ import { LocaleProvider } from "../lib/useLocale";
 import type { WorkspaceStore } from "../lib/useWorkspace";
 import { readRepoFile } from "../test/readRepoFile";
 import WorkspaceContextRow, {
+  recentWithoutRegistered,
   splitForMiddleEllipsis,
   workspaceFolderName,
 } from "./WorkspaceContextRow";
@@ -142,6 +143,28 @@ describe("workspace context row — the trigger", () => {
     // margin would push the chevron away from the label again.
     expect(chevron).not.toMatch(/margin-inline-start:\s*auto/);
     expect(chevron).toMatch(/margin-inline-start:\s*0/);
+  });
+});
+
+describe("workspace context row — recent/registry dedupe", () => {
+  it("does not repeat a registered path in Recent", () => {
+    expect(
+      recentWithoutRegistered(["D:\\2", "D:\\3", "D:\\4"], ["D:\\2"], null),
+    ).toEqual(["D:\\3", "D:\\4"]);
+  });
+
+  it("drops the current root and caps the recent list at five", () => {
+    expect(
+      recentWithoutRegistered(
+        ["D:\\1", "D:\\2", "D:\\3", "D:\\4", "D:\\5", "D:\\6", "D:\\7"],
+        ["D:\\3"],
+        "D:\\1",
+      ),
+    ).toEqual(["D:\\2", "D:\\4", "D:\\5", "D:\\6", "D:\\7"]);
+  });
+
+  it("returns an empty list when every recent path is registered", () => {
+    expect(recentWithoutRegistered(["D:\\2"], ["D:\\2"], null)).toEqual([]);
   });
 });
 

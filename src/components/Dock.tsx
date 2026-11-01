@@ -110,23 +110,28 @@ function DockButton({
         />
       )}
       {/* Tooltip bubble: overlay surface, outside the capsule (paints to the
-          right of the button), hover/focus reveal, not clipped. */}
-      <span
-        aria-hidden="true"
-        className={cn(
-          "absolute left-full top-1/2 -translate-y-1/2 translate-x-[var(--space-xxs)]",
-          "z-[var(--nex-sys-z-tooltip)] pointer-events-none",
-          "bg-[var(--color-surface-floating)] border border-[var(--color-outline-variant)] rounded-[var(--shape-small)]",
-          "px-[var(--space-xs)] py-[var(--space-xxs)]",
-          "text-[var(--color-popover-foreground)] text-sm font-medium whitespace-nowrap",
-          "opacity-0 transition-opacity",
-          "[transition-duration:var(--motion-duration-short2)]",
-          "[transition-timing-function:var(--motion-easing-standard)]",
-          "group-hover/dock-btn:opacity-100 group-focus-within/dock-btn:opacity-100"
-        )}
-      >
-        {tooltip}
-      </span>
+          right of the button), hover/focus reveal, not clipped. It is
+          absent while the panel is expanded: the panel itself paints over
+          that space, and a focus-retained trigger would leave a clipped
+          "S" chip at the panel's left edge. */}
+      {!expanded && (
+        <span
+          aria-hidden="true"
+          className={cn(
+            "absolute left-full top-1/2 -translate-y-1/2 translate-x-[var(--space-xxs)]",
+            "z-[var(--nex-sys-z-tooltip)] pointer-events-none",
+            "bg-[var(--color-surface-floating)] border border-[var(--color-outline-variant)] rounded-[var(--shape-small)]",
+            "px-[var(--space-xs)] py-[var(--space-xxs)]",
+            "text-[var(--color-popover-foreground)] text-sm font-medium whitespace-nowrap",
+            "opacity-0 transition-opacity",
+            "[transition-duration:var(--motion-duration-short2)]",
+            "[transition-timing-function:var(--motion-easing-standard)]",
+            "group-hover/dock-btn:opacity-100 group-focus-within/dock-btn:opacity-100"
+          )}
+        >
+          {tooltip}
+        </span>
+      )}
     </button>
   );
 }
