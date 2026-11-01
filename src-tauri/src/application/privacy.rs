@@ -15,13 +15,13 @@
 //!   recording path.
 //! - [`export_ledger`] returns the same aggregates as JSON-able data (the
 //!   panel copies/downloads it exactly like the diagnostics bundle).
-//! - [`wipe`] deletes every ledger row behind an explicit `confirmed` flag
-//!   (the `refactor_apply` precedent: unconfirmed calls refuse instead of
-//!   deleting). That flag is **renderer-attested, not a Rust-side
-//!   user-presence proof** — any IPC caller passes `confirmed: true` in one
-//!   call. Migrating it to the mint-and-consume flow (native dialog +
-//!   operation binding, `application/confirmations.rs`) is an open audit
-//!   item; do not describe this path as server-verified until then.
+//! - [`wipe`] deletes every ledger row behind a live single-use confirmation
+//!   id minted in the `privacy` scope by the `request_confirmation` command
+//!   (SEC-03: the same server-side mint-and-consume gate as the terminal and
+//!   data-management paths — native dialog + operation binding,
+//!   `application/confirmations.rs`). Forged, expired, reused, cross-scope,
+//!   and different-operation ids refuse with [`PrivacyError::Unconfirmed`]
+//!   and delete nothing.
 //!
 //! There is NO network upload of telemetry anywhere: no POST of stats
 //! exists on this path (or anywhere else in the backend — the only POSTs
@@ -36,6 +36,9 @@
 
 use serde::Serialize;
 
+use crate::application::confirmations::{
+    ConfirmationRegistry, ConfirmationTarget, OP_PRIVACY_WIPE, SCOPE_PRIVACY,
+};
 use crate::application::github::GITHUB_KEYRING_ENTRY;
 use crate::application::providers::ProviderService;
 use crate::infrastructure::database::{Database, DatabaseError};
@@ -59,7 +62,8 @@ const SECONDS_PER_DAY: i64 = 86_400;
 pub(crate) enum PrivacyError {
     /// A `SQLite` operation failed.
     Database(DatabaseError),
-    /// `wipe` was called without `confirmed = true`.
+    /// `wipe` was called without a live single-use confirmation id minted
+    /// for the privacy scope (SEC-03).
     Unconfirmed,
     /// A caller tried to record outside the fixed [`LEDGER_KINDS`]
     /// vocabulary (the schema CHECK would reject it anyway).
@@ -356,16 +360,27 @@ pub(crate) fn export_ledger(db: &Database) -> Result<LedgerExport, PrivacyError>
     })
 }
 
-/// Delete every ledger row. Refuses without `confirmed = true` (the
-/// `refactor_apply` precedent: the panel sends `confirmed: true` only from
-/// its explicit confirm step).
+/// Delete every ledger row. Requires `confirmation_id` — a live single-use
+/// id minted for [`OP_PRIVACY_WIPE`] in the `privacy` scope by the
+/// `request_confirmation` command, which only mints after the user accepts a
+/// blocking native OS dialog (SEC-03, the server-side destructive-action
+/// gate).
 ///
 /// # Errors
 ///
-/// Returns [`PrivacyError::Unconfirmed`] without deleting anything when
-/// `confirmed` is false, [`PrivacyError::Database`] on storage failure.
-pub(crate) fn wipe(db: &Database, confirmed: bool) -> Result<WipeResult, PrivacyError> {
-    if !confirmed {
+/// Returns [`PrivacyError::Unconfirmed`] without deleting anything when the
+/// id is forged, expired, already consumed, cross-scope, or bound to a
+/// different operation, and [`PrivacyError::Database`] on storage failure.
+pub(crate) fn wipe(
+    db: &Database,
+    confirmation_id: &str,
+    confirmations: &ConfirmationRegistry,
+) -> Result<WipeResult, PrivacyError> {
+    if !confirmations.consume(
+        SCOPE_PRIVACY,
+        confirmation_id,
+        &ConfirmationTarget::new(OP_PRIVACY_WIPE),
+    ) {
         return Err(PrivacyError::Unconfirmed);
     }
     let conn = db.lock()?;
@@ -472,18 +487,28 @@ mod tests {
     }
 
     #[test]
-    fn wipe_needs_confirmation_and_clears_everything() {
+    fn wipe_needs_a_server_verified_confirmation_and_clears_everything() {
         let db = in_memory_database();
         record(&db, "github_read");
-        let refused = wipe(&db, false);
+        // Forged ids refuse and delete nothing: the gate is the server-side
+        // registry, never a caller-supplied flag.
+        let refused = wipe(&db, "forged-id", &ConfirmationRegistry::new());
         assert!(
             matches!(refused, Err(PrivacyError::Unconfirmed)),
             "unconfirmed wipe must refuse, got {refused:?}"
         );
         let kept = status(&db).expect("status reads the ledger");
         assert_eq!(kept.total_events, 1, "unconfirmed wipe deletes nothing");
-        let wiped = wipe(&db, true).expect("confirmed wipe clears the ledger");
+        // A live single-use id minted for the exact operation wipes once.
+        let registry = ConfirmationRegistry::new();
+        let id = registry
+            .request(SCOPE_PRIVACY, &ConfirmationTarget::new(OP_PRIVACY_WIPE))
+            .expect("mint confirmation id");
+        let wiped = wipe(&db, &id, &registry).expect("confirmed wipe clears the ledger");
         assert_eq!(wiped.deleted_rows, 1);
+        // The id was consumed: a replay refuses.
+        let replay = wipe(&db, &id, &registry);
+        assert!(matches!(replay, Err(PrivacyError::Unconfirmed)));
         let cleared = status(&db).expect("status reads the ledger");
         assert!(cleared.stats.is_empty());
         assert_eq!(cleared.total_events, 0);

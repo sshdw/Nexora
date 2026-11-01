@@ -423,6 +423,12 @@ impl From<ExportError> for CommandError {
                 ErrorKind::InvalidInput,
                 format!("the export path is invalid: {reason}"),
             ),
+            // SEC-03: the caller supplied no live single-use id minted for
+            // this export; fixed vocabulary, never echoed.
+            ExportError::ConfirmationRequired => Self::new(
+                ErrorKind::ConfirmationRequired,
+                "explicit confirmation is required before this export can run",
+            ),
         }
     }
 }

@@ -20,22 +20,27 @@
 //! pending-map bound, and single-use enforcement. No business logic lives
 //! here beyond that translation.
 //!
-//! # Coverage (partial — read before claiming full coverage)
+//! # Coverage (complete for the destructive-write set — read before claiming)
 //!
 //! Rust-verified today: `terminal_run`, `clear_application_data`,
 //! `delete_conversation_permanently` (the only conversation-delete command —
 //! the ungated `delete_conversation` sibling was removed, so the live sidebar
-//! path mints through the native prompt first), and
+//! path mints through the native prompt first),
 //! `delete_prompt_permanently` (the only prompt-delete command — the ungated
 //! `delete_prompt` sibling was removed, so the live library path mints
-//! through the native prompt first).
+//! through the native prompt first), the version-control writes
+//! (`git_stage` / `git_unstage` / `git_commit` / `git_push`, scope
+//! `version_control`), `refactor_apply` (scope `refactor`),
+//! `privacy_wipe` (scope `privacy`), `create_issue_for_finding` (scope
+//! `release`), and the four export commands (scope `export`) — the former
+//! renderer-attested set, migrated in SEC-03.
 //!
-//! Still renderer-attested (`confirmed: bool`, or no gate at all for the
-//! write-to-disk exports — no Rust-side proof): `git_stage` / `git_unstage` /
-//! `git_commit` / `git_push`, `refactor_apply`, `privacy_wipe`,
-//! `create_issue_for_finding`, and the export paths (`export_conversation`,
-//! `export_conversation_to_file`, `export_setup`, `export_setup_to_file`).
-//! See open audit items #137 (SEC-005) and the remaining boolean gates.
+//! Other destructive commands without any gate (`delete_task`,
+//! `remove_attachment`, `delete_setting`, `remove_provider`,
+//! `delete_debt_item`, `remove_permission_rule`) are outside this
+//! confirmation gate's scope and are tracked separately. Do not describe
+//! the confirmation gate as covering those paths until they are migrated to
+//! the same mint-and-consume flow.
 
 // Tauri command handlers must take ownership of their deserialized
 // arguments: serde cannot borrow into the wire payload, so passing by
@@ -184,14 +189,20 @@ mod tests {
 
     /// Static wiring check: the destructive paths that claim Rust-side
     /// verification must all route through the shared mint/consume registry.
-    /// Their sibling boolean gates must stay visible as *not* covered, so the
-    /// module docs cannot overstate coverage without this test noticing the
-    /// shape changing underneath them.
+    /// This is the SEC-03 verified set — terminal, data-management, the
+    /// version-control writes, `refactor_apply`, `privacy_wipe`,
+    /// `create_issue_for_finding`, and the four export commands — and none
+    /// of them may keep (or regain) a caller-supplied boolean gate.
     #[test]
     fn rust_verified_paths_all_consume_the_shared_registry() {
         for source in [
             include_str!("terminal.rs"),
             include_str!("data_management.rs"),
+            include_str!("version_control.rs"),
+            include_str!("dep_refactor.rs"),
+            include_str!("privacy.rs"),
+            include_str!("release.rs"),
+            include_str!("import_export.rs"),
         ] {
             // The command layer holds the registry as managed state via the
             // `ManagedConfirmations` alias; that alias IS the shared registry.
@@ -208,26 +219,7 @@ mod tests {
                 "no Rust-verified path may keep a caller-supplied boolean gate"
             );
         }
-        // The still-attested gates are named in the module docs on purpose;
-        // this list is the migration checklist — when one of these stops
-        // carrying its boolean, it belongs in the verified set above.
-        for (path, marker) in [
-            ("version_control.rs", "confirmed: bool"),
-            ("dep_refactor.rs", "confirmed: bool"),
-            ("privacy.rs", "confirmed: bool"),
-            ("release.rs", "confirmed: bool"),
-        ] {
-            let source = read_command(path);
-            assert!(
-                source.contains(marker),
-                "{path} is listed as renderer-attested and must still carry its \
-                 caller-supplied boolean; move it into the verified set instead"
-            );
-        }
-        // The write-to-disk exports are renderer-attested with NO gate at all
-        // (raw caller-chosen path, open item #137 / SEC-005): pin that they
-        // stay gateless until migrated, so adding any confirmation shape here
-        // forces a docs + verified-set update instead of passing silently.
+        // The export module must still expose all four gated commands.
         let exports = read_command("import_export.rs");
         for command in [
             "export_conversation_to_file",
@@ -239,14 +231,6 @@ mod tests {
                 "import_export.rs must still expose {command}"
             );
         }
-        assert!(
-            !exports.contains("confirmation_id"),
-            "the export paths must not gain a minted id without joining the verified set"
-        );
-        assert!(
-            !exports.contains("confirmed: bool"),
-            "the export paths must not gain a caller boolean without joining the attested list"
-        );
     }
 
     /// Read a sibling command module's source for the static wiring checks.

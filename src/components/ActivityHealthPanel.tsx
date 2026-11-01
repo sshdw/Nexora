@@ -1010,7 +1010,9 @@ function PrivacySection({ status, error, onReload }: PrivacySectionProps) {
     setWipeBusy(true);
     setWipeError(null);
     try {
-      const result = await privacyWipe(true);
+      // The confirmation is the native OS dialog the wrapper raises (SEC-03):
+      // no caller-supplied boolean exists any more.
+      const result = await privacyWipe();
       setWiped(result.deleted_rows);
       setWipeArmed(false);
       onReload();

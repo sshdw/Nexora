@@ -34,15 +34,30 @@
 //! ascending (DATABASE.md §7.2), and are emitted in that order without any
 //! re-sorting.
 //!
+//! # Server-side confirmation (SEC-03)
+//!
+//! Every export operation — the document-to-string serializations and the
+//! write-to-disk twins alike — requires a live single-use confirmation id
+//! minted in the `export` scope by the `request_confirmation` command, which
+//! only mints after the user accepts a **blocking native OS dialog**. The id
+//! is bound to the exact operation ([`OP_EXPORT_CONVERSATION`] /
+//! [`OP_EXPORT_CONVERSATION_TO_FILE`] / [`OP_EXPORT_SETUP`] /
+//! [`OP_EXPORT_SETUP_TO_FILE`]; the two conversation operations additionally
+//! bind to the conversation row) and consumed atomically before any work.
+//! Forged, expired, reused, cross-scope, and different-operation ids refuse
+//! with [`ExportError::ConfirmationRequired`] and read nothing — the same
+//! gate shape as the terminal and data-management paths.
+//!
 //! # Error handling
 //!
 //! All failure modes are classified by [`ExportError`]: a missing conversation
 //! is [`ExportError::NotFound`], persistence failures are
 //! [`ExportError::Database`], serialization failures are
 //! [`ExportError::Serialization`], rejected destinations are
-//! [`ExportError::InvalidPath`], and file-write failures are
-//! [`ExportError::Io`]. No error variant carries a credential or other secret
-//! value (ARCHITECTURE.md §9, §11).
+//! [`ExportError::InvalidPath`], file-write failures are
+//! [`ExportError::Io`], and a refused confirmation is
+//! [`ExportError::ConfirmationRequired`]. No error variant carries a
+//! credential or other secret value (ARCHITECTURE.md §9, §11).
 
 use std::collections::BTreeMap;
 use std::io;
@@ -50,6 +65,10 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
+use super::confirmations::{
+    ConfirmationRegistry, ConfirmationTarget, OP_EXPORT_CONVERSATION,
+    OP_EXPORT_CONVERSATION_TO_FILE, OP_EXPORT_SETUP, OP_EXPORT_SETUP_TO_FILE, SCOPE_EXPORT,
+};
 use super::settings::SettingsService;
 
 use super::workspace::{
@@ -198,21 +217,40 @@ impl<'a> ExportService<'a> {
 
     /// Build the JSON document for `conversation_id` (FR-010).
     ///
+    /// Requires `confirmation_id` — a live single-use id minted for
+    /// [`OP_EXPORT_CONVERSATION`] in the `export` scope, bound to this
+    /// conversation row (SEC-03) — consumed atomically before any read.
+    ///
     /// Returns the pretty-printed serialized document as a string without
     /// touching the filesystem, so the payload can be inspected or forwarded.
     ///
     /// # Errors
     ///
-    /// Returns [`ExportError::NotFound`] when no conversation with
+    /// Returns [`ExportError::ConfirmationRequired`] for a refused
+    /// confirmation, [`ExportError::NotFound`] when no conversation with
     /// `conversation_id` exists, [`ExportError::Database`] when a read fails,
     /// or [`ExportError::Serialization`] when the document cannot be
     /// serialized.
-    pub(crate) fn serialize(&self, conversation_id: i64) -> Result<String> {
-        let export = self.build(conversation_id)?;
-        serde_json::to_string_pretty(&export).map_err(ExportError::Serialization)
+    pub(crate) fn serialize(
+        &self,
+        conversation_id: i64,
+        confirmation_id: &str,
+        confirmations: &ConfirmationRegistry,
+    ) -> Result<String> {
+        require_export_confirmation(
+            confirmations,
+            confirmation_id,
+            &ConfirmationTarget::for_target(OP_EXPORT_CONVERSATION, conversation_id),
+        )?;
+        self.rendered_document(conversation_id)
     }
 
     /// Export `conversation_id` to the JSON file at `path` (FR-010).
+    ///
+    /// Requires `confirmation_id` — a live single-use id minted for
+    /// [`OP_EXPORT_CONVERSATION_TO_FILE`] in the `export` scope, bound to
+    /// this conversation row (SEC-03) — consumed atomically before any read
+    /// or write.
     ///
     /// The document is fully materialized in memory before any file access, so
     /// a failed write is reported cleanly as [`ExportError::Io`]; the database
@@ -223,15 +261,35 @@ impl<'a> ExportService<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`ExportError::NotFound`] when no conversation with
+    /// Returns [`ExportError::ConfirmationRequired`] for a refused
+    /// confirmation, [`ExportError::NotFound`] when no conversation with
     /// `conversation_id` exists, [`ExportError::Database`] when a read fails,
     /// [`ExportError::Serialization`] when the document cannot be serialized,
     /// [`ExportError::InvalidPath`] when the destination is rejected, or
     /// [`ExportError::Io`] when the file cannot be written.
-    pub(crate) fn export_to_file(&self, conversation_id: i64, path: &Path) -> Result<()> {
-        let json = self.serialize(conversation_id)?;
+    pub(crate) fn export_to_file(
+        &self,
+        conversation_id: i64,
+        path: &Path,
+        confirmation_id: &str,
+        confirmations: &ConfirmationRegistry,
+    ) -> Result<()> {
+        require_export_confirmation(
+            confirmations,
+            confirmation_id,
+            &ConfirmationTarget::for_target(OP_EXPORT_CONVERSATION_TO_FILE, conversation_id),
+        )?;
+        let json = self.rendered_document(conversation_id)?;
         let target = validate_export_path(path)?;
         write_export_file(&target, json.as_bytes())
+    }
+
+    /// Build and serialize the document for `conversation_id` without the
+    /// confirmation gate — the gate lives in the public entry points, which
+    /// consume the id exactly once per operation.
+    fn rendered_document(&self, conversation_id: i64) -> Result<String> {
+        let export = self.build(conversation_id)?;
+        serde_json::to_string_pretty(&export).map_err(ExportError::Serialization)
     }
 
     /// Read `conversation_id` and assemble its export record in persisted
@@ -325,20 +383,34 @@ impl<'a> SetupExportService<'a> {
     /// Build the portable setup document as a pretty-printed JSON string
     /// without touching the filesystem.
     ///
+    /// Requires `confirmation_id` — a live single-use id minted for
+    /// [`OP_EXPORT_SETUP`] in the `export` scope (SEC-03) — consumed
+    /// atomically before any read.
+    ///
     /// # Errors
     ///
-    /// Returns [`ExportError::Database`] when the settings cannot be read, or
-    /// [`ExportError::Serialization`] when the document cannot be serialized.
-    pub(crate) fn serialize_setup(&self) -> Result<String> {
-        let export = SetupExport {
-            format: SETUP_FORMAT.to_string(),
-            version: SETUP_VERSION,
-            settings: self.settings.list()?.into_iter().collect(),
-        };
-        serde_json::to_string_pretty(&export).map_err(ExportError::Serialization)
+    /// Returns [`ExportError::ConfirmationRequired`] for a refused
+    /// confirmation, [`ExportError::Database`] when the settings cannot be
+    /// read, or [`ExportError::Serialization`] when the document cannot be
+    /// serialized.
+    pub(crate) fn serialize_setup(
+        &self,
+        confirmation_id: &str,
+        confirmations: &ConfirmationRegistry,
+    ) -> Result<String> {
+        require_export_confirmation(
+            confirmations,
+            confirmation_id,
+            &ConfirmationTarget::new(OP_EXPORT_SETUP),
+        )?;
+        self.rendered_setup()
     }
 
     /// Export the current setup to the JSON file at `path` (WS-E.2).
+    ///
+    /// Requires `confirmation_id` — a live single-use id minted for
+    /// [`OP_EXPORT_SETUP_TO_FILE`] in the `export` scope (SEC-03) — consumed
+    /// atomically before any read or write.
     ///
     /// The document is fully materialized in memory before any file access.
     /// The destination is validated through [`validate_export_path`] (the
@@ -352,10 +424,32 @@ impl<'a> SetupExportService<'a> {
     /// [`ExportError::Serialization`] when the document cannot be serialized,
     /// [`ExportError::InvalidPath`] when the destination is rejected, or
     /// [`ExportError::Io`] when the file cannot be written.
-    pub(crate) fn export_setup_to_file(&self, path: &Path) -> Result<()> {
-        let json = self.serialize_setup()?;
+    pub(crate) fn export_setup_to_file(
+        &self,
+        path: &Path,
+        confirmation_id: &str,
+        confirmations: &ConfirmationRegistry,
+    ) -> Result<()> {
+        require_export_confirmation(
+            confirmations,
+            confirmation_id,
+            &ConfirmationTarget::new(OP_EXPORT_SETUP_TO_FILE),
+        )?;
+        let json = self.rendered_setup()?;
         let target = validate_export_path(path)?;
         write_export_file(&target, json.as_bytes())
+    }
+
+    /// Build and serialize the setup document without the confirmation gate —
+    /// the gate lives in the public entry points, which consume the id
+    /// exactly once per operation.
+    fn rendered_setup(&self) -> Result<String> {
+        let export = SetupExport {
+            format: SETUP_FORMAT.to_string(),
+            version: SETUP_VERSION,
+            settings: self.settings.list()?.into_iter().collect(),
+        };
+        serde_json::to_string_pretty(&export).map_err(ExportError::Serialization)
     }
 }
 
@@ -383,6 +477,9 @@ pub(crate) enum ExportError {
     },
     /// The exported file could not be written.
     Io(io::Error),
+    /// The caller supplied no live single-use confirmation id minted for
+    /// this exact export operation (SEC-03).
+    ConfirmationRequired,
 }
 
 impl std::fmt::Display for ExportError {
@@ -393,6 +490,10 @@ impl std::fmt::Display for ExportError {
             Self::Serialization(err) => write!(f, "export serialization failed: {err}"),
             Self::InvalidPath { reason } => write!(f, "export path invalid: {reason}"),
             Self::Io(err) => write!(f, "export file write failed: {err}"),
+            Self::ConfirmationRequired => write!(
+                f,
+                "explicit confirmation is required before this export can run"
+            ),
         }
     }
 }
@@ -400,7 +501,7 @@ impl std::fmt::Display for ExportError {
 impl std::error::Error for ExportError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::NotFound { .. } | Self::InvalidPath { .. } => None,
+            Self::NotFound { .. } | Self::InvalidPath { .. } | Self::ConfirmationRequired => None,
             Self::Database(err) => Some(err),
             Self::Serialization(err) => Some(err),
             Self::Io(err) => Some(err),
@@ -411,6 +512,25 @@ impl std::error::Error for ExportError {
 impl From<DatabaseError> for ExportError {
     fn from(err: DatabaseError) -> Self {
         Self::Database(err)
+    }
+}
+
+/// Consume the single-use export confirmation id for `target` (SEC-03): the
+/// id must have been minted in the `export` scope by `request_confirmation`
+/// — which only mints after the user accepts a blocking native OS dialog —
+/// and bound to this exact operation (and conversation row where one is
+/// bound). Forged, expired, reused, cross-scope, and different-operation ids
+/// refuse with [`ExportError::ConfirmationRequired`] and nothing is read or
+/// written.
+fn require_export_confirmation(
+    confirmations: &ConfirmationRegistry,
+    confirmation_id: &str,
+    target: &ConfirmationTarget<'_>,
+) -> Result<()> {
+    if confirmations.consume(SCOPE_EXPORT, confirmation_id, target) {
+        Ok(())
+    } else {
+        Err(ExportError::ConfirmationRequired)
     }
 }
 
@@ -662,6 +782,56 @@ mod tests {
             assistant_message_id,
         )
     }
+
+    /// Mint one fresh export-scope id for `target` (each export consumes its
+    /// single-use id, so every confirmed call mints its own). Returns the id
+    /// together with the registry that must consume it.
+    fn minted(target: &ConfirmationTarget<'_>) -> (String, ConfirmationRegistry) {
+        let registry = ConfirmationRegistry::new();
+        let id = registry
+            .request(SCOPE_EXPORT, target)
+            .expect("mint export confirmation");
+        (id, registry)
+    }
+
+    /// [`ExportService::serialize`] with a freshly minted
+    /// [`OP_EXPORT_CONVERSATION`] id bound to the conversation row.
+    fn serialize_confirmed(service: &ExportService<'_>, conversation_id: i64) -> Result<String> {
+        let (id, confirmations) = minted(&ConfirmationTarget::for_target(
+            OP_EXPORT_CONVERSATION,
+            conversation_id,
+        ));
+        service.serialize(conversation_id, &id, &confirmations)
+    }
+
+    /// [`ExportService::export_to_file`] with a freshly minted
+    /// [`OP_EXPORT_CONVERSATION_TO_FILE`] id bound to the conversation row.
+    fn export_to_file_confirmed(
+        service: &ExportService<'_>,
+        conversation_id: i64,
+        path: &Path,
+    ) -> Result<()> {
+        let (id, confirmations) = minted(&ConfirmationTarget::for_target(
+            OP_EXPORT_CONVERSATION_TO_FILE,
+            conversation_id,
+        ));
+        service.export_to_file(conversation_id, path, &id, &confirmations)
+    }
+
+    /// [`SetupExportService::serialize_setup`] with a freshly minted
+    /// [`OP_EXPORT_SETUP`] id.
+    fn serialize_setup_confirmed(service: &SetupExportService<'_>) -> Result<String> {
+        let (id, confirmations) = minted(&ConfirmationTarget::new(OP_EXPORT_SETUP));
+        service.serialize_setup(&id, &confirmations)
+    }
+
+    /// [`SetupExportService::export_setup_to_file`] with a freshly minted
+    /// [`OP_EXPORT_SETUP_TO_FILE`] id.
+    fn export_setup_to_file_confirmed(service: &SetupExportService<'_>, path: &Path) -> Result<()> {
+        let (id, confirmations) = minted(&ConfirmationTarget::new(OP_EXPORT_SETUP_TO_FILE));
+        service.export_setup_to_file(path, &id, &confirmations)
+    }
+
     #[test]
     fn export_preserves_conversation_and_messages_with_metadata() {
         let db = test_db();
@@ -669,7 +839,7 @@ mod tests {
             seeded_conversation(&db);
         let service = ExportService::new(&db);
 
-        let json = service.serialize(conversation_id).expect("export succeeds");
+        let json = serialize_confirmed(&service, conversation_id).expect("export succeeds");
         let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
 
         // The document is self-describing.
@@ -716,7 +886,7 @@ mod tests {
         drop(conn);
 
         let service = ExportService::new(&db);
-        let json = service.serialize(conversation_id).expect("export succeeds");
+        let json = serialize_confirmed(&service, conversation_id).expect("export succeeds");
         let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
 
         let messages = value["messages"].as_array().expect("messages array");
@@ -737,7 +907,7 @@ mod tests {
         drop(conn);
 
         let service = ExportService::new(&db);
-        let json = service.serialize(conversation_id).expect("export succeeds");
+        let json = serialize_confirmed(&service, conversation_id).expect("export succeeds");
         let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
 
         assert_eq!(value["conversation"]["title"], "Empty");
@@ -764,15 +934,14 @@ mod tests {
 
         let path =
             std::env::temp_dir().join(format!("nexora_export_test_{}.json", std::process::id()));
-        service
-            .export_to_file(conversation_id, &path)
+        export_to_file_confirmed(&service, conversation_id, &path)
             .expect("export to file succeeds");
 
         // The written file matches the serialized document exactly.
         let written = std::fs::read_to_string(&path).expect("read exported file");
         assert_eq!(
             written,
-            service.serialize(conversation_id).expect("serialize")
+            serialize_confirmed(&service, conversation_id).expect("serialize")
         );
 
         // Export performed read-only access: the stored records are unchanged.
@@ -794,14 +963,12 @@ mod tests {
         let db = test_db();
         let service = ExportService::new(&db);
 
-        let err = service.serialize(42).expect_err("unknown conversation");
+        let err = serialize_confirmed(&service, 42).expect_err("unknown conversation");
         assert!(matches!(err, ExportError::NotFound { id: 42 }));
 
         // The file variant also fails cleanly and writes nothing.
         let path = std::env::temp_dir().join("nexora_export_unknown.json");
-        let err = service
-            .export_to_file(42, &path)
-            .expect_err("unknown conversation");
+        let err = export_to_file_confirmed(&service, 42, &path).expect_err("unknown conversation");
         assert!(matches!(err, ExportError::NotFound { id: 42 }));
         assert!(!path.exists());
         let _ = std::fs::remove_file(&path);
@@ -817,8 +984,7 @@ mod tests {
         let path = std::env::temp_dir()
             .join("nexora_missing_parent_dir")
             .join("export.json");
-        let err = service
-            .export_to_file(conversation_id, &path)
+        let err = export_to_file_confirmed(&service, conversation_id, &path)
             .expect_err("write must fail");
 
         assert!(matches!(err, ExportError::Io(_)));
@@ -882,12 +1048,13 @@ mod tests {
 
     #[test]
     fn export_never_overwrites_an_existing_destination() {
-        // NEX-SEC-005: the export IPC takes a caller-chosen path with no
-        // confirmation gate, so an existing `.json` document must be refused
-        // — never truncated — and its bytes must survive the denied export.
-        // Both file-export services share the validator, so both are pinned.
-        // The full production schema backs this test (the setup export reads
-        // `app_settings`, which the conversation-only `test_db` omits).
+        // NEX-SEC-005: an existing `.json` document must be refused — never
+        // truncated — and its bytes must survive the denied export, even
+        // though the export path is now also behind the server-side
+        // confirmation gate (SEC-03). Both file-export services share the
+        // validator, so both are pinned. The full production schema backs
+        // this test (the setup export reads `app_settings`, which the
+        // conversation-only `test_db` omits).
         use crate::infrastructure::database::in_memory_database;
         let db = in_memory_database();
         let (conversation_id, ..) = seeded_conversation(&db);
@@ -901,15 +1068,13 @@ mod tests {
         std::fs::write(&path, b"sentinel-bytes").expect("seed existing file");
 
         assert_eq!(invalid_export_reason(&path), "destination already exists");
-        let err = service
-            .export_to_file(conversation_id, &path)
+        let err = export_to_file_confirmed(&service, conversation_id, &path)
             .expect_err("existing destination must be denied");
         assert!(
             matches!(err, ExportError::InvalidPath { .. }),
             "expected InvalidPath, got {err:?}"
         );
-        let err = setup
-            .export_setup_to_file(&path)
+        let err = export_setup_to_file_confirmed(&setup, &path)
             .expect_err("existing setup destination must be denied");
         assert!(
             matches!(err, ExportError::InvalidPath { .. }),
@@ -929,8 +1094,7 @@ mod tests {
         let service = ExportService::new(&db);
         let path =
             std::env::temp_dir().join(format!("nexora_export_reject_{}.exe", std::process::id()));
-        let err = service
-            .export_to_file(conversation_id, &path)
+        let err = export_to_file_confirmed(&service, conversation_id, &path)
             .expect_err("non-json artifact must be denied");
         assert!(matches!(err, ExportError::InvalidPath { .. }));
         assert!(!path.exists(), "denied export writes nothing");
@@ -962,8 +1126,7 @@ mod tests {
         let db = test_db();
         let (conversation_id, ..) = seeded_conversation(&db);
         let service = ExportService::new(&db);
-        let err = service
-            .export_to_file(conversation_id, &target)
+        let err = export_to_file_confirmed(&service, conversation_id, &target)
             .expect_err("depth-2 escape must be denied");
         assert!(matches!(err, ExportError::InvalidPath { .. }));
         assert!(!outside.join("newsub").join("out.json").exists());
@@ -991,7 +1154,7 @@ mod tests {
             .expect("seed flag");
         let service = SetupExportService::new(&db);
 
-        let json = service.serialize_setup().expect("setup export succeeds");
+        let json = serialize_setup_confirmed(&service).expect("setup export succeeds");
         let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
 
         assert_eq!(value["format"], SETUP_FORMAT);
@@ -1016,12 +1179,13 @@ mod tests {
 
         let path =
             std::env::temp_dir().join(format!("nexora_setup_test_{}.json", std::process::id()));
-        service
-            .export_setup_to_file(&path)
-            .expect("setup export to file succeeds");
+        export_setup_to_file_confirmed(&service, &path).expect("setup export to file succeeds");
 
         let written = std::fs::read_to_string(&path).expect("read setup file");
-        assert_eq!(written, service.serialize_setup().expect("serialize setup"));
+        assert_eq!(
+            written,
+            serialize_setup_confirmed(&service).expect("serialize setup")
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1032,10 +1196,97 @@ mod tests {
         let service = SetupExportService::new(&db);
         let path =
             std::env::temp_dir().join(format!("nexora_setup_reject_{}.exe", std::process::id()));
-        let err = service
-            .export_setup_to_file(&path)
+        let err = export_setup_to_file_confirmed(&service, &path)
             .expect_err("non-json setup artifact must be denied");
         assert!(matches!(err, ExportError::InvalidPath { .. }));
         assert!(!path.exists(), "denied setup export writes nothing");
+    }
+
+    // -----------------------------------------------------------------------
+    // Server-side export confirmation (SEC-03)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn export_requires_a_server_verified_confirmation_id() {
+        let db = test_db();
+        let (conversation_id, ..) = seeded_conversation(&db);
+        let service = ExportService::new(&db);
+
+        // Forged ids refuse and read nothing.
+        let err = service
+            .serialize(conversation_id, "forged-id", &ConfirmationRegistry::new())
+            .expect_err("forged id must refuse");
+        assert!(matches!(err, ExportError::ConfirmationRequired));
+        assert_eq!(
+            err.to_string(),
+            "explicit confirmation is required before this export can run"
+        );
+
+        // The conversation operations bind to their row: an id minted for a
+        // different conversation cannot export this one.
+        let registry = ConfirmationRegistry::new();
+        let other_row = registry
+            .request(
+                SCOPE_EXPORT,
+                &ConfirmationTarget::for_target(OP_EXPORT_CONVERSATION, conversation_id + 1),
+            )
+            .expect("mint id for another row");
+        let err = service
+            .serialize(conversation_id, &other_row, &registry)
+            .expect_err("wrong-row id must refuse");
+        assert!(matches!(err, ExportError::ConfirmationRequired));
+
+        // Operation binding: an id minted for the setup export cannot drive
+        // the conversation export.
+        let registry = ConfirmationRegistry::new();
+        let setup_id = registry
+            .request(SCOPE_EXPORT, &ConfirmationTarget::new(OP_EXPORT_SETUP))
+            .expect("mint setup id");
+        let err = service
+            .serialize(conversation_id, &setup_id, &registry)
+            .expect_err("a setup id must not export a conversation");
+        assert!(matches!(err, ExportError::ConfirmationRequired));
+
+        // A minted id authorizes exactly one export; the replay refuses.
+        let registry = ConfirmationRegistry::new();
+        let id = registry
+            .request(
+                SCOPE_EXPORT,
+                &ConfirmationTarget::for_target(OP_EXPORT_CONVERSATION, conversation_id),
+            )
+            .expect("mint id");
+        service
+            .serialize(conversation_id, &id, &registry)
+            .expect("minted id authorizes the export");
+        let err = service
+            .serialize(conversation_id, &id, &registry)
+            .expect_err("replay must refuse");
+        assert!(matches!(err, ExportError::ConfirmationRequired));
+    }
+
+    #[test]
+    fn setup_export_requires_a_server_verified_confirmation_id() {
+        use crate::infrastructure::database::in_memory_database;
+        let db = in_memory_database();
+        let service = SetupExportService::new(&db);
+
+        let err = service
+            .serialize_setup("forged-id", &ConfirmationRegistry::new())
+            .expect_err("forged id must refuse");
+        assert!(matches!(err, ExportError::ConfirmationRequired));
+
+        // Operation binding across the setup twins: a to-file id cannot
+        // drive the serialize operation.
+        let registry = ConfirmationRegistry::new();
+        let to_file_id = registry
+            .request(
+                SCOPE_EXPORT,
+                &ConfirmationTarget::new(OP_EXPORT_SETUP_TO_FILE),
+            )
+            .expect("mint to-file id");
+        let err = service
+            .serialize_setup(&to_file_id, &registry)
+            .expect_err("a to-file id must not serialize");
+        assert!(matches!(err, ExportError::ConfirmationRequired));
     }
 }

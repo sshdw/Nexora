@@ -24,7 +24,8 @@
 //! Every other audit kind refuses; the file must be tracked and clean so the
 //! working-tree diff is exactly the apply (revert with `git checkout`), and
 //! the panel requires an explicit confirmation tick before sending — the tick
-//! IS the approval, and the wrapper always passes `confirmed: true`.
+//! is the pre-gate UX, and the actual approval is the blocking native OS
+//! dialog the wrapper raises to mint the single-use confirmation id (SEC-03).
 //!
 //! Display rules (secret-free): kinds, severities, skip reasons, and dep
 //! sources render as fixed-vocabulary catalog labels (unknown tokens echo

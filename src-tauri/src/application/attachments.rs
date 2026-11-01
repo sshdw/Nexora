@@ -9,13 +9,14 @@
 //!
 //! # Local-file semantics
 //!
-//! FR-008 requires a *local-file reference*: the `file_name`, `file_path`,
-//! `file_size_bytes`, and `mime_type` metadata are persisted in a draft row
-//! (`message_id` is `NULL`) so attachments are visible before submission and
-//! removable before sending (DATABASE.md §7.4). No file is copied, read,
-//! parsed, or uploaded, no content is extracted, and no cloud path, remote URL,
-//! upload mechanism, or provider-specific attachment representation is
-//! introduced here.
+//! FR-008 requires a *local-file reference*: the `file_name`, `file_path`, and
+//! `mime_type` metadata are persisted in a draft row (`message_id` is `NULL`)
+//! so attachments are visible before submission and removable before sending
+//! (DATABASE.md §7.4). `file_size_bytes` is derived server-side from the
+//! file's own metadata (SEC-01) — the renderer never supplies it. No file is
+//! copied, parsed, or uploaded at attach time, no content is extracted, and
+//! no cloud path, remote URL, upload mechanism, or provider-specific
+//! attachment representation is introduced here.
 //!
 //! # Provider independence (ARCHITECTURE.md §7)
 //!
@@ -68,26 +69,31 @@ impl<'a> AttachmentService<'a> {
     /// DATABASE.md §7.4).
     ///
     /// The flow is:
-    ///   1. Validate `file_name`, `file_path`, `file_size_bytes`, and
-    ///      `mime_type` against the documented `attachments` constraints.
+    ///   1. Validate `file_name`, `file_path`, and `mime_type` against the
+    ///      documented `attachments` constraints.
     ///   2. Require the conversation to exist.
-    ///   3. Persist a draft attachment row (`message_id` is `NULL`) through the
+    ///   3. Resolve and validate the file path (canonicalization, system /
+    ///      sensitive-location guards) and derive `file_size_bytes` from the
+    ///      file's own metadata — the size is **server-derived**, never a
+    ///      caller-supplied value (SEC-01/SEC-02).
+    ///   4. Persist a draft attachment row (`message_id` is `NULL`) through the
     ///      existing repository.
-    ///   4. Return the persisted attachment, including the schema-assigned
+    ///   5. Return the persisted attachment, including the schema-assigned
     ///      `id`.
     ///
-    /// No file is opened, copied, or parsed here: this is a local-file
-    /// reference only, and no document content is ever read or stored.
+    /// No file content is opened, copied, parsed, or uploaded here: this is a
+    /// local-file reference only.
     ///
     /// The MVP applies no supported-file-type allowlist (Product Owner
-    /// confirmation): any local file type may be attached, and only the
-    /// documented `attachments` schema constraints and the conversation
-    /// ownership rule are enforced.
+    /// confirmation): any local file type may be attached, subject to the
+    /// documented schema constraints, the conversation ownership rule, and
+    /// the sensitive-location blocklist in
+    /// [`resolve_attachment_file_path`].
     ///
     /// # Errors
     ///
     /// Returns [`AttachmentError::InvalidInput`] when a value violates a
-    /// documented `attachments` constraint;
+    /// documented `attachments` constraint or the file is oversized;
     /// [`AttachmentError::ConversationNotFound`] when no conversation with
     /// `conversation_id` exists; or [`AttachmentError::Database`] when a
     /// persistence step fails.
@@ -96,10 +102,9 @@ impl<'a> AttachmentService<'a> {
         conversation_id: i64,
         file_name: &str,
         file_path: &str,
-        file_size_bytes: Option<i64>,
         mime_type: Option<&str>,
     ) -> Result<Attachment> {
-        validate_attachment_input(file_name, file_path, file_size_bytes, mime_type)?;
+        validate_attachment_input(file_name, file_path, mime_type)?;
 
         if !self.conversations.exists(conversation_id)? {
             return Err(AttachmentError::ConversationNotFound {
@@ -108,9 +113,10 @@ impl<'a> AttachmentService<'a> {
         }
 
         let canonical = resolve_attachment_file_path(file_path)?;
-        // WS-C.2 size gate on the real filesystem size: the declared value
-        // above is caller-supplied, so the on-disk size is re-checked before
-        // the reference is persisted.
+        // Server-derived size (SEC-01): the renderer no longer supplies a
+        // declared size, so the WS-C.2 gate checks the only size that exists —
+        // the file's own metadata. A metadata failure after a successful
+        // canonicalization means the file vanished mid-check: fail closed.
         let actual_size = std::fs::metadata(&canonical)
             .map(|meta| meta.len())
             .ok()
@@ -128,7 +134,7 @@ impl<'a> AttachmentService<'a> {
             conversation_id,
             file_name,
             &canonical_text,
-            file_size_bytes,
+            Some(actual_size),
             mime_type,
         )?;
 
@@ -253,18 +259,16 @@ impl From<DatabaseError> for AttachmentError {
 ///
 /// * `file_name`: `length(file_name) > 0` and `length(file_name) <= 255`.
 /// * `file_path`: `length(file_path) > 0`.
-/// * `file_size_bytes`: `file_size_bytes >= 0` (only when present).
 /// * `mime_type`: `length(mime_type) <= 127` (only when present).
 ///
-/// No additional restrictions are invented — in particular, no supported-
-/// file-type allowlist is applied (Product Owner confirmation): any local
-/// file type is accepted. `file_size_bytes` and `mime_type` remain optional
-/// exactly as the schema defines them, and `length` counts characters,
-/// matching `SQLite`'s `length()` semantics.
+/// `file_size_bytes` is intentionally absent: the size is derived from the
+/// file's own metadata in [`AttachmentService::attach`] (SEC-01), never from
+/// caller-supplied text. No supported-file-type allowlist is applied
+/// (Product Owner confirmation): any local file type is accepted, and
+/// `length` counts characters, matching `SQLite`'s `length()` semantics.
 fn validate_attachment_input(
     file_name: &str,
     file_path: &str,
-    file_size_bytes: Option<i64>,
     mime_type: Option<&str>,
 ) -> Result<()> {
     if file_name.chars().count() == 0 {
@@ -285,20 +289,6 @@ fn validate_attachment_input(
             reason: "must not be empty",
         });
     }
-    if matches!(file_size_bytes, Some(size) if size < 0) {
-        return Err(AttachmentError::InvalidInput {
-            field: "file_size_bytes",
-            reason: "must not be negative",
-        });
-    }
-    // WS-C.2 size gate (reuses the 20 MiB `MAX_ATTACHMENT_BYTES` precedent):
-    // a reference must never promise more than the send path can carry.
-    if matches!(file_size_bytes, Some(size) if size > MAX_ATTACHMENT_BYTES) {
-        return Err(AttachmentError::InvalidInput {
-            field: "file_size_bytes",
-            reason: "exceeds the 20 MiB limit",
-        });
-    }
     if matches!(mime_type, Some(value) if value.chars().count() > 127) {
         return Err(AttachmentError::InvalidInput {
             field: "mime_type",
@@ -308,19 +298,110 @@ fn validate_attachment_input(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Sensitive user-profile blocklist (SEC-02)
+// ---------------------------------------------------------------------------
+
+/// Sensitive dot-directory components: a canonical attachment path carrying
+/// any of these components — on any drive, for any user — names a well-known
+/// credential store (SSH keys, cloud credentials, the `GnuPG` keyring,
+/// Kubernetes cluster configs) and is refused. The system blocklist
+/// (`is_system_file_path`) deliberately admits the `Users` tree, so this
+/// subpath rule is what keeps profile-level credential files unattachable.
+const SENSITIVE_DOT_COMPONENTS: &[&str] = &[".ssh", ".aws", ".gnupg", ".kube"];
+
+/// User-profile-relative browser user-data directories (SEC-02), matched
+/// case-insensitively against the home-relative remainder of a canonical
+/// path with both separators normalized to `/`. Covers the Chrome /
+/// Chromium / Edge / Firefox families on Windows and Unix, including the
+/// snap-packaged Firefox layout.
+const BROWSER_PROFILE_PATHS: &[&str] = &[
+    "appdata/local/google/chrome/user data",
+    "appdata/local/chromium/user data",
+    "appdata/local/microsoft/edge/user data",
+    "appdata/roaming/mozilla/firefox",
+    "snap/firefox/common/.mozilla/firefox",
+    ".config/google-chrome",
+    ".config/chromium",
+    ".config/microsoft-edge",
+    ".mozilla/firefox",
+];
+
+/// The current user's home directory from the environment (no new
+/// dependency): `USERPROFILE` on Windows, `HOME` elsewhere, with the other
+/// variable as a fallback. `None` when neither is set — the dot-component
+/// rule still applies without it.
+fn current_user_home() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        std::env::var_os("USERPROFILE")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var_os("HOME").map(PathBuf::from)
+    }
+}
+
+/// Whether `canonical` names a sensitive user-profile location (SEC-02):
+/// any path component equals one of [`SENSITIVE_DOT_COMPONENTS`]
+/// (case-insensitive), or the path sits inside the current user's browser
+/// user-data directory ([`BROWSER_PROFILE_PATHS`], home-relative). A pure
+/// predicate over text — no filesystem access — so tests can drive it with
+/// fabricated homes.
+fn is_sensitive_profile_path(home: Option<&Path>, canonical: &Path) -> bool {
+    for component in canonical.components() {
+        if let std::path::Component::Normal(part) = component {
+            let text = part.to_string_lossy();
+            if SENSITIVE_DOT_COMPONENTS
+                .iter()
+                .any(|sensitive| text.eq_ignore_ascii_case(sensitive))
+            {
+                return true;
+            }
+        }
+    }
+    let Some(home) = home else {
+        return false;
+    };
+    // Separator- and case-agnostic comparison: canonical paths use `\` on
+    // Windows and `/` elsewhere, and the environment's casing is not
+    // guaranteed to match the filesystem's, so both sides normalize to
+    // lowercase `/` text before the prefix test.
+    let mut home_text = home.to_string_lossy().replace('\\', "/");
+    while home_text.ends_with('/') {
+        home_text.pop();
+    }
+    let home_text = home_text.to_lowercase();
+    let canonical_text = canonical
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_lowercase();
+    let Some(relative) = canonical_text.strip_prefix(&home_text) else {
+        return false;
+    };
+    let relative = relative.strip_prefix('/').unwrap_or(relative);
+    BROWSER_PROFILE_PATHS
+        .iter()
+        .any(|profile| relative == *profile || relative.starts_with(&format!("{profile}/")))
+}
+
 /// Resolve `raw` as an attachment file path and return its canonical form.
 ///
 /// Checks run in exactly this order, mirroring [`super::workspace::validate_workspace_root`]:
 /// trim, reject empty / null-byte / overlong / relative / UNC / protected-system
 /// paths, canonicalize via the filesystem (non-existent paths fail here), then
-/// reject UNC / non-file / protected-system / drive-root canonical paths and
-/// overlong canonical text. The returned path is the canonicalized absolute
-/// path with any Windows verbatim prefix stripped, ready to store.
+/// reject UNC / non-file / protected-system / drive-root canonical paths,
+/// sensitive user-profile locations ([`is_sensitive_profile_path`], SEC-02),
+/// and overlong canonical text. The returned path is the canonicalized
+/// absolute path with any Windows verbatim prefix stripped, ready to store.
 ///
 /// Every failure is the existing [`AttachmentError::InvalidInput`] with
 /// `field: "file_path"` and a static reason that never contains the path or
-/// file content. No extension/MIME allowlist and no user-profile sub-path
-/// blocklist are applied here.
+/// file content. No extension/MIME allowlist is applied (the Product Owner
+/// no-allowlist rule); the user-profile sub-path blocklist is the one
+/// deliberate addition (SEC-02).
 pub(crate) fn resolve_attachment_file_path(raw: &str) -> Result<PathBuf> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -386,6 +467,15 @@ pub(crate) fn resolve_attachment_file_path(raw: &str) -> Result<PathBuf> {
         return Err(AttachmentError::InvalidInput {
             field: "file_path",
             reason: "a drive root is not allowed",
+        });
+    }
+    // SEC-02: credential stores and browser profile databases are never
+    // valid attachments — the send path would ship their bytes to the
+    // configured AI provider.
+    if is_sensitive_profile_path(current_user_home().as_deref(), &canonical) {
+        return Err(AttachmentError::InvalidInput {
+            field: "file_path",
+            reason: "a sensitive user-profile location is not allowed",
         });
     }
     if canonical.to_string_lossy().len() > WORKSPACE_ROOT_MAX_LEN {
@@ -511,7 +601,6 @@ mod tests {
                 conversation_id,
                 "notes.txt",
                 path.to_string_lossy().as_ref(),
-                Some(12),
                 Some("text/plain"),
             )
             .expect("attachment created");
@@ -523,7 +612,9 @@ mod tests {
         assert_eq!(attachment.file_name, "notes.txt");
         // The stored path is the canonical form, not the raw input.
         assert_eq!(attachment.file_path, canonical_str(&path));
-        assert_eq!(attachment.file_size_bytes, Some(12));
+        // The size is derived server-side from the file's own metadata
+        // (SEC-01): `notes body` is 10 bytes, whatever the caller claims.
+        assert_eq!(attachment.file_size_bytes, Some(10));
         assert_eq!(attachment.mime_type.as_deref(), Some("text/plain"));
 
         // The row is independently persisted through the repository.
@@ -541,20 +632,13 @@ mod tests {
         let second_path = temp_file(b"b");
 
         let first_file = service
-            .attach(
-                first,
-                "a.txt",
-                first_path.to_string_lossy().as_ref(),
-                None,
-                None,
-            )
+            .attach(first, "a.txt", first_path.to_string_lossy().as_ref(), None)
             .expect("attach to first");
         let second_file = service
             .attach(
                 second,
                 "b.txt",
                 second_path.to_string_lossy().as_ref(),
-                None,
                 None,
             )
             .expect("attach to second");
@@ -585,7 +669,6 @@ mod tests {
                 conversation_id,
                 "a.txt",
                 first_path.to_string_lossy().as_ref(),
-                Some(1),
                 Some("text/plain"),
             )
             .expect("attach first");
@@ -594,7 +677,6 @@ mod tests {
                 conversation_id,
                 "b.txt",
                 second_path.to_string_lossy().as_ref(),
-                Some(2),
                 None,
             )
             .expect("attach second");
@@ -619,7 +701,6 @@ mod tests {
                 conversation_id,
                 "note.txt",
                 path.to_string_lossy().as_ref(),
-                None,
                 None,
             )
             .expect("attachment created")
@@ -647,7 +728,6 @@ mod tests {
                 "note.txt",
                 path.to_string_lossy().as_ref(),
                 None,
-                None,
             )
             .expect("attachment created")
             .id;
@@ -671,7 +751,6 @@ mod tests {
                 "keep.txt",
                 keep_path.to_string_lossy().as_ref(),
                 None,
-                None,
             )
             .expect("attach kept file")
             .id;
@@ -680,7 +759,6 @@ mod tests {
                 conversation_id,
                 "gone.txt",
                 gone_path.to_string_lossy().as_ref(),
-                None,
                 None,
             )
             .expect("attach removed file")
@@ -714,7 +792,7 @@ mod tests {
         let service = AttachmentService::new(&db);
 
         let err = service
-            .attach(42, "note.txt", "/tmp/note.txt", None, None)
+            .attach(42, "note.txt", "/tmp/note.txt", None)
             .expect_err("unknown conversation");
 
         assert!(matches!(
@@ -736,7 +814,7 @@ mod tests {
 
         // Empty `file_name` violates length(file_name) > 0.
         let err = service
-            .attach(conversation_id, "", "/tmp/x.txt", None, None)
+            .attach(conversation_id, "", "/tmp/x.txt", None)
             .expect_err("empty file name");
         assert!(matches!(
             err,
@@ -749,7 +827,7 @@ mod tests {
         // 256 characters violate length(file_name) <= 255.
         let long_name = "x".repeat(256);
         let err = service
-            .attach(conversation_id, &long_name, "/tmp/x.txt", None, None)
+            .attach(conversation_id, &long_name, "/tmp/x.txt", None)
             .expect_err("overlong file name");
         assert!(matches!(
             err,
@@ -768,7 +846,7 @@ mod tests {
 
         // Empty `file_path` violates length(file_path) > 0.
         let err = service
-            .attach(conversation_id, "x.txt", "", None, None)
+            .attach(conversation_id, "x.txt", "", None)
             .expect_err("empty file path");
 
         assert!(matches!(
@@ -780,26 +858,6 @@ mod tests {
         ));
     }
     #[test]
-    fn attach_with_negative_file_size_is_invalid_input() {
-        let db = test_db();
-        let service = AttachmentService::new(&db);
-        let conversation_id = create_conversation(&db);
-
-        // A negative size violates file_size_bytes >= 0.
-        let err = service
-            .attach(conversation_id, "x.txt", "/tmp/x.txt", Some(-1), None)
-            .expect_err("negative file size");
-
-        assert!(matches!(
-            err,
-            AttachmentError::InvalidInput {
-                field: "file_size_bytes",
-                ..
-            }
-        ));
-    }
-
-    #[test]
     fn attach_with_overlong_mime_type_is_invalid_input() {
         let db = test_db();
         let service = AttachmentService::new(&db);
@@ -808,13 +866,7 @@ mod tests {
         // 128 characters violate length(mime_type) <= 127.
         let long_mime = "a".repeat(128);
         let err = service
-            .attach(
-                conversation_id,
-                "x.txt",
-                "/tmp/x.txt",
-                None,
-                Some(&long_mime),
-            )
+            .attach(conversation_id, "x.txt", "/tmp/x.txt", Some(&long_mime))
             .expect_err("overlong mime type");
 
         assert!(matches!(
@@ -832,17 +884,16 @@ mod tests {
         let service = AttachmentService::new(&db);
         let conversation_id = create_conversation(&db);
 
-        // 255-char `file_name`, 127-char `mime_type`, and a zero size are the
-        // upper/lower bounds the schema permits.
+        // 255-char `file_name`, 127-char `mime_type`, and a zero-byte file
+        // (server-derived size 0) are the bounds the schema permits.
         let name = "x".repeat(255);
         let mime = "m".repeat(127);
-        let path = temp_file(b"boundary");
+        let path = temp_file(b"");
         let attachment = service
             .attach(
                 conversation_id,
                 &name,
                 path.to_string_lossy().as_ref(),
-                Some(0),
                 Some(&mime),
             )
             .expect("boundary values accepted");
@@ -850,6 +901,7 @@ mod tests {
         assert_eq!(attachment.file_name, name);
         assert_eq!(attachment.file_size_bytes, Some(0));
         assert_eq!(attachment.mime_type.as_deref(), Some(mime.as_str()));
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -867,7 +919,6 @@ mod tests {
                 conversation_id,
                 "archive.xyz",
                 path.to_string_lossy().as_ref(),
-                Some(3),
                 Some("application/x-unknown"),
             )
             .expect("arbitrary file type accepted");
@@ -879,6 +930,7 @@ mod tests {
             Some("application/x-unknown")
         );
         assert!(attachment.id > 0);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -914,7 +966,6 @@ mod tests {
                 conversation_id,
                 "note.txt",
                 path.to_string_lossy().as_ref(),
-                None,
                 None,
             )
             .expect_err("missing attachments table");
@@ -1028,7 +1079,6 @@ mod tests {
                 "hello.txt",
                 path.to_string_lossy().as_ref(),
                 None,
-                None,
             )
             .expect("temp file accepted");
         assert_eq!(attachment.file_path, canonical_str(&path));
@@ -1040,35 +1090,10 @@ mod tests {
     }
 
     #[test]
-    fn attach_rejects_declared_size_above_the_limit() {
-        let db = test_db();
-        let service = AttachmentService::new(&db);
-        let conversation_id = create_conversation(&db);
-        let path = temp_file(b"tiny");
-
-        let err = service
-            .attach(
-                conversation_id,
-                "big.bin",
-                path.to_string_lossy().as_ref(),
-                Some(MAX_ATTACHMENT_BYTES + 1),
-                None,
-            )
-            .expect_err("declared oversize must be denied");
-        assert!(matches!(
-            err,
-            AttachmentError::InvalidInput {
-                field: "file_size_bytes",
-                ..
-            }
-        ));
-        assert!(service.list(conversation_id).expect("list").is_empty());
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
     fn attach_rejects_actual_size_above_the_limit() {
         // Sparse file: the logical size trips the gate without 20 MiB of I/O.
+        // With the size now derived server-side (SEC-01), this is the only
+        // size gate — there is no separate caller-declared size to reject.
         let db = test_db();
         let service = AttachmentService::new(&db);
         let conversation_id = create_conversation(&db);
@@ -1086,7 +1111,6 @@ mod tests {
                 conversation_id,
                 "sparse.bin",
                 path.to_string_lossy().as_ref(),
-                None,
                 None,
             )
             .expect_err("actual oversize must be denied");
@@ -1106,5 +1130,211 @@ mod tests {
         assert!(service.list(conversation_id).expect("list").is_empty());
         drop(file);
         let _ = std::fs::remove_file(&path);
+    }
+
+    // -----------------------------------------------------------------------
+    // Sensitive user-profile blocklist (SEC-02)
+    // -----------------------------------------------------------------------
+
+    /// Fabricated home used by the blocklist predicate tests: no filesystem
+    /// access happens behind the predicate, so a non-existent user tree is
+    /// sufficient. Both separators and mixed casing are exercised on purpose.
+    fn fabricated_home() -> &'static str {
+        if cfg!(windows) {
+            r"C:\Users\Tester"
+        } else {
+            "/home/tester"
+        }
+    }
+
+    /// The blocklist predicate must fire for a sensitive path under the
+    /// fabricated home (or anywhere, for the dot-directory rule).
+    fn sensitive(home: Option<&Path>, path: &str) -> bool {
+        is_sensitive_profile_path(home, Path::new(path))
+    }
+
+    #[test]
+    fn sensitive_path_blocklist_rejects_the_ssh_store() {
+        let home = Path::new(fabricated_home());
+        assert!(sensitive(
+            Some(home),
+            &format!("{}/.ssh/id_rsa", fabricated_home())
+        ));
+        // The dot-directory rule is home-independent: any drive, any user,
+        // either separator, any casing.
+        assert!(sensitive(Some(home), r"D:\repo\.ssh\known_hosts"));
+        assert!(sensitive(Some(home), "/etc/dropbear/.SSH/authorized_keys"));
+    }
+
+    #[test]
+    fn sensitive_path_blocklist_rejects_the_aws_store() {
+        let home = Path::new(fabricated_home());
+        assert!(sensitive(
+            Some(home),
+            &format!("{}/.aws/credentials", fabricated_home())
+        ));
+        assert!(sensitive(Some(home), r"E:\work\.AWS\config"));
+    }
+
+    #[test]
+    fn sensitive_path_blocklist_rejects_the_gnupg_keyring() {
+        let home = Path::new(fabricated_home());
+        assert!(sensitive(
+            Some(home),
+            &format!("{}/.gnupg/pubring.kbx", fabricated_home())
+        ));
+        assert!(sensitive(Some(home), r"C:\Users\tester\.GNUPG\secring.gpg"));
+    }
+
+    #[test]
+    fn sensitive_path_blocklist_rejects_the_kube_config() {
+        let home = Path::new(fabricated_home());
+        assert!(sensitive(
+            Some(home),
+            &format!("{}/.kube/config", fabricated_home())
+        ));
+        assert!(sensitive(Some(home), r"D:\ops\.KUBE\admin.conf"));
+    }
+
+    #[test]
+    fn sensitive_path_blocklist_rejects_the_chrome_user_data_dir() {
+        let home = Path::new(fabricated_home());
+        assert!(sensitive(
+            Some(home),
+            &format!(
+                "{}/AppData/Local/Google/Chrome/User Data/Default/Cookies",
+                fabricated_home()
+            ),
+        ));
+        assert!(sensitive(
+            Some(home),
+            &format!(
+                "{}/.config/google-chrome/Default/Cookies",
+                fabricated_home()
+            ),
+        ));
+    }
+
+    #[test]
+    fn sensitive_path_blocklist_rejects_the_chromium_user_data_dir() {
+        let home = Path::new(fabricated_home());
+        assert!(sensitive(
+            Some(home),
+            &format!(
+                "{}/AppData/Local/Chromium/User Data/Default/Cookies",
+                fabricated_home()
+            ),
+        ));
+        assert!(sensitive(
+            Some(home),
+            &format!("{}/.config/chromium/Default/Cookies", fabricated_home()),
+        ));
+    }
+
+    #[test]
+    fn sensitive_path_blocklist_rejects_the_edge_user_data_dir() {
+        let home = Path::new(fabricated_home());
+        assert!(sensitive(
+            Some(home),
+            &format!(
+                "{}/AppData/Local/Microsoft/Edge/User Data/Default/Login Data",
+                fabricated_home()
+            ),
+        ));
+        assert!(sensitive(
+            Some(home),
+            &format!(
+                "{}/.config/microsoft-edge/Default/Cookies",
+                fabricated_home()
+            ),
+        ));
+    }
+
+    #[test]
+    fn sensitive_path_blocklist_rejects_the_firefox_profile_dir() {
+        let home = Path::new(fabricated_home());
+        assert!(sensitive(
+            Some(home),
+            &format!(
+                "{}/AppData/Roaming/Mozilla/Firefox/Profiles/abc.default/logins.json",
+                fabricated_home()
+            ),
+        ));
+        assert!(sensitive(
+            Some(home),
+            &format!(
+                "{}/.mozilla/firefox/abc.default/logins.json",
+                fabricated_home()
+            ),
+        ));
+        // The snap-packaged layout is part of the Firefox family.
+        assert!(sensitive(
+            Some(home),
+            &format!(
+                "{}/snap/firefox/common/.mozilla/firefox/abc.default/logins.json",
+                fabricated_home()
+            ),
+        ));
+    }
+
+    #[test]
+    fn sensitive_path_blocklist_admits_ordinary_user_files_and_near_misses() {
+        let home = Path::new(fabricated_home());
+        // Ordinary profile files stay attachable (the whole point of keeping
+        // the `Users` tree out of the system blocklist).
+        assert!(!sensitive(
+            Some(home),
+            &format!("{}/Documents/notes.txt", fabricated_home())
+        ));
+        assert!(!sensitive(
+            Some(home),
+            &format!("{}/AppData/Local/Temp/scratch.txt", fabricated_home())
+        ));
+        // Near-misses of the dot rule are not sensitive components.
+        assert!(!sensitive(
+            Some(home),
+            &format!("{}/.sshx/id_backup", fabricated_home())
+        ));
+        assert!(!sensitive(
+            Some(home),
+            &format!("{}/src/aws_client.rs", fabricated_home())
+        ));
+        // A browser-profile shape outside the current user's home does not
+        // match the home-relative rule (the dot-directory rule still applies
+        // wherever a `.ssh`-style component appears).
+        assert!(!sensitive(
+            Some(home),
+            r"D:\OtherUsers\Elsewhere\AppData\Local\Google\Chrome\User Data\Cookies",
+        ));
+        // Without a resolvable home, only the dot rule fires.
+        assert!(sensitive(None, r"C:\any\.ssh\id_rsa"));
+        assert!(!sensitive(None, r"C:\any\Documents\notes.txt"));
+    }
+
+    #[test]
+    fn attachment_path_rejects_a_real_sensitive_dot_directory_file() {
+        // End-to-end through the resolver: a real file under a `.ssh`
+        // component is refused with the fixed reason, never the path.
+        let id = FILE_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let outer = std::env::temp_dir().join(format!(
+            "nexora-attach-blocklist-{}-{id}.d",
+            std::process::id()
+        ));
+        let dir = outer.join(".ssh");
+        std::fs::create_dir_all(&dir).expect("create .ssh test dir");
+        let file = dir.join("id_blocklist_test");
+        std::fs::write(&file, b"not a real key").expect("write test file");
+
+        let (field, reason) = match resolve_attachment_file_path(file.to_string_lossy().as_ref()) {
+            Err(AttachmentError::InvalidInput { field, reason }) => (field, reason),
+            other => panic!("expected InvalidInput, got {other:?}"),
+        };
+        assert_eq!(field, "file_path");
+        assert_eq!(reason, "a sensitive user-profile location is not allowed");
+        // The refusal is secret-free: no path fragment, no file content.
+        assert!(!reason.contains(".ssh"));
+        assert!(!reason.contains("id_blocklist_test"));
+
+        let _ = std::fs::remove_dir_all(&outer);
     }
 }

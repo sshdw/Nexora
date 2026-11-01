@@ -5,14 +5,15 @@
 //! Tauri file dialogs (`@tauri-apps/plugin-dialog`). The backend remains the
 //! source of truth: export is read-only against the database and import is
 //! atomic (all inserts in one transaction), so no partial state can exist on
-//! failure. Every failure path surfaces the backend's classified
-//! [`CommandError`] and never leaves a busy state behind. Fully local —
-//! no network access is involved.
+//! failure. Import reads the picked document BACKEND-side (SEC-01): the
+//! renderer forwards the dialog-picked path only and holds no `fs` plugin
+//! grant to read file content itself. Every failure path surfaces the
+//! backend's classified [`CommandError`] and never leaves a busy state
+//! behind. Fully local — no network access is involved.
 
 import { useCallback, useMemo, useState } from "react";
 
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { readTextFile } from "@tauri-apps/plugin-fs";
 
 import {
   type CommandError,
@@ -98,8 +99,10 @@ export function useImportExport(): ImportExportStore {
 
     setBusy(true);
     try {
-      const json = await readTextFile(selection);
-      const newId = await importConversation(json);
+      // SEC-01: pass the dialog-picked path — the backend reads and validates
+      // the document itself (.json allowlist, containment, 16 MiB cap), so
+      // the webview never touches the file content.
+      const newId = await importConversation(selection);
       setImportedId(newId);
       return newId;
     } catch (e) {

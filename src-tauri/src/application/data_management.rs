@@ -399,8 +399,11 @@ mod tests {
             .expect("setting created");
     }
 
-    fn count(db: &Database, table: &str) -> i64 {
+    fn count(db: &Database, table: &'static str) -> i64 {
         let conn = db.lock().expect("lock connection");
+        // `table` is a `&'static str` (SEC-07, same typing as
+        // `application/system.rs::count`): interpolation only ever sees a
+        // fixed literal, never caller text.
         conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
             row.get(0)
         })

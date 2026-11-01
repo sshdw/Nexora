@@ -1,6 +1,8 @@
 //! Shared GitHub-issue filing dialog: the ConfirmDialog-based confirmation
 //! step behind every "File issue" button (debt rows, audit findings,
-//! release-check rows).
+//! release-check rows). The in-app dialog is the pre-gate UX; the actual
+//! destructive-action gate is the blocking native OS dialog the IPC wrapper
+//! raises to mint the single-use confirmation id (SEC-03).
 //!
 //! Presentational over the single `create_issue_for_finding` IPC wrapper:
 //! the caller supplies the prefilled target (title + optional
@@ -66,7 +68,6 @@ export default function FileIssueDialog({
       const created = await createIssueForFinding(
         target.title,
         target.source,
-        true,
         target.location,
         target.detail,
       );

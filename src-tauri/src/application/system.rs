@@ -150,9 +150,9 @@ fn schema_target() -> i64 {
         .unwrap_or(0)
 }
 
-fn count(conn: &rusqlite::Connection, table: &str) -> Result<i64, SystemError> {
-    // `table` is always one of the fixed literals below — never caller
-    // input — so interpolation cannot inject.
+fn count(conn: &rusqlite::Connection, table: &'static str) -> Result<i64, SystemError> {
+    // `table` is a `&'static str` (SEC-07): only a fixed literal can reach the
+    // interpolation, so no caller-supplied text can ever become SQL here.
     let sql = format!("SELECT COUNT(*) FROM {table}");
     Ok(conn.query_row(&sql, [], |row| row.get(0))?)
 }

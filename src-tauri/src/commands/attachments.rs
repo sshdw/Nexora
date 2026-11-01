@@ -21,12 +21,15 @@ use super::error::CommandError;
 
 /// Attach a local-file reference to a conversation as a draft attachment and
 /// return the persisted attachment.
+///
+/// The file size is derived backend-side from the picked file's own metadata
+/// (SEC-01) — the renderer supplies only the dialog-picked `file_path`, the
+/// display `file_name`, and the optional `mime_type` hint.
 #[tauri::command]
 pub(crate) fn attach_file(
     conversation_id: i64,
     file_name: String,
     file_path: String,
-    file_size_bytes: Option<i64>,
     mime_type: Option<String>,
     db: State<'_, Database>,
 ) -> Result<Attachment, CommandError> {
@@ -35,7 +38,6 @@ pub(crate) fn attach_file(
             conversation_id,
             &file_name,
             &file_path,
-            file_size_bytes,
             mime_type.as_deref(),
         )
         .map_err(Into::into)

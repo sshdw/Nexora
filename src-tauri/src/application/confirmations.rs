@@ -32,9 +32,9 @@
 //!
 //! Other preserved properties:
 //!
-//! - every id is bound to one scope ([`SCOPE_TERMINAL`] or
-//!   [`SCOPE_DATA_MANAGEMENT`]) and consumed **atomically on first use**:
-//!   reuse, cross-scope replay, and unknown ids are refused with no execution;
+//! - every id is bound to one scope (one of the `SCOPE_*` constants below)
+//!   and consumed **atomically on first use**: reuse, cross-scope replay, and
+//!   unknown ids are refused with no execution;
 //! - ids expire after [`CONFIRMATION_TTL`] (120 s) on a monotonic clock;
 //! - the pending map is bounded by [`MAX_PENDING`] — expired entries are
 //!   purged and, if that is not enough, the oldest entries are evicted, so a
@@ -67,6 +67,23 @@ pub(crate) const SCOPE_TERMINAL: &str = "terminal";
 /// clear-all).
 pub(crate) const SCOPE_DATA_MANAGEMENT: &str = "data_management";
 
+/// Scope binding the guarded version-control writes
+/// (`git_stage` / `git_unstage` / `git_commit` / `git_push`).
+pub(crate) const SCOPE_VERSION_CONTROL: &str = "version_control";
+
+/// Scope binding the confirmed dead-code apply (`refactor_apply`).
+pub(crate) const SCOPE_REFACTOR: &str = "refactor";
+
+/// Scope binding the ledger wipe (`privacy_wipe`).
+pub(crate) const SCOPE_PRIVACY: &str = "privacy";
+
+/// Scope binding GitHub issue filing (`create_issue_for_finding`).
+pub(crate) const SCOPE_RELEASE: &str = "release";
+
+/// Scope binding the four export commands (documents written to disk or
+/// returned for copy).
+pub(crate) const SCOPE_EXPORT: &str = "export";
+
 /// Operation identity for permanently deleting one prompt row. The frontend
 /// mints with this exact string (mirrored in `src/lib/tauri.ts` and pinned by
 /// a source check in `commands/confirmations.rs`).
@@ -77,6 +94,39 @@ pub(crate) const OP_DELETE_CONVERSATION: &str = "delete_conversation";
 
 /// Operation identity for clearing every locally stored table.
 pub(crate) const OP_CLEAR_ALL_DATA: &str = "clear_application_data";
+
+/// Operation identity for staging files into the git index.
+pub(crate) const OP_GIT_STAGE: &str = "git_stage";
+
+/// Operation identity for unstaging files back to `HEAD`.
+pub(crate) const OP_GIT_UNSTAGE: &str = "git_unstage";
+
+/// Operation identity for committing the staged index.
+pub(crate) const OP_GIT_COMMIT: &str = "git_commit";
+
+/// Operation identity for pushing the current branch to `origin`.
+pub(crate) const OP_GIT_PUSH: &str = "git_push";
+
+/// Operation identity for one confirmed dead-code apply.
+pub(crate) const OP_REFACTOR_APPLY: &str = "refactor_apply";
+
+/// Operation identity for wiping the usage ledger.
+pub(crate) const OP_PRIVACY_WIPE: &str = "privacy_wipe";
+
+/// Operation identity for filing one GitHub issue.
+pub(crate) const OP_CREATE_ISSUE: &str = "create_issue_for_finding";
+
+/// Operation identity for serializing one conversation export document.
+pub(crate) const OP_EXPORT_CONVERSATION: &str = "export_conversation";
+
+/// Operation identity for writing one conversation export document to disk.
+pub(crate) const OP_EXPORT_CONVERSATION_TO_FILE: &str = "export_conversation_to_file";
+
+/// Operation identity for serializing the portable setup document.
+pub(crate) const OP_EXPORT_SETUP: &str = "export_setup";
+
+/// Operation identity for writing the portable setup document to disk.
+pub(crate) const OP_EXPORT_SETUP_TO_FILE: &str = "export_setup_to_file";
 
 // ---------------------------------------------------------------------------
 // Limits
@@ -196,6 +246,11 @@ fn scope_of(scope: &str) -> Option<&'static str> {
     match scope {
         SCOPE_TERMINAL => Some(SCOPE_TERMINAL),
         SCOPE_DATA_MANAGEMENT => Some(SCOPE_DATA_MANAGEMENT),
+        SCOPE_VERSION_CONTROL => Some(SCOPE_VERSION_CONTROL),
+        SCOPE_REFACTOR => Some(SCOPE_REFACTOR),
+        SCOPE_PRIVACY => Some(SCOPE_PRIVACY),
+        SCOPE_RELEASE => Some(SCOPE_RELEASE),
+        SCOPE_EXPORT => Some(SCOPE_EXPORT),
         _ => None,
     }
 }
@@ -384,6 +439,32 @@ impl ConfirmationRegistry {
 // Native prompt text
 // ---------------------------------------------------------------------------
 
+/// Human-readable area name rendered into the native dialog header for a
+/// non-terminal scope. Fixed vocabulary derived from the scope itself, never
+/// from caller text.
+fn scope_label(scope: &str) -> &'static str {
+    match scope {
+        SCOPE_DATA_MANAGEMENT => "data-management",
+        SCOPE_VERSION_CONTROL => "version-control",
+        SCOPE_REFACTOR => "refactor",
+        SCOPE_PRIVACY => "privacy",
+        SCOPE_RELEASE => "issue-filing",
+        SCOPE_EXPORT => "export",
+        _ => "destructive",
+    }
+}
+
+/// Honest closing line for a non-terminal scope. Destructive-delete scopes
+/// state irreversibility directly; the rest ask the phishing-resistance
+/// question instead (a stage or an export *can* be undone, so "cannot be
+/// undone" would be a lie).
+fn scope_footer(scope: &str) -> &'static str {
+    match scope {
+        SCOPE_DATA_MANAGEMENT | SCOPE_PRIVACY => "This cannot be undone.",
+        _ => "Only confirm if you raised this prompt yourself.",
+    }
+}
+
 /// Compose the body of the native confirmation dialog for `target` inside
 /// `scope`.
 ///
@@ -408,13 +489,17 @@ pub(crate) fn prompt_body(scope: &str, target: &ConfirmationTarget<'_>) -> Strin
              This runs the command directly on your machine."
         )
     } else {
-        let mut body = format!("Nexora will run this data-management operation:\n\n{operation}");
+        let mut body = format!(
+            "Nexora will run this {} operation:\n\n{operation}",
+            scope_label(scope)
+        );
         if let Some(id) = target.target_id {
             let row: String = id.to_string().chars().take(MAX_TARGET_CHARS).collect();
             body.push_str("\n\nTarget row: #");
             body.push_str(&row);
         }
-        body.push_str("\n\nThis cannot be undone.");
+        body.push_str("\n\n");
+        body.push_str(scope_footer(scope));
         body
     };
     if operation.chars().count() < target.operation.chars().count() {
@@ -424,38 +509,44 @@ pub(crate) fn prompt_body(scope: &str, target: &ConfirmationTarget<'_>) -> Strin
 }
 
 // ---------------------------------------------------------------------------
-// Coverage (NEX-SEC-004 is partial — read this before claiming coverage)
+// Coverage (NEX-SEC-004 — read this before claiming or denying coverage)
 // ---------------------------------------------------------------------------
 //
 // Rust-verified today (minted only after the native prompt is accepted, bound
-// to the exact operation, consumed atomically once):
+// to the exact scope + operation (+ target row where one exists), consumed
+// atomically once):
 //
-// - `terminal_run`
+// - `terminal_run` (scope `terminal`, operation = the literal command text)
 // - `delete_conversation_permanently` — the ONLY conversation-delete command:
 //   the ungated `delete_conversation` sibling was removed, so the live sidebar
 //   path (`useConversations.remove`) mints through the native prompt first.
 // - `delete_prompt_permanently` — the ONLY prompt-delete command: the ungated
-//   `delete_prompt` sibling was removed, so the live library path
-//   (`usePrompts.remove`) mints through the native prompt first.
+//   `delete_prompt` sibling was removed, so the live library path mints
+//   through the native prompt first.
 // - `clear_application_data`
+// - `git_stage` / `git_unstage` / `git_commit` / `git_push` (scope
+//   `version_control`, operations [`OP_GIT_STAGE`] / [`OP_GIT_UNSTAGE`] /
+//   [`OP_GIT_COMMIT`] / [`OP_GIT_PUSH`])
+// - `refactor_apply` (scope `refactor`, operation [`OP_REFACTOR_APPLY`])
+// - `privacy_wipe` (scope `privacy`, operation [`OP_PRIVACY_WIPE`])
+// - `create_issue_for_finding` (scope `release`, operation
+//   [`OP_CREATE_ISSUE`])
+// - the four export commands (scope `export`): `export_conversation`
+//   ([`OP_EXPORT_CONVERSATION`]), `export_conversation_to_file`
+//   ([`OP_EXPORT_CONVERSATION_TO_FILE`], bound to the conversation row),
+//   `export_setup` ([`OP_EXPORT_SETUP`]), `export_setup_to_file`
+//   ([`OP_EXPORT_SETUP_TO_FILE`])
 //
-// Still renderer-attested: these destructive paths take a caller-supplied
-// `confirmed: bool` (or, for the write-to-disk exports, no gate at all) and
-// therefore have **no** Rust-side user-presence proof — any IPC caller passes
-// them:
+// Frontend mint contract (work-package 2): the renderer mints each of the
+// operations above by passing the exact scope string and operation identity
+// (plus `target_id` = the conversation id for the two conversation exports)
+// to `request_confirmation`. The backend consumes each id against the same
+// constants, so any drift fails closed (the id is refused) rather than open.
 //
-// - `git_stage`, `git_unstage`, `git_commit`, `git_push`
-// - `refactor_apply`
-// - `privacy_wipe`
-// - `create_issue_for_finding`
-// - `export_conversation_to_file` (and the other write-to-disk export paths:
-//   `export_conversation`, `export_setup`, `export_setup_to_file`)
-//
-// Tracked as open audit items — #137 (SEC-005, export-to-file confirmation)
-// and the remaining boolean gates listed above. Other destructive commands
-// without any gate (`delete_task`, `remove_attachment`, `delete_setting`,
-// `remove_provider`, `delete_debt_item`, `remove_permission_rule`) are outside
-// this confirmation gate's scope and are tracked separately. Do not describe
+// Other destructive commands without any gate (`delete_task`,
+// `remove_attachment`, `delete_setting`, `remove_provider`,
+// `delete_debt_item`, `remove_permission_rule`) are outside this
+// confirmation gate's scope and are tracked separately. Do not describe
 // the confirmation gate as covering those paths until they are migrated to
 // the same mint-and-consume flow.
 
@@ -629,6 +720,72 @@ mod tests {
         );
     }
 
+    /// The destructively-gated areas each mint in their own scope: every
+    /// `SCOPE_*` constant maps, and a near-miss string still refuses.
+    #[test]
+    fn every_gated_area_scope_is_known() {
+        for scope in [
+            SCOPE_TERMINAL,
+            SCOPE_DATA_MANAGEMENT,
+            SCOPE_VERSION_CONTROL,
+            SCOPE_REFACTOR,
+            SCOPE_PRIVACY,
+            SCOPE_RELEASE,
+            SCOPE_EXPORT,
+        ] {
+            assert!(
+                crate::application::confirmations::scope_of_public(scope).is_some(),
+                "scope {scope:?} must be mintable"
+            );
+        }
+        assert!(crate::application::confirmations::scope_of_public("Version_Control").is_none());
+        assert!(crate::application::confirmations::scope_of_public("export;").is_none());
+    }
+
+    /// An id minted in one gated area can never be spent in another, and one
+    /// minted for one operation can never drive a sibling operation of the
+    /// same area (the git writes are distinct operations on purpose).
+    #[test]
+    fn ids_do_not_cross_areas_or_sibling_operations() {
+        let registry = ConfirmationRegistry::new();
+        let stage = ConfirmationTarget::new(OP_GIT_STAGE);
+        let id = registry
+            .request(SCOPE_VERSION_CONTROL, &stage)
+            .expect("mint succeeds");
+        assert!(
+            !registry.consume(SCOPE_EXPORT, &id, &ConfirmationTarget::new(OP_EXPORT_SETUP)),
+            "a version-control id must not authorize an export"
+        );
+        // The failed cross-scope spend burned the id, exactly like a replay.
+        assert!(
+            !registry.consume(SCOPE_VERSION_CONTROL, &id, &stage),
+            "burned id must stay single-use"
+        );
+
+        let fresh = registry
+            .request(
+                SCOPE_VERSION_CONTROL,
+                &ConfirmationTarget::new(OP_GIT_STAGE),
+            )
+            .expect("mint succeeds");
+        assert!(
+            !registry.consume(
+                SCOPE_VERSION_CONTROL,
+                &fresh,
+                &ConfirmationTarget::new(OP_GIT_COMMIT),
+            ),
+            "a stage id must not authorize a commit"
+        );
+        assert!(
+            !registry.consume(
+                SCOPE_VERSION_CONTROL,
+                &fresh,
+                &ConfirmationTarget::new(OP_GIT_STAGE),
+            ),
+            "the mismatched spend must have consumed the id"
+        );
+    }
+
     #[test]
     fn minted_ids_are_unique() {
         let registry = ConfirmationRegistry::new();
@@ -674,6 +831,40 @@ mod tests {
         );
         assert!(body.contains(OP_DELETE_CONVERSATION), "{body}");
         assert!(body.contains("#5"), "the prompt must name the row: {body}");
+        assert!(body.contains("This cannot be undone."), "{body}");
+    }
+
+    /// The migrated areas render their own honest area label and closing
+    /// line: irreversible wipes say "cannot be undone", while undoable
+    /// operations (a stage, an export) ask the phishing-resistance question
+    /// instead of lying.
+    #[test]
+    fn prompt_body_labels_each_gated_area_honestly() {
+        let body = prompt_body(
+            SCOPE_VERSION_CONTROL,
+            &ConfirmationTarget::new(OP_GIT_STAGE),
+        );
+        assert!(body.contains("version-control"), "{body}");
+        assert!(body.contains(OP_GIT_STAGE), "{body}");
+        assert!(
+            !body.contains("This cannot be undone."),
+            "a stage is undoable; the prompt must not claim otherwise: {body}"
+        );
+
+        let body = prompt_body(SCOPE_PRIVACY, &ConfirmationTarget::new(OP_PRIVACY_WIPE));
+        assert!(body.contains("privacy"), "{body}");
+        assert!(body.contains("This cannot be undone."), "{body}");
+
+        let body = prompt_body(
+            SCOPE_EXPORT,
+            &ConfirmationTarget::for_target(OP_EXPORT_CONVERSATION_TO_FILE, 7),
+        );
+        assert!(body.contains("export"), "{body}");
+        assert!(body.contains(OP_EXPORT_CONVERSATION_TO_FILE), "{body}");
+        assert!(body.contains("#7"), "{body}");
+
+        let body = prompt_body(SCOPE_RELEASE, &ConfirmationTarget::new(OP_CREATE_ISSUE));
+        assert!(body.contains("issue-filing"), "{body}");
     }
 
     #[test]

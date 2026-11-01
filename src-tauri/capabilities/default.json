@@ -5,16 +5,6 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "opener:default",
-    "dialog:default",
-    "fs:allow-stat",
-    {
-      "identifier": "fs:allow-read-text-file",
-      "allow": [{ "path": "$HOME" }, { "path": "$HOME/**/*" }]
-    },
-    {
-      "identifier": "fs:scope",
-      "allow": [{ "path": "$HOME" }, { "path": "$HOME/**/*" }]
-    }
+    "dialog:default"
   ]
 }
