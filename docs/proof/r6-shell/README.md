@@ -20,25 +20,24 @@ states that set lacked.
 | `03-sessions-scrolled-1200x800.png` | 1200×800 | 1500×1000 | `ACF86CBCF0BC4D0F5FC6C70B5A2F236F` | 1981 | Same list scrolled (`scrollTop` 2432): older rows ("23 окт.", "Workspace roots switcher", "Composer height regression at 5-6 lin…"), the bottom band melts into the canvas over real content, thumb mid-track. |
 | `04-search-mid-1200x800.png` | 1200×800 | 1500×1000 | `48F58C6CBE62C0617C168D765E357515` | 1896 | Filter mid-typing (`se`, caret in field): list already narrowed to the 2 matching rows. |
 | `05-search-results-1200x800.png` | 1200×800 | 1500×1000 | `42277D5E8B1C52F7BA895E49AE44DB33` | 2524 | Filter `set`: honest empty state — "No sessions match that filter", panel keeps its shape, no layout jump. |
-| `06-dock-expanded-focus-1200x800.png` | 1200×800 | 1500×1000 | `2395496652FC8C5E6E523B321E533E52` | 2129 | **Close-out pair, expanded side:** panel open AND the dock Sessions trigger focused — **no tooltip chip**, no clipped "S" at the panel's left edge (the `f77184c` behavior, visually confirmed). |
+| `06-dock-expanded-focus-1200x800.png` | 1200×800 | 1500×1000 | `905166CA4F43AB4B8D26BCCF25332BA4` | 5681 | **Close-out pair, expanded side:** panel open AND the dock Sessions trigger truly focused (`:focus-visible` ring on the trigger is visible) — **no tooltip chip**, no clipped "S" at the panel's left edge (`f77184c`, visually confirmed). The provider error card is already visible in the thread behind the panel. |
 | `07-dock-hover-tooltip-1200x800.png` | 1200×800 | 1500×1000 | `ACB066A8CE356189682FEC30F502E5A2` | 2243 | **Close-out pair, collapsed side:** panel closed, trigger focused — the `Sessions` tooltip chip sits right of the button, focus ring on the trigger, nothing clipped. |
 | `08-conversation-loaded-1200x800.png` | 1200×800 | 1500×1000 | `ACA7CB6B9B45D56B033F766CD539D80B` | 3797 | A real conversation loaded: 3 tabs in the strip, active tab "Composer height regression at 5…", thread shows the user message "Seeded capture fixture — …" (17 окт.); the sessions panel is still open above it. |
 | `09-tabs-two-1200x800.png` | 1200×800 | 1500×1000 | `AFF06B24E73E2910F39CB7B992FF754C` | 2739 | Two tabs: strip with two "New Conversation" tabs (second active, hairline underline), `nx` workspace chip and the pane menu in the header, `Split` control at the right edge. |
 | `10-tabs-split-1200x800.png` | 1200×800 | 1500×1000 | `558498FD2480F76B228F41F81F9E50BC` | 4084 | Split active: two panes — loaded conversation left, New Conversation right — each with its own header and composer; `Close split` replaced the Split control; a `[2]` count badge sits on the middle tab. |
 | `11-send-early-1200x800.png` | 1200×800 | 1500×1000 | `1730BC8B69BC6899ECC71DE6DBECBFED` | 4423 | Send +1.5 s, Chat mode (left composer switched: `+` attach, no Full-auto): the assistant placeholder row starts appearing at the thread top, partially behind the still-open sessions panel. Mid-flight state, honestly occluded. |
-| `12-send-settled-1200x800.png` | 1200×800 | 1500×1000 | `429383FC491BE54FFC1F01A7DD37EA10` | 4672 | Panel closed: clean split view — thread with the user message and the **"Assistant is responding"** streaming placeholder (spinner). The stream never advanced past this state during the capture window. |
+| `12-send-settled-1200x800.png` | 1200×800 | 1500×1000 | `429383FC491BE54FFC1F01A7DD37EA10` | 4672 | Panel closed: clean split view — thread with the user message and the **"Assistant is responding"** streaming placeholder (spinner). The stream stayed here for minutes before failing. |
+| `13-error-turn-1200x800.png` | 1200×800 | 1500×1000 | `1CAE05AA22B898D785996C22E9F6F723` | 5302 | **Error turn, real backend:** the hung stream resolved as a provider failure — red-bordered card "the AI provider 'nvidia' failed: the AI provider could not be reached (network or timeout)" below the two user turns; thread stays readable, composer unaffected. |
 
 Every frame is distinct (unique MD5) and carries >1890 colours.
 
 ## Known gaps
 
-- **Error turn not captured.** The test send's provider stream hung in "Assistant is responding"
-  until capture ended; no error surface was reached. Backend error mapping is covered by Rust
-  tests (CommandError sentinels); the visual error-turn frame is deferred to the F3 campaign
-  phase where send/error states get reworked anyway (markdown renderer).
 - **Reduced-motion frame not captured.** It requires an OS-level animation toggle; the
   reduced-motion coverage is code-pinned instead (`src/styles/motion.css:182` global gate,
   `context.css:313`, `conversation.css:1282`, `src/lib/useReducedMotion.ts` tests) and gets a
   live pass in the F5 motion phase (P7 landing).
-- The streaming hang itself is **not a shell regression**: the shell correctly holds the
-  placeholder + spinner; the stall is on the provider side (gpt-oss-20b endpoint).
+- The provider stall/failure behind frames 11–13 is **not a shell regression**: the shell held
+  the placeholder + spinner correctly and surfaced the eventual failure as a styled error card;
+  the `nvidia` endpoint for `openai/gpt-oss-20b` was unreachable from this machine at capture
+  time.
