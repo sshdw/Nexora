@@ -264,6 +264,17 @@ const en = {
   "conv.autonomyExplainSemi": "Semi-auto: routine steps run alone, writes still ask first.",
   "conv.autonomyExplainFull": "Full-auto: the agent runs to the end without stopping.",
 
+  // ---- message markdown (MessageMarkdown.tsx, ADD-01) -------------------------
+  // Copy-only link affordance + fence render cap (02-SECURITY §4.2 req 3/4).
+  "md.copyLink": "Copy link",
+  "md.linkCopied": "Copied",
+  "md.codeTruncated": "Code truncated — showing the first {limit} characters.",
+
+  // ---- error boundaries (ErrorBoundary.tsx, ADD-05) ---------------------------
+  // One sentence for every boundary level (root, dock slot, thread pane);
+  // the action reuses common.retry.
+  "err.boundaryBody": "This screen failed to render — nothing was lost, and you can try again.",
+
   // ---- agent runs (AgentRunSteps.tsx) --------------------------------------------
   "agent.statusRunning": "Running",
   "agent.statusPaused": "Paused",
@@ -1801,6 +1812,12 @@ const ru: Record<StringKey, string> = {
   "conv.autonomyExplainSupervised": "Под присмотром: каждый вызов инструмента ждёт вашего подтверждения.",
   "conv.autonomyExplainSemi": "Полуавто: рутинные шаги идут сами, запись файлов всё равно спросит.",
   "conv.autonomyExplainFull": "Полный авто: агент дорабатывает задачу без остановок.",
+
+  "md.copyLink": "Скопировать ссылку",
+  "md.linkCopied": "Скопировано",
+  "md.codeTruncated": "Код обрезан — показаны первые {limit} символов.",
+
+  "err.boundaryBody": "Этот экран не удалось отрисовать — ничего не пропало, можно попробовать снова.",
 
   "agent.statusRunning": "Выполняется",
   "agent.statusPaused": "На паузе",

@@ -1564,3 +1564,39 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ============================================================
+   ERROR BOUNDARY (ADD-05, ErrorBoundary.tsx)
+   Muted degradation surface, not the M3E error strip: a boundary
+   fallback means "this slot broke", not "your data is wrong" —
+   surface-1 tone, hairline seam (THEME §2 --border), text-2 ink.
+   One card, three levels (root / dock slot / thread pane); the
+   root variant only adds the whole-window centering.
+   ============================================================ */
+.nex-error-boundary {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-xs);
+  width: 100%;
+  max-width: var(--layout-measure-max);
+  margin-inline: auto;
+  padding: var(--space-md);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--shape-medium);
+  color: var(--muted-foreground);
+  font-size: var(--type-size-body-small);
+}
+.nex-error-boundary-text {
+  margin: 0;
+}
+.nex-error-boundary-root {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100vw;
+  height: 100vh;
+  background: var(--background);
+  padding: var(--space-md);
+}

@@ -16,6 +16,7 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { tr } from "../lib/strings";
+import type { Message } from "../lib/tauri";
 import type { AutonomyStore } from "../lib/useAutonomy";
 import type { WorkspaceStore } from "../lib/useWorkspace";
 import { LOCALE_KEY, LocaleProvider } from "../lib/useLocale";
@@ -24,10 +25,12 @@ import ConversationView from "./ConversationView";
 // The pane owns three hooks that all reach the backend. They are replaced
 // wholesale: this file is about the mode the pane STARTS in, not about
 // history, attachments or runs, and an empty conversation is the state the
-// app opens on.
+// app opens on. `conversationMessages` lets the message-body describe block
+// (ADD-01) seed exactly the rows it pins without touching the others.
+let conversationMessages: Message[] = [];
 vi.mock("../lib/useConversation", () => ({
   useConversation: () => ({
-    messages: [],
+    messages: conversationMessages,
     loading: false,
     error: null,
     sending: false,
@@ -53,6 +56,8 @@ vi.mock("../lib/useAgentRun", () => ({
     loading: false,
     error: null,
     reload: vi.fn(async () => {}),
+    // AC-102/ADD-08 lazy-steps seam added to the store.
+    loadRunSteps: vi.fn(async () => {}),
     expandStep: vi.fn(),
     collapseStep: vi.fn(),
   }),
@@ -114,6 +119,7 @@ function modeGroup(): HTMLElement {
 }
 
 beforeEach(() => {
+  conversationMessages = [];
   window.localStorage.setItem(LOCALE_KEY, "en");
 });
 
@@ -204,4 +210,59 @@ describe("mode pill title copy", () => {
       expect(title).not.toMatch(/attach|вложен/i);
     });
   }
+});
+
+describe("message bodies (ADD-01)", () => {
+  it("parses ASSISTANT bodies as markdown and keeps USER bodies plain text", () => {
+    // The seam the ADD-01 swap owns: only model-authored bodies are
+    // markdown-interpreted (05-ADD §3.1) — user text is data, not formatting.
+    // jsdom computes no cascade: what is pinned is element presence and
+    // absence, which is what decides "interpreted" vs "escaped text".
+    conversationMessages = [
+      {
+        id: 1,
+        conversation_id: 1,
+        role: "user",
+        content: "**not bold** [x](https://a.example)",
+        provider_id: null,
+        model_name: null,
+        created_at: 1_700_000_000,
+      },
+      {
+        id: 2,
+        conversation_id: 1,
+        role: "assistant",
+        content: "**bold** [x](https://a.example)",
+        provider_id: 1,
+        model_name: "gemini-3.6-flash",
+        created_at: 1_700_000_060,
+      },
+    ];
+    render(pane());
+
+    // Assistant side: the emphasis became an element, the link became the
+    // copy-only affordance — never an anchor (02-SECURITY §4.2 req 3).
+    const assistantBody = screen
+      .getByText("bold")
+      .closest<HTMLElement>(".nex-message-body");
+    expect(assistantBody).not.toBeNull();
+    expect(assistantBody?.querySelector("strong")).not.toBeNull();
+    expect(assistantBody?.querySelector("a")).toBeNull();
+    expect(assistantBody?.querySelector("[href]")).toBeNull();
+    expect(
+      within(assistantBody!).getByRole("button", { name: "Copy link" }),
+    ).toBeInTheDocument();
+
+    // User side: the same syntax survives literally as one escaped text
+    // node — no strong, no link affordance, no structure.
+    const userBody = screen
+      .getByText("**not bold** [x](https://a.example)")
+      .closest<HTMLElement>(".nex-message-body");
+    expect(userBody).not.toBeNull();
+    expect(userBody?.querySelector("strong")).toBeNull();
+    expect(userBody?.querySelector("a")).toBeNull();
+    expect(
+      within(userBody!).queryByRole("button", { name: "Copy link" }),
+    ).toBeNull();
+  });
 });

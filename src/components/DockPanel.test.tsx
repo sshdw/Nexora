@@ -9,6 +9,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { tr } from "../lib/strings";
 import { LocaleProvider } from "../lib/useLocale";
 import { readRepoFile } from "../test/readRepoFile";
 import DockPanel, { type DockPanelProps } from "./DockPanel";
@@ -147,6 +148,27 @@ describe("dock panel — focus", () => {
     } finally {
       trigger.remove();
     }
+  });
+});
+
+describe("dock panel — error boundary (ADD-05)", () => {
+  it("degrades a crashing panel body to the strip inside the panel, shell intact", () => {
+    // The boundary+React report the crash on console.error; keep the output
+    // clean and pin that the crash is logged, never silent.
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    function Boom(): never {
+      throw new Error("panel boom");
+    }
+    renderPanel({ children: <Boom /> });
+
+    // The slot degraded to the boundary strip (alert + catalog Retry)…
+    expect(screen.getByRole("alert")).toHaveTextContent(tr("en", "err.boundaryBody"));
+    expect(screen.getByRole("button", { name: tr("en", "common.retry") })).toBeInTheDocument();
+    // …and the panel shell survived: dialog, title, close and dismissal all
+    // still work — one panel crashing never takes the shell down.
+    expect(screen.getByRole("dialog", { name: "Sessions" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Close" })).toBeInTheDocument();
+    expect(consoleError).toHaveBeenCalled();
   });
 });
 

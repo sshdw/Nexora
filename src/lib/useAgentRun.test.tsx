@@ -15,6 +15,7 @@ import type {
   AgentStep,
   StepEventFrame,
 } from "./tauri";
+import { listAgentRuns, listAgentSteps } from "./tauri";
 import { useAgentRun } from "./useAgentRun";
 
 type TauriEvent = { payload: AgentRunEventPayload };
@@ -137,7 +138,7 @@ beforeEach(() => {
 });
 
 describe("useAgentRun", () => {
-  it("rehydrates runs and steps on mount via the typed wrappers", async () => {
+  it("rehydrates a bounded run page on mount and lazy-loads steps only when asked", async () => {
     routeInvoke({ 1: [runRow()] }, { 7: [stepRow()] });
 
     const { result } = renderHook(() => useAgentRun(1));
@@ -147,25 +148,72 @@ describe("useAgentRun", () => {
       run_id: 7,
       conversation_id: 1,
       status: "running",
+      // AC-102/ADD-08: runs rehydrate WITHOUT their step lists.
+      steps_loaded: false,
+      total_steps: 0,
+    });
+    expect(result.current.runs[0].steps).toHaveLength(0);
+    expect(result.current.loading).toBe(false);
+    expect(result.current.error).toBeNull();
+    // Wrapper contract: snake_case command, camelCase args, bounded page
+    // (REHYDRATION_RUN_PAGE = 50), no cursor on the initial load.
+    expect(mockInvoke).toHaveBeenCalledWith("list_agent_runs", {
+      conversationId: 1,
+      limit: 50,
+      beforeRunId: null,
+    });
+    // The N+1 must stay dead: NO per-run steps fan-out on load.
+    expect(mockInvoke).not.toHaveBeenCalledWith(
+      "list_agent_steps",
+      expect.anything(),
+    );
+    // Channel contract: production subscribes to "agent-run-event"
+    // (useAgentRun.ts); guards a silent channel rename.
+    expect(mockListen).toHaveBeenCalledWith(
+      "agent-run-event",
+      expect.any(Function),
+    );
+
+    // Lazy load: the expanded run asks once, steps arrive mapped, and a
+    // second ask is a no-op (already loaded — no second IPC).
+    await act(async () => {
+      await result.current.loadRunSteps(7);
     });
     expect(result.current.runs[0].steps).toHaveLength(1);
     expect(result.current.runs[0].steps[0]).toMatchObject({
       seq: 1,
       tool_name: "read_file",
     });
-    expect(result.current.loading).toBe(false);
-    expect(result.current.error).toBeNull();
-    // Wrapper contract: snake_case command, camelCase args.
-    expect(mockInvoke).toHaveBeenCalledWith("list_agent_runs", {
-      conversationId: 1,
+    expect(result.current.runs[0].steps_loaded).toBe(true);
+    expect(mockInvoke).toHaveBeenCalledTimes(2);
+    expect(mockInvoke).toHaveBeenLastCalledWith("list_agent_steps", {
+      runId: 7,
+      limit: null,
+      beforeSeq: null,
     });
-    expect(mockInvoke).toHaveBeenCalledWith("list_agent_steps", { runId: 7 });
-    // Channel contract: production subscribes to "agent-run-event"
-    // (useAgentRun.ts:321); guards a silent channel rename.
-    expect(mockListen).toHaveBeenCalledWith(
-      "agent-run-event",
-      expect.any(Function),
-    );
+    await act(async () => {
+      await result.current.loadRunSteps(7);
+    });
+    expect(mockInvoke).toHaveBeenCalledTimes(2);
+  });
+
+  it("wrapper forwards optional pagination args camelCase over the snake_case commands", async () => {
+    // The wrapper contract pinned directly: optional camelCase keys flow
+    // through as null when absent and verbatim when present (the Rust side
+    // takes `limit` / `before_run_id` / `before_seq` as Option<i64>).
+    mockInvoke.mockResolvedValue([]);
+    await listAgentRuns(1, { limit: 10, beforeRunId: 42 });
+    expect(mockInvoke).toHaveBeenLastCalledWith("list_agent_runs", {
+      conversationId: 1,
+      limit: 10,
+      beforeRunId: 42,
+    });
+    await listAgentSteps(7, { limit: 5, beforeSeq: 12 });
+    expect(mockInvoke).toHaveBeenLastCalledWith("list_agent_steps", {
+      runId: 7,
+      limit: 5,
+      beforeSeq: 12,
+    });
   });
 
   it("merges live step frames sorted by seq and ignores duplicate seq", async () => {
@@ -216,8 +264,12 @@ describe("useAgentRun", () => {
     expect(result.current.runs[0].run_id).toBe(7);
     expect(reloadCalls()).toBe(baseline);
 
-    // Own conversation's terminal frame: honored — triggers a reload that
-    // reconciles with persisted truth (fixture status is "running" again).
+    // Own conversation's terminal frame: honored — AC-102/ADD-08 PATCHES the
+    // affected run from the payload (status/finished_at/error) and lazy-
+    // fetches its now-final step list ONCE, instead of re-firing the full
+    // rehydration fan-out.
+    const stepsCalls = (): number =>
+      mockInvoke.mock.calls.filter((c) => c[0] === "list_agent_steps").length;
     act(() => {
       emitAgentEvent({
         type: "finished",
@@ -230,9 +282,53 @@ describe("useAgentRun", () => {
         },
       });
     });
-    await waitFor(() => expect(reloadCalls()).toBeGreaterThan(baseline));
+    // No runs re-query: the patch came from the frame payload alone.
+    expect(reloadCalls()).toBe(baseline);
+    await waitFor(() => expect(result.current.runs[0].status).toBe("completed"));
+    expect(result.current.runs[0].error).toBeNull();
+    expect(result.current.runs[0].finished_at).not.toBeNull();
+    // The run had no steps on screen (rehydrated unloaded), so its final
+    // step list loads exactly once.
+    await waitFor(() => expect(stepsCalls()).toBe(1));
+    expect(mockInvoke).toHaveBeenCalledWith("list_agent_steps", {
+      runId: 7,
+      limit: null,
+      beforeSeq: null,
+    });
+    expect(result.current.runs[0].steps_loaded).toBe(true);
+  });
+
+  it("finished frame for a run with live steps patches without a steps fetch", async () => {
+    // A run the user watched live carries its steps from the frames — the
+    // terminal frame must not re-fetch what is already on screen.
+    routeInvoke({ 1: [] }, { 7: [] });
+
+    const { result } = renderHook(() => useAgentRun(1));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => {
+      emitAgentEvent({ type: "step", run_id: 7, event: stepFrame({ seq: 1 }) });
+    });
     expect(result.current.runs).toHaveLength(1);
-    expect(result.current.runs[0].run_id).toBe(7);
+    expect(result.current.runs[0].steps_loaded).toBe(true);
+
+    act(() => {
+      emitAgentEvent({
+        type: "finished",
+        run_id: 7,
+        event: {
+          conversation_id: 1,
+          status: "completed",
+          final_content: "done",
+          error: null,
+        },
+      });
+    });
+    expect(result.current.runs[0].status).toBe("completed");
+    expect(result.current.runs[0].steps.map((s) => s.seq)).toEqual([1]);
+    expect(
+      mockInvoke.mock.calls.filter((c) => c[0] === "list_agent_steps"),
+    ).toHaveLength(0);
   });
 
   it("pins foreign step-frame behavior: unknown run_id opens a placeholder under the active conversation", async () => {
@@ -302,6 +398,12 @@ describe("useAgentRun", () => {
     );
 
     const { result } = renderHook(() => useAgentRun(1));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    // AC-102/ADD-08: steps lazy-load first — the observation expand works on
+    // the fetched list, exactly as it did on the rehydrated one.
+    await act(async () => {
+      await result.current.loadRunSteps(7);
+    });
     await waitFor(() => expect(result.current.runs[0]?.steps).toHaveLength(1));
     expect(result.current.runs[0].steps[0].observation_full).toBeNull();
 
@@ -339,6 +441,10 @@ describe("useAgentRun", () => {
     });
 
     const { result } = renderHook(() => useAgentRun(1));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await act(async () => {
+      await result.current.loadRunSteps(7);
+    });
     await waitFor(() => expect(result.current.runs[0]?.steps).toHaveLength(1));
 
     // Start the expand (sets the loading flag), then collapse before the

@@ -474,12 +474,20 @@ pub(crate) fn resume_agent_run(
 }
 
 /// Rehydration: the runs of one conversation, `started_at` DESC.
+///
+/// AC-102/ADD-08 pagination: `limit` bounds the page and `before_run_id` is
+/// the exclusive keyset cursor (the previous page's last run id). Both are
+/// optional — `None` keeps the historical unbounded read. Invoke args arrive
+/// camelCase (`beforeRunId`) and map onto these `snake_case` params.
 #[tauri::command]
 pub(crate) fn list_agent_runs(
     conversation_id: i64,
+    limit: Option<i64>,
+    before_run_id: Option<i64>,
     db: State<'_, Database>,
 ) -> Result<Vec<AgentRun>, CommandError> {
-    service::list_runs_for_conversation(db.inner(), conversation_id).map_err(Into::into)
+    service::list_runs_for_conversation_paged(db.inner(), conversation_id, limit, before_run_id)
+        .map_err(Into::into)
 }
 
 /// Rehydration: the steps of one run, `seq` ASC.
@@ -491,9 +499,11 @@ pub(crate) fn list_agent_runs(
 #[tauri::command]
 pub(crate) fn list_agent_steps(
     run_id: i64,
+    limit: Option<i64>,
+    before_seq: Option<i64>,
     db: State<'_, Database>,
 ) -> Result<Vec<service::AgentStepListItem>, CommandError> {
-    service::list_steps_for_run(db.inner(), run_id).map_err(Into::into)
+    service::list_steps_for_run_paged(db.inner(), run_id, limit, before_seq).map_err(Into::into)
 }
 
 /// On-demand full step text (NEX-PERF-003): the complete sanitized
@@ -1120,8 +1130,11 @@ mod tests {
                 &["runId", "callId", "approved", "scope"],
             ),
             ("extend_agent_run", &["runId", "extraSteps"]),
-            ("list_agent_runs", &["conversationId"]),
-            ("list_agent_steps", &["runId"]),
+            (
+                "list_agent_runs",
+                &["conversationId", "limit", "beforeRunId"],
+            ),
+            ("list_agent_steps", &["runId", "limit", "beforeSeq"]),
             ("get_agent_step_observation", &["stepId"]),
             ("inspect_run", &["runId"]),
             ("inspect_run_live", &["conversationId"]),

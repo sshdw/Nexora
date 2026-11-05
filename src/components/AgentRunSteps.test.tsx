@@ -62,6 +62,9 @@ function runView(overrides: Partial<AgentRunView> = {}): AgentRunView {
     finished_at: null,
     error: null,
     steps: [],
+    // AC-102/ADD-08 shape: fixtures carry their steps, so loaded = true.
+    steps_loaded: true,
+    total_steps: 0,
     pending_approval: null,
     ...overrides,
   };
@@ -848,5 +851,101 @@ describe("run-scoped callbacks", () => {  it("passes the run id to every control
     fireEvent.click(screen.getByRole("button", { name: "Pause" }));
     expect(onPause).toHaveBeenCalledWith(7);
     expect(within(container).getByText("run 7")).toBeInTheDocument();
+  });
+});
+
+describe("unloaded rehydrated runs (AC-102/ADD-08 lazy steps)", () => {
+  it("counts the line from total_steps while unloaded, never '0 steps'", () => {
+    // A completed 12-step run rehydrates WITHOUT its step list; the line
+    // must read the persisted count, not the empty in-memory list.
+    renderRun(
+      runView({
+        status: "completed",
+        finished_at: 1012,
+        steps_loaded: false,
+        total_steps: 12,
+        steps: [],
+      }),
+    );
+    const line = screen.getByRole("status");
+    expect(line).toHaveTextContent("Done in 12 steps");
+    expect(line.textContent).not.toContain("0 steps");
+  });
+
+  it("a long unloaded run starts folded and asks for its steps only on expand", () => {
+    // total_steps >= FOLD_MIN_STEPS: folded by default, so the lazy fetch
+    // does NOT fire for every rehydrated run on mount — expanding is what
+    // asks, exactly once per cycle.
+    const onLoadRunSteps = vi.fn();
+    renderRun(
+      runView({
+        status: "completed",
+        finished_at: 1012,
+        steps_loaded: false,
+        total_steps: 12,
+        steps: [],
+      }),
+      { onLoadRunSteps },
+    );
+    // The line is the disclosure even with no rows on screen yet: a static
+    // span here would leave a folded run with no way to expand.
+    const line = screen.getByRole("button", { name: /Done in 12 steps/ });
+    expect(line).toHaveAttribute("aria-expanded", "false");
+    expect(onLoadRunSteps).not.toHaveBeenCalled();
+
+    fireEvent.click(line);
+    expect(line).toHaveAttribute("aria-expanded", "true");
+    expect(onLoadRunSteps).toHaveBeenCalledTimes(1);
+    expect(onLoadRunSteps).toHaveBeenCalledWith(7);
+  });
+
+  it("a short unloaded run stays expanded and fetches on mount", () => {
+    // total_steps < FOLD_MIN_STEPS: the data-following default is expanded,
+    // so the persisted list is fetched right away — same as the pre-lazy
+    // behavior for small runs.
+    const onLoadRunSteps = vi.fn();
+    renderRun(
+      runView({
+        status: "completed",
+        finished_at: 1012,
+        steps_loaded: false,
+        total_steps: 3,
+        steps: [],
+      }),
+      { onLoadRunSteps },
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("Done in 3 steps");
+    expect(onLoadRunSteps).toHaveBeenCalledTimes(1);
+    expect(onLoadRunSteps).toHaveBeenCalledWith(7);
+  });
+
+  it("an unloaded running run counts from total_steps while frames stream in", () => {
+    renderRun(
+      runView({
+        status: "running",
+        finished_at: null,
+        steps_loaded: false,
+        total_steps: 4,
+        steps: [],
+      }),
+    );
+    // Rehydrated mid-run (frames not yet arrived): the persisted count
+    // stands in for "Starting…", which would deny the steps that ran.
+    expect(screen.getByRole("status")).toHaveTextContent("Working… · 4 steps");
+  });
+
+  it("an unloaded cancelled run with recorded steps never claims 'nothing ran'", () => {
+    renderRun(
+      runView({
+        status: "cancelled",
+        finished_at: 1005,
+        steps_loaded: false,
+        total_steps: 5,
+        steps: [],
+      }),
+    );
+    const line = screen.getByRole("status");
+    expect(line).toHaveTextContent("Cancelled · 5 steps");
+    expect(line.textContent).not.toContain("nothing");
   });
 });

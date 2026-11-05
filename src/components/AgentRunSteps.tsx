@@ -78,6 +78,11 @@ export interface AgentRunStepsProps {
   onResume?: (runId: number) => void;
   onExpandStep?: (runId: number, seq: number) => void;
   onCollapseStep?: (runId: number, seq: number) => void;
+  /** AC-102/ADD-08 lazy steps: fired when this run's step list is (or
+   *  becomes) visible with no steps loaded — the store dedupes and fetches
+   *  the persisted list once. The parent owns the binding so the prop stays
+   *  referentially stable across frames, like every callback above. */
+  onLoadRunSteps?: (runId: number) => void;
 }
 
 function statusLabel(status: string, locale: Locale = getLocale()): string {
@@ -252,6 +257,18 @@ function foldableRun(run: AgentRunView, sorted: AgentStepView[]): boolean {
   if (!isTerminalStatus(run.status)) return false;
   if (run.status === "budget_exhausted") return false;
   if (run.pending_approval !== null) return false;
+  // AC-102/ADD-08: an UNLOADED run decides its default fold from the
+  // persisted `total_steps` column, so a long finished run starts folded
+  // and the lazy step fetch does not fire for every rehydrated run on
+  // mount — the fetch happens when the user expands the run. The per-step
+  // gates below (tool calls, protected rows) need the list on screen and
+  // cannot pre-approve a fold they cannot evaluate; expanding is the user's
+  // explicit ask, the steps load into the open run, and a failed or denied
+  // row inside is therefore shown, never hidden behind the fold
+  // (§13.29 "failure stays findable").
+  if (!run.steps_loaded) {
+    return run.total_steps !== null && run.total_steps >= FOLD_MIN_STEPS;
+  }
   if (sorted.length < FOLD_MIN_STEPS) return false;
   if (!sorted.some((step) => step.kind === "tool_call")) return false;
   return !sorted.some(isProtectedRow);
@@ -1018,6 +1035,7 @@ function AgentRunSteps({
   onResume,
   onExpandStep,
   onCollapseStep,
+  onLoadRunSteps,
 }: AgentRunStepsProps) {
   const { locale, t } = useStrings();
   const sorted = useMemo(() => [...run.steps].sort((a, b) => a.seq - b.seq), [run.steps]);
@@ -1104,6 +1122,15 @@ function AgentRunSteps({
       return currentCollapsed;
     });
   }, [foldable]);
+  // AC-102/ADD-08 lazy steps: a run whose step list is visible but not
+  // loaded (rehydrated unloaded — live runs arrive with theirs) asks the
+  // store once per visibility change; the store dedupes (loaded / in-flight
+  // guards), so a StrictMode double-effect is harmless and a failed fetch
+  // retries on the next collapse/expand cycle.
+  const sortedCount = sorted.length;
+  useEffect(() => {
+    if (!collapsed && sortedCount === 0) onLoadRunSteps?.(run.run_id);
+  }, [collapsed, sortedCount, onLoadRunSteps, run.run_id]);
   // Stable per group: the identity is the head step's seq — unique within the
   // run (only one group starts at a given seq) and invariant across the
   // per-frame re-sort/re-group. Derived from seq, not from a sanitised text
@@ -1155,22 +1182,34 @@ function AgentRunSteps({
     summaryParts.push(tp(locale, "toolCalls", ranCalls));
   }
   const summaryText = summaryParts.join(" · ");
+  // AC-102/ADD-08: while the persisted step list is still unloaded, every
+  // count on the line reads the run's persisted `total_steps` column — never
+  // the (still empty) in-memory list — so a completed 12-step run cannot
+  // flash "Done in 0 steps" in the moment before its lazy fetch resolves.
+  // Any step on screen (loaded list or live frames) switches the counts back
+  // to the real rows, which is how live runs keep their per-frame tallies.
+  const unloaded = !run.steps_loaded && sorted.length === 0;
+  const lineStepCount = unloaded ? (run.total_steps ?? 0) : sorted.length;
   // Cancelled runs say what a cancel means, because a cancelled run that
-  // had already written files must not read as "done".
-  const cancelledNote = run.status === "cancelled" && ranCalls === 0;
+  // had already written files must not read as "done". While the step list
+  // is unloaded the persisted count stands in for the tool tally, so an
+  // unloaded cancelled run with recorded steps never claims "nothing ran".
+  const cancelledNote =
+    run.status === "cancelled" &&
+    (unloaded ? lineStepCount === 0 : ranCalls === 0);
 
   // The line's own sentence. `tp(locale, "steps", n)` carries the declensed
   // noun; the duration is appended only when `finished_at` is real.
-  const stepPhrase = tp(locale, "steps", sorted.length);
+  const stepPhrase = tp(locale, "steps", lineStepCount);
   const durationText = formatRunDuration(run.started_at, run.finished_at, locale);
   let lineText: string;
-  if (isRunning && sorted.length === 0) {
+  if (isRunning && lineStepCount === 0) {
     lineText = tr(locale, "agent.runStarting");
   } else if (isRunning) {
     lineText = tr(locale, "agent.workingSteps", { steps: stepPhrase });
   } else if (run.status === "completed") {
     lineText = tr(locale, "agent.doneIn", { steps: stepPhrase });
-  } else if (sorted.length === 0) {
+  } else if (lineStepCount === 0) {
     lineText = statusLabel(run.status, locale);
   } else {
     lineText = `${statusLabel(run.status, locale)} · ${stepPhrase}`;
@@ -1218,8 +1257,12 @@ function AgentRunSteps({
             spinner/dot beside the word follow the spine's motion rule: a
             parked run keeps the persisted `running` status but is waiting on
             a human, not burning cycles. The line is the disclosure: pressing
-            it opens the step list in place, with no card around it. */}
-        {sorted.length === 0 ? (
+            it opens the step list in place, with no card around it. An
+            unloaded foldable run (AC-102/ADD-08) has no rows to show yet but
+            MUST still render as the disclosure — a static line here would
+            leave a folded run with no way to expand, so its steps could
+            never lazy-load. */}
+        {sorted.length === 0 && !(foldable && !run.steps_loaded) ? (
           <span className="nex-agent-run-disclosure is-static" role="status">
             {isRunning && !parked && (
               <span className="nex-spinner nex-agent-spinner" aria-hidden="true" />

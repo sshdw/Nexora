@@ -1,6 +1,10 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+// ADD-05 root boundary: one render crash anywhere used to unmount the whole
+// tree to a blank window (bare render, review 05-ADD §3.5a). The boundary
+// degrades to a centred muted screen with a Retry action instead.
+import ErrorBoundary from "./components/ErrorBoundary";
 // Type payloads, NOT stylesheet entries. These imports emit
 // only `@font-face` registrations (no selectors, no cascade
 // participants), so they cannot outrank a utility the way an
@@ -39,7 +43,9 @@ async function bootstrap(): Promise<void> {
   }
   ReactDOM.createRoot(document.getElementById("root")!).render(
     <React.StrictMode>
-      <App />
+      <ErrorBoundary root>
+        <App />
+      </ErrorBoundary>
     </React.StrictMode>,
   );
 }

@@ -2,10 +2,16 @@
 //!
 //! Mirrors `useConversation` structure: one `listen` on the static event name
 //! `"agent-run-event"`, `run_id` filter, stale-conversation guard,
-//! `unlisten` cleanup, and rehydration via `list_agent_runs` / `list_agent_steps`
-//! on conversation switch (ORDER BY seq). Keeps rehydration as the source of
-//! truth; live frames are best-effort display until the terminal `finished`
-//! frame triggers a `reload()`.
+//! `unlisten` cleanup, and rehydration via `list_agent_runs` on conversation
+//! switch. Keeps rehydration as the source of truth.
+//!
+//! AC-102/ADD-08 (run-rehydration N+1): the initial load fetches a BOUNDED
+//! page of runs (`REHYDRATION_RUN_PAGE`) and NO per-run steps fan-out — steps
+//! lazy-load through `loadRunSteps` only for a run whose step list is
+//! actually shown (AgentRunSteps asks when a run renders expanded with no
+//! steps loaded). A terminal `finished` frame PATCHes the affected run from
+//! its payload instead of re-firing the full `reload()` fan-out; a run with
+//! no steps on screen fetches its now-final step list once.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
@@ -20,6 +26,13 @@ import {
   listAgentRuns,
   listAgentSteps,
 } from "./tauri";
+
+/** Bounded rehydration page (AC-102/ADD-08): the newest 50 runs of a
+ * conversation load on switch; older history stays unpaged (no load-more
+ * affordance in this change — a later cursor page through `beforeRunId` is
+ * the extension point). 50 covers any realistic visible thread while keeping
+ * the switch-off IPC count flat as histories grow. */
+const REHYDRATION_RUN_PAGE = 50;
 
 /** One step as rendered in the accordion (persisted shape + live append).
  * NEX-PERF-003: `observation` is the bounded preview (or the full text when
@@ -55,6 +68,13 @@ export interface AgentRunView {
   finished_at: number | null;
   error: string | null;
   steps: AgentStepView[];
+  /** AC-102/ADD-08: false while the run rehydrated WITHOUT its step list
+   *  (steps lazy-load through `loadRunSteps` when the run's step list is
+   *  shown). Live runs are true from birth — their steps stream in. */
+  steps_loaded: boolean;
+  /** Persisted `agent_runs.total_steps` (0 for live placeholders until a
+   *  reload lands). Lets the run line stay honest while steps are unloaded. */
+  total_steps: number | null;
   pending_approval: { call_id: string; name: string; arguments: string; timeout_secs: number; requested_at: number } | null;
 }
 
@@ -105,6 +125,10 @@ export interface AgentRunStore {
   loading: boolean;
   error: string | null;
   reload: () => Promise<void>;
+  /** AC-102/ADD-08: lazy-load one run's persisted step list (bounded
+   * previews, NEX-PERF-003). Idempotent — a no-op for live runs (their steps
+   * streamed in) and for runs already loaded or in flight. */
+  loadRunSteps: (runId: number) => Promise<void>;
   /** Fetch the full observation text of one truncated step (NEX-PERF-003
    * on-demand expand). Sets the step's loading flag, fills
    * `observation_full` on success or `observation_error` on failure. */
@@ -121,6 +145,10 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
   const activeConversationRef = useRef<number | null>(null);
   // Known run_ids for the active conversation, for live filtering.
   const knownRunIdsRef = useRef<Set<number>>(new Set());
+  // Runs with a lazy step fetch in flight (AC-102/ADD-08): a sync set so a
+  // StrictMode double-effect or a fast expand/collapse cycle cannot double-
+  // fire the same listAgentSteps.
+  const stepsLoadingRef = useRef<Set<number>>(new Set());
   // Latest rendered runs, for snapshot reads BEFORE state updaters (expand
   // needs the step's fetch key without assigning inside an updater — the
   // updater must stay pure so a StrictMode double-invoke is harmless).
@@ -139,34 +167,28 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
     setLoading(true);
     setError(null);
     try {
-      const fetched: AgentRun[] = await listAgentRuns(requestedId);
+      // AC-102/ADD-08: one bounded page of runs — the newest
+      // REHYDRATION_RUN_PAGE — and NO per-run steps fan-out. Step lists
+      // lazy-load through `loadRunSteps` only for runs whose step list is
+      // actually shown (AgentRunSteps asks; the store dedupes).
+      const fetched: AgentRun[] = await listAgentRuns(requestedId, {
+        limit: REHYDRATION_RUN_PAGE,
+      });
       // Only the active conversation may update state.
       if (activeConversationRef.current !== requestedId) return;
-      // Fetch steps for each run (all of them in 5.1; runs are small).
-      const views: AgentRunView[] = await Promise.all(
-        fetched.map(async (run) => {
-          let steps: AgentStepView[] = [];
-          try {
-            const raw = await listAgentSteps(run.id);
-            // list_steps is ORDER BY seq ASC, gap-free per CF-01.
-            steps = raw.map(toStepView);
-          } catch {
-            // Best-effort: leave empty, UI will still show run pill.
-            steps = [];
-          }
-          return {
-            run_id: run.id,
-            conversation_id: run.conversation_id ?? requestedId,
-            status: run.status,
-            model: run.model,
-            started_at: run.started_at,
-            finished_at: run.finished_at,
-            error: run.error,
-            steps,
-            pending_approval: null,
-          } satisfies AgentRunView;
-        }),
-      );
+      const views: AgentRunView[] = fetched.map((run) => ({
+        run_id: run.id,
+        conversation_id: run.conversation_id ?? requestedId,
+        status: run.status,
+        model: run.model,
+        started_at: run.started_at,
+        finished_at: run.finished_at,
+        error: run.error,
+        steps: [],
+        steps_loaded: false,
+        total_steps: run.total_steps,
+        pending_approval: null,
+      }));
       if (activeConversationRef.current !== requestedId) return;
       // Preserve live pending_approvals across reloads? Reload is source of truth,
       // so pending approvals come only from live stream, not persistence.
@@ -190,6 +212,38 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
       if (activeConversationRef.current === requestedId) setLoading(false);
     }
   }, [conversationId]);
+
+  /** AC-102/ADD-08 lazy step load: one `list_agent_steps` for a run whose
+   *  persisted step list is (about to be) shown. A no-op for live runs —
+   *  their steps streamed in — and for runs already loaded or in flight.
+   *  Unknown run ids proceed (a just-finished placeholder is about to exist
+   *  by the time the fetch resolves) and patch in only if the run renders. */
+  const loadRunSteps = useCallback(async (runId: number): Promise<void> => {
+    const requestedConv = activeConversationRef.current;
+    if (requestedConv === null) return;
+    if (stepsLoadingRef.current.has(runId)) return;
+    const known = runsRef.current.find((r) => r.run_id === runId);
+    if (known !== undefined && known.steps_loaded) return;
+    stepsLoadingRef.current.add(runId);
+    try {
+      const raw = await listAgentSteps(runId);
+      if (activeConversationRef.current !== requestedConv) return;
+      // list_steps is ORDER BY seq ASC, gap-free per CF-01.
+      const steps = raw.map(toStepView);
+      setRuns((prev) =>
+        prev.map((run) =>
+          run.run_id !== runId || run.steps_loaded
+            ? run
+            : { ...run, steps, steps_loaded: true },
+        ),
+      );
+    } catch {
+      // Best-effort: the run pill still renders; the next visibility change
+      // asks again.
+    } finally {
+      stepsLoadingRef.current.delete(runId);
+    }
+  }, []);
 
   const collapseStep = useCallback((runId: number, seq: number): void => {
     setRuns((prev) =>
@@ -307,6 +361,7 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
     activeConversationRef.current = conversationId;
     setRuns([]);
     knownRunIdsRef.current = new Set();
+    stepsLoadingRef.current = new Set();
     setError(null);
     if (conversationId !== null) void reload();
   }, [conversationId, reload]);
@@ -326,9 +381,13 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
           // For finished frames we can check conversation_id directly.
           if (payload.type === "finished") {
             if (payload.event.conversation_id !== activeId) return;
-            // Known or new finished run: ensure it's tracked, then reload to reconcile.
-            // Trigger reload so persisted truth replaces live view (history is replaced, never appended).
-            // Optimistically update status before reload for instant pill feedback.
+            // AC-102/ADD-08 patch-on-finish: the terminal frame carries the
+            // run's outcome, so PATCH the affected run instead of re-firing
+            // the full rehydration fan-out (which re-fetched every run's
+            // steps on every completion). A run with no steps on screen —
+            // rehydrated unloaded, or an unknown run — fetches its now-final
+            // step list once, via the same lazy path as expansion.
+            const finished = runsRef.current.find((r) => r.run_id === payload.run_id);
             setRuns((prev) => {
               const idx = prev.findIndex((r) => r.run_id === payload.run_id);
               if (idx >= 0) {
@@ -336,7 +395,8 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
                 copy[idx] = { ...copy[idx], status: payload.event.status, finished_at: Date.now() / 1000, error: payload.event.error };
                 return copy;
               }
-              // Unknown run that finished for this conversation: add placeholder, then reload will fill steps.
+              // Unknown run that finished for this conversation: add a
+              // placeholder; the lazy fetch below fills its final steps.
               return [
                 ...prev,
                 {
@@ -348,12 +408,16 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
                   finished_at: Date.now() / 1000,
                   error: payload.event.error,
                   steps: [],
+                  steps_loaded: false,
+                  total_steps: null,
                   pending_approval: null,
                 },
               ];
             });
             knownRunIdsRef.current.add(payload.run_id);
-            void reload();
+            if (finished === undefined || finished.steps.length === 0) {
+              void loadRunSteps(payload.run_id);
+            }
             return;
           }
 
@@ -405,6 +469,9 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
                   finished_at: null,
                   error: null,
                   steps: [toStepViewFromFrame(runId, frame)],
+                  // Live run: its steps stream in, nothing to lazy-load.
+                  steps_loaded: true,
+                  total_steps: null,
                   pending_approval: null,
                 },
               ];
@@ -443,6 +510,9 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
                     finished_at: null,
                     error: null,
                     steps: [],
+                    // Live run: steps stream in, nothing to lazy-load.
+                    steps_loaded: true,
+                    total_steps: null,
                     pending_approval: {
                       call_id: gov.call_id,
                       name: gov.name,
@@ -532,7 +602,7 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
       if (unlisten) unlisten();
       else void cleanupPromise.then((fn) => { if (fn) fn(); });
     };
-  }, [reload]);
+  }, [reload, loadRunSteps]);
 
-  return { runs, loading, error, reload, expandStep, collapseStep };
+  return { runs, loading, error, reload, loadRunSteps, expandStep, collapseStep };
 }
