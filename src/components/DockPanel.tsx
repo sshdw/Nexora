@@ -25,6 +25,7 @@ import { useEffect, useId, useRef } from "react";
 import type { ReactNode } from "react";
 
 import { useStrings } from "../lib/useLocale";
+import ErrorBoundary from "./ErrorBoundary";
 import M3IconButton from "./M3IconButton";
 import { CloseIcon } from "./icons";
 
@@ -126,7 +127,13 @@ export default function DockPanel({ id, title, meta, onClose, children }: DockPa
           <CloseIcon />
         </M3IconButton>
       </header>
-      <div className="nex-dock-panel-body">{children}</div>
+      <div className="nex-dock-panel-body">
+        {/* ADD-05: one panel crashing degrades to the boundary strip inside
+            this slot — the panel shell (title, meta, close, dismissal, focus
+            return) stays alive, the Dock and the thread behind it never
+            notice (review 05-ADD §3.5a). */}
+        <ErrorBoundary>{children}</ErrorBoundary>
+      </div>
     </div>
   );
 }

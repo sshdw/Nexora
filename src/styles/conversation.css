@@ -478,6 +478,161 @@
   padding: 0;
 }
 
+/* ---- Markdown bodies (ADD-01, MessageMarkdown.tsx) ----
+   Assistant bodies parse into block elements INSIDE `.nex-message-body`;
+   user turns stay plain text and never match these descendant rules, so
+   nothing here reaches them. All paint comes from the flat token set —
+   no new hex, durations or radii (AGENTS.md UI rule). One beat of rhythm
+   above each block, mirroring the existing `pre` offset. */
+.nex-message-body p,
+.nex-message-body ul,
+.nex-message-body ol,
+.nex-message-body blockquote,
+.nex-message-body table,
+.nex-message-body hr {
+  margin: var(--space-xs) 0 0;
+}
+/* The first block continues the meta line's rhythm; it carries no extra
+   offset of its own. */
+.nex-message-body > :first-child {
+  margin-top: 0;
+}
+
+/* In-prose headings are structure, not page titles: one quiet step up from
+   the 15px body by size, then weight — never a new hue, never a louder
+   ladder step than the chrome uses (THEME §3). */
+.nex-message-body h1,
+.nex-message-body h2 {
+  margin: var(--space-sm) 0 0;
+  font-size: var(--type-size-title-medium);
+  line-height: var(--type-line-height-normal);
+  font-weight: var(--type-weight-semibold);
+}
+.nex-message-body h3,
+.nex-message-body h4,
+.nex-message-body h5,
+.nex-message-body h6 {
+  margin: var(--space-sm) 0 0;
+  font-size: var(--type-size-title-small);
+  line-height: var(--type-line-height-normal);
+  font-weight: var(--type-weight-semibold);
+}
+
+.nex-message-body ul,
+.nex-message-body ol {
+  padding-inline-start: var(--space-md);
+}
+.nex-message-body li > ul,
+.nex-message-body li > ol {
+  margin: var(--space-xxs) 0 0;
+}
+/* Task lists (GFM): the disabled checkbox replaces the bullet, so the item
+   pulls back into the marker column instead of leaving a dead indent. */
+.nex-message-body li.task-list-item {
+  list-style: none;
+  margin-inline-start: calc(var(--space-md) * -1);
+}
+.nex-message-body li.task-list-item input[type="checkbox"] {
+  margin-inline-end: var(--space-xxs);
+}
+
+.nex-message-body blockquote {
+  padding-inline-start: var(--space-sm);
+  border-inline-start: 2px solid var(--color-outline-variant);
+  color: var(--color-on-surface-variant);
+}
+
+.nex-message-body table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: var(--type-size-body-small);
+}
+.nex-message-body th,
+.nex-message-body td {
+  border: 1px solid var(--color-outline-variant);
+  padding: var(--space-xxs) var(--space-sm);
+  text-align: start;
+}
+.nex-message-body th {
+  background: var(--color-surface-container-low);
+  font-weight: var(--type-weight-medium);
+}
+
+.nex-message-body hr {
+  border: 0;
+  border-top: 1px solid var(--color-outline-variant);
+}
+.nex-message-body del {
+  color: var(--color-on-surface-variant);
+}
+
+/* Copy-only links (02-SECURITY §4.2 req 3): the label is emphasized text,
+   never a control; the destination renders beside it verbatim so the user
+   always sees what a copy puts on the clipboard; the copy affordance is a
+   real button with the pane's focus ring. */
+.nex-md-link {
+  overflow-wrap: anywhere;
+}
+.nex-md-link-text {
+  font-weight: var(--type-weight-medium);
+}
+.nex-md-link-target {
+  margin-inline-start: var(--space-xxs);
+  font-size: var(--type-size-label-medium);
+  color: var(--color-on-surface-faint);
+}
+.nex-md-copy {
+  margin-inline-start: var(--space-xxs);
+  padding: 0 var(--space-xxs);
+  font-size: var(--type-size-label-medium);
+  line-height: var(--type-line-height-normal);
+  color: var(--color-on-surface-variant);
+  background: transparent;
+  border: 1px solid var(--color-outline);
+  border-radius: var(--shape-extra-small);
+  cursor: pointer;
+}
+.nex-md-copy:hover {
+  color: var(--color-on-surface);
+  background: var(--color-surface-container-high);
+}
+.nex-md-copy:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.nex-md-copy-failed {
+  margin-inline-start: var(--space-xxs);
+  font-size: var(--type-size-label-medium);
+  color: var(--color-on-surface-faint);
+}
+
+/* Images: app-generated attachment sources render; every model-authored
+   source is stripped by the renderer hook and surfaces as its alt text
+   (or its destination when there is no alt) in the muted meta tone. */
+.nex-md-img {
+  max-width: 100%;
+  border-radius: var(--shape-extra-small);
+  border: 1px solid var(--color-outline-variant);
+}
+.nex-md-img-alt {
+  font-size: var(--type-size-label-medium);
+  color: var(--color-on-surface-faint);
+  overflow-wrap: anywhere;
+}
+
+/* Fence overflow note (02-SECURITY §4.2 req 4): the cap is honest, not
+   silent — the note resets to the sans family because it is UI chrome,
+   not code (mono is for code/ids only, THEME §3). */
+.nex-md-code-note {
+  display: block;
+  margin-top: var(--space-xxs);
+  font-family: var(--type-family);
+  font-size: var(--type-size-label-medium);
+  color: var(--color-on-surface-faint);
+}
+
 /* Turn clustering: consecutive same-role messages group via tighter
    spacing (tone + spacing group items, never per-row borders). */
 .nex-thread > .nex-message-grouped {

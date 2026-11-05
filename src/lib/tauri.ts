@@ -721,18 +721,36 @@ export function extendAgentRun(runId: number, extraSteps: number): Promise<void>
   });
 }
 
-/** List the runs of one conversation (rehydration, Task 5.1). */
-export function listAgentRuns(conversationId: number): Promise<AgentRun[]> {
+/** List the runs of one conversation (rehydration, Task 5.1).
+ * AC-102/ADD-08 pagination: `page.limit` bounds the read and `page.beforeRunId`
+ * is the exclusive keyset cursor (the previous page's last run id) — omitted
+ * or null means "unpaged", matching the command's `Option<i64>` params.
+ * Args stay camelCase per the casing contract above; payloads stay snake_case. */
+export function listAgentRuns(
+  conversationId: number,
+  page?: { limit?: number; beforeRunId?: number },
+): Promise<AgentRun[]> {
   return invoke<AgentRun[]>("list_agent_runs", {
     conversationId,
+    limit: page?.limit ?? null,
+    beforeRunId: page?.beforeRunId ?? null,
   });
 }
 
 /** List the steps of one run (rehydration, Task 5.1). Each item carries a
  * bounded observation preview plus its byte-exact total (NEX-PERF-003);
- * expand via `getAgentStepObservation`. */
-export function listAgentSteps(runId: number): Promise<AgentStep[]> {
-  return invoke<AgentStep[]>("list_agent_steps", { runId });
+ * expand via `getAgentStepObservation`. AC-102/ADD-08 pagination: `page.limit`
+ * bounds the read and `page.beforeSeq` is an exclusive upper-bound cursor on
+ * the run's `seq` ordering — omitted or null means "unpaged". */
+export function listAgentSteps(
+  runId: number,
+  page?: { limit?: number; beforeSeq?: number },
+): Promise<AgentStep[]> {
+  return invoke<AgentStep[]>("list_agent_steps", {
+    runId,
+    limit: page?.limit ?? null,
+    beforeSeq: page?.beforeSeq ?? null,
+  });
 }
 
 /** Fetch the full sanitized observation text of one step by its

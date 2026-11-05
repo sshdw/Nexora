@@ -63,6 +63,8 @@ vi.mock("../lib/useAgentRun", () => ({
     loading: false,
     error: null,
     reload: vi.fn(async () => {}),
+    // AC-102/ADD-08 lazy-steps seam added to the store.
+    loadRunSteps: vi.fn(async () => {}),
     expandStep: vi.fn(),
     collapseStep: vi.fn(),
   }),
@@ -116,6 +118,8 @@ const run: AgentRunView = {
   finished_at: 1002,
   error: null,
   steps: [],
+  steps_loaded: true,
+  total_steps: 0,
   pending_approval: null,
 };
 

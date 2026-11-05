@@ -26,6 +26,12 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // ADD-10: native window-geometry persistence. The Rust-side builder
+        // both restores the saved geometry when the window is created and
+        // saves it on exit — no frontend calls, no JS guest bindings. The
+        // `window-state:default` capability entry covers the plugin's
+        // commands per the AGENTS.md plugin rule.
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
             commands::conversations::create_conversation,
             commands::conversations::list_conversations,

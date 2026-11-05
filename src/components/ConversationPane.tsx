@@ -16,6 +16,7 @@
 //! the pane header no longer repeats the folder as a read-only chip.
 
 import ConversationView from "./ConversationView";
+import ErrorBoundary from "./ErrorBoundary";
 import M3IconButton from "./M3IconButton";
 import M3Toolbar from "./M3Toolbar";
 import { ExportIcon } from "./icons";
@@ -110,21 +111,28 @@ export default function ConversationPane({
             (messages, attachments, agent runs, scroll position) so the two
             panes can never clobber each other. Drafts are likewise keyed per
             conversation in App (see `drafts`), never shared. */}
-        <ConversationView
-          key={conversation.id}
-          conversationId={conversation.id}
-          selectedProvider={selectedProvider}
-          selectedModel={selectedModel}
-          models={models}
-          onSelectModel={onSelectModel}
-          modelError={modelError}
-          autonomy={autonomy}
-          onOpenSettings={onOpenSettings}
-          onMessageSent={onMessageSent}
-          draft={draft}
-          setDraft={setDraft}
-          workspace={workspace}
-        />
+        {/* ADD-05 thread boundary: this is the most dynamic subtree (per-frame
+            agent-run renders, markdown bodies, attachments). A frame-shaped
+            runtime error degrades to the boundary strip inside the pane —
+            header and shell stay up — never a blank window (review 05-ADD
+            §3.5a). */}
+        <ErrorBoundary>
+          <ConversationView
+            key={conversation.id}
+            conversationId={conversation.id}
+            selectedProvider={selectedProvider}
+            selectedModel={selectedModel}
+            models={models}
+            onSelectModel={onSelectModel}
+            modelError={modelError}
+            autonomy={autonomy}
+            onOpenSettings={onOpenSettings}
+            onMessageSent={onMessageSent}
+            draft={draft}
+            setDraft={setDraft}
+            workspace={workspace}
+          />
+        </ErrorBoundary>
       </div>
     </section>
   );

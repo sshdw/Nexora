@@ -247,17 +247,52 @@ impl AgentRunRepository<'_> {
     /// List the runs of one conversation ordered by `started_at` descending
     /// (DATABASE.md §7.8, §8).
     ///
+    /// Unpaged: every run of the conversation. Callers rehydrating a UI
+    /// thread should prefer [`Self::list_runs_by_conversation_paged`]
+    /// (AC-102/ADD-08) so a long history cannot fan the query out unbounded.
+    ///
     /// # Errors
     ///
     /// Returns a [`DatabaseError`] if listing fails.
     pub fn list_runs_by_conversation(&self, conversation_id: i64) -> Result<Vec<AgentRun>> {
+        self.list_runs_by_conversation_paged(conversation_id, None, None)
+    }
+
+    /// Paged variant of [`Self::list_runs_by_conversation`] (AC-102/ADD-08):
+    /// `limit` bounds the page and `before_run_id` is an exclusive keyset
+    /// cursor — the caller pages by passing the last run's `id` back. Both
+    /// parameters are optional: `None` keeps the historical unbounded
+    /// behavior, so existing callers are unchanged.
+    ///
+    /// The cursor is `id < before_run_id` under `ORDER BY started_at DESC,
+    /// id DESC`. That pairing is well-defined because `started_at` is
+    /// assigned at insert time (schema default `unixepoch()`) and `id` is
+    /// assigned by the same insert, so within one conversation ids are
+    /// monotonic with `started_at` up to same-second ties — which the `id`
+    /// tie-break makes deterministic. Pagination therefore skips no rows and
+    /// repeats none as long as the caller passes the final row's id back.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DatabaseError`] if listing fails.
+    pub fn list_runs_by_conversation_paged(
+        &self,
+        conversation_id: i64,
+        limit: Option<i64>,
+        before_run_id: Option<i64>,
+    ) -> Result<Vec<AgentRun>> {
+        // SQLite semantics: a negative LIMIT means "no limit", so `None`
+        // degrades to the historical unbounded query; the cursor degenerates
+        // to "every id" via i64::MAX, keeping one static SQL string.
+        let limit = limit.unwrap_or(-1);
+        let cursor = before_run_id.unwrap_or(i64::MAX);
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, conversation_id, model, mode, status, started_at, finished_at, \
              total_steps, final_content, error, spent_micro_usd, limit_micro_usd FROM agent_runs \
-             WHERE conversation_id = ?1 ORDER BY started_at DESC",
+             WHERE conversation_id = ?1 AND id < ?2 ORDER BY started_at DESC, id DESC LIMIT ?3",
         )?;
-        let rows = stmt.query_map([conversation_id], row_to_agent_run)?;
+        let rows = stmt.query_map(params![conversation_id, cursor, limit], row_to_agent_run)?;
         let mut runs = Vec::new();
         for row in rows {
             runs.push(row?);
@@ -404,17 +439,41 @@ impl AgentRunRepository<'_> {
     /// List the recorded steps of one run ordered by `seq` (DATABASE.md
     /// §7.9, §8).
     ///
+    /// Unpaged. Callers rehydrating on demand should prefer
+    /// [`Self::list_steps_paged`] (AC-102/ADD-08) when they bound the fetch.
+    ///
     /// # Errors
     ///
     /// Returns a [`DatabaseError`] if listing fails.
     pub fn list_steps(&self, run_id: i64) -> Result<Vec<AgentStep>> {
+        self.list_steps_paged(run_id, None, None)
+    }
+
+    /// Paged variant of [`Self::list_steps`] (AC-102/ADD-08): `limit` bounds
+    /// the page and `before_seq` is an exclusive upper-bound cursor on the
+    /// `seq` column (the run's step ordering key, DATABASE.md §7.9), so a
+    /// caller can fetch only the steps before a known sequence. Both
+    /// parameters are optional: `None` keeps the historical full-listing
+    /// behavior, so existing callers are unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DatabaseError`] if listing fails.
+    pub fn list_steps_paged(
+        &self,
+        run_id: i64,
+        limit: Option<i64>,
+        before_seq: Option<i64>,
+    ) -> Result<Vec<AgentStep>> {
+        let limit = limit.unwrap_or(-1);
+        let cursor = before_seq.unwrap_or(i64::MAX);
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, run_id, seq, kind, tool_name, arguments, observation, status, \
              started_at, duration_ms, rule_id, group_key, decided_by, input_tokens, output_tokens \
-             FROM agent_steps WHERE run_id = ?1 ORDER BY seq",
+             FROM agent_steps WHERE run_id = ?1 AND seq < ?2 ORDER BY seq LIMIT ?3",
         )?;
-        let rows = stmt.query_map([run_id], |row| {
+        let rows = stmt.query_map(params![run_id, cursor, limit], |row| {
             let input_i64: Option<i64> = row.get(13)?;
             let output_i64: Option<i64> = row.get(14)?;
             Ok(AgentStep {
@@ -787,6 +846,128 @@ mod tests {
             runs.list_steps(run_id).expect("list steps").is_empty(),
             "conversation delete cascades agent steps through the run"
         );
+    }
+
+    #[test]
+    fn paged_run_listing_keyset_cursor_pages_without_skipping() {
+        // AC-102/ADD-08: the rehydration query must bound itself. Five runs
+        // created back-to-back share the same-second `started_at` (schema
+        // default `unixepoch()`), so this fixture also pins the `id DESC`
+        // tie-break that keeps same-second pages deterministic.
+        let db = in_memory_database();
+        let runs = repo(&db);
+        let conv_id = {
+            let conn = db.lock().expect("lock");
+            conn.execute(
+                "INSERT INTO conversations (title, status) VALUES ('c', 'active')",
+                [],
+            )
+            .expect("create conversation");
+            conn.last_insert_rowid()
+        };
+        let mut ids = Vec::new();
+        for _ in 0..5 {
+            ids.push(
+                runs.create_run(Some(conv_id), "m", "semi_autonomous")
+                    .expect("run"),
+            );
+        }
+        // Another conversation's runs must never leak into the page.
+        let foreign = runs.create_run(None, "m", "semi_autonomous").expect("run");
+
+        // None/None keeps the historical unbounded behavior (defaults keep
+        // existing callers working).
+        let all = runs
+            .list_runs_by_conversation_paged(conv_id, None, None)
+            .expect("unpaged");
+        assert_eq!(all.len(), 5);
+        assert!(all.iter().all(|run| run.id != foreign));
+
+        // First page: the two NEWEST runs, ids descending within the tie.
+        let page1 = runs
+            .list_runs_by_conversation_paged(conv_id, Some(2), None)
+            .expect("page 1");
+        assert_eq!(
+            page1.iter().map(|run| run.id).collect::<Vec<i64>>(),
+            ids[3..].iter().rev().copied().collect::<Vec<i64>>(),
+        );
+
+        // Page 2 through the cursor (exclusive: the previous page's tail id
+        // is not repeated) — keyset pagination covers every row exactly once.
+        let page2 = runs
+            .list_runs_by_conversation_paged(conv_id, Some(2), Some(page1[1].id))
+            .expect("page 2");
+        assert_eq!(
+            page2.iter().map(|run| run.id).collect::<Vec<i64>>(),
+            ids[1..3].iter().rev().copied().collect::<Vec<i64>>(),
+        );
+        let page3 = runs
+            .list_runs_by_conversation_paged(conv_id, Some(2), Some(page2[1].id))
+            .expect("page 3");
+        assert_eq!(page3.len(), 1);
+        assert_eq!(page3[0].id, ids[0]);
+
+        // Cursor past the oldest row: honest empty page, not an error.
+        let exhausted = runs
+            .list_runs_by_conversation_paged(conv_id, Some(2), Some(ids[0]))
+            .expect("exhausted");
+        assert!(exhausted.is_empty());
+    }
+
+    #[test]
+    fn paged_step_listing_bounds_and_cursor() {
+        let db = in_memory_database();
+        let runs = repo(&db);
+        let run_id = runs.create_run(None, "m", "semi_autonomous").expect("run");
+        for seq in 1..=5 {
+            append_checked(
+                &runs,
+                run_id,
+                seq,
+                "tool_call",
+                Some("read_file"),
+                None,
+                None,
+            )
+            .expect("append step");
+        }
+
+        // Defaults: unpaged behavior unchanged.
+        assert_eq!(runs.list_steps(run_id).expect("all").len(), 5);
+        assert_eq!(
+            runs.list_steps_paged(run_id, None, None)
+                .expect("unpaged")
+                .len(),
+            5,
+        );
+
+        // Bounded page: the FIRST `limit` steps in seq order.
+        let page = runs
+            .list_steps_paged(run_id, Some(2), None)
+            .expect("limited");
+        assert_eq!(page.iter().map(|step| step.seq).collect::<Vec<_>>(), [1, 2]);
+
+        // Cursor: only the steps strictly before `before_seq`.
+        let before = runs
+            .list_steps_paged(run_id, None, Some(3))
+            .expect("cursor");
+        assert_eq!(
+            before.iter().map(|step| step.seq).collect::<Vec<_>>(),
+            [1, 2]
+        );
+
+        // Combined: the first `limit` steps strictly below the cursor.
+        let window = runs
+            .list_steps_paged(run_id, Some(1), Some(3))
+            .expect("window");
+        assert_eq!(window.iter().map(|step| step.seq).collect::<Vec<_>>(), [1]);
+
+        // Another run's steps never leak into the page.
+        let other = runs.create_run(None, "m", "semi_autonomous").expect("run");
+        assert!(runs
+            .list_steps_paged(other, None, None)
+            .expect("other run")
+            .is_empty(),);
     }
 
     #[test]

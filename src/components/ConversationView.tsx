@@ -39,6 +39,7 @@ import { useConversation } from "../lib/useConversation";
 import type { WorkspaceStore } from "../lib/useWorkspace";
 import AgentRunSteps from "./AgentRunSteps";
 import Composer from "./Composer";
+import MessageMarkdown from "./MessageMarkdown";
 import { useStrings } from "../lib/useLocale";
 import M3LoadingIndicator from "./M3LoadingIndicator";
 
@@ -99,7 +100,7 @@ export default function ConversationView({
     remove,
     refresh: refreshAttachments,
   } = useAttachments(conversationId);
-  const { runs, reload: reloadAgent, expandStep, collapseStep } = useAgentRun(conversationId);
+  const { runs, reload: reloadAgent, loadRunSteps, expandStep, collapseStep } = useAgentRun(conversationId);
   // R4-02: the pane opens in Agent mode. Chat is still one click away on
   // the composer's pills, and the choice is pane state for the session.
   const [agentMode, setAgentMode] = useState<boolean>(true);
@@ -267,6 +268,15 @@ export default function ConversationView({
     },
     [expandStep],
   );
+  // AC-102/ADD-08 lazy steps: AgentRunSteps asks when a run's step list is
+  // visible but unloaded; the store owns the dedupe. Stable identity like
+  // every dispatcher above so the memoized run row keeps its props.
+  const dispatchLoadRunSteps = useCallback(
+    (runId: number) => {
+      void loadRunSteps(runId);
+    },
+    [loadRunSteps],
+  );
   const dispatchCollapseStep = useCallback(
     (runId: number, seq: number) => {
       collapseStep(runId, seq);
@@ -398,6 +408,7 @@ export default function ConversationView({
                   onResume={dispatchAgentResume}
                   onExpandStep={dispatchExpandStep}
                   onCollapseStep={dispatchCollapseStep}
+                  onLoadRunSteps={dispatchLoadRunSteps}
                 />
               );
             }
@@ -440,7 +451,19 @@ export default function ConversationView({
                     {formatRelativeTime(item.message.created_at, locale)}
                   </time>
                 </div>
-                <div className="nex-message-body">{item.message.content}</div>
+                <div className="nex-message-body">
+                  {/* ADD-01: only model-authored bodies are markdown-
+                      interpreted (05-ADD §3.1); user text is data, not
+                      formatting, and stays plain escaped text. */}
+                  {item.message.role === "assistant" ? (
+                    <MessageMarkdown
+                      messageId={item.message.id}
+                      content={item.message.content}
+                    />
+                  ) : (
+                    item.message.content
+                  )}
+                </div>
               </article>
             );
           })
