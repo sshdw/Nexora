@@ -843,6 +843,10 @@ fn spawn_run(
 
 /// List the runs of one conversation, newest first (`started_at` DESC).
 ///
+/// Unpaged. The rehydration command uses
+/// [`list_runs_for_conversation_paged`] (AC-102/ADD-08) so a long history
+/// cannot fan the read out unbounded.
+///
 /// # Errors
 ///
 /// Propagates [`crate::infrastructure::database::DatabaseError`].
@@ -851,6 +855,27 @@ pub(crate) fn list_runs_for_conversation(
     conversation_id: i64,
 ) -> Result<Vec<AgentRun>, crate::infrastructure::database::DatabaseError> {
     AgentRunRepository::new(db).list_runs_by_conversation(conversation_id)
+}
+
+/// Paged variant of [`list_runs_for_conversation`] (AC-102/ADD-08): `limit`
+/// bounds the page, `before_run_id` is the exclusive keyset cursor (the
+/// previous page's last run id). `None` keeps the historical unbounded
+/// behavior.
+///
+/// # Errors
+///
+/// Propagates [`crate::infrastructure::database::DatabaseError`].
+pub(crate) fn list_runs_for_conversation_paged(
+    db: &Database,
+    conversation_id: i64,
+    limit: Option<i64>,
+    before_run_id: Option<i64>,
+) -> Result<Vec<AgentRun>, crate::infrastructure::database::DatabaseError> {
+    AgentRunRepository::new(db).list_runs_by_conversation_paged(
+        conversation_id,
+        limit,
+        before_run_id,
+    )
 }
 
 /// List the steps of one run, `seq` ascending (gap-free per CF-01).
@@ -869,8 +894,24 @@ pub(crate) fn list_steps_for_run(
     db: &Database,
     run_id: i64,
 ) -> Result<Vec<AgentStepListItem>, crate::infrastructure::database::DatabaseError> {
+    list_steps_for_run_paged(db, run_id, None, None)
+}
+
+/// Paged variant of [`list_steps_for_run`] (AC-102/ADD-08): `limit` bounds
+/// the page, `before_seq` is an exclusive upper-bound cursor on the run's
+/// `seq` ordering. `None` keeps the historical full-listing behavior.
+///
+/// # Errors
+///
+/// Propagates [`crate::infrastructure::database::DatabaseError`].
+pub(crate) fn list_steps_for_run_paged(
+    db: &Database,
+    run_id: i64,
+    limit: Option<i64>,
+    before_seq: Option<i64>,
+) -> Result<Vec<AgentStepListItem>, crate::infrastructure::database::DatabaseError> {
     Ok(AgentRunRepository::new(db)
-        .list_steps(run_id)?
+        .list_steps_paged(run_id, limit, before_seq)?
         .iter()
         .map(AgentStepListItem::from_row)
         .collect())
@@ -1363,8 +1404,31 @@ mod tests {
             "conversation must accept a new run after timeout, got: {second:?}"
         );
         let second_id = second.expect("start");
-        assert!(registry.cancel(second_id), "cleanup: cancel the second run");
-        let _ = collect_frames(&rx);
+        // The second run is a scripted single-response chat with no park, so
+        // it completes on its own and its exit path releases the registry
+        // entry BEFORE the forwarder emits `Finished` (the terminal frame is
+        // forwarded only after the run thread's senders drop, which happens
+        // after `release`). Waiting for that frame synchronizes with the
+        // run's exit; an unconditional `assert!(registry.cancel(..))` here
+        // lost that race intermittently — `cancel` returned false on the
+        // entry the run had already self-released.
+        let second_frames = collect_frames(&rx);
+        let RunFrame::Finished { run_id, event } = second_frames.last().expect("second run frames")
+        else {
+            panic!("second run must terminate with a Finished frame");
+        };
+        assert_eq!(
+            *run_id, second_id,
+            "Finished frame belongs to the second run"
+        );
+        assert_eq!(
+            event.status, "completed",
+            "second run completes on the released conversation"
+        );
+        assert!(
+            !registry.is_active(second_id),
+            "registry entry released by the second run's own exit path"
+        );
         let _ = std::fs::remove_dir_all(temp_workspace("park-timeout"));
         let _ = std::fs::remove_dir_all(temp_workspace("park-timeout-second"));
     }
