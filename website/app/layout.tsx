@@ -11,7 +11,7 @@ export const metadata: Metadata = {
     default: 'Nexora',
   },
   description:
-    'Nexora — a free, open-source, local-first AI coding workspace with visible agent actions, approvals, and reviewable changes.',
+    'Nexora: a free, open-source, local-first AI coding workspace with visible agent actions, approvals, and reviewable changes.',
   metadataBase: new URL(process.env.SITE_URL ?? 'https://prismdev.duckdns.org'),
   alternates: {
     canonical: '/',

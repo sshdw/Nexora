@@ -8,7 +8,7 @@ export default function Page() {
               Nexora
             </h1>
             <p className="mt-4 text-base leading-relaxed text-muted">
-              Homepage shell — Phase 1 foundation. Homepage copy, hero, and interactive demo follow in Phase 2.
+              Homepage shell: Phase 1 foundation. Homepage copy, hero, and interactive demo follow in Phase 2.
             </p>
           </div>
         </section>
