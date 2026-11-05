@@ -2,7 +2,7 @@
 @import "@fontsource-variable/geist";
 @import "@fontsource-variable/geist-mono";
 
-/* Design tokens — Nexora marketing website.
+/* Design tokens - Nexora marketing website.
    Light theme is the default (light-first architecture); .dark overrides for dark mode.
    Component colors reference these CSS custom properties through Tailwind utilities.
 */
