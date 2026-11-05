@@ -149,6 +149,28 @@ impl Display for CoreError {
 
 impl std::error::Error for CoreError {}
 
+impl From<crate::provider::CredentialError> for CoreError {
+    /// Map the provider credential-store failure categories into the shared
+    /// taxonomy. The bridge lives here (not in an adapter) because both sides
+    /// of the conversion are core types: `CredentialError` moved to
+    /// [`crate::provider`] with the execution seam (NEX-ARCH-002), and an
+    /// orphan-rules `From` impl for two foreign types cannot exist in the
+    /// adapters. The messages are the same curated, secret-free texts the
+    /// desktop adapter used before the move.
+    fn from(err: crate::provider::CredentialError) -> Self {
+        match err {
+            crate::provider::CredentialError::StorageUnavailable => Self::new(
+                CoreErrorKind::Credential,
+                "the provider credential store is unavailable (OS secure keyring)",
+            ),
+            crate::provider::CredentialError::Invalid => Self::new(
+                CoreErrorKind::Credential,
+                "the provider credential could not be read or written in the OS secure keyring",
+            ),
+        }
+    }
+}
+
 /// Process exit codes (brief §9.4).
 ///
 /// Documented codes instead of a bare `1` for every outcome. The numeric

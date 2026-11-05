@@ -28,6 +28,7 @@ pub mod attachments;
 pub mod conversations;
 pub mod debt_items;
 pub mod messages;
+pub mod permission_rules;
 pub mod prompts;
 pub mod providers;
 pub mod search;

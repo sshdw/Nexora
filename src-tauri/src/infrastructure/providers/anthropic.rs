@@ -8,8 +8,9 @@
 //! provider-independent [`AiResponse`].
 //!
 //! Isolation: every Anthropic-specific wire type lives in this module. Nothing
-//! Anthropic-specific is exposed through [`application::execution`]; the
-//! boundary only ever sees [`AiRequest`]/[`AiResponse`]/[`ExecutorError`].
+//! Anthropic-specific crosses the boundary; the caller only ever sees
+//! [`AiRequest`]/[`AiResponse`]/[`ExecutorError`] (the contract lives in
+//! `nexora_core::provider`, NEX-ARCH-002).
 //!
 //! # Anthropic-specific contract notes
 //!
@@ -25,8 +26,8 @@
 //!
 //! # Security (ARCHITECTURE.md В§9, В§11, В§12)
 //!
-//! - The credential is supplied by the caller from the [`CredentialStore`] for
-//!   the duration of the call only; it is never persisted, logged, or returned.
+//! - The credential is supplied by the caller for the duration of the call
+//!   only; it is never persisted, logged, or returned.
 //! - The credential is sent only in the `x-api-key` header via `reqwest`, never
 //!   in the body.
 //! - Failed responses are read and classified by HTTP status **plus the
@@ -42,13 +43,14 @@
 // `doc_markdown` pedantic lint flags as needing backticks. Allow it locally.
 #![allow(clippy::doc_markdown)]
 
-use crate::application::agent::control::CancellationToken;
-use crate::application::execution::{
-    AiAttachmentPayload, AiMessage, AiRequest, AiResponse, AiRole, ExecutorError, ProviderExecutor,
+use nexora_core::provider::{
+    AiAttachmentPayload, AiMessage, AiRequest, AiResponse, AiRole, CancellationToken,
+    ExecutorError, ProviderExecutor, TokenUsage, ToolCall,
 };
-// `AiAttachment` is referenced only by this module's unit tests.
+// `AiAttachment`, `ToolDefinition`, and `AiToolResult` are referenced only by
+// this module's unit tests.
 #[cfg(test)]
-use crate::application::execution::AiAttachment;
+use nexora_core::provider::{AiAttachment, AiToolResult, ToolDefinition};
 
 use super::transport::{Credential, HttpClient, PostOutcome, PostRequest};
 
@@ -82,8 +84,8 @@ const DEFAULT_MAX_TOKENS: u32 = 1024;
 /// this set documents the currently supported models and anchors the
 /// model-selection surface so the UI can present only supported choices.
 ///
-/// Pricing is governed by the policy table in
-/// `crate::application::agent::pricing` (DATABASE.md В§7.8); the first entry
+/// Pricing is governed by the application-layer pricing policy table
+/// (DATABASE.md В§7.8); the first entry
 /// is the provider default consumed as `models[0]` by the selection surface
 /// (`claude-3-5-sonnet-20240620`, the previous sole entry, was retired
 /// October 28, 2025).
@@ -503,7 +505,7 @@ struct ContentBlock {
 /// rather than inventing a partial response shape.
 fn to_ai_response(response: AnthropicResponse) -> Result<AiResponse, AnthropicError> {
     let mut text_parts: Vec<String> = Vec::new();
-    let mut tool_calls: Vec<crate::application::execution::ToolCall> = Vec::new();
+    let mut tool_calls: Vec<ToolCall> = Vec::new();
     for block in response.content {
         match block.kind.as_str() {
             "text" => {
@@ -519,7 +521,7 @@ fn to_ai_response(response: AnthropicResponse) -> Result<AiResponse, AnthropicEr
                     .unwrap_or(serde_json::Value::Object(serde_json::Map::default()));
                 let arguments = serde_json::to_string(&input)
                     .map_err(|_| AnthropicError::UnexpectedResponse)?;
-                tool_calls.push(crate::application::execution::ToolCall {
+                tool_calls.push(ToolCall {
                     id,
                     name,
                     arguments,
@@ -542,7 +544,7 @@ fn to_ai_response(response: AnthropicResponse) -> Result<AiResponse, AnthropicEr
         if u.input_tokens == 0 && u.output_tokens == 0 {
             None
         } else {
-            Some(crate::application::execution::TokenUsage {
+            Some(TokenUsage {
                 input_tokens: u.input_tokens,
                 output_tokens: u.output_tokens,
             })
@@ -1150,7 +1152,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_result: None,
             }]),
-            tools: std::sync::Arc::new(vec![crate::application::execution::ToolDefinition {
+            tools: std::sync::Arc::new(vec![ToolDefinition {
                 name: "get_weather".to_string(),
                 description: "Get the weather for a location".to_string(),
                 parameters: serde_json::json!({
@@ -1371,7 +1373,7 @@ mod tests {
                     role: AiRole::Assistant,
                     content: String::new(),
                     attachments: Vec::new(),
-                    tool_calls: vec![crate::application::execution::ToolCall {
+                    tool_calls: vec![ToolCall {
                         id: "call_7".to_string(),
                         name: "list_directory".to_string(),
                         arguments: r#"{"path":"."}"#.to_string(),
@@ -1384,7 +1386,7 @@ mod tests {
                     content: String::new(),
                     attachments: Vec::new(),
                     tool_calls: Vec::new(),
-                    tool_result: Some(crate::application::execution::AiToolResult {
+                    tool_result: Some(AiToolResult {
                         call_id: "call_7".to_string(),
                         name: "list_directory".to_string(),
                         content: "a.txt".to_string(),

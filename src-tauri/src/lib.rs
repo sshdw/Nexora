@@ -1,6 +1,5 @@
 mod application;
 mod commands;
-mod domain;
 mod infrastructure;
 
 use tauri::Manager;
@@ -225,6 +224,16 @@ pub fn run() {
             app.manage(std::sync::Arc::new(
                 application::confirmations::ConfirmationRegistry::new(),
             ));
+            // Install the process-wide provider execution sources
+            // (NEX-ARCH-002 / AC-101): the concrete provider executors are
+            // wired HERE, in the composition root, and the application layer
+            // resolves them only through the `nexora_core::provider` seam —
+            // `application::execution` never names a concrete provider, and
+            // the provider executors never import application types.
+            let (executors, credentials) =
+                infrastructure::providers::registry::execution_sources();
+            application::execution::install_execution_sources(executors, credentials)
+                .map_err(std::io::Error::other)?;
             // Confirm the shared connection is reachable through managed state
             // and record the applied schema version; startup fails loudly if it
             // is not (DATABASE.md §4–§5).

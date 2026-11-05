@@ -5,7 +5,10 @@
 //!
 //! - [`CancellationToken`]: a cheaply cloneable, std-only cooperative
 //!   cancellation flag shared all the way down into long-running tool
-//!   executions (`ToolRegistry::execute_with_cancellation`).
+//!   executions (`ToolRegistry::execute_with_cancellation`) and into the
+//!   provider executors through the `nexora_core::provider` boundary. The
+//!   type itself lives in `nexora_core::provider` (NEX-ARCH-002) and is
+//!   re-exported here so the agent stack keeps one import path.
 //! - [`RunControl`]: a cheap cloneable handle exposing `cancel`, `pause`,
 //!   `resume`, and `extend_steps`. Internally `Arc<Mutex<…>> + Condvar` —
 //!   deliberately std-only, no tokio — so `cancel` reliably wakes a loop
@@ -27,69 +30,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
 use serde::Serialize;
 
-// ---------------------------------------------------------------------------
-// Cancellation token
-// ---------------------------------------------------------------------------
-
-/// Cooperative cancellation flag shared across the run stack.
-///
-/// `std`-only (`Arc<AtomicBool>`), cheap to clone, polled by the runner
-/// around every provider call, between tool dispatches, and inside the
-/// command-execution wait loop so a user cancellation reaches running tool
-/// processes promptly.
-///
-/// NEX-TASK-002: the flag additionally records a shutdown origin
-/// ([`Self::shutdown`]): a shutdown-cancel wakes every parked wait exactly
-/// like [`Self::cancel`], but parked approval waits observe the origin and
-/// record the honest shutdown vocabulary instead of the user-cancel text.
-#[derive(Debug, Clone)]
-pub(crate) struct CancellationToken {
-    cancelled: Arc<AtomicBool>,
-    shutdown: Arc<AtomicBool>,
-}
-
-impl Default for CancellationToken {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl CancellationToken {
-    /// Create a token in the not-cancelled state.
-    pub(crate) fn new() -> Self {
-        Self {
-            cancelled: Arc::new(AtomicBool::new(false)),
-            shutdown: Arc::new(AtomicBool::new(false)),
-        }
-    }
-
-    /// Mark the token cancelled. Never blocks.
-    pub(crate) fn cancel(&self) {
-        self.cancelled.store(true, Ordering::SeqCst);
-    }
-
-    /// Mark the token cancelled *by application shutdown* (NEX-TASK-002).
-    /// Wakes every parked wait exactly like [`Self::cancel`]; parked
-    /// approval waits additionally observe this origin and record the
-    /// shutdown vocabulary (never the user-cancel text). Never blocks.
-    pub(crate) fn shutdown(&self) {
-        self.shutdown.store(true, Ordering::SeqCst);
-        self.cancel();
-    }
-
-    /// Whether cancellation has been requested.
-    #[must_use]
-    pub(crate) fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::SeqCst)
-    }
-
-    /// Whether the cancellation came from application shutdown
-    /// ([`Self::shutdown`]) rather than a user cancel.
-    #[must_use]
-    pub(crate) fn is_shutdown(&self) -> bool {
-        self.shutdown.load(Ordering::SeqCst)
-    }
-}
+pub(crate) use nexora_core::provider::CancellationToken;
 
 // ---------------------------------------------------------------------------
 // Governance events

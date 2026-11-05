@@ -19,7 +19,11 @@
 //!
 //! What stayed here is exactly the business logic: the `From` impls that map
 //! this app's classified errors into the taxonomy. The taxonomy and its
-//! exit-code table moved; the translation did not.
+//! exit-code table moved; the translation did not. One mapping left with its
+//! types: `CredentialError` moved to `nexora_core::provider` with the
+//! execution seam (NEX-ARCH-002), so its `From` impl for the taxonomy moved
+//! into `nexora-core` too (an orphan-rules `From` impl for two core types
+//! cannot live here) — the curated, secret-free messages are unchanged.
 
 use crate::application::attachments::AttachmentError;
 use crate::application::compat::CompatError;
@@ -40,7 +44,6 @@ use crate::application::repo_audit::RepoAuditError;
 use crate::application::search::SearchError;
 use crate::application::system::SystemError;
 use crate::application::version_control::{CommitMessageError, VersionControlError};
-use crate::infrastructure::providers::credentials::CredentialError;
 
 /// Stable, secret-free error categories the frontend can branch on.
 ///
@@ -56,20 +59,6 @@ pub(crate) use nexora_core::error::CoreErrorKind as ErrorKind;
 /// taxonomy is business logic and did not move.
 pub(crate) use nexora_core::error::CoreError as CommandError;
 
-impl From<CredentialError> for CommandError {
-    fn from(err: CredentialError) -> Self {
-        match err {
-            CredentialError::StorageUnavailable => Self::new(
-                ErrorKind::Credential,
-                "the provider credential store is unavailable (OS secure keyring)",
-            ),
-            CredentialError::Invalid => Self::new(
-                ErrorKind::Credential,
-                "the provider credential could not be read or written in the OS secure keyring",
-            ),
-        }
-    }
-}
 impl From<ProviderError> for CommandError {
     fn from(err: ProviderError) -> Self {
         match err {

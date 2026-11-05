@@ -28,7 +28,10 @@ use super::error::{CommandError, ErrorKind};
 /// Default workspace location: the pre-picker `agent_workspace` directory
 /// under the app-data dir. Used when no valid `agent.workspace_root` setting
 /// exists (the pre-picker behavior). Shared with the version-control
-/// commands, which resolve the same effective workspace root.
+/// commands, which resolve the same effective workspace root. The directory
+/// creation itself lives in the application layer
+/// ([`crate::application::workspace::ensure_workspace_dir`], AC-202); this
+/// command only resolves the platform app-data base and maps failures.
 pub(crate) fn default_root(app: &AppHandle) -> Result<PathBuf, CommandError> {
     let base = app.path().app_data_dir().map_err(|err| {
         CommandError::new(
@@ -36,11 +39,8 @@ pub(crate) fn default_root(app: &AppHandle) -> Result<PathBuf, CommandError> {
             format!("the application data directory is unavailable: {err}"),
         )
     })?;
-    let root = base.join("agent_workspace");
-    std::fs::create_dir_all(&root).map_err(|_| {
-        CommandError::new(ErrorKind::Io, "the agent workspace could not be created")
-    })?;
-    Ok(root)
+    crate::application::workspace::ensure_workspace_dir(&base)
+        .map_err(|_| CommandError::new(ErrorKind::Io, "the agent workspace could not be created"))
 }
 
 /// Return the effective workspace root for tool scoping: the stored

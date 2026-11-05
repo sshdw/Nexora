@@ -152,10 +152,7 @@ impl<'a> ProviderService<'a> {
             .any(|entry| entry.name == name);
         let configured = self.read_by_name(name)?.is_some();
         let credentialed = Self::has_credentials(name)?;
-        let executable = name == COMPAT_NAME
-            || super::execution::ExecutorRegistry::shared()
-                .resolve(name)
-                .is_some();
+        let executable = name == COMPAT_NAME || super::execution::resolve_executor(name).is_some();
         Ok(ProviderHealth {
             provider: name.to_string(),
             status: classify_health(HealthSignals {

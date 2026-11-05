@@ -48,7 +48,7 @@ use super::persistence::{mode_to_column, terminal_outcome, RunRecorder};
 use super::runner::AgentRunner;
 use crate::application::context_stats::context_limit_for;
 use crate::application::conversations::ConversationService;
-use crate::application::execution::{AiMessage, ExecutorRegistry, ProviderExecutor, RequestError};
+use crate::application::execution::{AiMessage, ProviderExecutor, RequestError};
 use crate::application::routing::{RoutingService, TaskKind};
 use crate::application::settings::SettingsService;
 use crate::infrastructure::database::Database;
@@ -491,13 +491,14 @@ pub(crate) fn start_run(
     mode: AutonomyMode,
     preset: RunPreset,
 ) -> Result<i64, AgentRunError> {
-    ExecutorRegistry::new()
-        .resolve_owned(&request.provider)
-        .ok_or_else(|| {
-            AgentRunError::Request(RequestError::ExecutorUnavailable {
-                name: request.provider.clone(),
-            })
-        })?;
+    // Executor availability is the caller's contract: every call site resolves
+    // the executor through `execution::resolve_executor` first (agent command,
+    // task loop bridge, e2e smoke) and fails with the same classified
+    // `ExecutorUnavailable` before this bridge is reached, then hands the
+    // resolved executor in. Re-checking here would consult the process
+    // registry rather than the injected executor — a vacuous check — so it is
+    // deliberately not repeated (NEX-ARCH-002: the resolver is installed by
+    // the composition root; unit tests inject stubs instead).
 
     // DP-4: claim synchronously so a second start for the same conversation
     // is rejected even before the run thread registers its entry.

@@ -21,8 +21,18 @@
 //! §9, §11). Each secret is passed directly between the caller and the keyring
 //! without being logged, and [`CredentialError`] deliberately carries no
 //! secret payload.
+//!
+//! The error taxonomy itself lives in `nexora_core::provider` (NEX-ARCH-002:
+//! the application execution service consumes it through the
+//! [`CredentialSource`] seam without importing this module) and is re-exported
+//! here; this module additionally implements the seam so the composition root
+//! can install [`CredentialStore`] as the process credential source.
 
 use keyring::Entry;
+
+pub(crate) use nexora_core::provider::CredentialError;
+
+use nexora_core::provider::CredentialSource;
 
 /// Fixed application service namespace for keyring entries.
 ///
@@ -149,36 +159,12 @@ fn classify(err: &keyring::Error) -> CredentialError {
     }
 }
 
-/// Errors raised by the provider credential store.
-///
-/// Deliberately carries **no secret payload**: the variants identify only the
-/// failure category, so a formatted [`CredentialError`] can never leak a
-/// credential into the logs (ARCHITECTURE.md §9, §11).
-#[derive(Debug)]
-pub(crate) enum CredentialError {
-    /// The operating-system secure keyring could not be reached, was locked,
-    /// or is unsupported on this system.
-    StorageUnavailable,
-    /// A credential's value or stored representation could not be written or
-    /// read as expected.
-    Invalid,
-}
+impl CredentialSource for CredentialStore {
+    fn exists(&self, provider: &str) -> Result<bool, CredentialError> {
+        Self::exists(provider)
+    }
 
-impl std::fmt::Display for CredentialError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::StorageUnavailable => {
-                write!(
-                    f,
-                    "provider credential store is unavailable (OS secure keyring)"
-                )
-            }
-            Self::Invalid => write!(
-                f,
-                "provider credential could not be read or written in the OS secure keyring"
-            ),
-        }
+    fn read(&self, provider: &str) -> Result<Option<String>, CredentialError> {
+        Self::read(provider)
     }
 }
-
-impl std::error::Error for CredentialError {}

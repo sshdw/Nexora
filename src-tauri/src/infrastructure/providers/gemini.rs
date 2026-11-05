@@ -8,8 +8,9 @@
 //! into the provider-independent [`AiResponse`].
 //!
 //! Isolation: every Gemini-specific wire type lives in this module. Nothing
-//! Gemini-specific is exposed through [`application::execution`]; the
-//! boundary only ever sees [`AiRequest`]/[`AiResponse`]/[`ExecutorError`].
+//! Gemini-specific crosses the boundary; the caller only ever sees
+//! [`AiRequest`]/[`AiResponse`]/[`ExecutorError`] (the contract lives in
+//! `nexora_core::provider`, NEX-ARCH-002).
 //!
 //! # Gemini-specific contract notes
 //!
@@ -29,8 +30,8 @@
 //!
 //! # Security (ARCHITECTURE.md В§9, В§11, В§12)
 //!
-//! - The credential is supplied by the caller from the [`CredentialStore`] for
-//!   the duration of the call only; it is never persisted, logged, or returned.
+//! - The credential is supplied by the caller for the duration of the call
+//!   only; it is never persisted, logged, or returned.
 //! - The credential is sent only in the `x-goog-api-key` header via `reqwest`,
 //!   never in the body or URL.
 //! - Failed responses are read and classified by HTTP status **plus the
@@ -47,13 +48,14 @@
 // backticks. Allow it locally.
 #![allow(clippy::doc_markdown)]
 
-use crate::application::agent::control::CancellationToken;
-use crate::application::execution::{
-    AiAttachmentPayload, AiMessage, AiRequest, AiResponse, AiRole, ExecutorError, ProviderExecutor,
+use nexora_core::provider::{
+    AiAttachmentPayload, AiMessage, AiRequest, AiResponse, AiRole, CancellationToken,
+    ExecutorError, ProviderExecutor, TokenUsage, ToolCall,
 };
-// `AiAttachment` is referenced only by this module's unit tests.
+// `AiAttachment`, `ToolDefinition`, and `AiToolResult` are referenced only by
+// this module's unit tests.
 #[cfg(test)]
-use crate::application::execution::AiAttachment;
+use nexora_core::provider::{AiAttachment, AiToolResult, ToolDefinition};
 
 use super::transport::{Credential, HttpClient, PostOutcome, PostRequest};
 
@@ -85,8 +87,8 @@ pub(crate) const PROVIDER_DISPLAY_NAME: &str = "Gemini";
 /// Dropped: `gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemini-2.5-pro`
 /// (404), `gemini-flash-latest` (503).
 ///
-/// Pricing is governed by the policy table in
-/// `crate::application::agent::pricing` (DATABASE.md В§7.8); the first entry
+/// Pricing is governed by the application-layer pricing policy table
+/// (DATABASE.md В§7.8); the first entry
 /// is the provider default consumed as `models[0]` by the selection surface.
 /// The retired IDs this list replaces: `gemini-1.5-pro`, `gemini-1.5-flash`
 /// (shut down), and `gemini-2.0-flash` (retired June 1, 2026).
@@ -112,8 +114,8 @@ pub(crate) const SUPPORTED_MODELS: &[&str] = &[
 /// Live-verified 2026-10-03 via the zero-token `GET
 /// /v1beta/models/{modelId}` metadata endpoint: every ID here reports
 /// `inputTokenLimit = 1048576`. Kept as an explicit subset (rather than
-/// re-derived by callers) so the context-window table in
-/// `application::context_stats` resolves the verified clamp without
+/// re-derived by callers) so the application context-window table resolves
+/// the verified clamp without
 /// restating IDs — a strict subset of [`SUPPORTED_MODELS`] by construction
 /// (see the `gemini_lite_subset_of_supported` test).
 pub(crate) const GEMINI_LITE_MODELS: &[&str] = &[
@@ -273,8 +275,12 @@ impl ProviderExecutor for GeminiExecutor {
 /// `tools` carries Gemini-native function declarations only when
 /// `AiRequest.tools` is non-empty; an empty list is omitted entirely to keep
 /// the wire payload byte-compatible with plain chat.
+///
+/// Crate-visible alongside [`generate_content_request`] so the shared tool
+/// definitions can pin their wire reduction from the application side
+/// (NEX-ARCH-002).
 #[derive(Debug, Serialize)]
-struct GenerateContentRequest {
+pub(crate) struct GenerateContentRequest {
     contents: Vec<GeminiContent>,
     #[serde(rename = "systemInstruction", skip_serializing_if = "Option::is_none")]
     system_instruction: Option<SystemInstruction>,
@@ -376,7 +382,11 @@ struct SystemInstruction {
 /// `systemInstruction` parameter; `user` and `assistant` messages map to the
 /// corresponding Gemini `contents.role` (`user`/`model`) and remain in
 /// chronological order.
-fn generate_content_request(request: &AiRequest) -> GenerateContentRequest {
+///
+/// Crate-visible so the shared tool definitions can pin their Gemini wire
+/// reduction from the application side (`agent::tools`), where the
+/// definitions live.
+pub(crate) fn generate_content_request(request: &AiRequest) -> GenerateContentRequest {
     let system = collect_system(&request.messages);
     let contents: Vec<GeminiContent> = request
         .messages
@@ -726,7 +736,7 @@ fn to_ai_response(
         .next()
         .ok_or(GeminiError::UnexpectedResponse)?;
     let mut text_parts: Vec<String> = Vec::new();
-    let mut tool_calls: Vec<crate::application::execution::ToolCall> = Vec::new();
+    let mut tool_calls: Vec<ToolCall> = Vec::new();
     for part in candidate.content.parts {
         if let Some(text) = part.text {
             text_parts.push(text);
@@ -739,7 +749,7 @@ fn to_ai_response(
                 .unwrap_or(serde_json::Value::Object(serde_json::Map::default()));
             let arguments =
                 serde_json::to_string(&args_value).map_err(|_| GeminiError::UnexpectedResponse)?;
-            tool_calls.push(crate::application::execution::ToolCall {
+            tool_calls.push(ToolCall {
                 id,
                 name: call.name,
                 arguments,
@@ -770,7 +780,7 @@ fn to_ai_response(
         if u.prompt_token_count == 0 && u.candidates_token_count == 0 {
             None
         } else {
-            Some(crate::application::execution::TokenUsage {
+            Some(TokenUsage {
                 input_tokens: u.prompt_token_count,
                 output_tokens: u.candidates_token_count,
             })
@@ -1545,7 +1555,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_result: None,
             }]),
-            tools: std::sync::Arc::new(vec![crate::application::execution::ToolDefinition {
+            tools: std::sync::Arc::new(vec![ToolDefinition {
                 name: "get_weather".to_string(),
                 description: "Get the weather for a location".to_string(),
                 parameters: serde_json::json!({
@@ -1871,13 +1881,13 @@ mod tests {
                     content: "Listing".to_string(),
                     attachments: Vec::new(),
                     tool_calls: vec![
-                        crate::application::execution::ToolCall {
+                        ToolCall {
                             id: "call_0".to_string(),
                             name: "list_directory".to_string(),
                             arguments: r#"{"path":"."}"#.to_string(),
                             thought_signature: Some("sig-abc".to_string()),
                         },
-                        crate::application::execution::ToolCall {
+                        ToolCall {
                             id: "call_1".to_string(),
                             name: "read_file".to_string(),
                             arguments: r#"{"path":"a.txt"}"#.to_string(),
@@ -1891,7 +1901,7 @@ mod tests {
                     content: String::new(),
                     attachments: Vec::new(),
                     tool_calls: Vec::new(),
-                    tool_result: Some(crate::application::execution::AiToolResult {
+                    tool_result: Some(AiToolResult {
                         call_id: "call_0".to_string(),
                         name: "list_directory".to_string(),
                         content: "a.txt\nb.txt".to_string(),
@@ -2119,194 +2129,6 @@ mod tests {
         let u = ai.usage.expect("some");
         assert_eq!(u.input_tokens, 0);
         assert_eq!(u.output_tokens, 5);
-    }
-
-    // ---- Gemini tool-schema reduction (v1.0.1) ---------------------------
-    //
-    // `ToolRegistry::definitions()` (src/application/agent/tools.rs:100, 119,
-    // 144, 163) emits full JSON Schema objects (`additionalProperties`,
-    // `minimum`), but Gemini parses `tools[].functionDeclarations[].parameters`
-    // as proto3 JSON and rejects any unknown field name with 400
-    // INVALID_ARGUMENT. `to_gemini_schema` is the Gemini-only wire adapter.
-
-    /// True when `key` appears anywhere inside `value` (objects or arrays).
-    fn contains_key_recursive(value: &serde_json::Value, key: &str) -> bool {
-        match value {
-            serde_json::Value::Object(map) => {
-                map.contains_key(key)
-                    || map.values().any(|inner| contains_key_recursive(inner, key))
-            }
-            serde_json::Value::Array(items) => {
-                items.iter().any(|inner| contains_key_recursive(inner, key))
-            }
-            _ => false,
-        }
-    }
-
-    /// An [`AiRequest`] carrying the four real workspace tool definitions.
-    fn tool_request(tools: Vec<crate::application::execution::ToolDefinition>) -> AiRequest {
-        AiRequest {
-            provider: PROVIDER_NAME.to_string(),
-            model: "gemini-3.6-flash".to_string(),
-            messages: std::sync::Arc::new(vec![AiMessage {
-                role: AiRole::User,
-                content: "Run the tests".to_string(),
-                attachments: Vec::new(),
-                tool_calls: Vec::new(),
-                tool_result: None,
-            }]),
-            tools: std::sync::Arc::new(tools),
-            model_config: None,
-            request_timeout: None,
-        }
-    }
-
-    /// Test (a): the six real tool definitions, serialized through
-    /// `generate_content_request`, contain none of the JSON-Schema keys Gemini
-    /// rejects; read_file's parameters equal the exact reduced shape; the
-    /// empty `required` of list_directory is dropped entirely.
-    #[test]
-    fn agent_tool_declarations_are_reduced_to_the_gemini_subset() {
-        let request = tool_request(crate::application::agent::tools::ToolRegistry::definitions());
-        let body = generate_content_request(&request);
-        let value: serde_json::Value =
-            serde_json::from_str(&serde_json::to_string(&body).expect("serialize")).expect("parse");
-        let declarations = value["tools"][0]["functionDeclarations"]
-            .as_array()
-            .expect("six function declarations");
-        assert_eq!(declarations.len(), 6, "all six tools are declared");
-
-        for declaration in declarations {
-            let parameters = &declaration["parameters"];
-            for forbidden in [
-                "additionalProperties",
-                "minimum",
-                "maximum",
-                "const",
-                "propertyNames",
-                "$schema",
-                "$defs",
-            ] {
-                assert!(
-                    !contains_key_recursive(parameters, forbidden),
-                    "declaration '{}' leaked forbidden key '{forbidden}': {parameters}",
-                    declaration["name"]
-                );
-            }
-        }
-
-        // read_file: type / description / properties / non-empty required
-        // survive unchanged; minimum and additionalProperties are gone.
-        let read_file = &declarations[1];
-        assert_eq!(read_file["name"], "read_file");
-        let expected = serde_json::json!({
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Path to the file relative to workspace root"
-                },
-                "offset_lines": {
-                    "type": "integer",
-                    "description": "Line offset to start reading from (0-indexed)"
-                },
-                "limit_lines": {
-                    "type": "integer",
-                    "description": "Maximum number of lines to return"
-                }
-            },
-            "required": ["path"]
-        });
-        assert_eq!(
-            read_file["parameters"], expected,
-            "read_file parameters must equal the exact reduced shape"
-        );
-
-        // list_directory: `required: []` is dropped entirely (tools.rs:175).
-        let list_directory = &declarations[3];
-        assert_eq!(list_directory["name"], "list_directory");
-        assert!(
-            list_directory["parameters"].get("required").is_none(),
-            "list_directory must not carry a 'required' key"
-        );
-
-        // Non-empty required arrays of the other tools survive verbatim.
-        assert_eq!(
-            declarations[0]["parameters"]["required"],
-            serde_json::json!(["command"]),
-            "execute_command keeps its required array"
-        );
-        assert_eq!(
-            declarations[2]["parameters"]["required"],
-            serde_json::json!(["path", "content"]),
-            "write_file keeps its required array"
-        );
-        assert_eq!(
-            declarations[4]["parameters"]["required"],
-            serde_json::json!(["path", "new_text"]),
-            "edit_file keeps its required array"
-        );
-        assert_eq!(declarations[4]["name"], "edit_file");
-        assert_eq!(
-            declarations[5]["parameters"]["required"],
-            serde_json::json!(["pattern"]),
-            "search_files keeps its required array"
-        );
-        assert_eq!(declarations[5]["name"], "search_files");
-    }
-
-    /// Test (b): the reduction is a Gemini wire adapter only. The shared
-    /// `AiRequest.tools` payload — the exact value the OpenAI
-    /// (`chat_completion_request`, openai.rs:190) and Anthropic
-    /// (`anthropic_request`, anthropic.rs:235) body builders serialize
-    /// verbatim into their `tools` arrays — keeps the full JSON Schema, and
-    /// `generate_content_request` never mutates it.
-    #[test]
-    fn other_providers_keep_the_schema_verbatim() {
-        let definitions = crate::application::agent::tools::ToolRegistry::definitions();
-        let shared = definitions.clone();
-
-        // The shared source of truth still carries the keys Gemini rejects;
-        // OpenAI and Anthropic serialize exactly this value.
-        for definition in &shared {
-            assert!(
-                definition.parameters.get("additionalProperties").is_some(),
-                "shared definition '{}' lost additionalProperties",
-                definition.name
-            );
-        }
-        let read_file = &shared[1];
-        assert_eq!(read_file.name, "read_file");
-        assert!(
-            contains_key_recursive(&read_file.parameters, "minimum"),
-            "shared read_file schema lost its 'minimum' constraints"
-        );
-
-        // Driving the definitions through the Gemini body builder leaves the
-        // shared value untouched, and the reduction appears only in the
-        // Gemini wire body (a passthrough would leak the keys below).
-        let request = tool_request(definitions);
-        let body = generate_content_request(&request);
-        let value: serde_json::Value =
-            serde_json::from_str(&serde_json::to_string(&body).expect("serialize")).expect("parse");
-        let declarations = value["tools"][0]["functionDeclarations"]
-            .as_array()
-            .expect("declarations");
-        for declaration in declarations {
-            assert!(
-                !contains_key_recursive(&declaration["parameters"], "additionalProperties"),
-                "gemini body for '{}' still carries additionalProperties: {}",
-                declaration["name"],
-                declaration["parameters"]
-            );
-        }
-        for definition in &shared {
-            assert!(
-                definition.parameters.get("additionalProperties").is_some(),
-                "shared definition '{}' was mutated by the gemini builder",
-                definition.name
-            );
-        }
     }
 
     /// Test (c): a plain chat request (empty tools) serializes without a

@@ -8,15 +8,15 @@
 //! response into the provider-independent [`AiResponse`].
 //!
 //! Isolation: every OpenAI-specific wire type lives in this module. Nothing
-//! OpenAI-specific is exposed through [`application::execution`]; the boundary
-//! only ever sees [`AiRequest`]/[`AiResponse`]/[`ExecutorError`]. The same
-//! boundary can later host Anthropic, Gemini, DeepSeek, Kimi, or Grok without
-//! touching this contract.
+//! OpenAI-specific crosses the boundary; the caller only ever sees
+//! [`AiRequest`]/[`AiResponse`]/[`ExecutorError`] (the contract lives in
+//! `nexora_core::provider`, NEX-ARCH-002). The same boundary can later host
+//! Anthropic, Gemini, DeepSeek, Kimi, or Grok without touching this contract.
 //!
 //! # Security (ARCHITECTURE.md В§9, В§11, В§12)
 //!
-//! - The credential is supplied by the caller from the [`CredentialStore`] for
-//!   the duration of the call only; it is never persisted, logged, or returned.
+//! - The credential is supplied by the caller for the duration of the call
+//!   only; it is never persisted, logged, or returned.
 //! - The credential is sent only in the `Authorization` header via
 //!   `reqwest`'s `bearer_auth`, never in the body.
 //! - Failed responses are read and classified by HTTP status **plus the
@@ -33,14 +33,14 @@
 // `doc_markdown` pedantic lint flags as needing backticks. Allow it locally.
 #![allow(clippy::doc_markdown)]
 
-use crate::application::agent::control::CancellationToken;
-use crate::application::execution::{
-    model_info_for, AiAttachmentPayload, AiMessage, AiRequest, AiResponse, AiRole, ExecutorError,
-    ModelConfig, ProviderExecutor,
+use nexora_core::provider::{
+    AiAttachmentPayload, AiMessage, AiRequest, AiResponse, AiRole, CancellationToken,
+    ExecutorError, ModelConfig, ProviderExecutor, TokenUsage, ToolCall,
 };
-// `AiAttachment` is referenced only by this module's unit tests.
+// `AiAttachment`, `ToolDefinition`, and `AiToolResult` are referenced only by
+// this module's unit tests.
 #[cfg(test)]
-use crate::application::execution::AiAttachment;
+use nexora_core::provider::{AiAttachment, AiToolResult, ToolDefinition};
 
 use super::transport::{Credential, HttpClient, PostOutcome, PostRequest};
 use serde::{Deserialize, Serialize};
@@ -61,8 +61,8 @@ pub(crate) const PROVIDER_DISPLAY_NAME: &str = "OpenAI";
 /// this set documents the currently supported models and anchors the
 /// model-selection surface so the UI can present only supported choices.
 ///
-/// Pricing is governed by the policy table in
-/// `crate::application::agent::pricing` (DATABASE.md В§7.8); the first entry
+/// Pricing is governed by the application-layer pricing policy table
+/// (DATABASE.md В§7.8); the first entry
 /// is the provider default consumed as `models[0]` by the selection surface.
 pub(crate) const SUPPORTED_MODELS: &[&str] = &[
     // Default: best balance of cost and capability.
@@ -101,6 +101,31 @@ pub(crate) fn rate_for_model(model: &str) -> Option<(u64, u64)> {
         .find(|(name, _, _)| *name == model)
         .map(|(_, input, output)| (*input, *output))
 }
+
+/// Whether `model` is listed for the OpenAI-family provider `name`.
+///
+/// The local capability verdict for tool-calling: an ID is listed exactly
+/// when it appears in that provider's hardcoded shortlist (the same consts
+/// the `supported_providers` aggregation draws from — one source of truth).
+/// Unknown providers and unlisted IDs yield `false`, so an unlisted model
+/// never receives a `tools` member. This is the executor-side projection of
+/// the catalog: no application import is needed (NEX-ARCH-002).
+#[must_use]
+fn is_listed_model(name: &str, model: &str) -> bool {
+    // The user-configured endpoint (like any unknown name) has no hardcoded
+    // shortlist: its tool support comes from the endpoint toggle, never from
+    // a list.
+    let listed: &[&str] = match name {
+        PROVIDER_NAME => SUPPORTED_MODELS,
+        XKIRO_NAME => XKIRO_MODELS,
+        OPENROUTER_NAME => OPENROUTER_MODELS,
+        NVIDIA_NAME => NVIDIA_MODELS,
+        OPENCODE_ZEN_NAME => OPENCODE_ZEN_MODELS,
+        _ => &[],
+    };
+    listed.contains(&model)
+}
+
 /// OpenAI-compatible provider identities sharing [`OpenAiExecutor`].
 ///
 /// Curated hardcoded model shortlists (DATABASE.md §7.5); `MODELS[0]` is the
@@ -552,7 +577,7 @@ pub(crate) struct OpenAiExecutor {
     /// Optional organization identifier, sent as `OpenAI-Organization`.
     organization: Option<String>,
     /// Endpoint tool-calling support override. `None` derives the verdict
-    /// from the curated [`model_info_for`] projection; `Some` (the
+    /// from the curated [`is_listed_model`] projection; `Some` (the
     /// user-configured endpoint) is honored verbatim so an endpoint without
     /// function-calling support never receives an incompatible `tools` member.
     tools_supported: Option<bool>,
@@ -650,7 +675,7 @@ impl OpenAiExecutor {
         // derive the verdict from the local capability projection.
         let tools_supported = self
             .tools_supported
-            .unwrap_or_else(|| model_info_for(self.name, &request.model).supports_tools);
+            .unwrap_or_else(|| is_listed_model(self.name, &request.model));
         let body = chat_completion_request(request, tools_supported);
         let wire = serde_json::to_vec(&body).map_err(|_| OpenAiError::UnexpectedResponse)?;
         // The organization rides its own header value, validated upstream.
@@ -1013,9 +1038,9 @@ fn to_ai_response(response: ChatCompletionResponse) -> Result<AiResponse, OpenAi
         .next()
         .ok_or(OpenAiError::UnexpectedResponse)?;
     let wire_tool_calls = choice.message.tool_calls.unwrap_or_default();
-    let tool_calls: Vec<crate::application::execution::ToolCall> = wire_tool_calls
+    let tool_calls: Vec<ToolCall> = wire_tool_calls
         .into_iter()
-        .map(|call| crate::application::execution::ToolCall {
+        .map(|call| ToolCall {
             id: call.id,
             name: call.function.name,
             arguments: call.function.arguments,
@@ -1034,7 +1059,7 @@ fn to_ai_response(response: ChatCompletionResponse) -> Result<AiResponse, OpenAi
         if u.prompt_tokens == 0 && u.completion_tokens == 0 {
             None
         } else {
-            Some(crate::application::execution::TokenUsage {
+            Some(TokenUsage {
                 input_tokens: u.prompt_tokens,
                 output_tokens: u.completion_tokens,
             })
@@ -1683,7 +1708,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_result: None,
             }]),
-            tools: std::sync::Arc::new(vec![crate::application::execution::ToolDefinition {
+            tools: std::sync::Arc::new(vec![ToolDefinition {
                 name: "get_weather".to_string(),
                 description: "Get the weather for a location".to_string(),
                 parameters: serde_json::json!({
@@ -1856,7 +1881,7 @@ mod tests {
                     role: AiRole::Assistant,
                     content: String::new(),
                     attachments: Vec::new(),
-                    tool_calls: vec![crate::application::execution::ToolCall {
+                    tool_calls: vec![ToolCall {
                         id: "call_7".to_string(),
                         name: "list_directory".to_string(),
                         arguments: r#"{"path":"."}"#.to_string(),
@@ -1869,7 +1894,7 @@ mod tests {
                     content: String::new(),
                     attachments: Vec::new(),
                     tool_calls: Vec::new(),
-                    tool_result: Some(crate::application::execution::AiToolResult {
+                    tool_result: Some(AiToolResult {
                         call_id: "call_7".to_string(),
                         name: "list_directory".to_string(),
                         content: "a.txt".to_string(),
@@ -2742,7 +2767,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_result: None,
             }]),
-            tools: std::sync::Arc::new(vec![crate::application::execution::ToolDefinition {
+            tools: std::sync::Arc::new(vec![ToolDefinition {
                 name: "get_weather".to_string(),
                 description: "Get the weather".to_string(),
                 parameters: serde_json::json!({"type": "object"}),
@@ -2777,17 +2802,17 @@ mod tests {
                 tool_result: None,
             }]),
             tools: std::sync::Arc::new(vec![
-                crate::application::execution::ToolDefinition {
+                ToolDefinition {
                     name: "good".to_string(),
                     description: "fine".to_string(),
                     parameters: serde_json::json!({"type": "object"}),
                 },
-                crate::application::execution::ToolDefinition {
+                ToolDefinition {
                     name: String::new(),
                     description: "nameless".to_string(),
                     parameters: serde_json::json!({"type": "object"}),
                 },
-                crate::application::execution::ToolDefinition {
+                ToolDefinition {
                     name: "bad-schema".to_string(),
                     description: "array schema".to_string(),
                     parameters: serde_json::json!([{"type": "string"}]),

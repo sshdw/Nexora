@@ -37,9 +37,9 @@
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Duration;
 
-use crate::application::agent::control::CancellationToken;
-use crate::application::execution::{
-    is_retryable_status, retry_delay, ExecutorError, MAX_RETRY_DELAY_SECS, MAX_SEND_ATTEMPTS,
+use nexora_core::provider::{
+    is_retryable_status, retry_delay, CancellationToken, ExecutorError, MAX_RETRY_DELAY_SECS,
+    MAX_SEND_ATTEMPTS,
 };
 
 /// Upper bound on an error body kept for `Retry-After` extraction (bytes).

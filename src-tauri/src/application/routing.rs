@@ -184,7 +184,7 @@ impl RoutingProfile {
             return Self::default();
         };
         let model = if require_tools {
-            crate::application::execution::recommended_models(&first.name, true)
+            crate::application::model_catalog::recommended_models(&first.name, true)
                 .into_iter()
                 .next()
                 .or_else(|| first.models.first().cloned())
@@ -327,7 +327,7 @@ pub(crate) fn is_valid_custom_model_id(value: &str) -> bool {
 #[must_use]
 pub(crate) fn resolve_route(entries: &[RouteEntry], require_tools: bool) -> Option<&RouteEntry> {
     entries.iter().find(|entry| {
-        if crate::application::execution::recommended_models(&entry.provider, require_tools)
+        if crate::application::model_catalog::recommended_models(&entry.provider, require_tools)
             .iter()
             .any(|gated| gated == &entry.model)
         {
@@ -619,10 +619,12 @@ mod tests {
         // cross-provider fallback), so resolution lands on the explicit
         // second entry, exactly as ordered.
         assert!(
-            crate::application::execution::recommended_models("ghost-provider", false).is_empty()
+            crate::application::model_catalog::recommended_models("ghost-provider", false)
+                .is_empty()
         );
         assert!(
-            crate::application::execution::recommended_models("ghost-provider", true).is_empty()
+            crate::application::model_catalog::recommended_models("ghost-provider", true)
+                .is_empty()
         );
         let listed = first_listed("gemini");
         let entries = vec![
@@ -680,7 +682,7 @@ mod tests {
         let registry = crate::infrastructure::providers::supported_providers();
         let first = registry.first().expect("build must register a provider");
         assert!(
-            !crate::application::execution::recommended_models(&first.name, true).is_empty(),
+            !crate::application::model_catalog::recommended_models(&first.name, true).is_empty(),
             "default provider {:?} must list a tool-capable model",
             first.name
         );
@@ -705,7 +707,7 @@ mod tests {
         assert_eq!(head.provider, first.name);
         // The agent default passes tool gating wherever the provider lists a
         // tool-capable model; otherwise it falls back to the first model.
-        let gated = crate::application::execution::recommended_models(&head.provider, true);
+        let gated = crate::application::model_catalog::recommended_models(&head.provider, true);
         if gated.is_empty() {
             assert_eq!(
                 head.model,
