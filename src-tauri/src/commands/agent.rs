@@ -39,11 +39,11 @@ use crate::application::agent::approval::AutonomyMode;
 use crate::application::agent::inspect::RunInspection;
 use crate::application::agent::permissions::{self, PermissionRule, RuleEffect};
 use crate::application::agent::service::{
-    self, AgentRunError, AgentRunHost, AgentRunRegistry, AgentRunRequest, ResolveOutcome, RunFrame,
+    self, AgentRunError, AgentRunHost, AgentRunRegistry, AgentRunRequest, RunFrame,
 };
 use crate::application::agent::spend::SpendDashboard;
 use crate::application::conversations::ConversationService;
-use crate::application::execution::{ExecutorRegistry, RequestError, RequestExecutionService};
+use crate::application::execution::{resolve_executor, RequestError, RequestExecutionService};
 use crate::infrastructure::database::Database;
 use crate::infrastructure::repository::agent_runs::AgentRun;
 
@@ -115,15 +115,14 @@ pub(crate) fn workspace_root(app: &AppHandle, db: &Database) -> Result<PathBuf, 
             format!("the application data directory is unavailable: {err}"),
         )
     })?;
-    let fallback = base.join("agent_workspace");
+    let fallback = base.join(crate::application::workspace::WORKSPACE_DEFAULT_DIR_NAME);
     let resolved = crate::application::workspace::resolve_workspace_root(db, &fallback);
     if resolved != fallback {
         return Ok(resolved);
     }
-    std::fs::create_dir_all(&fallback).map_err(|_| {
-        CommandError::new(ErrorKind::Io, "the agent workspace could not be created")
-    })?;
-    Ok(fallback)
+    // AC-202: the create-on-demand write lives in the application layer.
+    crate::application::workspace::ensure_workspace_dir(&base)
+        .map_err(|_| CommandError::new(ErrorKind::Io, "the agent workspace could not be created"))
 }
 
 /// Response returned immediately by [`start_agent_run`]: the run is fully
@@ -186,13 +185,11 @@ pub(crate) async fn start_agent_run(
 
         // 2. Resolve the provider executor (no fallback; same registry plain
         //    chat uses).
-        let executor = ExecutorRegistry::new()
-            .resolve_owned(&provider)
-            .ok_or_else(|| {
-                CommandError::from(RequestError::ExecutorUnavailable {
-                    name: provider.clone(),
-                })
-            })?;
+        let executor = resolve_executor(&provider).ok_or_else(|| {
+            CommandError::from(RequestError::ExecutorUnavailable {
+                name: provider.clone(),
+            })
+        })?;
 
         let root = workspace_root(&handle, db_ref)?;
         let host: Arc<dyn AgentRunHost> = Arc::new(TauriAgentHost::new(handle, db_client.clone()));
@@ -279,80 +276,56 @@ pub(crate) fn resolve_agent_approval(
     registry: State<'_, ManagedRegistry>,
     db: State<'_, Database>,
 ) -> Result<(), CommandError> {
-    let parsed = parse_resolve_scope(scope.as_deref())?;
-    // NEX-AGENT-023: validate the scope confirmation against a read-only
-    // peek BEFORE the park is consumed, so a mismatch fails closed with the
-    // park intact and persists nothing.
-    let confirmed = match &parsed {
-        ResolveScope::ConfirmGroup { scope: echo } => {
-            let pending = registry.pending_scope_info(run_id, &call_id);
-            let Some((tool_name, group_key)) = pending else {
-                return Err(CommandError::new(
-                    ErrorKind::NotFound,
-                    "the run has no pending approval for that call",
-                ));
-            };
-            match permissions::confirm_group_scope(&tool_name, group_key.as_deref(), echo) {
-                Ok(confirmed) => Some(confirmed),
-                Err(permissions::GroupScopeError::ScopeMismatch { expected }) => {
-                    return Err(scope_mismatch_error(&expected));
-                }
-                Err(permissions::GroupScopeError::NoPendingGroup) => {
-                    return Err(CommandError::new(
-                        ErrorKind::InvalidInput,
-                        "the pending approval has no group scope to persist",
-                    ));
-                }
-                Err(permissions::GroupScopeError::ShellNeverPersists) => {
-                    return Err(CommandError::new(
-                        ErrorKind::InvalidInput,
-                        "persistent allow is not available for shell commands",
-                    ));
-                }
-            }
-        }
-        ResolveScope::Single | ResolveScope::Group => None,
-    };
-    let sticky = !matches!(parsed, ResolveScope::Single);
-    let (outcome, _) = registry.resolve_with_scope(
+    // AC-202: the scope decision (parse, confirmation, sticky mapping) and
+    // the persistence live in the application service
+    // (`permissions::resolve_approval`, next to the confirmation policy and
+    // the group-allow insert); this command is delegation plus error mapping.
+    permissions::resolve_approval(
+        registry.inner(),
+        db.inner(),
         run_id,
         &call_id,
         approved,
-        if sticky { Some("group") } else { None },
-    );
-    match outcome {
-        ResolveOutcome::RunNotActive => Err(CommandError::new(
-            ErrorKind::NotFound,
-            format!("no active agent run with id {run_id}"),
-        )),
-        ResolveOutcome::NoPendingApproval => Err(CommandError::new(
-            ErrorKind::NotFound,
-            "the run has no pending approval for that call",
-        )),
-        ResolveOutcome::Resolved => {
-            // Persistence only after explicit scope confirmation (validated
-            // above): best-effort insert, so a duplicate row never fails the
-            // resolution — the session-sticky verdict already governs this run.
-            if approved {
-                if let Some(scope) = confirmed {
-                    let _ = permissions::insert_group_allow_rule(db.inner(), &scope);
-                }
-            }
-            Ok(())
-        }
-    }
+        scope.as_deref(),
+    )
+    .map_err(|err| approval_error(run_id, err))
 }
 
-/// Parsed `scope` for [`resolve_agent_approval`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ResolveScope<'a> {
-    /// One call only (default).
-    Single,
-    /// Session-sticky group verdict for this run (persists nothing).
-    Group,
-    /// Sticky verdict plus a persistent `allow` rule — only when `scope`
-    /// echoes the pending group key exactly (NEX-AGENT-023).
-    ConfirmGroup { scope: &'a str },
+/// IPC error mapping for [`crate::application::agent::permissions::resolve_approval`]
+/// (AC-202): the command layer owns only this translation. Every message is
+/// the exact vocabulary the inline implementation surfaced before the move —
+/// fixed and secret-free (caller input is never echoed back; a confirmation
+/// mismatch names the server-derived expected scope).
+fn approval_error(run_id: i64, err: permissions::ApprovalResolveError) -> CommandError {
+    match err {
+        permissions::ApprovalResolveError::RunNotActive => CommandError::new(
+            ErrorKind::NotFound,
+            format!("no active agent run with id {run_id}"),
+        ),
+        permissions::ApprovalResolveError::NoPendingApproval => CommandError::new(
+            ErrorKind::NotFound,
+            "the run has no pending approval for that call",
+        ),
+        permissions::ApprovalResolveError::Group(permissions::GroupScopeError::ScopeMismatch {
+            expected,
+        }) => scope_mismatch_error(&expected),
+        permissions::ApprovalResolveError::Group(permissions::GroupScopeError::NoPendingGroup) => {
+            CommandError::new(
+                ErrorKind::InvalidInput,
+                "the pending approval has no group scope to persist",
+            )
+        }
+        permissions::ApprovalResolveError::Group(
+            permissions::GroupScopeError::ShellNeverPersists,
+        ) => CommandError::new(
+            ErrorKind::InvalidInput,
+            "persistent allow is not available for shell commands",
+        ),
+        permissions::ApprovalResolveError::ScopeInvalid => CommandError::new(
+            ErrorKind::InvalidInput,
+            "scope must be 'single', 'group', or 'group:confirm:<scope>'",
+        ),
+    }
 }
 
 /// `InvalidInput` for a scope-confirmation mismatch (NEX-AGENT-023): names
@@ -367,24 +340,6 @@ fn scope_mismatch_error(expected: &str) -> CommandError {
             "scope confirmation does not match the pending approval group; expected '{expected}'"
         ),
     )
-}
-
-/// Parse the `scope` argument: `None`/`"single"`, `"group"`, or
-/// `"group:confirm:<exact-group-key>"`. Anything else is `InvalidInput`.
-/// Secret-free fixed vocabulary (caller input is never echoed back; a
-/// confirmation mismatch reports the server-derived expected scope).
-fn parse_resolve_scope(scope: Option<&str>) -> Result<ResolveScope<'_>, CommandError> {
-    match scope {
-        None | Some("single") => Ok(ResolveScope::Single),
-        Some("group") => Ok(ResolveScope::Group),
-        Some(rest) => match rest.strip_prefix("group:confirm:") {
-            Some(echo) if !echo.is_empty() => Ok(ResolveScope::ConfirmGroup { scope: echo }),
-            _ => Err(CommandError::new(
-                ErrorKind::InvalidInput,
-                "scope must be 'single', 'group', or 'group:confirm:<scope>'",
-            )),
-        },
-    }
 }
 
 /// Grant `extra_steps` further iterations to a budget-parked (or running)
@@ -1235,63 +1190,93 @@ mod tests {
     #[test]
     fn resolve_agent_approval_scope_routes_through_registry() {
         const SOURCE: &str = include_str!("agent.rs");
+        const SERVICE: &str = include_str!("../application/agent/permissions.rs");
+        // AC-202: the command delegates the scope decision and persistence to
+        // the application service; it must not grow its own copy. Needles are
+        // built with `concat!` so this test's own source never matches them
+        // verbatim.
         assert!(
-            SOURCE.contains("resolve_with_scope("),
-            "resolve_agent_approval must route group scope through the registry"
+            SOURCE.contains(concat!("permissions", "::", "resolve_approval", "(")),
+            "resolve_agent_approval must delegate to the application service"
         );
-        // NEX-AGENT-023: bare group scope records the sticky verdict only;
-        // persistence additionally requires the exact-echo confirmation.
         assert!(
-            SOURCE.contains("pending_scope_info("),
+            !SOURCE.contains(concat!("resolve", "_with_", "scope", "(")),
+            "the registry must be reached only through the application service"
+        );
+        // (No negative needle for the group-allow insert here: the command's
+        // `shell_never_gets_persistent_allow` test legitimately calls the
+        // application persistence helper directly to pin the deny-floor.)
+        // The moved needles now pin the application service itself
+        // (NEX-AGENT-023: peek-then-confirm-then-persist, in one place).
+        assert!(
+            SERVICE.contains(concat!("resolve", "_with_", "scope", "(")),
+            "the service must route group scope through the registry"
+        );
+        assert!(
+            SERVICE.contains("pending_scope_info("),
             "scope confirmation must peek the pending group before resolving"
         );
         assert!(
-            SOURCE.contains("confirm_group_scope("),
+            SERVICE.contains("confirm_group_scope("),
             "group-scope persistence requires explicit scope confirmation"
         );
         assert!(
-            SOURCE.contains("insert_group_allow_rule("),
+            SERVICE.contains("insert_group_allow_rule("),
             "confirmed group scopes persist via the application-layer group-allow path"
         );
     }
 
     #[test]
-    fn parse_resolve_scope_accepts_only_single_group_and_confirm() {
-        // `None`/`"single"` resolve one call; `"group"` is sticky-only.
+    fn approval_resolve_errors_map_to_the_fixed_vocabulary() {
+        // The parse test itself moved with the parser
+        // (`application::agent::permissions` tests); what stays here is the
+        // IPC mapping: every classified failure keeps the exact message the
+        // inline implementation surfaced before the move (AC-202).
+        let err = approval_error(9, permissions::ApprovalResolveError::ScopeInvalid);
+        assert_eq!(err.kind, ErrorKind::InvalidInput);
         assert_eq!(
-            parse_resolve_scope(None).expect("none parses"),
-            ResolveScope::Single
+            err.message,
+            "scope must be 'single', 'group', or 'group:confirm:<scope>'"
         );
+        let err = approval_error(9, permissions::ApprovalResolveError::RunNotActive);
+        assert_eq!(err.kind, ErrorKind::NotFound);
+        assert_eq!(err.message, "no active agent run with id 9");
+        let err = approval_error(9, permissions::ApprovalResolveError::NoPendingApproval);
+        assert_eq!(err.kind, ErrorKind::NotFound);
+        assert_eq!(err.message, "the run has no pending approval for that call");
+        let err = approval_error(
+            9,
+            permissions::ApprovalResolveError::Group(permissions::GroupScopeError::ScopeMismatch {
+                expected: "coding:write_file:docs".to_string(),
+            }),
+        );
+        assert_eq!(err.kind, ErrorKind::InvalidInput);
+        assert!(
+            err.message.contains("coding:write_file:docs"),
+            "mismatch must name the expected scope: {}",
+            err.message
+        );
+        let err = approval_error(
+            9,
+            permissions::ApprovalResolveError::Group(permissions::GroupScopeError::NoPendingGroup),
+        );
+        assert_eq!(err.kind, ErrorKind::InvalidInput);
         assert_eq!(
-            parse_resolve_scope(Some("single")).expect("single parses"),
-            ResolveScope::Single
+            err.message,
+            "the pending approval has no group scope to persist"
         );
+        let err = approval_error(
+            9,
+            permissions::ApprovalResolveError::Group(
+                permissions::GroupScopeError::ShellNeverPersists,
+            ),
+        );
+        assert_eq!(err.kind, ErrorKind::InvalidInput);
         assert_eq!(
-            parse_resolve_scope(Some("group")).expect("group parses"),
-            ResolveScope::Group
+            err.message,
+            "persistent allow is not available for shell commands"
         );
-        // Confirmation carries the exact scope to whitelist.
-        assert_eq!(
-            parse_resolve_scope(Some("group:confirm:coding:write_file:docs"))
-                .expect("confirm parses"),
-            ResolveScope::ConfirmGroup {
-                scope: "coding:write_file:docs"
-            }
-        );
-        // Anything else is InvalidInput — a bare "approve group" intent never
-        // parses as a confirmation, so it can never persist a rule.
-        for bad in [
-            "",
-            "all",
-            "GROUP",
-            "group:confirm:",
-            "group:confirm",
-            "group:*",
-        ] {
-            let err = parse_resolve_scope(Some(bad)).expect_err("must reject {bad}");
-            assert_eq!(err.kind, ErrorKind::InvalidInput);
-            assert!(safe_message(&err));
-        }
+        assert!(safe_message(&err));
     }
 
     #[test]

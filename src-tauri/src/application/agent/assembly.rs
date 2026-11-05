@@ -37,7 +37,7 @@
 //! | Token estimates | `compaction::{estimate_tokens, message_tokens}` |
 //! | Tool envelopes | `injection::envelope_tool_output` (unknown names collapse — hostile labels never echoed) |
 //! | Lifecycle / stage / role vocabulary | `lifecycle::RunState`, `pipeline::PipelineStage` (+ its bound `AgentRole`), shared with `inspect::RunInspection` |
-//! | Tool gating | `execution::model_info_for` (listing-side counterpart: `recommended_models`) |
+//! | Tool gating | `model_catalog::model_info_for` (listing-side counterpart: `recommended_models`) |
 //! | Terminal signal | `AgentError::ContextExhausted` |
 //!
 //! # Secret-freedom
@@ -64,7 +64,8 @@ use super::injection;
 use super::lifecycle::RunState;
 use super::pipeline::PipelineStage;
 use crate::application::context_stats;
-use crate::application::execution::{self, AiMessage, TokenUsage};
+use crate::application::execution::{AiMessage, TokenUsage};
+use crate::application::model_catalog;
 
 // ---------------------------------------------------------------------------
 // Sections
@@ -180,12 +181,12 @@ pub(crate) fn section_budgets(provider: Option<&str>, model: Option<&str>) -> Se
 
 /// Whether (`provider`, `model`) may be offered tools.
 ///
-/// Pure projection over [`execution::model_info_for`]: listed models are
+/// Pure projection over [`model_catalog::model_info_for`]: listed models are
 /// tool-capable, unlisted IDs are conservatively not. The listing-side
-/// counterpart is [`execution::recommended_models`] with `require_tools`.
+/// counterpart is [`model_catalog::recommended_models`] with `require_tools`.
 #[must_use]
 pub(crate) fn supports_tools_for(provider: &str, model: &str) -> bool {
-    execution::model_info_for(provider, model).supports_tools
+    model_catalog::model_info_for(provider, model).supports_tools
 }
 
 /// Resolve the effective model window: the explicit override when present
@@ -1042,7 +1043,7 @@ mod tests {
 
         // The listing-side counterpart agrees: tool-gated recommendations
         // keep the listed model and exclude the unknown ID.
-        let recommended = execution::recommended_models("openai", true);
+        let recommended = model_catalog::recommended_models("openai", true);
         assert!(recommended.contains(&"gpt-5.6-terra".to_string()));
         assert!(!recommended.contains(&"mystery-model-9".to_string()));
     }

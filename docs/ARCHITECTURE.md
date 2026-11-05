@@ -92,14 +92,6 @@ Application Layer (`src-tauri/src/application/` — use cases, agent subsystem)
 
 
 
-Domain Layer (`src-tauri/src/domain/`)
-
-
-
-↓
-
-
-
 Infrastructure Layer (`src-tauri/src/infrastructure/` — SQLite, repositories, provider executors)
 
 
@@ -120,9 +112,16 @@ AI providers are external services accessed only through the backend
 
 5\. Application Layers
 
-The backend is five layers. Dependency direction is strictly downward:
-commands → application → domain → infrastructure, with AI providers external
-behind the executor boundary. Nothing below the commands layer handles Tauri IPC (commands, AppHandle, managed-state wiring); the sole exception is the provider transport's use of `tauri::async_runtime::spawn`; nothing above the infrastructure layer touches SQLite or the network
+The backend is three layers. Dependency direction is strictly downward:
+commands → application → infrastructure, with AI providers external
+behind the executor boundary and the shared, shell-free core
+`crates/nexora-core` (error/exit taxonomy, allow-listed config, storage
+foundation, provider-execution boundary types) below both adapters.
+The previously documented `domain/` layer was deleted on 2026-10-31 by
+owner decision (NEX-ARCH-001 / AC-201): it had never contained code —
+entities are repository rows and policy lives in `application/` and
+`nexora_core` — so the truthful description is three layers, not four.
+Nothing below the commands layer handles Tauri IPC (commands, AppHandle, managed-state wiring); the sole exception is the provider transport's use of `tauri::async_runtime::spawn`; nothing above the infrastructure layer touches SQLite or the network
 directly.
 
 Commands / IPC Layer (`src-tauri/src/commands/`)
@@ -178,20 +177,6 @@ snapshots (`snapshots`), injection hardening (`injection`), self-audit
 (`activity`), persistence recording (`persistence`), and the native
 workspace tools (`tools/`). The provider-independent execution boundary
 (`application/execution.rs`) also lives here (see §7).
-
-Domain Layer (`src-tauri/src/domain/`)
-
-Responsible for:
-
-business rules
-
-entities
-
-use cases
-
-application logic
-
-Independent from UI.
 
 Infrastructure Layer (`src-tauri/src/infrastructure/`)
 

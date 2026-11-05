@@ -407,6 +407,29 @@ pub(crate) fn resolve_workspace_root(db: &Database, default_root: &Path) -> Path
     default_root.to_path_buf()
 }
 
+/// Directory name of the default (pre-picker) workspace root, created on
+/// demand under the app-data dir by [`ensure_workspace_dir`].
+pub(crate) const WORKSPACE_DEFAULT_DIR_NAME: &str = "agent_workspace";
+
+/// Ensure the default (pre-picker) workspace directory exists under `base`
+/// and return its path (AC-202: the filesystem write lives in the
+/// application layer; the IPC commands only resolve the platform
+/// app-data base and map failures).
+///
+/// # Errors
+///
+/// Returns [`WorkspaceError::Invalid`] with a fixed, secret-free message
+/// when the directory cannot be created — the same classification the
+/// commands surfaced before this move (the underlying OS error is
+/// deliberately not echoed).
+pub(crate) fn ensure_workspace_dir(base: &Path) -> Result<PathBuf, WorkspaceError> {
+    let root = base.join(WORKSPACE_DEFAULT_DIR_NAME);
+    std::fs::create_dir_all(&root).map_err(|_| {
+        WorkspaceError::Invalid("the agent workspace could not be created".to_string())
+    })?;
+    Ok(root)
+}
+
 /// Multi-root registry view: the active root plus every registered root.
 ///
 /// Storage decision (documented per task scope): the registry is the
@@ -622,8 +645,13 @@ mod tests {
     fn test_base() -> PathBuf {
         // The OS temp dir can itself sit under the blocklist (e.g. TEMP under
         // `C:\Users`); in that case scratch under the crate target dir, which
-        // lives outside every blocklist entry on dev machines and is ignored
-        // by version control.
+        // lives outside every blocklist entry when the checkout does (CI
+        // windows runners check out to `D:\a\...`). When even the checkout
+        // sits under a blocklisted root (e.g. a local worktree under
+        // `C:\Users\...\Temp`), fall back to a scratch dir under the first
+        // drive root whose candidate path passes the same guard the tests
+        // exercise — so the produced dirs are registrable workspace roots by
+        // the tests' own rules.
         let tmp = std::env::temp_dir();
         if !is_system_path(&tmp) && !is_drive_root(&tmp) {
             return tmp;
@@ -631,8 +659,35 @@ mod tests {
         let scratch = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("target")
             .join("nexora-test-tmp");
-        std::fs::create_dir_all(&scratch).expect("create test scratch base");
-        scratch.canonicalize().unwrap_or(scratch)
+        if !is_system_path(&scratch) && !is_drive_root(&scratch) {
+            std::fs::create_dir_all(&scratch).expect("create test scratch base");
+            return scratch.canonicalize().unwrap_or(scratch);
+        }
+        out_of_blocklist_base().unwrap_or(scratch)
+    }
+
+    /// Last-resort scratch base for checkouts that themselves sit under a
+    /// blocklisted root: `nexora-test-scratch-<pid>` under the first existing
+    /// drive root whose candidate passes `is_system_path`/`is_drive_root`.
+    /// `[None]` when no drive works — callers keep the previous base and the
+    /// tests then fail with the guard's own message, as before. Never
+    /// reached on unix or on CI (temp passes outright there, or the checkout
+    /// is outside `C:\Users`).
+    fn out_of_blocklist_base() -> Option<PathBuf> {
+        for letter in b'C'..=b'Z' {
+            let drive = PathBuf::from(format!("{}:\\", letter as char));
+            if !drive.is_dir() {
+                continue;
+            }
+            let candidate = drive.join(format!("nexora-test-scratch-{}", std::process::id()));
+            if std::fs::create_dir_all(&candidate).is_ok()
+                && !is_system_path(&candidate)
+                && !is_drive_root(&candidate)
+            {
+                return Some(candidate);
+            }
+        }
+        None
     }
 
     fn temp_dir() -> PathBuf {
@@ -1235,5 +1290,34 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn ensure_workspace_dir_creates_the_default_dir_and_reports_failures() {
+        // AC-202: the create-on-demand write lives here, not in the command
+        // bodies. A fresh base gets the `agent_workspace` child, created and
+        // returned.
+        let base = temp_dir();
+        let root = ensure_workspace_dir(&base).expect("default workspace dir created");
+        assert_eq!(
+            root,
+            base.join(WORKSPACE_DEFAULT_DIR_NAME),
+            "the dir is created under the given base"
+        );
+        assert!(root.is_dir(), "the returned path exists");
+        // Creating again is idempotent (create_dir_all semantics).
+        assert_eq!(ensure_workspace_dir(&base).expect("idempotent"), root);
+
+        // A base that cannot hold a directory (a file) fails with the fixed,
+        // secret-free message — the OS error is deliberately not echoed.
+        let file_base = temp_dir().join("not-a-dir");
+        std::fs::write(&file_base, b"x").expect("write probe file");
+        let err = ensure_workspace_dir(&file_base).expect_err("file base must fail");
+        assert_eq!(
+            err.to_string(),
+            "invalid workspace root: the agent workspace could not be created"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+        let _ = std::fs::remove_file(&file_base);
     }
 }

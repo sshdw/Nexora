@@ -327,4 +327,195 @@ mod tests {
         // `definitions()` stays the coding alias (frozen coding behavior).
         assert_eq!(ToolRegistry::definitions(), coding);
     }
+
+    // ---- Gemini wire-reduction pins (moved from the Gemini executor's test
+    // module, NEX-ARCH-002: the infrastructure tests may no longer import the
+    // application `ToolRegistry`, so the sync pins live beside the
+    // definitions they pin and drive the Gemini body builder through the
+    // crate-visible `generate_content_request`).
+
+    use crate::infrastructure::providers::gemini::{
+        generate_content_request, PROVIDER_NAME as GEMINI_PROVIDER_NAME,
+    };
+    use nexora_core::provider::{AiMessage, AiRequest, AiRole};
+
+    /// True when `key` appears anywhere inside `value` (objects or arrays).
+    fn contains_key_recursive(value: &serde_json::Value, key: &str) -> bool {
+        match value {
+            serde_json::Value::Object(map) => {
+                map.contains_key(key)
+                    || map.values().any(|inner| contains_key_recursive(inner, key))
+            }
+            serde_json::Value::Array(items) => {
+                items.iter().any(|inner| contains_key_recursive(inner, key))
+            }
+            _ => false,
+        }
+    }
+
+    /// An [`AiRequest`] carrying the four real workspace tool definitions.
+    fn tool_request(tools: Vec<ToolDefinition>) -> AiRequest {
+        AiRequest {
+            provider: GEMINI_PROVIDER_NAME.to_string(),
+            model: "gemini-3.6-flash".to_string(),
+            messages: std::sync::Arc::new(vec![AiMessage {
+                role: AiRole::User,
+                content: "Run the tests".to_string(),
+                attachments: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_result: None,
+            }]),
+            tools: std::sync::Arc::new(tools),
+            model_config: None,
+            request_timeout: None,
+        }
+    }
+
+    /// Test (a): the six real tool definitions, serialized through
+    /// `generate_content_request`, contain none of the JSON-Schema keys Gemini
+    /// rejects; `read_file`'s parameters equal the exact reduced shape; the
+    /// empty `required` of `list_directory` is dropped entirely.
+    #[test]
+    fn agent_tool_declarations_are_reduced_to_the_gemini_subset() {
+        let request = tool_request(ToolRegistry::definitions());
+        let body = generate_content_request(&request);
+        let value: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&body).expect("serialize")).expect("parse");
+        let declarations = value["tools"][0]["functionDeclarations"]
+            .as_array()
+            .expect("six function declarations");
+        assert_eq!(declarations.len(), 6, "all six tools are declared");
+
+        for declaration in declarations {
+            let parameters = &declaration["parameters"];
+            for forbidden in [
+                "additionalProperties",
+                "minimum",
+                "maximum",
+                "const",
+                "propertyNames",
+                "$schema",
+                "$defs",
+            ] {
+                assert!(
+                    !contains_key_recursive(parameters, forbidden),
+                    "declaration '{}' leaked forbidden key '{forbidden}': {parameters}",
+                    declaration["name"]
+                );
+            }
+        }
+
+        // read_file: type / description / properties / non-empty required
+        // survive unchanged; minimum and additionalProperties are gone.
+        let read_file = &declarations[1];
+        assert_eq!(read_file["name"], "read_file");
+        let expected = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to the file relative to workspace root"
+                },
+                "offset_lines": {
+                    "type": "integer",
+                    "description": "Line offset to start reading from (0-indexed)"
+                },
+                "limit_lines": {
+                    "type": "integer",
+                    "description": "Maximum number of lines to return"
+                }
+            },
+            "required": ["path"]
+        });
+        assert_eq!(
+            read_file["parameters"], expected,
+            "read_file parameters must equal the exact reduced shape"
+        );
+
+        // list_directory: `required: []` is dropped entirely (tools.rs:175).
+        let list_directory = &declarations[3];
+        assert_eq!(list_directory["name"], "list_directory");
+        assert!(
+            list_directory["parameters"].get("required").is_none(),
+            "list_directory must not carry a 'required' key"
+        );
+
+        // Non-empty required arrays of the other tools survive verbatim.
+        assert_eq!(
+            declarations[0]["parameters"]["required"],
+            serde_json::json!(["command"]),
+            "execute_command keeps its required array"
+        );
+        assert_eq!(
+            declarations[2]["parameters"]["required"],
+            serde_json::json!(["path", "content"]),
+            "write_file keeps its required array"
+        );
+        assert_eq!(
+            declarations[4]["parameters"]["required"],
+            serde_json::json!(["path", "new_text"]),
+            "edit_file keeps its required array"
+        );
+        assert_eq!(declarations[4]["name"], "edit_file");
+        assert_eq!(
+            declarations[5]["parameters"]["required"],
+            serde_json::json!(["pattern"]),
+            "search_files keeps its required array"
+        );
+        assert_eq!(declarations[5]["name"], "search_files");
+    }
+
+    /// Test (b): the reduction is a Gemini wire adapter only. The shared
+    /// `AiRequest.tools` payload — the exact value the OpenAI-compatible
+    /// (`chat_completion_request`, `openai.rs:190`) and Anthropic-native
+    /// (`anthropic_request`, `anthropic.rs:235`) body builders serialize
+    /// verbatim into their `tools` arrays — keeps the full JSON Schema, and
+    /// `generate_content_request` never mutates it.
+    #[test]
+    fn other_providers_keep_the_schema_verbatim() {
+        let definitions = ToolRegistry::definitions();
+        let shared = definitions.clone();
+
+        // The shared source of truth still carries the keys Gemini rejects;
+        // OpenAI and Anthropic serialize exactly this value.
+        for definition in &shared {
+            assert!(
+                definition.parameters.get("additionalProperties").is_some(),
+                "shared definition '{}' lost additionalProperties",
+                definition.name
+            );
+        }
+        let read_file = &shared[1];
+        assert_eq!(read_file.name, "read_file");
+        assert!(
+            contains_key_recursive(&read_file.parameters, "minimum"),
+            "shared read_file schema lost its 'minimum' constraints"
+        );
+
+        // Driving the definitions through the Gemini body builder leaves the
+        // shared value untouched, and the reduction appears only in the
+        // Gemini wire body (a passthrough would leak the keys below).
+        let request = tool_request(definitions);
+        let body = generate_content_request(&request);
+        let value: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&body).expect("serialize")).expect("parse");
+        let declarations = value["tools"][0]["functionDeclarations"]
+            .as_array()
+            .expect("declarations");
+        for declaration in declarations {
+            assert!(
+                !contains_key_recursive(&declaration["parameters"], "additionalProperties"),
+                "gemini body for '{}' still carries additionalProperties: {}",
+                declaration["name"],
+                declaration["parameters"]
+            );
+        }
+        for definition in &shared {
+            assert!(
+                definition.parameters.get("additionalProperties").is_some(),
+                "shared definition '{}' was mutated by the gemini builder",
+                definition.name
+            );
+        }
+    }
 }

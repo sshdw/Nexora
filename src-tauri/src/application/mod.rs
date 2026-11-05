@@ -35,6 +35,7 @@ pub mod export;
 pub mod flags;
 pub mod github;
 pub mod import;
+pub mod model_catalog;
 pub mod privacy;
 pub mod project_dir;
 pub mod prompts;

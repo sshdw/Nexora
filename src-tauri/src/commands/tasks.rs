@@ -61,7 +61,7 @@ use crate::application::agent::service::{self, AgentRunHost};
 use crate::application::agent::tasks::{
     self, TaskError, TaskEvent, TaskRegistry, TaskRunConfig, TaskService,
 };
-use crate::application::execution::{ExecutorRegistry, RequestExecutionService};
+use crate::application::execution::{resolve_executor, RequestExecutionService};
 use crate::infrastructure::database::Database;
 use crate::infrastructure::repository::agent_tasks::{AgentTask, AgentTaskStep, TaskLock};
 
@@ -184,15 +184,13 @@ pub(crate) async fn start_task_run(app: AppHandle, task_id: i64) -> Result<(), C
 
         // 3. Resolve the provider executor (no fallback; same registry plain
         //    chat and agent runs use).
-        let executor = ExecutorRegistry::new()
-            .resolve_owned(&provider)
-            .ok_or_else(|| {
-                CommandError::from(
-                    crate::application::execution::RequestError::ExecutorUnavailable {
-                        name: provider.clone(),
-                    },
-                )
-            })?;
+        let executor = resolve_executor(&provider).ok_or_else(|| {
+            CommandError::from(
+                crate::application::execution::RequestError::ExecutorUnavailable {
+                    name: provider.clone(),
+                },
+            )
+        })?;
 
         let root: PathBuf = super::agent::workspace_root(&handle, db_ref)?;
         let emitter = handle_state_emitter(&handle);

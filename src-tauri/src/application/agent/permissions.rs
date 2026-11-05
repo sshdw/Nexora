@@ -33,12 +33,17 @@
 //! requires [`confirm_group_scope`] — the caller must echo the exact pending
 //! group scope back, proving the whitelisted scope was shown, and the shell
 //! never persists.
-
-use rusqlite::params;
-use serde::Serialize;
+//!
+//! Persistence (NEX-ARCH-003 / AC-103): the `permission_rules` SQL lives in
+//! [`crate::infrastructure::repository::permission_rules`] with the sibling
+//! repositories; this module owns the business rules (matching, specificity,
+//! confirmation policy) and reaches the rows only through that repository.
 
 use crate::application::agent::approval::RiskClass;
+use crate::application::agent::service::{AgentRunRegistry, ResolveOutcome};
 use crate::infrastructure::database::{Database, DatabaseError};
+
+pub(crate) use crate::infrastructure::repository::permission_rules::{PermissionRule, RuleEffect};
 
 /// Run preset (T5): which tool surface a run may use.
 ///
@@ -65,48 +70,6 @@ impl RunPreset {
             Self::Document => "document",
         }
     }
-}
-
-/// Effect of a permission rule.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum RuleEffect {
-    Allow,
-    Ask,
-    Deny,
-}
-
-impl RuleEffect {
-    /// Parse the column value.
-    fn from_column(value: &str) -> Option<Self> {
-        match value {
-            "allow" => Some(Self::Allow),
-            "ask" => Some(Self::Ask),
-            "deny" => Some(Self::Deny),
-            _ => None,
-        }
-    }
-
-    /// Column value.
-    #[must_use]
-    pub(crate) fn as_column(self) -> &'static str {
-        match self {
-            Self::Allow => "allow",
-            Self::Ask => "ask",
-            Self::Deny => "deny",
-        }
-    }
-}
-
-/// One `permission_rules` row.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct PermissionRule {
-    pub id: i64,
-    pub preset: String,
-    pub tool_pattern: String,
-    pub path_pattern: Option<String>,
-    pub effect: RuleEffect,
-    pub priority: i64,
 }
 
 /// Raw rule outcome (before mode overrides).
@@ -397,41 +360,17 @@ pub(crate) fn is_known_tool(name: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Persistence helpers (used by the commands layer + service bridge)
+// Persistence helpers (used by the commands layer + service bridge).
+//
+// The SQL itself lives in the repository
+// ([`crate::infrastructure::repository::permission_rules`], AC-103); these are
+// the application-layer entry points the IPC commands and the runner call —
+// the commands layer never touches the repository directly.
 // ---------------------------------------------------------------------------
-
-fn row_to_rule(row: &rusqlite::Row<'_>) -> rusqlite::Result<PermissionRule> {
-    let effect_text: String = row.get(4)?;
-    let effect = RuleEffect::from_column(&effect_text).ok_or_else(|| {
-        rusqlite::Error::FromSqlConversionFailure(
-            4,
-            rusqlite::types::Type::Text,
-            format!("unknown effect '{effect_text}'").into(),
-        )
-    })?;
-    Ok(PermissionRule {
-        id: row.get(0)?,
-        preset: row.get(1)?,
-        tool_pattern: row.get(2)?,
-        path_pattern: row.get(3)?,
-        effect,
-        priority: row.get(5)?,
-    })
-}
 
 /// List all rules ordered `priority ASC, id ASC`.
 pub(crate) fn list_rules(db: &Database) -> Result<Vec<PermissionRule>, DatabaseError> {
-    let conn = db.lock()?;
-    let mut stmt = conn.prepare(
-        "SELECT id, preset, tool_pattern, path_pattern, effect, priority \
-         FROM permission_rules ORDER BY priority ASC, id ASC",
-    )?;
-    let rows = stmt.query_map([], row_to_rule)?;
-    let mut rules = Vec::new();
-    for row in rows {
-        rules.push(row?);
-    }
-    Ok(rules)
+    crate::infrastructure::repository::permission_rules::PermissionRulesRepository::new(db).list()
 }
 
 /// Insert one rule row. Returns the new id.
@@ -443,26 +382,19 @@ pub(crate) fn insert_rule(
     effect: RuleEffect,
     priority: i64,
 ) -> Result<i64, DatabaseError> {
-    let conn = db.lock()?;
-    conn.execute(
-        "INSERT INTO permission_rules (preset, tool_pattern, path_pattern, effect, priority) \
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![
-            preset,
-            tool_pattern,
-            path_pattern,
-            effect.as_column(),
-            priority
-        ],
-    )?;
-    Ok(conn.last_insert_rowid())
+    crate::infrastructure::repository::permission_rules::PermissionRulesRepository::new(db).insert(
+        preset,
+        tool_pattern,
+        path_pattern,
+        effect,
+        priority,
+    )
 }
 
 /// Delete one rule row. Returns `true` when a row was removed.
 pub(crate) fn delete_rule(db: &Database, id: i64) -> Result<bool, DatabaseError> {
-    let conn = db.lock()?;
-    let removed = conn.execute("DELETE FROM permission_rules WHERE id = ?1", params![id])?;
-    Ok(removed > 0)
+    crate::infrastructure::repository::permission_rules::PermissionRulesRepository::new(db)
+        .delete(id)
 }
 
 // ---------------------------------------------------------------------------
@@ -581,6 +513,113 @@ pub(crate) fn insert_group_allow_rule(db: &Database, scope: &ConfirmedGroupScope
         200,
     )
     .is_ok()
+}
+
+// ---------------------------------------------------------------------------
+// Approval resolution: scope decision + persistence (AC-202)
+// ---------------------------------------------------------------------------
+
+/// Parsed `scope` argument for [`resolve_approval`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ApprovalScope<'a> {
+    /// One call only (default).
+    Single,
+    /// Session-sticky group verdict for this run (persists nothing).
+    Group,
+    /// Sticky verdict plus a persistent `allow` rule — only when `scope`
+    /// echoes the pending group key exactly (NEX-AGENT-023).
+    ConfirmGroup { scope: &'a str },
+}
+
+/// Parse the `scope` argument: `None`/`"single"`, `"group"`, or
+/// `"group:confirm:<exact-group-key>"`. [`None`] for anything else — a bare
+/// "approve group" intent never parses as a confirmation, so it can never
+/// persist a rule. Secret-free fixed vocabulary (caller input is never echoed
+/// back; a confirmation mismatch reports the server-derived expected scope).
+#[must_use]
+pub(crate) fn parse_approval_scope(scope: Option<&str>) -> Option<ApprovalScope<'_>> {
+    match scope {
+        None | Some("single") => Some(ApprovalScope::Single),
+        Some("group") => Some(ApprovalScope::Group),
+        Some(rest) => match rest.strip_prefix("group:confirm:") {
+            Some(echo) if !echo.is_empty() => Some(ApprovalScope::ConfirmGroup { scope: echo }),
+            _ => None,
+        },
+    }
+}
+
+/// Why resolving a parked approval failed. Fixed, secret-free vocabulary:
+/// the IPC layer maps these onto error kinds and never echoes caller input
+/// (a confirmation mismatch carries the server-derived expected scope).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ApprovalResolveError {
+    /// The `scope` argument is not one of the accepted vocabulary values.
+    ScopeInvalid,
+    /// The scope confirmation was rejected (mismatch / no pending group /
+    /// shell).
+    Group(GroupScopeError),
+    /// No active run carries the requested id.
+    RunNotActive,
+    /// The run has no pending approval for the requested call.
+    NoPendingApproval,
+}
+
+/// Resolve a parked approval end to end (AC-202): parse the scope, validate a
+/// confirmation against a read-only peek BEFORE the park is consumed (a
+/// mismatch fails closed with the park intact and persists nothing), map the
+/// sticky verdict, resolve through the registry, and — only on a resolved
+/// `allow` with an explicit scope confirmation — persist the group-allow
+/// rule. Best-effort persistence: a duplicate row never fails the
+/// resolution, because the session-sticky verdict already governs this run.
+///
+/// The IPC layer owns only the error mapping; the scope→persistence decision
+/// lives here, next to [`confirm_group_scope`] and [`insert_group_allow_rule`].
+pub(crate) fn resolve_approval(
+    registry: &AgentRunRegistry,
+    db: &Database,
+    run_id: i64,
+    call_id: &str,
+    approved: bool,
+    scope: Option<&str>,
+) -> Result<(), ApprovalResolveError> {
+    let parsed = parse_approval_scope(scope).ok_or(ApprovalResolveError::ScopeInvalid)?;
+    // NEX-AGENT-023: validate the scope confirmation against a read-only
+    // peek BEFORE the park is consumed, so a mismatch fails closed with the
+    // park intact and persists nothing.
+    let confirmed = match &parsed {
+        ApprovalScope::ConfirmGroup { scope: echo } => {
+            let Some((tool_name, group_key)) = registry.pending_scope_info(run_id, call_id) else {
+                return Err(ApprovalResolveError::NoPendingApproval);
+            };
+            Some(
+                confirm_group_scope(&tool_name, group_key.as_deref(), echo)
+                    .map_err(ApprovalResolveError::Group)?,
+            )
+        }
+        ApprovalScope::Single | ApprovalScope::Group => None,
+    };
+    let sticky = !matches!(parsed, ApprovalScope::Single);
+    let (outcome, _) = registry.resolve_with_scope(
+        run_id,
+        call_id,
+        approved,
+        if sticky { Some("group") } else { None },
+    );
+    match outcome {
+        ResolveOutcome::RunNotActive => Err(ApprovalResolveError::RunNotActive),
+        ResolveOutcome::NoPendingApproval => Err(ApprovalResolveError::NoPendingApproval),
+        ResolveOutcome::Resolved => {
+            // Persistence only after explicit scope confirmation (validated
+            // above): best-effort insert, so a duplicate row never fails the
+            // resolution — the session-sticky verdict already governs this run.
+            if approved {
+                if let Some(scope) = confirmed {
+                    let _ = insert_group_allow_rule(db, &scope);
+                }
+            }
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1119,5 +1158,174 @@ mod tests {
             store.decide("coding", "write_file", Some("docs"), RiskClass::Mutating),
             Some(PermissionOutcome::Allow { .. })
         ));
+    }
+
+    #[test]
+    fn parse_approval_scope_accepts_only_single_group_and_confirm() {
+        // `None`/`"single"` resolve one call; `"group"` is sticky-only.
+        assert_eq!(parse_approval_scope(None), Some(ApprovalScope::Single));
+        assert_eq!(
+            parse_approval_scope(Some("single")),
+            Some(ApprovalScope::Single)
+        );
+        assert_eq!(
+            parse_approval_scope(Some("group")),
+            Some(ApprovalScope::Group)
+        );
+        // Confirmation carries the exact scope to whitelist.
+        assert_eq!(
+            parse_approval_scope(Some("group:confirm:coding:write_file:docs")),
+            Some(ApprovalScope::ConfirmGroup {
+                scope: "coding:write_file:docs"
+            })
+        );
+        // Anything else is rejected — a bare "approve group" intent never
+        // parses as a confirmation, so it can never persist a rule.
+        for bad in [
+            "",
+            "all",
+            "GROUP",
+            "group:confirm:",
+            "group:confirm",
+            "group:*",
+        ] {
+            assert!(
+                parse_approval_scope(Some(bad)).is_none(),
+                "must reject {bad:?}"
+            );
+        }
+    }
+
+    /// `resolve_approval` fixture: run 42 registered under a supervised gate
+    /// plus a fresh in-memory rules database.
+    fn approval_fixture() -> (
+        AgentRunRegistry,
+        crate::application::agent::approval::ApprovalGate,
+        Database,
+    ) {
+        use crate::application::agent::approval::ApprovalGate;
+        use crate::application::agent::control::RunControl;
+        use crate::application::agent::registry::ActiveAgentRun;
+        let registry = AgentRunRegistry::default();
+        let gate = ApprovalGate::new(crate::application::agent::approval::AutonomyMode::Supervised);
+        registry.register(
+            42,
+            ActiveAgentRun {
+                conversation_id: 7,
+                control: RunControl::new(),
+                gate: gate.clone(),
+            },
+        );
+        let db = crate::infrastructure::database::in_memory_database();
+        (registry, gate, db)
+    }
+
+    /// Park one `write_file` call in the `coding:write_file:docs` group.
+    fn park_pending(gate: &crate::application::agent::approval::ApprovalGate, call_id: &str) {
+        use crate::application::execution::ToolCall;
+        gate.prepare_pending_with_group(
+            &ToolCall {
+                id: call_id.to_string(),
+                name: "write_file".to_string(),
+                arguments: "{}".to_string(),
+                thought_signature: None,
+            },
+            Some("coding:write_file:docs".to_string()),
+        );
+    }
+
+    #[test]
+    fn resolve_approval_persists_only_on_confirmed_allow() {
+        let (registry, gate, db) = approval_fixture();
+
+        // Bare group scope: sticky verdict resolves the park, persists nothing.
+        park_pending(&gate, "call-1");
+        resolve_approval(&registry, &db, 42, "call-1", true, Some("group"))
+            .expect("group scope resolves");
+        assert!(
+            !list_rules(&db)
+                .expect("list rules")
+                .iter()
+                .any(|rule| rule.tool_pattern == "write_file"),
+            "a bare group verdict must not persist a rule"
+        );
+
+        // A wrong echo fails closed: classified mismatch, park intact, no row.
+        park_pending(&gate, "call-2");
+        assert_eq!(
+            resolve_approval(
+                &registry,
+                &db,
+                42,
+                "call-2",
+                true,
+                Some("group:confirm:coding:write_file:other")
+            ),
+            Err(ApprovalResolveError::Group(
+                GroupScopeError::ScopeMismatch {
+                    expected: "coding:write_file:docs".to_string()
+                }
+            ))
+        );
+        assert!(gate.has_pending_for("call-2"), "mismatch keeps the park");
+        assert!(
+            !list_rules(&db)
+                .expect("list rules")
+                .iter()
+                .any(|rule| rule.tool_pattern == "write_file"),
+            "a failed confirmation must persist nothing"
+        );
+
+        // The exact echo resolves and persists the priority-200 allow rule.
+        resolve_approval(
+            &registry,
+            &db,
+            42,
+            "call-2",
+            true,
+            Some("group:confirm:coding:write_file:docs"),
+        )
+        .expect("confirmed scope resolves and persists");
+        let persisted = list_rules(&db)
+            .expect("list rules")
+            .into_iter()
+            .find(|rule| rule.tool_pattern == "write_file")
+            .expect("write_file allow persisted");
+        assert_eq!(persisted.effect, RuleEffect::Allow);
+        assert_eq!(persisted.priority, 200);
+    }
+
+    #[test]
+    fn resolve_approval_denials_and_rejections_persist_nothing() {
+        let (registry, gate, db) = approval_fixture();
+
+        // A denial never persists, even with a valid echo.
+        park_pending(&gate, "call-1");
+        resolve_approval(
+            &registry,
+            &db,
+            42,
+            "call-1",
+            false,
+            Some("group:confirm:coding:write_file:docs"),
+        )
+        .expect("denial resolves");
+        assert!(
+            !list_rules(&db)
+                .expect("list rules")
+                .iter()
+                .any(|rule| rule.tool_pattern == "write_file"),
+            "a denied confirmation must not add a rule"
+        );
+
+        // Unknown run and unknown vocabulary classify without touching rows.
+        assert_eq!(
+            resolve_approval(&registry, &db, 9999, "call-1", true, Some("group")),
+            Err(ApprovalResolveError::RunNotActive)
+        );
+        assert_eq!(
+            resolve_approval(&registry, &db, 42, "call-1", true, Some("approve-all")),
+            Err(ApprovalResolveError::ScopeInvalid)
+        );
     }
 }

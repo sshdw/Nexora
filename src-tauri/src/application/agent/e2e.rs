@@ -1845,7 +1845,7 @@ fn e2e_real_provider_smoke() {
 
     // Resolve executor via production registry
     let executor =
-        crate::application::execution::ExecutorRegistry::new().resolve_owned(provider_guess);
+        crate::infrastructure::providers::registry::provider_executors().resolve(provider_guess);
     if executor.is_none() {
         // Unknown provider: clean classified error, no panic.
         return;

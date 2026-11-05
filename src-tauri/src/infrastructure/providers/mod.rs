@@ -5,14 +5,17 @@
 //! system integration. It exposes the OS secure keyring credential store
 //! ([`credentials`], FR-014) and the concrete provider executors
 //! ([`openai`], [`anthropic`], [`gemini`]) behind the provider-independent
-//! [`ProviderExecutor`] boundary (ARCHITECTURE.md §7). The supported provider
-//! definitions and hardcoded model lists are aggregated here for the UI via
-//! [`supported_providers`] (DATABASE.md §7.5).
+//! `nexora_core::provider::ProviderExecutor` boundary (ARCHITECTURE.md §7;
+//! NEX-ARCH-002). The supported provider definitions and hardcoded model
+//! lists are aggregated here for the UI via [`supported_providers`]
+//! (DATABASE.md §7.5), and [`registry`] wires the concrete executors into the
+//! process-wide resolver installed by the composition root.
 
 pub mod anthropic;
 pub mod credentials;
 pub mod gemini;
 pub mod openai;
+pub mod registry;
 pub mod transport;
 
 use serde::Serialize;
@@ -57,7 +60,7 @@ pub(crate) fn supported_providers() -> Vec<SupportedProvider> {
 /// `opencode_zen`, `openai_compat`) ride the shared OpenAI-compatible path,
 /// so they resolve through the native `OpenAI` table. Unknown providers and
 /// unknown model IDs yield `None` — never a guessed rate; callers fall back
-/// to the policy default in `application::agent::pricing`.
+/// to their own policy default (the application pricing policy).
 #[must_use]
 pub(crate) fn rate_for_model(provider: &str, model: &str) -> Option<(u64, u64)> {
     match provider {

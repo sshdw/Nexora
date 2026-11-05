@@ -35,12 +35,20 @@
 //! - [`storage`] — the single `SQLite` bootstrap (pragmas, migrations, poisoned
 //!   lock recovery), the app-data resolver both shells use, and the shared
 //!   repository foundation plus the run/task repositories (issue #161).
+//! - [`provider`] — the provider-independent AI execution boundary
+//!   (NEX-ARCH-002 / AC-101): request/response data, the [`provider::ProviderExecutor`]
+//!   contract, the executor-resolution and credential seams, the classified
+//!   [`provider::ExecutorError`], and the bounded retry policy. Lifted out of
+//!   the desktop adapter so `application` and `infrastructure` stop importing
+//!   each other's provider types; concrete executors, HTTP transport, the
+//!   keyring, model catalogs, and pricing stay with their adapters.
 //!
-//! **Not** contained: business logic. Provider registries, routing-profile and
-//! MCP-server parsing, agent execution, storage, and the database all stay with
-//! their current owners. Where a value domain is defined by this build rather
-//! than by a static rule, [`config::ConfigRegistry`] takes it as an injected
-//! predicate instead of importing it.
+//! **Not** contained: business logic. Concrete provider registries (which
+//! executor backs which name), routing-profile and MCP-server parsing, agent
+//! execution, and the database all stay with their current owners. Where a
+//! value domain is defined by this build rather than by a static rule,
+//! [`config::ConfigRegistry`] takes it as an injected predicate instead of
+//! importing it.
 //!
 //! ## Dependency rule (enforced, not aspirational)
 //!
@@ -61,8 +69,10 @@
 
 pub mod config;
 pub mod error;
+pub mod provider;
 pub mod storage;
 pub mod version;
 
 pub use error::{CoreError, CoreErrorKind, ExitCode, EXIT_CODE_TABLE_VERSION};
+pub use provider::{AiRequest, AiResponse, CancellationToken, ExecutorError, ProviderExecutor};
 pub use version::{ManifestVersions, MAX_VERSION_CHARS};
