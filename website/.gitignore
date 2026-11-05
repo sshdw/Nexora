@@ -1,0 +1,14 @@
+node_modules/
+.next/
+out/
+dist/
+*.log
+.env
+.env.local
+.DS_Store
+test-results/
+playwright-report/
+coverage/
+
+# Next.js build cache
+tsconfig.tsbuildinfo
