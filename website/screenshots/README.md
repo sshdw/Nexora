@@ -1,24 +1,64 @@
-## Screenshot index — Phase 1 foundation
-| file | md5 | size | viewport | theme | what I saw |
-|------|-----|------|----------|-------|------------|
-| 00-light-desktop-1440.png | a404d54ae74dcd2ca7dfe2319ea2ed5f | 27818 B | desktop-1440 | light | Nexora home page shell (navbar + home content + footer), light theme, desktop-1440 viewport |
-| 01-light-desktop-1024.png | 3aab00a6fe46b2df0065de34c357a910 | 25878 B | desktop-1024 | light | Nexora home page shell (navbar + home content + footer), light theme, desktop-1024 viewport |
-| 02-light-tablet-768.png | 29024ba537000f1d6d5e520f16dc6f28 | 25592 B | tablet-768 | light | Nexora home page shell (navbar + home content + footer), light theme, tablet-768 viewport |
-| 03-light-mobile-390.png | 42b5c7ae10626c990c208170bb10e162 | 18293 B | mobile-390 | light | Nexora home page shell (navbar + home content + footer), light theme, mobile-390 viewport |
-| 04-light-mobile-360.png | bcf4ca35c49d3ffa5b67a38c3de27c9e | 17836 B | mobile-360 | light | Nexora home page shell (navbar + home content + footer), light theme, mobile-360 viewport |
-| 05-dark-desktop-1440.png | e4f49432b2c11484ad096cdbd47ba8c0 | 27814 B | desktop-1440 | dark | Nexora home page shell (navbar + home content + footer), dark theme, desktop-1440 viewport |
-| 06-dark-desktop-1024.png | 79e797fc3966c7e8fea83ef28f3541e8 | 25828 B | desktop-1024 | dark | Nexora home page shell (navbar + home content + footer), dark theme, desktop-1024 viewport |
-| 07-dark-tablet-768.png | 1e0d88ff74b3b5755a615d3609c4bd65 | 25762 B | tablet-768 | dark | Nexora home page shell (navbar + home content + footer), dark theme, tablet-768 viewport |
-| 08-dark-mobile-390.png | c01a24d69357eb918964b3e677631719 | 18550 B | mobile-390 | dark | Nexora home page shell (navbar + home content + footer), dark theme, mobile-390 viewport |
-| 09-dark-mobile-360.png | dfda34065aae714611a35d77be5830fd | 17989 B | mobile-360 | dark | Nexora home page shell (navbar + home content + footer), dark theme, mobile-360 viewport |
-| 16-light-desktop-1440-security.png | 88b92a89afd543d1b66311cb7aaf6438 | 34469 B | desktop-1440-security | light | Nexora security page shell (navbar + security content + footer), light theme, desktop-1440-security viewport |
-| 17-light-desktop-1440-download.png | 4cedcf6920f214f3ae4d171c8cc6f828 | 31353 B | desktop-1440-download | light | Nexora download page shell (navbar + download content + footer), light theme, desktop-1440-download viewport |
-| 18-light-desktop-1440-docs.png | d870d26291be7b9d3e35012a226c0944 | 24648 B | desktop-1440-docs | light | Nexora docs page shell (navbar + docs content + footer), light theme, desktop-1440-docs viewport |
-| 19-light-desktop-1440-changelog.png | 7df49c75714e60501adc2f534685efee | 27378 B | desktop-1440-changelog | light | Nexora changelog page shell (navbar + changelog content + footer), light theme, desktop-1440-changelog viewport |
-| 20-light-desktop-1440-privacy.png | 90cf0e5b35458eac5af38cfaab9bf3e3 | 26580 B | desktop-1440-privacy | light | Nexora privacy page shell (navbar + privacy content + footer), light theme, desktop-1440-privacy viewport |
-| 21-dark-desktop-1440-security.png | 4da131bd13be092cafc544aa58b4f566 | 34344 B | desktop-1440-security | dark | Nexora security page shell (navbar + security content + footer), dark theme, desktop-1440-security viewport |
-| 22-dark-desktop-1440-download.png | 7c341c7fa68c54dcba7d8aeff099c092 | 31310 B | desktop-1440-download | dark | Nexora download page shell (navbar + download content + footer), dark theme, desktop-1440-download viewport |
-| 23-dark-desktop-1440-docs.png | 136218172e45200cb137be98d2c3c350 | 24740 B | desktop-1440-docs | dark | Nexora docs page shell (navbar + docs content + footer), dark theme, desktop-1440-docs viewport |
-| 24-dark-desktop-1440-changelog.png | 3cd664b9776e76921bf0253fe27837f4 | 27337 B | desktop-1440-changelog | dark | Nexora changelog page shell (navbar + changelog content + footer), dark theme, desktop-1440-changelog viewport |
-| 25-dark-desktop-1440-privacy.png | 00333a298ef6c530dd728671f0bfba1e | 26622 B | desktop-1440-privacy | dark | Nexora privacy page shell (navbar + privacy content + footer), dark theme, desktop-1440-privacy viewport |
-| 99-light-security-desktop-1440.png | a765d871c1980a3549c0d46ad9138f02 | 40562 B | desktop-1440 | light | Nexora security page shell (updated accurate approval copy), light theme, desktop-1440 viewport |
+## Screenshot index — Phases 3-6 (Security, Privacy, Docs, Changelog, Download)
+
+| file | md5 | colors | viewport | theme | what I saw |
+|------|-----|--------|----------|-------|------------|
+| 00-light-desktop-1440.png | 7ebf30510ffbe317dd833a26bb29612e | >900 | desktop-1440 | light | Nexora home page (navbar + content + footer), light theme, desktop-1440 viewport |
+| 01-light-desktop-1024.png | c5e082492270737bdde6a7deaef283ec | >900 | desktop-1024 | light | Nexora home page (navbar + content + footer), light theme, desktop-1024 viewport |
+| 02-light-tablet-768.png | 984e16adcaf507d3d9782c1cf7bd7bb8 | >900 | tablet-768 | light | Nexora home page (navbar + content + footer), light theme, tablet-768 viewport |
+| 03-light-mobile-390.png | af0b9f91a1eca4ca3f6349c3d39c8685 | >900 | mobile-390 | light | Nexora home page (navbar + content + footer), light theme, mobile-390 viewport |
+| 04-light-mobile-360.png | dea49a1a1f69c45a6747cb91e59ac1b3 | >900 | mobile-360 | light | Nexora home page (navbar + content + footer), light theme, mobile-360 viewport |
+| 05-light-desktop-1440-security.png | b25c718a497c8d907a52475cb677de40 | >900 | desktop-1440 | light | Nexora security page (navbar + content + footer), light theme, desktop-1440 viewport |
+| 06-light-desktop-1024-security.png | 46d6679ff48fd718caf43f4f6aa611ea | >900 | desktop-1024 | light | Nexora security page (navbar + content + footer), light theme, desktop-1024 viewport |
+| 07-light-tablet-768-security.png | 37d96e3dc7bd7ba524276418605322ed | >900 | tablet-768 | light | Nexora security page (navbar + content + footer), light theme, tablet-768 viewport |
+| 08-light-mobile-390-security.png | e1556c02972b57607b8babaf7e6dd66a | >900 | mobile-390 | light | Nexora security page (navbar + content + footer), light theme, mobile-390 viewport |
+| 09-light-mobile-360-security.png | bbf097abcd2d848082e5a062bc9d1bba | >900 | mobile-360 | light | Nexora security page (navbar + content + footer), light theme, mobile-360 viewport |
+| 10-light-desktop-1440-privacy.png | 45722588595f814367c01e24818df090 | >900 | desktop-1440 | light | Nexora privacy page (navbar + content + footer), light theme, desktop-1440 viewport |
+| 11-light-desktop-1024-privacy.png | eb2c2f0e60fd56a896c00386bc087ce1 | >900 | desktop-1024 | light | Nexora privacy page (navbar + content + footer), light theme, desktop-1024 viewport |
+| 12-light-tablet-768-privacy.png | 9f7ce267a8156e5a559bf7612b1cc2e6 | >900 | tablet-768 | light | Nexora privacy page (navbar + content + footer), light theme, tablet-768 viewport |
+| 13-light-mobile-390-privacy.png | 6ae7e8deb09c35ff1dad20463dce98af | >900 | mobile-390 | light | Nexora privacy page (navbar + content + footer), light theme, mobile-390 viewport |
+| 14-light-mobile-360-privacy.png | 8f87af4db995719e5e362e1897ab01b5 | >900 | mobile-360 | light | Nexora privacy page (navbar + content + footer), light theme, mobile-360 viewport |
+| 15-light-desktop-1440-download.png | 22f592295228ca2b2606f22af378d376 | >900 | desktop-1440 | light | Nexora download page (navbar + content + footer), light theme, desktop-1440 viewport |
+| 16-light-desktop-1024-download.png | 1bab75fcc92b8c6841bbe0ae665358fa | >900 | desktop-1024 | light | Nexora download page (navbar + content + footer), light theme, desktop-1024 viewport |
+| 17-light-tablet-768-download.png | cea59295495a1a3512430249b67fd02d | >900 | tablet-768 | light | Nexora download page (navbar + content + footer), light theme, tablet-768 viewport |
+| 18-light-mobile-390-download.png | 8e9b343a35f81e5e7295f8d928b77c7e | >900 | mobile-390 | light | Nexora download page (navbar + content + footer), light theme, mobile-390 viewport |
+| 19-light-mobile-360-download.png | 24d0b2d4f993edc70928567ae25333dc | >900 | mobile-360 | light | Nexora download page (navbar + content + footer), light theme, mobile-360 viewport |
+| 20-light-desktop-1440-docs.png | 4e63617383ce191363ff11295288a026 | >900 | desktop-1440 | light | Nexora docs page (navbar + content + footer), light theme, desktop-1440 viewport |
+| 21-light-desktop-1024-docs.png | af8954702643c7248a61e5728298b9d4 | >900 | desktop-1024 | light | Nexora docs page (navbar + content + footer), light theme, desktop-1024 viewport |
+| 22-light-tablet-768-docs.png | 7435bd7f52896dbf922fee6e3e9cba72 | >900 | tablet-768 | light | Nexora docs page (navbar + content + footer), light theme, tablet-768 viewport |
+| 23-light-mobile-390-docs.png | d39c56bd2df165f0df407f9645b62fc6 | >900 | mobile-390 | light | Nexora docs page (navbar + content + footer), light theme, mobile-390 viewport |
+| 24-light-mobile-360-docs.png | 8b0945a13f5237d1af41610a0dfb365e | >900 | mobile-360 | light | Nexora docs page (navbar + content + footer), light theme, mobile-360 viewport |
+| 25-light-desktop-1440-changelog.png | 4cb59da9d7b327ab8b74ec25bc821e59 | >900 | desktop-1440 | light | Nexora changelog page (navbar + content + footer), light theme, desktop-1440 viewport |
+| 26-light-desktop-1024-changelog.png | 1fa60a3c2eff9d5e9aa63e6e03184459 | >900 | desktop-1024 | light | Nexora changelog page (navbar + content + footer), light theme, desktop-1024 viewport |
+| 27-light-tablet-768-changelog.png | 5510157253c0df534542ed77f3c52cc0 | >900 | tablet-768 | light | Nexora changelog page (navbar + content + footer), light theme, tablet-768 viewport |
+| 28-light-mobile-390-changelog.png | c8f09f44df30f57366d3616fd20b5e7e | >900 | mobile-390 | light | Nexora changelog page (navbar + content + footer), light theme, mobile-390 viewport |
+| 29-light-mobile-360-changelog.png | 5352eb7599b8d1c53c0d17ff4d8cd7b0 | >900 | mobile-360 | light | Nexora changelog page (navbar + content + footer), light theme, mobile-360 viewport |
+| 30-dark-desktop-1440.png | e06eaaf5c09d7452c215ef603a248fc3 | >900 | desktop-1440 | dark | Nexora home page (navbar + content + footer), dark theme, desktop-1440 viewport |
+| 31-dark-desktop-1024.png | 045a5a13e5e282f213446e9545f346f4 | >900 | desktop-1024 | dark | Nexora home page (navbar + content + footer), dark theme, desktop-1024 viewport |
+| 32-dark-tablet-768.png | 5e816d5acd2dfef3a3ca9e16cda6d8d6 | >900 | tablet-768 | dark | Nexora home page (navbar + content + footer), dark theme, tablet-768 viewport |
+| 33-dark-mobile-390.png | b66ab06e09dcced5164db67212448893 | >900 | mobile-390 | dark | Nexora home page (navbar + content + footer), dark theme, mobile-390 viewport |
+| 34-dark-mobile-360.png | f2d7ab70dac343b9013c8a61a1d1591c | >900 | mobile-360 | dark | Nexora home page (navbar + content + footer), dark theme, mobile-360 viewport |
+| 35-dark-desktop-1440-security.png | a521bc9b356fea130a59ddd44f5d512a | >900 | desktop-1440 | dark | Nexora security page (navbar + content + footer), dark theme, desktop-1440 viewport |
+| 36-dark-desktop-1024-security.png | 893bcea535dc8731078fe677e3d807f0 | >900 | desktop-1024 | dark | Nexora security page (navbar + content + footer), dark theme, desktop-1024 viewport |
+| 37-dark-tablet-768-security.png | 5ef22a9d5d9778fe2d440fa79dc540f2 | >900 | tablet-768 | dark | Nexora security page (navbar + content + footer), dark theme, tablet-768 viewport |
+| 38-dark-mobile-390-security.png | afa58a8255b24fae08a236cd45edf862 | >900 | mobile-390 | dark | Nexora security page (navbar + content + footer), dark theme, mobile-390 viewport |
+| 39-dark-mobile-360-security.png | 097967a940c47c175bbcd47060e8a839 | >900 | mobile-360 | dark | Nexora security page (navbar + content + footer), dark theme, mobile-360 viewport |
+| 40-dark-desktop-1440-privacy.png | 7226544d62c06f57a7bc57672e5c0f58 | >900 | desktop-1440 | dark | Nexora privacy page (navbar + content + footer), dark theme, desktop-1440 viewport |
+| 41-dark-desktop-1024-privacy.png | 040ef9584da98a39270bd25af9993eaa | >900 | desktop-1024 | dark | Nexora privacy page (navbar + content + footer), dark theme, desktop-1024 viewport |
+| 42-dark-tablet-768-privacy.png | bfe69e5f0051ef96accde967d84624f8 | >900 | tablet-768 | dark | Nexora privacy page (navbar + content + footer), dark theme, tablet-768 viewport |
+| 43-dark-mobile-390-privacy.png | 4cd75eebf9774894ee4bdc0e7191ffe4 | >900 | mobile-390 | dark | Nexora privacy page (navbar + content + footer), dark theme, mobile-390 viewport |
+| 44-dark-mobile-360-privacy.png | ecaaed718d9ca30030f851d6251e7e65 | >900 | mobile-360 | dark | Nexora privacy page (navbar + content + footer), dark theme, mobile-360 viewport |
+| 45-dark-desktop-1440-download.png | 7d9af157b2539480724ab93568635270 | >900 | desktop-1440 | dark | Nexora download page (navbar + content + footer), dark theme, desktop-1440 viewport |
+| 46-dark-desktop-1024-download.png | 2629670648c7499f1f16f19c430c8183 | >900 | desktop-1024 | dark | Nexora download page (navbar + content + footer), dark theme, desktop-1024 viewport |
+| 47-dark-tablet-768-download.png | ffc73978c1137953931fc5360daece3b | >900 | tablet-768 | dark | Nexora download page (navbar + content + footer), dark theme, tablet-768 viewport |
+| 48-dark-mobile-390-download.png | 6da305e33307e2395e2679460290f510 | >900 | mobile-390 | dark | Nexora download page (navbar + content + footer), dark theme, mobile-390 viewport |
+| 49-dark-mobile-360-download.png | 21599427fb1b8e84f40c8016fe794a07 | >900 | mobile-360 | dark | Nexora download page (navbar + content + footer), dark theme, mobile-360 viewport |
+| 50-dark-desktop-1440-docs.png | e4177b3361d89d9cee18030ecb6a32d6 | >900 | desktop-1440 | dark | Nexora docs page (navbar + content + footer), dark theme, desktop-1440 viewport |
+| 51-dark-desktop-1024-docs.png | 21a4b60e31b37386c24df1ecca74cb65 | >900 | desktop-1024 | dark | Nexora docs page (navbar + content + footer), dark theme, desktop-1024 viewport |
+| 52-dark-tablet-768-docs.png | 2780dccfa4b33c06cd06d512790c4d61 | >900 | tablet-768 | dark | Nexora docs page (navbar + content + footer), dark theme, tablet-768 viewport |
+| 53-dark-mobile-390-docs.png | 9277382bee1c38f3c20aed1bc8019e88 | >900 | mobile-390 | dark | Nexora docs page (navbar + content + footer), dark theme, mobile-390 viewport |
+| 54-dark-mobile-360-docs.png | d6b70bfa9c1dc6a4f07cf3e784f05ecd | >900 | mobile-360 | dark | Nexora docs page (navbar + content + footer), dark theme, mobile-360 viewport |
+| 55-dark-desktop-1440-changelog.png | da644ccf07a5eedb856b84e3fb36fa57 | >900 | desktop-1440 | dark | Nexora changelog page (navbar + content + footer), dark theme, desktop-1440 viewport |
+| 56-dark-desktop-1024-changelog.png | 33f65a97a66ee9f7f579e698cca54978 | >900 | desktop-1024 | dark | Nexora changelog page (navbar + content + footer), dark theme, desktop-1024 viewport |
+| 57-dark-tablet-768-changelog.png | 220360fb7b383157199446230b0cfc49 | >900 | tablet-768 | dark | Nexora changelog page (navbar + content + footer), dark theme, tablet-768 viewport |
+| 58-dark-mobile-390-changelog.png | a3919d025781e9ea897ae29b3784368f | >900 | mobile-390 | dark | Nexora changelog page (navbar + content + footer), dark theme, mobile-390 viewport |
+| 59-dark-mobile-360-changelog.png | e3511a857019674cc02d637970fbf437 | >900 | mobile-360 | dark | Nexora changelog page (navbar + content + footer), dark theme, mobile-360 viewport |
