@@ -21,3 +21,4 @@
 | 23-dark-desktop-1440-docs.png | 136218172e45200cb137be98d2c3c350 | 24740 B | desktop-1440-docs | dark | Nexora docs page shell (navbar + docs content + footer), dark theme, desktop-1440-docs viewport |
 | 24-dark-desktop-1440-changelog.png | 3cd664b9776e76921bf0253fe27837f4 | 27337 B | desktop-1440-changelog | dark | Nexora changelog page shell (navbar + changelog content + footer), dark theme, desktop-1440-changelog viewport |
 | 25-dark-desktop-1440-privacy.png | 00333a298ef6c530dd728671f0bfba1e | 26622 B | desktop-1440-privacy | dark | Nexora privacy page shell (navbar + privacy content + footer), dark theme, desktop-1440-privacy viewport |
+| 99-light-security-desktop-1440.png | a765d871c1980a3549c0d46ad9138f02 | 40562 B | desktop-1440 | light | Nexora security page shell (updated accurate approval copy), light theme, desktop-1440 viewport |
