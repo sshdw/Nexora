@@ -43,8 +43,13 @@ jobs:
         run: npm run build
         working-directory: website
 
-      - name: Install Chromium
-        run: npx playwright install chromium
+      - name: Install Playwright browsers
+        run: npx playwright install
+        working-directory: website
+
+      - name: Install Playwright system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: npx playwright install-deps
         working-directory: website
 
       - name: Browser smoke + accessibility smoke
