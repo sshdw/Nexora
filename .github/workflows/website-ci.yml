@@ -1,0 +1,57 @@
+name: Website CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: website-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 26
+        uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: 'npm'
+          cache-dependency-path: website/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: website
+
+      - name: Lint
+        run: npm run lint
+        working-directory: website
+
+      - name: Typecheck
+        run: npm run typecheck
+        working-directory: website
+
+      - name: Unit tests
+        run: npm test
+        working-directory: website
+
+      - name: Production build (static export)
+        run: npm run build
+        working-directory: website
+
+      - name: Install Playwright browsers
+        run: npx playwright install
+        working-directory: website
+
+      - name: Install Playwright system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: npx playwright install-deps
+        working-directory: website
+
+      - name: Browser smoke + accessibility smoke
+        run: npx playwright test
+        working-directory: website

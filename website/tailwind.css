@@ -1,0 +1,34 @@
+@import "tailwindcss";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+
+/* Design tokens - Nexora marketing website.
+   Light theme is the default (light-first architecture); .dark overrides for dark mode.
+   Component colors reference these CSS custom properties through Tailwind utilities.
+*/
+@theme {
+  /* Light (default) */
+  --color-canvas: #F7F8FA;
+  --color-surface: #FFFFFF;
+  --color-text: #15171B;
+  --color-muted: #646A73;
+  --color-accent: #3F6075;
+  --color-accent-hover: #2E4C5E;
+  --color-primary-cta-bg: #EDEAE7;
+  --color-primary-cta-text: #141517;
+  --color-border: #E5E8EC;
+  --radius-sm: 6px;
+  --radius: 8px;
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.dark {
+  --color-canvas: #0E0E11;
+  --color-surface: #18191C;
+  --color-text: #F3F3F4;
+  --color-muted: #A4A7AD;
+  --color-accent: #9AB8C8;
+  --color-accent-hover: #B4CEDD;
+  --color-border: #303238;
+}
