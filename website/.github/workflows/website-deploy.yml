@@ -1,0 +1,50 @@
+name: Website Deploy
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: website-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 26
+        uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: 'npm'
+          cache-dependency-path: website/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: website
+
+      - name: Lint
+        run: npm run lint
+        working-directory: website
+
+      - name: Typecheck
+        run: npm run typecheck
+        working-directory: website
+
+      - name: Unit tests
+        run: npm test
+        working-directory: website
+
+      - name: Production build (static export)
+        run: npm run build
+        working-directory: website
+
+      - name: Deploy to VPS
+        run: |
+          echo "Deploy step requires SSH access to the VPS (152.70.6.37 as ubuntu)."
+          echo "SSH key must be configured in repository secrets (VPS_SSH_KEY)."
+          echo "Skipping deploy — add VPS_SSH_KEY secret to enable."
+        working-directory: website

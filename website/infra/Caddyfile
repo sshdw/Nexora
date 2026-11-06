@@ -1,0 +1,60 @@
+# Caddyfile — Nexora marketing website static file server
+# Serves /var/www/nexora as static files with HTTPS via certbot (automatic).
+# Domain is configured through SITE_URL environment variable at deploy time.
+
+{}
+# Disable Caddy's default HTTP→HTTPS redirect if we manage it ourselves;
+# Caddy handles automatic HTTPS via Let's Encrypt by default.
+
+prismdev.duckdns.org
+
+root * /var/www/nexora
+file_server
+
+# Security headers (TZ §54)
+header {
+    # Content-Security Policy: self + fonts + GitHub images + simpleicons
+    Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://cdn.simpleicons.org https://github.com; font-src 'self'; connect-src 'self'; base-uri 'self'; form-action 'none'; frame-ancestors 'none';"
+    X-Content-Type-Options "nosniff"
+    X-Frame-Options "DENY"
+    Referrer-Policy "no-referrer"
+    Permissions-Policy "geolocation=(), microphone=(), camera=()"
+}
+
+# Strict caching for versioned assets in _next/static
+/_next/static/* {
+    file_server
+    header Cache-Control "public, max-age=31536000, immutable"
+}
+
+# HTML files: no cache (static export, re-deploy on change)
+*.html {
+    file_server
+    header Cache-Control "no-cache"
+}
+
+# robots.txt, sitemap.xml, favicon
+robots.txt {
+    file_server
+    header Cache-Control "public, max-age=86400"
+}
+
+sitemap.xml {
+    file_server
+    header Cache-Control "public, max-age=86400"
+}
+
+favicon.svg {
+    file_server
+    header Cache-Control "public, max-age=86400"
+}
+
+# /github route: static export renders 200 with redirect() page;
+# Caddy serves the static HTML as-is (redirect happens client-side via Next.js meta/refresh or JS).
+# If server-side redirect is desired, uncomment:
+# redir /github https://github.com/sshdw/Nexora 302
+
+# Health check endpoint
+/healthz {
+    respond "ok" 200
+}
