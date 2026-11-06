@@ -21,6 +21,10 @@
   --radius: 8px;
   --font-sans: "Geist Variable", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: "Geist Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --ease-base: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --duration-press: 100ms;
+  --duration-hover: 160ms;
+  --duration-demo: 350ms;
 }
 
 .dark {
