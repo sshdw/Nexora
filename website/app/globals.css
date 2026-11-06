@@ -43,7 +43,6 @@ h2,
 h3 {
   margin: 1rem 0 0.5rem 0;
   font-weight: 600;
-  color: var(--color-text);
 }
 
 p {
@@ -55,3 +54,114 @@ code,
 pre {
   font-family: var(--font-mono);
 }
+
+/* Hero interactive demo: always rendered as real dark Nexora UI. */
+.demo {
+  background: #0E0E11;
+  color: #F3F3F4;
+  border: 1px solid #303238;
+  border-radius: var(--radius);
+}
+
+.demo-slide {
+  animation: demo-enter var(--duration-demo) var(--ease-base) both;
+}
+
+@keyframes demo-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.demo-cta {
+  background: #EDEAE7;
+  color: #141517;
+  display: inline-block;
+  whitespace: nowrap; /* kept for legacy; prefer utility whitespace-nowrap */
+  border-radius: var(--radius-sm);
+  padding: 2px 16px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  transition: opacity 160ms var(--ease-base);
+}
+.demo-cta:hover {
+  opacity: 0.9;
+}
+.demo-cta:active {
+  transform: scale(0.97);
+}
+
+.demo-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  whitespace: nowrap;
+  border: 1px solid #6D727A;
+  background: transparent;
+  color: #F3F3F4;
+  border-radius: var(--radius-sm);
+  padding: 2px 16px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: opacity 160ms var(--ease-base);
+}
+.demo-btn:hover {
+  opacity: 0.8;
+}
+.demo-btn:active {
+  transform: scale(0.97);
+}
+
+.demo-ctrl {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #A4A7AD;
+  border-radius: var(--radius-sm);
+  padding: 2px 10px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: opacity 160ms var(--ease-base), border-color 160ms var(--ease-base);
+}
+.demo-ctrl:hover {
+  color: #F3F3F4;
+  border-color: #6D727A;
+}
+.demo-ctrl:active {
+  transform: scale(0.97);
+}
+
+.demo-ctrl[data-state="active"] {
+  color: #9AB8C8;
+  border-color: #9AB8C8;
+}
+
+pre.demo-diff {
+  margin: 0;
+  border: 1px solid #303238;
+  background: #18191C;
+  border-radius: var(--radius-sm);
+}
+code.demo-diff {
+  padding: 0;
+}
+.diff-line {
+  display: block;
+  padding: 0 10px;
+  line-height: 1.55;
+  white-space: pre;
+}
+.diff-line.add { color: #8FBC8F; }
+.diff-line.remove { color: #CB8B8B; }
+.diff-line.ctx { color: #A4A7AD; }
+.diff-line.hdr { color: #A4A7AD; }

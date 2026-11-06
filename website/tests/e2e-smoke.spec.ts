@@ -4,7 +4,7 @@ import { AxeBuilder } from '@axe-core/playwright'
 test('homepage shell loads and shows navbar and footer', async ({ page }) => {
   await page.goto('/')
 
-  await expect(page.locator('h1')).toContainText('Nexora')
+  await expect(page.locator('h1')).toContainText('Code with agents')
 
   // Links that must be visible on every viewport (navbar + footer).
   for (const name of ['Nexora', 'Download', 'Security', 'Docs', 'GitHub', 'Changelog']) {
@@ -29,7 +29,7 @@ test('theme toggle switches dark mode', async ({ page }) => {
   await expect(page.locator('html')).not.toHaveClass('dark')
 })
 
-test('accessibility smoke test — no WCAG 2.2 AA violations', async ({ page }) => {
+test('accessibility smoke test: no WCAG 2.2 AA violations', async ({ page }) => {
   await page.goto('/')
 
   const results = await new AxeBuilder({ page })
