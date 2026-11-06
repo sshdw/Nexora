@@ -1,0 +1,11 @@
+{
+    http_port 8080
+    https_port 443
+    auto_https disable_redirects
+}
+
+prismdev.duckdns.org {
+    root * /var/www/nexora
+    file_server
+    encode gzip zstd
+}
