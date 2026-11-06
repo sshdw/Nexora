@@ -8,7 +8,11 @@ export default function Page() {
               Security model
             </h1>
             <p className="mt-4 text-base leading-relaxed text-muted">
-              Nexora is local-first, so your credentials stay on your machine and every agent action waits for your explicit approval before it runs.
+              Nexora is local-first, so your credentials stay on your machine and
+              never leave for a Nexora server. Agent actions are visible as they
+              run, and shell commands wait for your explicit approval unless you
+              choose full-autonomous mode, where the agent runs to the end without
+              stopping.
             </p>
           </div>
         </section>
