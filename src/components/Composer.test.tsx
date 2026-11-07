@@ -663,6 +663,28 @@ describe("composer — model picker (R6-02)", () => {
     expect(options[1]?.querySelector(".nex-composer-model-option-check")).toBeNull();
   });
 
+  it("lets the trigger shrink on a narrow card, so the label truncates before Send leaves", () => {
+    // F5 defect (visual QA, frame 09-narrow-900): at 900px in split view the
+    // wrapped trailing line overflowed its card — the trigger held its full
+    // mono measure, the id ran past the card edge, and the chevron and Send
+    // were pushed out of view. The shrink can only live on the className:
+    // the vendored base string ships `shrink-0` (ui/button.tsx) and
+    // composer.css is `layer(base)`, which cannot outrank a utility.
+    renderComposer({ selectedModel: "nvidia/nemotron-3-ultra-550b-a55b" });
+    const picker = trigger();
+    // tailwind-merge must have EVICTED the base's bare `shrink-0` for this
+    // later `shrink` — both present is the pre-fix state, and `shrink-0`
+    // wins in the layer order, returning the overflow.
+    expect(picker).toHaveClass("shrink");
+    expect(picker).not.toHaveClass("shrink-0");
+    // The svg-scoped variant stays: the chevron itself must not compress.
+    expect(picker.className).toContain("[&_svg]:shrink-0");
+    // …and the label inside carries the truncation contract that makes the
+    // shrink honest (ellipsis, never paint-over — pinned on the sheet in
+    // "composer sheet — theme linkage" below).
+    expect(picker.querySelector(".nex-composer-model-name")).not.toBeNull();
+  });
+
   it("filters the list as the query is typed, case-insensitively", () => {
     renderComposer();
     openPicker();
@@ -1477,6 +1499,34 @@ describe("composer sheet — theme linkage (src/styles/composer.css)", () => {
     const trigger = ruleBody(".nex-composer-model-trigger");
     expect(trigger).not.toMatch(/max-width/);
     expect(trigger).toContain("min-width: 0");
+  });
+
+  it("keeps the narrow-card overflow chain intact (label truncates, controls stay)", () => {
+    // F5 defect (frame 09-narrow-900): on a wrapped line the trailing
+    // group's BOX shrinks to the card (`min-width: 0` on the group), the
+    // trigger's `shrink` utility (ModelPicker.tsx — a sheet rule cannot
+    // outrank the base string's `shrink-0`) then shrinks the button, and
+    // the label's ellipsis cuts the id, so the chevron and Send never
+    // leave the card. Every link of that chain is load-bearing.
+    expect(ruleBody(".nex-composer-bar-trailing")).toContain("min-width: 0");
+
+    const name = ruleBody(".nex-composer-model-name");
+    expect(name).toContain("overflow: hidden");
+    expect(name).toContain("text-overflow: ellipsis");
+    expect(name).toContain("white-space: nowrap");
+  });
+
+  it("gives the workspace row the same narrow-card contract as the model row", () => {
+    // The workspace chip + branch share the composer card (the row sits
+    // above the shell), so at the same narrow widths its folder + branch
+    // must truncate instead of overflowing: the button caps at the card
+    // (min-width 0 lets it get there), and head/branch are the parts CSS
+    // cuts — middle ellipsis with a fixed tail, per WorkspaceContextRow.
+    const row = ruleBody(".nex-composer-context");
+    expect(row).toContain("max-width: 100%");
+    expect(row).toContain("min-width: 0");
+    expect(ruleBody(".nex-composer-context-head")).toContain("text-overflow: ellipsis");
+    expect(ruleBody(".nex-composer-context-branch")).toContain("text-overflow: ellipsis");
   });
 
   it("registers no second stylesheet entry or unlayered import", () => {

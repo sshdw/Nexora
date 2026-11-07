@@ -686,8 +686,13 @@
 .nex-composer-model-trigger {
   /* No `max-width` here any more (it was 220px). The cap belonged to the
      LABEL's own measure, not to the button: see `.nex-composer-model-name`
-     below. `min-width: 0` stays so a card narrower than the bar's budget
-     still shrinks the label into an ellipsis instead of pushing Send out. */
+     below. `min-width: 0` PERMITS the narrow-card shrink; the shrink itself
+     comes from the `shrink` utility on the trigger's className
+     (ModelPicker.tsx), because this sheet is `layer(base)` and cannot
+     outrank the vendored base string's `shrink-0` utility. F5 defect
+     (frame 09-narrow-900): with `shrink-0` live the trigger held its full
+     mono measure on the wrapped line, the label ran past the card edge and
+     pushed the chevron and Send out of view. */
   min-width: 0;
   color: var(--muted-foreground);
 }
