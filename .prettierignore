@@ -1,4 +1,43 @@
-node_modules
-dist
-src-tauri/target
-src-tauri/gen
+# Prettier scope (ADD-16): src/ + root-owned configs + scripts/ only.
+# Everything below is excluded with a reason; scripts run `prettier --write .` /
+# `prettier --check .`, so this file defines the scoped set.
+
+# --- Dependencies & build output: generated, never hand-edited ---
+node_modules/
+dist/
+coverage/
+target/
+.logs/
+
+# --- Generated lockfile: npm owns it; reformatting creates endless diffs ---
+package-lock.json
+
+# --- Rust is rustfmt territory, not prettier (AGENTS.md) ---
+src-tauri/
+
+# --- prettier's CSS parser errors on this file's `//!` header comment
+# --- (CssSyntaxError: Unknown word); excluded rather than fighting it — the
+# --- file ships as-is today and fixing its comment syntax is not formatting.
+src/styles/tasks.css
+
+# --- Out of ADD-16 scope (repo trees other than src/ + root configs + scripts/) ---
+.github/
+docs/
+website/
+apps/
+crates/
+public/
+.vscode/
+.playwright-mcp/
+
+# --- Root prose docs are not configs; keep them out of the pass ---
+/*.md
+
+# --- Local-only untracked working files: not repo sources, stay untouched ---
+.ai/
+.clinerules/
+.workbuddy-ai/
+.zcode/
+.mcp.json
+opencode.json
+for human do not open tis/
