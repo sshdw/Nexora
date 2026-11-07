@@ -77,7 +77,7 @@ export const ru: Record<StringKey, string> = {
   "nav.audit": "Аудит",
   "nav.debtLabel": "Журнал технического долга",
   "nav.debt": "Долг",
-  "nav.ghLabel": "Задачи и пул-реквесты GitHub",
+  "nav.ghLabel": "Issues и PR GitHub",
   "nav.gh": "Issues и PR",
   "nav.docsLabel": "Документация продукта",
   "nav.docs": "Доки",
@@ -165,12 +165,12 @@ export const ru: Record<StringKey, string> = {
   "conv.sendAria": "Отправить сообщение",
   "conv.stopAria": "Остановить запуск агента",
   "conv.workspaceContextAria": "Контекст рабочей папки",
-  "workspace.menuTitle": "Рабочая область",
+  "workspace.menuTitle": "Рабочая папка",
   "workspace.none": "Папка не открыта",
   "workspace.recent": "Недавние",
-  "workspace.roots": "Рабочие области",
+  "workspace.roots": "Рабочие папки",
   "workspace.chooseFolder": "Выбрать папку…",
-  "workspace.openHint": "Откройте папку, чтобы задать агенту рабочую область.",
+  "workspace.openHint": "Откройте папку, чтобы задать агенту рабочую папку.",
   "conv.contextWindow": "Контекстное окно",
   "conv.contextAria": "Контекстное окно: использовано {percent}%",
   "conv.contextAriaNa": "Контекстное окно: н/д",
@@ -355,7 +355,7 @@ export const ru: Record<StringKey, string> = {
   "settings.sectionWorkspace": "Рабочая папка",
   "settings.sectionCredentials": "Учётные данные",
   "settings.sectionData": "Управление данными",
-  "settings.sectionAdvanced": "Продвинутые",
+  "settings.sectionAdvanced": "Дополнительные",
   "settings.appearanceHint":
     "Визуальная тема этого устройства. Применяется сразу и сохраняется между сессиями.",
   "settings.themeLabel": "Тема",
@@ -387,10 +387,10 @@ export const ru: Record<StringKey, string> = {
     "Автономность по умолчанию для новых запусков агента и лимит трат на запуск. Шапка разговора всё равно может переключать автономность для текущего запуска.",
   "settings.autonomyLabel": "Режим автономности",
   "settings.autonomyHint":
-    "Под присмотром — пауза для подтверждения; полуавтономный спрашивает на рискованных шагах; полностью автономный работает до конца.",
+    "Под присмотром — пауза для подтверждения; Полуавто — спрашивает на рискованных шагах; Полный авто — работает до конца.",
   "settings.autonomySupervised": "Под присмотром",
-  "settings.autonomySemi": "Полуавтономный",
-  "settings.autonomyFull": "Полностью автономный",
+  "settings.autonomySemi": "Полуавто",
+  "settings.autonomyFull": "Полный авто",
   "settings.autonomySaveFail": "Не удалось сохранить режим автономности.",
   "settings.spendLabel": "Лимит трат на запуск (микро-USD)",
   "settings.spendPh": "Пусто = без лимита",
@@ -429,10 +429,10 @@ export const ru: Record<StringKey, string> = {
   "settings.clearing": "Удаление…",
   "settings.advancedHint":
     "Мощные ключи для раскатки 2.0 и внутренностей роутинга. Пока ключ не задан, действуют значения по умолчанию; очистка ключа возвращает значение по умолчанию. Для повседневного использования здесь ничего не нужно.",
-  "settings.advancedLoadFail": "Не удалось загрузить продвинутые настройки.",
+  "settings.advancedLoadFail": "Не удалось загрузить дополнительные настройки.",
   "settings.flagsLabel": "Фичефлаги",
   "settings.flagsHint":
-    "Глобальные гейты раскатки 2.0. Файл флагов воркспейса важнее, когда он есть; иначе решают эти ключи.",
+    "Глобальные гейты раскатки 2.0. Файл флагов рабочей папки важнее, когда он есть; иначе решают эти ключи.",
   "settings.enforced": "Применяется в запусках",
   "settings.resolvedOnly": "Только резолвится",
   "settings.flagSnapshots": "Захват снапшотов запуска, чекпоинты и откат.",
@@ -566,10 +566,10 @@ export const ru: Record<StringKey, string> = {
   "palette.cmd.settings_provider": "Настройки: провайдер и модель",
   "palette.cmd.settings_agent": "Настройки: агент и бюджеты",
   "palette.cmd.settings_workspace": "Настройки: рабочая папка",
-  "palette.cmd.workspace_add-root": "Воркспейс: добавить папку…",
+  "palette.cmd.workspace_add-root": "Рабочая папка: добавить папку…",
   "palette.cmd.settings_credentials": "Настройки: учётные данные провайдеров",
   "palette.cmd.settings_data": "Настройки: управление данными",
-  "palette.cmd.settings_advanced": "Настройки: продвинутые",
+  "palette.cmd.settings_advanced": "Настройки: дополнительные",
   "palette.cmd.settings_language": "Переключить язык интерфейса",
   "palette.cmd.chat_new": "Новый разговор",
   "palette.cmd.chat_focus-composer": "Фокус в поле сообщения",
@@ -589,7 +589,7 @@ export const ru: Record<StringKey, string> = {
 
   "shortcuts.title": "Горячие клавиши",
   "shortcuts.hintClose": "закрыть",
-  "shortcuts.groupLauncher": "Лаунчер",
+  "shortcuts.groupLauncher": "Палитра",
   "shortcuts.groupGo": "Перейти",
   "shortcuts.groupTabs": "Вкладки",
   "shortcuts.groupLayout": "Раскладка",
@@ -692,7 +692,7 @@ export const ru: Record<StringKey, string> = {
 
   "vcs.group": "Версионный контроль",
   "vcs.title": "Версионный контроль",
-  "vcs.subtitleBare": "Git-статус открытого воркспейса.",
+  "vcs.subtitleBare": "Git-статус открытой рабочей папки.",
   "vcs.subtitleBranch": "На ветке {branch}.",
   "vcs.subtitleSuffix":
     "Только ручное обновление — записи спрашивают сначала и никогда не делают force-push.",
@@ -791,7 +791,7 @@ export const ru: Record<StringKey, string> = {
   "gh.loading": "Загрузка Issues и PR",
   "gh.unavailable": "Issues и PR недоступны.",
   "gh.noRemote":
-    "Origin воркспейса — не репозиторий github.com: откройте воркспейс, склонированный с GitHub.",
+    "Origin рабочей папки — не репозиторий github.com: откройте рабочую папку, склонированный с GitHub.",
   "gh.noToken":
     "Без токена GitHub — публичные данные репозитория с общими лимитами.",
   "gh.rateLimited": "Лимит запросов GitHub исчерпан — попробуйте позже.",
@@ -1366,16 +1366,16 @@ export const ru: Record<StringKey, string> = {
     "Рабочая папка может содержать каталог проекта .nexora/ (манифест, правила игнорирования, заготовки профилей) — создаётся только явной инициализацией. Файлы папки важнее глобальных настроек там, где есть оба; в экспорты он никогда не входит.",
   "docs.newRoutingT": "Профили маршрутизации",
   "docs.newRoutingB":
-    "Настройки → Продвинутые показывают профили маршрутизации агента и чата (routing.profile.agent / chat): проверяемый выбор модели с fallback по возможностям.",
+    "Настройки → Дополнительные показывают профили маршрутизации агента и чата (routing.profile.agent / chat): проверяемый выбор модели с fallback по возможностям.",
   "docs.newFlagsT": "Флаги функций",
   "docs.newFlagsB":
-    "Настройки → Продвинутые переключают флаги раскатки; файл .nexora/flags.json в папке важнее глобальных ключей. Экран здоровья показывает действующее значение и источник каждого флага.",
+    "Настройки → Дополнительные переключают флаги раскатки; файл .nexora/flags.json в папке важнее глобальных ключей. Экран здоровья показывает действующее значение и источник каждого флага.",
   "docs.newKeyringT": "API-ключи только в keyring",
   "docs.newKeyringB":
     "Ключи провайдеров живут исключительно в системном хранилище (Настройки → Учётные данные). В SQLite, логи и экспорты они не попадают.",
   "docs.newSettingsT": "Компактные настройки",
   "docs.newSettingsB":
-    "Семь групп — внешний вид, провайдер, агент, папка, учётные данные, данные, продвинутые — с поиском по странице. Силовые ключи (флаги, маршрутизация, MCP, пресет), у которых не было UI, видны в «Продвинутых».",
+    "Семь групп — внешний вид, провайдер, агент, папка, учётные данные, данные, дополнительные — с поиском по странице. Силовые ключи (флаги, маршрутизация, MCP, пресет), у которых не было UI, видны в «Дополнительных».",
   "docs.newRootsT": "Рабочие папки",
   "docs.newRootsB":
     "Несколько зарегистрированных рабочих папок с переключателем; разговоры помнят свою папку (миграция v6).",
