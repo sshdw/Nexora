@@ -148,7 +148,10 @@ mod tests {
     /// `src/lib/ipc/confirmations.ts`), so the mint pin scans the surface it
     /// actually governs (paths resolved relative to `src-tauri/` =
     /// `CARGO_MANIFEST_DIR`; read at test runtime so the pin always sees the
-    /// current frontend).
+    /// current frontend). Before the AC-205 rebase lands there is no
+    /// `src/lib/ipc/` directory and the wrapper is the whole surface, so a
+    /// missing directory simply contributes no modules instead of failing
+    /// the pin.
     fn frontend_ipc_sources() -> Vec<String> {
         let lib = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
@@ -157,17 +160,21 @@ mod tests {
         let mut sources =
             vec![std::fs::read_to_string(lib.join("tauri.ts")).expect("read src/lib/tauri.ts")];
         let ipc = lib.join("ipc");
-        let mut names: Vec<String> = std::fs::read_dir(&ipc)
-            .expect("read src/lib/ipc directory")
-            .filter_map(Result::ok)
-            .map(|entry| entry.file_name().to_string_lossy().into_owned())
-            .filter(|name| {
-                std::path::Path::new(name)
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("ts"))
-                    && !name.ends_with(".test.ts")
-            })
-            .collect();
+        let mut names: Vec<String> = match std::fs::read_dir(&ipc) {
+            Ok(entries) => entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .filter(|name| {
+                    std::path::Path::new(name)
+                        .extension()
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("ts"))
+                        && !name.ends_with(".test.ts")
+                })
+                .collect(),
+            // No `src/lib/ipc/` yet (pre-AC-205 tree): `tauri.ts` is then the
+            // whole wrapper surface on its own.
+            Err(_) => Vec::new(),
+        };
         names.sort();
         for name in names {
             sources.push(std::fs::read_to_string(ipc.join(&name)).expect("read ipc module"));

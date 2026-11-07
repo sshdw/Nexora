@@ -215,7 +215,7 @@ impl AgentRunRepository<'_> {
     ///
     /// Returns a [`DatabaseError`] if the read fails.
     pub fn read_run(&self, id: i64) -> Result<Option<AgentRun>> {
-        let conn = self.conn()?;
+        let conn = self.read_conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, conversation_id, model, mode, status, started_at, finished_at, \
              total_steps, final_content, error, spent_micro_usd, limit_micro_usd FROM agent_runs WHERE id = ?1",
@@ -231,7 +231,7 @@ impl AgentRunRepository<'_> {
     ///
     /// Returns a [`DatabaseError`] if listing fails.
     pub fn list_runs_by_started_at_desc(&self) -> Result<Vec<AgentRun>> {
-        let conn = self.conn()?;
+        let conn = self.read_conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, conversation_id, model, mode, status, started_at, finished_at, \
              total_steps, final_content, error, spent_micro_usd, limit_micro_usd FROM agent_runs ORDER BY started_at DESC",
@@ -286,7 +286,7 @@ impl AgentRunRepository<'_> {
         // to "every id" via i64::MAX, keeping one static SQL string.
         let limit = limit.unwrap_or(-1);
         let cursor = before_run_id.unwrap_or(i64::MAX);
-        let conn = self.conn()?;
+        let conn = self.read_conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, conversation_id, model, mode, status, started_at, finished_at, \
              total_steps, final_content, error, spent_micro_usd, limit_micro_usd FROM agent_runs \
@@ -427,7 +427,7 @@ impl AgentRunRepository<'_> {
     ///
     /// Returns a [`DatabaseError`] if the read fails.
     pub fn read_step_observation(&self, step_id: i64) -> Result<Option<String>> {
-        let conn = self.conn()?;
+        let conn = self.read_conn()?;
         let mut stmt = conn.prepare("SELECT observation FROM agent_steps WHERE id = ?1")?;
         let mut rows = stmt.query([step_id])?;
         match rows.next()? {
@@ -467,7 +467,7 @@ impl AgentRunRepository<'_> {
     ) -> Result<Vec<AgentStep>> {
         let limit = limit.unwrap_or(-1);
         let cursor = before_seq.unwrap_or(i64::MAX);
-        let conn = self.conn()?;
+        let conn = self.read_conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, run_id, seq, kind, tool_name, arguments, observation, status, \
              started_at, duration_ms, rule_id, group_key, decided_by, input_tokens, output_tokens \

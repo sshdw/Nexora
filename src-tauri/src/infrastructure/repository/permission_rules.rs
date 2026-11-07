@@ -89,7 +89,7 @@ impl<'a> PermissionRulesRepository<'a> {
 
     /// List all rules ordered `priority ASC, id ASC`.
     pub(crate) fn list(&self) -> std::result::Result<Vec<PermissionRule>, DatabaseError> {
-        let conn = self.conn()?;
+        let conn = self.read_conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, preset, tool_pattern, path_pattern, effect, priority \
              FROM permission_rules ORDER BY priority ASC, id ASC",

@@ -145,7 +145,7 @@ impl DebtItemRepository<'_> {
     ///
     /// Returns a [`DatabaseError`] if the read fails.
     pub(crate) fn read(&self, id: i64) -> Result<Option<DebtItem>> {
-        let conn = self.conn()?;
+        let conn = self.read_conn()?;
         match conn.query_row(
             "SELECT id, title, source, severity, status, location, note, audit_key, created_at, updated_at \
              FROM debt_items WHERE id = ?1",
@@ -165,7 +165,7 @@ impl DebtItemRepository<'_> {
     ///
     /// Returns a [`DatabaseError`] if listing fails.
     pub(crate) fn list(&self) -> Result<Vec<DebtItem>> {
-        let conn = self.conn()?;
+        let conn = self.read_conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, title, source, severity, status, location, note, audit_key, created_at, updated_at \
              FROM debt_items ORDER BY updated_at DESC, id DESC",

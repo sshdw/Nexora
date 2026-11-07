@@ -106,7 +106,7 @@ impl MessageRepository<'_> {
     ///
     /// Returns a [`DatabaseError`] on a failed query or a poisoned connection.
     pub(crate) fn read(&self, id: i64) -> Result<Option<Message>> {
-        let conn = self.conn()?;
+        let conn = self.read_conn()?;
         match conn.query_row(
             "SELECT id, conversation_id, role, content, provider_id, \
              model_name, created_at FROM messages WHERE id = ?1",
@@ -224,7 +224,7 @@ impl MessageRepository<'_> {
     ///
     /// Returns a [`DatabaseError`] if the existence check fails.
     pub(crate) fn exists(&self, id: i64) -> Result<bool> {
-        let conn = self.conn()?;
+        let conn = self.read_conn()?;
         let count: i64 =
             conn.query_row("SELECT COUNT(*) FROM messages WHERE id = ?1", [id], |row| {
                 row.get(0)
@@ -244,7 +244,7 @@ impl MessageRepository<'_> {
     ///
     /// Returns a [`DatabaseError`] if listing fails.
     pub(crate) fn list_by_conversation(&self, conversation_id: i64) -> Result<Vec<Message>> {
-        let conn = self.conn()?;
+        let conn = self.read_conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, conversation_id, role, content, provider_id, \
              model_name, created_at FROM messages \

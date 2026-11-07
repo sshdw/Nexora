@@ -111,7 +111,7 @@ impl AttachmentRepository<'_> {
     ///
     /// Returns a [`DatabaseError`] on a failed query or a poisoned connection.
     pub(crate) fn read(&self, id: i64) -> Result<Option<Attachment>> {
-        let conn = self.conn()?;
+        let conn = self.read_conn()?;
         match conn.query_row(
             "SELECT id, conversation_id, message_id, file_name, file_path, \
              file_size_bytes, mime_type FROM attachments WHERE id = ?1",
@@ -178,7 +178,7 @@ impl AttachmentRepository<'_> {
     ///
     /// Returns a [`DatabaseError`] if the existence check fails.
     pub(crate) fn exists(&self, id: i64) -> Result<bool> {
-        let conn = self.conn()?;
+        let conn = self.read_conn()?;
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM attachments WHERE id = ?1",
             [id],
@@ -200,7 +200,7 @@ impl AttachmentRepository<'_> {
     ///
     /// Returns a [`DatabaseError`] if listing fails.
     pub(crate) fn list_by_conversation(&self, conversation_id: i64) -> Result<Vec<Attachment>> {
-        let conn = self.conn()?;
+        let conn = self.read_conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, conversation_id, message_id, file_name, file_path, \
              file_size_bytes, mime_type FROM attachments \
@@ -237,7 +237,7 @@ impl AttachmentRepository<'_> {
     ///
     /// Returns a [`DatabaseError`] if listing fails.
     pub(crate) fn list_by_message(&self, message_id: i64) -> Result<Vec<Attachment>> {
-        let conn = self.conn()?;
+        let conn = self.read_conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, conversation_id, message_id, file_name, file_path, \
              file_size_bytes, mime_type FROM attachments \

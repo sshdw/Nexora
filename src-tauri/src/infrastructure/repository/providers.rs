@@ -85,7 +85,7 @@ impl ProviderRepository<'_> {
     ///
     /// Returns a [`DatabaseError`] on a failed query or a poisoned connection.
     pub(crate) fn read(&self, id: i64) -> Result<Option<Provider>> {
-        let conn = self.conn()?;
+        let conn = self.read_conn()?;
         match conn.query_row(
             "SELECT id, name, display_name FROM providers WHERE id = ?1",
             [id],
@@ -114,7 +114,7 @@ impl ProviderRepository<'_> {
     ///
     /// Returns a [`DatabaseError`] on a failed query or a poisoned connection.
     pub(crate) fn read_by_name(&self, name: &str) -> Result<Option<Provider>> {
-        let conn = self.conn()?;
+        let conn = self.read_conn()?;
         match conn.query_row(
             "SELECT id, name, display_name FROM providers WHERE name = ?1",
             [name],
@@ -143,7 +143,7 @@ impl ProviderRepository<'_> {
     ///
     /// Returns a [`DatabaseError`] if listing fails.
     pub(crate) fn list(&self) -> Result<Vec<Provider>> {
-        let conn = self.conn()?;
+        let conn = self.read_conn()?;
         let mut stmt = conn.prepare("SELECT id, name, display_name FROM providers ORDER BY id")?;
         let rows = stmt.query_map([], |row| {
             Ok(Provider {

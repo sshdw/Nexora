@@ -7,11 +7,15 @@
 //! final output truncation to protect the LLM context; no code path can block
 //! indefinitely (a detached grandchild holding a pipe cannot stall the tool).
 
+mod command;
 mod definitions;
 mod executor;
 mod output;
+mod path_safety;
+mod search;
 
-pub(crate) use executor::{is_within_workspace, ToolError};
+pub(crate) use executor::ToolError;
+pub(crate) use path_safety::is_within_workspace;
 
 // ---------------------------------------------------------------------------
 // Registry
