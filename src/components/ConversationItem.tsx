@@ -159,7 +159,11 @@ function ConversationItem({
           </time>
         }
       >
-        <span className="truncate" title={conversation.title} aria-hidden="true">
+        <span
+          className="truncate"
+          title={conversation.title}
+          aria-hidden="true"
+        >
           {conversation.title}
         </span>
       </M3RailItem>
@@ -226,7 +230,7 @@ function ConversationItem({
                           showSnack(
                             t("list.restoreFailed", {
                               title: conversation.title,
-                            }),
+                            })
                           );
                         }
                       })();

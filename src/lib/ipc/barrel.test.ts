@@ -150,7 +150,9 @@ describe("tauri barrel parity (AC-205)", () => {
     for (const key of SNAPSHOT) {
       const value = exports[key];
       expect(value, `barrel export "${key}" is undefined`).toBeDefined();
-      expect(typeof value, `barrel export "${key}" is not a function`).toBe("function");
+      expect(typeof value, `barrel export "${key}" is not a function`).toBe(
+        "function"
+      );
     }
   });
 });

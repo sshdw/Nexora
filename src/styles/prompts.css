@@ -146,7 +146,8 @@
   align-items: center;
   gap: 0;
   opacity: 0;
-  transition: opacity var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard);
+  transition: opacity var(--nex-sys-motion-duration-fast)
+    var(--nex-sys-motion-easing-standard);
 }
 .nex-prompt-card:hover .nex-prompt-card-tools,
 .nex-prompt-card:focus-within .nex-prompt-card-tools {

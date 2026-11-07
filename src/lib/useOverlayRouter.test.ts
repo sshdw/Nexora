@@ -80,7 +80,7 @@ describe("useOverlayRouter exclusivity", () => {
       }
       expect(result.current.active).toBe(kind);
       expect(result.current.hasOverlay).toBe(true);
-    },
+    }
   );
 
   it("opening a second overlay closes the first (single active by construction)", () => {

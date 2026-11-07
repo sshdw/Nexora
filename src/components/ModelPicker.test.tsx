@@ -8,7 +8,14 @@
 //! resetting on close so a reopen shows the unfiltered list, and the
 //! empty-filter Escape path closing without a pick.
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { LocaleProvider } from "../lib/useLocale";
@@ -31,11 +38,12 @@ function renderPicker(overrides: Partial<PickerProps> = {}) {
   return render(
     <LocaleProvider>
       <ModelPicker {...props} />
-    </LocaleProvider>,
+    </LocaleProvider>
   );
 }
 
-const trigger = () => screen.getByRole("button", { name: "Agent mode and model" });
+const trigger = () =>
+  screen.getByRole("button", { name: "Agent mode and model" });
 const openPicker = () => fireEvent.click(trigger());
 const list = () => screen.getByRole("listbox", { name: "Model" });
 const search = () => screen.getByRole("searchbox", { name: "Search models" });
@@ -89,7 +97,7 @@ describe("ModelPicker — active row and query lifecycle", () => {
           onSelectModel={onSelectModel}
           onOpenSettings={() => {}}
         />
-      </LocaleProvider>,
+      </LocaleProvider>
     );
     expect(trigger()).toHaveTextContent("claude-sonnet-4");
   });

@@ -14,7 +14,13 @@
 //! saving/loading disablement, removing a registered root — is ported here
 //! rather than dropped with the panel.
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { GitInfo } from "../lib/tauri";
@@ -65,7 +71,7 @@ function renderRow(overrides: Partial<WorkspaceStore> = {}) {
   const view = render(
     <LocaleProvider>
       <WorkspaceContextRow workspace={workspace} />
-    </LocaleProvider>,
+    </LocaleProvider>
   );
   return { workspace, ...view };
 }
@@ -108,7 +114,9 @@ describe("workspace context row — the trigger", () => {
     const branch = await screen.findByText("feat/shell-round6");
     expect(branch).toHaveClass("nex-composer-context-branch");
     expect(branch).toHaveAttribute("title", "feat/shell-round6");
-    expect(container.querySelector(".nex-composer-context-sep")).toHaveTextContent("·");
+    expect(
+      container.querySelector(".nex-composer-context-sep")
+    ).toHaveTextContent("·");
   });
 
   it("drops the branch when git fails or reports none", async () => {
@@ -116,14 +124,20 @@ describe("workspace context row — the trigger", () => {
     const failed = renderRow({ root: "C:\\src\\notes" });
     expect(screen.getByText("notes")).toBeInTheDocument();
     await waitFor(() => expect(mockGitInfo).toHaveBeenCalledTimes(1));
-    expect(failed.container.querySelector(".nex-composer-context-branch")).toBeNull();
+    expect(
+      failed.container.querySelector(".nex-composer-context-branch")
+    ).toBeNull();
     failed.unmount();
 
     mockGitInfo.mockResolvedValue(git(null));
     const detached = renderRow({ root: "C:\\src\\notes" });
     await screen.findByText("notes");
-    expect(detached.container.querySelector(".nex-composer-context-branch")).toBeNull();
-    expect(detached.container.querySelector(".nex-composer-context-sep")).toBeNull();
+    expect(
+      detached.container.querySelector(".nex-composer-context-branch")
+    ).toBeNull();
+    expect(
+      detached.container.querySelector(".nex-composer-context-sep")
+    ).toBeNull();
   });
 
   it("sizes the trigger to its label so the chevron cannot drift to the card edge", () => {
@@ -149,7 +163,7 @@ describe("workspace context row — the trigger", () => {
 describe("workspace context row — recent/registry dedupe", () => {
   it("does not repeat a registered path in Recent", () => {
     expect(
-      recentWithoutRegistered(["D:\\2", "D:\\3", "D:\\4"], ["D:\\2"], null),
+      recentWithoutRegistered(["D:\\2", "D:\\3", "D:\\4"], ["D:\\2"], null)
     ).toEqual(["D:\\3", "D:\\4"]);
   });
 
@@ -158,8 +172,8 @@ describe("workspace context row — recent/registry dedupe", () => {
       recentWithoutRegistered(
         ["D:\\1", "D:\\2", "D:\\3", "D:\\4", "D:\\5", "D:\\6", "D:\\7"],
         ["D:\\3"],
-        "D:\\1",
-      ),
+        "D:\\1"
+      )
     ).toEqual(["D:\\2", "D:\\4", "D:\\5", "D:\\6", "D:\\7"]);
   });
 
@@ -181,16 +195,18 @@ describe("workspace context row — long names", () => {
     expect(splitForMiddleEllipsis("nexora")).toEqual(["nexora", ""]);
     const { container } = renderRow({ root: "C:\\src\\nexora" });
     expect(container.querySelector(".nex-composer-context-tail")).toBeNull();
-    expect(container.querySelector(".nex-composer-context-head")).toHaveTextContent("nexora");
+    expect(
+      container.querySelector(".nex-composer-context-head")
+    ).toHaveTextContent("nexora");
   });
 
   it("renders both halves so the visible line still reads the whole name", () => {
     const name = "a-very-long-workspace-folder-name";
     const { container } = renderRow({ root: `C:\\src\\${name}` });
     const wrapper = container.querySelector(".nex-composer-context-name");
-    expect(wrapper?.querySelector(".nex-composer-context-tail")).toHaveTextContent(
-      name.slice(-10),
-    );
+    expect(
+      wrapper?.querySelector(".nex-composer-context-tail")
+    ).toHaveTextContent(name.slice(-10));
     expect(wrapper?.textContent).toBe(name);
   });
 });
@@ -207,7 +223,7 @@ describe("workspace menu — current root", () => {
     expect(current).toHaveTextContent("C:\\src\\app");
     expect(current?.querySelector(".nex-workspace-menu-path")).toHaveAttribute(
       "title",
-      "C:\\src\\app",
+      "C:\\src\\app"
     );
   });
 
@@ -215,7 +231,9 @@ describe("workspace menu — current root", () => {
     const { unmount } = renderRow({ root: null, recent: [] });
     openMenu();
     expect(document.querySelector(".nex-workspace-menu-current")).toBeNull();
-    expect(screen.getByText("Open a folder to give the agent a workspace.")).toBeInTheDocument();
+    expect(
+      screen.getByText("Open a folder to give the agent a workspace.")
+    ).toBeInTheDocument();
     unmount();
   });
 });
@@ -226,7 +244,7 @@ describe("workspace menu — recents", () => {
     openMenu();
 
     const rows = [...document.querySelectorAll(".nex-workspace-menu-row")].map(
-      (node) => node.textContent,
+      (node) => node.textContent
     );
     expect(rows).toEqual(["otherC:\\src\\other"]);
     expect(screen.getByText("Recent")).toBeInTheDocument();
@@ -238,8 +256,12 @@ describe("workspace menu — recents", () => {
     openMenu();
 
     fireEvent.click(screen.getByRole("button", { name: /other/ }));
-    await waitFor(() => expect(selectRecent).toHaveBeenCalledWith("C:\\src\\other"));
-    await waitFor(() => expect(document.querySelector(".nex-workspace-menu-row")).toBeNull());
+    await waitFor(() =>
+      expect(selectRecent).toHaveBeenCalledWith("C:\\src\\other")
+    );
+    await waitFor(() =>
+      expect(document.querySelector(".nex-workspace-menu-row")).toBeNull()
+    );
   });
 
   it("hides the section when the active root is the only one", () => {
@@ -304,7 +326,9 @@ describe("workspace menu — choose folder", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Choose folder/ }));
     await waitFor(() => expect(pickFolder).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(document.querySelector(".nex-workspace-menu-choose")).toBeNull());
+    await waitFor(() =>
+      expect(document.querySelector(".nex-workspace-menu-choose")).toBeNull()
+    );
     expect(workspace.pickFolder).toBe(pickFolder);
   });
 
@@ -314,7 +338,9 @@ describe("workspace menu — choose folder", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Choose folder/ }));
     await waitFor(() =>
-      expect(document.querySelector(".nex-workspace-menu-choose")).not.toBeNull(),
+      expect(
+        document.querySelector(".nex-workspace-menu-choose")
+      ).not.toBeNull()
     );
   });
 
@@ -337,7 +363,10 @@ describe("workspace menu — choose folder", () => {
 describe("workspace menu — store state", () => {
   it("surfaces the backend's error in words", () => {
     renderRow({
-      error: { kind: "invalid_root", message: "That folder is inside the current one" },
+      error: {
+        kind: "invalid_root",
+        message: "That folder is inside the current one",
+      },
     });
     openMenu();
     const alert = screen.getByRole("alert");
@@ -347,7 +376,9 @@ describe("workspace menu — store state", () => {
   it("disables every action while the store is saving", () => {
     renderRow({ saving: true, roots: ["C:\\src\\app", "C:\\src\\registered"] });
     openMenu();
-    expect(screen.getByRole("button", { name: /Choose folder/ })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: /Choose folder/ })
+    ).toBeDisabled();
     expect(screen.getByRole("button", { name: /other/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Remove" })).toBeDisabled();
   });
@@ -355,7 +386,9 @@ describe("workspace menu — store state", () => {
   it("disables every action while the initial load is in flight", () => {
     renderRow({ loading: true });
     openMenu();
-    expect(screen.getByRole("button", { name: /Choose folder/ })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: /Choose folder/ })
+    ).toBeDisabled();
     expect(screen.getByRole("button", { name: /other/ })).toBeDisabled();
     expect(screen.getByText("Loading…")).toBeInTheDocument();
   });

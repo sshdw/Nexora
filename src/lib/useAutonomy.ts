@@ -15,11 +15,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import {
-  getSetting,
-  setSetting,
-  type AutonomyMode,
-} from "./tauri";
+import { getSetting, setSetting, type AutonomyMode } from "./tauri";
 import { getLocale, tr } from "./strings";
 
 /** Setting key backing the agent-autonomy default for new runs. */
@@ -77,25 +73,28 @@ export function useAutonomy(): AutonomyStore {
     }
   }, [syncMode]);
 
-  const setMode = useCallback(async (next: AutonomyMode): Promise<string | null> => {
-    const previous = modeRef.current;
-    syncMode(next);
-    setError(null);
-    try {
-      await setSetting(AUTONOMY_KEY, next);
-      return null;
-    } catch (e) {
-      // Roll back the optimistic control: a rejected write must not leave
-      // either surface showing a mode that was never persisted.
-      syncMode(previous);
-      const message =
-        typeof e === "object" && e !== null && "message" in e
-          ? String((e as { message: unknown }).message)
-          : tr(getLocale(), "settings.autonomySaveFail");
-      setError(message);
-      return message;
-    }
-  }, [syncMode]);
+  const setMode = useCallback(
+    async (next: AutonomyMode): Promise<string | null> => {
+      const previous = modeRef.current;
+      syncMode(next);
+      setError(null);
+      try {
+        await setSetting(AUTONOMY_KEY, next);
+        return null;
+      } catch (e) {
+        // Roll back the optimistic control: a rejected write must not leave
+        // either surface showing a mode that was never persisted.
+        syncMode(previous);
+        const message =
+          typeof e === "object" && e !== null && "message" in e
+            ? String((e as { message: unknown }).message)
+            : tr(getLocale(), "settings.autonomySaveFail");
+        setError(message);
+        return message;
+      }
+    },
+    [syncMode]
+  );
 
   useEffect(() => {
     void reload();
@@ -105,6 +104,6 @@ export function useAutonomy(): AutonomyStore {
   // as props to Settings and both conversation panes.
   return useMemo(
     () => ({ mode, loading, error, reload, setMode }),
-    [mode, loading, error, reload, setMode],
+    [mode, loading, error, reload, setMode]
   );
 }

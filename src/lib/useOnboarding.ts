@@ -54,7 +54,7 @@ export interface OnboardingStore {
 
 export function useOnboarding(): OnboardingStore {
   const [completed, setCompleted] = useState<boolean>(() =>
-    hasCompletedOnboarding(),
+    hasCompletedOnboarding()
   );
   const [open, setOpen] = useState<boolean>(false);
   const [runId, setRunId] = useState<number>(0);
@@ -73,6 +73,6 @@ export function useOnboarding(): OnboardingStore {
   // Memoized store identity (NEX-FE-002 audit).
   return useMemo(
     () => ({ completed, open, runId, dismiss, replay }),
-    [completed, open, runId, dismiss, replay],
+    [completed, open, runId, dismiss, replay]
   );
 }

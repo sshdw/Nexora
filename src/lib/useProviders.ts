@@ -69,15 +69,23 @@ export interface ProvidersStore {
   /** Register the provider definition (if needed) and store its credential.
    * Resolves `true` only when the operation succeeded, so the caller can
    * safely discard transient input; failures surface through `error`. */
-  connect: (name: string, displayName: string, credential: string) => Promise<boolean>;
+  connect: (
+    name: string,
+    displayName: string,
+    credential: string
+  ) => Promise<boolean>;
   /** Remove the provider definition and its keyring credential. */
   disconnect: (name: string) => Promise<void>;
 }
 
 export function useProviders(): ProvidersStore {
   const [supported, setSupported] = useState<SupportedProvider[]>([]);
-  const [configuredProviders, setConfiguredProviders] = useState<ProviderDef[]>([]);
-  const [credentialedNames, setCredentialedNames] = useState<Set<string>>(new Set());
+  const [configuredProviders, setConfiguredProviders] = useState<ProviderDef[]>(
+    []
+  );
+  const [credentialedNames, setCredentialedNames] = useState<Set<string>>(
+    new Set()
+  );
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
@@ -88,12 +96,13 @@ export function useProviders(): ProvidersStore {
     setLoading(true);
     setError(null);
     try {
-      const [defs, configured, providerSetting, modelSetting] = await Promise.all([
-        supportedProviders(),
-        listProviders(),
-        getSetting(SELECTED_PROVIDER_KEY),
-        getSetting(SELECTED_MODEL_KEY),
-      ]);
+      const [defs, configured, providerSetting, modelSetting] =
+        await Promise.all([
+          supportedProviders(),
+          listProviders(),
+          getSetting(SELECTED_PROVIDER_KEY),
+          getSetting(SELECTED_MODEL_KEY),
+        ]);
       setSupported(defs);
       setConfiguredProviders(configured);
 
@@ -102,8 +111,9 @@ export function useProviders(): ProvidersStore {
       const credentialed = new Set<string>();
       await Promise.all(
         defs.map(async (provider) => {
-          if (await hasProviderCredential(provider.name)) credentialed.add(provider.name);
-        }),
+          if (await hasProviderCredential(provider.name))
+            credentialed.add(provider.name);
+        })
       );
       setCredentialedNames(credentialed);
 
@@ -111,8 +121,11 @@ export function useProviders(): ProvidersStore {
       // belongs to the supported provider/model domains; anything else (a
       // stale or hand-edited value) falls back to the default (no selection).
       // A valid custom model ID persists like a listed one.
-      const validProvider =
-        defs.some((provider) => provider.name === providerSetting) ? providerSetting : null;
+      const validProvider = defs.some(
+        (provider) => provider.name === providerSetting
+      )
+        ? providerSetting
+        : null;
       const validModel =
         modelSetting === null
           ? null
@@ -142,7 +155,9 @@ export function useProviders(): ProvidersStore {
         // valid custom model ID, which is provider-independent and kept.
         const def = supported.find((provider) => provider.name === name);
         const nextModel =
-          def && selectedModel && (def.models.includes(selectedModel) || isCustomModelId(selectedModel))
+          def &&
+          selectedModel &&
+          (def.models.includes(selectedModel) || isCustomModelId(selectedModel))
             ? selectedModel
             : null;
         if (nextModel !== selectedModel) {
@@ -155,7 +170,7 @@ export function useProviders(): ProvidersStore {
         setError(toCommandError(e));
       }
     },
-    [supported, selectedModel],
+    [supported, selectedModel]
   );
 
   const selectModel = useCallback(async (model: string): Promise<void> => {
@@ -167,12 +182,18 @@ export function useProviders(): ProvidersStore {
       setError(toCommandError(e));
     }
   }, []);
-const connect = useCallback(
-    async (name: string, displayName: string, credential: string): Promise<boolean> => {
+  const connect = useCallback(
+    async (
+      name: string,
+      displayName: string,
+      credential: string
+    ): Promise<boolean> => {
       setWorking(true);
       setError(null);
       try {
-        const configured = configuredProviders.some((provider) => provider.name === name);
+        const configured = configuredProviders.some(
+          (provider) => provider.name === name
+        );
         if (!configured) {
           await createProvider(name, displayName);
         }
@@ -190,7 +211,7 @@ const connect = useCallback(
         setWorking(false);
       }
     },
-    [configuredProviders, credentialedNames, reload],
+    [configuredProviders, credentialedNames, reload]
   );
 
   const disconnect = useCallback(
@@ -205,7 +226,9 @@ const connect = useCallback(
           await setSetting(SELECTED_MODEL_KEY, null);
         }
         await removeProviderCredential(name);
-        const def = configuredProviders.find((provider) => provider.name === name);
+        const def = configuredProviders.find(
+          (provider) => provider.name === name
+        );
         if (def) {
           await removeProvider(def.id);
         }
@@ -216,7 +239,7 @@ const connect = useCallback(
         setWorking(false);
       }
     },
-    [configuredProviders, selectedProvider, reload],
+    [configuredProviders, selectedProvider, reload]
   );
 
   // Memoized derivation (NEX-FE-002 audit): without this the `providers`
@@ -227,16 +250,16 @@ const connect = useCallback(
       supported.map((definition) => ({
         supported: definition,
         configured: configuredProviders.some(
-          (provider) => provider.name === definition.name,
+          (provider) => provider.name === definition.name
         ),
         credentialed: credentialedNames.has(definition.name),
         available:
           credentialedNames.has(definition.name) &&
           configuredProviders.some(
-            (provider) => provider.name === definition.name,
+            (provider) => provider.name === definition.name
           ),
       })),
-    [supported, configuredProviders, credentialedNames],
+    [supported, configuredProviders, credentialedNames]
   );
 
   // Memoized store identity (NEX-FE-002 audit).
@@ -266,7 +289,7 @@ const connect = useCallback(
       selectModel,
       connect,
       disconnect,
-    ],
+    ]
   );
 }
 
@@ -277,9 +300,13 @@ function toCommandError(error: unknown): CommandError {
     typeof (error as CommandError).kind === "string" &&
     typeof (error as CommandError).message === "string"
   ) {
-    return { kind: (error as CommandError).kind, message: (error as CommandError).message };
+    return {
+      kind: (error as CommandError).kind,
+      message: (error as CommandError).message,
+    };
   }
   if (typeof error === "string") return { kind: "unknown", message: error };
-  if (error instanceof Error) return { kind: "unknown", message: error.message };
+  if (error instanceof Error)
+    return { kind: "unknown", message: error.message };
   return { kind: "unknown", message: tr(getLocale(), "common.dbUnreachable") };
 }

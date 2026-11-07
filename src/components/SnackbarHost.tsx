@@ -71,21 +71,24 @@ export function SnackbarProvider({ children }: { children: ReactNode }) {
     setSnack(null);
   }, []);
 
-  const showSnack = useCallback((message: string, options?: ShowSnackOptions) => {
-    keyRef.current += 1;
-    const key = keyRef.current;
-    setSnack({
-      key,
-      message,
-      actionLabel: options?.actionLabel,
-      onAction: options?.onAction,
-      timeoutMs: options?.timeoutMs,
-    });
-  }, []);
+  const showSnack = useCallback(
+    (message: string, options?: ShowSnackOptions) => {
+      keyRef.current += 1;
+      const key = keyRef.current;
+      setSnack({
+        key,
+        message,
+        actionLabel: options?.actionLabel,
+        onAction: options?.onAction,
+        timeoutMs: options?.timeoutMs,
+      });
+    },
+    []
+  );
 
   const value = useMemo(
     () => ({ showSnack, dismissSnack }),
-    [showSnack, dismissSnack],
+    [showSnack, dismissSnack]
   );
 
   return (

@@ -26,7 +26,11 @@ export function createPrompt(title: string, content: string): Promise<number> {
 }
 
 /** Update a prompt's `title` / `content` via `update_prompt` (FR-007). */
-export function updatePrompt(id: number, title: string, content: string): Promise<void> {
+export function updatePrompt(
+  id: number,
+  title: string,
+  content: string
+): Promise<void> {
   return invoke<void>("update_prompt", { id, title, content });
 }
 
@@ -38,9 +42,13 @@ export function updatePrompt(id: number, title: string, content: string): Promis
  * clear-all) is refused. Cancelling at the native dialog rejects and deletes
  * nothing (FR-007). */
 export async function deletePrompt(id: number): Promise<void> {
-  const confirmationId = await requestConfirmation("data_management", OP_DELETE_PROMPT, {
-    targetId: id,
-  });
+  const confirmationId = await requestConfirmation(
+    "data_management",
+    OP_DELETE_PROMPT,
+    {
+      targetId: id,
+    }
+  );
   return invoke<void>("delete_prompt_permanently", {
     id,
     confirmationId,

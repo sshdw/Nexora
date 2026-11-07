@@ -88,11 +88,14 @@ function riskLabel(signal: string, locale: Locale = getLocale()): string {
 }
 
 /** Compact stats line for one timeline node: counts only, never content. */
-function statsLine(commit: {
-  files_changed: number;
-  insertions: number;
-  deletions: number;
-}, locale: Locale = getLocale()): string {
+function statsLine(
+  commit: {
+    files_changed: number;
+    insertions: number;
+    deletions: number;
+  },
+  locale: Locale = getLocale()
+): string {
   const files = tp(locale, "files", commit.files_changed);
   return `${files} · +${commit.insertions} −${commit.deletions}`;
 }
@@ -109,7 +112,10 @@ export interface VersionControlPanelProps {
   request?: { token: number; action: "refresh" | "focus-commit" } | null;
 }
 
-export default function VersionControlPanel({ onClose, request = null }: VersionControlPanelProps) {
+export default function VersionControlPanel({
+  onClose,
+  request = null,
+}: VersionControlPanelProps) {
   const { locale, t, tp: tpn } = useStrings();
   const vcs = useVcs();
   const {
@@ -158,7 +164,8 @@ export default function VersionControlPanel({ onClose, request = null }: Version
     commitRef.current?.focus();
   }, [request, loading, info]);
 
-  const stagedCount = info?.files.filter((file) => file.status === "staged").length ?? 0;
+  const stagedCount =
+    info?.files.filter((file) => file.status === "staged").length ?? 0;
   const explainable = commitDiff !== null && commitDiff.files.length > 0;
 
   return (
@@ -167,7 +174,9 @@ export default function VersionControlPanel({ onClose, request = null }: Version
         <div className="nex-vcs-heading">
           <h2 className="nex-vcs-title">{t("vcs.title")}</h2>
           <p className="nex-vcs-subtitle">
-            {info?.branch ? t("vcs.subtitleBranch", { branch: info.branch }) : t("vcs.subtitleBare")}{" "}
+            {info?.branch
+              ? t("vcs.subtitleBranch", { branch: info.branch })
+              : t("vcs.subtitleBare")}{" "}
             {t("vcs.subtitleSuffix")}
           </p>
         </div>
@@ -222,7 +231,10 @@ export default function VersionControlPanel({ onClose, request = null }: Version
             )}
             {tab === "working" ? (
               <>
-                <section className="nex-vcs-section" aria-label={t("vcs.changedTitle", { n: info.files.length })}>
+                <section
+                  className="nex-vcs-section"
+                  aria-label={t("vcs.changedTitle", { n: info.files.length })}
+                >
                   <h3 className="nex-vcs-section-title">
                     {t("vcs.changedTitle", { n: info.files.length })}
                   </h3>
@@ -239,7 +251,10 @@ export default function VersionControlPanel({ onClose, request = null }: Version
                             <li key={file.path} className="nex-vcs-file-row">
                               <button
                                 type="button"
-                                className={"nex-vcs-file" + (selected ? " is-selected" : "")}
+                                className={
+                                  "nex-vcs-file" +
+                                  (selected ? " is-selected" : "")
+                                }
                                 aria-current={selected ? "true" : undefined}
                                 onClick={() => void vcs.loadDiff(file.path)}
                               >
@@ -257,9 +272,15 @@ export default function VersionControlPanel({ onClose, request = null }: Version
                                 variant="quiet"
                                 size="sm"
                                 disabled={busy || acting !== null}
-                                onClick={() => void vcs.toggleStage(file.path, staged)}
+                                onClick={() =>
+                                  void vcs.toggleStage(file.path, staged)
+                                }
                               >
-                                {busy ? t("vcs.working") : staged ? t("vcs.unstage") : t("vcs.stage")}
+                                {busy
+                                  ? t("vcs.working")
+                                  : staged
+                                    ? t("vcs.unstage")
+                                    : t("vcs.stage")}
                               </M3Button>
                             </li>
                           );
@@ -275,20 +296,33 @@ export default function VersionControlPanel({ onClose, request = null }: Version
                 </section>
 
                 {selectedPath && (
-                  <section className="nex-vcs-section" aria-label={t("vcs.diffAria", { path: selectedPath })}>
+                  <section
+                    className="nex-vcs-section"
+                    aria-label={t("vcs.diffAria", { path: selectedPath })}
+                  >
                     <h3 className="nex-vcs-section-title">
-                      {t("vcs.diffTitle")} <span className="nex-tag nex-tag-mono">{selectedPath}</span>
+                      {t("vcs.diffTitle")}{" "}
+                      <span className="nex-tag nex-tag-mono">
+                        {selectedPath}
+                      </span>
                     </h3>
                     {diffLoading ? (
-                      <M3LoadingIndicator label={t("vcs.diffLoading", { path: selectedPath })} />
+                      <M3LoadingIndicator
+                        label={t("vcs.diffLoading", { path: selectedPath })}
+                      />
                     ) : diffError || !diff ? (
-                      <div className="nex-composer-error nex-fade-in" role="alert">
+                      <div
+                        className="nex-composer-error nex-fade-in"
+                        role="alert"
+                      >
                         {diffError ?? t("vcs.diffUnavailable")}
                       </div>
                     ) : diff.binary ? (
                       <p className="nex-agent-empty">{t("vcs.binaryFile")}</p>
                     ) : diff.diff === "" ? (
-                      <p className="nex-agent-empty">{t("vcs.noChangesFile")}</p>
+                      <p className="nex-agent-empty">
+                        {t("vcs.noChangesFile")}
+                      </p>
                     ) : (
                       <>
                         {diff.truncated && (
@@ -299,7 +333,9 @@ export default function VersionControlPanel({ onClose, request = null }: Version
                         <div
                           className="nex-vcs-diff-scroll"
                           role="region"
-                          aria-label={t("vcs.diffRegion", { path: selectedPath })}
+                          aria-label={t("vcs.diffRegion", {
+                            path: selectedPath,
+                          })}
                           tabIndex={0}
                         >
                           <DiffView observation={diff.diff} />
@@ -309,8 +345,13 @@ export default function VersionControlPanel({ onClose, request = null }: Version
                   </section>
                 )}
 
-                <section className="nex-vcs-section" aria-label={t("vcs.commitSection", { n: stagedCount })}>
-                  <h3 className="nex-vcs-section-title">{t("vcs.commitSection", { n: stagedCount })}</h3>
+                <section
+                  className="nex-vcs-section"
+                  aria-label={t("vcs.commitSection", { n: stagedCount })}
+                >
+                  <h3 className="nex-vcs-section-title">
+                    {t("vcs.commitSection", { n: stagedCount })}
+                  </h3>
                   <textarea
                     ref={commitRef}
                     className="nex-composer-input"
@@ -319,7 +360,9 @@ export default function VersionControlPanel({ onClose, request = null }: Version
                     aria-label={t("vcs.commitAria")}
                     value={commitMessage}
                     disabled={acting !== null || generating}
-                    onChange={(event) => vcs.setCommitMessage(event.target.value)}
+                    onChange={(event) =>
+                      vcs.setCommitMessage(event.target.value)
+                    }
                   />
                   {generatedTruncated && (
                     <p className="nex-vcs-notice" role="note">
@@ -339,11 +382,16 @@ export default function VersionControlPanel({ onClose, request = null }: Version
                       variant="primary"
                       size="sm"
                       disabled={
-                        acting !== null || generating || commitMessage.trim() === "" || stagedCount === 0
+                        acting !== null ||
+                        generating ||
+                        commitMessage.trim() === "" ||
+                        stagedCount === 0
                       }
                       onClick={() => void vcs.commit()}
                     >
-                      {acting === "commit" ? t("vcs.committing") : t("vcs.commit")}
+                      {acting === "commit"
+                        ? t("vcs.committing")
+                        : t("vcs.commit")}
                     </M3Button>
                   </div>
                   <p className="nex-vcs-notice" role="note">
@@ -351,17 +399,30 @@ export default function VersionControlPanel({ onClose, request = null }: Version
                   </p>
                 </section>
 
-                <section className="nex-vcs-section" aria-label={t("vcs.pushSection")}>
-                  <h3 className="nex-vcs-section-title">{t("vcs.pushSection")}</h3>
+                <section
+                  className="nex-vcs-section"
+                  aria-label={t("vcs.pushSection")}
+                >
+                  <h3 className="nex-vcs-section-title">
+                    {t("vcs.pushSection")}
+                  </h3>
                   <div className="nex-vcs-header-actions">
                     <M3Button
                       variant="secondary"
                       size="sm"
                       disabled={acting !== null || !info.branch}
                       onClick={() => void vcs.push()}
-                      title={info.branch ? t("vcs.pushTitleOk") : t("vcs.pushTitleDetached")}
+                      title={
+                        info.branch
+                          ? t("vcs.pushTitleOk")
+                          : t("vcs.pushTitleDetached")
+                      }
                     >
-                      {acting === "push" ? t("vcs.pushing") : pushArmed ? t("vcs.confirmPush") : t("vcs.push")}
+                      {acting === "push"
+                        ? t("vcs.pushing")
+                        : pushArmed
+                          ? t("vcs.confirmPush")
+                          : t("vcs.push")}
                     </M3Button>
                   </div>
                   {pushArmed && info.branch && acting === null && (
@@ -376,8 +437,15 @@ export default function VersionControlPanel({ onClose, request = null }: Version
               </>
             ) : (
               <>
-                <section className="nex-vcs-section" aria-label={t("vcs.timelineTitle", { n: info.commits.length })}>
-                  <h3 className="nex-vcs-section-title">{t("vcs.timelineTitle", { n: info.commits.length })}</h3>
+                <section
+                  className="nex-vcs-section"
+                  aria-label={t("vcs.timelineTitle", {
+                    n: info.commits.length,
+                  })}
+                >
+                  <h3 className="nex-vcs-section-title">
+                    {t("vcs.timelineTitle", { n: info.commits.length })}
+                  </h3>
                   {info.commits.length === 0 ? (
                     <p className="nex-agent-empty">{t("vcs.noCommits")}</p>
                   ) : (
@@ -385,15 +453,24 @@ export default function VersionControlPanel({ onClose, request = null }: Version
                       {info.commits.map((commit) => {
                         const selected = commit.hash === selectedCommit;
                         return (
-                          <li key={commit.hash} className="nex-vcs-timeline-node">
-                            <span className="nex-vcs-timeline-dot" aria-hidden="true" />
+                          <li
+                            key={commit.hash}
+                            className="nex-vcs-timeline-node"
+                          >
+                            <span
+                              className="nex-vcs-timeline-dot"
+                              aria-hidden="true"
+                            />
                             <button
                               type="button"
                               className={
-                                "nex-vcs-timeline-card" + (selected ? " is-selected" : "")
+                                "nex-vcs-timeline-card" +
+                                (selected ? " is-selected" : "")
                               }
                               aria-current={selected ? "true" : undefined}
-                              onClick={() => void vcs.loadCommitDiff(commit.hash)}
+                              onClick={() =>
+                                void vcs.loadCommitDiff(commit.hash)
+                              }
                             >
                               <span className="nex-vcs-timeline-row">
                                 <span
@@ -412,7 +489,11 @@ export default function VersionControlPanel({ onClose, request = null }: Version
                               <span className="nex-vcs-commit-meta">
                                 {commit.author || t("vcs.unknownAuthor")}
                                 {" · "}
-                                <time dateTime={new Date(commit.time * 1000).toISOString()}>
+                                <time
+                                  dateTime={new Date(
+                                    commit.time * 1000
+                                  ).toISOString()}
+                                >
                                   {formatRelativeTime(commit.time, locale)}
                                 </time>
                                 {" · "}
@@ -441,15 +522,27 @@ export default function VersionControlPanel({ onClose, request = null }: Version
                 {selectedCommit && (
                   <section
                     className="nex-vcs-section"
-                    aria-label={t("vcs.commitAriaTitle", { hash: shortHash(selectedCommit) })}
+                    aria-label={t("vcs.commitAriaTitle", {
+                      hash: shortHash(selectedCommit),
+                    })}
                   >
                     <h3 className="nex-vcs-section-title">
-                      {t("vcs.commitTitle")} <span className="nex-tag nex-tag-mono">{shortHash(selectedCommit)}</span>
+                      {t("vcs.commitTitle")}{" "}
+                      <span className="nex-tag nex-tag-mono">
+                        {shortHash(selectedCommit)}
+                      </span>
                     </h3>
                     {commitDiffLoading ? (
-                      <M3LoadingIndicator label={t("vcs.commitLoading", { hash: shortHash(selectedCommit) })} />
+                      <M3LoadingIndicator
+                        label={t("vcs.commitLoading", {
+                          hash: shortHash(selectedCommit),
+                        })}
+                      />
                     ) : commitDiffError || !commitDiff ? (
-                      <div className="nex-composer-error nex-fade-in" role="alert">
+                      <div
+                        className="nex-composer-error nex-fade-in"
+                        role="alert"
+                      >
                         {commitDiffError ?? t("vcs.commitDiffUnavailable")}
                       </div>
                     ) : (
@@ -478,7 +571,9 @@ export default function VersionControlPanel({ onClose, request = null }: Version
                             </ul>
                             {commitDiff.files_overflow > 0 && (
                               <p className="nex-vcs-notice" role="note">
-                                {t("vcs.filesCappedShort", { n: commitDiff.files_overflow })}
+                                {t("vcs.filesCappedShort", {
+                                  n: commitDiff.files_overflow,
+                                })}
                               </p>
                             )}
                           </>
@@ -493,7 +588,9 @@ export default function VersionControlPanel({ onClose, request = null }: Version
                             <div
                               className="nex-vcs-diff-scroll"
                               role="region"
-                              aria-label={t("vcs.commitDiffRegion", { hash: shortHash(selectedCommit) })}
+                              aria-label={t("vcs.commitDiffRegion", {
+                                hash: shortHash(selectedCommit),
+                              })}
                               tabIndex={0}
                             >
                               <DiffView observation={commitDiff.diff} />
@@ -505,7 +602,9 @@ export default function VersionControlPanel({ onClose, request = null }: Version
                             variant="quiet"
                             size="sm"
                             disabled={explain.loading || !explainable}
-                            onClick={() => void vcs.explainCommit(commitDiff.hash)}
+                            onClick={() =>
+                              void vcs.explainCommit(commitDiff.hash)
+                            }
                             title={t("vcs.explainTitle")}
                           >
                             {explain.loading
@@ -518,9 +617,15 @@ export default function VersionControlPanel({ onClose, request = null }: Version
                             <M3Button
                               variant="quiet"
                               size="sm"
-                              onClick={() => void vcs.copyExplanation(explain.explanation ?? "")}
+                              onClick={() =>
+                                void vcs.copyExplanation(
+                                  explain.explanation ?? ""
+                                )
+                              }
                             >
-                              {explain.copied ? t("vcs.copied") : t("vcs.copyExplanation")}
+                              {explain.copied
+                                ? t("vcs.copied")
+                                : t("vcs.copyExplanation")}
                             </M3Button>
                           )}
                         </div>
@@ -533,12 +638,17 @@ export default function VersionControlPanel({ onClose, request = null }: Version
                           </p>
                         )}
                         {explain.error && (
-                          <div className="nex-composer-error nex-fade-in" role="alert">
+                          <div
+                            className="nex-composer-error nex-fade-in"
+                            role="alert"
+                          >
                             {explain.error}
                           </div>
                         )}
                         {explain.explanation && (
-                          <p className="nex-vcs-explanation">{explain.explanation}</p>
+                          <p className="nex-vcs-explanation">
+                            {explain.explanation}
+                          </p>
                         )}
                       </>
                     )}

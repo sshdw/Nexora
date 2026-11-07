@@ -32,7 +32,7 @@ export function createDebtItem(
   title: string,
   severity: string,
   location: string | null,
-  note: string | null,
+  note: string | null
 ): Promise<number> {
   return invoke<number>("create_debt_item", {
     title,
@@ -48,7 +48,10 @@ export function listDebtItems(): Promise<DebtItem[]> {
 }
 
 /** Move one debt item to a new triage status. */
-export function updateDebtItemStatus(debtId: number, status: string): Promise<void> {
+export function updateDebtItemStatus(
+  debtId: number,
+  status: string
+): Promise<void> {
   return invoke<void>("update_debt_item_status", { debtId, status });
 }
 

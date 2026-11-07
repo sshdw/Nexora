@@ -23,21 +23,31 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** matchMedia mock whose `matches` answer can be flipped mid-test; the
  *  registered change listeners are captured so a test can fire them. */
-function mockMatchMedia(reduced: boolean): { setReduced: (next: boolean) => void } {
+function mockMatchMedia(reduced: boolean): {
+  setReduced: (next: boolean) => void;
+} {
   let matches = reduced;
   const listeners = new Set<(event: { matches: boolean }) => void>();
   vi.stubGlobal("matchMedia", (query: string) => ({
     matches: query === REDUCED_MOTION_QUERY ? matches : false,
     media: query,
     onchange: null,
-    addEventListener: (type: string, listener: (event: { matches: boolean }) => void) => {
+    addEventListener: (
+      type: string,
+      listener: (event: { matches: boolean }) => void
+    ) => {
       if (type === "change") listeners.add(listener);
     },
-    removeEventListener: (type: string, listener: (event: { matches: boolean }) => void) => {
+    removeEventListener: (
+      type: string,
+      listener: (event: { matches: boolean }) => void
+    ) => {
       if (type === "change") listeners.delete(listener);
     },
-    addListener: (listener: (event: { matches: boolean }) => void) => listeners.add(listener),
-    removeListener: (listener: (event: { matches: boolean }) => void) => listeners.delete(listener),
+    addListener: (listener: (event: { matches: boolean }) => void) =>
+      listeners.add(listener),
+    removeListener: (listener: (event: { matches: boolean }) => void) =>
+      listeners.delete(listener),
     dispatchEvent: () => false,
   }));
   return {
@@ -94,7 +104,10 @@ describe("motion level — startup", () => {
       [900, "l1"],
     ] as const) {
       window.localStorage.clear();
-      seed({ auto: { count, lastUse: Math.floor(Date.now() / 1000) }, manual: null });
+      seed({
+        auto: { count, lastUse: Math.floor(Date.now() / 1000) },
+        manual: null,
+      });
       const mod = await fresh();
       expect(mod.applyMotionLevel(), `count ${count}`).toBe(expected);
     }
@@ -112,11 +125,16 @@ describe("motion level — startup", () => {
     for (const [count, idleDays, expected] of cases) {
       window.localStorage.clear();
       seed({
-        auto: { count, lastUse: Math.floor((Date.now() - idleDays * DAY_MS) / 1000) },
+        auto: {
+          count,
+          lastUse: Math.floor((Date.now() - idleDays * DAY_MS) / 1000),
+        },
         manual: null,
       });
       const mod = await fresh();
-      expect(mod.applyMotionLevel(), `${count} uses idle ${idleDays}d`).toBe(expected);
+      expect(mod.applyMotionLevel(), `${count} uses idle ${idleDays}d`).toBe(
+        expected
+      );
     }
   });
 
@@ -220,7 +238,10 @@ describe("motion level — interaction recording", () => {
   it("recomputes with the 21-day idle bump at the start of an interaction", async () => {
     mockMatchMedia(false);
     seed({
-      auto: { count: 41, lastUse: Math.floor((Date.now() - 22 * DAY_MS) / 1000) },
+      auto: {
+        count: 41,
+        lastUse: Math.floor((Date.now() - 22 * DAY_MS) / 1000),
+      },
       manual: null,
     });
     const mod = await fresh();
@@ -230,8 +251,9 @@ describe("motion level — interaction recording", () => {
     // counter takes over on the next one.
     expect(mod.recordSurfaceUse()).toBe("l2");
     expect(mod.recordSurfaceUse()).toBe("l1"); // idle reset, band(43)
-    expect((stored() as { auto: { lastUse: number } }).auto.lastUse)
-      .toBeGreaterThanOrEqual(Math.floor((Date.now() - 5_000) / 1000));
+    expect(
+      (stored() as { auto: { lastUse: number } }).auto.lastUse
+    ).toBeGreaterThanOrEqual(Math.floor((Date.now() - 5_000) / 1000));
   });
 });
 

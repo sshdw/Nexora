@@ -18,7 +18,7 @@ const { mockInvoke, failNext, baseImpl } = vi.hoisted(() => {
   const failNext = { command: "" };
   const baseImpl = async (
     command: string,
-    args?: Record<string, unknown>,
+    args?: Record<string, unknown>
   ): Promise<unknown> => {
     void args;
     if (failNext.command === command) {
@@ -57,7 +57,9 @@ describe("useSpendLimit — load", () => {
     });
     const { result } = renderHook(() => useSpendLimit());
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(mockInvoke).toHaveBeenCalledWith("get_setting", { key: SPEND_LIMIT_KEY });
+    expect(mockInvoke).toHaveBeenCalledWith("get_setting", {
+      key: SPEND_LIMIT_KEY,
+    });
     expect(result.current.limitMicroUsd).toBe(7500);
     expect(result.current.error).toBeNull();
   });
@@ -80,7 +82,10 @@ describe("useSpendLimit — load", () => {
     const { result } = renderHook(() => useSpendLimit());
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.limitMicroUsd).toBeNull();
-    expect(result.current.error).toEqual({ kind: "io", message: "backend refused" });
+    expect(result.current.error).toEqual({
+      kind: "io",
+      message: "backend refused",
+    });
   });
 });
 
@@ -115,7 +120,9 @@ describe("useSpendLimit — persist", () => {
       accepted = await result.current.setLimit(null);
     });
     expect(accepted).toBe(true);
-    expect(mockInvoke).toHaveBeenCalledWith("delete_setting", { key: SPEND_LIMIT_KEY });
+    expect(mockInvoke).toHaveBeenCalledWith("delete_setting", {
+      key: SPEND_LIMIT_KEY,
+    });
     expect(result.current.limitMicroUsd).toBeNull();
   });
 
@@ -131,12 +138,16 @@ describe("useSpendLimit — persist", () => {
       expect(accepted).toBe(false);
       expect(result.current.error?.kind).toBe("invalidInput");
       expect(result.current.error?.message).toBe(
-        "The spend limit must be a non-negative integer.",
+        "The spend limit must be a non-negative integer."
       );
     }
     // The value-domain rejection is local: no write command ever fired.
-    expect(mockInvoke.mock.calls.some(([command]) => command === "set_setting")).toBe(false);
-    expect(mockInvoke.mock.calls.some(([command]) => command === "delete_setting")).toBe(false);
+    expect(
+      mockInvoke.mock.calls.some(([command]) => command === "set_setting")
+    ).toBe(false);
+    expect(
+      mockInvoke.mock.calls.some(([command]) => command === "delete_setting")
+    ).toBe(false);
   });
 
   it("surfaces a failed write and keeps the previous mirror value", async () => {
@@ -149,7 +160,10 @@ describe("useSpendLimit — persist", () => {
       accepted = await result.current.setLimit(2500);
     });
     expect(accepted).toBe(false);
-    expect(result.current.error).toEqual({ kind: "io", message: "backend refused" });
+    expect(result.current.error).toEqual({
+      kind: "io",
+      message: "backend refused",
+    });
     expect(result.current.limitMicroUsd).toBeNull();
     expect(result.current.saving).toBe(false);
   });

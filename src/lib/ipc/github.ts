@@ -185,7 +185,10 @@ export interface GhActionLog {
 }
 
 /** Fetch one failed job's log tail via `gh_action_log`. */
-export function ghActionLog(runId: number, jobId: number): Promise<GhActionLog> {
+export function ghActionLog(
+  runId: number,
+  jobId: number
+): Promise<GhActionLog> {
   return invoke<GhActionLog>("gh_action_log", { runId, jobId });
 }
 

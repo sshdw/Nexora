@@ -31,8 +31,19 @@ import M3LoadingIndicator from "./M3LoadingIndicator";
 type ColumnStatus = AgentTask["status"];
 type MoveTarget = "pending" | "completed" | "failed" | "cancelled";
 
-const COLUMNS: readonly ColumnStatus[] = ["pending", "running", "completed", "failed", "cancelled"];
-const MOVE_TARGETS: readonly MoveTarget[] = ["pending", "completed", "failed", "cancelled"];
+const COLUMNS: readonly ColumnStatus[] = [
+  "pending",
+  "running",
+  "completed",
+  "failed",
+  "cancelled",
+];
+const MOVE_TARGETS: readonly MoveTarget[] = [
+  "pending",
+  "completed",
+  "failed",
+  "cancelled",
+];
 
 /** Fixed-vocabulary column label; unknown values echo defensively. */
 function columnLabel(status: ColumnStatus, t: Strings["t"]): string {
@@ -70,12 +81,15 @@ export interface KanbanBoardProps {
   hiddenTaskId?: number | null;
 }
 
-export default function KanbanBoard({ store, hiddenTaskId = null }: KanbanBoardProps) {
+export default function KanbanBoard({
+  store,
+  hiddenTaskId = null,
+}: KanbanBoardProps) {
   const { t } = useStrings();
   // Per-board-instance holder label: two boards are two surfaces, so a
   // contended lock honestly names the other board instance.
   const [holder] = useState(
-    () => `kanban-${Math.random().toString(36).slice(2, 8)}`,
+    () => `kanban-${Math.random().toString(36).slice(2, 8)}`
   );
   const [busyIds, setBusyIds] = useState<Record<number, boolean>>({});
   const [denied, setDenied] = useState<Record<number, DeniedMove>>({});
@@ -121,7 +135,7 @@ export default function KanbanBoard({ store, hiddenTaskId = null }: KanbanBoardP
         });
       }
     },
-    [holder, store],
+    [holder, store]
   );
 
   const handleDropOn = useCallback(
@@ -131,14 +145,17 @@ export default function KanbanBoard({ store, hiddenTaskId = null }: KanbanBoardP
       const raw = event.dataTransfer.getData("text/plain");
       const taskId = Number(raw);
       if (!Number.isInteger(taskId)) return;
-      const view = store.tasks.find((candidate) => candidate.task.id === taskId);
+      const view = store.tasks.find(
+        (candidate) => candidate.task.id === taskId
+      );
       if (!view || !canMove(view.task.status, target)) return;
       void handleMove(view, target);
     },
-    [handleMove, store.tasks],
+    [handleMove, store.tasks]
   );
 
-  const doneCount = (view: TaskView) => view.steps.filter((s) => s.status === "completed").length;
+  const doneCount = (view: TaskView) =>
+    view.steps.filter((s) => s.status === "completed").length;
 
   return (
     <div className="nex-term-body">
@@ -158,7 +175,8 @@ export default function KanbanBoard({ store, hiddenTaskId = null }: KanbanBoardP
               <section
                 key={status}
                 className={
-                  "nex-kanban-column" + (dropTarget === status ? " is-drop-target" : "")
+                  "nex-kanban-column" +
+                  (dropTarget === status ? " is-drop-target" : "")
                 }
                 aria-label={`${columnLabel(status, t)} — ${cards.length}`}
                 onDragOver={
@@ -183,7 +201,9 @@ export default function KanbanBoard({ store, hiddenTaskId = null }: KanbanBoardP
                   <span className="nex-tag nex-tag-mono">{cards.length}</span>
                 </div>
                 {status === "running" && cards.length > 0 && (
-                  <p className="nex-kanban-note">{t("kanban.runningManaged")}</p>
+                  <p className="nex-kanban-note">
+                    {t("kanban.runningManaged")}
+                  </p>
                 )}
                 {cards.length === 0 ? (
                   <p className="nex-kanban-empty">{t("kanban.emptyColumn")}</p>
@@ -199,11 +219,16 @@ export default function KanbanBoard({ store, hiddenTaskId = null }: KanbanBoardP
                         aria-label={`${view.task.title} — ${columnLabel(view.task.status, t)}`}
                         draggable={draggable}
                         onDragStart={(event) => {
-                          event.dataTransfer.setData("text/plain", String(view.task.id));
+                          event.dataTransfer.setData(
+                            "text/plain",
+                            String(view.task.id)
+                          );
                           event.dataTransfer.effectAllowed = "move";
                         }}
                       >
-                        <span className="nex-kanban-card-title">{view.task.title}</span>
+                        <span className="nex-kanban-card-title">
+                          {view.task.title}
+                        </span>
                         {view.steps.length > 0 && (
                           <span className="nex-kanban-meta">
                             <span className="nex-tag nex-tag-mono">
@@ -217,7 +242,7 @@ export default function KanbanBoard({ store, hiddenTaskId = null }: KanbanBoardP
                         {view.task.status !== "running" && (
                           <div className="nex-kanban-actions">
                             {MOVE_TARGETS.filter((target) =>
-                              canMove(view.task.status, target),
+                              canMove(view.task.status, target)
                             ).map((target) => (
                               <M3Button
                                 key={target}
@@ -229,7 +254,9 @@ export default function KanbanBoard({ store, hiddenTaskId = null }: KanbanBoardP
                                 })}
                                 onClick={() => void handleMove(view, target)}
                               >
-                                {t("kanban.moveTo", { status: columnLabel(target, t) })}
+                                {t("kanban.moveTo", {
+                                  status: columnLabel(target, t),
+                                })}
                               </M3Button>
                             ))}
                           </div>
@@ -241,7 +268,9 @@ export default function KanbanBoard({ store, hiddenTaskId = null }: KanbanBoardP
                               variant="quiet"
                               size="sm"
                               disabled={busy}
-                              onClick={() => void handleMove(view, block.target)}
+                              onClick={() =>
+                                void handleMove(view, block.target)
+                              }
                             >
                               {t("kanban.takeOver")}
                             </M3Button>

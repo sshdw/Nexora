@@ -25,7 +25,13 @@ export interface PrivacySectionProps {
   onWipe: () => Promise<WipeResult>;
 }
 
-export default function PrivacySection({ status, error, onReload, onExport, onWipe }: PrivacySectionProps) {
+export default function PrivacySection({
+  status,
+  error,
+  onReload,
+  onExport,
+  onWipe,
+}: PrivacySectionProps) {
   const { locale, t } = useStrings();
   const [copied, setCopied] = useState(false);
   const [copyFailed, setCopyFailed] = useState(false);
@@ -106,12 +112,16 @@ export default function PrivacySection({ status, error, onReload, onExport, onWi
         <M3LoadingIndicator label={t("privacy.loading")} />
       ) : (
         <>
-          <h3 className="nex-activity-section-title">{t("privacy.surfaces")}</h3>
+          <h3 className="nex-activity-section-title">
+            {t("privacy.surfaces")}
+          </h3>
           <ul className="nex-activity-list">
             {status.surfaces.map((surface) => (
               <li key={surface.id} className="nex-activity-row">
                 <div className="nex-activity-row-main">
-                  <span className="nex-activity-row-title">{surface.title}</span>
+                  <span className="nex-activity-row-title">
+                    {surface.title}
+                  </span>
                   <span className="nex-activity-pill">
                     {surfaceStateLabel(surface.state, locale)}
                   </span>

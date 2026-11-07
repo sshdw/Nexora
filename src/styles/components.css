@@ -49,11 +49,17 @@
   background: transparent;
   color: inherit;
   cursor: pointer;
-  transition: background-color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard),
-    border-color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard),
-    color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard),
-    opacity var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard),
-    transform var(--nex-sys-motion-duration-short2) var(--nex-sys-motion-easing-standard);
+  transition:
+    background-color var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard),
+    border-color var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard),
+    color var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard),
+    opacity var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard),
+    transform var(--nex-sys-motion-duration-short2)
+      var(--nex-sys-motion-easing-standard);
 }
 
 /* Pressed layer (OFFICIAL 0.12 overlay). Painted over the
@@ -158,17 +164,25 @@
    with a single soft overshoot (OFFICIAL expressive-fast-spatial
    conversion pair). Reduced motion collapses both to instant. */
 .nex-btn-expressive {
-  transition: background-color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard),
-    border-color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard),
-    color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard),
-    opacity var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard),
+  transition:
+    background-color var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard),
+    border-color var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard),
+    color var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard),
+    opacity var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard),
     transform var(--nex-sys-motion-spring-expressive-fast-spatial-duration)
       var(--nex-sys-motion-spring-expressive-fast-spatial-curve);
 }
 .nex-btn-expressive:active:not(:disabled) {
   transform: scale(0.98);
-  transition: background-color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard),
-    transform var(--nex-sys-motion-duration-short2) var(--nex-sys-motion-easing-standard);
+  transition:
+    background-color var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard),
+    transform var(--nex-sys-motion-duration-short2)
+      var(--nex-sys-motion-easing-standard);
 }
 
 /* Shape-morph press (Banegasn-reference mechanic, sanctioned by
@@ -176,26 +190,34 @@
    squarer radius while pressed, then springs back. Applied to the
    composer's send pill only (NEXORA ADAPTATION rationing). */
 .nex-morph-pill {
-  transition-property: background-color, border-color, color, opacity, transform, border-radius;
-  transition-duration: var(--nex-sys-motion-duration-fast), var(--nex-sys-motion-duration-fast),
+  transition-property:
+    background-color, border-color, color, opacity, transform, border-radius;
+  transition-duration:
+    var(--nex-sys-motion-duration-fast), var(--nex-sys-motion-duration-fast),
     var(--nex-sys-motion-duration-fast), var(--nex-sys-motion-duration-fast),
     var(--nex-sys-motion-spring-expressive-fast-spatial-duration),
     var(--nex-sys-motion-spring-expressive-fast-spatial-duration);
-  transition-timing-function: var(--nex-sys-motion-easing-standard),
-    var(--nex-sys-motion-easing-standard), var(--nex-sys-motion-easing-standard),
-    var(--nex-sys-motion-easing-standard), var(--nex-sys-motion-spring-expressive-fast-spatial-curve),
+  transition-timing-function:
+    var(--nex-sys-motion-easing-standard),
+    var(--nex-sys-motion-easing-standard),
+    var(--nex-sys-motion-easing-standard),
+    var(--nex-sys-motion-easing-standard),
+    var(--nex-sys-motion-spring-expressive-fast-spatial-curve),
     var(--nex-sys-motion-spring-expressive-fast-spatial-curve);
 }
 .nex-morph-pill:active:not(:disabled) {
   border-radius: var(--shape-medium);
   transform: scale(0.98);
-  transition-duration: var(--nex-sys-motion-duration-fast), var(--nex-sys-motion-duration-fast),
+  transition-duration:
+    var(--nex-sys-motion-duration-fast), var(--nex-sys-motion-duration-fast),
     var(--nex-sys-motion-duration-fast), var(--nex-sys-motion-duration-fast),
     var(--nex-sys-motion-duration-short2), var(--nex-sys-motion-duration-short2);
-  transition-timing-function: var(--nex-sys-motion-easing-standard),
-    var(--nex-sys-motion-easing-standard), var(--nex-sys-motion-easing-standard),
-    var(--nex-sys-motion-easing-standard), var(--nex-sys-motion-easing-standard),
-    var(--nex-sys-motion-easing-standard);
+  transition-timing-function:
+    var(--nex-sys-motion-easing-standard),
+    var(--nex-sys-motion-easing-standard),
+    var(--nex-sys-motion-easing-standard),
+    var(--nex-sys-motion-easing-standard),
+    var(--nex-sys-motion-easing-standard), var(--nex-sys-motion-easing-standard);
 }
 
 /* ============================================================
@@ -220,8 +242,11 @@
   background: transparent;
   color: var(--color-on-surface-variant);
   cursor: pointer;
-  transition: background-color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard),
-    color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard);
+  transition:
+    background-color var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard),
+    color var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard);
 }
 .nex-icon-btn::after {
   content: "";
@@ -336,8 +361,11 @@
   background: var(--card);
   opacity: 0;
   pointer-events: none;
-  transition: opacity var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard),
-    background-color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard);
+  transition:
+    opacity var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard),
+    background-color var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard);
 }
 
 /* Revealed by: the pointer is over the row, the keyboard is INSIDE
@@ -374,11 +402,14 @@
    (which lives INSIDE the row button, before the actions in the
    tree) react to focus landing in the actions. */
 [data-slot="conversation-date"] {
-  transition: opacity var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard);
+  transition: opacity var(--nex-sys-motion-duration-fast)
+    var(--nex-sys-motion-easing-standard);
 }
 [data-slot="conversation-row"]:hover [data-slot="conversation-date"],
-[data-slot="conversation-row"][data-selected="true"] [data-slot="conversation-date"],
-[data-slot="conversation-row"]:has([data-slot="row-actions"]:focus-within) [data-slot="conversation-date"] {
+[data-slot="conversation-row"][data-selected="true"]
+  [data-slot="conversation-date"],
+[data-slot="conversation-row"]:has([data-slot="row-actions"]:focus-within)
+  [data-slot="conversation-date"] {
   opacity: 0;
 }
 
@@ -410,7 +441,8 @@
    move, they only arrive (motion contract, "quick fade enter"). */
 [data-slot="search-status"],
 [data-slot="search-empty"] {
-  animation: nex-fade-enter var(--nex-sys-motion-spring-expressive-fast-effects-duration)
+  animation: nex-fade-enter
+    var(--nex-sys-motion-spring-expressive-fast-effects-duration)
     var(--nex-sys-motion-spring-expressive-fast-effects-curve);
 }
 
@@ -441,8 +473,11 @@
   font-size: var(--type-size-body-medium);
   font-family: inherit;
   outline: none;
-  transition: border-color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard),
-    background-color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard);
+  transition:
+    border-color var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard),
+    background-color var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard);
 }
 
 .nex-textarea {
@@ -518,8 +553,11 @@
   color: var(--color-on-surface);
   font-size: var(--type-size-body-medium);
   outline: none;
-  transition: border-color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard),
-    background-color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard);
+  transition:
+    border-color var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard),
+    background-color var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard);
 }
 .nex-search-input::placeholder {
   color: var(--color-on-surface-tertiary);
@@ -690,8 +728,11 @@
   border-radius: var(--shape-small);
   background: transparent;
   text-align: left;
-  transition: background-color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard),
-    color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard);
+  transition:
+    background-color var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard),
+    color var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard);
 }
 .nex-nav-entry:hover {
   background: var(--state-hover);
@@ -793,8 +834,11 @@
   background: var(--color-surface-container-highest);
   border: 1px solid var(--color-outline-variant);
   border-radius: var(--shape-small);
-  transition: background-color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard),
-    border-color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard);
+  transition:
+    background-color var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard),
+    border-color var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard);
 }
 .nex-chip:hover {
   background: var(--state-hover);
@@ -834,8 +878,11 @@
   background: transparent;
   color: var(--color-on-surface-variant);
   cursor: pointer;
-  transition: background-color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard),
-    color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard);
+  transition:
+    background-color var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard),
+    color var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard);
 }
 .nex-chip-remove:hover:not(:disabled),
 .nex-chip-remove:active:not(:disabled) {
@@ -974,7 +1021,8 @@
    ============================================================ */
 
 .nex-fade-in {
-  animation: nex-fade-enter var(--nex-sys-motion-spring-expressive-fast-effects-duration)
+  animation: nex-fade-enter
+    var(--nex-sys-motion-spring-expressive-fast-effects-duration)
     var(--nex-sys-motion-spring-expressive-fast-effects-curve);
 }
 
@@ -1019,18 +1067,42 @@
   animation: nex-stagger-enter var(--nex-sys-motion-duration-medium4)
     var(--nex-sys-motion-easing-emphasized-decelerate) backwards;
 }
-.nex-stagger > *:nth-child(1) { animation-delay: calc(var(--nex-sys-motion-stagger-step) * 0); }
-.nex-stagger > *:nth-child(2) { animation-delay: calc(var(--nex-sys-motion-stagger-step) * 1); }
-.nex-stagger > *:nth-child(3) { animation-delay: calc(var(--nex-sys-motion-stagger-step) * 2); }
-.nex-stagger > *:nth-child(4) { animation-delay: calc(var(--nex-sys-motion-stagger-step) * 3); }
-.nex-stagger > *:nth-child(5) { animation-delay: calc(var(--nex-sys-motion-stagger-step) * 4); }
-.nex-stagger > *:nth-child(6) { animation-delay: calc(var(--nex-sys-motion-stagger-step) * 5); }
-.nex-stagger > *:nth-child(7) { animation-delay: calc(var(--nex-sys-motion-stagger-step) * 6); }
-.nex-stagger > *:nth-child(8) { animation-delay: calc(var(--nex-sys-motion-stagger-step) * 7); }
-.nex-stagger > *:nth-child(9) { animation-delay: calc(var(--nex-sys-motion-stagger-step) * 8); }
-.nex-stagger > *:nth-child(10) { animation-delay: calc(var(--nex-sys-motion-stagger-step) * 9); }
-.nex-stagger > *:nth-child(11) { animation-delay: calc(var(--nex-sys-motion-stagger-step) * 10); }
-.nex-stagger > *:nth-child(12) { animation-delay: calc(var(--nex-sys-motion-stagger-step) * 11); }
+.nex-stagger > *:nth-child(1) {
+  animation-delay: calc(var(--nex-sys-motion-stagger-step) * 0);
+}
+.nex-stagger > *:nth-child(2) {
+  animation-delay: calc(var(--nex-sys-motion-stagger-step) * 1);
+}
+.nex-stagger > *:nth-child(3) {
+  animation-delay: calc(var(--nex-sys-motion-stagger-step) * 2);
+}
+.nex-stagger > *:nth-child(4) {
+  animation-delay: calc(var(--nex-sys-motion-stagger-step) * 3);
+}
+.nex-stagger > *:nth-child(5) {
+  animation-delay: calc(var(--nex-sys-motion-stagger-step) * 4);
+}
+.nex-stagger > *:nth-child(6) {
+  animation-delay: calc(var(--nex-sys-motion-stagger-step) * 5);
+}
+.nex-stagger > *:nth-child(7) {
+  animation-delay: calc(var(--nex-sys-motion-stagger-step) * 6);
+}
+.nex-stagger > *:nth-child(8) {
+  animation-delay: calc(var(--nex-sys-motion-stagger-step) * 7);
+}
+.nex-stagger > *:nth-child(9) {
+  animation-delay: calc(var(--nex-sys-motion-stagger-step) * 8);
+}
+.nex-stagger > *:nth-child(10) {
+  animation-delay: calc(var(--nex-sys-motion-stagger-step) * 9);
+}
+.nex-stagger > *:nth-child(11) {
+  animation-delay: calc(var(--nex-sys-motion-stagger-step) * 10);
+}
+.nex-stagger > *:nth-child(12) {
+  animation-delay: calc(var(--nex-sys-motion-stagger-step) * 11);
+}
 
 @keyframes nex-stagger-enter {
   from {
@@ -1086,8 +1158,11 @@
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
-  transition: opacity var(--nex-sys-motion-duration-short3) var(--nex-sys-motion-easing-standard),
-    transform var(--nex-sys-motion-duration-short3) var(--nex-sys-motion-easing-standard),
+  transition:
+    opacity var(--nex-sys-motion-duration-short3)
+      var(--nex-sys-motion-easing-standard),
+    transform var(--nex-sys-motion-duration-short3)
+      var(--nex-sys-motion-easing-standard),
     visibility 0s linear var(--nex-sys-motion-duration-short3);
 }
 
@@ -1097,7 +1172,9 @@
   visibility: visible;
   transform: translateX(-50%) translateY(0);
   /* Delay only the reveal; hiding stays immediate. OFFICIAL medium4. */
-  transition-delay: var(--nex-sys-motion-duration-medium4), var(--nex-sys-motion-duration-medium4),
+  transition-delay:
+    var(--nex-sys-motion-duration-medium4),
+    var(--nex-sys-motion-duration-medium4),
     var(--nex-sys-motion-duration-medium4);
 }
 
@@ -1150,7 +1227,8 @@
   font-size: var(--type-size-body-small);
   font-weight: var(--type-weight-medium);
   cursor: pointer;
-  transition: background-color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard);
+  transition: background-color var(--nex-sys-motion-duration-fast)
+    var(--nex-sys-motion-easing-standard);
 }
 .nex-snackbar-action:hover {
   background: var(--state-inverse-hover);
@@ -1205,7 +1283,8 @@
   border-radius: var(--shape-full);
   background: var(--color-on-surface-variant);
   opacity: 0.4;
-  animation: nex-typing var(--nex-sys-motion-duration-normal) var(--nex-sys-motion-easing-standard) infinite;
+  animation: nex-typing var(--nex-sys-motion-duration-normal)
+    var(--nex-sys-motion-easing-standard) infinite;
 }
 .nex-typing-dot:nth-child(2) {
   animation-delay: var(--nex-sys-motion-loop-typing-dot-delay);
@@ -1328,8 +1407,8 @@
   border-radius: var(--shape-full);
   background: var(--color-primary);
   animation: nex-m3-loading-bounce var(--nex-sys-motion-duration-medium3)
-    var(--nex-sys-motion-spring-expressive-default-spatial-curve)
-    infinite alternate;
+    var(--nex-sys-motion-spring-expressive-default-spatial-curve) infinite
+    alternate;
 }
 .nex-m3-loading-dot:nth-child(2) {
   animation-delay: var(--nex-sys-motion-loop-typing-dot-delay);
@@ -1425,8 +1504,8 @@
   height: 100%;
 }
 .nex-m3-progress-circular.is-indeterminate .nex-m3-progress-circular-svg {
-  animation: nex-m3-progress-rotate var(--nex-sys-motion-loop-skeleton)
-    linear infinite;
+  animation: nex-m3-progress-rotate var(--nex-sys-motion-loop-skeleton) linear
+    infinite;
 }
 @keyframes nex-m3-progress-rotate {
   to {
@@ -1484,7 +1563,9 @@
   font-family: inherit;
   text-align: left;
   cursor: pointer;
-  transition: background-color var(--nex-sys-motion-spring-expressive-default-spatial-duration)
+  transition:
+    background-color
+      var(--nex-sys-motion-spring-expressive-default-spatial-duration)
       var(--nex-sys-motion-spring-expressive-default-spatial-curve),
     color var(--nex-sys-motion-duration-fast)
       var(--nex-sys-motion-easing-standard);

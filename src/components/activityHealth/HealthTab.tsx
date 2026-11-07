@@ -55,8 +55,13 @@ export default function HealthTab({
 
   return (
     <>
-      <section className="nex-activity-section" aria-label={t("activity.providersSection")}>
-        <h3 className="nex-activity-section-title">{t("activity.providersSection")}</h3>
+      <section
+        className="nex-activity-section"
+        aria-label={t("activity.providersSection")}
+      >
+        <h3 className="nex-activity-section-title">
+          {t("activity.providersSection")}
+        </h3>
         {healthError !== null ? (
           <p className="nex-activity-error" role="alert">
             {healthError}
@@ -74,7 +79,9 @@ export default function HealthTab({
                       {def.display_name}
                     </span>
                     <span className="nex-activity-pill">
-                      {probe ? healthLabel(probe.status, locale) : t("activity.healthUnknown")}
+                      {probe
+                        ? healthLabel(probe.status, locale)
+                        : t("activity.healthUnknown")}
                     </span>
                   </div>
                   <div className="nex-activity-row-meta">
@@ -91,20 +98,33 @@ export default function HealthTab({
           </ul>
         )}
       </section>
-      <section className="nex-activity-section" aria-label={t("activity.budgetSection")}>
-        <h3 className="nex-activity-section-title">{t("activity.budgetSection")}</h3>
+      <section
+        className="nex-activity-section"
+        aria-label={t("activity.budgetSection")}
+      >
+        <h3 className="nex-activity-section-title">
+          {t("activity.budgetSection")}
+        </h3>
         {feed === null ? (
           <p className="nex-activity-muted">{t("activity.spendUnavailable")}</p>
         ) : (
           <ul className="nex-activity-list">
             <li className="nex-activity-row">
               <div className="nex-activity-row-main">
-                <span className="nex-activity-row-title">{t("activity.allRuns")}</span>
+                <span className="nex-activity-row-title">
+                  {t("activity.allRuns")}
+                </span>
               </div>
               <div className="nex-activity-row-meta">
                 <span>
-                  {tpn("runs", feed.totals.runs)} · {tpn("steps", feed.totals.total_steps)} ·{" "}
-                  {t("activity.totalsTotal", { total: formatMicroUsd(feed.totals.total_spent_micro_usd, locale) })}
+                  {tpn("runs", feed.totals.runs)} ·{" "}
+                  {tpn("steps", feed.totals.total_steps)} ·{" "}
+                  {t("activity.totalsTotal", {
+                    total: formatMicroUsd(
+                      feed.totals.total_spent_micro_usd,
+                      locale
+                    ),
+                  })}
                 </span>
                 <span>
                   {t("activity.limitValue", {
@@ -119,12 +139,15 @@ export default function HealthTab({
           </ul>
         )}
       </section>
-      <section className="nex-activity-section" aria-label={t("activity.contextSection")}>
-        <h3 className="nex-activity-section-title">{t("activity.contextSection")}</h3>
+      <section
+        className="nex-activity-section"
+        aria-label={t("activity.contextSection")}
+      >
+        <h3 className="nex-activity-section-title">
+          {t("activity.contextSection")}
+        </h3>
         {activeConversationId === null ? (
-          <p className="nex-activity-muted">
-            {t("activity.openConv")}
-          </p>
+          <p className="nex-activity-muted">{t("activity.openConv")}</p>
         ) : contextError !== null ? (
           <p className="nex-activity-error" role="alert">
             {contextError}
@@ -146,7 +169,9 @@ export default function HealthTab({
                 {t("ctx.labelMessages")}: {context.message_count} ·{" "}
                 {t("ctx.legendTools")}: {context.tool_call_count}
               </span>
-              <span>{formatMicroUsd(context.total_cost_micro_usd, locale)}</span>
+              <span>
+                {formatMicroUsd(context.total_cost_micro_usd, locale)}
+              </span>
             </div>
             {context.has_token_data && (
               <div
@@ -166,8 +191,13 @@ export default function HealthTab({
           </div>
         )}
       </section>
-      <section className="nex-activity-section" aria-label={t("activity.gitSection")}>
-        <h3 className="nex-activity-section-title">{t("activity.gitSection")}</h3>
+      <section
+        className="nex-activity-section"
+        aria-label={t("activity.gitSection")}
+      >
+        <h3 className="nex-activity-section-title">
+          {t("activity.gitSection")}
+        </h3>
         {gitError !== null ? (
           <p className="nex-activity-muted">{gitError}</p>
         ) : git === null ? (
@@ -179,7 +209,9 @@ export default function HealthTab({
                 {git.branch ?? t("vcs.detachedHead")}
               </span>
               <span className="nex-activity-pill">
-                {git.files.length === 0 ? t("activity.clean") : t("activity.dirty")}
+                {git.files.length === 0
+                  ? t("activity.clean")
+                  : t("activity.dirty")}
               </span>
             </div>
             <div className="nex-activity-row-meta">
@@ -187,7 +219,9 @@ export default function HealthTab({
                 {git.files.length === 0
                   ? t("activity.noChanged")
                   : `${tpn("files", git.files.length)}${
-                      git.files_overflow > 0 ? ` ${t("activity.filesMore", { n: git.files_overflow })}` : ""
+                      git.files_overflow > 0
+                        ? ` ${t("activity.filesMore", { n: git.files_overflow })}`
+                        : ""
                     }`}
               </span>
               <span>
@@ -199,8 +233,13 @@ export default function HealthTab({
           </div>
         )}
       </section>
-      <section className="nex-activity-section" aria-label={t("activity.flagsSection")}>
-        <h3 className="nex-activity-section-title">{t("activity.flagsSection")}</h3>
+      <section
+        className="nex-activity-section"
+        aria-label={t("activity.flagsSection")}
+      >
+        <h3 className="nex-activity-section-title">
+          {t("activity.flagsSection")}
+        </h3>
         {flagsError !== null ? (
           <p className="nex-activity-error" role="alert">
             {flagsError}
@@ -218,8 +257,14 @@ export default function HealthTab({
                   </span>
                 </div>
                 <div className="nex-activity-row-meta">
-                  <span>{t("activity.sourcePrefix", { source: flag.source })}</span>
-                  <span>{flag.enforced ? t("activity.enforced") : t("activity.notEnforced")}</span>
+                  <span>
+                    {t("activity.sourcePrefix", { source: flag.source })}
+                  </span>
+                  <span>
+                    {flag.enforced
+                      ? t("activity.enforced")
+                      : t("activity.notEnforced")}
+                  </span>
                 </div>
               </li>
             ))}

@@ -36,15 +36,20 @@ function allCss(): string {
 /** Every class token the three P2 components actually put on the DOM. */
 function emittedClasses(source: string): string[] {
   const tokens = new Set<string>();
-  for (const match of source.matchAll(/className\s*=\s*(?:"([^"]*)"|\{([^}]*)\})/g)) {
+  for (const match of source.matchAll(
+    /className\s*=\s*(?:"([^"]*)"|\{([^}]*)\})/g
+  )) {
     const literal = match[1];
     // A plain literal is the class list itself; a braced one is an
     // expression, so its quoted arms ("a", cond ? "b" : "c") are the
     // lists. Reading the arm's own quotes as if they were the outer
     // pair is what returns nothing for every plain className.
-    const lists = literal === undefined
-      ? [...(match[2] ?? "").matchAll(/"([^"]*)"/g)].map((arm) => arm[1] ?? "")
-      : [literal];
+    const lists =
+      literal === undefined
+        ? [...(match[2] ?? "").matchAll(/"([^"]*)"/g)].map(
+            (arm) => arm[1] ?? ""
+          )
+        : [literal];
     for (const list of lists) {
       for (const token of list.split(/\s+/)) {
         if (token) tokens.add(token);
@@ -69,7 +74,9 @@ function classNames(css: string): string[] {
     .replace(/^[ \t]*\/\/.*$/gm, "");
   return [
     ...new Set(
-      [...uncommented.matchAll(/\.([_a-zA-Z][\w-]*)/g)].map((match) => match[1] ?? ""),
+      [...uncommented.matchAll(/\.([_a-zA-Z][\w-]*)/g)].map(
+        (match) => match[1] ?? ""
+      )
     ),
   ].sort();
 }
@@ -79,7 +86,9 @@ function classNames(css: string): string[] {
  *  a first-match read would report a declaration that is overridden
  *  two lines down. */
 function declaration(rule: string, property: string): string {
-  const found = [...rule.matchAll(new RegExp(`(?:^|;)\\s*${property}:\\s*([^;]+)`, "g"))];
+  const found = [
+    ...rule.matchAll(new RegExp(`(?:^|;)\\s*${property}:\\s*([^;]+)`, "g")),
+  ];
   return found[found.length - 1]?.[1]?.trim() ?? "";
 }
 
@@ -110,7 +119,7 @@ describe("P2 chrome — no unstyled className", () => {
       "nex-workspace-chip-text",
     ]);
     expect(emittedClasses(SOURCES.ConversationPane)).toContain(
-      "nex-pane-header-separator",
+      "nex-pane-header-separator"
     );
   });
 
@@ -121,7 +130,7 @@ describe("P2 chrome — no unstyled className", () => {
     // name that lives only inside a comment is not a rule.
     expect(classNames(".nex-tabstrip-list")).toEqual(["nex-tabstrip-list"]);
     expect(
-      classNames("/* .nex-comment-only */\n.a,\n.b.is-active { color: red }"),
+      classNames("/* .nex-comment-only */\n.a,\n.b.is-active { color: red }")
     ).toEqual(["a", "b", "is-active"]);
   });
 
@@ -130,14 +139,19 @@ describe("P2 chrome — no unstyled className", () => {
       // A modifier lives inside a compound selector
       // (`.nex-tab.is-active`), so both halves land in CLASS_NAMES in
       // their own right and each is checked on its own.
-      const missing = emittedClasses(source).filter((token) => !CLASS_NAMES.has(token));
+      const missing = emittedClasses(source).filter(
+        (token) => !CLASS_NAMES.has(token)
+      );
       expect(missing).toEqual([]);
     });
   }
 });
 
 describe("P2 chrome — token discipline in the tabs + pane-header sheet", () => {
-  const css = readRepoFile("src/styles/tabs.css").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readRepoFile("src/styles/tabs.css").replace(
+    /\/\*[\s\S]*?\*\//g,
+    ""
+  );
 
   it("declares no raw colour value", () => {
     expect(css).not.toMatch(/#[0-9a-f]{3,8}\b/i);
@@ -147,7 +161,9 @@ describe("P2 chrome — token discipline in the tabs + pane-header sheet", () =>
   it("declares no raw duration — every one is a token", () => {
     // The gate that collapses reduced motion cannot collapse a literal.
     expect(css).not.toMatch(/\d+ms\b/);
-    const durations = [...css.matchAll(/var\((--[\w-]*(?:duration|travel)[\w-]*)\)/g)];
+    const durations = [
+      ...css.matchAll(/var\((--[\w-]*(?:duration|travel)[\w-]*)\)/g),
+    ];
     expect(durations.length).toBeGreaterThan(0);
   });
 
@@ -165,7 +181,8 @@ describe("P2 chrome — token discipline in the tabs + pane-header sheet", () =>
     const active = /\.nex-tab\.is-active \{([\s\S]*?)\}/.exec(css)?.[1] ?? "";
     expect(active).not.toMatch(/background/);
     // The tick: bottom-anchored and 2px (--nex-sys-space-xxxs).
-    const tick = /\.nex-tab\.is-active::after \{([\s\S]*?)\}/.exec(css)?.[1] ?? "";
+    const tick =
+      /\.nex-tab\.is-active::after \{([\s\S]*?)\}/.exec(css)?.[1] ?? "";
     expect(tick).toMatch(/bottom:\s*0/);
     expect(tick).toMatch(/height:\s*var\(--space-xxxs\)/);
     // …AND its indicator colour, which is what this test was blind
@@ -197,13 +214,16 @@ describe("P2 chrome — token discipline in the tabs + pane-header sheet", () =>
     // owns it (theme.test.ts pins that rule, its layer and its missing
     // `!important`). A second declaration here would be the same
     // one-role-two-sources mistake the amber tick alias was.
-    const actions = /\.nex-tabstrip-actions \{([\s\S]*?)\}/.exec(css)?.[1] ?? "";
+    const actions =
+      /\.nex-tabstrip-actions \{([\s\S]*?)\}/.exec(css)?.[1] ?? "";
     expect(actions).not.toMatch(/\bcolor\s*:/);
     expect(declaration(actions, "flex-shrink")).toBe("0");
   });
 
   it("lets both split tracks shrink", () => {
-    expect(css).toMatch(/grid-template-columns:\s*minmax\(0,\s*1fr\)\s*minmax\(0,\s*1fr\)/);
+    expect(css).toMatch(
+      /grid-template-columns:\s*minmax\(0,\s*1fr\)\s*minmax\(0,\s*1fr\)/
+    );
   });
 
   it("holds the header's trailing group at its intrinsic width", () => {
@@ -213,12 +233,15 @@ describe("P2 chrome — token discipline in the tabs + pane-header sheet", () =>
     // flexing the trailing group and squeezing the export control
     // off the row, and the title beside it is the part allowed to
     // truncate.
-    const rule = /\.nex-main-header-actions \{([\s\S]*?)\}/.exec(css)?.[1] ?? "";
+    const rule =
+      /\.nex-main-header-actions \{([\s\S]*?)\}/.exec(css)?.[1] ?? "";
     expect(rule).toMatch(/flex-shrink:\s*0/);
     // …and nothing else: display/alignment/gap belong to
     // `.nex-m3-toolbar-docked`, which this sheet out-ranks, so a
     // duplicate would silently re-space the row.
-    expect(rule.split(";").filter((line) => line.trim() !== "")).toHaveLength(1);
+    expect(rule.split(";").filter((line) => line.trim() !== "")).toHaveLength(
+      1
+    );
     // The legacy sheet is not the second home for it.
     const legacy = readRepoFile("src/styles.css");
     expect(legacy).not.toMatch(/\.nex-main-header-actions\s*\{/);

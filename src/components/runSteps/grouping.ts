@@ -19,7 +19,12 @@ export const FOLD_MIN_STEPS = 6;
  * `list_agents`, …) is still counted honestly in the total instead of
  * vanishing. `model_turn` and `approval` rows are not tool calls and are
  * counted in neither. */
-export const FILE_TOOLS = new Set(["read_file", "write_file", "edit_file", "list_directory"]);
+export const FILE_TOOLS = new Set([
+  "read_file",
+  "write_file",
+  "edit_file",
+  "list_directory",
+]);
 
 export interface FoldCounts {
   calls: number;
@@ -35,7 +40,8 @@ export function foldCounts(steps: AgentStepView[]): FoldCounts {
     counts.calls += 1;
     if (step.tool_name === "execute_command") counts.commands += 1;
     else if (step.tool_name === "search_files") counts.searches += 1;
-    else if (step.tool_name !== null && FILE_TOOLS.has(step.tool_name)) counts.files += 1;
+    else if (step.tool_name !== null && FILE_TOOLS.has(step.tool_name))
+      counts.files += 1;
   }
   return counts;
 }
@@ -53,7 +59,10 @@ export function foldCounts(steps: AgentStepView[]): FoldCounts {
  * Continue, and "where exactly did it run out" is the question the user is
  * about to ask before pressing it. Folding it would answer that question with
  * a count, so it stays expanded. */
-export function foldableRun(run: AgentRunView, sorted: AgentStepView[]): boolean {
+export function foldableRun(
+  run: AgentRunView,
+  sorted: AgentStepView[]
+): boolean {
   if (!isTerminalStatus(run.status)) return false;
   if (run.status === "budget_exhausted") return false;
   if (run.pending_approval !== null) return false;
@@ -89,7 +98,7 @@ export function foldableRun(run: AgentRunView, sorted: AgentStepView[]): boolean
    collapse never adds a disclosure around a single item. */
 export interface StepGroup {
   key: string; // grouping identity (tool|target) — consecutive comparison only
-  id: string;  // stable unique DOM/React identity within the run
+  id: string; // stable unique DOM/React identity within the run
   steps: AgentStepView[];
 }
 
@@ -101,7 +110,9 @@ function groupKey(step: AgentStepView): string | null {
   return target === null ? null : `${step.tool_name}|${target.text}`;
 }
 
-export function groupSteps(steps: AgentStepView[]): Array<AgentStepView | StepGroup> {
+export function groupSteps(
+  steps: AgentStepView[]
+): Array<AgentStepView | StepGroup> {
   const out: Array<AgentStepView | StepGroup> = [];
   let current: StepGroup | null = null;
   for (const step of steps) {

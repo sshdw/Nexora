@@ -105,7 +105,7 @@ export function useConversationTabs(): ConversationTabsStore {
       // A closed conversation cannot stay in the split pane.
       if (splitId === id) setSplitId(null);
     },
-    [openIds, activeId, splitId],
+    [openIds, activeId, splitId]
   );
 
   const openInSplit = useCallback(
@@ -120,7 +120,7 @@ export function useConversationTabs(): ConversationTabsStore {
         setSplitId(id);
       }
     },
-    [openIds, activeId],
+    [openIds, activeId]
   );
 
   const closeSplit = useCallback(() => {
@@ -131,12 +131,14 @@ export function useConversationTabs(): ConversationTabsStore {
     (direction: 1 | -1) => {
       if (openIds.length === 0) return;
       const anchor =
-        activeId !== null && openIds.includes(activeId) ? activeId : (openIds[0] as number);
+        activeId !== null && openIds.includes(activeId)
+          ? activeId
+          : (openIds[0] as number);
       const nextIndex =
         (openIds.indexOf(anchor) + direction + openIds.length) % openIds.length;
       setActiveId(openIds[nextIndex] as number);
     },
-    [openIds, activeId],
+    [openIds, activeId]
   );
 
   const next = useCallback(() => step(1), [step]);
@@ -148,7 +150,7 @@ export function useConversationTabs(): ConversationTabsStore {
       const clamped = Math.max(0, Math.min(index, openIds.length - 1));
       setActiveId(openIds[clamped] as number);
     },
-    [openIds],
+    [openIds]
   );
 
   const prune = useCallback(
@@ -173,7 +175,7 @@ export function useConversationTabs(): ConversationTabsStore {
       }
       if (splitId !== null && !validIds.has(splitId)) setSplitId(null);
     },
-    [openIds, activeId, splitId],
+    [openIds, activeId, splitId]
   );
 
   // Memoized store identity (NEX-FE-002): every member is either state or
@@ -210,6 +212,6 @@ export function useConversationTabs(): ConversationTabsStore {
       prev,
       jumpTo,
       prune,
-    ],
+    ]
   );
 }

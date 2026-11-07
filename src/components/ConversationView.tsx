@@ -18,7 +18,14 @@
 //! hooks, the send guards, the draft and the error surfaces, and hands
 //! the composer a plain set of callbacks.
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { CSSProperties } from "react";
 
 import { formatRelativeTime } from "../lib/format";
@@ -91,7 +98,8 @@ export default function ConversationView({
   workspace,
 }: ConversationViewProps) {
   const { locale, t } = useStrings();
-  const { messages, loading, error, sending, send } = useConversation(conversationId);
+  const { messages, loading, error, sending, send } =
+    useConversation(conversationId);
   const {
     attachments,
     error: attachmentError,
@@ -100,7 +108,13 @@ export default function ConversationView({
     remove,
     refresh: refreshAttachments,
   } = useAttachments(conversationId);
-  const { runs, reload: reloadAgent, loadRunSteps, expandStep, collapseStep } = useAgentRun(conversationId);
+  const {
+    runs,
+    reload: reloadAgent,
+    loadRunSteps,
+    expandStep,
+    collapseStep,
+  } = useAgentRun(conversationId);
   // R4-02: the pane opens in Agent mode. Chat is still one click away on
   // the composer's pills, and the choice is pane state for the session.
   const [agentMode, setAgentMode] = useState<boolean>(true);
@@ -125,7 +139,7 @@ export default function ConversationView({
       ? new Set(
           messages
             .filter((message) => !prevMessages.ids.has(message.id))
-            .map((message) => message.id),
+            .map((message) => message.id)
         )
       : null;
   useLayoutEffect(() => {
@@ -141,12 +155,17 @@ export default function ConversationView({
       (r) =>
         r.status === "running" ||
         r.status === "paused" ||
-        r.status === "budget_exhausted",
+        r.status === "budget_exhausted"
     ) ?? null;
   const liveRunId = activeRun?.run_id ?? null;
   const hasActiveRun = activeRun !== null;
   const canSend =
-    ready && draft.trim() !== "" && !sending && !attachmentsBusy && !agentBusy && !hasActiveRun;
+    ready &&
+    draft.trim() !== "" &&
+    !sending &&
+    !attachmentsBusy &&
+    !agentBusy &&
+    !hasActiveRun;
 
   // D4: the context ring refreshes on conversation change (the pane is keyed
   // by conversation id) and whenever the run store OR the message store
@@ -163,7 +182,7 @@ export default function ConversationView({
         (run) =>
           `${run.run_id}:${run.status}:${run.finished_at ?? ""}:${run.steps
             .map((step) => `${step.seq}:${step.status ?? ""}`)
-            .join(",")}`,
+            .join(",")}`
       )
       .join("|");
     const newest = messages[messages.length - 1];
@@ -208,14 +227,17 @@ export default function ConversationView({
     }
   }, []);
 
-  const handleAgentApprove = useCallback(async (runId: number, callId: string, approved: boolean) => {
-    setAgentError(null);
-    try {
-      await resolveAgentApproval(runId, callId, approved);
-    } catch (e) {
-      setAgentError(e instanceof Error ? e.message : String(e));
-    }
-  }, []);
+  const handleAgentApprove = useCallback(
+    async (runId: number, callId: string, approved: boolean) => {
+      setAgentError(null);
+      try {
+        await resolveAgentApproval(runId, callId, approved);
+      } catch (e) {
+        setAgentError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    []
+  );
 
   const handleAgentContinue = useCallback(async (runId: number) => {
     setAgentError(null);
@@ -236,37 +258,37 @@ export default function ConversationView({
     (runId: number, callId: string, approved: boolean) => {
       void handleAgentApprove(runId, callId, approved);
     },
-    [handleAgentApprove],
+    [handleAgentApprove]
   );
   const dispatchAgentCancel = useCallback(
     (runId: number) => {
       void handleAgentCancel(runId);
     },
-    [handleAgentCancel],
+    [handleAgentCancel]
   );
   const dispatchAgentContinue = useCallback(
     (runId: number) => {
       void handleAgentContinue(runId);
     },
-    [handleAgentContinue],
+    [handleAgentContinue]
   );
   const dispatchAgentPause = useCallback(
     (runId: number) => {
       void handleAgentPause(runId);
     },
-    [handleAgentPause],
+    [handleAgentPause]
   );
   const dispatchAgentResume = useCallback(
     (runId: number) => {
       void handleAgentResume(runId);
     },
-    [handleAgentResume],
+    [handleAgentResume]
   );
   const dispatchExpandStep = useCallback(
     (runId: number, seq: number) => {
       void expandStep(runId, seq);
     },
-    [expandStep],
+    [expandStep]
   );
   // AC-102/ADD-08 lazy steps: AgentRunSteps asks when a run's step list is
   // visible but unloaded; the store owns the dedupe. Stable identity like
@@ -275,13 +297,13 @@ export default function ConversationView({
     (runId: number) => {
       void loadRunSteps(runId);
     },
-    [loadRunSteps],
+    [loadRunSteps]
   );
   const dispatchCollapseStep = useCallback(
     (runId: number, seq: number) => {
       collapseStep(runId, seq);
     },
-    [collapseStep],
+    [collapseStep]
   );
 
   const handleAutonomyChange = useCallback(
@@ -306,7 +328,7 @@ export default function ConversationView({
         }
       }
     },
-    [autonomy, runs],
+    [autonomy, runs]
   );
 
   const handleSubmit = async () => {
@@ -319,13 +341,23 @@ export default function ConversationView({
       setAgentBusy(true);
       setDraft("");
       try {
-        await startAgentRun(conversationId, content, selectedProvider, selectedModel);
+        await startAgentRun(
+          conversationId,
+          content,
+          selectedProvider,
+          selectedModel
+        );
         // User message persisted before spawn; refresh both histories.
         await Promise.all([refreshAttachments(), reloadAgent()]);
         onMessageSent?.();
       } catch (e) {
         // Start failed: surface error, restore draft, and reload to show persisted state.
-        const msg = e instanceof Error ? e.message : typeof e === "object" && e !== null && "message" in e ? String((e as { message: unknown }).message) : String(e);
+        const msg =
+          e instanceof Error
+            ? e.message
+            : typeof e === "object" && e !== null && "message" in e
+              ? String((e as { message: unknown }).message)
+              : String(e);
         setAgentError(msg);
         setDraft(content);
         await Promise.all([refreshAttachments(), reloadAgent()]);
@@ -335,7 +367,12 @@ export default function ConversationView({
       return;
     }
     setDraft("");
-    const failure = await send(content, selectedProvider, selectedModel, attachmentIds);
+    const failure = await send(
+      content,
+      selectedProvider,
+      selectedModel,
+      attachmentIds
+    );
     // A failed AI request keeps the persisted user message and creates no
     // assistant message (DATABASE.md §7.2). Offline/network failures arrive
     // classified under the backend's "request" kind (commands/error.rs maps
@@ -364,10 +401,18 @@ export default function ConversationView({
   > = useMemo(
     () =>
       [
-        ...messages.map((m) => ({ kind: "message" as const, ts: m.created_at, message: m })),
-        ...runs.map((r) => ({ kind: "run" as const, ts: r.started_at, run: r })),
+        ...messages.map((m) => ({
+          kind: "message" as const,
+          ts: m.created_at,
+          message: m,
+        })),
+        ...runs.map((r) => ({
+          kind: "run" as const,
+          ts: r.started_at,
+          run: r,
+        })),
       ].sort((a, b) => a.ts - b.ts),
-    [messages, runs],
+    [messages, runs]
   );
 
   // Stagger order for the spatial slide-in: genuinely inserted messages
@@ -400,7 +445,12 @@ export default function ConversationView({
 
   return (
     <div className={"nex-main-conversation" + (emptyStage ? " is-empty" : "")}>
-      <div className="nex-thread" ref={threadRef} role="log" aria-label={t("conv.messagesAria")}>
+      <div
+        className="nex-thread"
+        ref={threadRef}
+        role="log"
+        aria-label={t("conv.messagesAria")}
+      >
         {loading ? (
           <M3LoadingIndicator label={t("conv.loadingMessages")} />
         ) : (
@@ -438,25 +488,33 @@ export default function ConversationView({
                 }
                 style={
                   isFresh
-                    ? ({ "--nex-chat-insert-index": freshOrder.get(item.message.id) ?? 0 } as CSSProperties)
+                    ? ({
+                        "--nex-chat-insert-index":
+                          freshOrder.get(item.message.id) ?? 0,
+                      } as CSSProperties)
                     : undefined
                 }
               >
                 <div className="nex-message-meta">
                   <span className="nex-message-author">
-                    {item.message.role === "user" ? t("conv.authorYou") : t("conv.authorAssistant")}
+                    {item.message.role === "user"
+                      ? t("conv.authorYou")
+                      : t("conv.authorAssistant")}
                   </span>
-                  {item.message.role === "assistant" && item.message.model_name && (
-                    <span
-                      className="nex-message-origin"
-                      title={t("conv.originTitle")}
-                    >
-                      {item.message.model_name}
-                    </span>
-                  )}
+                  {item.message.role === "assistant" &&
+                    item.message.model_name && (
+                      <span
+                        className="nex-message-origin"
+                        title={t("conv.originTitle")}
+                      >
+                        {item.message.model_name}
+                      </span>
+                    )}
                   <time
                     className="nex-message-time"
-                    dateTime={new Date(item.message.created_at * 1000).toISOString()}
+                    dateTime={new Date(
+                      item.message.created_at * 1000
+                    ).toISOString()}
                   >
                     {formatRelativeTime(item.message.created_at, locale)}
                   </time>

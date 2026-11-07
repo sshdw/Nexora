@@ -282,7 +282,8 @@
      had. Never `--nex-sys-color-accent-indicator`: that aliases the same
      amber, and the P2 tab-tick fix is the precedent for staying off it. */
   background: var(--color-primary);
-  transition: width var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard);
+  transition: width var(--nex-sys-motion-duration-fast)
+    var(--nex-sys-motion-easing-standard);
 }
 
 /* Over budget: the ONE state tone in this sheet's budget block, matching

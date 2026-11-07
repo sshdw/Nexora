@@ -69,7 +69,7 @@ export default function FileIssueDialog({
         target.title,
         target.source,
         target.location,
-        target.detail,
+        target.detail
       );
       onFiled(t("issue.created", { n: created.number, url: created.url }));
       onClose();
@@ -86,7 +86,10 @@ export default function FileIssueDialog({
       title={t("issue.confirmTitle")}
       body={
         target.location
-          ? t("issue.confirmBody", { title: target.title, location: target.location })
+          ? t("issue.confirmBody", {
+              title: target.title,
+              location: target.location,
+            })
           : t("issue.confirmBodyNoLocation", { title: target.title })
       }
       confirmLabel={busy ? t("issue.filing") : t("issue.confirm")}

@@ -33,7 +33,12 @@ const { mockInvoke, settings, failNext } = vi.hoisted(() => {
         },
       ],
     },
-    diff: { path: "src/lib/a.ts", diff: "@@ -1 +1 @@", truncated: false, binary: false },
+    diff: {
+      path: "src/lib/a.ts",
+      diff: "@@ -1 +1 @@",
+      truncated: false,
+      binary: false,
+    },
     commitDiff: {
       hash: "abc1234567890",
       diff: "@@ -1 +1 @@",
@@ -45,39 +50,41 @@ const { mockInvoke, settings, failNext } = vi.hoisted(() => {
     generated: { message: "fix: generated", truncated_input: true },
     explained: { explanation: "it broke", truncated_input: false },
   };
-  const mockInvoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
-    if (failNext.command === command) {
-      failNext.command = "";
-      throw { kind: "io", message: "git refused" };
+  const mockInvoke = vi.fn(
+    async (command: string, args?: Record<string, unknown>) => {
+      if (failNext.command === command) {
+        failNext.command = "";
+        throw { kind: "io", message: "git refused" };
+      }
+      switch (command) {
+        case "git_info":
+          return JSON.parse(JSON.stringify(fixtures.info));
+        case "git_file_diff":
+          return fixtures.diff;
+        case "git_commit_diff":
+          return fixtures.commitDiff;
+        case "request_confirmation":
+          return "confirm-id-1";
+        case "git_stage":
+        case "git_unstage":
+          return 1;
+        case "git_commit":
+          return "def000";
+        case "git_push":
+          return null;
+        case "git_generate_commit_message":
+          return fixtures.generated;
+        case "git_explain_commit":
+          return fixtures.explained;
+        case "get_setting":
+          return settings.has((args as { key: string }).key)
+            ? settings.get((args as { key: string }).key)
+            : null;
+        default:
+          throw new Error(`unexpected command ${command}`);
+      }
     }
-    switch (command) {
-      case "git_info":
-        return JSON.parse(JSON.stringify(fixtures.info));
-      case "git_file_diff":
-        return fixtures.diff;
-      case "git_commit_diff":
-        return fixtures.commitDiff;
-      case "request_confirmation":
-        return "confirm-id-1";
-      case "git_stage":
-      case "git_unstage":
-        return 1;
-      case "git_commit":
-        return "def000";
-      case "git_push":
-        return null;
-      case "git_generate_commit_message":
-        return fixtures.generated;
-      case "git_explain_commit":
-        return fixtures.explained;
-      case "get_setting":
-        return settings.has((args as { key: string }).key)
-          ? settings.get((args as { key: string }).key)
-          : null;
-      default:
-        throw new Error(`unexpected command ${command}`);
-    }
-  });
+  );
   return { mockInvoke, settings, failNext };
 });
 
@@ -104,7 +111,9 @@ describe("useVcs", () => {
     await act(async () => {
       await result.current.loadDiff("src/lib/a.ts");
     });
-    expect(mockInvoke).toHaveBeenCalledWith("git_file_diff", { path: "src/lib/a.ts" });
+    expect(mockInvoke).toHaveBeenCalledWith("git_file_diff", {
+      path: "src/lib/a.ts",
+    });
     expect(result.current.selectedPath).toBe("src/lib/a.ts");
     expect(result.current.diff?.truncated).toBe(false);
     expect(result.current.diffLoading).toBe(false);
@@ -127,7 +136,9 @@ describe("useVcs", () => {
       confirmationId: "confirm-id-1",
     });
     // The write refreshes the aggregate afterwards (same page).
-    expect(mockInvoke.mock.calls.filter(([command]) => command === "git_info")).toHaveLength(2);
+    expect(
+      mockInvoke.mock.calls.filter(([command]) => command === "git_info")
+    ).toHaveLength(2);
 
     await act(async () => {
       await result.current.toggleStage("src/lib/a.ts", true);
@@ -215,7 +226,7 @@ describe("useVcs", () => {
     });
     expect(mockInvoke).not.toHaveBeenCalledWith(
       "git_generate_commit_message",
-      expect.anything(),
+      expect.anything()
     );
     expect(result.current.actionError).not.toBeNull();
     expect(result.current.generating).toBe(false);
@@ -260,7 +271,9 @@ describe("useVcs", () => {
     await act(async () => {
       await result.current.loadCommitDiff("abc1234567890");
     });
-    expect(mockInvoke).toHaveBeenCalledWith("git_commit_diff", { hash: "abc1234567890" });
+    expect(mockInvoke).toHaveBeenCalledWith("git_commit_diff", {
+      hash: "abc1234567890",
+    });
     expect(result.current.commitDiff?.files).toEqual(["src/lib/a.ts"]);
     expect(result.current.selectedCommit).toBe("abc1234567890");
   });

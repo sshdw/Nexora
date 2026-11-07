@@ -43,7 +43,7 @@ function underBoundary(children: ReactNode, root = false) {
   return render(
     <LocaleProvider>
       <ErrorBoundary root={root}>{children}</ErrorBoundary>
-    </LocaleProvider>,
+    </LocaleProvider>
   );
 }
 
@@ -64,7 +64,9 @@ describe("error boundary — component level", () => {
     // The boundary and React both report the crash on console.error; the
     // spy keeps the test output clean and pins that the crash is at least
     // logged, never swallowed silently.
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
 
     underBoundary(<FlakyChild />);
 
@@ -90,7 +92,7 @@ describe("error boundary — component level", () => {
       <>
         <p>before</p>
         <Boom />
-      </>,
+      </>
     );
     // The healthy sibling goes down with the slot — a boundary replaces its
     // WHOLE children slot — but the shell above the boundary survives, which
@@ -111,11 +113,13 @@ describe("error boundary — component level", () => {
 describe("error boundary — root-level wiring pin (ADD-05, main.tsx)", () => {
   it("main.tsx wraps <App/> in the root boundary — the render is no longer bare", () => {
     const source = readRepoFile("src/main.tsx");
-    expect(source).toMatch(/import ErrorBoundary from "\.\/components\/ErrorBoundary"/);
+    expect(source).toMatch(
+      /import ErrorBoundary from "\.\/components\/ErrorBoundary"/
+    );
     // The exact finding (main.tsx:40 bare render) cannot regress silently:
     // the boundary must sit between StrictMode and the app.
     expect(source).toMatch(
-      /<ErrorBoundary root>\s*<App \/>\s*<\/ErrorBoundary>/,
+      /<ErrorBoundary root>\s*<App \/>\s*<\/ErrorBoundary>/
     );
     // And the root variant is requested, so the last-resort screen centres
     // on the window instead of flowing into an unstyled document body.

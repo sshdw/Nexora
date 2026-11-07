@@ -43,13 +43,14 @@ export default function AdvancedSection({
   // routing profiles, MCP servers, and the agent preset are complex JSON
   // the UI does not edit — they stay visible but read-only.
   return (
-    <section className="nex-settings-section" aria-labelledby="advanced-heading">
+    <section
+      className="nex-settings-section"
+      aria-labelledby="advanced-heading"
+    >
       <h3 id="advanced-heading" className="nex-settings-heading">
         {t("settings.sectionAdvanced")}
       </h3>
-      <p className="nex-settings-hint">
-        {t("settings.advancedHint")}
-      </p>
+      <p className="nex-settings-hint">{t("settings.advancedHint")}</p>
       {advancedError && (
         <p className="nex-settings-error nex-fade-in" role="alert">
           {advancedError}
@@ -60,24 +61,33 @@ export default function AdvancedSection({
         <span className="nex-settings-label" id="flags-label">
           {t("settings.flagsLabel")}
         </span>
-        <p className="nex-settings-hint">
-          {t("settings.flagsHint")}
-        </p>
+        <p className="nex-settings-hint">{t("settings.flagsHint")}</p>
         {FLAG_DEFS.map((flag) => (
-          <label key={flag.name} className="nex-flag-row" htmlFor={`flag-${flag.name}`}>
+          <label
+            key={flag.name}
+            className="nex-flag-row"
+            htmlFor={`flag-${flag.name}`}
+          >
             <input
               id={`flag-${flag.name}`}
               type="checkbox"
               checked={flagValues[flag.name] ?? true}
               disabled={flagsSaving !== null}
-              onChange={(event) => onFlagToggle(flag.name, event.target.checked)}
+              onChange={(event) =>
+                onFlagToggle(flag.name, event.target.checked)
+              }
               aria-describedby={`flag-${flag.name}-hint`}
             />
             <span>
               <span className="nex-provider-name">{flag.name}</span>{" "}
-              <span className="nex-tag">{flag.enforced ? t("settings.enforced") : t("settings.resolvedOnly")}</span>
+              <span className="nex-tag">
+                {flag.enforced
+                  ? t("settings.enforced")
+                  : t("settings.resolvedOnly")}
+              </span>
               <span id={`flag-${flag.name}-hint`} className="nex-settings-hint">
-                {" "}{t(flag.descriptionKey)}
+                {" "}
+                {t(flag.descriptionKey)}
               </span>
             </span>
           </label>
@@ -91,49 +101,58 @@ export default function AdvancedSection({
 
       <details className="nex-settings-details">
         <summary>{t("settings.routingTitle")}</summary>
-        <p className="nex-settings-hint">
-          {t("settings.routingHint")}
-        </p>
+        <p className="nex-settings-hint">{t("settings.routingHint")}</p>
         <div className="nex-settings-field">
-          <span className="nex-settings-label">{t("settings.chatProfile")}</span>
+          <span className="nex-settings-label">
+            {t("settings.chatProfile")}
+          </span>
           <p className="nex-settings-value">
             {advancedValues === null
               ? t("common.loading")
-              : summarizeRoutingProfile(advancedValues[ROUTING_CHAT_KEY] ?? null, locale)}
+              : summarizeRoutingProfile(
+                  advancedValues[ROUTING_CHAT_KEY] ?? null,
+                  locale
+                )}
           </p>
         </div>
         <div className="nex-settings-field">
-          <span className="nex-settings-label">{t("settings.agentProfile")}</span>
+          <span className="nex-settings-label">
+            {t("settings.agentProfile")}
+          </span>
           <p className="nex-settings-value">
             {advancedValues === null
               ? t("common.loading")
-              : summarizeRoutingProfile(advancedValues[ROUTING_AGENT_KEY] ?? null, locale)}
+              : summarizeRoutingProfile(
+                  advancedValues[ROUTING_AGENT_KEY] ?? null,
+                  locale
+                )}
           </p>
         </div>
       </details>
 
       <details className="nex-settings-details">
         <summary>{t("settings.mcpTitle")}</summary>
-        <p className="nex-settings-hint">
-          {t("settings.mcpHint")}
-        </p>
+        <p className="nex-settings-hint">{t("settings.mcpHint")}</p>
         <div className="nex-settings-field">
           <span className="nex-settings-label">{t("settings.mcpServers")}</span>
           <p className="nex-settings-value">
             {advancedValues === null
               ? t("common.loading")
-              : summarizeMcpServers(advancedValues[MCP_SERVERS_KEY] ?? null, locale)}
+              : summarizeMcpServers(
+                  advancedValues[MCP_SERVERS_KEY] ?? null,
+                  locale
+                )}
           </p>
         </div>
       </details>
 
       <details className="nex-settings-details">
         <summary>{t("settings.presetTitle")}</summary>
-        <p className="nex-settings-hint">
-          {t("settings.presetHint")}
-        </p>
+        <p className="nex-settings-hint">{t("settings.presetHint")}</p>
         <div className="nex-settings-field">
-          <span className="nex-settings-label">{t("settings.presetLabel")}</span>
+          <span className="nex-settings-label">
+            {t("settings.presetLabel")}
+          </span>
           <p className="nex-settings-value">
             {advancedValues === null
               ? t("common.loading")

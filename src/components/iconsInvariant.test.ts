@@ -33,9 +33,7 @@ function tsxFiles(dir: string): string[] {
 /** Comments are prose, not code: a doc comment that names `<svg>` must not
  *  satisfy or fail a pin. */
 function code(source: string): string {
-  return source
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/^\s*\/\/.*$/gm, "");
+  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 }
 
 const SOURCES = tsxFiles(SRC).map((full) => ({
@@ -46,15 +44,15 @@ const SOURCES = tsxFiles(SRC).map((full) => ({
 describe("icon layer — one source of truth", () => {
   it("draws no raw <svg> outside the icon layer", () => {
     const offenders = SOURCES.filter(
-      (file) => file.path !== ICON_LAYER && /<svg[\s>]/.test(file.body),
+      (file) => file.path !== ICON_LAYER && /<svg[\s>]/.test(file.body)
     ).map((file) => file.path);
     expect(offenders).toEqual([]);
   });
 
   it("is the only file that imports the icon library", () => {
-    const importers = SOURCES.filter((file) => file.body.includes("@phosphor-icons/react")).map(
-      (file) => file.path,
-    );
+    const importers = SOURCES.filter((file) =>
+      file.body.includes("@phosphor-icons/react")
+    ).map((file) => file.path);
     expect(importers).toEqual([ICON_LAYER]);
   });
 
@@ -119,7 +117,9 @@ describe("icon layer — rendered contract", () => {
     expect(emptySvg?.querySelectorAll("circle")).toHaveLength(1);
     // R6-09: the empty state is a PRESENT but empty ring, not a spinner.
     // A dash pattern on the track is what made it read as loading.
-    expect(emptySvg?.querySelector("circle")).not.toHaveAttribute("stroke-dasharray");
+    expect(emptySvg?.querySelector("circle")).not.toHaveAttribute(
+      "stroke-dasharray"
+    );
     empty.unmount();
 
     const half = render(createElement(ContextRingIcon, { percent: 50 }));
@@ -135,7 +135,9 @@ describe("icon layer — rendered contract", () => {
     const source = readRepoFile(ICON_LAYER);
     expect(source.match(/weight="fill"/g) ?? []).toHaveLength(1);
     expect(source.match(/filledIcon\(/g) ?? []).toHaveLength(2); // helper + StopIcon
-    expect(source).toMatch(/export const StopIcon = filledIcon\(Square, "StopIcon"\)/);
+    expect(source).toMatch(
+      /export const StopIcon = filledIcon\(Square, "StopIcon"\)/
+    );
     // A call site cannot ask for the filled weight: the props omit it.
     expect(source).toMatch(/Omit<IconProps, "weight" \| "size" \| "ref">/);
   });
@@ -143,9 +145,11 @@ describe("icon layer — rendered contract", () => {
   it("clamps a percentage that arrives out of range", () => {
     const over = render(createElement(ContextRingIcon, { percent: 140 }));
     const overArc = over.container.querySelectorAll("circle")[1];
-    const fullArc = render(createElement(ContextRingIcon, { percent: 100 })).container.querySelectorAll(
-      "circle",
-    )[1];
-    expect(overArc?.getAttribute("stroke-dasharray")).toBe(fullArc?.getAttribute("stroke-dasharray"));
+    const fullArc = render(
+      createElement(ContextRingIcon, { percent: 100 })
+    ).container.querySelectorAll("circle")[1];
+    expect(overArc?.getAttribute("stroke-dasharray")).toBe(
+      fullArc?.getAttribute("stroke-dasharray")
+    );
   });
 });

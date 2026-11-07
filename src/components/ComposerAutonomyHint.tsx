@@ -35,12 +35,17 @@ export interface ComposerAutonomyHintProps {
   text: string;
 }
 
-export default function ComposerAutonomyHint({ mode, text }: ComposerAutonomyHintProps) {
+export default function ComposerAutonomyHint({
+  mode,
+  text,
+}: ComposerAutonomyHintProps) {
   // Guards the lookup rather than trusting the caller's union: an
   // unknown mode must degrade to no explainer, never to a crash.
   if (!EXPLAINED_MODES.includes(mode)) return null;
 
-  return <span className="nex-autonomy-explain" title={text}>
-    {text}
-  </span>;
+  return (
+    <span className="nex-autonomy-explain" title={text}>
+      {text}
+    </span>
+  );
 }

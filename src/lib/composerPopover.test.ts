@@ -35,7 +35,7 @@ describe("composer popover — offset from the card", () => {
   it("falls back to the gap when a rectangle is unmeasurable", () => {
     expect(popoverOffsetFromCard(Number.NaN, 379)).toBe(COMPOSER_POPOVER_GAP);
     expect(popoverOffsetFromCard(447, Number.POSITIVE_INFINITY)).toBe(
-      COMPOSER_POPOVER_GAP,
+      COMPOSER_POPOVER_GAP
     );
   });
 });

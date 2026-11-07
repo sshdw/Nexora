@@ -111,18 +111,24 @@ export function useConversations(): ConversationsStore {
         setWorking(false);
       }
     },
-    [reload],
+    [reload]
   );
 
   const rename = useCallback(
     (id: number, title: string) => run(() => renameConversation(id, title)),
-    [run],
+    [run]
   );
-  const archive = useCallback((id: number) => run(() => archiveConversation(id)), [run]);
-  const restore = useCallback((id: number) => run(() => restoreConversation(id)), [run]);
+  const archive = useCallback(
+    (id: number) => run(() => archiveConversation(id)),
+    [run]
+  );
+  const restore = useCallback(
+    (id: number) => run(() => restoreConversation(id)),
+    [run]
+  );
   const remove = useCallback(
     (id: number) => run(() => deleteConversationPermanently(id)),
-    [run],
+    [run]
   );
 
   useEffect(() => {
@@ -157,14 +163,16 @@ export function useConversations(): ConversationsStore {
       archive,
       restore,
       remove,
-    ],
+    ]
   );
 }
 
 function toCommandError(error: unknown): CommandError {
-  if (isCommandError(error)) return { kind: error.kind, message: error.message };
+  if (isCommandError(error))
+    return { kind: error.kind, message: error.message };
   if (typeof error === "string") return { kind: "unknown", message: error };
-  if (error instanceof Error) return { kind: "unknown", message: error.message };
+  if (error instanceof Error)
+    return { kind: "unknown", message: error.message };
   return {
     kind: "unknown",
     // Accepted: the fallback message is built in the locale active when the

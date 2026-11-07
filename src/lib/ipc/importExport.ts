@@ -22,11 +22,14 @@ import {
  * `export_conversation_to_file` in the `export` scope, bound to this exact
  * conversation row — this wrapper mints it through the blocking native OS
  * dialog first, so cancelling at the dialog rejects and writes nothing. */
-export async function exportConversationToFile(id: number, path: string): Promise<void> {
+export async function exportConversationToFile(
+  id: number,
+  path: string
+): Promise<void> {
   const confirmationId = await requestConfirmation(
     "export",
     OP_EXPORT_CONVERSATION_TO_FILE,
-    { targetId: id },
+    { targetId: id }
   );
   return invoke<void>("export_conversation_to_file", {
     conversationId: id,
@@ -104,7 +107,10 @@ export async function exportSetup(): Promise<string> {
  * `export_setup_to_file`; the destination is never overwritten (the backend
  * refuses an existing file). */
 export async function exportSetupToFile(path: string): Promise<void> {
-  const confirmationId = await requestConfirmation("export", OP_EXPORT_SETUP_TO_FILE);
+  const confirmationId = await requestConfirmation(
+    "export",
+    OP_EXPORT_SETUP_TO_FILE
+  );
   return invoke<void>("export_setup_to_file", { path, confirmationId });
 }
 

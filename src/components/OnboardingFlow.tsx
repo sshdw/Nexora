@@ -53,9 +53,7 @@ export default function OnboardingFlow({
 }: OnboardingFlowProps) {
   const [step, setStep] = useState(0);
   const [providerName, setProviderName] = useState(
-    providers.selectedProvider ??
-      providers.providers[0]?.supported.name ??
-      "",
+    providers.selectedProvider ?? providers.providers[0]?.supported.name ?? ""
   );
   const [apiKey, setApiKey] = useState("");
   const [connecting, setConnecting] = useState(false);
@@ -75,10 +73,10 @@ export default function OnboardingFlow({
   }, [providers.selectedProvider, providers.providers, manualPick]);
 
   const activeProvider = providers.providers.find(
-    (p) => p.supported.name === providerName,
+    (p) => p.supported.name === providerName
   );
-  const connectedName = providers.providers.find((p) => p.available)
-    ?.supported.display_name;
+  const connectedName = providers.providers.find((p) => p.available)?.supported
+    .display_name;
 
   const handleConnect = async () => {
     const credential = apiKey.trim();
@@ -88,7 +86,7 @@ export default function OnboardingFlow({
       const ok = await providers.connect(
         activeProvider.supported.name,
         activeProvider.supported.display_name,
-        credential,
+        credential
       );
       if (!ok) return; // Error surfaces via providers.error; keep input.
       setApiKey("");
@@ -118,34 +116,37 @@ export default function OnboardingFlow({
       onClose={onClose}
     >
       <div className="nex-onboarding nex-pop-enter">
-        <ol className="nex-onboarding-steps" aria-label={t("onboarding.progress")}>
+        <ol
+          className="nex-onboarding-steps"
+          aria-label={t("onboarding.progress")}
+        >
           {STEP_TITLES.map((key, index) => {
             const title = t(key);
             return (
-            <li
-              key={key}
-              className={
-                "nex-onboarding-step" +
-                (index === step ? " is-current" : "") +
-                (index < step ? " is-done" : "")
-              }
-              aria-current={index === step ? "step" : undefined}
-            >
-              <span className="nex-onboarding-dot" aria-hidden="true" />
-              <span className="nex-sr-only">
-                {t("onboarding.stepAria", {
-                  i: index + 1,
-                  n: STEP_TITLES.length,
-                  title,
-                  suffix:
-                    index === step
-                      ? t("onboarding.suffixCurrent")
-                      : index < step
-                        ? t("onboarding.suffixDone")
-                        : "",
-                })}
-              </span>
-            </li>
+              <li
+                key={key}
+                className={
+                  "nex-onboarding-step" +
+                  (index === step ? " is-current" : "") +
+                  (index < step ? " is-done" : "")
+                }
+                aria-current={index === step ? "step" : undefined}
+              >
+                <span className="nex-onboarding-dot" aria-hidden="true" />
+                <span className="nex-sr-only">
+                  {t("onboarding.stepAria", {
+                    i: index + 1,
+                    n: STEP_TITLES.length,
+                    title,
+                    suffix:
+                      index === step
+                        ? t("onboarding.suffixCurrent")
+                        : index < step
+                          ? t("onboarding.suffixDone")
+                          : "",
+                  })}
+                </span>
+              </li>
             );
           })}
         </ol>
@@ -173,9 +174,7 @@ export default function OnboardingFlow({
               >
                 {t("onboarding.stepConnect")}
               </h4>
-              <p className="nex-settings-hint">
-                {t("onboarding.connectHint")}
-              </p>
+              <p className="nex-settings-hint">{t("onboarding.connectHint")}</p>
               {providers.providers.length === 0 ? (
                 <p className="nex-settings-hint" role="status">
                   {t("onboarding.noProviders")}
@@ -241,26 +240,24 @@ export default function OnboardingFlow({
                       loading={connecting}
                       disabled={!apiKey.trim() || connecting}
                     >
-                      {activeProvider?.credentialed ? t("onboarding.updateKey") : t("onboarding.connect")}
+                      {activeProvider?.credentialed
+                        ? t("onboarding.updateKey")
+                        : t("onboarding.connect")}
                     </M3Button>
                     {(connectDone || activeProvider?.available) && (
-                      <span
-                        className="nex-onboarding-status"
-                        role="status"
-                      >
+                      <span className="nex-onboarding-status" role="status">
                         {t("onboarding.connectedStatus", {
                           rest: connectedName
-                            ? t("onboarding.connectedRest", { name: connectedName })
+                            ? t("onboarding.connectedRest", {
+                                name: connectedName,
+                              })
                             : "",
                         })}
                       </span>
                     )}
                   </div>
                   {providers.error && (
-                    <p
-                      className="nex-settings-error nex-fade-in"
-                      role="alert"
-                    >
+                    <p className="nex-settings-error nex-fade-in" role="alert">
                       {providers.error.message}
                     </p>
                   )}
@@ -322,9 +319,7 @@ export default function OnboardingFlow({
                           type="button"
                           className="nex-onboarding-recent-item"
                           title={path}
-                          disabled={
-                            workspace.saving || path === workspace.root
-                          }
+                          disabled={workspace.saving || path === workspace.root}
                           onClick={() => void workspace.selectRecent(path)}
                         >
                           {path === workspace.root ? `● ${path}` : path}
@@ -349,23 +344,35 @@ export default function OnboardingFlow({
                 {t("onboarding.stepDone")}
               </h4>
               <p className="nex-settings-hint">
-                {connectedName ?? workspace.root
+                {(connectedName ?? workspace.root)
                   ? [
                       connectedName
-                        ? t("onboarding.summaryProvider", { name: connectedName })
+                        ? t("onboarding.summaryProvider", {
+                            name: connectedName,
+                          })
                         : t("onboarding.summaryNoProvider"),
                       workspace.root
-                        ? t("onboarding.summaryWorkspace", { root: workspace.root })
+                        ? t("onboarding.summaryWorkspace", {
+                            root: workspace.root,
+                          })
                         : t("onboarding.summaryNoWorkspace"),
                     ].join(" · ")
                   : t("onboarding.summaryNone")}
               </p>
               <ul className="nex-onboarding-tips">
                 <li>
-                  {t("onboarding.tipPaletteA")}<kbd>Ctrl</kbd> + <kbd>K</kbd>{t("onboarding.tipPaletteB")}
+                  {t("onboarding.tipPaletteA")}
+                  <kbd>Ctrl</kbd> + <kbd>K</kbd>
+                  {t("onboarding.tipPaletteB")}
                 </li>
                 <li>
-                  {t("onboarding.tipKeysA")}<kbd>Ctrl</kbd>{t("onboarding.tipKeysB")}<kbd>/</kbd>{t("onboarding.tipKeysC")}<kbd>F1</kbd>{t("onboarding.tipKeysD")}
+                  {t("onboarding.tipKeysA")}
+                  <kbd>Ctrl</kbd>
+                  {t("onboarding.tipKeysB")}
+                  <kbd>/</kbd>
+                  {t("onboarding.tipKeysC")}
+                  <kbd>F1</kbd>
+                  {t("onboarding.tipKeysD")}
                 </li>
               </ul>
             </section>

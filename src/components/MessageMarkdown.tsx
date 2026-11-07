@@ -71,7 +71,8 @@ function isAppImageSource(value: string): boolean {
 /** Flatten React children to their text content. Used for the fence cap and
  *  for deduplicating autolink labels (a GFM autolink's label IS its URL). */
 function textOf(node: ReactNode): string {
-  if (node === null || node === undefined || typeof node === "boolean") return "";
+  if (node === null || node === undefined || typeof node === "boolean")
+    return "";
   if (typeof node === "string") return node;
   if (typeof node === "number") return String(node);
   if (Array.isArray(node)) return node.map(textOf).join("");
@@ -82,8 +83,7 @@ function textOf(node: ReactNode): string {
 }
 
 interface CopyOnlyLinkProps
-  extends AnchorHTMLAttributes<HTMLAnchorElement>,
-    ExtraProps {
+  extends AnchorHTMLAttributes<HTMLAnchorElement>, ExtraProps {
   /** Catalog label for the copy affordance. */
   copyLabel: string;
   /** Catalog label shown after a successful copy. */
@@ -95,7 +95,12 @@ interface CopyOnlyLinkProps
  *  URLs — IssuesPanel.tsx:317-319 renders `html_url` as text) and copies
  *  verbatim on demand. If the label already is the destination (GFM
  *  autolink, bare URL) it is shown once. */
-function CopyOnlyLink({ children, href, copyLabel, copiedLabel }: CopyOnlyLinkProps) {
+function CopyOnlyLink({
+  children,
+  href,
+  copyLabel,
+  copiedLabel,
+}: CopyOnlyLinkProps) {
   const { t } = useStrings();
   const [copied, setCopied] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -123,7 +128,11 @@ function CopyOnlyLink({ children, href, copyLabel, copiedLabel }: CopyOnlyLinkPr
         (failed ? (
           <span className="nex-md-copy-failed">{t("common.copyFailed")}</span>
         ) : (
-          <button type="button" className="nex-md-copy" onClick={() => void copy()}>
+          <button
+            type="button"
+            className="nex-md-copy"
+            onClick={() => void copy()}
+          >
             {copied ? copiedLabel : copyLabel}
           </button>
         ))}
@@ -231,5 +240,6 @@ function MessageMarkdown({ content }: MessageMarkdownProps) {
 
 export default memo(
   MessageMarkdown,
-  (prev, next) => prev.messageId === next.messageId && prev.content === next.content,
+  (prev, next) =>
+    prev.messageId === next.messageId && prev.content === next.content
 );

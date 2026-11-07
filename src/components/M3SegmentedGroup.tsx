@@ -40,7 +40,13 @@
 //! Home/End jump to the ends. All behaviour is unchanged from the M3E
 //! original — only the paint and the pill moved.
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import type { ReactNode } from "react";
 
 import { cn } from "../lib/utils";
@@ -139,7 +145,7 @@ export default function M3SegmentedGroup<T extends string>({
   // selected (value === null) — the first enabled option so the group
   // stays tabbable.
   const firstEnabledIndex = options.findIndex(
-    (_, index) => !isOptionDisabled(index),
+    (_, index) => !isOptionDisabled(index)
   );
 
   /** Publish the selected segment's SEAT as the two sanctioned Glide
@@ -156,7 +162,7 @@ export default function M3SegmentedGroup<T extends string>({
     const container = containerRef.current;
     if (container === null) return false;
     const selectedIndex = optionsRef.current.findIndex(
-      (option) => option.value === valueRef.current,
+      (option) => option.value === valueRef.current
     );
     const selectedButton =
       selectedIndex >= 0 ? itemRefs.current[selectedIndex] : null;
@@ -169,13 +175,10 @@ export default function M3SegmentedGroup<T extends string>({
     // `clientLeft` is the border the padding box sits behind; without a
     // border (every group today) this is 0.
     const x = seat.left - track.left - container.clientLeft;
-    container.style.setProperty(
-      "--seg-indicator-x",
-      `${toCssLength(x)}px`,
-    );
+    container.style.setProperty("--seg-indicator-x", `${toCssLength(x)}px`);
     container.style.setProperty(
       "--seg-indicator-w",
-      `${toCssLength(seat.width)}px`,
+      `${toCssLength(seat.width)}px`
     );
     return true;
   }, []);
@@ -211,7 +214,7 @@ export default function M3SegmentedGroup<T extends string>({
         if (current !== null) delete current.dataset.noAnim;
       });
     },
-    [measure],
+    [measure]
   );
 
   // Re-measure on selection changes (glide) and on label changes
@@ -269,7 +272,7 @@ export default function M3SegmentedGroup<T extends string>({
         frameRef.current = null;
       }
     },
-    [],
+    []
   );
 
   const focusOption = (index: number, direction: 1 | -1 = 1) => {
@@ -294,7 +297,7 @@ export default function M3SegmentedGroup<T extends string>({
   // inline (the focused group IS the scope; see lib/shortcuts.ts).
   const handleKeyDown = (
     event: React.KeyboardEvent<HTMLButtonElement>,
-    index: number,
+    index: number
   ) => {
     switch (event.key) {
       case "ArrowRight":
@@ -328,7 +331,7 @@ export default function M3SegmentedGroup<T extends string>({
         isConnected
           ? "nex-seg-connected overflow-hidden rounded-lg border border-border"
           : "gap-0.5 rounded-lg bg-muted p-0.5",
-        className,
+        className
       )}
       data-ready={ready ? "true" : "false"}
       role={isTabs ? "tablist" : "radiogroup"}
@@ -372,10 +375,10 @@ export default function M3SegmentedGroup<T extends string>({
                     // With the pill drawn the tone comes from behind;
                     // without it the segment keeps its own fill so the
                     // selection is always legible.
-                    !hasIndicator && "bg-background",
+                    !hasIndicator && "bg-background"
                   )
                 : "text-muted-foreground hover:bg-accent hover:text-foreground",
-              selected && "is-active",
+              selected && "is-active"
             )}
             tabIndex={
               selected || (value === null && index === firstEnabledIndex)

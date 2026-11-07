@@ -7,21 +7,35 @@
 //! value state's numbers, the panel the popover now carries, and the compact
 //! formatter the popover depends on.
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 
 import type { ConversationContextStats } from "../lib/tauri";
 import { LocaleProvider } from "../lib/useLocale";
 import ContextRing, { formatCompactTokens } from "./ContextRing";
 
-const { mockStats, listAgentRuns, listAgentSteps, getAgentStepObservation } = vi.hoisted(
-  () => ({
+const { mockStats, listAgentRuns, listAgentSteps, getAgentStepObservation } =
+  vi.hoisted(() => ({
     mockStats: vi.fn(),
     listAgentRuns: vi.fn(),
     listAgentSteps: vi.fn(),
     getAgentStepObservation: vi.fn(),
-  }),
-);
+  }));
 
 vi.mock("../lib/tauri", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/tauri")>()),
@@ -42,7 +56,7 @@ beforeAll(() => {
       observe(): void {}
       unobserve(): void {}
       disconnect(): void {}
-    },
+    }
   );
 });
 
@@ -61,7 +75,9 @@ beforeEach(() => {
   window.localStorage.clear();
 });
 
-function stats(overrides: Partial<ConversationContextStats> = {}): ConversationContextStats {
+function stats(
+  overrides: Partial<ConversationContextStats> = {}
+): ConversationContextStats {
   return {
     conversation_id: 7,
     title: "Alpha",
@@ -93,15 +109,19 @@ function renderRing() {
   return render(
     <LocaleProvider>
       <ContextRing conversationId={7} revision="0" />
-    </LocaleProvider>,
+    </LocaleProvider>
   );
 }
 
 describe("context ring — no token data", () => {
   it("reads n/a and draws a solid empty track, never a zero percent", async () => {
-    mockStats.mockResolvedValue(stats({ has_token_data: false, usage_percent: 0, total_tokens: 0 }));
+    mockStats.mockResolvedValue(
+      stats({ has_token_data: false, usage_percent: 0, total_tokens: 0 })
+    );
     const { container } = renderRing();
-    const trigger = await screen.findByRole("button", { name: "Context window: n/a" });
+    const trigger = await screen.findByRole("button", {
+      name: "Context window: n/a",
+    });
     expect(trigger).toHaveAttribute("data-context", "na");
 
     const svg = container.querySelector("svg[data-state='na']");
@@ -120,22 +140,32 @@ describe("context ring — no token data", () => {
   it("degrades to the same n/a when the fetch fails", async () => {
     mockStats.mockRejectedValue(new Error("backend offline"));
     renderRing();
-    const trigger = await screen.findByRole("button", { name: "Context window: n/a" });
+    const trigger = await screen.findByRole("button", {
+      name: "Context window: n/a",
+    });
     expect(trigger).toHaveAttribute("data-context", "na");
   });
 
   it("keeps the numbers honest in the popover", async () => {
-    mockStats.mockResolvedValue(stats({ has_token_data: false, total_tokens: 0 }));
+    mockStats.mockResolvedValue(
+      stats({ has_token_data: false, total_tokens: 0 })
+    );
     renderRing();
-    const trigger = await screen.findByRole("button", { name: "Context window: n/a" });
+    const trigger = await screen.findByRole("button", {
+      name: "Context window: n/a",
+    });
     fireEvent.click(trigger);
     // The usage line and the panel's own reading both say n/a; neither
     // invents a zero.
     expect(screen.getAllByText("n/a").length).toBeGreaterThan(0);
     expect(screen.queryByText("0%")).toBeNull();
     expect(screen.queryByText("0.0%")).toBeNull();
-    expect(screen.queryByRole("region", { name: "Context breakdown" })).toBeNull();
-    expect(screen.getByRole("slider", { name: "Context budget" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("region", { name: "Context breakdown" })
+    ).toBeNull();
+    expect(
+      screen.getByRole("slider", { name: "Context budget" })
+    ).toBeInTheDocument();
   });
 });
 
@@ -143,7 +173,9 @@ describe("context ring — value", () => {
   it("names the button with the real percentage and paints the arc", async () => {
     mockStats.mockResolvedValue(stats());
     const { container } = renderRing();
-    const trigger = await screen.findByRole("button", { name: "Context window: 6% used" });
+    const trigger = await screen.findByRole("button", {
+      name: "Context window: 6% used",
+    });
     expect(trigger).toHaveAttribute("data-context", "value");
 
     const svg = container.querySelector("svg[data-state='value']");
@@ -156,7 +188,9 @@ describe("context ring — value", () => {
   it("shows compact totals, the provider and the model in the popover", async () => {
     mockStats.mockResolvedValue(stats());
     renderRing();
-    const trigger = await screen.findByRole("button", { name: "Context window: 6% used" });
+    const trigger = await screen.findByRole("button", {
+      name: "Context window: 6% used",
+    });
     fireEvent.click(trigger);
 
     expect(screen.getByText("12K / 200K (6%)")).toBeInTheDocument();
@@ -167,9 +201,13 @@ describe("context ring — value", () => {
   });
 
   it("falls back to the provider id when there is no display name", async () => {
-    mockStats.mockResolvedValue(stats({ provider_display: null, provider: "openai" }));
+    mockStats.mockResolvedValue(
+      stats({ provider_display: null, provider: "openai" })
+    );
     renderRing();
-    fireEvent.click(await screen.findByRole("button", { name: "Context window: 6% used" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Context window: 6% used" })
+    );
     expect(screen.getByText("openai")).toBeInTheDocument();
   });
 });
@@ -178,12 +216,16 @@ describe("context ring — the panel it carries (R6-05)", () => {
   it("fetches the stats once, however often the popover opens", async () => {
     mockStats.mockResolvedValue(stats());
     renderRing();
-    const trigger = await screen.findByRole("button", { name: "Context window: 6% used" });
+    const trigger = await screen.findByRole("button", {
+      name: "Context window: 6% used",
+    });
     expect(mockStats).toHaveBeenCalledTimes(1);
     fireEvent.click(trigger);
     // The body receives the stats as a prop; it never asks again.
     expect(mockStats).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole("slider", { name: "Context budget" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("slider", { name: "Context budget" })
+    ).toBeInTheDocument();
   });
 
   it("reads runs only while the popover is open", async () => {
@@ -194,15 +236,21 @@ describe("context ring — the panel it carries (R6-05)", () => {
     // ring never pays for runs → steps → diffs.
     expect(listAgentRuns).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole("button", { name: "Context window: 6% used" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Context window: 6% used" })
+    );
     await waitFor(() => expect(listAgentRuns).toHaveBeenCalledWith(7));
   });
 
   it("carries the context budget control into the popover", async () => {
     mockStats.mockResolvedValue(stats());
     renderRing();
-    fireEvent.click(await screen.findByRole("button", { name: "Context window: 6% used" }));
-    expect(screen.getByRole("slider", { name: "Context budget" })).toBeInTheDocument();
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Context window: 6% used" })
+    );
+    expect(
+      screen.getByRole("slider", { name: "Context budget" })
+    ).toBeInTheDocument();
     expect(screen.getByText("Context budget")).toBeInTheDocument();
   });
 });

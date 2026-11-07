@@ -75,7 +75,7 @@ export function usePrompts(): PromptsStore {
         setWorking(false);
       }
     },
-    [reload],
+    [reload]
   );
 
   // Shared runner for update/delete: call the command, then refresh so the list
@@ -95,16 +95,19 @@ export function usePrompts(): PromptsStore {
         setWorking(false);
       }
     },
-    [reload],
+    [reload]
   );
 
   const update = useCallback(
     (id: number, title: string, content: string) =>
       run(() => updatePrompt(id, title, content)),
-    [run],
+    [run]
   );
 
-  const remove = useCallback((id: number) => run(() => deletePrompt(id)), [run]);
+  const remove = useCallback(
+    (id: number) => run(() => deletePrompt(id)),
+    [run]
+  );
 
   useEffect(() => {
     void reload();
@@ -120,9 +123,13 @@ function toCommandError(error: unknown): CommandError {
     typeof (error as CommandError).kind === "string" &&
     typeof (error as CommandError).message === "string"
   ) {
-    return { kind: (error as CommandError).kind, message: (error as CommandError).message };
+    return {
+      kind: (error as CommandError).kind,
+      message: (error as CommandError).message,
+    };
   }
   if (typeof error === "string") return { kind: "unknown", message: error };
-  if (error instanceof Error) return { kind: "unknown", message: error.message };
+  if (error instanceof Error)
+    return { kind: "unknown", message: error.message };
   return { kind: "unknown", message: tr(getLocale(), "common.dbUnreachable") };
 }

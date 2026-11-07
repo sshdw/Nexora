@@ -101,8 +101,11 @@
   font-family: inherit;
   text-align: left;
   cursor: pointer;
-  transition: background-color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard),
-    color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard);
+  transition:
+    background-color var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard),
+    color var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard);
 }
 
 .nex-settings-nav-item:hover {

@@ -56,15 +56,17 @@ const stepRow: AgentTaskStep = {
 
 const { mockInvoke, mockListen, deletedIds } = vi.hoisted(() => {
   const deletedIds: number[] = [];
-  const mockInvoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
-    if (command === "list_tasks") return [{ ...taskRow }];
-    if (command === "list_task_steps") return [{ ...stepRow }];
-    if (command === "delete_task") {
-      deletedIds.push((args as { taskId: number }).taskId);
-      return null;
+  const mockInvoke = vi.fn(
+    async (command: string, args?: Record<string, unknown>) => {
+      if (command === "list_tasks") return [{ ...taskRow }];
+      if (command === "list_task_steps") return [{ ...stepRow }];
+      if (command === "delete_task") {
+        deletedIds.push((args as { taskId: number }).taskId);
+        return null;
+      }
+      throw new Error(`unexpected command ${command}`);
     }
-    throw new Error(`unexpected command ${command}`);
-  });
+  );
   const mockListen = vi.fn(async () => () => {});
   return { mockInvoke, mockListen, deletedIds };
 });
@@ -87,16 +89,20 @@ function renderPanel() {
   return render(
     <LocaleProvider>
       <SnackbarProvider>
-        <TaskPanel onClose={() => {}} defaultProvider={null} defaultModel={null} />
+        <TaskPanel
+          onClose={() => {}}
+          defaultProvider={null}
+          defaultModel={null}
+        />
       </SnackbarProvider>
-    </LocaleProvider>,
+    </LocaleProvider>
   );
 }
 
 async function openDeleteDialog() {
   renderPanel();
   await waitFor(() =>
-    expect(screen.getByText("Write report")).toBeInTheDocument(),
+    expect(screen.getByText("Write report")).toBeInTheDocument()
   );
   fireEvent.click(screen.getByRole("button", { name: "Delete" }));
   const dialog = screen.getByRole("dialog");
@@ -109,24 +115,20 @@ describe("TaskPanel delete with bounded undo", () => {
     const dialog = await openDeleteDialog();
     // Nothing fired yet — the delete is still unconfirmed.
     expect(mockInvoke.mock.calls.some(([c]) => c === "delete_task")).toBe(
-      false,
+      false
     );
     // Fake timers from here: the pending-delete + snackbar windows below
     // are the only timer-driven behavior under test.
     vi.useFakeTimers();
     // Confirming hides the row and offers Undo; the IPC still has not fired.
-    fireEvent.click(
-      within(dialog).getByRole("button", { name: "Delete" }),
-    );
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
     expect(screen.queryByText("Write report")).toBeNull();
     expect(screen.getByRole("status")).toHaveTextContent(
-      "“Write report” deleted.",
+      "“Write report” deleted."
     );
-    expect(
-      screen.getByRole("button", { name: "Undo" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
     expect(mockInvoke.mock.calls.some(([c]) => c === "delete_task")).toBe(
-      false,
+      false
     );
   });
 
@@ -134,9 +136,7 @@ describe("TaskPanel delete with bounded undo", () => {
     await openDeleteDialog();
     const dialog = screen.getByRole("dialog");
     vi.useFakeTimers();
-    fireEvent.click(
-      within(dialog).getByRole("button", { name: "Delete" }),
-    );
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
     fireEvent.click(screen.getByRole("button", { name: "Undo" }));
     expect(screen.getByText("Write report")).toBeInTheDocument();
     expect(screen.queryByRole("status")).toBeNull();
@@ -150,9 +150,7 @@ describe("TaskPanel delete with bounded undo", () => {
     await openDeleteDialog();
     const dialog = screen.getByRole("dialog");
     vi.useFakeTimers();
-    fireEvent.click(
-      within(dialog).getByRole("button", { name: "Delete" }),
-    );
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
     await act(async () => {
       vi.advanceTimersByTime(UNDO_WINDOW_MS);
     });
@@ -167,9 +165,7 @@ describe("TaskPanel delete with bounded undo", () => {
     await openDeleteDialog();
     const dialog = screen.getByRole("dialog");
     vi.useFakeTimers();
-    fireEvent.click(
-      within(dialog).getByRole("button", { name: "Delete" }),
-    );
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
     // Confirming in the list then switching to the board within the window
     // must not resurrect the row: the board filters the same pending id.
     fireEvent.click(screen.getByRole("tab", { name: "Board" }));

@@ -38,7 +38,7 @@ export const COMPOSER_POPOVER_VIEWPORT_PADDING = 8;
 export function popoverOffsetFromCard(
   triggerTop: number,
   cardTop: number,
-  gap: number = COMPOSER_POPOVER_GAP,
+  gap: number = COMPOSER_POPOVER_GAP
 ): number {
   if (!Number.isFinite(triggerTop) || !Number.isFinite(cardTop)) return gap;
   return Math.max(gap, triggerTop - cardTop + gap);
@@ -56,7 +56,7 @@ export function popoverMaxHeightFromCard(
   cardTop: number,
   headerBottom: number,
   gap: number = COMPOSER_POPOVER_GAP,
-  padding: number = COMPOSER_POPOVER_VIEWPORT_PADDING,
+  padding: number = COMPOSER_POPOVER_VIEWPORT_PADDING
 ): number {
   if (!Number.isFinite(cardTop) || !Number.isFinite(headerBottom)) return 0;
   return Math.max(0, cardTop - headerBottom - gap - padding);

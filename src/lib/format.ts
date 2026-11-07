@@ -48,7 +48,10 @@ function formatLocale(date: Date, options: Intl.DateTimeFormatOptions): string {
  * date parts use the safely-resolved browser locale (see `dateLocale` —
  * date/number locale formatting beyond string level is out of scope —
  * documented in strings.ts). */
-export function formatRelativeTime(seconds: number, locale: Locale = getLocale()): string {
+export function formatRelativeTime(
+  seconds: number,
+  locale: Locale = getLocale()
+): string {
   const ms = seconds * SECOND_MS;
   const now = Date.now();
   const diffMs = now - ms;
@@ -62,12 +65,17 @@ export function formatRelativeTime(seconds: number, locale: Locale = getLocale()
   const today = new Date();
   const yesterday = new Date(now - DAY_MS);
 
-  if (sameDay(date, today)) return formatLocale(date, { hour: "numeric", minute: "2-digit" });
+  if (sameDay(date, today))
+    return formatLocale(date, { hour: "numeric", minute: "2-digit" });
   if (sameDay(date, yesterday)) return tr(locale, "time.yesterday");
   if (date.getFullYear() === today.getFullYear()) {
     return formatLocale(date, { month: "short", day: "numeric" });
   }
-  return formatLocale(date, { month: "short", day: "numeric", year: "numeric" });
+  return formatLocale(date, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
 }
 
 /** Format a byte count as a compact human label ("1.2 MB"); returns null for

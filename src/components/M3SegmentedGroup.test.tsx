@@ -32,9 +32,25 @@
 //! No timing assertions anywhere (repo policy): the frame tests wait
 //! for the attribute to go away, they never assert a duration.
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { useState } from "react";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 
 import M3SegmentedGroup from "./M3SegmentedGroup";
 import type { M3SegmentOption } from "./M3SegmentedGroup";
@@ -88,7 +104,12 @@ function fireResize(): void {
 }
 
 /** A DOMRect with the four fields the measurement reads. */
-function makeRect(left: number, top: number, width: number, height: number): DOMRect {
+function makeRect(
+  left: number,
+  top: number,
+  width: number,
+  height: number
+): DOMRect {
   return {
     x: left,
     y: top,
@@ -193,7 +214,7 @@ beforeAll(() => {
           0,
           0,
           Number(this.dataset.testRectWidth ?? 0),
-          Number(this.dataset.testRectHeight ?? 0),
+          Number(this.dataset.testRectHeight ?? 0)
         );
       }
       const group = this.closest(".nex-seg");
@@ -203,9 +224,9 @@ beforeAll(() => {
         track.left + Number(this.dataset.testOffsetLeft ?? 0),
         track.top,
         Number(this.dataset.testOffsetWidth ?? 0),
-        28,
+        28
       );
-    },
+    }
   );
 });
 
@@ -296,7 +317,7 @@ describe("Glide Select measurement", () => {
         options={TWO_OPTIONS}
         value="chat"
         onChange={() => {}}
-      />,
+      />
     );
     const root = group();
     let [chat, agent] = segments();
@@ -310,7 +331,7 @@ describe("Glide Select measurement", () => {
         options={ru}
         value="chat"
         onChange={() => {}}
-      />,
+      />
     );
 
     // Equal-width tracks: the box is the layout's, not the label's.
@@ -531,9 +552,7 @@ describe("semantics are unchanged by the pill", () => {
   });
 
   it("skips a disabled segment with the arrow keys", () => {
-    render(
-      <GroupHarness options={THREE_WITH_DISABLED} initial="context" />,
-    );
+    render(<GroupHarness options={THREE_WITH_DISABLED} initial="context" />);
     const [, disabled, context] = segments();
     expect(disabled).toBeDisabled();
 
@@ -558,7 +577,7 @@ describe("semantics are unchanged by the pill", () => {
 describe("components.css contract (G-18)", () => {
   const sheet = readRepoFile("src/styles/components.css").replace(
     /\/\*[\s\S]*?\*\//g,
-    "",
+    ""
   );
 
   it("declares the container and pill contract the component emits", () => {
@@ -581,7 +600,7 @@ describe("components.css contract (G-18)", () => {
     // D-10 (review 06): the sheet consumes the canonical
     // --nex-sys-motion-* names after the call-site rename.
     expect(marker![1]).toContain(
-      "transition: transform var(--nex-sys-motion-duration-short4)",
+      "transition: transform var(--nex-sys-motion-duration-short4)"
     );
     expect(marker![1]).toContain("var(--nex-sys-motion-easing-standard)");
     // The gate in motion.css reaches transitions only, never keyframes.
@@ -602,7 +621,7 @@ describe("components.css contract (G-18)", () => {
 
     const segment =
       /\.nex-seg:not\(\.nex-seg-connected\) button\s*\{([\s\S]*?)\n\}/.exec(
-        sheet,
+        sheet
       );
     expect(segment).not.toBeNull();
     expect(segment![1]).toContain("border-radius: var(--seg-radius)");
@@ -632,16 +651,16 @@ describe("components.css contract (G-18)", () => {
 
   it("suppresses the transition before ready and during the no-anim frame", () => {
     expect(sheet).toMatch(
-      /\.nex-seg\[data-ready="false"\]\s+\.nex-seg-indicator[\s\S]*?transition:\s*none/,
+      /\.nex-seg\[data-ready="false"\]\s+\.nex-seg-indicator[\s\S]*?transition:\s*none/
     );
     expect(sheet).toMatch(
-      /\.nex-seg\[data-no-anim\]\s+\.nex-seg-indicator[\s\S]*?transition:\s*none/,
+      /\.nex-seg\[data-no-anim\]\s+\.nex-seg-indicator[\s\S]*?transition:\s*none/
     );
   });
 
   it("uses tokens only — no raw colour, duration or radius", () => {
     const start = sheet.indexOf(".nex-seg {");
-    const lastOwnRule = sheet.indexOf('.nex-seg[data-no-anim]');
+    const lastOwnRule = sheet.indexOf(".nex-seg[data-no-anim]");
     expect(start).toBeGreaterThan(-1);
     expect(lastOwnRule).toBeGreaterThan(start);
     const end = sheet.indexOf("\n}", lastOwnRule) + 2;

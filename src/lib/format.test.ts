@@ -28,7 +28,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("formatRelativeTime with an invalid browser locale (JSC reports \"c\")", () => {
+describe('formatRelativeTime with an invalid browser locale (JSC reports "c")', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(FROZEN_NOW_MS);
@@ -52,7 +52,9 @@ describe("formatRelativeTime with an invalid browser locale (JSC reports \"c\")"
     stubLanguage("c");
     // Previous calendar year: reaches `formatLocale` with
     // `{ month: "short", day: "numeric", year: "numeric" }`.
-    const ts = Math.floor(new Date("2025-06-15T12:00:00.000Z").getTime() / 1_000);
+    const ts = Math.floor(
+      new Date("2025-06-15T12:00:00.000Z").getTime() / 1_000
+    );
     const expected = new Intl.DateTimeFormat("en-US", {
       month: "short",
       day: "numeric",

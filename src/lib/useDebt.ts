@@ -51,7 +51,7 @@ export interface DebtStore {
     title: string,
     severity: string,
     location: string | null,
-    note: string | null,
+    note: string | null
   ) => Promise<string | null>;
   /** Route a caller-side failure (the shared issue-filing dialog) into the
    * same list-level error slot this store renders. */
@@ -98,21 +98,22 @@ export function useDebt(): DebtStore {
   // Same in-flight guard shape as the audit panel: rapid Import presses
   // collapse into the active run instead of stacking backend scans. The
   // post-import refresh swaps the rows without the list loading flag.
-  const importFromAudit = useCallback(async (): Promise<DebtImportResult | null> => {
-    if (importing) return null;
-    setImporting(true);
-    setError(null);
-    try {
-      const result = await importDebtFromAudit();
-      setItems(await listDebtItems());
-      return result;
-    } catch (err) {
-      setError(toMessage(err));
-      return null;
-    } finally {
-      setImporting(false);
-    }
-  }, [importing]);
+  const importFromAudit =
+    useCallback(async (): Promise<DebtImportResult | null> => {
+      if (importing) return null;
+      setImporting(true);
+      setError(null);
+      try {
+        const result = await importDebtFromAudit();
+        setItems(await listDebtItems());
+        return result;
+      } catch (err) {
+        setError(toMessage(err));
+        return null;
+      } finally {
+        setImporting(false);
+      }
+    }, [importing]);
 
   const changeStatus = useCallback(
     async (item: DebtItem, status: string) => {
@@ -128,7 +129,7 @@ export function useDebt(): DebtStore {
         setBusyId(null);
       }
     },
-    [busyId],
+    [busyId]
   );
 
   const remove = useCallback(
@@ -145,7 +146,7 @@ export function useDebt(): DebtStore {
         setBusyId(null);
       }
     },
-    [busyId],
+    [busyId]
   );
 
   const create = useCallback(
@@ -153,7 +154,7 @@ export function useDebt(): DebtStore {
       title: string,
       severity: string,
       location: string | null,
-      note: string | null,
+      note: string | null
     ): Promise<string | null> => {
       if (saving) return null;
       setSaving(true);
@@ -170,7 +171,7 @@ export function useDebt(): DebtStore {
         setSaving(false);
       }
     },
-    [saving],
+    [saving]
   );
 
   return {

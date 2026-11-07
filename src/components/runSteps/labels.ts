@@ -6,7 +6,10 @@
 import type { AgentStepView } from "../../lib/useAgentRun";
 import { getLocale, tr, type Locale, type StringKey } from "../../lib/strings";
 
-export function statusLabel(status: string, locale: Locale = getLocale()): string {
+export function statusLabel(
+  status: string,
+  locale: Locale = getLocale()
+): string {
   switch (status) {
     case "running":
       return tr(locale, "agent.statusRunning");
@@ -172,12 +175,17 @@ export function hasToolVerb(step: AgentStepView): boolean {
   return step.tool_name !== null && TOOL_VERBS[step.tool_name] !== undefined;
 }
 
-export function toolVerb(step: AgentStepView, locale: Locale = getLocale()): string {
+export function toolVerb(
+  step: AgentStepView,
+  locale: Locale = getLocale()
+): string {
   const key = step.tool_name ? TOOL_VERBS[step.tool_name] : undefined;
   return tr(locale, key ?? "agent.actTool");
 }
 
-export function parseToolArgs(json: string | null): Record<string, unknown> | null {
+export function parseToolArgs(
+  json: string | null
+): Record<string, unknown> | null {
   if (!json) return null;
   try {
     return JSON.parse(json) as Record<string, unknown>;
@@ -190,17 +198,23 @@ export function parseToolArgs(json: string | null): Record<string, unknown> | nu
  *  searched, the command it ran. Returns null when the tool has no
  *  single obvious target, and the row then shows no file slot at all
  *  rather than a placeholder. */
-export function stepTarget(step: AgentStepView): { text: string; title: string } | null {
+export function stepTarget(
+  step: AgentStepView
+): { text: string; title: string } | null {
   const args = parseToolArgs(step.arguments);
   if (args === null) return null;
   if (step.tool_name === "execute_command") {
     const command = typeof args.command === "string" ? args.command : null;
-    return command === null ? null : { text: command, title: tr(getLocale(), "agent.commandTitle") };
+    return command === null
+      ? null
+      : { text: command, title: tr(getLocale(), "agent.commandTitle") };
   }
   const path = typeof args.path === "string" ? args.path : null;
-  if (path !== null) return { text: path, title: tr(getLocale(), "agent.pathTitle") };
+  if (path !== null)
+    return { text: path, title: tr(getLocale(), "agent.pathTitle") };
   const query = typeof args.query === "string" ? args.query : null;
-  if (query !== null) return { text: query, title: tr(getLocale(), "agent.queryTitle") };
+  if (query !== null)
+    return { text: query, title: tr(getLocale(), "agent.queryTitle") };
   return null;
 }
 
@@ -220,7 +234,11 @@ export function splitPathTarget(text: string): { dir: string; name: string } {
 /** The persisted step status → the word shown. `null` is the LIVE shape
  *  (a step row with no status yet), which reads as running while its run
  *  is live and as nothing at all once it is not. */
-export function verifyWord(status: string | null, live: boolean, locale: Locale = getLocale()): string | null {
+export function verifyWord(
+  status: string | null,
+  live: boolean,
+  locale: Locale = getLocale()
+): string | null {
   if (status === null) return live ? tr(locale, "agent.verifyRunning") : null;
   switch (status) {
     case "succeeded":
@@ -239,7 +257,9 @@ export function verifyWord(status: string | null, live: boolean, locale: Locale 
 /** `+N −M` over a unified diff, counted from the lines themselves rather
  *  than from any stored number. Returns null when there is no diff text —
  *  the CHANGE slot then simply does not render. */
-export function diffCounts(observation: string | null): { added: number; removed: number } | null {
+export function diffCounts(
+  observation: string | null
+): { added: number; removed: number } | null {
   if (!observation) return null;
   let added = 0;
   let removed = 0;
@@ -288,8 +308,14 @@ export const NOUN_COMMANDS: CountedNoun = {
  * The template (`{n} {unit}`) is localized in the catalog and interpolated by
  * `tr`; the noun declines here - EN takes the singular at 1 and the plural
  * otherwise, RU walks the one/few/many triple through `ruPlural` above. */
-export function countedPhrase(locale: Locale, key: StringKey, n: number, noun: CountedNoun): string {
-  const unit = locale === "ru" ? ruPlural(n, noun.ru) : n === 1 ? noun.en[0] : noun.en[1];
+export function countedPhrase(
+  locale: Locale,
+  key: StringKey,
+  n: number,
+  noun: CountedNoun
+): string {
+  const unit =
+    locale === "ru" ? ruPlural(n, noun.ru) : n === 1 ? noun.en[0] : noun.en[1];
   return tr(locale, key, { n, unit });
 }
 
@@ -299,9 +325,10 @@ export function countedPhrase(locale: Locale, key: StringKey, n: number, noun: C
 export function formatRunDuration(
   startedAt: number,
   finishedAt: number | null,
-  locale: Locale = getLocale(),
+  locale: Locale = getLocale()
 ): string | null {
-  if (finishedAt === null || startedAt <= 0 || finishedAt < startedAt) return null;
+  if (finishedAt === null || startedAt <= 0 || finishedAt < startedAt)
+    return null;
   const total = Math.max(0, Math.round(finishedAt - startedAt));
   if (total < 60) return tr(locale, "agent.durationSeconds", { n: total });
   return tr(locale, "agent.durationMinutes", {
@@ -328,6 +355,10 @@ export function formatCountdown(totalSecs: number, locale: Locale): string {
 /** Seconds left on a pending approval, clamped to `[0, timeoutSecs]`
  * (NEX-AGENT-004): `requested_at` is client receipt time, so clock skew can
  * otherwise push the countdown above the deadline it claims to track. */
-export function remainingSecs(timeoutSecs: number, requestedAt: number, now: number): number {
+export function remainingSecs(
+  timeoutSecs: number,
+  requestedAt: number,
+  now: number
+): number {
   return Math.min(timeoutSecs, Math.max(0, requestedAt + timeoutSecs - now));
 }

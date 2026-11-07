@@ -11,17 +11,30 @@
 //! in src/components/Composer.test.tsx.
 
 import { cleanup, render, screen } from "@testing-library/react";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 
 import type { ConversationContextStats } from "../lib/tauri";
 
-const { conversationContextStats, listAgentRuns, listAgentSteps, getAgentStepObservation } =
-  vi.hoisted(() => ({
-    conversationContextStats: vi.fn(),
-    listAgentRuns: vi.fn(),
-    listAgentSteps: vi.fn(),
-    getAgentStepObservation: vi.fn(),
-  }));
+const {
+  conversationContextStats,
+  listAgentRuns,
+  listAgentSteps,
+  getAgentStepObservation,
+} = vi.hoisted(() => ({
+  conversationContextStats: vi.fn(),
+  listAgentRuns: vi.fn(),
+  listAgentSteps: vi.fn(),
+  getAgentStepObservation: vi.fn(),
+}));
 
 vi.mock("../lib/tauri", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/tauri")>()),
@@ -35,7 +48,9 @@ import ContextPanel from "./ContextPanel";
 import { CONTEXT_BUDGET_KEY } from "../lib/useContextBudget";
 import { readRepoFile } from "../test/readRepoFile";
 
-function stats(overrides: Partial<ConversationContextStats> = {}): ConversationContextStats {
+function stats(
+  overrides: Partial<ConversationContextStats> = {}
+): ConversationContextStats {
   return {
     conversation_id: 1,
     title: "Designing the composer",
@@ -75,7 +90,7 @@ beforeAll(() => {
       observe(): void {}
       unobserve(): void {}
       disconnect(): void {}
-    },
+    }
   );
 });
 
@@ -97,7 +112,9 @@ afterEach(() => {
 
 /** Render the body with the ring's already-fetched stats. */
 async function renderPanel(overrides: Partial<ConversationContextStats> = {}) {
-  const view = render(<ContextPanel conversationId={1} stats={stats(overrides)} />);
+  const view = render(
+    <ContextPanel conversationId={1} stats={stats(overrides)} />
+  );
   // The changed-files section settles asynchronously; the slider is what
   // proves the body rendered.
   await screen.findByRole("slider", { name: "Context budget" });
@@ -108,24 +125,26 @@ describe("context panel — budget slider", () => {
   it("exposes one slider with a name, a description and a real value", async () => {
     await renderPanel();
 
-    const slider = await screen.findByRole("slider", { name: "Context budget" });
+    const slider = await screen.findByRole("slider", {
+      name: "Context budget",
+    });
     // Radix carries the ARIA value plumbing; the panel carries the name.
     expect(slider).toHaveAttribute("aria-valuemin", "8000");
     expect(slider).toHaveAttribute("aria-valuemax", "256000");
     expect(slider).toHaveAttribute("aria-valuenow", "128000");
     // The rendered number and the control's own value are one number.
     expect(slider.getAttribute("aria-valuenow")).toBe(
-      screen.getByText("128 000 tokens").textContent?.replace(/\D/g, ""),
+      screen.getByText("128 000 tokens").textContent?.replace(/\D/g, "")
     );
     // Described by the hint: it is the control's DESCRIPTION (what
     // the number is for), while the live reading is the value the
     // control already announces through aria-valuenow. Both were
     // declared in round 1 and the hint was the one never rendered.
     expect(slider).toHaveAccessibleDescription(
-      "Tokens this conversation is measured against. Above it the budget reads as over.",
+      "Tokens this conversation is measured against. Above it the budget reads as over."
     );
     expect(
-      screen.getByText("32 000 of 128 000 tokens used"),
+      screen.getByText("32 000 of 128 000 tokens used")
     ).toBeInTheDocument();
   });
 
@@ -154,7 +173,9 @@ describe("context panel — budget slider", () => {
     const fill = meter.querySelector(".nex-context-meter-fill") as HTMLElement;
     expect(fill.style.width).toBe("100%");
     expect(meter.className).toContain("is-over");
-    expect(screen.getByText("Over budget — past 16 000 tokens.")).toBeInTheDocument();
+    expect(
+      screen.getByText("Over budget — past 16 000 tokens.")
+    ).toBeInTheDocument();
   });
 
   it("leaves the hairline empty when there is no usage to measure", async () => {
@@ -177,12 +198,12 @@ describe("context panel — budget slider", () => {
     // The mouse affordance…
     expect(screen.getByText("32 000 of 128 000 tokens used")).toHaveAttribute(
       "title",
-      "Total cost 1.23 $",
+      "Total cost 1.23 $"
     );
     // …and the same sentence where a keyboard or screen-reader user gets
     // it, so the detail is never hover-ONLY (SYSTEM §8).
     expect(
-      screen.getByRole("img", { name: /Total cost 1\.23 \$/ }),
+      screen.getByRole("img", { name: /Total cost 1\.23 \$/ })
     ).toBeInTheDocument();
     // And it is NOT a sixteenth permanent row among the stats.
     expect(screen.queryByText("Total cost")).toBeNull();
@@ -191,34 +212,45 @@ describe("context panel — budget slider", () => {
   it("reads the stored budget on mount", async () => {
     window.localStorage.setItem(CONTEXT_BUDGET_KEY, "64000");
     await renderPanel();
-    const slider = await screen.findByRole("slider", { name: "Context budget" });
+    const slider = await screen.findByRole("slider", {
+      name: "Context budget",
+    });
     expect(slider).toHaveAttribute("aria-valuenow", "64000");
     expect(screen.getByText("64 000 tokens")).toBeInTheDocument();
     // …and the reading is recomputed against it, not against the
     // model's own context limit.
-    expect(screen.getByText("32 000 of 64 000 tokens used")).toBeInTheDocument();
+    expect(
+      screen.getByText("32 000 of 64 000 tokens used")
+    ).toBeInTheDocument();
   });
 
   it("changes the panel's own reading when the value changes", async () => {
     window.localStorage.setItem(CONTEXT_BUDGET_KEY, "40000");
     await renderPanel();
-    const slider = await screen.findByRole("slider", { name: "Context budget" });
-    expect(screen.getByText("32 000 of 40 000 tokens used")).toBeInTheDocument();
+    const slider = await screen.findByRole("slider", {
+      name: "Context budget",
+    });
+    expect(
+      screen.getByText("32 000 of 40 000 tokens used")
+    ).toBeInTheDocument();
 
     // ArrowRight is a real Slider key: one step up, and the reading
     // follows it. No timing assertion (repo policy).
     slider.focus();
-    slider.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
-    await screen.findByText("32 000 of 48 000 tokens used");
-    expect(screen.getByRole("slider", { name: "Context budget" })).toHaveAttribute(
-      "aria-valuenow",
-      "48000",
+    slider.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })
     );
+    await screen.findByText("32 000 of 48 000 tokens used");
+    expect(
+      screen.getByRole("slider", { name: "Context budget" })
+    ).toHaveAttribute("aria-valuenow", "48000");
   });
 
   it("persists only on commit, not on every drag frame", async () => {
     await renderPanel();
-    const slider = await screen.findByRole("slider", { name: "Context budget" });
+    const slider = await screen.findByRole("slider", {
+      name: "Context budget",
+    });
     expect(window.localStorage.getItem(CONTEXT_BUDGET_KEY)).toBeNull();
     // Rendering the control must not write; only a committed change does.
     expect(slider).toBeInTheDocument();
@@ -250,7 +282,9 @@ describe("context panel — budget slider", () => {
     // fire a whole step early.
     window.localStorage.setItem(CONTEXT_BUDGET_KEY, "32000");
     await renderPanel();
-    expect(screen.getByText("32 000 of 32 000 tokens used")).toBeInTheDocument();
+    expect(
+      screen.getByText("32 000 of 32 000 tokens used")
+    ).toBeInTheDocument();
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
@@ -263,7 +297,9 @@ describe("context panel — budget slider", () => {
 
   it("says so when there is no persisted token usage to measure", async () => {
     await renderPanel({ has_token_data: false, total_tokens: 0 });
-    const slider = await screen.findByRole("slider", { name: "Context budget" });
+    const slider = await screen.findByRole("slider", {
+      name: "Context budget",
+    });
     expect(slider).toHaveAttribute("aria-valuenow", "128000");
     expect(screen.getByText("No persisted token usage")).toBeInTheDocument();
   });
@@ -271,7 +307,11 @@ describe("context panel — budget slider", () => {
   it("never prints 0% when the backend has no token data", async () => {
     // Real capture: the ring said n/a, but this body printed Usage 0% and
     // four 0.0% breakdown rows. R5-01: absent data is absent, not zero.
-    await renderPanel({ has_token_data: false, total_tokens: 0, usage_percent: 0 });
+    await renderPanel({
+      has_token_data: false,
+      total_tokens: 0,
+      usage_percent: 0,
+    });
 
     const usage = screen.getByText("Usage");
     expect(usage.parentElement).toHaveTextContent("n/a");
@@ -280,10 +320,14 @@ describe("context panel — budget slider", () => {
     // The breakdown is hidden outright; a bar of four zeros is a fabricated
     // measurement. The budget control and the changed-files list stay.
     expect(
-      screen.queryByRole("region", { name: "Context breakdown" }),
+      screen.queryByRole("region", { name: "Context breakdown" })
     ).toBeNull();
-    expect(screen.getByRole("slider", { name: "Context budget" })).toBeInTheDocument();
-    expect(await screen.findByText("No file changes recorded.")).toBeInTheDocument();
+    expect(
+      screen.getByRole("slider", { name: "Context budget" })
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByText("No file changes recorded.")
+    ).toBeInTheDocument();
   });
 
   it("keeps the popover body one compact column", () => {
@@ -319,7 +363,7 @@ describe("context popover — the ring's stats, not a second fetch", () => {
   it("says the stats are unavailable when the ring's fetch failed", () => {
     render(<ContextPanel conversationId={1} stats={null} />);
     expect(screen.getByRole("alert")).toHaveTextContent(
-      "Context stats are unavailable.",
+      "Context stats are unavailable."
     );
     // No control without data: the budget slider is not a placeholder.
     expect(screen.queryByRole("slider", { name: "Context budget" })).toBeNull();
@@ -408,7 +452,9 @@ describe("context popover — changed files", () => {
   it("says there are no recorded changes instead of drawing an empty list", async () => {
     listAgentRuns.mockResolvedValue([]);
     await renderPanel();
-    expect(await screen.findByText("No file changes recorded.")).toBeInTheDocument();
+    expect(
+      await screen.findByText("No file changes recorded.")
+    ).toBeInTheDocument();
   });
 
   it("keeps the preview when the full diff cannot be fetched", async () => {
@@ -423,6 +469,8 @@ describe("context popover — changed files", () => {
   it("surfaces a failed run read in words", async () => {
     listAgentRuns.mockRejectedValue(new Error("database is locked"));
     await renderPanel();
-    expect(await screen.findByRole("alert")).toHaveTextContent("database is locked");
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "database is locked"
+    );
   });
 });

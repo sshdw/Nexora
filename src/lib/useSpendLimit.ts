@@ -39,8 +39,12 @@ function toCommandError(error: unknown): CommandError {
     return { kind: e.kind, message: e.message };
   }
   if (typeof error === "string") return { kind: "unknown", message: error };
-  if (error instanceof Error) return { kind: "unknown", message: error.message };
-  return { kind: "unknown", message: tr(getLocale(), "common.spendUnreachable") };
+  if (error instanceof Error)
+    return { kind: "unknown", message: error.message };
+  return {
+    kind: "unknown",
+    message: tr(getLocale(), "common.spendUnreachable"),
+  };
 }
 
 function parseStored(value: string | null): number | null {
@@ -71,32 +75,38 @@ export function useSpendLimit(): SpendLimitStore {
     }
   }, []);
 
-  const setLimit = useCallback(async (value: number | null): Promise<boolean> => {
-    if (value !== null && (!Number.isInteger(value) || value < 0)) {
-      // Accepted: this transient validation error is built in the locale
-      // active when it fired (cleared on the next attempt, so it never pins
-      // the UI to a stale language).
-      setError({ kind: "invalidInput", message: tr(getLocale(), "common.spendInvalid") });
-      return false;
-    }
-    setSaving(true);
-    setError(null);
-    try {
-      if (value === null) {
-        await deleteSetting(SPEND_LIMIT_KEY);
-        setLimitMicroUsd(null);
-      } else {
-        await setSetting(SPEND_LIMIT_KEY, String(value));
-        setLimitMicroUsd(value);
+  const setLimit = useCallback(
+    async (value: number | null): Promise<boolean> => {
+      if (value !== null && (!Number.isInteger(value) || value < 0)) {
+        // Accepted: this transient validation error is built in the locale
+        // active when it fired (cleared on the next attempt, so it never pins
+        // the UI to a stale language).
+        setError({
+          kind: "invalidInput",
+          message: tr(getLocale(), "common.spendInvalid"),
+        });
+        return false;
       }
-      return true;
-    } catch (e) {
-      setError(toCommandError(e));
-      return false;
-    } finally {
-      setSaving(false);
-    }
-  }, []);
+      setSaving(true);
+      setError(null);
+      try {
+        if (value === null) {
+          await deleteSetting(SPEND_LIMIT_KEY);
+          setLimitMicroUsd(null);
+        } else {
+          await setSetting(SPEND_LIMIT_KEY, String(value));
+          setLimitMicroUsd(value);
+        }
+        return true;
+      } catch (e) {
+        setError(toCommandError(e));
+        return false;
+      } finally {
+        setSaving(false);
+      }
+    },
+    []
+  );
 
   useEffect(() => {
     void reload();
@@ -106,6 +116,6 @@ export function useSpendLimit(): SpendLimitStore {
   // object as a prop, so a fresh literal every render re-rendered Settings.
   return useMemo(
     () => ({ limitMicroUsd, loading, saving, error, reload, setLimit }),
-    [limitMicroUsd, loading, saving, error, reload, setLimit],
+    [limitMicroUsd, loading, saving, error, reload, setLimit]
   );
 }

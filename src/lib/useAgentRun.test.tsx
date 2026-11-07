@@ -20,28 +20,26 @@ import { useAgentRun } from "./useAgentRun";
 
 type TauriEvent = { payload: AgentRunEventPayload };
 
-const { mockInvoke, mockListen, listeners, emitAgentEvent } = vi.hoisted(
-  () => {
-    const listeners: Array<(event: TauriEvent) => void> = [];
-    const mockInvoke = vi.fn();
-    const mockListen = vi.fn(
-      async (
-        _eventName: string,
-        handler: (event: TauriEvent) => void,
-      ): Promise<() => void> => {
-        listeners.push(handler);
-        return () => {
-          const i = listeners.indexOf(handler);
-          if (i >= 0) listeners.splice(i, 1);
-        };
-      },
-    );
-    const emitAgentEvent = (payload: AgentRunEventPayload): void => {
-      for (const handler of [...listeners]) handler({ payload });
-    };
-    return { mockInvoke, mockListen, listeners, emitAgentEvent };
-  },
-);
+const { mockInvoke, mockListen, listeners, emitAgentEvent } = vi.hoisted(() => {
+  const listeners: Array<(event: TauriEvent) => void> = [];
+  const mockInvoke = vi.fn();
+  const mockListen = vi.fn(
+    async (
+      _eventName: string,
+      handler: (event: TauriEvent) => void
+    ): Promise<() => void> => {
+      listeners.push(handler);
+      return () => {
+        const i = listeners.indexOf(handler);
+        if (i >= 0) listeners.splice(i, 1);
+      };
+    }
+  );
+  const emitAgentEvent = (payload: AgentRunEventPayload): void => {
+    for (const handler of [...listeners]) handler({ payload });
+  };
+  return { mockInvoke, mockListen, listeners, emitAgentEvent };
+});
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mockInvoke }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: mockListen }));
@@ -107,28 +105,32 @@ function stepFrame(overrides: Partial<StepEventFrame> = {}): StepEventFrame {
 function routeInvoke(
   runsByConversation: Record<number, AgentRun[]>,
   stepsByRun: Record<number, AgentStep[]>,
-  fullObservation = "FULL OBSERVATION TEXT",
+  fullObservation = "FULL OBSERVATION TEXT"
 ): void {
-  mockInvoke.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
-    if (cmd === "list_agent_runs") {
-      const id = args?.["conversationId"];
-      if (typeof id !== "number" || !(id in runsByConversation)) {
-        return Promise.reject(new Error(`no fixture for conversation ${String(id)}`));
+  mockInvoke.mockImplementation(
+    (cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === "list_agent_runs") {
+        const id = args?.["conversationId"];
+        if (typeof id !== "number" || !(id in runsByConversation)) {
+          return Promise.reject(
+            new Error(`no fixture for conversation ${String(id)}`)
+          );
+        }
+        return Promise.resolve(runsByConversation[id]);
       }
-      return Promise.resolve(runsByConversation[id]);
-    }
-    if (cmd === "list_agent_steps") {
-      const id = args?.["runId"];
-      if (typeof id !== "number" || !(id in stepsByRun)) {
-        return Promise.reject(new Error(`no fixture for run ${String(id)}`));
+      if (cmd === "list_agent_steps") {
+        const id = args?.["runId"];
+        if (typeof id !== "number" || !(id in stepsByRun)) {
+          return Promise.reject(new Error(`no fixture for run ${String(id)}`));
+        }
+        return Promise.resolve(stepsByRun[id]);
       }
-      return Promise.resolve(stepsByRun[id]);
+      if (cmd === "get_agent_step_observation") {
+        return Promise.resolve(fullObservation);
+      }
+      return Promise.reject(new Error(`unexpected invoke: ${cmd}`));
     }
-    if (cmd === "get_agent_step_observation") {
-      return Promise.resolve(fullObservation);
-    }
-    return Promise.reject(new Error(`unexpected invoke: ${cmd}`));
-  });
+  );
 }
 
 beforeEach(() => {
@@ -165,13 +167,13 @@ describe("useAgentRun", () => {
     // The N+1 must stay dead: NO per-run steps fan-out on load.
     expect(mockInvoke).not.toHaveBeenCalledWith(
       "list_agent_steps",
-      expect.anything(),
+      expect.anything()
     );
     // Channel contract: production subscribes to "agent-run-event"
     // (useAgentRun.ts); guards a silent channel rename.
     expect(mockListen).toHaveBeenCalledWith(
       "agent-run-event",
-      expect.any(Function),
+      expect.any(Function)
     );
 
     // Lazy load: the expanded run asks once, steps arrive mapped, and a
@@ -284,7 +286,9 @@ describe("useAgentRun", () => {
     });
     // No runs re-query: the patch came from the frame payload alone.
     expect(reloadCalls()).toBe(baseline);
-    await waitFor(() => expect(result.current.runs[0].status).toBe("completed"));
+    await waitFor(() =>
+      expect(result.current.runs[0].status).toBe("completed")
+    );
     expect(result.current.runs[0].error).toBeNull();
     expect(result.current.runs[0].finished_at).not.toBeNull();
     // The run had no steps on screen (rehydrated unloaded), so its final
@@ -327,7 +331,7 @@ describe("useAgentRun", () => {
     expect(result.current.runs[0].status).toBe("completed");
     expect(result.current.runs[0].steps.map((s) => s.seq)).toEqual([1]);
     expect(
-      mockInvoke.mock.calls.filter((c) => c[0] === "list_agent_steps"),
+      mockInvoke.mock.calls.filter((c) => c[0] === "list_agent_steps")
     ).toHaveLength(0);
   });
 
@@ -345,7 +349,11 @@ describe("useAgentRun", () => {
     // behavior — the real fix needs conversation_id in StepEventFrame
     // (backend scope, out of scope here). See issue #189.
     act(() => {
-      emitAgentEvent({ type: "step", run_id: 999, event: stepFrame({ seq: 1 }) });
+      emitAgentEvent({
+        type: "step",
+        run_id: 999,
+        event: stepFrame({ seq: 1 }),
+      });
     });
     expect(result.current.runs).toHaveLength(2);
     const placeholder = result.current.runs.find((r) => r.run_id === 999);
@@ -358,23 +366,25 @@ describe("useAgentRun", () => {
 
   it("drops a stale reload that resolves after a conversation switch", async () => {
     let resolveConv1: ((runs: AgentRun[]) => void) | null = null;
-    mockInvoke.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
-      if (cmd === "list_agent_runs") {
-        const id = args?.["conversationId"];
-        if (id === 1) {
-          return new Promise<AgentRun[]>((resolve) => {
-            resolveConv1 = resolve;
-          });
+    mockInvoke.mockImplementation(
+      (cmd: string, args?: Record<string, unknown>) => {
+        if (cmd === "list_agent_runs") {
+          const id = args?.["conversationId"];
+          if (id === 1) {
+            return new Promise<AgentRun[]>((resolve) => {
+              resolveConv1 = resolve;
+            });
+          }
+          return Promise.resolve([runRow({ id: 8, conversation_id: 2 })]);
         }
-        return Promise.resolve([runRow({ id: 8, conversation_id: 2 })]);
+        if (cmd === "list_agent_steps") return Promise.resolve([]);
+        return Promise.reject(new Error(`unexpected invoke: ${cmd}`));
       }
-      if (cmd === "list_agent_steps") return Promise.resolve([]);
-      return Promise.reject(new Error(`unexpected invoke: ${cmd}`));
-    });
+    );
 
     const { result, rerender } = renderHook(
       ({ id }: { id: number | null }) => useAgentRun(id),
-      { initialProps: { id: 1 as number | null } },
+      { initialProps: { id: 1 as number | null } }
     );
 
     // Switch before conversation 1's reload resolves.
@@ -394,7 +404,7 @@ describe("useAgentRun", () => {
     routeInvoke(
       { 1: [runRow()] },
       { 7: [stepRow({ observation: "preview", observation_truncated: true })] },
-      "FULL OBSERVATION TEXT",
+      "FULL OBSERVATION TEXT"
     );
 
     const { result } = renderHook(() => useAgentRun(1));
@@ -411,7 +421,7 @@ describe("useAgentRun", () => {
       await result.current.expandStep(7, 1);
     });
     expect(result.current.runs[0].steps[0].observation_full).toBe(
-      "FULL OBSERVATION TEXT",
+      "FULL OBSERVATION TEXT"
     );
     expect(mockInvoke).toHaveBeenCalledWith("get_agent_step_observation", {
       stepId: 11,

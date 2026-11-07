@@ -84,11 +84,18 @@ export interface KeyEventLike {
 /** True when the event satisfies every specified combo field. Unspecified
  * modifiers are ignored — the caller keeps its own outer guards, so a
  * combo only ever narrows the key comparison it replaces. */
-export function matchesCombo(event: KeyEventLike, combo: ShortcutCombo): boolean {
+export function matchesCombo(
+  event: KeyEventLike,
+  combo: ShortcutCombo
+): boolean {
   if (combo.ctrl !== undefined && combo.ctrl !== event.ctrlKey) return false;
   if (combo.alt !== undefined && combo.alt !== event.altKey) return false;
   if (combo.meta !== undefined && combo.meta !== event.metaKey) return false;
-  if (combo.shift !== undefined && combo.shift !== "any" && combo.shift !== event.shiftKey) {
+  if (
+    combo.shift !== undefined &&
+    combo.shift !== "any" &&
+    combo.shift !== event.shiftKey
+  ) {
     return false;
   }
   if (combo.ci === true) {
@@ -98,7 +105,10 @@ export function matchesCombo(event: KeyEventLike, combo: ShortcutCombo): boolean
 }
 
 /** True when any combo in the list matches (multi-key shortcuts). */
-export function matchesAnyCombo(event: KeyEventLike, combos: readonly ShortcutCombo[]): boolean {
+export function matchesAnyCombo(
+  event: KeyEventLike,
+  combos: readonly ShortcutCombo[]
+): boolean {
   return combos.some((combo) => matchesCombo(event, combo));
 }
 
@@ -125,24 +135,98 @@ export interface ShortcutEntry {
 
 const NO_META = { alt: false, meta: false } as const;
 
-export const COMBO_TAB_NEXT_TAB: ShortcutCombo = { key: "Tab", ctrl: true, ...NO_META, shift: "any" };
-export const COMBO_TAB_NEXT_PAGEDOWN: ShortcutCombo = { key: "PageDown", ctrl: true, ...NO_META, shift: "any" };
-export const COMBO_TAB_PREV_PAGEDUP: ShortcutCombo = { key: "PageUp", ctrl: true, ...NO_META, shift: "any" };
-export const COMBO_TAB_CLOSE: ShortcutCombo = { key: "w", ctrl: false, alt: true, meta: false, shift: "any", ci: true };
-export const COMBO_SPLIT_TOGGLE: ShortcutCombo = { key: "s", ctrl: false, alt: true, meta: false, shift: "any", ci: true };
-export const COMBO_PALETTE_K: ShortcutCombo = { key: "k", ctrl: true, alt: false, meta: false, shift: "any", ci: true };
-export const COMBO_PALETTE_P: ShortcutCombo = { key: "p", ctrl: true, alt: false, meta: false, shift: "any", ci: true };
+export const COMBO_TAB_NEXT_TAB: ShortcutCombo = {
+  key: "Tab",
+  ctrl: true,
+  ...NO_META,
+  shift: "any",
+};
+export const COMBO_TAB_NEXT_PAGEDOWN: ShortcutCombo = {
+  key: "PageDown",
+  ctrl: true,
+  ...NO_META,
+  shift: "any",
+};
+export const COMBO_TAB_PREV_PAGEDUP: ShortcutCombo = {
+  key: "PageUp",
+  ctrl: true,
+  ...NO_META,
+  shift: "any",
+};
+export const COMBO_TAB_CLOSE: ShortcutCombo = {
+  key: "w",
+  ctrl: false,
+  alt: true,
+  meta: false,
+  shift: "any",
+  ci: true,
+};
+export const COMBO_SPLIT_TOGGLE: ShortcutCombo = {
+  key: "s",
+  ctrl: false,
+  alt: true,
+  meta: false,
+  shift: "any",
+  ci: true,
+};
+export const COMBO_PALETTE_K: ShortcutCombo = {
+  key: "k",
+  ctrl: true,
+  alt: false,
+  meta: false,
+  shift: "any",
+  ci: true,
+};
+export const COMBO_PALETTE_P: ShortcutCombo = {
+  key: "p",
+  ctrl: true,
+  alt: false,
+  meta: false,
+  shift: "any",
+  ci: true,
+};
 /** Alt+1..Alt+9 are matched by range, not by combo (position math lives in
  * the handler): this entry documents the guard exactly as implemented. */
-export const COMBO_TAB_JUMP_GUARD: ShortcutCombo = { key: "", ctrl: false, alt: true, meta: false, shift: "any" };
-export const COMBO_HELP_SLASH: ShortcutCombo = { key: "/", ctrl: true, alt: false, meta: false, shift: "any" };
-export const COMBO_HELP_QUESTION: ShortcutCombo = { key: "?", ctrl: true, alt: false, meta: false, shift: "any" };
-export const COMBO_HELP_F1: ShortcutCombo = { key: "F1", ctrl: false, alt: false, meta: false, shift: "any" };
+export const COMBO_TAB_JUMP_GUARD: ShortcutCombo = {
+  key: "",
+  ctrl: false,
+  alt: true,
+  meta: false,
+  shift: "any",
+};
+export const COMBO_HELP_SLASH: ShortcutCombo = {
+  key: "/",
+  ctrl: true,
+  alt: false,
+  meta: false,
+  shift: "any",
+};
+export const COMBO_HELP_QUESTION: ShortcutCombo = {
+  key: "?",
+  ctrl: true,
+  alt: false,
+  meta: false,
+  shift: "any",
+};
+export const COMBO_HELP_F1: ShortcutCombo = {
+  key: "F1",
+  ctrl: false,
+  alt: false,
+  meta: false,
+  shift: "any",
+};
 /** Ctrl+Shift+T (tasks): the Ctrl map owns only Tab/PageUp/PageDown (+
  * palette K/P, help //?) — T with Ctrl+Shift is unbound, collision-free
  * (`ci` matches the "T" key value Shift produces; inserts no text, so it
  * opens from anywhere including typing targets). */
-export const COMBO_TASKS_OPEN: ShortcutCombo = { key: "t", ctrl: true, alt: false, meta: false, shift: true, ci: true };
+export const COMBO_TASKS_OPEN: ShortcutCombo = {
+  key: "t",
+  ctrl: true,
+  alt: false,
+  meta: false,
+  shift: true,
+  ci: true,
+};
 
 // --- The inventory (100% of the Phase-1 grep — see module header). ----------
 

@@ -26,8 +26,10 @@ import type { ButtonHTMLAttributes, ReactNode } from "react";
 
 import { cn } from "../lib/utils";
 
-export interface M3RailItemProps
-  extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, "children"> {
+export interface M3RailItemProps extends Omit<
+  ButtonHTMLAttributes<HTMLButtonElement>,
+  "children"
+> {
   /** Visible + accessible label (aria-label + title). */
   label: string;
   /** Outlined/rest icon (optional — text-only rows omit it). */
@@ -63,7 +65,7 @@ export default function M3RailItem({
         active
           ? "bg-accent font-medium text-foreground"
           : "text-muted-foreground hover:bg-muted hover:text-foreground",
-        className,
+        className
       )}
       aria-label={label}
       aria-current={active ? "page" : undefined}
@@ -82,7 +84,9 @@ export default function M3RailItem({
         </span>
       ) : null}
       <span className="min-w-0 flex-1 truncate">{children ?? label}</span>
-      {trailing ? <span className="flex shrink-0 items-center">{trailing}</span> : null}
+      {trailing ? (
+        <span className="flex shrink-0 items-center">{trailing}</span>
+      ) : null}
     </button>
   );
 }

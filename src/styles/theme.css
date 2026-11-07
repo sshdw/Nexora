@@ -6,11 +6,25 @@
    ============================================================ */
 
 /* ---- Box model ---- */
-*, *::before, *::after { box-sizing: border-box; }
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
 
-img, svg { display: block; max-width: 100%; height: auto; }
+img,
+svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
 
-html, body { margin: 0; padding: 0; height: 100%; }
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
 
 /* The page behind the shell is the canvas tier, matching .nex-app so
    overscroll and the pre-hydration paint never flash a second tone
@@ -35,8 +49,12 @@ body {
   background: var(--color-surface-canvas);
 }
 
-a { color: var(--color-primary); }
-a:hover { text-decoration: underline; }
+a {
+  color: var(--color-primary);
+}
+a:hover {
+  text-decoration: underline;
+}
 
 /* Buttons reset to a predictable baseline; themed via .nex-btn* classes. */
 button {
@@ -56,16 +74,29 @@ button[disabled] {
   opacity: var(--state-disabled-opacity);
 }
 
-ul, ol { margin: 0; padding: 0; list-style: none; }
+ul,
+ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
 
 /* Typography guards (skill §4): every text primitive and form control uses the
    same UI sans family — no heading or control may fall back to a UA serif. */
-h1, h2, h3, h4, h5, h6, p {
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p {
   margin: 0;
   font-family: inherit;
 }
 
-input, textarea, select {
+input,
+textarea,
+select {
   font-family: inherit;
 }
 

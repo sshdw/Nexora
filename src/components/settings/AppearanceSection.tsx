@@ -12,16 +12,21 @@ export interface AppearanceSectionProps {
   onLocaleChange: (locale: Locale) => void;
 }
 
-export default function AppearanceSection({ appearance, locale, onLocaleChange }: AppearanceSectionProps) {
+export default function AppearanceSection({
+  appearance,
+  locale,
+  onLocaleChange,
+}: AppearanceSectionProps) {
   const { t } = useStrings();
   return (
-    <section className="nex-settings-section" aria-labelledby="appearance-heading">
+    <section
+      className="nex-settings-section"
+      aria-labelledby="appearance-heading"
+    >
       <h3 id="appearance-heading" className="nex-settings-heading">
         {t("settings.sectionAppearance")}
       </h3>
-      <p className="nex-settings-hint">
-        {t("settings.appearanceHint")}
-      </p>
+      <p className="nex-settings-hint">{t("settings.appearanceHint")}</p>
       <div className="nex-settings-field">
         <span className="nex-settings-label" id="theme-label">
           {t("settings.themeLabel")}
@@ -35,9 +40,7 @@ export default function AppearanceSection({ appearance, locale, onLocaleChange }
             { value: "light", label: t("settings.themeLight") },
           ]}
         />
-        <p className="nex-settings-hint">
-          {t("settings.themeProvisional")}
-        </p>
+        <p className="nex-settings-hint">{t("settings.themeProvisional")}</p>
       </div>
       <div className="nex-settings-field">
         <span className="nex-settings-label" id="language-label">
@@ -52,9 +55,7 @@ export default function AppearanceSection({ appearance, locale, onLocaleChange }
             { value: "ru", label: t("settings.langRu") },
           ]}
         />
-        <p className="nex-settings-hint">
-          {t("settings.languageHint")}
-        </p>
+        <p className="nex-settings-hint">{t("settings.languageHint")}</p>
       </div>
     </section>
   );

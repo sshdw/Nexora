@@ -209,7 +209,7 @@ export function useVcs(): VcsStore {
         setActing(null);
       }
     },
-    [loadInfo],
+    [loadInfo]
   );
 
   const commit = useCallback(async () => {
@@ -276,7 +276,12 @@ export function useVcs(): VcsStore {
   const explainCommit = useCallback(async (hash: string) => {
     if (explainingRef.current !== null) return;
     explainingRef.current = hash;
-    setExplain((prev) => ({ ...prev, loading: true, error: null, copied: false }));
+    setExplain((prev) => ({
+      ...prev,
+      loading: true,
+      error: null,
+      copied: false,
+    }));
     try {
       const [provider, model] = await Promise.all([
         getSetting("provider.selected"),
@@ -290,7 +295,11 @@ export function useVcs(): VcsStore {
         }));
         return;
       }
-      const result: CommitExplanation = await gitExplainCommit(hash, provider, model);
+      const result: CommitExplanation = await gitExplainCommit(
+        hash,
+        provider,
+        model
+      );
       setExplain({
         loading: false,
         explanation: result.explanation,

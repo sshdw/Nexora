@@ -746,7 +746,8 @@
   font-size: var(--type-size-body-small);
   text-align: start;
   cursor: pointer;
-  transition: color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard);
+  transition: color var(--nex-sys-motion-duration-fast)
+    var(--nex-sys-motion-easing-standard);
 }
 .nex-agent-run-disclosure:hover {
   color: var(--color-on-surface);
@@ -1410,7 +1411,8 @@
   will-change: transform, opacity;
 }
 .nex-agent-run-state-running:not(.nex-agent-run-parked) .nex-agent-spine-pulse {
-  animation: nex-agent-spine-flow var(--nex-sys-motion-loop-skeleton) var(--nex-sys-motion-easing-standard) infinite;
+  animation: nex-agent-spine-flow var(--nex-sys-motion-loop-skeleton)
+    var(--nex-sys-motion-easing-standard) infinite;
 }
 @keyframes nex-agent-spine-flow {
   0% {
@@ -1435,7 +1437,8 @@
    duration/iteration), so the segment survives as a static accent
    mark: same information, zero motion (brief §15:885-887). */
 @media (prefers-reduced-motion: reduce) {
-  .nex-agent-run-state-running:not(.nex-agent-run-parked) .nex-agent-spine-pulse {
+  .nex-agent-run-state-running:not(.nex-agent-run-parked)
+    .nex-agent-spine-pulse {
     animation: none;
     opacity: 1;
     transform: translateY(150%);
@@ -1497,8 +1500,8 @@
 [data-theme="high-contrast"] .nex-agent-spine,
 [data-theme="high-contrast"]
   .nex-agent-step-slot:not(.nex-agent-step-slot-current):not(
-      .nex-agent-step-slot-failed
-    )::before {
+    .nex-agent-step-slot-failed
+  )::before {
   background: var(--color-outline);
 }
 
@@ -1525,7 +1528,11 @@
    outcome word would be the one thing on the row that changes what the
    reader is told happened. */
 .nex-agent-step-age-1
-  :is(.nex-agent-step-header, .nex-agent-step-observation, .nex-agent-terminal-stdout) {
+  :is(
+    .nex-agent-step-header,
+    .nex-agent-step-observation,
+    .nex-agent-terminal-stdout
+  ) {
   color: var(--color-on-surface-variant);
 }
 .nex-agent-step-age-1
@@ -1579,7 +1586,8 @@
    aiming at. The path's own hover is colour-only for the same reason. */
 .nex-agent-step-header,
 .nex-agent-step-target {
-  transition: color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard);
+  transition: color var(--nex-sys-motion-duration-fast)
+    var(--nex-sys-motion-easing-standard);
 }
 
 @media (prefers-reduced-motion: reduce) {

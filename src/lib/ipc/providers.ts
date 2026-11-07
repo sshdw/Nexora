@@ -35,7 +35,10 @@ export function supportedProviders(): Promise<SupportedProvider[]> {
 }
 
 /** Register a new provider definition (FR-004). Backend rejects duplicates. */
-export function createProvider(name: string, displayName: string): Promise<number> {
+export function createProvider(
+  name: string,
+  displayName: string
+): Promise<number> {
   return invoke<number>("create_provider", { name, displayName });
 }
 
@@ -51,7 +54,8 @@ export function isProviderAvailable(name: string): Promise<boolean> {
 
 /** Local health verdict for one provider (`provider_health`, WS-A.5).
  * Local-only: no network probe — `healthy` means locally ready to serve. */
-export type ProviderHealthStatus = "healthy" | "degraded" | "unreachable" | "unknown";
+export type ProviderHealthStatus =
+  "healthy" | "degraded" | "unreachable" | "unknown";
 
 /** Local health snapshot for one provider. Metadata only — presence booleans
  * plus a `last_checked` Unix-seconds timestamp; never a credential value.
@@ -124,12 +128,18 @@ export function hasProviderCredential(provider: string): Promise<boolean> {
 }
 
 /** Store a new keyring credential for `provider` (FR-014). */
-export function addProviderCredential(provider: string, credential: string): Promise<void> {
+export function addProviderCredential(
+  provider: string,
+  credential: string
+): Promise<void> {
   return invoke<void>("add_provider_credential", { provider, credential });
 }
 
 /** Update the stored keyring credential for `provider` (FR-014). */
-export function updateProviderCredential(provider: string, credential: string): Promise<void> {
+export function updateProviderCredential(
+  provider: string,
+  credential: string
+): Promise<void> {
   return invoke<void>("update_provider_credential", { provider, credential });
 }
 

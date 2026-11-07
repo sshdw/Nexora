@@ -172,7 +172,11 @@ export default function ModelPicker({
         sideOffset={layout.sideOffset}
         collisionPadding={8}
         className="nex-composer-model-menu"
-        style={layout.maxHeight === undefined ? undefined : { maxHeight: layout.maxHeight }}
+        style={
+          layout.maxHeight === undefined
+            ? undefined
+            : { maxHeight: layout.maxHeight }
+        }
         onOpenAutoFocus={(event) => {
           if (!noModels) {
             event.preventDefault();
@@ -186,7 +190,10 @@ export default function ModelPicker({
 
         {!noModels && (
           <div className="nex-composer-model-search">
-            <SearchIcon className="nex-composer-model-search-icon" aria-hidden="true" />
+            <SearchIcon
+              className="nex-composer-model-search-icon"
+              aria-hidden="true"
+            />
             <input
               ref={inputRef}
               type="search"
@@ -227,11 +234,17 @@ export default function ModelPicker({
                   onMouseEnter={() => setActive(index)}
                   onClick={() => pick(model)}
                 >
-                  <span className="nex-composer-model-option-name" title={model}>
+                  <span
+                    className="nex-composer-model-option-name"
+                    title={model}
+                  >
                     {model}
                   </span>
                   {selected && (
-                    <CheckIcon className="nex-composer-model-option-check" aria-hidden="true" />
+                    <CheckIcon
+                      className="nex-composer-model-option-check"
+                      aria-hidden="true"
+                    />
                   )}
                 </li>
               );

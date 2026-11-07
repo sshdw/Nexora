@@ -44,7 +44,9 @@ export interface Message {
 /** Load a conversation's persisted messages via `conversation_history`, in the
  * backend's chronological order (`created_at` ascending). The backend is the
  * only source of history; the UI never invents or reorders messages. */
-export function conversationHistory(conversationId: number): Promise<Message[]> {
+export function conversationHistory(
+  conversationId: number
+): Promise<Message[]> {
   return invoke<Message[]>("conversation_history", { conversationId });
 }
 
@@ -92,7 +94,7 @@ export function sendMessage(
   content: string,
   provider: string,
   model: string,
-  attachmentIds: number[],
+  attachmentIds: number[]
 ): Promise<AiResponse> {
   return invoke<AiResponse>("send_message", {
     conversationId,
@@ -115,7 +117,7 @@ export async function deleteConversationPermanently(id: number): Promise<void> {
   const confirmationId = await requestConfirmation(
     "data_management",
     OP_DELETE_CONVERSATION,
-    { targetId: id },
+    { targetId: id }
   );
   return invoke<void>("delete_conversation_permanently", {
     id,
@@ -157,7 +159,7 @@ export interface ConversationContextStats {
 /** Load one conversation's read-only context stats via
  * `conversation_context_stats`. */
 export function conversationContextStats(
-  conversationId: number,
+  conversationId: number
 ): Promise<ConversationContextStats> {
   return invoke<ConversationContextStats>("conversation_context_stats", {
     conversationId,

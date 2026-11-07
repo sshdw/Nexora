@@ -2,7 +2,8 @@ const fs = require("fs");
 const path = require("path");
 const zlib = require("zlib");
 
-const W = 1024, H = 1024;
+const W = 1024,
+  H = 1024;
 const rowLen = 1 + W * 3;
 const raw = Buffer.alloc(rowLen * H);
 
@@ -11,7 +12,9 @@ for (let y = 0; y < H; y++) {
   raw[rowStart] = 0;
   for (let x = 0; x < W; x++) {
     const px = rowStart + 1 + x * 3;
-    raw[px] = 37; raw[px + 1] = 99; raw[px + 2] = 235;
+    raw[px] = 37;
+    raw[px + 1] = 99;
+    raw[px + 2] = 235;
   }
 }
 
@@ -31,10 +34,17 @@ const sig = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 const ihdr = Buffer.alloc(13);
 ihdr.writeUInt32BE(W, 0);
 ihdr.writeUInt32BE(H, 4);
-ihdr[8] = 8; ihdr[9] = 2; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
+ihdr[8] = 8;
+ihdr[9] = 2;
+ihdr[10] = 0;
+ihdr[11] = 0;
+ihdr[12] = 0;
 
 const png = Buffer.concat([
-  sig, chunk("IHDR", ihdr), chunk("IDAT", compressed), chunk("IEND", Buffer.alloc(0))
+  sig,
+  chunk("IHDR", ihdr),
+  chunk("IDAT", compressed),
+  chunk("IEND", Buffer.alloc(0)),
 ]);
 
 const outDir = path.join(__dirname, "..", "src-tauri");
