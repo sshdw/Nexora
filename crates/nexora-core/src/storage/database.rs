@@ -29,11 +29,12 @@
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rusqlite::ffi::ErrorCode;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OpenFlags};
 
 /// Busy budget shared by the `SQLite` pragma and the cross-process migration
 /// leadership lock. Past this budget the caller gets an honest
@@ -1170,20 +1171,100 @@ pub fn now_secs() -> i64 {
 /// cheaply cloneable: the Task 5.1 agent-run bridge moves an owned clone
 /// into the spawned run thread, which records steps through the same shared
 /// connection (every access still serializes on the one `Mutex`).
+///
+/// AC-204: reads no longer have to serialize behind the writer. For a
+/// file-backed database a bounded pool of `SQLITE_OPEN_READ_ONLY`
+/// connections ([`READ_POOL_SIZE`]) serves [`Database::read`] round-robin;
+/// WAL (DATABASE.md §3, applied by [`configure`]) lets those readers run
+/// concurrently with the single writer. Writes and transactions keep taking
+/// the one writer connection's [`Database::lock`], so single-writer
+/// integrity is unchanged.
 #[derive(Clone)]
 pub struct Database {
     conn: Arc<Mutex<Connection>>,
+    reads: Reads,
+}
+
+/// Bounded number of read-only pool connections opened beside the single
+/// writer (AC-204). Four covers a desktop session's concurrent readers (UI
+/// lists, FTS search, export) without extra file handles; the pool exists
+/// only for file-backed databases.
+pub(crate) const READ_POOL_SIZE: usize = 4;
+
+/// Where [`Database::read`] serves its connection guards from.
+#[derive(Clone)]
+enum Reads {
+    /// No pool: reads take the single writer connection's lock exactly as
+    /// before AC-204. Used for in-memory databases (no second connection can
+    /// see them) and whenever the pool connections could not be opened, so
+    /// [`Database::new`] stays infallible.
+    Shared,
+    /// Bounded set of read-only connections over the same file, served
+    /// round-robin. Writes never touch these: the writer connection behind
+    /// [`Database::conn`] stays the only writer (DATABASE.md §3).
+    Pool(Arc<PoolConns>),
+}
+
+/// The pooled read-only connections plus the round-robin cursor. Shared by
+/// all [`Database`] clones through the [`Arc`] in [`Reads::Pool`]; never
+/// cloned itself (`Mutex`/`AtomicUsize` are not `Clone`).
+struct PoolConns {
+    conns: Vec<Mutex<Connection>>,
+    next: AtomicUsize,
+}
+
+/// Open the bounded read-only pool over `path` (AC-204).
+///
+/// Every connection is `SQLITE_OPEN_READ_ONLY` — a misrouted write fails
+/// loudly at the `SQLite` level instead of ever racing the single writer — and
+/// runs the same pragma bootstrap as the writer ([`configure`]; the file is
+/// already in WAL mode at that point, so the journal-mode pragma is a
+/// no-op read on a read-only connection).
+///
+/// # Errors
+///
+/// Returns the underlying [`DatabaseError`] when a pool connection cannot be
+/// opened or configured; [`Database::new`] then degrades to [`Reads::Shared`].
+fn build_read_pool(path: &Path) -> Result<Reads, DatabaseError> {
+    let mut conns = Vec::with_capacity(READ_POOL_SIZE);
+    for _ in 0..READ_POOL_SIZE {
+        let conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        configure(&conn)?;
+        conns.push(Mutex::new(conn));
+    }
+    Ok(Reads::Pool(Arc::new(PoolConns {
+        conns,
+        next: AtomicUsize::new(0),
+    })))
 }
 
 impl Database {
     /// Wrap an already-opened, migrated connection in shared application state.
+    ///
+    /// For a file-backed `conn` this also opens the bounded read-only pool
+    /// (AC-204, [`READ_POOL_SIZE`] connections). The pool is built after the
+    /// caller's migrations have run, so every reader sees the final schema.
+    /// An in-memory `conn` degrades to [`Reads::Shared`] — rusqlite reports
+    /// `Some(":memory:")` as its path, and opening extra connections on that
+    /// name would give every reader its own private empty database — as does
+    /// any database whose pool connections cannot be opened.
     pub fn new(conn: Connection) -> Self {
+        let reads = match conn.path() {
+            Some(path) if path != ":memory:" && !path.is_empty() => {
+                build_read_pool(Path::new(path)).unwrap_or(Reads::Shared)
+            }
+            _ => Reads::Shared,
+        };
         Self {
             conn: Arc::new(Mutex::new(conn)),
+            reads,
         }
     }
 
-    /// Acquire the shared connection.
+    /// Acquire the shared writer connection.
     ///
     /// Returns a guard providing exclusive access to the single connection.
     /// Holders must never write secrets (API keys, tokens, prompts, user
@@ -1206,10 +1287,12 @@ impl Database {
     pub fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>, DatabaseError> {
         match self.conn.lock() {
             Ok(guard) => Ok(guard),
+            // The `PoisonError` still holds the locked guard: consume it via
+            // `into_inner` (never re-lock — a second `lock()` here would
+            // block on the guard this arm has not dropped yet), roll back
+            // any transaction the panicking holder left open, and fail this
+            // call with the typed error.
             Err(poisoned) => {
-                // Clear the poison (holding the guard alone does not reset
-                // it) and reset any transaction the panicking holder left
-                // open, so later holders proceed on a clean connection.
                 let guard = poisoned.into_inner();
                 let _ = guard.execute_batch("ROLLBACK;");
                 drop(guard);
@@ -1217,6 +1300,47 @@ impl Database {
                 Err(DatabaseError::Lock(
                     "the database connection was interrupted; retry the operation".to_string(),
                 ))
+            }
+        }
+    }
+
+    /// Acquire a read-only pool connection (AC-204).
+    ///
+    /// Read-only repository paths use this instead of [`Database::lock`]: on
+    /// a file-backed database the guard comes from the bounded read-only
+    /// pool and runs concurrently with the single writer (WAL, DATABASE.md
+    /// §3); on an in-memory database it falls back to the writer connection.
+    /// Writes and transactions keep using [`Database::lock`], so
+    /// single-writer semantics are unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DatabaseError::Lock`] when a previous holder poisoned the
+    /// pool connection's lock; the poison is cleared and any open
+    /// transaction rolled back exactly as for [`Database::lock`].
+    pub fn read(&self) -> Result<std::sync::MutexGuard<'_, Connection>, DatabaseError> {
+        match &self.reads {
+            Reads::Shared => self.lock(),
+            Reads::Pool(pool) => {
+                // Round-robin over a fixed, non-empty pool; fetch_add wraps,
+                // and the modulo keeps the index in bounds.
+                let index = pool.next.fetch_add(1, Ordering::Relaxed) % pool.conns.len();
+                match pool.conns[index].lock() {
+                    Ok(guard) => Ok(guard),
+                    // Same NEX-SEC-006 dance as [`Database::lock`], on the
+                    // pooled connection's own mutex; consume the guard out
+                    // of the `PoisonError` instead of re-locking.
+                    Err(poisoned) => {
+                        let guard = poisoned.into_inner();
+                        let _ = guard.execute_batch("ROLLBACK;");
+                        drop(guard);
+                        pool.conns[index].clear_poison();
+                        Err(DatabaseError::Lock(
+                            "the database connection was interrupted; retry the operation"
+                                .to_string(),
+                        ))
+                    }
+                }
             }
         }
     }
@@ -1491,5 +1615,112 @@ mod core_storage_tests {
             version_rows(&conn),
             (1..=target_version()).collect::<Vec<_>>()
         );
+    }
+
+    // -------------------------------------------------------------------
+    // Read pool (AC-204)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn file_backed_database_builds_the_bounded_read_pool() {
+        let db = Database::new(TempDb::new("pool-size").migrated());
+        match &db.reads {
+            Reads::Pool(pool) => assert_eq!(pool.conns.len(), READ_POOL_SIZE),
+            Reads::Shared => panic!("a file-backed database must build the read pool"),
+        }
+    }
+
+    #[test]
+    fn in_memory_database_degrades_to_shared_reads() {
+        let db = in_memory_database();
+        assert!(matches!(db.reads, Reads::Shared));
+    }
+
+    #[test]
+    fn pooled_read_connections_cannot_write() {
+        // SQLITE_OPEN_READ_ONLY is the blueprint's read-only guarantee: a
+        // misrouted write fails loudly at the SQLite level instead of ever
+        // racing the single writer.
+        let db = Database::new(TempDb::new("pool-readonly").migrated());
+        let conn = db.read().expect("pooled read");
+        let err = conn
+            .execute(
+                "INSERT INTO app_settings (key, value) VALUES ('pool-guard', '1')",
+                [],
+            )
+            .expect_err("a write through a read-only connection must fail");
+        assert!(
+            matches!(err, rusqlite::Error::SqliteFailure(..)),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn pooled_reads_see_committed_writes() {
+        let db = Database::new(TempDb::new("pool-visibility").migrated());
+        {
+            let conn = db.lock().expect("writer lock");
+            conn.execute(
+                "INSERT INTO app_settings (key, value) VALUES ('pool-vis', 'seen')",
+                [],
+            )
+            .expect("seed write");
+        }
+        let conn = db.read().expect("pooled read");
+        let value: Option<String> = conn
+            .query_row(
+                "SELECT value FROM app_settings WHERE key = 'pool-vis'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read back");
+        assert_eq!(value.as_deref(), Some("seen"));
+    }
+
+    #[test]
+    fn pooled_read_does_not_block_behind_a_held_writer_lock() {
+        // The pool's reason to exist: a reader must not wait for the writer
+        // connection's mutex. Hold the writer lock, then read through the
+        // pool from another thread; under the pre-AC-204 single-connection
+        // design this join would never complete.
+        let db = Database::new(TempDb::new("pool-unblocked").migrated());
+        assert!(
+            matches!(db.reads, Reads::Pool(_)),
+            "this test needs the pool; a Shared fallback would deadlock here"
+        );
+        let writer = db.clone();
+        let guard = writer.lock().expect("writer lock");
+        let reader = db.clone();
+        let handle = std::thread::spawn(move || {
+            let conn = reader.read().expect("pooled read");
+            version_rows(&conn)
+        });
+        assert_eq!(
+            handle.join().expect("reader thread"),
+            (1..=target_version()).collect::<Vec<i64>>()
+        );
+        drop(guard);
+    }
+
+    #[test]
+    fn concurrent_pooled_reads_run_in_parallel() {
+        let db = Database::new(TempDb::new("pool-concurrent").migrated());
+        let handles: Vec<_> = (0..READ_POOL_SIZE)
+            .map(|_| {
+                let reader = db.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..25 {
+                        let conn = reader.read().expect("pooled read");
+                        let count: i64 = conn
+                            .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
+                            .expect("count versions");
+                        assert!(count > 0);
+                    }
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().expect("reader thread");
+        }
     }
 }

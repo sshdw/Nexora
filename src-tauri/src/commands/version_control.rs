@@ -463,7 +463,7 @@ mod tests {
     #[test]
     fn commit_explain_reuses_the_shared_ai_boundary_without_auto_execution() {
         const SOURCE: &str = include_str!("version_control.rs");
-        const SERVICE: &str = include_str!("../application/version_control.rs");
+        const SERVICE: &str = include_str!("../application/version_control/commit_message.rs");
         assert!(
             SERVICE.contains("RequestExecutionService::new("),
             "the explain service must execute through the shared boundary"

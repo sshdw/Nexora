@@ -187,7 +187,7 @@ impl AgentTaskRepository<'_> {
     ///
     /// Returns a [`DatabaseError`] if the read fails.
     pub fn read_task(&self, id: i64) -> Result<Option<AgentTask>> {
-        let conn = self.conn()?;
+        let conn = self.read_conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, title, description, status, conversation_id, provider, model, \
               max_steps, current_step, total_steps, report, run_id, created_at, updated_at \
@@ -204,7 +204,7 @@ impl AgentTaskRepository<'_> {
     ///
     /// Returns a [`DatabaseError`] if listing fails.
     pub fn list_tasks(&self) -> Result<Vec<AgentTask>> {
-        let conn = self.conn()?;
+        let conn = self.read_conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, title, description, status, conversation_id, provider, model, \
               max_steps, current_step, total_steps, report, run_id, created_at, updated_at \
@@ -403,7 +403,7 @@ impl AgentTaskRepository<'_> {
     ///
     /// Returns a [`DatabaseError`] if listing fails.
     pub fn list_steps(&self, task_id: i64) -> Result<Vec<AgentTaskStep>> {
-        let conn = self.conn()?;
+        let conn = self.read_conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, task_id, seq, title, status, result, run_id, started_at, finished_at \
              FROM agent_task_steps WHERE task_id = ?1 ORDER BY seq",
@@ -452,7 +452,7 @@ impl AgentTaskRepository<'_> {
     ///
     /// Returns a [`DatabaseError`] if the read fails.
     pub fn read_lock(&self, task_id: i64) -> Result<Option<TaskLock>> {
-        let conn = self.conn()?;
+        let conn = self.read_conn()?;
         let mut stmt = conn.prepare(
             "SELECT task_id, holder, token, acquired_at, expires_at \
              FROM task_locks WHERE task_id = ?1",

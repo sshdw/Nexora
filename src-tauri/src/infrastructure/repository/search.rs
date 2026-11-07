@@ -65,7 +65,7 @@ impl SearchRepository<'_> {
     /// Returns a [`DatabaseError`] if the query fails, including a malformed
     /// FTS `MATCH` expression or a missing `conversations_fts` index.
     pub(crate) fn search_conversations(&self, query: &str) -> Result<Vec<Conversation>> {
-        let conn = self.conn()?;
+        let conn = self.read_conn()?;
         let mut stmt = conn.prepare(
             "SELECT c.id, c.title, c.status, c.created_at, c.updated_at, c.workspace_root \
              FROM conversations_fts \
@@ -104,7 +104,7 @@ impl SearchRepository<'_> {
     /// Returns a [`DatabaseError`] if the query fails, including a malformed
     /// FTS `MATCH` expression or a missing `messages_fts` index.
     pub(crate) fn search_messages(&self, query: &str) -> Result<Vec<Message>> {
-        let conn = self.conn()?;
+        let conn = self.read_conn()?;
         let mut stmt = conn.prepare(
             "SELECT m.id, m.conversation_id, m.role, m.content, m.provider_id, \
              m.model_name, m.created_at \
@@ -141,7 +141,7 @@ impl SearchRepository<'_> {
     /// Returns a [`DatabaseError`] if the query fails, including a malformed
     /// FTS `MATCH` expression or a missing `prompts_fts` index.
     pub(crate) fn search_prompts(&self, query: &str) -> Result<Vec<Prompt>> {
-        let conn = self.conn()?;
+        let conn = self.read_conn()?;
         let mut stmt = conn.prepare(
             "SELECT p.id, p.title, p.content, p.created_at, p.updated_at \
              FROM prompts_fts \

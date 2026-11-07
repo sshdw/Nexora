@@ -84,7 +84,7 @@ impl SettingsRepository<'_> {
     ///
     /// Returns a [`DatabaseError`] on a failed query or a poisoned connection.
     pub(crate) fn read(&self, key: &str) -> Result<SettingValue> {
-        let conn = self.conn()?;
+        let conn = self.read_conn()?;
         match conn.query_row(
             "SELECT value FROM app_settings WHERE key = ?1",
             [key],
@@ -132,7 +132,7 @@ impl SettingsRepository<'_> {
     ///
     /// Returns a [`DatabaseError`] if the existence check fails.
     pub(crate) fn exists(&self, key: &str) -> Result<bool> {
-        let conn = self.conn()?;
+        let conn = self.read_conn()?;
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM app_settings WHERE key = ?1",
             [key],
@@ -162,7 +162,7 @@ impl SettingsRepository<'_> {
     ///
     /// Returns a [`DatabaseError`] if listing fails.
     pub(crate) fn list(&self) -> Result<Vec<(String, Option<String>)>> {
-        let conn = self.conn()?;
+        let conn = self.read_conn()?;
         let mut stmt = conn.prepare("SELECT key, value FROM app_settings ORDER BY key")?;
         let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))

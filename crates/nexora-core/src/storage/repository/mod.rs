@@ -41,6 +41,23 @@ pub trait Repository {
         self.db().lock()
     }
 
+    /// Acquire a read-only pool connection (AC-204).
+    ///
+    /// Read-only repository paths use this instead of [`Repository::conn`]:
+    /// on a file-backed database the guard comes from the bounded read-only
+    /// pool and runs concurrently with the single writer (WAL, DATABASE.md
+    /// §3); on an in-memory database it falls back to the writer connection.
+    /// Writes and transactions keep using [`Repository::conn`] /
+    /// [`Repository::transaction`], so single-writer semantics are
+    /// unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DatabaseError`] if the connection lock is poisoned.
+    fn read_conn(&self) -> Result<std::sync::MutexGuard<'_, Connection>> {
+        self.db().read()
+    }
+
     /// Run `body` inside a transaction on the shared connection.
     ///
     /// Commits on success; on failure rolls back and returns the error.
