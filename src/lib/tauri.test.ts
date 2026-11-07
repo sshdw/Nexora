@@ -74,7 +74,7 @@ beforeEach(() => {
   mockInvoke.mockReset();
   // `request_confirmation` mints the single-use id the run is bound to.
   mockInvoke.mockImplementation(async (cmd: string) =>
-    cmd === "request_confirmation" ? "confirm-id-1" : RUN_RESULT,
+    cmd === "request_confirmation" ? "confirm-id-1" : RUN_RESULT
   );
 });
 
@@ -104,7 +104,9 @@ describe("workspace terminal IPC wrappers (#219)", () => {
   });
 
   it("terminalKill still invokes `terminal_kill` and returns the backend flag", async () => {
-    mockInvoke.mockImplementation(async (cmd: string) => (cmd === "terminal_kill" ? true : null));
+    mockInvoke.mockImplementation(async (cmd: string) =>
+      cmd === "terminal_kill" ? true : null
+    );
     await expect(terminalKill()).resolves.toBe(true);
     expect(mockInvoke).toHaveBeenCalledWith("terminal_kill");
   });
@@ -116,12 +118,17 @@ describe("workspace terminal IPC wrappers (#219)", () => {
       truncated_input: false,
     };
     mockInvoke.mockImplementation(async () => explained);
-    await expect(terminalExplain("boom", "non-zero exit", "openai", "gpt")).resolves.toEqual(
-      explained,
-    );
+    await expect(
+      terminalExplain("boom", "non-zero exit", "openai", "gpt")
+    ).resolves.toEqual(explained);
     expect(mockInvoke.mock.calls[0]).toEqual([
       "terminal_explain",
-      { output: "boom", exitContext: "non-zero exit", provider: "openai", model: "gpt" },
+      {
+        output: "boom",
+        exitContext: "non-zero exit",
+        provider: "openai",
+        model: "gpt",
+      },
     ]);
   });
 });
@@ -138,12 +145,17 @@ describe("workspace terminal IPC wrappers (#219)", () => {
 describe("destructive IPC wrappers mint then consume (SF-03)", () => {
   it("gitStage mints git_stage in the version_control scope and forwards the id", async () => {
     mockInvoke.mockImplementation(async (cmd: string) =>
-      cmd === "request_confirmation" ? "confirm-id-1" : 2,
+      cmd === "request_confirmation" ? "confirm-id-1" : 2
     );
     await expect(gitStage(["src/lib/a.ts"])).resolves.toBe(2);
     expect(mockInvoke.mock.calls[0]).toEqual([
       "request_confirmation",
-      { scope: "version_control", operation: "git_stage", cwd: null, targetId: null },
+      {
+        scope: "version_control",
+        operation: "git_stage",
+        cwd: null,
+        targetId: null,
+      },
     ]);
     expect(mockInvoke.mock.calls[1]).toEqual([
       "git_stage",
@@ -153,12 +165,17 @@ describe("destructive IPC wrappers mint then consume (SF-03)", () => {
 
   it("gitUnstage mints git_unstage (its own operation, not a reusable stage id)", async () => {
     mockInvoke.mockImplementation(async (cmd: string) =>
-      cmd === "request_confirmation" ? "confirm-id-2" : 1,
+      cmd === "request_confirmation" ? "confirm-id-2" : 1
     );
     await expect(gitUnstage(["src/lib/a.ts"])).resolves.toBe(1);
     expect(mockInvoke.mock.calls[0]).toEqual([
       "request_confirmation",
-      { scope: "version_control", operation: "git_unstage", cwd: null, targetId: null },
+      {
+        scope: "version_control",
+        operation: "git_unstage",
+        cwd: null,
+        targetId: null,
+      },
     ]);
     expect(mockInvoke.mock.calls[1]).toEqual([
       "git_unstage",
@@ -168,12 +185,17 @@ describe("destructive IPC wrappers mint then consume (SF-03)", () => {
 
   it("gitCommit mints git_commit and forwards message + confirmationId", async () => {
     mockInvoke.mockImplementation(async (cmd: string) =>
-      cmd === "request_confirmation" ? "confirm-id-3" : "abc123",
+      cmd === "request_confirmation" ? "confirm-id-3" : "abc123"
     );
     await expect(gitCommit("fix: thing")).resolves.toBe("abc123");
     expect(mockInvoke.mock.calls[0]).toEqual([
       "request_confirmation",
-      { scope: "version_control", operation: "git_commit", cwd: null, targetId: null },
+      {
+        scope: "version_control",
+        operation: "git_commit",
+        cwd: null,
+        targetId: null,
+      },
     ]);
     expect(mockInvoke.mock.calls[1]).toEqual([
       "git_commit",
@@ -183,12 +205,17 @@ describe("destructive IPC wrappers mint then consume (SF-03)", () => {
 
   it("gitPush mints git_push and keeps the allowlisted origin remote", async () => {
     mockInvoke.mockImplementation(async (cmd: string) =>
-      cmd === "request_confirmation" ? "confirm-id-4" : null,
+      cmd === "request_confirmation" ? "confirm-id-4" : null
     );
     await expect(gitPush()).resolves.toBeNull();
     expect(mockInvoke.mock.calls[0]).toEqual([
       "request_confirmation",
-      { scope: "version_control", operation: "git_push", cwd: null, targetId: null },
+      {
+        scope: "version_control",
+        operation: "git_push",
+        cwd: null,
+        targetId: null,
+      },
     ]);
     expect(mockInvoke.mock.calls[1]).toEqual([
       "git_push",
@@ -207,14 +234,19 @@ describe("destructive IPC wrappers mint then consume (SF-03)", () => {
       verified: true,
     };
     mockInvoke.mockImplementation(async (cmd: string) =>
-      cmd === "request_confirmation" ? "confirm-id-5" : applied,
+      cmd === "request_confirmation" ? "confirm-id-5" : applied
     );
-    await expect(refactorApply("src-tauri/src/lib.rs", 10, 12, "dead-code-candidate")).resolves.toEqual(
-      applied,
-    );
+    await expect(
+      refactorApply("src-tauri/src/lib.rs", 10, 12, "dead-code-candidate")
+    ).resolves.toEqual(applied);
     expect(mockInvoke.mock.calls[0]).toEqual([
       "request_confirmation",
-      { scope: "refactor", operation: "refactor_apply", cwd: null, targetId: null },
+      {
+        scope: "refactor",
+        operation: "refactor_apply",
+        cwd: null,
+        targetId: null,
+      },
     ]);
     expect(mockInvoke.mock.calls[1]).toEqual([
       "refactor_apply",
@@ -229,16 +261,24 @@ describe("destructive IPC wrappers mint then consume (SF-03)", () => {
   });
 
   it("createIssueForFinding no longer takes a confirmed boolean and mints in the release scope", async () => {
-    const created: CreatedIssue = { url: "https://github.com/o/r/issues/9", number: 9 };
+    const created: CreatedIssue = {
+      url: "https://github.com/o/r/issues/9",
+      number: 9,
+    };
     mockInvoke.mockImplementation(async (cmd: string) =>
-      cmd === "request_confirmation" ? "confirm-id-6" : created,
+      cmd === "request_confirmation" ? "confirm-id-6" : created
     );
     await expect(
-      createIssueForFinding("title", "debt", "src/a.rs:1", "detail"),
+      createIssueForFinding("title", "debt", "src/a.rs:1", "detail")
     ).resolves.toEqual(created);
     expect(mockInvoke.mock.calls[0]).toEqual([
       "request_confirmation",
-      { scope: "release", operation: "create_issue_for_finding", cwd: null, targetId: null },
+      {
+        scope: "release",
+        operation: "create_issue_for_finding",
+        cwd: null,
+        targetId: null,
+      },
     ]);
     expect(mockInvoke.mock.calls[1]).toEqual([
       "create_issue_for_finding",
@@ -255,12 +295,17 @@ describe("destructive IPC wrappers mint then consume (SF-03)", () => {
   it("privacyWipe takes no confirmed argument and mints in the privacy scope", async () => {
     const wiped: WipeResult = { deleted_rows: 4 };
     mockInvoke.mockImplementation(async (cmd: string) =>
-      cmd === "request_confirmation" ? "confirm-id-7" : wiped,
+      cmd === "request_confirmation" ? "confirm-id-7" : wiped
     );
     await expect(privacyWipe()).resolves.toEqual(wiped);
     expect(mockInvoke.mock.calls[0]).toEqual([
       "request_confirmation",
-      { scope: "privacy", operation: "privacy_wipe", cwd: null, targetId: null },
+      {
+        scope: "privacy",
+        operation: "privacy_wipe",
+        cwd: null,
+        targetId: null,
+      },
     ]);
     expect(mockInvoke.mock.calls[1]).toEqual([
       "privacy_wipe",
@@ -270,9 +315,11 @@ describe("destructive IPC wrappers mint then consume (SF-03)", () => {
 
   it("exportConversationToFile mints in the export scope bound to the conversation row", async () => {
     mockInvoke.mockImplementation(async (cmd: string) =>
-      cmd === "request_confirmation" ? "confirm-id-8" : null,
+      cmd === "request_confirmation" ? "confirm-id-8" : null
     );
-    await expect(exportConversationToFile(5, "C:/tmp/conv.json")).resolves.toBeNull();
+    await expect(
+      exportConversationToFile(5, "C:/tmp/conv.json")
+    ).resolves.toBeNull();
     expect(mockInvoke.mock.calls[0]).toEqual([
       "request_confirmation",
       {
@@ -284,13 +331,17 @@ describe("destructive IPC wrappers mint then consume (SF-03)", () => {
     ]);
     expect(mockInvoke.mock.calls[1]).toEqual([
       "export_conversation_to_file",
-      { conversationId: 5, path: "C:/tmp/conv.json", confirmationId: "confirm-id-8" },
+      {
+        conversationId: 5,
+        path: "C:/tmp/conv.json",
+        confirmationId: "confirm-id-8",
+      },
     ]);
   });
 
   it("exportSetup and exportSetupToFile mint their own export-scope operations", async () => {
     mockInvoke.mockImplementation(async (cmd: string) =>
-      cmd === "request_confirmation" ? "confirm-id-9" : "document",
+      cmd === "request_confirmation" ? "confirm-id-9" : "document"
     );
     await expect(exportSetup()).resolves.toBe("document");
     expect(mockInvoke.mock.calls[0]).toEqual([
@@ -304,12 +355,17 @@ describe("destructive IPC wrappers mint then consume (SF-03)", () => {
 
     mockInvoke.mockReset();
     mockInvoke.mockImplementation(async (cmd: string) =>
-      cmd === "request_confirmation" ? "confirm-id-10" : null,
+      cmd === "request_confirmation" ? "confirm-id-10" : null
     );
     await expect(exportSetupToFile("C:/tmp/setup.json")).resolves.toBeNull();
     expect(mockInvoke.mock.calls[0]).toEqual([
       "request_confirmation",
-      { scope: "export", operation: "export_setup_to_file", cwd: null, targetId: null },
+      {
+        scope: "export",
+        operation: "export_setup_to_file",
+        cwd: null,
+        targetId: null,
+      },
     ]);
     expect(mockInvoke.mock.calls[1]).toEqual([
       "export_setup_to_file",
@@ -322,7 +378,10 @@ describe("destructive IPC wrappers mint then consume (SF-03)", () => {
       if (cmd === "request_confirmation") {
         // What `requestConfirmation` rejects with when the user cancels the
         // native dialog (commands/confirmations.rs mints nothing in that case).
-        throw { kind: "confirmationRequired", message: "explicit confirmation is required" };
+        throw {
+          kind: "confirmationRequired",
+          message: "explicit confirmation is required",
+        };
       }
       return null;
     });
@@ -361,7 +420,7 @@ describe("backend-side file access wrappers (SEC-01)", () => {
     };
     mockInvoke.mockImplementation(async () => attached);
     await expect(
-      attachFile(5, "notes.txt", "C:/picks/notes.txt", "text/plain"),
+      attachFile(5, "notes.txt", "C:/picks/notes.txt", "text/plain")
     ).resolves.toEqual(attached);
     expect(mockInvoke).toHaveBeenCalledWith("attach_file", {
       conversationId: 5,

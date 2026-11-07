@@ -50,8 +50,13 @@ export const CONTEXT_BUDGET_DEFAULT = 128_000;
 /** Clamp any number into the slider's own range, and snap it to a step. */
 export function clampContextBudget(value: number): number {
   if (!Number.isFinite(value)) return CONTEXT_BUDGET_DEFAULT;
-  const clamped = Math.min(CONTEXT_BUDGET_MAX, Math.max(CONTEXT_BUDGET_MIN, value));
-  const steps = Math.round((clamped - CONTEXT_BUDGET_MIN) / CONTEXT_BUDGET_STEP);
+  const clamped = Math.min(
+    CONTEXT_BUDGET_MAX,
+    Math.max(CONTEXT_BUDGET_MIN, value)
+  );
+  const steps = Math.round(
+    (clamped - CONTEXT_BUDGET_MIN) / CONTEXT_BUDGET_STEP
+  );
   const snapped = CONTEXT_BUDGET_MIN + steps * CONTEXT_BUDGET_STEP;
   return Math.min(CONTEXT_BUDGET_MAX, Math.max(CONTEXT_BUDGET_MIN, snapped));
 }
@@ -82,7 +87,10 @@ export function readContextBudget(): number {
  *  preference, never the panel. */
 export function writeContextBudget(value: number): void {
   try {
-    window.localStorage.setItem(CONTEXT_BUDGET_KEY, String(clampContextBudget(value)));
+    window.localStorage.setItem(
+      CONTEXT_BUDGET_KEY,
+      String(clampContextBudget(value))
+    );
   } catch {
     // Best-effort by design (see useLocale.persistLocale).
   }

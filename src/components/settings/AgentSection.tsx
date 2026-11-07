@@ -34,9 +34,7 @@ export default function AgentSection({
       <h3 id="agent-heading" className="nex-settings-heading">
         {t("settings.sectionAgent")}
       </h3>
-      <p className="nex-settings-hint">
-        {t("settings.agentHint")}
-      </p>
+      <p className="nex-settings-hint">{t("settings.agentHint")}</p>
       <div className="nex-settings-field">
         <span className="nex-settings-label" id="autonomy-label">
           {t("settings.autonomyLabel")}
@@ -50,9 +48,7 @@ export default function AgentSection({
             label: t(AUTONOMY_LABELS[mode]),
           }))}
         />
-        <p className="nex-settings-hint">
-          {t("settings.autonomyHint")}
-        </p>
+        <p className="nex-settings-hint">{t("settings.autonomyHint")}</p>
         {autonomy.error && (
           <p className="nex-settings-error nex-fade-in" role="alert">
             {autonomy.error}
@@ -77,9 +73,7 @@ export default function AgentSection({
             if (event.key === "Enter") onSpendCommit();
           }}
         />
-        <p className="nex-settings-hint">
-          {t("settings.spendHint")}
-        </p>
+        <p className="nex-settings-hint">{t("settings.spendHint")}</p>
         {spendLimit.error && (
           <p className="nex-settings-error nex-fade-in" role="alert">
             {spendLimit.error.message}

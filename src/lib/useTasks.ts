@@ -44,9 +44,13 @@ export interface TasksStore {
     provider: string | null,
     model: string | null,
     steps: string[],
-    maxSteps?: number,
+    maxSteps?: number
   ) => Promise<number | null>;
-  update: (taskId: number, title: string, description: string | null) => Promise<boolean>;
+  update: (
+    taskId: number,
+    title: string,
+    description: string | null
+  ) => Promise<boolean>;
   remove: (taskId: number) => Promise<boolean>;
   start: (taskId: number) => Promise<boolean>;
   stop: (taskId: number) => Promise<boolean>;
@@ -63,7 +67,7 @@ export interface TasksStore {
   move: (
     taskId: number,
     status: "pending" | "completed" | "failed" | "cancelled",
-    holder: string,
+    holder: string
   ) => Promise<{ ok: boolean; message: string | null }>;
 }
 
@@ -100,7 +104,7 @@ export function useTasks(): TasksStore {
             steps = [];
           }
           return { task, steps };
-        }),
+        })
       );
       setTasks(views);
     } catch (e) {
@@ -123,9 +127,12 @@ export function useTasks(): TasksStore {
 
     const setup = async () => {
       try {
-        unlisten = await listen<AgentTaskEventPayload>("agent-task-event", () => {
-          void reload();
-        });
+        unlisten = await listen<AgentTaskEventPayload>(
+          "agent-task-event",
+          () => {
+            void reload();
+          }
+        );
         if (cancelled && unlisten) {
           unlisten();
           unlisten = null;
@@ -150,10 +157,18 @@ export function useTasks(): TasksStore {
       provider: string | null,
       model: string | null,
       steps: string[],
-      maxSteps?: number,
+      maxSteps?: number
     ): Promise<number | null> => {
       try {
-        const id = await createTask(title, description, null, provider, model, steps, maxSteps);
+        const id = await createTask(
+          title,
+          description,
+          null,
+          provider,
+          model,
+          steps,
+          maxSteps
+        );
         await reload();
         return id;
       } catch (e) {
@@ -161,11 +176,15 @@ export function useTasks(): TasksStore {
         return null;
       }
     },
-    [reload],
+    [reload]
   );
 
   const update = useCallback(
-    async (taskId: number, title: string, description: string | null): Promise<boolean> => {
+    async (
+      taskId: number,
+      title: string,
+      description: string | null
+    ): Promise<boolean> => {
       try {
         await updateTask(taskId, title, description);
         await reload();
@@ -175,7 +194,7 @@ export function useTasks(): TasksStore {
         return false;
       }
     },
-    [reload],
+    [reload]
   );
 
   const remove = useCallback(
@@ -189,7 +208,7 @@ export function useTasks(): TasksStore {
         return false;
       }
     },
-    [reload],
+    [reload]
   );
 
   const start = useCallback(
@@ -203,7 +222,7 @@ export function useTasks(): TasksStore {
         return false;
       }
     },
-    [reload],
+    [reload]
   );
 
   const stop = useCallback(
@@ -217,7 +236,7 @@ export function useTasks(): TasksStore {
         return false;
       }
     },
-    [reload],
+    [reload]
   );
 
   const acquireLock = useCallback(
@@ -229,18 +248,21 @@ export function useTasks(): TasksStore {
         return null;
       }
     },
-    [],
+    []
   );
 
-  const releaseLock = useCallback(async (taskId: number, token: string): Promise<boolean> => {
-    try {
-      await releaseTaskLock(taskId, token);
-      return true;
-    } catch (e) {
-      setError(toMessage(e));
-      return false;
-    }
-  }, []);
+  const releaseLock = useCallback(
+    async (taskId: number, token: string): Promise<boolean> => {
+      try {
+        await releaseTaskLock(taskId, token);
+        return true;
+      } catch (e) {
+        setError(toMessage(e));
+        return false;
+      }
+    },
+    []
+  );
 
   const heartbeatLock = useCallback(
     async (taskId: number, token: string): Promise<TaskLock | null> => {
@@ -251,14 +273,14 @@ export function useTasks(): TasksStore {
         return null;
       }
     },
-    [],
+    []
   );
 
   const move = useCallback(
     async (
       taskId: number,
       status: "pending" | "completed" | "failed" | "cancelled",
-      holder: string,
+      holder: string
     ): Promise<{ ok: boolean; message: string | null }> => {
       let token: string | null = null;
       try {
@@ -285,8 +307,22 @@ export function useTasks(): TasksStore {
         }
       }
     },
-    [reload],
+    [reload]
   );
 
-  return { tasks, loading, error, reload, create, update, remove, start, stop, acquireLock, releaseLock, heartbeatLock, move };
+  return {
+    tasks,
+    loading,
+    error,
+    reload,
+    create,
+    update,
+    remove,
+    start,
+    stop,
+    acquireLock,
+    releaseLock,
+    heartbeatLock,
+    move,
+  };
 }

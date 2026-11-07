@@ -43,10 +43,7 @@
 import { useCallback, useMemo, useState } from "react";
 
 import type { ActivityHealthTab } from "../components/ActivityHealthPanel";
-import type {
-  PaletteSettingsSection,
-  PaletteVcsRequest,
-} from "./commands";
+import type { PaletteSettingsSection, PaletteVcsRequest } from "./commands";
 
 /** Workspace-scoped overlay destinations (one rail entry each). */
 export type OverlayKind =
@@ -486,6 +483,6 @@ export function useOverlayRouter(): OverlayRouter {
       closeRelease,
       selectPrompt,
       closeAll,
-    ],
+    ]
   );
 }

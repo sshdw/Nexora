@@ -68,7 +68,7 @@ export const OP_EXPORT_SETUP_TO_FILE = "export_setup_to_file";
 export function requestConfirmation(
   scope: ConfirmationScope,
   operation: string,
-  target?: { cwd?: string | null; targetId?: number | null },
+  target?: { cwd?: string | null; targetId?: number | null }
 ): Promise<string> {
   return invoke<string>("request_confirmation", {
     scope,
@@ -90,7 +90,7 @@ export function requestConfirmation(
 export async function clearApplicationData(): Promise<void> {
   const confirmationId = await requestConfirmation(
     "data_management",
-    OP_CLEAR_ALL_DATA,
+    OP_CLEAR_ALL_DATA
   );
   return invoke<void>("clear_application_data", { confirmationId });
 }

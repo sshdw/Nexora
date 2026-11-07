@@ -110,16 +110,24 @@ const componentSources: Record<string, string> = {
 
 /** Body of a top-level rule in src/index.css, found by its selector. */
 function ruleBody(selector: RegExp, label: string): string {
-  const match = new RegExp(`${selector.source}\\s*\\{([\\s\\S]*?)\\n\\}`).exec(cssCode);
+  const match = new RegExp(`${selector.source}\\s*\\{([\\s\\S]*?)\\n\\}`).exec(
+    cssCode
+  );
   if (!match) throw new Error(`src/index.css: no block matching ${label}`);
   return match[1];
 }
 
 /** The default theme — dark, painted by an un-marked `:root`. */
-const DARK_BLOCK = ruleBody(/:root,\s*:root\[data-theme="dark"\]/, "the dark/default theme block");
+const DARK_BLOCK = ruleBody(
+  /:root,\s*:root\[data-theme="dark"\]/,
+  "the dark/default theme block"
+);
 
 /** The light counterpart, selected by `data-theme="light"`. */
-const LIGHT_BLOCK = ruleBody(/:root\[data-theme="light"\]/, "the light theme block");
+const LIGHT_BLOCK = ruleBody(
+  /:root\[data-theme="light"\]/,
+  "the light theme block"
+);
 
 /** Custom properties DEFINED in a block body, as `--name -> value`. */
 function definedVars(body: string): Map<string, string> {
@@ -346,9 +354,15 @@ function lightThemeVar(name: string): Oklch {
 
 function blockVar(body: string, name: string, label: string): Oklch {
   const declaration = new RegExp(`${name}\\s*:\\s*([^;]+);`).exec(body);
-  if (!declaration) throw new Error(`src/index.css: ${name} is not defined in the ${label} theme`);
+  if (!declaration)
+    throw new Error(
+      `src/index.css: ${name} is not defined in the ${label} theme`
+    );
   const parsed = parseOklch(declaration[1]);
-  if (!parsed) throw new Error(`src/index.css: ${name} is "${declaration[1]}", not an oklch() value`);
+  if (!parsed)
+    throw new Error(
+      `src/index.css: ${name} is "${declaration[1]}", not an oklch() value`
+    );
   return parsed;
 }
 
@@ -460,13 +474,18 @@ const STRING_LITERAL = /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`/g;
 
 /** Every class token in a component source, comments and interpolations aside. */
 function classTokens(source: string): string[] {
-  const code = source.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/^\s*\/\/.*$/gm, " ");
+  const code = source
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/^\s*\/\/.*$/gm, " ");
   const tokens = new Set<string>();
   for (const match of code.matchAll(STRING_LITERAL)) {
     // The body is the MATCH with its delimiters trimmed off, never a
     // capture group: a capture group delimited by the quote class
     // cannot hold a quote of the other kind, which is the bug above.
-    for (const raw of match[0].slice(1, -1).replace(/\$\{[^}]*\}/g, " ").split(/\s+/)) {
+    for (const raw of match[0]
+      .slice(1, -1)
+      .replace(/\$\{[^}]*\}/g, " ")
+      .split(/\s+/)) {
       if (raw) tokens.add(raw);
     }
   }
@@ -480,7 +499,8 @@ function colourUtilities(source: string): string[] {
     // Strip variant prefixes one at a time: `dark:`,
     // `focus-visible:aria-invalid:`, `has-data-[icon=inline-end]:`.
     let bare = token;
-    while (/^[a-z0-9[\]_.-]+:/i.test(bare)) bare = bare.replace(/^[a-z0-9[\]_.-]+:/i, "");
+    while (/^[a-z0-9[\]_.-]+:/i.test(bare))
+      bare = bare.replace(/^[a-z0-9[\]_.-]+:/i, "");
     // Strip the opacity modifier: `bg-destructive/10` -> `bg-destructive`.
     bare = bare.replace(/\/\s*\d+$/, "");
     // `ring-offset-2` is the focus gap WIDTH, not a colour —
@@ -510,8 +530,10 @@ describe("black theme — variable coverage", () => {
     const missing: string[] = [];
     for (const [alias, target] of mapping) {
       if (!alias.startsWith("--color-")) continue;
-      if (!darkDefined.has(target)) missing.push(`dark: ${target} (aliased by ${alias})`);
-      if (!lightDefined.has(target)) missing.push(`light: ${target} (aliased by ${alias})`);
+      if (!darkDefined.has(target))
+        missing.push(`dark: ${target} (aliased by ${alias})`);
+      if (!lightDefined.has(target))
+        missing.push(`light: ${target} (aliased by ${alias})`);
     }
     expect(missing).toEqual([]);
   });
@@ -525,7 +547,10 @@ describe("black theme — variable coverage", () => {
     const unresolved: string[] = [];
     for (const [alias, target] of mapping) {
       if (alias.startsWith("--color-")) continue;
-      const resolves = darkDefined.has(target) || themeKeys.has(target) || externalVars.has(target);
+      const resolves =
+        darkDefined.has(target) ||
+        themeKeys.has(target) ||
+        externalVars.has(target);
       if (!resolves) unresolved.push(`${alias} -> ${target}`);
     }
     expect(unresolved).toEqual([]);
@@ -536,7 +561,12 @@ describe("black theme — variable coverage", () => {
     // `@theme inline` emits it into the theme layer, or if it is one
     // of the named external tokens above.
     const missing = [...referencedVars()]
-      .filter((name) => !darkDefined.has(name) && !themeKeys.has(name) && !externalVars.has(name))
+      .filter(
+        (name) =>
+          !darkDefined.has(name) &&
+          !themeKeys.has(name) &&
+          !externalVars.has(name)
+      )
       .sort();
     expect(missing).toEqual([]);
   });
@@ -556,7 +586,11 @@ describe("black theme — variable coverage", () => {
     for (const [name, source] of Object.entries(componentSources)) {
       for (const match of source.matchAll(/var\(\s*(--[a-z0-9-]+)/gi)) {
         const target = match[1];
-        if (darkDefined.has(target) || themeKeys.has(target) || externalVars.has(target)) {
+        if (
+          darkDefined.has(target) ||
+          themeKeys.has(target) ||
+          externalVars.has(target)
+        ) {
           continue;
         }
         missing.push(`${name}: ${target}`);
@@ -599,7 +633,7 @@ describe("black theme — variable coverage", () => {
         "bg-destructive",
         "border-border",
         "border-destructive",
-      ]),
+      ])
     );
     // EXACT, not a subset. A containment check would still pass if the
     // extractor lost 16 of 17; a set check makes a registry update
@@ -658,10 +692,14 @@ describe("black theme — variable coverage", () => {
           continue;
         }
         if (!darkDefined.has(target)) {
-          unresolved.push(`${name}: ${utility} -> ${target} undefined in the dark theme`);
+          unresolved.push(
+            `${name}: ${utility} -> ${target} undefined in the dark theme`
+          );
         }
         if (!lightDefined.has(target)) {
-          unresolved.push(`${name}: ${utility} -> ${target} undefined in the light theme`);
+          unresolved.push(
+            `${name}: ${utility} -> ${target} undefined in the light theme`
+          );
         }
       }
     }
@@ -690,9 +728,9 @@ describe("black theme — variable coverage", () => {
       const button = container.querySelector("button");
       expect(button).not.toBeNull();
       expect(button!.className.split(/\s+/)).toContain("bg-primary");
-      expect(getComputedStyle(document.documentElement).getPropertyValue("--primary")).toBe(
-        darkDefined.get("--primary"),
-      );
+      expect(
+        getComputedStyle(document.documentElement).getPropertyValue("--primary")
+      ).toBe(darkDefined.get("--primary"));
       container.remove();
     } finally {
       style.remove();
@@ -744,7 +782,9 @@ describe("cascade — the merged sheets load inside a layer", () => {
   /** `@import "<specifier>"[ layer(<name>)]` → `specifier -> layer`. */
   function importedLayers(): Map<string, string | null> {
     const out = new Map<string, string | null>();
-    for (const match of cssCode.matchAll(/@import\s+["']([^"']+)["']([^;]*);/g)) {
+    for (const match of cssCode.matchAll(
+      /@import\s+["']([^"']+)["']([^;]*);/g
+    )) {
       const qualifier = /\blayer\(\s*([a-z-]+)\s*\)/.exec(match[2]);
       out.set(match[1], qualifier ? qualifier[1] : null);
     }
@@ -752,7 +792,9 @@ describe("cascade — the merged sheets load inside a layer", () => {
   }
 
   it("declares the layer order exactly once, ahead of every @import", () => {
-    const statements = cssCode.match(/@layer\s+[a-z][a-z-]*(?:\s*,\s*[a-z][a-z-]*)*\s*;/gi) ?? [];
+    const statements =
+      cssCode.match(/@layer\s+[a-z][a-z-]*(?:\s*,\s*[a-z][a-z-]*)*\s*;/gi) ??
+      [];
     expect(statements).toHaveLength(1);
     // utilities LAST: that is what lets a utility outrank a reset.
     const order = (statements[0] ?? "")
@@ -760,16 +802,20 @@ describe("cascade — the merged sheets load inside a layer", () => {
       .split(",")
       .map((s) => s.trim());
     expect(order).toEqual(["theme", "base", "components", "utilities"]);
-    expect(cssCode.indexOf("@layer theme,")).toBeLessThan(cssCode.search(/@import\s+["']/));
+    expect(cssCode.indexOf("@layer theme,")).toBeLessThan(
+      cssCode.search(/@import\s+["']/)
+    );
   });
 
   it("imports every merged sheet with layer(base)", () => {
     const layers = importedLayers();
-    expect([...layers.keys()].filter((spec) => legacySheets.includes(spec)).sort()).toEqual(
-      legacySheets,
-    );
+    expect(
+      [...layers.keys()].filter((spec) => legacySheets.includes(spec)).sort()
+    ).toEqual(legacySheets);
     for (const specifier of legacySheets) {
-      expect(`${specifier}: ${layers.get(specifier)}`).toBe(`${specifier}: base`);
+      expect(`${specifier}: ${layers.get(specifier)}`).toBe(
+        `${specifier}: base`
+      );
     }
   });
 
@@ -802,9 +848,9 @@ describe("cascade — the merged sheets load inside a layer", () => {
   it("keeps exactly one stylesheet entry, in src/main.tsx", () => {
     // A second `import "./x.css"` in main.tsx is unlayered by
     // definition and would reinstate the bug behind this file's back.
-    const entries = [...mainTsx.matchAll(/import\s+(?:[^"']*from\s+)?["']([^"']+\.css)["']/g)].map(
-      (match) => match[1],
-    );
+    const entries = [
+      ...mainTsx.matchAll(/import\s+(?:[^"']*from\s+)?["']([^"']+\.css)["']/g),
+    ].map((match) => match[1]);
     expect(entries).toEqual(["./index.css"]);
   });
 
@@ -830,9 +876,14 @@ describe("cascade — the merged sheets load inside a layer", () => {
    *  stops at the first nested rule's closing brace. */
   function baseLayerBlock(): string {
     const start = cssCode.indexOf("@layer base {");
-    if (start === -1) throw new Error("src/index.css: no top-level `@layer base` block");
+    if (start === -1)
+      throw new Error("src/index.css: no top-level `@layer base` block");
     let depth = 0;
-    for (let index = cssCode.indexOf("{", start); index < cssCode.length; index += 1) {
+    for (
+      let index = cssCode.indexOf("{", start);
+      index < cssCode.length;
+      index += 1
+    ) {
       if (cssCode[index] === "{") depth += 1;
       else if (cssCode[index] === "}") {
         depth -= 1;
@@ -847,7 +898,7 @@ describe("cascade — the merged sheets load inside a layer", () => {
     // The rule itself: one declaration, one token. A raw colour here
     // would be a fourth theme's worth of paint nobody reviewed.
     expect(block).toMatch(
-      /button\s*\{\s*color:\s*var\(--color-on-surface-variant\);\s*\}/,
+      /button\s*\{\s*color:\s*var\(--color-on-surface-variant\);\s*\}/
     );
     // No `!important`. For important declarations the EARLIER layer
     // wins, so an important colour in `base` would cross the layers in
@@ -858,10 +909,16 @@ describe("cascade — the merged sheets load inside a layer", () => {
     // An unlayered `button { color }` here would out-rank the utilities
     // by Cascade L5 (normal declarations) exactly as the old unlayered
     // sheet imports did, repainting filled buttons quiet grey.
-    expect(cssCode.replace(block, "")).not.toMatch(/(?:^|[^-\w])button\b[^{};]*\{/m);
+    expect(cssCode.replace(block, "")).not.toMatch(
+      /(?:^|[^-\w])button\b[^{};]*\{/m
+    );
     // The token it names resolves in both theme blocks.
-    expect(definedVars(DARK_BLOCK).has("--color-on-surface-variant")).toBe(true);
-    expect(definedVars(LIGHT_BLOCK).has("--color-on-surface-variant")).toBe(true);
+    expect(definedVars(DARK_BLOCK).has("--color-on-surface-variant")).toBe(
+      true
+    );
+    expect(definedVars(LIGHT_BLOCK).has("--color-on-surface-variant")).toBe(
+      true
+    );
   });
 
   /* ----------------------------------------------------------
@@ -880,7 +937,7 @@ describe("cascade — the merged sheets load inside a layer", () => {
     // High contrast is dark-based: it must not fall back to the UA's light.
     const highContrast =
       /:root\[data-theme="high-contrast"\],\s*\.nex-theme-high-contrast\s*\{([\s\S]*?)\n\}/.exec(
-        cssCode,
+        cssCode
       )?.[1] ?? "";
     expect(highContrast).toMatch(/(?:^|[;{\s])color-scheme:\s*dark;/);
   });
@@ -891,7 +948,9 @@ describe("cascade — the merged sheets load inside a layer", () => {
     const scrollbarRules = cssCode.slice(at, at + 1200);
     expect(scrollbarRules).toContain("*::-webkit-scrollbar-thumb");
     expect(scrollbarRules).toContain("background: var(--scrollbar-thumb)");
-    expect(scrollbarRules).toContain("background: var(--scrollbar-thumb-hover)");
+    expect(scrollbarRules).toContain(
+      "background: var(--scrollbar-thumb-hover)"
+    );
     // No raw colour in the scrollbar paint: it follows the theme.
     expect(scrollbarRules).not.toMatch(/#[0-9a-f]{3,8}\b/i);
     expect(scrollbarRules).not.toMatch(/\brgba?\(/);
@@ -916,7 +975,7 @@ describe("cascade — the merged sheets load inside a layer", () => {
 
     const rule =
       /\.nex-thread,\s*\.nex-sessions-scroll,\s*\.nex-composer-model-list,\s*\.nex-context\s*\{([\s\S]*?)\n\s*\}/.exec(
-        block,
+        block
       )?.[1] ?? "";
     expect(rule).toContain("scrollbar-gutter: stable");
     expect(rule).not.toMatch(/scrollbar-width\s*:/);
@@ -924,7 +983,7 @@ describe("cascade — the merged sheets load inside a layer", () => {
 
     expect(block).toMatch(/\*::-webkit-scrollbar\s*\{[^}]*width:\s*10px/);
     expect(block).toMatch(
-      /\*::-webkit-scrollbar-button\s*\{\s*display:\s*none;\s*\}/,
+      /\*::-webkit-scrollbar-button\s*\{\s*display:\s*none;\s*\}/
     );
   });
 
@@ -934,10 +993,10 @@ describe("cascade — the merged sheets load inside a layer", () => {
     const at = cssCode.indexOf("*::-webkit-scrollbar");
     const block = cssCode.slice(at, at + 1800);
     expect(block).toMatch(
-      /\*::-webkit-scrollbar-button\s*\{\s*display:\s*none;\s*\}/,
+      /\*::-webkit-scrollbar-button\s*\{\s*display:\s*none;\s*\}/
     );
     expect(block).toMatch(
-      /\*::-webkit-scrollbar-corner\s*\{\s*background:\s*transparent;\s*\}/,
+      /\*::-webkit-scrollbar-corner\s*\{\s*background:\s*transparent;\s*\}/
     );
   });
 
@@ -947,7 +1006,7 @@ describe("cascade — the merged sheets load inside a layer", () => {
     const dark = definedVars(DARK_BLOCK);
     expect(dark.get("--scrollbar-thumb")).toBe("rgba(255, 255, 255, 0.3)");
     expect(dark.get("--scrollbar-thumb-hover")).toBe(
-      "rgba(255, 255, 255, 0.45)",
+      "rgba(255, 255, 255, 0.45)"
     );
     expect(dark.get("--scrollbar-thumb")).not.toContain("0.12");
 
@@ -958,7 +1017,7 @@ describe("cascade — the merged sheets load inside a layer", () => {
     // High contrast keeps its stronger pair.
     const highContrast =
       /:root\[data-theme="high-contrast"\],\s*\.nex-theme-high-contrast\s*\{([\s\S]*?)\n\}/.exec(
-        cssCode,
+        cssCode
       )?.[1] ?? "";
     const hc = definedVars(highContrast);
     expect(hc.get("--scrollbar-thumb")).toBe("rgba(255, 255, 255, 0.35)");
@@ -973,19 +1032,21 @@ describe("cascade — the merged sheets load inside a layer", () => {
     const block = cssCode.slice(at, at + 1800);
     const rule =
       /\.nex-thread,\s*\.nex-sessions-scroll,\s*\.nex-composer-model-list,\s*\.nex-context\s*\{([\s\S]*?)\n\s*\}/.exec(
-        block,
+        block
       )?.[1] ?? "";
     expect(rule).toContain("scrollbar-gutter: stable");
   });
 
-  it("keeps the element reset free of tone, so this stays the only fallback", () => {    // src/styles/theme.css says so in its own header ("element resets
+  it("keeps the element reset free of tone, so this stays the only fallback", () => {
+    // src/styles/theme.css says so in its own header ("element resets
     // never invent a tone"). Asserted as a declaration, because the
     // tempting one-line fix — adding `color` to that reset — would put
     // the same fallback in a sheet whose whole job is geometry, and the
     // next reader would find two sources for one role.
-    const reset = /button\s*\{([\s\S]*?)\}/.exec(
-      readRepoFile("src/styles/theme.css").replace(/\/\*[\s\S]*?\*\//g, ""),
-    )?.[1] ?? "";
+    const reset =
+      /button\s*\{([\s\S]*?)\}/.exec(
+        readRepoFile("src/styles/theme.css").replace(/\/\*[\s\S]*?\*\//g, "")
+      )?.[1] ?? "";
     expect(reset).toMatch(/font-family:\s*inherit/);
     expect(reset).not.toMatch(/(?:^|;)\s*color\s*:/);
   });
@@ -1011,7 +1072,9 @@ describe("cascade — the merged sheets load inside a layer", () => {
       "text-primary",
       "hover:text-foreground",
     ]) {
-      expect(`${utility}: ${button.includes(utility)}`).toBe(`${utility}: true`);
+      expect(`${utility}: ${button.includes(utility)}`).toBe(
+        `${utility}: true`
+      );
     }
     // The ghost variant has no rest `text-*` at all — which is exactly
     // why the fallback exists, and why adding one to it instead (the
@@ -1034,10 +1097,12 @@ describe("black theme — direction", () => {
 
   it("keeps every surface barely lighter than the canvas", () => {
     const canvas = blackThemeVar("--background").l;
-    const steps = ["--card", "--popover", "--muted", "--accent"].map((name) => ({
-      name,
-      l: blackThemeVar(name).l,
-    }));
+    const steps = ["--card", "--popover", "--muted", "--accent"].map(
+      (name) => ({
+        name,
+        l: blackThemeVar(name).l,
+      })
+    );
     for (const step of steps) {
       expect(step.l).toBeGreaterThan(canvas);
       expect(step.l - canvas).toBeLessThanOrEqual(0.13);
@@ -1083,7 +1148,12 @@ describe("black theme — direction", () => {
     // error state fails too. There is deliberately no hue assertion
     // anywhere in this file anymore: the cold-accent band
     // (h 200–270) died with the accent.
-    const chromatic = new Set(["--state-ok", "--state-warn", "--state-err", "--destructive"]);
+    const chromatic = new Set([
+      "--state-ok",
+      "--state-warn",
+      "--state-err",
+      "--destructive",
+    ]);
     const themes = [
       ["dark", darkDefined],
       ["light", lightDefined],
@@ -1092,7 +1162,10 @@ describe("black theme — direction", () => {
       for (const [name, value] of vars) {
         if (NON_COLOUR_VARS.has(name)) continue;
         const parsed = parseOklch(value);
-        if (!parsed) throw new Error(`src/index.css: ${name} is not an oklch() value (${label})`);
+        if (!parsed)
+          throw new Error(
+            `src/index.css: ${name} is not an oklch() value (${label})`
+          );
         if (chromatic.has(name)) {
           expect(parsed.c).toBeGreaterThan(0.02);
         } else {
@@ -1116,12 +1189,12 @@ describe("black theme — direction", () => {
 
   it("keeps the state roles legible on the canvas, both themes", () => {
     for (const name of ["--state-ok", "--state-warn", "--state-err"] as const) {
-      expect(contrastRatio(blackThemeVar(name), blackThemeVar("--background"))).toBeGreaterThanOrEqual(
-        4.5,
-      );
-      expect(contrastRatio(lightThemeVar(name), lightThemeVar("--background"))).toBeGreaterThanOrEqual(
-        4.5,
-      );
+      expect(
+        contrastRatio(blackThemeVar(name), blackThemeVar("--background"))
+      ).toBeGreaterThanOrEqual(4.5);
+      expect(
+        contrastRatio(lightThemeVar(name), lightThemeVar("--background"))
+      ).toBeGreaterThanOrEqual(4.5);
     }
   });
 
@@ -1152,14 +1225,18 @@ describe("black theme — direction", () => {
     // Muted text is the first thing this theme dims, but never
     // past AA on any surface it lands on.
     for (const surface of ["--background", "--card", "--popover", "--muted"]) {
-      expect(contrastRatio(mutedForeground, blackThemeVar(surface))).toBeGreaterThanOrEqual(4.5);
+      expect(
+        contrastRatio(mutedForeground, blackThemeVar(surface))
+      ).toBeGreaterThanOrEqual(4.5);
     }
   });
 
   it("carries a legible primary text ladder", () => {
     const foreground = blackThemeVar("--foreground");
     for (const surface of ["--background", "--card", "--popover", "--muted"]) {
-      expect(contrastRatio(foreground, blackThemeVar(surface))).toBeGreaterThanOrEqual(4.5);
+      expect(
+        contrastRatio(foreground, blackThemeVar(surface))
+      ).toBeGreaterThanOrEqual(4.5);
     }
   });
 
@@ -1167,7 +1244,10 @@ describe("black theme — direction", () => {
     // Subsumed by the 16.08 pair pin above; kept as the AA-floor
     // phrasing so the ladder reads complete.
     expect(
-      contrastRatio(blackThemeVar("--primary-foreground"), blackThemeVar("--primary")),
+      contrastRatio(
+        blackThemeVar("--primary-foreground"),
+        blackThemeVar("--primary")
+      )
     ).toBeGreaterThanOrEqual(4.5);
   });
 
@@ -1175,8 +1255,8 @@ describe("black theme — direction", () => {
     expect(
       contrastRatio(
         blackThemeVar("--destructive-foreground"),
-        blackThemeVar("--destructive"),
-      ),
+        blackThemeVar("--destructive")
+      )
     ).toBeGreaterThanOrEqual(4.5);
   });
 
@@ -1190,7 +1270,7 @@ describe("black theme — direction", () => {
     // the generated component's, not the theme's, so this is the
     // assertion that keeps the two from drifting apart.
     expect(
-      contrastOnWash(destructive, { ...destructive, a: 0.1 }, canvas),
+      contrastOnWash(destructive, { ...destructive, a: 0.1 }, canvas)
     ).toBeGreaterThanOrEqual(4.5);
   });
 
@@ -1202,11 +1282,18 @@ describe("black theme — direction", () => {
     // the achromatic sweep above, which covers both themes.
     expect(light("--primary").l).toBeLessThan(0.25);
     expect(light("--primary-foreground").l).toBeGreaterThan(0.9);
-    const pair = contrastRatio(light("--primary-foreground"), light("--primary"));
+    const pair = contrastRatio(
+      light("--primary-foreground"),
+      light("--primary")
+    );
     expect(pair).toBeGreaterThanOrEqual(15.5);
     expect(pair).toBeLessThanOrEqual(16.6);
-    expect(contrastRatio(light("--foreground"), light("--background"))).toBeGreaterThanOrEqual(4.5);
-    expect(contrastRatio(light("--muted-foreground"), light("--background"))).toBeGreaterThanOrEqual(4.5);
+    expect(
+      contrastRatio(light("--foreground"), light("--background"))
+    ).toBeGreaterThanOrEqual(4.5);
+    expect(
+      contrastRatio(light("--muted-foreground"), light("--background"))
+    ).toBeGreaterThanOrEqual(4.5);
   });
 
   it("selects both themes with the attribute the app actually writes", () => {
@@ -1214,7 +1301,9 @@ describe("black theme — direction", () => {
     // tokens.css treats a bare `:root` as dark. A `.dark`/`.light`
     // class pair matched nothing at runtime, and a `dark:` variant
     // keyed off it was dead on every screen.
-    expect(css).toMatch(/@custom-variant\s+dark\s*\(\s*&:is\(\[data-theme="dark"\]/);
+    expect(css).toMatch(
+      /@custom-variant\s+dark\s*\(\s*&:is\(\[data-theme="dark"\]/
+    );
     expect(css).toMatch(/^:root\[data-theme="light"\] \{/m);
     expect(css).not.toMatch(/^\.dark \{/m);
     expect(css).not.toMatch(/^\.light \{/m);
@@ -1248,7 +1337,7 @@ describe("black theme — legacy hex tokens (D-02 composited-chroma sweep)", () 
   // ruleBody appends the brace itself.
   const hcBlock = ruleBody(
     /:root\[data-theme="high-contrast"\],\s*\.nex-theme-high-contrast/,
-    "high-contrast theme block",
+    "high-contrast theme block"
   );
 
   const themes = [
@@ -1268,7 +1357,8 @@ describe("black theme — legacy hex tokens (D-02 composited-chroma sweep)", () 
       /--background\s*:\s*([^;]+);/.exec(body)?.[1] ??
       /--background\s*:\s*([^;]+);/.exec(DARK_BLOCK)?.[1];
     const parsed = parseOklch(value ?? "");
-    if (!parsed) throw new Error(`--background is not oklch(): "${value ?? ""}"`);
+    if (!parsed)
+      throw new Error(`--background is not oklch(): "${value ?? ""}"`);
     return oklchToSrgbChannels(parsed);
   }
 
@@ -1304,7 +1394,10 @@ describe("black theme — legacy hex tokens (D-02 composited-chroma sweep)", () 
       "success-family wash — the sage rgba(143,168,135,…) IS --state-ok's hex",
     ],
     ["--color-on-secondary-container", "success-family companion (sage tint)"],
-    ["--color-primary", "legacy amber (06 §3); live legacy consumers; pruned by D-11/re-skin"],
+    [
+      "--color-primary",
+      "legacy amber (06 §3); live legacy consumers; pruned by D-11/re-skin",
+    ],
     ["--color-primary-hover", "legacy amber (06 §3); as above"],
     ["--color-primary-container", "legacy amber wash (06 §3); as above"],
     ["--color-on-primary", "amber fill's on-colour (hc #1c1408, c=0.0253)"],
@@ -1321,7 +1414,7 @@ describe("black theme — legacy hex tokens (D-02 composited-chroma sweep)", () 
         if (!rgba) {
           throw new Error(
             `src/index.css ${label}: ${name} = "${value}" is neither oklch(), a colour ` +
-              `literal, nor in NON_COLOUR_VARS — the D-02 blind spot is reopening`,
+              `literal, nor in NON_COLOUR_VARS — the D-02 blind spot is reopening`
           );
         }
         const chroma = oklabChroma(srgbToOklab(compositedSrgb(rgba, canvas)));
@@ -1330,7 +1423,7 @@ describe("black theme — legacy hex tokens (D-02 composited-chroma sweep)", () 
           chroma,
           `${name} (${value}) composites to c=${chroma.toFixed(4)} on the ${label} canvas — ` +
             `over the c<0.02 pin. Re-point it achromatic (D-01's pattern), or, if it is a ` +
-            `sanctioned survivor, name it in CHROMATIC_SURVIVORS with the reason`,
+            `sanctioned survivor, name it in CHROMATIC_SURVIVORS with the reason`
         ).toBeLessThan(0.02);
       }
     }
@@ -1342,11 +1435,17 @@ describe("black theme — legacy hex tokens (D-02 composited-chroma sweep)", () 
     // A future exempt-list edit must not be able to re-warm this name.
     for (const [label, body] of themes) {
       const value = definedVars(body).get("--color-on-surface-tertiary");
-      expect(value, `--color-on-surface-tertiary missing in ${label}`).toBeDefined();
+      expect(
+        value,
+        `--color-on-surface-tertiary missing in ${label}`
+      ).toBeDefined();
       const rgba = parseHexRgba(value!);
-      expect(rgba, `--color-on-surface-tertiary is not a hex literal in ${label}`).not.toBeNull();
+      expect(
+        rgba,
+        `--color-on-surface-tertiary is not a hex literal in ${label}`
+      ).not.toBeNull();
       const chroma = oklabChroma(
-        srgbToOklab(compositedSrgb(rgba!, canvasOf(body))),
+        srgbToOklab(compositedSrgb(rgba!, canvasOf(body)))
       );
       expect(chroma, `${label} tertiary`).toBeLessThan(0.02);
     }
@@ -1408,20 +1507,32 @@ describe("parity — tokens.css relocation (#230 Phase 6)", () => {
     // The selector may be followed by comma-separated co-selectors across
     // lines before the opening brace (e.g. the high-contrast block), so
     // allow anything between the selector name and `{`.
-    const match = new RegExp(selector.source + '[\\s\\S]*?\\{([\\s\\S]*?)\\n\\}').exec(css);
+    const match = new RegExp(
+      selector.source + "[\\s\\S]*?\\{([\\s\\S]*?)\\n\\}"
+    ).exec(css);
     if (!match) throw new Error(`src/index.css: no block matching ${label}`);
     return match[1];
   }
 
   function defsOf(body: string): Map<string, string> {
     const out = new Map<string, string>();
-    for (const m of body.matchAll(/(--[a-z0-9-]+)\s*:\s*([\s\S]*?);/gi)) out.set(m[1], m[2].trim());
+    for (const m of body.matchAll(/(--[a-z0-9-]+)\s*:\s*([\s\S]*?);/gi))
+      out.set(m[1], m[2].trim());
     return out;
   }
 
-  const DARK_BLOCK = ruleBody(/:root,\s*:root\[data-theme="dark"\]/, "dark/default theme block");
-  const LIGHT_BLOCK = ruleBody(/:root\[data-theme="light"\]/, "light theme block");
-  const HC_BLOCK = ruleBody(/:root\[data-theme="high-contrast"\]/, "high-contrast theme block");
+  const DARK_BLOCK = ruleBody(
+    /:root,\s*:root\[data-theme="dark"\]/,
+    "dark/default theme block"
+  );
+  const LIGHT_BLOCK = ruleBody(
+    /:root\[data-theme="light"\]/,
+    "light theme block"
+  );
+  const HC_BLOCK = ruleBody(
+    /:root\[data-theme="high-contrast"\]/,
+    "high-contrast theme block"
+  );
 
   const darkDefs = defsOf(DARK_BLOCK);
   const lightDefs = new Map(darkDefs);
@@ -1429,14 +1540,22 @@ describe("parity — tokens.css relocation (#230 Phase 6)", () => {
   const hcDefs = new Map(darkDefs);
   for (const [k, v] of defsOf(HC_BLOCK)) hcDefs.set(k, v);
 
-  const THEMES: Array<{ label: string; key: "dark" | "light" | "hc"; defs: Map<string, string> }> = [
+  const THEMES: Array<{
+    label: string;
+    key: "dark" | "light" | "hc";
+    defs: Map<string, string>;
+  }> = [
     { label: "dark/default", key: "dark", defs: darkDefs },
     { label: "light", key: "light", defs: lightDefs },
     { label: "high-contrast", key: "hc", defs: hcDefs },
   ];
 
   /** Follow `var()` chains recursively, like the browser does. */
-  function resolve(value: string, defs: Map<string, string>, seen = new Set<string>()): string {
+  function resolve(
+    value: string,
+    defs: Map<string, string>,
+    seen = new Set<string>()
+  ): string {
     return value.replace(
       /var\(\s*(--[a-z0-9-]+)(?:\s*,\s*([\s\S]*?))?\s*\)/g,
       (match, name, fallback) => {
@@ -1447,7 +1566,7 @@ describe("parity — tokens.css relocation (#230 Phase 6)", () => {
         const resolved = resolve(def, defs, seen);
         seen.delete(name);
         return resolved;
-      },
+      }
     );
   }
 
@@ -1468,7 +1587,10 @@ describe("parity — tokens.css relocation (#230 Phase 6)", () => {
     for (const theme of THEMES) {
       it(`${c.old} -> ${c.new} resolves to the base literal in the ${theme.label} theme`, () => {
         const value = theme.defs.get(c.new);
-        expect(value, `${c.new} is not defined in the ${theme.label} theme block`).toBeDefined();
+        expect(
+          value,
+          `${c.new} is not defined in the ${theme.label} theme block`
+        ).toBeDefined();
         const resolved = resolve(value!, theme.defs);
         expect(norm(resolved)).toBe(norm(c[theme.key]));
       });

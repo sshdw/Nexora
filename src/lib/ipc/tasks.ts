@@ -34,7 +34,8 @@ export interface AgentTaskStep {
   task_id: number;
   seq: number;
   title: string;
-  status: "pending" | "running" | "completed" | "failed" | "skipped" | "cancelled";
+  status:
+    "pending" | "running" | "completed" | "failed" | "skipped" | "cancelled";
   result: string | null;
   run_id: number | null;
   started_at: number; // seconds since unix epoch
@@ -59,7 +60,7 @@ export function createTask(
   provider: string | null,
   model: string | null,
   steps: string[],
-  maxSteps?: number,
+  maxSteps?: number
 ): Promise<number> {
   return invoke<number>("create_task", {
     title,
@@ -86,7 +87,7 @@ export function listTaskSteps(taskId: number): Promise<AgentTaskStep[]> {
 export function updateTask(
   taskId: number,
   title: string,
-  description: string | null,
+  description: string | null
 ): Promise<void> {
   return invoke<void>("update_task", {
     taskId,
@@ -133,7 +134,7 @@ export interface TaskLock {
 export function acquireTaskLock(
   taskId: number,
   holder: string,
-  ttlSecs?: number,
+  ttlSecs?: number
 ): Promise<TaskLock> {
   return invoke<TaskLock>("acquire_task_lock", {
     taskId,
@@ -152,7 +153,7 @@ export function releaseTaskLock(taskId: number, token: string): Promise<void> {
 export function heartbeatTaskLock(
   taskId: number,
   token: string,
-  ttlSecs?: number,
+  ttlSecs?: number
 ): Promise<TaskLock> {
   return invoke<TaskLock>("heartbeat_task_lock", {
     taskId,
@@ -167,7 +168,7 @@ export function heartbeatTaskLock(
 export function moveTask(
   taskId: number,
   status: "pending" | "completed" | "failed" | "cancelled",
-  token: string,
+  token: string
 ): Promise<void> {
   return invoke<void>("move_task", { taskId, status, token });
 }

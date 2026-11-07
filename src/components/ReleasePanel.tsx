@@ -130,11 +130,7 @@ export default function ReleasePanel({ onClose }: ReleasePanelProps) {
         detail: `${t("release.versionsAgree", { v: package_json_version })} ${versionsLine}`,
         fileIssue: null,
       });
-    } else if (
-      package_json_version &&
-      cargo_version &&
-      tauri_conf_version
-    ) {
+    } else if (package_json_version && cargo_version && tauri_conf_version) {
       checks.push({
         id: "versions",
         label: t("release.checkVersions"),
@@ -178,18 +174,26 @@ export default function ReleasePanel({ onClose }: ReleasePanelProps) {
         id: "migrations",
         label: t("release.checkMigrations"),
         state: "fail",
-        detail: t("release.migrationsPending", { n: status.pending_migrations }),
+        detail: t("release.migrationsPending", {
+          n: status.pending_migrations,
+        }),
         fileIssue: {
-          title: t("release.issueTitle", { check: t("release.checkMigrations") }),
+          title: t("release.issueTitle", {
+            check: t("release.checkMigrations"),
+          }),
           location: "release/migrations",
-          detail: t("release.migrationsPending", { n: status.pending_migrations }),
+          detail: t("release.migrationsPending", {
+            n: status.pending_migrations,
+          }),
           source: "release-check",
         },
       });
     }
 
     if (status.snapshot) {
-      const size = formatBytes(status.snapshot.size_bytes) ?? String(status.snapshot.size_bytes);
+      const size =
+        formatBytes(status.snapshot.size_bytes) ??
+        String(status.snapshot.size_bytes);
       checks.push({
         id: "snapshot",
         label: t("release.checkSnapshot"),
@@ -316,7 +320,11 @@ export default function ReleasePanel({ onClose }: ReleasePanelProps) {
           <p className="nex-vcs-subtitle">{t("release.subtitle")}</p>
         </div>
         <div className="nex-vcs-header-actions">
-          <M3Button variant="quiet" onClick={() => void reload()} disabled={loading}>
+          <M3Button
+            variant="quiet"
+            onClick={() => void reload()}
+            disabled={loading}
+          >
             {loading ? t("release.refreshing") : t("release.refresh")}
           </M3Button>
           <M3Button variant="quiet" onClick={onClose}>
@@ -355,7 +363,10 @@ export default function ReleasePanel({ onClose }: ReleasePanelProps) {
                   <p className="nex-vcs-notice">{check.detail}</p>
                   {target && (
                     <div>
-                      <M3Button variant="quiet" onClick={() => setIssueTarget(target)}>
+                      <M3Button
+                        variant="quiet"
+                        onClick={() => setIssueTarget(target)}
+                      >
                         {t("release.fileIssue")}
                       </M3Button>
                     </div>

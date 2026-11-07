@@ -30,10 +30,20 @@
      Note: full "emphasized" easing is N/A in CSS per the official
      table — expressive begin+end falls back to standard. */
   --motion-easing-standard: cubic-bezier(0.2, 0, 0, 1);
-  --motion-easing-standard-decelerate: cubic-bezier(0, 0, 0, 1);   /* entering */
+  --motion-easing-standard-decelerate: cubic-bezier(0, 0, 0, 1); /* entering */
   --motion-easing-standard-accelerate: cubic-bezier(0.3, 0, 1, 1); /* exiting */
-  --motion-easing-emphasized-decelerate: cubic-bezier(0.05, 0.7, 0.1, 1); /* expressive entering */
-  --motion-easing-emphasized-accelerate: cubic-bezier(0.3, 0, 0.8, 0.15); /* expressive exiting */
+  --motion-easing-emphasized-decelerate: cubic-bezier(
+    0.05,
+    0.7,
+    0.1,
+    1
+  ); /* expressive entering */
+  --motion-easing-emphasized-accelerate: cubic-bezier(
+    0.3,
+    0,
+    0.8,
+    0.15
+  ); /* expressive exiting */
 
   /* ---- Duration tokens (OFFICIAL sets) ----
      short1-4: 50/100/150/200 · medium1-4: 250/300/350/400 ·
@@ -57,8 +67,10 @@
 
   /* Semantic aliases snapped to OFFICIAL stops (0.3.0 cleanup of
      the pre-existing tuned values; NEXORA ADAPTATION naming). */
-  --motion-duration-fast: var(--motion-duration-short3);   /* 150ms state fades */
-  --motion-duration-normal: var(--motion-duration-short4); /* 200ms micro transitions */
+  --motion-duration-fast: var(--motion-duration-short3); /* 150ms state fades */
+  --motion-duration-normal: var(
+    --motion-duration-short4
+  ); /* 200ms micro transitions */
 
   /* ---- Press tokens (NEXORA-THEME.md §6, owner-approved 2026-10-15:
      scale(0.985), 90ms press / instant release on ALL controls.
@@ -104,21 +116,134 @@
      (expressive-default-spatial, 1.39% overshoot; emphasized-
      decelerate, 410ms, 0% overshoot) stand FIRST in source exactly
      as §7.1 words them, as the deliberate degradation path. */
-  --nex-sys-motion-spring-settle-duration: var(--motion-spring-expressive-default-spatial-duration);
-  --nex-sys-motion-spring-settle: var(--motion-spring-expressive-default-spatial-curve);
+  --nex-sys-motion-spring-settle-duration: var(
+    --motion-spring-expressive-default-spatial-duration
+  );
+  --nex-sys-motion-spring-settle: var(
+    --motion-spring-expressive-default-spatial-curve
+  );
   --nex-sys-motion-spring-settle-duration: 343ms;
-  --nex-sys-motion-spring-settle: linear(0, 0.0124 2%, 0.0451 4%, 0.0924 6%, 0.1498 8%, 0.2134 10%, 0.2802 12%, 0.3479 14%, 0.4146 16%, 0.479 18%, 0.5402 20%, 0.5975 22%, 0.6504 24%, 0.6988 26%, 0.7426 28%, 0.7819 30%, 0.8169 32%, 0.8477 34%, 0.8747 36%, 0.8982 38%, 0.9183 40%, 0.9356 42%, 0.9501 44%, 0.9624 46%, 0.9726 48%, 0.9809 50%, 0.9877 52%, 0.9932 54%, 0.9974 56%, 1.0008 58%, 1.0032 60%, 1.0051 62%, 1.0063 64%, 1.0071 66%, 1.0076 68%, 1.0077 70%, 1.0077 70.34%, 1.0077 72%, 1.0074 74%, 1.0071 76%, 1.0066 78%, 1.0062 80%, 1.0056 82%, 1.0051 84%, 1.0046 86%, 1.0041 88%, 1.0036 90%, 1.0032 92%, 1.0028 94%, 1.0024 96%, 1.002 98%, 1 100%);
+  --nex-sys-motion-spring-settle: linear(
+    0,
+    0.0124 2%,
+    0.0451 4%,
+    0.0924 6%,
+    0.1498 8%,
+    0.2134 10%,
+    0.2802 12%,
+    0.3479 14%,
+    0.4146 16%,
+    0.479 18%,
+    0.5402 20%,
+    0.5975 22%,
+    0.6504 24%,
+    0.6988 26%,
+    0.7426 28%,
+    0.7819 30%,
+    0.8169 32%,
+    0.8477 34%,
+    0.8747 36%,
+    0.8982 38%,
+    0.9183 40%,
+    0.9356 42%,
+    0.9501 44%,
+    0.9624 46%,
+    0.9726 48%,
+    0.9809 50%,
+    0.9877 52%,
+    0.9932 54%,
+    0.9974 56%,
+    1.0008 58%,
+    1.0032 60%,
+    1.0051 62%,
+    1.0063 64%,
+    1.0071 66%,
+    1.0076 68%,
+    1.0077 70%,
+    1.0077 70.34%,
+    1.0077 72%,
+    1.0074 74%,
+    1.0071 76%,
+    1.0066 78%,
+    1.0062 80%,
+    1.0056 82%,
+    1.0051 84%,
+    1.0046 86%,
+    1.0041 88%,
+    1.0036 90%,
+    1.0032 92%,
+    1.0028 94%,
+    1.0024 96%,
+    1.002 98%,
+    1 100%
+  );
   --nex-sys-motion-spring-snap-duration: 410ms;
   --nex-sys-motion-spring-snap: var(--motion-easing-emphasized-decelerate);
   --nex-sys-motion-spring-snap-duration: 411ms;
-  --nex-sys-motion-spring-snap: linear(0, 0.0177 2%, 0.0645 4%, 0.1317 6%, 0.2121 8%, 0.2998 10%, 0.39 12%, 0.4792 14%, 0.5645 16%, 0.644 18%, 0.7163 20%, 0.7809 22%, 0.8372 24%, 0.8855 26%, 0.926 28%, 0.9593 30%, 0.9859 32%, 1.0065 34%, 1.022 36%, 1.033 38%, 1.0402 40%, 1.0443 42%, 1.0459 44%, 1.046 44.6%, 1.0456 46%, 1.0438 48%, 1.0409 50%, 1.0374 52%, 1.0334 54%, 1.0293 56%, 1.0252 58%, 1.0212 60%, 1.0174 62%, 1.014 64%, 1.0109 66%, 1.0082 68%, 1.0059 70%, 1.0039 72%, 1.0023 74%, 1.001 76%, 1 78%, 0.9992 80%, 0.9986 82%, 0.9982 84%, 0.998 86%, 0.9979 88%, 0.9979 89.2%, 0.998 90%, 0.9981 92%, 0.9982 94%, 0.9982 96%, 0.9984 98%, 1 100%);
+  --nex-sys-motion-spring-snap: linear(
+    0,
+    0.0177 2%,
+    0.0645 4%,
+    0.1317 6%,
+    0.2121 8%,
+    0.2998 10%,
+    0.39 12%,
+    0.4792 14%,
+    0.5645 16%,
+    0.644 18%,
+    0.7163 20%,
+    0.7809 22%,
+    0.8372 24%,
+    0.8855 26%,
+    0.926 28%,
+    0.9593 30%,
+    0.9859 32%,
+    1.0065 34%,
+    1.022 36%,
+    1.033 38%,
+    1.0402 40%,
+    1.0443 42%,
+    1.0459 44%,
+    1.046 44.6%,
+    1.0456 46%,
+    1.0438 48%,
+    1.0409 50%,
+    1.0374 52%,
+    1.0334 54%,
+    1.0293 56%,
+    1.0252 58%,
+    1.0212 60%,
+    1.0174 62%,
+    1.014 64%,
+    1.0109 66%,
+    1.0082 68%,
+    1.0059 70%,
+    1.0039 72%,
+    1.0023 74%,
+    1.001 76%,
+    1 78%,
+    0.9992 80%,
+    0.9986 82%,
+    0.9982 84%,
+    0.998 86%,
+    0.9979 88%,
+    0.9979 89.2%,
+    0.998 90%,
+    0.9981 92%,
+    0.9982 94%,
+    0.9982 96%,
+    0.9984 98%,
+    1 100%
+  );
 
   /* ---- Press release (OD-D9·motion §7.2 press row: 90 ms in, to the
      level scale, 411 ms snap out — this pair is what replaces the
      2026-10-15 instant release). L1 «тихий» has no spring, so its
      release is 220 ms emphasized-decelerate — overridden per level in
      the §7.3 tier blocks below. */
-  --nex-sys-motion-press-release-duration: var(--nex-sys-motion-spring-snap-duration);
+  --nex-sys-motion-press-release-duration: var(
+    --nex-sys-motion-spring-snap-duration
+  );
   --nex-sys-motion-press-release-easing: var(--nex-sys-motion-spring-snap);
 
   /* ---- Adaptive character tokens (OD-D10·motion §7.3): what the
@@ -128,7 +253,9 @@
      here are L2 «плавный», the level the app paints at before
      src/lib/motionLevel.ts writes data-motion-level on <html>. */
   --nex-sys-motion-entrance-easing: var(--nex-sys-motion-spring-settle);
-  --nex-sys-motion-entrance-duration: var(--nex-sys-motion-spring-settle-duration);
+  --nex-sys-motion-entrance-duration: var(
+    --nex-sys-motion-spring-settle-duration
+  );
   --nex-sys-motion-entrance-travel: 8px;
 
   /* ---- Spring→CSS conversion pairs (OFFICIAL table, motion.md §4)
@@ -138,32 +265,92 @@
      Effects springs never overshoot (ζ=1). */
   /* Expressive spatial (whitelisted moments only: send/create/
      insertion — NEXORA ADAPTATION rationing). */
-  --motion-spring-expressive-fast-spatial-curve: cubic-bezier(0.42, 1.67, 0.21, 0.9);
+  --motion-spring-expressive-fast-spatial-curve: cubic-bezier(
+    0.42,
+    1.67,
+    0.21,
+    0.9
+  );
   --motion-spring-expressive-fast-spatial-duration: 350ms;
-  --motion-spring-expressive-default-spatial-curve: cubic-bezier(0.38, 1.21, 0.22, 1);
+  --motion-spring-expressive-default-spatial-curve: cubic-bezier(
+    0.38,
+    1.21,
+    0.22,
+    1
+  );
   --motion-spring-expressive-default-spatial-duration: 500ms;
-  --motion-spring-expressive-slow-spatial-curve: cubic-bezier(0.39, 1.29, 0.35, 0.98);
+  --motion-spring-expressive-slow-spatial-curve: cubic-bezier(
+    0.39,
+    1.29,
+    0.35,
+    0.98
+  );
   --motion-spring-expressive-slow-spatial-duration: 650ms;
   /* Expressive effects. */
-  --motion-spring-expressive-fast-effects-curve: cubic-bezier(0.31, 0.94, 0.34, 1);
+  --motion-spring-expressive-fast-effects-curve: cubic-bezier(
+    0.31,
+    0.94,
+    0.34,
+    1
+  );
   --motion-spring-expressive-fast-effects-duration: 150ms;
-  --motion-spring-expressive-default-effects-curve: cubic-bezier(0.34, 0.8, 0.34, 1);
+  --motion-spring-expressive-default-effects-curve: cubic-bezier(
+    0.34,
+    0.8,
+    0.34,
+    1
+  );
   --motion-spring-expressive-default-effects-duration: 200ms;
-  --motion-spring-expressive-slow-effects-curve: cubic-bezier(0.34, 0.88, 0.34, 1);
+  --motion-spring-expressive-slow-effects-curve: cubic-bezier(
+    0.34,
+    0.88,
+    0.34,
+    1
+  );
   --motion-spring-expressive-slow-effects-duration: 300ms;
   /* Standard spatial. */
-  --motion-spring-standard-fast-spatial-curve: cubic-bezier(0.27, 1.06, 0.18, 1);
+  --motion-spring-standard-fast-spatial-curve: cubic-bezier(
+    0.27,
+    1.06,
+    0.18,
+    1
+  );
   --motion-spring-standard-fast-spatial-duration: 350ms;
-  --motion-spring-standard-default-spatial-curve: cubic-bezier(0.27, 1.06, 0.18, 1);
+  --motion-spring-standard-default-spatial-curve: cubic-bezier(
+    0.27,
+    1.06,
+    0.18,
+    1
+  );
   --motion-spring-standard-default-spatial-duration: 500ms;
-  --motion-spring-standard-slow-spatial-curve: cubic-bezier(0.27, 1.06, 0.18, 1);
+  --motion-spring-standard-slow-spatial-curve: cubic-bezier(
+    0.27,
+    1.06,
+    0.18,
+    1
+  );
   --motion-spring-standard-slow-spatial-duration: 750ms;
   /* Standard effects. */
-  --motion-spring-standard-fast-effects-curve: cubic-bezier(0.31, 0.94, 0.34, 1);
+  --motion-spring-standard-fast-effects-curve: cubic-bezier(
+    0.31,
+    0.94,
+    0.34,
+    1
+  );
   --motion-spring-standard-fast-effects-duration: 150ms;
-  --motion-spring-standard-default-effects-curve: cubic-bezier(0.34, 0.8, 0.34, 1);
+  --motion-spring-standard-default-effects-curve: cubic-bezier(
+    0.34,
+    0.8,
+    0.34,
+    1
+  );
   --motion-spring-standard-default-effects-duration: 200ms;
-  --motion-spring-standard-slow-effects-curve: cubic-bezier(0.34, 0.88, 0.34, 1);
+  --motion-spring-standard-slow-effects-curve: cubic-bezier(
+    0.34,
+    0.88,
+    0.34,
+    1
+  );
   --motion-spring-standard-slow-effects-duration: 300ms;
 
   /* ---- Entrance rhythm (0.3.0; values NEXORA ADAPTATION —
@@ -193,10 +380,18 @@
      freezes all loops. Information always survives in the final
      static frame (accessibility.md §5–§6). */
   --nex-sys-motion-easing-standard: var(--motion-easing-standard);
-  --nex-sys-motion-easing-standard-decelerate: var(--motion-easing-standard-decelerate);
-  --nex-sys-motion-easing-standard-accelerate: var(--motion-easing-standard-accelerate);
-  --nex-sys-motion-easing-emphasized-decelerate: var(--motion-easing-emphasized-decelerate);
-  --nex-sys-motion-easing-emphasized-accelerate: var(--motion-easing-emphasized-accelerate);
+  --nex-sys-motion-easing-standard-decelerate: var(
+    --motion-easing-standard-decelerate
+  );
+  --nex-sys-motion-easing-standard-accelerate: var(
+    --motion-easing-standard-accelerate
+  );
+  --nex-sys-motion-easing-emphasized-decelerate: var(
+    --motion-easing-emphasized-decelerate
+  );
+  --nex-sys-motion-easing-emphasized-accelerate: var(
+    --motion-easing-emphasized-accelerate
+  );
   --nex-sys-motion-duration-short1: var(--motion-duration-short1);
   --nex-sys-motion-duration-short2: var(--motion-duration-short2);
   --nex-sys-motion-duration-short3: var(--motion-duration-short3);
@@ -217,30 +412,78 @@
   --nex-sys-motion-duration-normal: var(--motion-duration-normal);
   --nex-sys-motion-duration-press: var(--motion-duration-press);
   --nex-sys-motion-scale-press: var(--motion-scale-press);
-  --nex-sys-motion-spring-expressive-fast-spatial-curve: var(--motion-spring-expressive-fast-spatial-curve);
-  --nex-sys-motion-spring-expressive-fast-spatial-duration: var(--motion-spring-expressive-fast-spatial-duration);
-  --nex-sys-motion-spring-expressive-default-spatial-curve: var(--motion-spring-expressive-default-spatial-curve);
-  --nex-sys-motion-spring-expressive-default-spatial-duration: var(--motion-spring-expressive-default-spatial-duration);
-  --nex-sys-motion-spring-expressive-slow-spatial-curve: var(--motion-spring-expressive-slow-spatial-curve);
-  --nex-sys-motion-spring-expressive-slow-spatial-duration: var(--motion-spring-expressive-slow-spatial-duration);
-  --nex-sys-motion-spring-expressive-fast-effects-curve: var(--motion-spring-expressive-fast-effects-curve);
-  --nex-sys-motion-spring-expressive-fast-effects-duration: var(--motion-spring-expressive-fast-effects-duration);
-  --nex-sys-motion-spring-expressive-default-effects-curve: var(--motion-spring-expressive-default-effects-curve);
-  --nex-sys-motion-spring-expressive-default-effects-duration: var(--motion-spring-expressive-default-effects-duration);
-  --nex-sys-motion-spring-expressive-slow-effects-curve: var(--motion-spring-expressive-slow-effects-curve);
-  --nex-sys-motion-spring-expressive-slow-effects-duration: var(--motion-spring-expressive-slow-effects-duration);
-  --nex-sys-motion-spring-standard-fast-spatial-curve: var(--motion-spring-standard-fast-spatial-curve);
-  --nex-sys-motion-spring-standard-fast-spatial-duration: var(--motion-spring-standard-fast-spatial-duration);
-  --nex-sys-motion-spring-standard-default-spatial-curve: var(--motion-spring-standard-default-spatial-curve);
-  --nex-sys-motion-spring-standard-default-spatial-duration: var(--motion-spring-standard-default-spatial-duration);
-  --nex-sys-motion-spring-standard-slow-spatial-curve: var(--motion-spring-standard-slow-spatial-curve);
-  --nex-sys-motion-spring-standard-slow-spatial-duration: var(--motion-spring-standard-slow-spatial-duration);
-  --nex-sys-motion-spring-standard-fast-effects-curve: var(--motion-spring-standard-fast-effects-curve);
-  --nex-sys-motion-spring-standard-fast-effects-duration: var(--motion-spring-standard-fast-effects-duration);
-  --nex-sys-motion-spring-standard-default-effects-curve: var(--motion-spring-standard-default-effects-curve);
-  --nex-sys-motion-spring-standard-default-effects-duration: var(--motion-spring-standard-default-effects-duration);
-  --nex-sys-motion-spring-standard-slow-effects-curve: var(--motion-spring-standard-slow-effects-curve);
-  --nex-sys-motion-spring-standard-slow-effects-duration: var(--motion-spring-standard-slow-effects-duration);
+  --nex-sys-motion-spring-expressive-fast-spatial-curve: var(
+    --motion-spring-expressive-fast-spatial-curve
+  );
+  --nex-sys-motion-spring-expressive-fast-spatial-duration: var(
+    --motion-spring-expressive-fast-spatial-duration
+  );
+  --nex-sys-motion-spring-expressive-default-spatial-curve: var(
+    --motion-spring-expressive-default-spatial-curve
+  );
+  --nex-sys-motion-spring-expressive-default-spatial-duration: var(
+    --motion-spring-expressive-default-spatial-duration
+  );
+  --nex-sys-motion-spring-expressive-slow-spatial-curve: var(
+    --motion-spring-expressive-slow-spatial-curve
+  );
+  --nex-sys-motion-spring-expressive-slow-spatial-duration: var(
+    --motion-spring-expressive-slow-spatial-duration
+  );
+  --nex-sys-motion-spring-expressive-fast-effects-curve: var(
+    --motion-spring-expressive-fast-effects-curve
+  );
+  --nex-sys-motion-spring-expressive-fast-effects-duration: var(
+    --motion-spring-expressive-fast-effects-duration
+  );
+  --nex-sys-motion-spring-expressive-default-effects-curve: var(
+    --motion-spring-expressive-default-effects-curve
+  );
+  --nex-sys-motion-spring-expressive-default-effects-duration: var(
+    --motion-spring-expressive-default-effects-duration
+  );
+  --nex-sys-motion-spring-expressive-slow-effects-curve: var(
+    --motion-spring-expressive-slow-effects-curve
+  );
+  --nex-sys-motion-spring-expressive-slow-effects-duration: var(
+    --motion-spring-expressive-slow-effects-duration
+  );
+  --nex-sys-motion-spring-standard-fast-spatial-curve: var(
+    --motion-spring-standard-fast-spatial-curve
+  );
+  --nex-sys-motion-spring-standard-fast-spatial-duration: var(
+    --motion-spring-standard-fast-spatial-duration
+  );
+  --nex-sys-motion-spring-standard-default-spatial-curve: var(
+    --motion-spring-standard-default-spatial-curve
+  );
+  --nex-sys-motion-spring-standard-default-spatial-duration: var(
+    --motion-spring-standard-default-spatial-duration
+  );
+  --nex-sys-motion-spring-standard-slow-spatial-curve: var(
+    --motion-spring-standard-slow-spatial-curve
+  );
+  --nex-sys-motion-spring-standard-slow-spatial-duration: var(
+    --motion-spring-standard-slow-spatial-duration
+  );
+  --nex-sys-motion-spring-standard-fast-effects-curve: var(
+    --motion-spring-standard-fast-effects-curve
+  );
+  --nex-sys-motion-spring-standard-fast-effects-duration: var(
+    --motion-spring-standard-fast-effects-duration
+  );
+  --nex-sys-motion-spring-standard-default-effects-curve: var(
+    --motion-spring-standard-default-effects-curve
+  );
+  --nex-sys-motion-spring-standard-default-effects-duration: var(
+    --motion-spring-standard-default-effects-duration
+  );
+  --nex-sys-motion-spring-standard-slow-effects-curve: var(
+    --motion-spring-standard-slow-effects-curve
+  );
+  --nex-sys-motion-spring-standard-slow-effects-duration: var(
+    --motion-spring-standard-slow-effects-duration
+  );
   --nex-sys-motion-stagger-step: var(--motion-stagger-step);
   --nex-sys-motion-stagger-travel: var(--motion-stagger-travel);
   --nex-sys-motion-view-travel: var(--motion-view-travel);
@@ -264,13 +507,17 @@
 :root[data-motion-level="l3"] {
   --motion-scale-press: 0.955;
   --nex-sys-motion-entrance-easing: var(--nex-sys-motion-spring-snap);
-  --nex-sys-motion-entrance-duration: var(--nex-sys-motion-spring-snap-duration);
+  --nex-sys-motion-entrance-duration: var(
+    --nex-sys-motion-spring-snap-duration
+  );
   --nex-sys-motion-entrance-travel: 12px;
 }
 :root[data-motion-level="l2"] {
   --motion-scale-press: 0.97;
   --nex-sys-motion-entrance-easing: var(--nex-sys-motion-spring-settle);
-  --nex-sys-motion-entrance-duration: var(--nex-sys-motion-spring-settle-duration);
+  --nex-sys-motion-entrance-duration: var(
+    --nex-sys-motion-spring-settle-duration
+  );
   --nex-sys-motion-entrance-travel: 8px;
 }
 :root[data-motion-level="l1"] {
@@ -278,11 +525,15 @@
      emphasized-decelerate (§7.3 derivation: D10·motion names 220 ms
      for L1 and L1 has no snap). */
   --motion-scale-press: 0.985;
-  --nex-sys-motion-entrance-easing: var(--nex-sys-motion-easing-emphasized-decelerate);
+  --nex-sys-motion-entrance-easing: var(
+    --nex-sys-motion-easing-emphasized-decelerate
+  );
   --nex-sys-motion-entrance-duration: 220ms;
   --nex-sys-motion-entrance-travel: 4px;
   --nex-sys-motion-press-release-duration: 220ms;
-  --nex-sys-motion-press-release-easing: var(--nex-sys-motion-easing-emphasized-decelerate);
+  --nex-sys-motion-press-release-easing: var(
+    --nex-sys-motion-easing-emphasized-decelerate
+  );
 }
 
 /* ---- Reduced motion (OFFICIAL requirement, accessibility.md §5)
@@ -327,10 +578,14 @@
   :root[data-motion-level="l2"],
   :root[data-motion-level="l1"] {
     --motion-scale-press: 0.985;
-    --nex-sys-motion-entrance-easing: var(--nex-sys-motion-easing-emphasized-decelerate);
+    --nex-sys-motion-entrance-easing: var(
+      --nex-sys-motion-easing-emphasized-decelerate
+    );
     --nex-sys-motion-entrance-duration: 220ms;
     --nex-sys-motion-entrance-travel: 4px;
     --nex-sys-motion-press-release-duration: 220ms;
-    --nex-sys-motion-press-release-easing: var(--nex-sys-motion-easing-emphasized-decelerate);
+    --nex-sys-motion-press-release-easing: var(
+      --nex-sys-motion-easing-emphasized-decelerate
+    );
   }
 }

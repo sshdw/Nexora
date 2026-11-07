@@ -70,12 +70,20 @@ function stateTag(state: string, t: Strings["t"]): string {
 /** Backend conclusion vocabulary echoed defensively (allowlisted
  * backend-side; anything else renders the catalog unknown tag). */
 function conclusionTag(conclusion: string, t: Strings["t"]): string {
-  if (conclusion === "failure" || conclusion === "timed_out" || conclusion === "action_required") {
+  if (
+    conclusion === "failure" ||
+    conclusion === "timed_out" ||
+    conclusion === "action_required"
+  ) {
     return t("gh.conclusionFailed");
   }
   if (conclusion === "success") return t("gh.conclusionSuccess");
   if (conclusion === "cancelled") return t("gh.conclusionCancelled");
-  if (conclusion === "neutral" || conclusion === "skipped" || conclusion === "stale") {
+  if (
+    conclusion === "neutral" ||
+    conclusion === "skipped" ||
+    conclusion === "stale"
+  ) {
     return t("gh.conclusionSkipped");
   }
   return t("gh.tagUnknown");
@@ -322,7 +330,9 @@ function ActionsView({
                   aria-label={`${job.name} — ${conclusionTag(job.conclusion, t)}`}
                 >
                   <div className="nex-agent-terminal-header">
-                    <span className="nex-agent-terminal-command">{job.name}</span>
+                    <span className="nex-agent-terminal-command">
+                      {job.name}
+                    </span>
                     <span className="nex-tag nex-tag-mono">
                       {conclusionTag(job.conclusion, t)}
                     </span>
@@ -331,7 +341,11 @@ function ActionsView({
                     {job.failed_steps.length > 0 && (
                       <p className="nex-vcs-notice">
                         {job.failed_steps.map((step) => (
-                          <span key={step} className="nex-tag nex-tag-mono" title={step}>
+                          <span
+                            key={step}
+                            className="nex-tag nex-tag-mono"
+                            title={step}
+                          >
                             {step}
                           </span>
                         ))}
@@ -359,7 +373,9 @@ function ActionsView({
                     disabled={fixBusy !== null}
                     onClick={() => onCreateFixTask(selectedRun)}
                   >
-                    {fixBusy === selectedRun.id ? t("gh.creatingFixTask") : t("gh.createFixTask")}
+                    {fixBusy === selectedRun.id
+                      ? t("gh.creatingFixTask")
+                      : t("gh.createFixTask")}
                   </M3Button>
                 </div>
               )}
@@ -404,7 +420,14 @@ interface RunnersViewProps {
  * needs-token state; the local checklist always renders real `PATH`
  * results. All visuals ride the shared panel/tag/notice primitives — zero
  * new CSS, zero raw values. */
-function RunnersView({ runners, total, needsAuth, local, loading, error }: RunnersViewProps): ReactNode {
+function RunnersView({
+  runners,
+  total,
+  needsAuth,
+  local,
+  loading,
+  error,
+}: RunnersViewProps): ReactNode {
   const { t } = useStrings();
   return (
     <section className="nex-vcs-section" aria-label={t("gh.runnersTitle")}>
@@ -445,7 +468,11 @@ function RunnersView({ runners, total, needsAuth, local, loading, error }: Runne
                   <>
                     {" "}
                     {runner.labels.map((label) => (
-                      <span key={label} className="nex-tag nex-tag-mono" title={label}>
+                      <span
+                        key={label}
+                        className="nex-tag nex-tag-mono"
+                        title={label}
+                      >
                         {label}
                       </span>
                     ))}
@@ -499,13 +526,17 @@ export default function IssuesPanel({ onClose }: IssuesPanelProps) {
   const createFixTaskFor = useCallback(
     async (run: GhActionRun) => {
       const branch = run.head_branch ?? t("gh.noBranch");
-      const title = Array.from(`Fix CI: ${run.name} #${run.id}`).slice(0, 200).join("");
+      const title = Array.from(`Fix CI: ${run.name} #${run.id}`)
+        .slice(0, 200)
+        .join("");
       const description = [
         `Failing GitHub Actions run ${gh.owner ?? "?"}/${gh.repo ?? "?"} — ${run.name} #${run.id}.`,
         `Branch: ${branch} · Event: ${run.event} · Conclusion: ${run.conclusion}.`,
         ...(run.html_url !== null ? [`Run: ${run.html_url}`] : []),
         ...(run.failed_jobs.length > 0
-          ? [`Failed jobs: ${run.failed_jobs.map((job) => job.name).join(", ")}.`]
+          ? [
+              `Failed jobs: ${run.failed_jobs.map((job) => job.name).join(", ")}.`,
+            ]
           : []),
         "Log excerpts are capped tails with possible secrets redacted — read the full log on GitHub.",
         "Re-run the workflow on GitHub after fixing (Nexora never re-runs workflows).",
@@ -518,7 +549,7 @@ export default function IssuesPanel({ onClose }: IssuesPanelProps) {
       ];
       await gh.createFixTask(run.id, { title, description, steps });
     },
-    [gh.createFixTask, gh.owner, gh.repo, t],
+    [gh.createFixTask, gh.owner, gh.repo, t]
   );
 
   const {
@@ -552,19 +583,20 @@ export default function IssuesPanel({ onClose }: IssuesPanelProps) {
   const noRemote = error !== null && error.includes("github.com");
   const actionsNoRemote =
     actionsError !== null && actionsError.includes("github.com");
-  const items: Array<{ number: number }> =
-    kind === "issues" ? issues : pulls;
+  const items: Array<{ number: number }> = kind === "issues" ? issues : pulls;
   const selectedIssue =
     kind === "issues"
-      ? issues.find((item) => item.number === selected) ?? null
+      ? (issues.find((item) => item.number === selected) ?? null)
       : null;
   const selectedPull =
     kind === "pulls"
-      ? pulls.find((item) => item.number === selected) ?? null
+      ? (pulls.find((item) => item.number === selected) ?? null)
       : null;
   const detail: GhIssue | GhPull | null = selectedIssue ?? selectedPull;
   const selectedActionRun =
-    kind === "actions" ? runs.find((run) => run.id === selectedRun) ?? null : null;
+    kind === "actions"
+      ? (runs.find((run) => run.id === selectedRun) ?? null)
+      : null;
   const subtitle =
     owner !== null && repo !== null
       ? `${t("gh.subtitle")} ${t("gh.repo", { owner, repo })}`
@@ -585,7 +617,9 @@ export default function IssuesPanel({ onClose }: IssuesPanelProps) {
                 void gh.loadActions();
                 void gh.loadRunners();
               } else {
-                void (kind === "issues" ? gh.loadIssues(state) : gh.loadPulls(state));
+                void (kind === "issues"
+                  ? gh.loadIssues(state)
+                  : gh.loadPulls(state));
               }
             }}
             disabled={loading}
@@ -764,21 +798,20 @@ export default function IssuesPanel({ onClose }: IssuesPanelProps) {
                       </span>
                     </p>
                   )}
-                {kind === "issues" &&
-                  (detail as GhIssue).labels.length > 0 && (
-                    <p className="nex-vcs-notice">
-                      {t("gh.labelsTitle")}:{" "}
-                      {(detail as GhIssue).labels.map((label) => (
-                        <span
-                          key={label}
-                          className="nex-tag nex-tag-mono"
-                          title={label}
-                        >
-                          {label}
-                        </span>
-                      ))}
-                    </p>
-                  )}
+                {kind === "issues" && (detail as GhIssue).labels.length > 0 && (
+                  <p className="nex-vcs-notice">
+                    {t("gh.labelsTitle")}:{" "}
+                    {(detail as GhIssue).labels.map((label) => (
+                      <span
+                        key={label}
+                        className="nex-tag nex-tag-mono"
+                        title={label}
+                      >
+                        {label}
+                      </span>
+                    ))}
+                  </p>
+                )}
                 {detail.body_truncated && (
                   <p className="nex-vcs-notice" role="note">
                     {t("gh.bodyTruncated")}

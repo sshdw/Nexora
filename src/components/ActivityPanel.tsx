@@ -28,9 +28,14 @@ export interface ActivityPanelProps {
   onOpenConversation: (id: number) => void;
 }
 
-export default function ActivityPanel({ onOpenTasks, onOpenConversation }: ActivityPanelProps) {
+export default function ActivityPanel({
+  onOpenTasks,
+  onOpenConversation,
+}: ActivityPanelProps) {
   const { t, locale } = useStrings();
-  const { queue: tasks, queueError: error } = useActivity({ taskQueueOnly: true });
+  const { queue: tasks, queueError: error } = useActivity({
+    taskQueueOnly: true,
+  });
 
   const statusWord = (status: AgentTask["status"]): string => {
     switch (status) {
@@ -50,7 +55,12 @@ export default function ActivityPanel({ onOpenTasks, onOpenConversation }: Activ
   const running = (tasks ?? []).filter((task) => task.status === "running");
   const queued = (tasks ?? []).filter((task) => task.status === "pending");
   const settled = (tasks ?? [])
-    .filter((task) => task.status === "completed" || task.status === "failed" || task.status === "cancelled")
+    .filter(
+      (task) =>
+        task.status === "completed" ||
+        task.status === "failed" ||
+        task.status === "cancelled"
+    )
     .slice(0, 4);
 
   const row = (task: AgentTask, showStatus: boolean) => {
@@ -110,26 +120,40 @@ export default function ActivityPanel({ onOpenTasks, onOpenConversation }: Activ
             {tasks.length === 0 ? (
               <>
                 <p className="nex-workspace-name">{t("dock.activityEmpty")}</p>
-                <p className="nex-dock-panel-note">{t("dock.activityEmptyText")}</p>
+                <p className="nex-dock-panel-note">
+                  {t("dock.activityEmptyText")}
+                </p>
               </>
             ) : (
               <>
                 {running.length > 0 && (
                   <>
-                    <p className="nex-dock-panel-group">{t("dock.activityRunning")}</p>
-                    <ul className="nex-sessions-list">{running.map((task) => row(task, false))}</ul>
+                    <p className="nex-dock-panel-group">
+                      {t("dock.activityRunning")}
+                    </p>
+                    <ul className="nex-sessions-list">
+                      {running.map((task) => row(task, false))}
+                    </ul>
                   </>
                 )}
                 {queued.length > 0 && (
                   <>
-                    <p className="nex-dock-panel-group">{t("dock.activityQueued")}</p>
-                    <ul className="nex-sessions-list">{queued.map((task) => row(task, false))}</ul>
+                    <p className="nex-dock-panel-group">
+                      {t("dock.activityQueued")}
+                    </p>
+                    <ul className="nex-sessions-list">
+                      {queued.map((task) => row(task, false))}
+                    </ul>
                   </>
                 )}
                 {settled.length > 0 && (
                   <>
-                    <p className="nex-dock-panel-group">{t("dock.activityRecent")}</p>
-                    <ul className="nex-sessions-list">{settled.map((task) => row(task, true))}</ul>
+                    <p className="nex-dock-panel-group">
+                      {t("dock.activityRecent")}
+                    </p>
+                    <ul className="nex-sessions-list">
+                      {settled.map((task) => row(task, true))}
+                    </ul>
                   </>
                 )}
               </>

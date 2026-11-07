@@ -35,14 +35,12 @@ import { Spinner } from "./ui/spinner";
  * (one per region) · secondary = tonal container action · quiet =
  * text-only action · destructive = error-toned action (text at rest;
  * filled only at the confirm step via `filled`). */
-export type M3ButtonVariant =
-  | "primary"
-  | "secondary"
-  | "quiet"
-  | "destructive";
+export type M3ButtonVariant = "primary" | "secondary" | "quiet" | "destructive";
 
-export interface M3ButtonProps
-  extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, "children"> {
+export interface M3ButtonProps extends Omit<
+  ButtonHTMLAttributes<HTMLButtonElement>,
+  "children"
+> {
   variant?: M3ButtonVariant;
   size?: "md" | "sm";
   /** Busy work in flight: disables the control, announces aria-busy and
@@ -59,7 +57,10 @@ export interface M3ButtonProps
   children: ReactNode;
 }
 
-const VARIANT: Record<M3ButtonVariant, "default" | "secondary" | "ghost" | "destructive"> = {
+const VARIANT: Record<
+  M3ButtonVariant,
+  "default" | "secondary" | "ghost" | "destructive"
+> = {
   primary: "default",
   secondary: "secondary",
   quiet: "ghost",
@@ -88,7 +89,7 @@ export default function M3Button({
   void expressive;
   if (import.meta.env.DEV && filled && variant !== "destructive") {
     console.warn(
-      `[M3Button] "filled" is ignored for variant "${variant}" (only "destructive" supports it).`,
+      `[M3Button] "filled" is ignored for variant "${variant}" (only "destructive" supports it).`
     );
   }
   const classes = [

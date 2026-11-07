@@ -77,6 +77,9 @@ export function nexoraInit(): Promise<string> {
  * is the JSON array of `{provider, model}` entries. The backend validates
  * before writing and refuses invalid documents secret-free. Returns the
  * written file path. */
-export function saveWorkspaceProfile(task: "chat" | "agent", document: string): Promise<string> {
+export function saveWorkspaceProfile(
+  task: "chat" | "agent",
+  document: string
+): Promise<string> {
   return invoke<string>("save_workspace_profile", { task, document });
 }

@@ -44,7 +44,12 @@ describe("context budget — clamping", () => {
     // The ceiling has to be reachable exactly, or the last step of
     // the track would be unusable.
     expect(clampContextBudget(CONTEXT_BUDGET_MAX)).toBe(CONTEXT_BUDGET_MAX);
-    for (const value of [CONTEXT_BUDGET_MIN, CONTEXT_BUDGET_MAX, 100_000, 240_000]) {
+    for (const value of [
+      CONTEXT_BUDGET_MIN,
+      CONTEXT_BUDGET_MAX,
+      100_000,
+      240_000,
+    ]) {
       const snapped = clampContextBudget(value);
       expect((snapped - CONTEXT_BUDGET_MIN) % CONTEXT_BUDGET_STEP).toBe(0);
       expect(snapped).toBeGreaterThanOrEqual(CONTEXT_BUDGET_MIN);
@@ -54,7 +59,9 @@ describe("context budget — clamping", () => {
 
   it("falls back to the default for anything that is not a number", () => {
     expect(clampContextBudget(Number.NaN)).toBe(CONTEXT_BUDGET_DEFAULT);
-    expect(clampContextBudget(Number.POSITIVE_INFINITY)).toBe(CONTEXT_BUDGET_DEFAULT);
+    expect(clampContextBudget(Number.POSITIVE_INFINITY)).toBe(
+      CONTEXT_BUDGET_DEFAULT
+    );
   });
 });
 
@@ -82,7 +89,9 @@ describe("context budget — stored value", () => {
 
   it("stores a clamped value, never an out-of-range one", () => {
     writeContextBudget(999_999);
-    expect(window.localStorage.getItem(CONTEXT_BUDGET_KEY)).toBe(String(CONTEXT_BUDGET_MAX));
+    expect(window.localStorage.getItem(CONTEXT_BUDGET_KEY)).toBe(
+      String(CONTEXT_BUDGET_MAX)
+    );
   });
 
   it("degrades to the default when the store throws", () => {

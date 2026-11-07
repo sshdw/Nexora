@@ -141,7 +141,9 @@ function DepRow({ entry, t }: { entry: DepEntry; t: Strings["t"] }) {
         {entry.name}
       </span>{" "}
       <span className="nex-tag nex-tag-mono">{entry.version}</span>{" "}
-      <span className="nex-tag nex-tag-mono">{depSourceLabel(entry.source, t)}</span>
+      <span className="nex-tag nex-tag-mono">
+        {depSourceLabel(entry.source, t)}
+      </span>
     </li>
   );
 }
@@ -159,7 +161,9 @@ function FindingRow({
   return (
     <li className="nex-vcs-file-row">
       <div>
-        <span className="nex-tag nex-tag-mono">{severityLabel(finding.severity, t)}</span>{" "}
+        <span className="nex-tag nex-tag-mono">
+          {severityLabel(finding.severity, t)}
+        </span>{" "}
         <span className="nex-tag nex-tag-mono" title={location}>
           {location}
         </span>
@@ -189,7 +193,9 @@ function DraftRow({
   return (
     <li className="nex-vcs-file-row">
       <div>
-        <span className="nex-tag nex-tag-mono">{kindLabel(draft.source_kind, t)}</span>{" "}
+        <span className="nex-tag nex-tag-mono">
+          {kindLabel(draft.source_kind, t)}
+        </span>{" "}
         <span className="nex-tag nex-tag-mono" title={location}>
           {location}
         </span>
@@ -254,7 +260,7 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
     (report?.findings ?? []).filter((finding) => finding.kind === kind);
   const visibleTotal = visibleKinds.reduce(
     (sum, kind) => sum + visibleFindings(kind).length,
-    0,
+    0
   );
 
   return (
@@ -265,8 +271,16 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
           <p className="nex-vcs-subtitle">{t("audit.subtitle")}</p>
         </div>
         <div className="nex-vcs-header-actions">
-          <M3Button variant="quiet" onClick={() => void audit.run()} disabled={running}>
-            {running ? t("audit.running") : report ? t("audit.rerun") : t("audit.run")}
+          <M3Button
+            variant="quiet"
+            onClick={() => void audit.run()}
+            disabled={running}
+          >
+            {running
+              ? t("audit.running")
+              : report
+                ? t("audit.rerun")
+                : t("audit.run")}
           </M3Button>
           <M3Button variant="quiet" onClick={onClose}>
             {t("common.backToConversations")}
@@ -335,7 +349,10 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
                     })}
                   >
                     <h3 className="nex-vcs-section-title">
-                      {t("audit.groupCount", { label: kindLabel(kind, t), n: rows.length })}
+                      {t("audit.groupCount", {
+                        label: kindLabel(kind, t),
+                        n: rows.length,
+                      })}
                     </h3>
                     <ul className="nex-vcs-file-list">
                       {rows.map((finding) => (
@@ -352,8 +369,13 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
               })
             )}
             {report.skipped.length > 0 && (
-              <section className="nex-vcs-section" aria-label={t("audit.skippedTitle")}>
-                <h3 className="nex-vcs-section-title">{t("audit.skippedTitle")}</h3>
+              <section
+                className="nex-vcs-section"
+                aria-label={t("audit.skippedTitle")}
+              >
+                <h3 className="nex-vcs-section-title">
+                  {t("audit.skippedTitle")}
+                </h3>
                 <ul className="nex-vcs-file-list">
                   {report.skipped.map((skip) => (
                     <li key={skip.path} className="nex-vcs-file-row">
@@ -375,7 +397,10 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
             )}
           </>
         )}
-        <section className="nex-vcs-section" aria-label={t("testgen.sectionTitle")}>
+        <section
+          className="nex-vcs-section"
+          aria-label={t("testgen.sectionTitle")}
+        >
           <h3 className="nex-vcs-section-title">{t("testgen.sectionTitle")}</h3>
           <p className="nex-vcs-notice" role="note">
             {t("testgen.hint")}
@@ -398,7 +423,9 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
               {draftsError}
             </div>
           )}
-          {draftsRunning && <M3LoadingIndicator label={t("testgen.generating")} />}
+          {draftsRunning && (
+            <M3LoadingIndicator label={t("testgen.generating")} />
+          )}
           {!draftsRunning && drafts && (
             <>
               <p className="nex-vcs-notice" role="note">
@@ -444,8 +471,16 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
             {t("dep.hint")}
           </p>
           <div>
-            <M3Button variant="quiet" onClick={() => void audit.loadDeps()} disabled={depsRunning}>
-              {depsRunning ? t("dep.loading") : deps ? t("dep.reload") : t("dep.load")}
+            <M3Button
+              variant="quiet"
+              onClick={() => void audit.loadDeps()}
+              disabled={depsRunning}
+            >
+              {depsRunning
+                ? t("dep.loading")
+                : deps
+                  ? t("dep.reload")
+                  : t("dep.load")}
             </M3Button>
           </div>
           {depsError && (
@@ -491,8 +526,13 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
             </>
           )}
         </section>
-        <section className="nex-vcs-section" aria-label={t("refactor.sectionTitle")}>
-          <h3 className="nex-vcs-section-title">{t("refactor.sectionTitle")}</h3>
+        <section
+          className="nex-vcs-section"
+          aria-label={t("refactor.sectionTitle")}
+        >
+          <h3 className="nex-vcs-section-title">
+            {t("refactor.sectionTitle")}
+          </h3>
           <p className="nex-vcs-notice" role="note">
             {t("refactor.hint")}
           </p>
@@ -551,7 +591,14 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
           <div>
             <M3Button
               variant="quiet"
-              onClick={() => void audit.applyRemoval(applyPath, applyStart, applyEnd, applyConfirmed)}
+              onClick={() =>
+                void audit.applyRemoval(
+                  applyPath,
+                  applyStart,
+                  applyEnd,
+                  applyConfirmed
+                )
+              }
               disabled={applyRunning}
             >
               {applyRunning ? t("refactor.applying") : t("refactor.apply")}
@@ -562,7 +609,9 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
               {applyError}
             </div>
           )}
-          {applyRunning && <M3LoadingIndicator label={t("refactor.applying")} />}
+          {applyRunning && (
+            <M3LoadingIndicator label={t("refactor.applying")} />
+          )}
           {!applyRunning && applyResult && (
             <>
               <p className="nex-vcs-notice" role="note">
@@ -573,9 +622,13 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
                 })}
               </p>
               <p className="nex-vcs-notice" role="note">
-                {applyResult.verified ? t("refactor.verified") : t("refactor.notVerified")}
+                {applyResult.verified
+                  ? t("refactor.verified")
+                  : t("refactor.notVerified")}
               </p>
-              <pre className="nex-agent-terminal-stdout">{applyResult.removed_preview}</pre>
+              <pre className="nex-agent-terminal-stdout">
+                {applyResult.removed_preview}
+              </pre>
             </>
           )}
         </section>

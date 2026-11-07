@@ -13,6 +13,10 @@ export interface SettingsEntryProps {
 export default function SettingsEntry({ onClick }: SettingsEntryProps) {
   const { t } = useStrings();
   return (
-    <M3RailItem label={t("nav.settings")} icon={<SettingsIcon />} onClick={onClick} />
+    <M3RailItem
+      label={t("nav.settings")}
+      icon={<SettingsIcon />}
+      onClick={onClick}
+    />
   );
 }

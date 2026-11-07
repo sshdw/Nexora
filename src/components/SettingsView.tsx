@@ -15,7 +15,13 @@ import { useEffect, useMemo, useState } from "react";
 import { scoreCommand } from "../lib/commands";
 import type { AutonomyMode, SupportedProvider } from "../lib/tauri";
 import { clearApplicationData, getSetting, setSetting } from "../lib/tauri";
-import { getLocale, settingsSearchTitle, tp, tr, type Locale } from "../lib/strings";
+import {
+  getLocale,
+  settingsSearchTitle,
+  tp,
+  tr,
+  type Locale,
+} from "../lib/strings";
 import { useStrings } from "../lib/useLocale";
 import type { AppearanceStore } from "../lib/useAppearance";
 import type { AutonomyStore } from "../lib/useAutonomy";
@@ -58,29 +64,147 @@ interface SettingsSearchEntry {
 }
 
 const STATIC_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
-  { group: "appearance", title: "Appearance", keywords: ["theme", "dark", "light", "appearance", "look"] },
-  { group: "appearance", title: "Theme", keywords: ["theme", "dark", "light", "color scheme"] },
-  { group: "provider", title: "Provider & model", keywords: ["provider", "model", "ai model", "llm"] },
+  {
+    group: "appearance",
+    title: "Appearance",
+    keywords: ["theme", "dark", "light", "appearance", "look"],
+  },
+  {
+    group: "appearance",
+    title: "Theme",
+    keywords: ["theme", "dark", "light", "color scheme"],
+  },
+  {
+    group: "provider",
+    title: "Provider & model",
+    keywords: ["provider", "model", "ai model", "llm"],
+  },
   { group: "provider", title: "Provider", keywords: ["provider", "vendor"] },
-  { group: "provider", title: "Model", keywords: ["model", "llm", "gpt", "claude", "gemini"] },
-  { group: "provider", title: "Custom model ID", keywords: ["custom", "model id", "model variant", "exact id"] },
-  { group: "agent", title: "Agent & budgets", keywords: ["agent", "budget", "autonomy", "spend", "cost"] },
-  { group: "agent", title: "Autonomy mode", keywords: ["autonomy", "supervised", "semi-autonomous", "autonomous", "approval", "agent mode"] },
-  { group: "agent", title: "Run cost limit", keywords: ["spend", "budget", "cost", "limit", "micro-usd", "micro usd", "run cost"] },
-  { group: "workspace", title: "Workspace folder", keywords: ["workspace", "folder", "directory", "root", "project path"] },
-  { group: "workspace", title: "Current root", keywords: ["root", "current", "folder", "scoped"] },
-  { group: "workspace", title: "Recent folders", keywords: ["recent", "history", "folders", "previous"] },
-  { group: "credentials", title: "Credentials", keywords: ["api key", "credentials", "connect", "key", "token", "auth"] },
-  { group: "credentials", title: "Provider credentials", keywords: ["api key", "secret", "keyring", "connect provider"] },
-  { group: "data", title: "Data management", keywords: ["data", "clear", "delete all", "reset", "storage", "database"] },
-  { group: "data", title: "Clear all application data", keywords: ["clear", "delete", "reset", "wipe", "danger"] },
-  { group: "data", title: "Import conversation", keywords: ["import", "upload", "restore", "open file"] },
-  { group: "data", title: "Export conversation", keywords: ["export", "download", "save", "share", "backup"] },
-  { group: "advanced", title: "Advanced", keywords: ["advanced", "power", "flags", "routing", "mcp", "internals"] },
-  { group: "advanced", title: "Feature flags", keywords: ["flags", "feature flags", "snapshots", "self audit", "injection", "assembly", "rollout"] },
-  { group: "advanced", title: "Routing profiles", keywords: ["routing", "profile", "order", "chat profile", "agent profile", "fallback"] },
-  { group: "advanced", title: "MCP servers", keywords: ["mcp", "servers", "tools", "model context protocol"] },
-  { group: "advanced", title: "Agent preset", keywords: ["preset", "agent preset", "defaults"] },
+  {
+    group: "provider",
+    title: "Model",
+    keywords: ["model", "llm", "gpt", "claude", "gemini"],
+  },
+  {
+    group: "provider",
+    title: "Custom model ID",
+    keywords: ["custom", "model id", "model variant", "exact id"],
+  },
+  {
+    group: "agent",
+    title: "Agent & budgets",
+    keywords: ["agent", "budget", "autonomy", "spend", "cost"],
+  },
+  {
+    group: "agent",
+    title: "Autonomy mode",
+    keywords: [
+      "autonomy",
+      "supervised",
+      "semi-autonomous",
+      "autonomous",
+      "approval",
+      "agent mode",
+    ],
+  },
+  {
+    group: "agent",
+    title: "Run cost limit",
+    keywords: [
+      "spend",
+      "budget",
+      "cost",
+      "limit",
+      "micro-usd",
+      "micro usd",
+      "run cost",
+    ],
+  },
+  {
+    group: "workspace",
+    title: "Workspace folder",
+    keywords: ["workspace", "folder", "directory", "root", "project path"],
+  },
+  {
+    group: "workspace",
+    title: "Current root",
+    keywords: ["root", "current", "folder", "scoped"],
+  },
+  {
+    group: "workspace",
+    title: "Recent folders",
+    keywords: ["recent", "history", "folders", "previous"],
+  },
+  {
+    group: "credentials",
+    title: "Credentials",
+    keywords: ["api key", "credentials", "connect", "key", "token", "auth"],
+  },
+  {
+    group: "credentials",
+    title: "Provider credentials",
+    keywords: ["api key", "secret", "keyring", "connect provider"],
+  },
+  {
+    group: "data",
+    title: "Data management",
+    keywords: ["data", "clear", "delete all", "reset", "storage", "database"],
+  },
+  {
+    group: "data",
+    title: "Clear all application data",
+    keywords: ["clear", "delete", "reset", "wipe", "danger"],
+  },
+  {
+    group: "data",
+    title: "Import conversation",
+    keywords: ["import", "upload", "restore", "open file"],
+  },
+  {
+    group: "data",
+    title: "Export conversation",
+    keywords: ["export", "download", "save", "share", "backup"],
+  },
+  {
+    group: "advanced",
+    title: "Advanced",
+    keywords: ["advanced", "power", "flags", "routing", "mcp", "internals"],
+  },
+  {
+    group: "advanced",
+    title: "Feature flags",
+    keywords: [
+      "flags",
+      "feature flags",
+      "snapshots",
+      "self audit",
+      "injection",
+      "assembly",
+      "rollout",
+    ],
+  },
+  {
+    group: "advanced",
+    title: "Routing profiles",
+    keywords: [
+      "routing",
+      "profile",
+      "order",
+      "chat profile",
+      "agent profile",
+      "fallback",
+    ],
+  },
+  {
+    group: "advanced",
+    title: "MCP servers",
+    keywords: ["mcp", "servers", "tools", "model context protocol"],
+  },
+  {
+    group: "advanced",
+    title: "Agent preset",
+    keywords: ["preset", "agent preset", "defaults"],
+  },
 ];
 
 // NEX-SEC-004: there is deliberately NO typed-phrase gate and NO in-app
@@ -155,7 +279,10 @@ export default function SettingsView({
   // Workspace-group state: recent folders (read-only here).
   const [recentFolders, setRecentFolders] = useState<string[] | null>(null);
   // Advanced-group state: power-key values loaded once on mount.
-  const [advancedValues, setAdvancedValues] = useState<Record<string, string | null> | null>(null);
+  const [advancedValues, setAdvancedValues] = useState<Record<
+    string,
+    string | null
+  > | null>(null);
   const [advancedError, setAdvancedError] = useState<string | null>(null);
   const [flagValues, setFlagValues] = useState<Record<string, boolean>>({});
   const [flagsSaving, setFlagsSaving] = useState<string | null>(null);
@@ -180,7 +307,8 @@ export default function SettingsView({
           ...FLAG_DEFS.map((flag) => getSetting(`flags.${flag.name}`)),
         ]);
         if (cancelled) return;
-        const [recentRaw, chatRaw, agentRaw, mcpRaw, presetRaw, ...flagRaws] = results;
+        const [recentRaw, chatRaw, agentRaw, mcpRaw, presetRaw, ...flagRaws] =
+          results;
         setRecentFolders(parseRecentList(recentRaw));
         setAdvancedValues({
           [ROUTING_CHAT_KEY]: chatRaw,
@@ -206,15 +334,19 @@ export default function SettingsView({
     };
   }, []);
 
-  const selected = store.providers.find((p) => p.supported.name === store.selectedProvider) ?? null;
-  const selectedDefinition: SupportedProvider | null = selected ? selected.supported : null;
+  const selected =
+    store.providers.find((p) => p.supported.name === store.selectedProvider) ??
+    null;
+  const selectedDefinition: SupportedProvider | null = selected
+    ? selected.supported
+    : null;
   const selectedModels = selectedDefinition ? selectedDefinition.models : [];
 
   /** The model to display: the persisted selection, or the provider default. */
   const effectiveModel =
     store.selectedModel && selectedModels.includes(store.selectedModel)
       ? store.selectedModel
-      : selectedModels[0] ?? null;
+      : (selectedModels[0] ?? null);
 
   /** A persisted custom model ID (valid but outside the shortlist). */
   const persistedCustom =
@@ -239,7 +371,9 @@ export default function SettingsView({
       });
       dynamic.push({
         group: "credentials",
-        title: tr(locale, "settings.apiKeySearchTitle", { name: supported.display_name }),
+        title: tr(locale, "settings.apiKeySearchTitle", {
+          name: supported.display_name,
+        }),
         keywords: [supported.name, supported.display_name, "api key", "key"],
       });
     }
@@ -281,7 +415,9 @@ export default function SettingsView({
   const visibleSections: SettingsSectionId[] = matches ?? [section];
 
   // shortcut:settings.search-jump / shortcut:settings.search-clear.
-  const handleSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+  const handleSearchKeyDown = (
+    event: React.KeyboardEvent<HTMLInputElement>
+  ) => {
     if (event.key === "Enter" && matches && matches.length > 0) {
       setSection(matches[0]);
     } else if (event.key === "Escape") {
@@ -297,13 +433,17 @@ export default function SettingsView({
 
   const handleProviderChange = async (name: string) => {
     // A custom model ID is provider-independent: keep it across the switch.
-    const keepCustom = store.selectedModel ? isCustomModelId(store.selectedModel) : false;
+    const keepCustom = store.selectedModel
+      ? isCustomModelId(store.selectedModel)
+      : false;
     setCustomDraft(null);
     await store.selectProvider(name);
     if (keepCustom) return;
     // Persist the default model for the newly selected provider so the
     // selection is never left without a model.
-    const def = store.providers.find((p) => p.supported.name === name)?.supported;
+    const def = store.providers.find(
+      (p) => p.supported.name === name
+    )?.supported;
     if (def && def.models.length > 0) {
       await store.selectModel(def.models[0]);
     }
@@ -328,7 +468,8 @@ export default function SettingsView({
   /** Local spend-limit draft; null means the persisted value is shown. */
   const [spendDraft, setSpendDraft] = useState<string | null>(null);
   const spendValue =
-    spendDraft ?? (spendLimit.limitMicroUsd !== null ? String(spendLimit.limitMicroUsd) : "");
+    spendDraft ??
+    (spendLimit.limitMicroUsd !== null ? String(spendLimit.limitMicroUsd) : "");
   const commitSpendLimit = () => {
     if (spendDraft === null) return;
     const trimmed = spendDraft.trim();
@@ -363,7 +504,7 @@ export default function SettingsView({
       setFlagsError(
         typeof e === "object" && e !== null && "message" in e
           ? String((e as { message: unknown }).message)
-          : tr(getLocale(), "settings.flagSaveFail", { name }),
+          : tr(getLocale(), "settings.flagSaveFail", { name })
       );
     } finally {
       setFlagsSaving(null);
@@ -373,7 +514,11 @@ export default function SettingsView({
   const handleConnect = async (definition: SupportedProvider) => {
     const credential = draftKeys[definition.name]?.trim() ?? "";
     if (!credential) return;
-    const succeeded = await store.connect(definition.name, definition.display_name, credential);
+    const succeeded = await store.connect(
+      definition.name,
+      definition.display_name,
+      credential
+    );
     if (!succeeded) return; // Keep the typed key for correction; error is shown.
     // Never keep the secret in component state after it is stored.
     setDraftKeys((prev) => ({ ...prev, [definition.name]: "" }));
@@ -407,7 +552,7 @@ export default function SettingsView({
           ? tr(getLocale(), "settings.clearCancelled")
           : typeof e === "object" && e !== null && "message" in e
             ? String((e as { message: unknown }).message)
-            : tr(getLocale(), "settings.clearFail"),
+            : tr(getLocale(), "settings.clearFail")
       );
     } finally {
       setClearing(false);
@@ -418,7 +563,12 @@ export default function SettingsView({
     switch (id) {
       case "appearance":
         return (
-          <AppearanceSection key={id} appearance={appearance} locale={locale} onLocaleChange={onLocaleChange} />
+          <AppearanceSection
+            key={id}
+            appearance={appearance}
+            locale={locale}
+            onLocaleChange={onLocaleChange}
+          />
         );
       case "provider":
         return (
@@ -502,9 +652,7 @@ export default function SettingsView({
       <header className="nex-settings-header">
         <div className="nex-settings-heading-block">
           <h2 className="nex-settings-title">{t("settings.title")}</h2>
-          <p className="nex-settings-subtitle">
-            {t("settings.subtitle")}
-          </p>
+          <p className="nex-settings-subtitle">{t("settings.subtitle")}</p>
         </div>
         <M3Button variant="quiet" onClick={onClose}>
           {t("common.backToConversations")}
@@ -512,7 +660,10 @@ export default function SettingsView({
       </header>
 
       <div className="nex-settings-layout">
-        <nav className="nex-settings-nav" aria-label={t("settings.sectionsAria")}>
+        <nav
+          className="nex-settings-nav"
+          aria-label={t("settings.sectionsAria")}
+        >
           <div className="nex-settings-search" role="search">
             <input
               className="nex-input"
@@ -560,12 +711,19 @@ export default function SettingsView({
         <div className="nex-settings-body">
           <div className="nex-settings-inner">
             {store.error && (
-              <p id="nex-settings-store-error" className="nex-settings-error nex-fade-in" role="alert">
+              <p
+                id="nex-settings-store-error"
+                className="nex-settings-error nex-fade-in"
+                role="alert"
+              >
                 {store.error.message}
               </p>
             )}
             {visibleSections.length === 0 ? (
-              <section className="nex-settings-section" aria-labelledby="search-empty-heading">
+              <section
+                className="nex-settings-section"
+                aria-labelledby="search-empty-heading"
+              >
                 <h3 id="search-empty-heading" className="nex-settings-heading">
                   {t("settings.searchEmptyTitle")}
                 </h3>

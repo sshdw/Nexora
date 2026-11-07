@@ -41,7 +41,13 @@ export interface DockPanelProps {
   children: ReactNode;
 }
 
-export default function DockPanel({ id, title, meta, onClose, children }: DockPanelProps) {
+export default function DockPanel({
+  id,
+  title,
+  meta,
+  onClose,
+  children,
+}: DockPanelProps) {
   const { t } = useStrings();
   const ref = useRef<HTMLDivElement>(null);
   const titleId = useId();
@@ -53,7 +59,8 @@ export default function DockPanel({ id, title, meta, onClose, children }: DockPa
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       // A dialog on top (Settings modal, command palette) owns Escape first.
-      if (document.querySelector('[role="dialog"][aria-modal="true"]') !== null) return;
+      if (document.querySelector('[role="dialog"][aria-modal="true"]') !== null)
+        return;
       event.preventDefault();
       onClose();
     };
@@ -61,7 +68,8 @@ export default function DockPanel({ id, title, meta, onClose, children }: DockPa
       const target = event.target as Node | null;
       if (target === null) return;
       if (ref.current?.contains(target)) return;
-      if (target instanceof Element && target.closest(".nex-dock") !== null) return;
+      if (target instanceof Element && target.closest(".nex-dock") !== null)
+        return;
       onClose();
     };
     window.addEventListener("keydown", onKeyDown);
@@ -92,7 +100,7 @@ export default function DockPanel({ id, title, meta, onClose, children }: DockPa
     const target =
       body?.querySelector<HTMLElement>("[data-dock-panel-autofocus]") ??
       body?.querySelector<HTMLElement>(
-        'button:not([disabled]), [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+        'button:not([disabled]), [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
       ) ??
       node;
     target.focus();
@@ -117,7 +125,9 @@ export default function DockPanel({ id, title, meta, onClose, children }: DockPa
         <h2 className="nex-dock-panel-title" id={titleId}>
           {title}
         </h2>
-        {meta !== undefined && <span className="nex-dock-panel-meta">{meta}</span>}
+        {meta !== undefined && (
+          <span className="nex-dock-panel-meta">{meta}</span>
+        )}
         <M3IconButton
           label={t("common.close")}
           size="sm"

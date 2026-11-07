@@ -74,9 +74,12 @@ export async function refactorApply(
   path: string,
   startLine: number,
   endLine: number,
-  kind: string,
+  kind: string
 ): Promise<RefactorApplyResult> {
-  const confirmationId = await requestConfirmation("refactor", OP_REFACTOR_APPLY);
+  const confirmationId = await requestConfirmation(
+    "refactor",
+    OP_REFACTOR_APPLY
+  );
   return invoke<RefactorApplyResult>("refactor_apply", {
     path,
     startLine,

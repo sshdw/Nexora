@@ -109,7 +109,10 @@ export function gitCommitDiff(hash: string): Promise<GitCommitDiff> {
  * the blocking native OS dialog first, so cancelling at the dialog rejects
  * and stages nothing (no caller-supplied boolean exists on this path). */
 export async function gitStage(paths: string[]): Promise<number> {
-  const confirmationId = await requestConfirmation("version_control", OP_GIT_STAGE);
+  const confirmationId = await requestConfirmation(
+    "version_control",
+    OP_GIT_STAGE
+  );
   return invoke<number>("git_stage", { paths, confirmationId });
 }
 
@@ -117,7 +120,10 @@ export async function gitStage(paths: string[]): Promise<number> {
  * Returns how many were unstaged; confirmed like `gitStage` (the id is
  * minted for `git_unstage`, so a stage id cannot authorize it). */
 export async function gitUnstage(paths: string[]): Promise<number> {
-  const confirmationId = await requestConfirmation("version_control", OP_GIT_UNSTAGE);
+  const confirmationId = await requestConfirmation(
+    "version_control",
+    OP_GIT_UNSTAGE
+  );
   return invoke<number>("git_unstage", { paths, confirmationId });
 }
 
@@ -126,7 +132,10 @@ export async function gitUnstage(paths: string[]): Promise<number> {
  * confirmation id this wrapper mints through the native OS dialog (SEC-03,
  * same gate as `gitStage`). */
 export async function gitCommit(message: string): Promise<string> {
-  const confirmationId = await requestConfirmation("version_control", OP_GIT_COMMIT);
+  const confirmationId = await requestConfirmation(
+    "version_control",
+    OP_GIT_COMMIT
+  );
   return invoke<string>("git_commit", { message, confirmationId });
 }
 
@@ -134,7 +143,10 @@ export async function gitCommit(message: string): Promise<string> {
  * `origin` is accepted backend-side). Confirmed like `gitStage` — the id is
  * minted for `git_push` specifically. */
 export async function gitPush(): Promise<void> {
-  const confirmationId = await requestConfirmation("version_control", OP_GIT_PUSH);
+  const confirmationId = await requestConfirmation(
+    "version_control",
+    OP_GIT_PUSH
+  );
   return invoke<void>("git_push", { remote: "origin", confirmationId });
 }
 
@@ -151,7 +163,7 @@ export interface GeneratedCommitMessage {
  * (keyring-only credentials, nothing persisted). */
 export function gitGenerateCommitMessage(
   provider: string,
-  model: string,
+  model: string
 ): Promise<GeneratedCommitMessage> {
   return invoke<GeneratedCommitMessage>("git_generate_commit_message", {
     provider,
@@ -175,7 +187,7 @@ export interface CommitExplanation {
 export function gitExplainCommit(
   commitHash: string,
   provider: string,
-  model: string,
+  model: string
 ): Promise<CommitExplanation> {
   return invoke<CommitExplanation>("git_explain_commit", {
     commitHash,

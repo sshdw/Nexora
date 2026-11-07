@@ -95,7 +95,11 @@ export default function ConversationPane({
   return (
     <section
       className="nex-pane"
-      aria-label={secondary ? t("app.splitPaneAria", { title: conversation.title }) : conversation.title}
+      aria-label={
+        secondary
+          ? t("app.splitPaneAria", { title: conversation.title })
+          : conversation.title
+      }
     >
       {!hideHeader && (
         <header className="nex-pane-header">

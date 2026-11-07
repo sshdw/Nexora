@@ -5,7 +5,11 @@
 //! facts only; the IPC actions arrive as props from the parent's
 //! `useActivity` store.
 
-import type { DiagnosticsBundle, SnapshotInfo, UpdateCheck } from "../../lib/tauri";
+import type {
+  DiagnosticsBundle,
+  SnapshotInfo,
+  UpdateCheck,
+} from "../../lib/tauri";
 import { formatRelativeTime } from "../../lib/format";
 import { useStrings } from "../../lib/useLocale";
 import M3Button from "../M3Button";
@@ -60,12 +64,15 @@ export default function SystemSection({
         <ul className="nex-activity-list">
           <li className="nex-activity-row">
             <div className="nex-activity-row-main">
-              <span className="nex-activity-row-title">{t("diag.appVersion")}</span>
+              <span className="nex-activity-row-title">
+                {t("diag.appVersion")}
+              </span>
               <span className="nex-activity-pill">{bundle.app_version}</span>
             </div>
             <div className="nex-activity-row-meta">
               <span>
-                {t("diag.platform")}: {bundle.platform_os}/{bundle.platform_arch}
+                {t("diag.platform")}: {bundle.platform_os}/
+                {bundle.platform_arch}
               </span>
               <span>
                 {t("diag.schema")}:{" "}
@@ -101,7 +108,9 @@ export default function SystemSection({
           </li>
           <li className="nex-activity-row">
             <div className="nex-activity-row-main">
-              <span className="nex-activity-row-title">{t("diag.crashes")}</span>
+              <span className="nex-activity-row-title">
+                {t("diag.crashes")}
+              </span>
               <span className="nex-activity-pill">
                 {t("diag.errorRuns", { n: bundle.error_runs })}
               </span>
@@ -115,7 +124,9 @@ export default function SystemSection({
                 {bundle.crashed_runs.map((run) => (
                   <span key={run.run_id}>
                     {t("diag.crashRow", { id: run.run_id, model: run.model })} ·{" "}
-                    <time dateTime={new Date(run.started_at * 1000).toISOString()}>
+                    <time
+                      dateTime={new Date(run.started_at * 1000).toISOString()}
+                    >
                       {formatRelativeTime(run.started_at, locale)}
                     </time>
                   </span>
@@ -164,12 +175,16 @@ export default function SystemSection({
           <span>{t("diag.upToDate", { version: update.current_version })}</span>
         )}
       </div>
-      {update !== null && update.update_available && update.latest_url !== null && (
-        <p className="nex-activity-muted">
-          {t("diag.downloadNote")} {update.latest_url}
-        </p>
-      )}
-      <h3 className="nex-activity-section-title">{t("diag.snapshotSection")}</h3>
+      {update !== null &&
+        update.update_available &&
+        update.latest_url !== null && (
+          <p className="nex-activity-muted">
+            {t("diag.downloadNote")} {update.latest_url}
+          </p>
+        )}
+      <h3 className="nex-activity-section-title">
+        {t("diag.snapshotSection")}
+      </h3>
       <p className="nex-activity-muted">{t("diag.snapshotHint")}</p>
       <div className="nex-activity-row-meta">
         <M3Button

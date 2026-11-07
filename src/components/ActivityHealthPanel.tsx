@@ -125,9 +125,7 @@ export default function ActivityHealthPanel({
       <header className="nex-activity-header">
         <div className="nex-activity-heading">
           <h2 className="nex-activity-title">{t("activity.title")}</h2>
-          <p className="nex-activity-subtitle">
-            {t("activity.subtitle")}
-          </p>
+          <p className="nex-activity-subtitle">{t("activity.subtitle")}</p>
         </div>
         <div className="nex-activity-header-actions">
           <M3Button
@@ -193,7 +191,7 @@ export default function ActivityHealthPanel({
                 if (bundle === null) return;
                 try {
                   await navigator.clipboard.writeText(
-                    JSON.stringify(bundle, null, 2),
+                    JSON.stringify(bundle, null, 2)
                   );
                   setCopied(true);
                   setCopyFailed(false);

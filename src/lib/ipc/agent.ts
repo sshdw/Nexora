@@ -78,12 +78,25 @@ export type GovernanceEventPayload =
   | { type: "resumed" }
   | { type: "budget_exhausted"; max_steps: number }
   | { type: "spend_limit_exceeded"; spent_micro: number; limit_micro: number }
-  | { type: "approval_requested"; call_id: string; name: string; arguments: string; group_key: string | null; group_size: number; timeout_secs: number }
+  | {
+      type: "approval_requested";
+      call_id: string;
+      name: string;
+      arguments: string;
+      group_key: string | null;
+      group_size: number;
+      timeout_secs: number;
+    }
   | { type: "approval_resolved"; call_id: string; approved: boolean }
   | { type: "cancelled" }
   | { type: "completed"; steps: number }
   | { type: "compaction_started"; reason: string; messages: number }
-  | { type: "compaction_finished"; reason: string; summarized: number; retained: number }
+  | {
+      type: "compaction_finished";
+      reason: string;
+      summarized: number;
+      retained: number;
+    }
   | { type: "compaction_failed"; reason: string };
 
 /** One `agent-run-event` frame (Task 5.1 design §2.4). */
@@ -101,7 +114,7 @@ export function startAgentRun(
   conversationId: number,
   content: string,
   provider: string,
-  model: string,
+  model: string
 ): Promise<{ run_id: number }> {
   return invoke<{ run_id: number }>("start_agent_run", {
     conversationId,
@@ -121,7 +134,7 @@ export function resolveAgentApproval(
   runId: number,
   callId: string,
   approved: boolean,
-  scope?: "single" | "group",
+  scope?: "single" | "group"
 ): Promise<void> {
   return invoke<void>("resolve_agent_approval", {
     runId,
@@ -132,7 +145,10 @@ export function resolveAgentApproval(
 }
 
 /** Grant additional iterations to a budget-parked run (Task 5.1). */
-export function extendAgentRun(runId: number, extraSteps: number): Promise<void> {
+export function extendAgentRun(
+  runId: number,
+  extraSteps: number
+): Promise<void> {
   return invoke<void>("extend_agent_run", {
     runId,
     extraSteps,
@@ -146,7 +162,7 @@ export function extendAgentRun(runId: number, extraSteps: number): Promise<void>
  * Args stay camelCase per the casing contract above; payloads stay snake_case. */
 export function listAgentRuns(
   conversationId: number,
-  page?: { limit?: number; beforeRunId?: number },
+  page?: { limit?: number; beforeRunId?: number }
 ): Promise<AgentRun[]> {
   return invoke<AgentRun[]>("list_agent_runs", {
     conversationId,
@@ -162,7 +178,7 @@ export function listAgentRuns(
  * the run's `seq` ordering — omitted or null means "unpaged". */
 export function listAgentSteps(
   runId: number,
-  page?: { limit?: number; beforeSeq?: number },
+  page?: { limit?: number; beforeSeq?: number }
 ): Promise<AgentStep[]> {
   return invoke<AgentStep[]>("list_agent_steps", {
     runId,
@@ -281,7 +297,7 @@ export interface LiveRunState {
  * caller renders no approval affordance instead of inventing one.
  */
 export function inspectRunLive(
-  conversationId: number,
+  conversationId: number
 ): Promise<LiveRunState | null> {
   return invoke<LiveRunState | null>("inspect_run_live", { conversationId });
 }
@@ -381,7 +397,7 @@ export function addPermissionRule(
   preset: string,
   toolPattern: string,
   pathPattern: string | null,
-  effect: "allow" | "ask" | "deny",
+  effect: "allow" | "ask" | "deny"
 ): Promise<number> {
   return invoke<number>("add_permission_rule", {
     preset,

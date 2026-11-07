@@ -149,21 +149,47 @@
 /* ---- Typography utilities ----
    Size stops map to M3 style roles per the matrix in tokens.css
    (label-small … headline-small). */
-.nex-text-xs { font-size: var(--type-size-label-small); }
-.nex-text-sm { font-size: var(--type-size-body-small); }
-.nex-text-base { font-size: var(--type-size-body-medium); }
-.nex-text-md { font-size: var(--type-size-body-large); }
-.nex-text-lg { font-size: var(--type-size-title-medium); }
+.nex-text-xs {
+  font-size: var(--type-size-label-small);
+}
+.nex-text-sm {
+  font-size: var(--type-size-body-small);
+}
+.nex-text-base {
+  font-size: var(--type-size-body-medium);
+}
+.nex-text-md {
+  font-size: var(--type-size-body-large);
+}
+.nex-text-lg {
+  font-size: var(--type-size-title-medium);
+}
 
-.nex-font-regular { font-weight: var(--type-weight-regular); }
-.nex-font-medium { font-weight: var(--type-weight-medium); }
-.nex-font-semibold { font-weight: var(--type-weight-semibold); }
+.nex-font-regular {
+  font-weight: var(--type-weight-regular);
+}
+.nex-font-medium {
+  font-weight: var(--type-weight-medium);
+}
+.nex-font-semibold {
+  font-weight: var(--type-weight-semibold);
+}
 
-.nex-text-primary { color: var(--color-on-surface); }
-.nex-text-secondary { color: var(--color-on-surface-variant); }
-.nex-text-tertiary { color: var(--color-on-surface-tertiary); }
+.nex-text-primary {
+  color: var(--color-on-surface);
+}
+.nex-text-secondary {
+  color: var(--color-on-surface-variant);
+}
+.nex-text-tertiary {
+  color: var(--color-on-surface-tertiary);
+}
 
-.nex-flex-center { display: flex; align-items: center; justify-content: center; }
+.nex-flex-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
 
 /* ---- Workspace roots switcher (multi-root registry): rail list of
    registered roots with set-active + remove, an add entry, and the honest
@@ -236,9 +262,11 @@
   border-radius: var(--shape-small);
   padding: var(--space-xxs) var(--space-sm);
   cursor: pointer;
-  transition: background-color var(--nex-sys-motion-duration-fast)
+  transition:
+    background-color var(--nex-sys-motion-duration-fast)
       var(--nex-sys-motion-easing-standard),
-    color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard),
+    color var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard),
     border-color var(--nex-sys-motion-duration-fast)
       var(--nex-sys-motion-easing-standard);
 }

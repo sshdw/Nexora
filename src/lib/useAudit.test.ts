@@ -51,32 +51,35 @@ const { mockInvoke, failNext, park } = vi.hoisted(() => {
   // A manually resolved gate for the single-flight pin: while active, the
   // audit scan parks until the test releases it.
   const park = { active: false, release: (): void => {} };
-  const mockInvoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
-    void args;
-    if (failNext.command === command) {
-      failNext.command = "";
-      throw { kind: "io", message: "scan refused" };
+  const mockInvoke = vi.fn(
+    async (command: string, args?: Record<string, unknown>) => {
+      void args;
+      if (failNext.command === command) {
+        failNext.command = "";
+        throw { kind: "io", message: "scan refused" };
+      }
+      switch (command) {
+        case "request_confirmation":
+          return "confirm-id-1";
+        case "repo_audit":
+          if (park.active) {
+            return new Promise<typeof fixtures.report>((resolve) => {
+              park.release = () =>
+                resolve(JSON.parse(JSON.stringify(fixtures.report)));
+            });
+          }
+          return JSON.parse(JSON.stringify(fixtures.report));
+        case "testgen_drafts":
+          return JSON.parse(JSON.stringify(fixtures.drafts));
+        case "dep_inventory":
+          return JSON.parse(JSON.stringify(fixtures.deps));
+        case "refactor_apply":
+          return fixtures.applied;
+        default:
+          throw new Error(`unexpected command ${command}`);
+      }
     }
-    switch (command) {
-      case "request_confirmation":
-        return "confirm-id-1";
-      case "repo_audit":
-        if (park.active) {
-          return new Promise<typeof fixtures.report>((resolve) => {
-            park.release = () => resolve(JSON.parse(JSON.stringify(fixtures.report)));
-          });
-        }
-        return JSON.parse(JSON.stringify(fixtures.report));
-      case "testgen_drafts":
-        return JSON.parse(JSON.stringify(fixtures.drafts));
-      case "dep_inventory":
-        return JSON.parse(JSON.stringify(fixtures.deps));
-      case "refactor_apply":
-        return fixtures.applied;
-      default:
-        throw new Error(`unexpected command ${command}`);
-    }
-  });
+  );
   return { mockInvoke, failNext, park };
 });
 
@@ -155,7 +158,9 @@ describe("useAudit", () => {
     await act(async () => {
       await result.current.applyRemoval("   ", "10", "12", true);
     });
-    expect(mockInvoke.mock.calls.some(([command]) => command === "refactor_apply")).toBe(false);
+    expect(
+      mockInvoke.mock.calls.some(([command]) => command === "refactor_apply")
+    ).toBe(false);
     expect(result.current.applyError).not.toBeNull();
     expect(result.current.applyResult).toBeNull();
     expect(result.current.applyRunning).toBe(false);
@@ -164,16 +169,28 @@ describe("useAudit", () => {
   it("refuses to apply without the confirm tick", async () => {
     const { result } = renderHook(() => useAudit());
     await act(async () => {
-      await result.current.applyRemoval("src-tauri/src/lib.rs", "10", "12", false);
+      await result.current.applyRemoval(
+        "src-tauri/src/lib.rs",
+        "10",
+        "12",
+        false
+      );
     });
-    expect(mockInvoke.mock.calls.some(([command]) => command === "refactor_apply")).toBe(false);
+    expect(
+      mockInvoke.mock.calls.some(([command]) => command === "refactor_apply")
+    ).toBe(false);
     expect(result.current.applyError).not.toBeNull();
   });
 
   it("applies a confirmed removal through the mint-and-consume gate", async () => {
     const { result } = renderHook(() => useAudit());
     await act(async () => {
-      await result.current.applyRemoval("src-tauri/src/lib.rs", "10", "12", true);
+      await result.current.applyRemoval(
+        "src-tauri/src/lib.rs",
+        "10",
+        "12",
+        true
+      );
     });
     expect(mockInvoke).toHaveBeenCalledWith("request_confirmation", {
       scope: "refactor",

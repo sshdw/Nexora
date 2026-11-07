@@ -77,7 +77,9 @@ function oklchToLinearSrgb({ l, c, h }: Oklch): [number, number, number] {
  */
 export function srgbToLinear(channel: number): number {
   const clamped = Math.min(1, Math.max(0, channel));
-  return clamped <= 0.04045 ? clamped / 12.92 : ((clamped + 0.055) / 1.055) ** 2.4;
+  return clamped <= 0.04045
+    ? clamped / 12.92
+    : ((clamped + 0.055) / 1.055) ** 2.4;
 }
 
 /**
@@ -92,7 +94,9 @@ export function srgbToLinear(channel: number): number {
  */
 export function linearToSrgb(channel: number): number {
   const clamped = Math.min(1, Math.max(0, channel));
-  return clamped <= 0.0031308 ? clamped * 12.92 : 1.055 * clamped ** (1 / 2.4) - 0.055;
+  return clamped <= 0.0031308
+    ? clamped * 12.92
+    : 1.055 * clamped ** (1 / 2.4) - 0.055;
 }
 
 /** `#rrggbb` → `[r, g, b]` in 0..1 sRGB. */
@@ -148,7 +152,7 @@ export function parseHexRgba(hex: string): Rgba | null {
 export function parseRgbaFunctional(value: string): Rgba | null {
   const match =
     /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*([\d.]+))?\s*\)$/.exec(
-      value.trim(),
+      value.trim()
     );
   if (!match) return null;
   return {
@@ -173,9 +177,15 @@ export interface Oklab {
  */
 export function srgbToOklab(rgb: [number, number, number]): Oklab {
   const [lr, lg, lb] = rgb.map(srgbToLinear);
-  const l_ = Math.cbrt(0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb);
-  const m_ = Math.cbrt(0.2119034982 * lr + 0.6806995451 * lg + 0.1073969566 * lb);
-  const s_ = Math.cbrt(0.0883024619 * lr + 0.2817188376 * lg + 0.6299787005 * lb);
+  const l_ = Math.cbrt(
+    0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb
+  );
+  const m_ = Math.cbrt(
+    0.2119034982 * lr + 0.6806995451 * lg + 0.1073969566 * lb
+  );
+  const s_ = Math.cbrt(
+    0.0883024619 * lr + 0.2817188376 * lg + 0.6299787005 * lb
+  );
   return {
     l: 0.2104542553 * l_ + 0.793617785 * m_ - 0.0040720468 * s_,
     a: 1.9779984951 * l_ - 2.428592205 * m_ + 0.4505937099 * s_,
@@ -193,9 +203,16 @@ export function oklabChroma(lab: Oklab): number {
  * 0..1 sRGB-ENCODED channels — the space CSS alpha compositing
  * happens in (same convention as `compositedLuminance`).
  */
-export function compositedSrgb(color: Rgba, backdrop: [number, number, number]): [number, number, number] {
+export function compositedSrgb(
+  color: Rgba,
+  backdrop: [number, number, number]
+): [number, number, number] {
   const blend = (fg: number, bg: number) => color.a * fg + (1 - color.a) * bg;
-  return [blend(color.r, backdrop[0]), blend(color.g, backdrop[1]), blend(color.b, backdrop[2])];
+  return [
+    blend(color.r, backdrop[0]),
+    blend(color.g, backdrop[1]),
+    blend(color.b, backdrop[2]),
+  ];
 }
 
 /**
@@ -218,7 +235,8 @@ export function oklchToSrgbChannels(color: Oklch): [number, number, number] {
  */
 export function relativeLuminance(color: Oklch): number {
   const [r, g, b] = oklchToLinearSrgb(color);
-  const toLinear = (channel: number): number => Math.min(1, Math.max(0, channel));
+  const toLinear = (channel: number): number =>
+    Math.min(1, Math.max(0, channel));
   return 0.2126 * toLinear(r) + 0.7152 * toLinear(g) + 0.0722 * toLinear(b);
 }
 
@@ -253,7 +271,10 @@ export function contrastRatio(a: Oklch, b: Oklch): number {
 
 /** Contrast ratio of a translucent `color` over an opaque `backdrop`. */
 export function contrastOver(color: Oklch, backdrop: Oklch): number {
-  return ratioBetween(compositedLuminance(color, backdrop), relativeLuminance(backdrop));
+  return ratioBetween(
+    compositedLuminance(color, backdrop),
+    relativeLuminance(backdrop)
+  );
 }
 
 /**
@@ -261,8 +282,15 @@ export function contrastOver(color: Oklch, backdrop: Oklch): number {
  * (which carries its own alpha) sitting on `backdrop` — the
  * pairing shadcn's destructive and ghost variants actually paint.
  */
-export function contrastOnWash(text: Oklch, wash: Oklch, backdrop: Oklch): number {
-  return ratioBetween(relativeLuminance(text), compositedLuminance(wash, backdrop));
+export function contrastOnWash(
+  text: Oklch,
+  wash: Oklch,
+  backdrop: Oklch
+): number {
+  return ratioBetween(
+    relativeLuminance(text),
+    compositedLuminance(wash, backdrop)
+  );
 }
 
 function ratioBetween(l1: number, l2: number): number {

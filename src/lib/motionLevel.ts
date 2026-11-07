@@ -66,7 +66,10 @@ function oneLevelUp(level: MotionLevel): MotionLevel {
 }
 
 function isMotionLevel(value: unknown): value is MotionLevel {
-  return typeof value === "string" && (MOTION_LEVELS as readonly string[]).includes(value);
+  return (
+    typeof value === "string" &&
+    (MOTION_LEVELS as readonly string[]).includes(value)
+  );
 }
 
 interface StoredRecord {
@@ -77,7 +80,10 @@ interface StoredRecord {
   manual: MotionLevel | null;
 }
 
-const FRESH_RECORD: StoredRecord = { auto: { count: 0, lastUse: null }, manual: null };
+const FRESH_RECORD: StoredRecord = {
+  auto: { count: 0, lastUse: null },
+  manual: null,
+};
 
 /** Read + validate the persisted record. `usable:false` = unavailable or
  *  corrupt storage → l2 with adaptation off (§7.3); the counters are
@@ -85,7 +91,10 @@ const FRESH_RECORD: StoredRecord = { auto: { count: 0, lastUse: null }, manual: 
 function readRecord(): { record: StoredRecord; usable: boolean } {
   let raw: string | null = null;
   try {
-    if (typeof window === "undefined" || typeof window.localStorage === "undefined") {
+    if (
+      typeof window === "undefined" ||
+      typeof window.localStorage === "undefined"
+    ) {
       return { record: FRESH_RECORD, usable: false };
     }
     raw = window.localStorage.getItem(MOTION_STORAGE_KEY);
@@ -95,19 +104,28 @@ function readRecord(): { record: StoredRecord; usable: boolean } {
   if (raw === null) return { record: FRESH_RECORD, usable: true };
   try {
     const parsed: unknown = JSON.parse(raw);
-    if (typeof parsed !== "object" || parsed === null) throw new Error("not an object");
+    if (typeof parsed !== "object" || parsed === null)
+      throw new Error("not an object");
     const entry = parsed as Record<string, unknown>;
     const auto = entry["auto"];
     if (typeof auto !== "object" || auto === null) throw new Error("bad auto");
     const { count, lastUse } = auto as Record<string, unknown>;
-    if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) {
+    if (
+      typeof count !== "number" ||
+      !Number.isSafeInteger(count) ||
+      count < 0
+    ) {
       throw new Error("bad count");
     }
-    if (lastUse !== null && (typeof lastUse !== "number" || !Number.isFinite(lastUse))) {
+    if (
+      lastUse !== null &&
+      (typeof lastUse !== "number" || !Number.isFinite(lastUse))
+    ) {
       throw new Error("bad lastUse");
     }
     const manual = entry["manual"];
-    if (manual !== null && !isMotionLevel(manual)) throw new Error("bad manual");
+    if (manual !== null && !isMotionLevel(manual))
+      throw new Error("bad manual");
     return {
       record: {
         auto: { count, lastUse: lastUse as number | null },
@@ -132,7 +150,10 @@ function writeRecord(record: StoredRecord): void {
 /** Level derived from the record BEFORE any interaction of this session
  *  (startup). Auto mode applies the 21-day idle bump here without
  *  counting this launch as a use. */
-function deriveStartupLevel(record: StoredRecord, usable: boolean): MotionLevel {
+function deriveStartupLevel(
+  record: StoredRecord,
+  usable: boolean
+): MotionLevel {
   if (!usable) return FALLBACK_LEVEL;
   if (record.manual !== null) return record.manual;
   let level = band(record.auto.count);
@@ -153,7 +174,8 @@ function setAttribute(level: MotionLevel): void {
 /** Subscribe to live `prefers-reduced-motion` changes (Safari <14 uses
  *  the deprecated listener API — same fallback as useReducedMotion.ts). */
 function onReducedMotionChange(listener: () => void): void {
-  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function")
+    return;
   const list = window.matchMedia(REDUCED_MOTION_QUERY);
   if (typeof list.addEventListener === "function") {
     list.addEventListener("change", listener);
@@ -185,7 +207,9 @@ export function applyMotionLevel(): MotionLevel {
   const read = readRecord();
   recordCache = read.record;
   usableCache = read.usable;
-  current = prefersReducedMotion() ? "l1" : deriveStartupLevel(read.record, read.usable);
+  current = prefersReducedMotion()
+    ? "l1"
+    : deriveStartupLevel(read.record, read.usable);
   setAttribute(current);
   return current;
 }
@@ -264,7 +288,9 @@ export function setManualMotionLevel(level: MotionLevel | null): MotionLevel {
   } else {
     writeRecord(recordCache);
   }
-  current = prefersReducedMotion() ? "l1" : (level ?? band(recordCache.auto.count));
+  current = prefersReducedMotion()
+    ? "l1"
+    : (level ?? band(recordCache.auto.count));
   setAttribute(current);
   return current;
 }

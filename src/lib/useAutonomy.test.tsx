@@ -6,7 +6,14 @@
 //! snake_case (`get_setting`, `set_setting`), args are camelCase (`key`,
 //! `value`). No timing assertions (policy).
 
-import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  renderHook,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AutonomyStore } from "./useAutonomy";
@@ -15,22 +22,24 @@ import { AUTONOMY_KEY, useAutonomy } from "./useAutonomy";
 const { mockInvoke, settings, failNextSet } = vi.hoisted(() => {
   const settings = new Map<string, string | null>();
   const failNextSet = { current: false };
-  const mockInvoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
-    if (command === "get_setting") {
-      const key = (args as { key: string }).key;
-      return settings.has(key) ? (settings.get(key) as string | null) : null;
-    }
-    if (command === "set_setting") {
-      if (failNextSet.current) {
-        failNextSet.current = false;
-        throw { kind: "io", message: "disk refused" };
+  const mockInvoke = vi.fn(
+    async (command: string, args?: Record<string, unknown>) => {
+      if (command === "get_setting") {
+        const key = (args as { key: string }).key;
+        return settings.has(key) ? (settings.get(key) as string | null) : null;
       }
-      const { key, value } = args as { key: string; value: string | null };
-      settings.set(key, value);
-      return null;
+      if (command === "set_setting") {
+        if (failNextSet.current) {
+          failNextSet.current = false;
+          throw { kind: "io", message: "disk refused" };
+        }
+        const { key, value } = args as { key: string; value: string | null };
+        settings.set(key, value);
+        return null;
+      }
+      throw new Error(`unexpected command ${command}`);
     }
-    throw new Error(`unexpected command ${command}`);
-  });
+  );
   return { mockInvoke, settings, failNextSet };
 });
 
@@ -115,14 +124,22 @@ describe("useAutonomy", () => {
     render(<Harness />);
     // Both surfaces start on the persisted default (no focus-resync needed).
     await waitFor(() =>
-      expect(screen.getByTestId("mode-settings")).toHaveTextContent("semi_autonomous"),
+      expect(screen.getByTestId("mode-settings")).toHaveTextContent(
+        "semi_autonomous"
+      )
     );
-    expect(screen.getByTestId("mode-header")).toHaveTextContent("semi_autonomous");
+    expect(screen.getByTestId("mode-header")).toHaveTextContent(
+      "semi_autonomous"
+    );
     // A change made in the header surface reflects in Settings immediately.
     fireEvent.click(screen.getByRole("button", { name: "set-header" }));
     await waitFor(() =>
-      expect(screen.getByTestId("mode-settings")).toHaveTextContent("full_autonomous"),
+      expect(screen.getByTestId("mode-settings")).toHaveTextContent(
+        "full_autonomous"
+      )
     );
-    expect(screen.getByTestId("mode-header")).toHaveTextContent("full_autonomous");
+    expect(screen.getByTestId("mode-header")).toHaveTextContent(
+      "full_autonomous"
+    );
   });
 });

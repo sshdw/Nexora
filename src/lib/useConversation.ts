@@ -56,11 +56,13 @@ export interface ConversationStore {
     content: string,
     provider: string,
     model: string,
-    attachmentIds: number[],
+    attachmentIds: number[]
   ) => Promise<CommandError | null>;
 }
 
-export function useConversation(conversationId: number | null): ConversationStore {
+export function useConversation(
+  conversationId: number | null
+): ConversationStore {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<CommandError | null>(null);
@@ -103,7 +105,7 @@ export function useConversation(conversationId: number | null): ConversationStor
         }
       }
     },
-    [conversationId],
+    [conversationId]
   );
 
   // Load history whenever the conversation is (re)selected. The ref is updated
@@ -129,12 +131,16 @@ export function useConversation(conversationId: number | null): ConversationStor
 
     const setup = async (): Promise<void> => {
       try {
-        const stop = await listen<AgentRunEventPayload>("agent-run-event", (event) => {
-          const payload = event.payload;
-          if (payload.type !== "finished") return;
-          if (payload.event.conversation_id !== activeConversationRef.current) return;
-          void reload({ silent: true });
-        });
+        const stop = await listen<AgentRunEventPayload>(
+          "agent-run-event",
+          (event) => {
+            const payload = event.payload;
+            if (payload.type !== "finished") return;
+            if (payload.event.conversation_id !== activeConversationRef.current)
+              return;
+            void reload({ silent: true });
+          }
+        );
         if (cancelled) stop();
         else unlisten = stop;
       } catch {
@@ -154,13 +160,19 @@ export function useConversation(conversationId: number | null): ConversationStor
       content: string,
       provider: string,
       model: string,
-      attachmentIds: number[],
+      attachmentIds: number[]
     ): Promise<CommandError | null> => {
       if (conversationId === null) return null;
       setSending(true);
       setError(null);
       try {
-        await sendMessage(conversationId, content, provider, model, attachmentIds);
+        await sendMessage(
+          conversationId,
+          content,
+          provider,
+          model,
+          attachmentIds
+        );
         // Success: reflect the persisted user + assistant messages.
         await reload();
         return null;
@@ -178,7 +190,7 @@ export function useConversation(conversationId: number | null): ConversationStor
         setSending(false);
       }
     },
-    [conversationId, reload],
+    [conversationId, reload]
   );
 
   return { messages, loading, error, sending, reload, send };
@@ -191,9 +203,16 @@ function toCommandError(error: unknown): CommandError {
     typeof (error as CommandError).kind === "string" &&
     typeof (error as CommandError).message === "string"
   ) {
-    return { kind: (error as CommandError).kind, message: (error as CommandError).message };
+    return {
+      kind: (error as CommandError).kind,
+      message: (error as CommandError).message,
+    };
   }
   if (typeof error === "string") return { kind: "unknown", message: error };
-  if (error instanceof Error) return { kind: "unknown", message: error.message };
-  return { kind: "unknown", message: tr(getLocale(), "common.backendUnreachable") };
+  if (error instanceof Error)
+    return { kind: "unknown", message: error.message };
+  return {
+    kind: "unknown",
+    message: tr(getLocale(), "common.backendUnreachable"),
+  };
 }

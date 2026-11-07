@@ -25,25 +25,25 @@ export default function CredentialsSection({
 }: CredentialsSectionProps) {
   const { t } = useStrings();
   return (
-    <section className="nex-settings-section" aria-labelledby="providers-heading">
+    <section
+      className="nex-settings-section"
+      aria-labelledby="providers-heading"
+    >
       <h3 id="providers-heading" className="nex-settings-heading">
         {t("settings.searchProviderCreds")}
       </h3>
-      <p className="nex-settings-hint">
-        {t("settings.credentialsHint")}
-      </p>
+      <p className="nex-settings-hint">{t("settings.credentialsHint")}</p>
 
       <ul className="nex-provider-list">
         {store.providers.map(({ supported, credentialed, available }) => (
           <li key={supported.name} className="nex-provider-row">
             <div className="nex-provider-meta">
-              <span className="nex-provider-name">{supported.display_name}</span>
+              <span className="nex-provider-name">
+                {supported.display_name}
+              </span>
               <span className="nex-provider-status">
                 <span
-                  className={
-                    "nex-tag" +
-                    (available ? " is-connected" : "")
-                  }
+                  className={"nex-tag" + (available ? " is-connected" : "")}
                 >
                   <span
                     className={
@@ -66,19 +66,27 @@ export default function CredentialsSection({
                 className="nex-input"
                 type="password"
                 autoComplete="new-password"
-                placeholder={credentialed ? t("settings.apiKeyUpdatePh") : t("settings.apiKeyPh")}
-                aria-label={t("settings.apiKeyAria", { name: supported.display_name })}
+                placeholder={
+                  credentialed
+                    ? t("settings.apiKeyUpdatePh")
+                    : t("settings.apiKeyPh")
+                }
+                aria-label={t("settings.apiKeyAria", {
+                  name: supported.display_name,
+                })}
                 aria-describedby={
                   store.error ? "nex-settings-store-error" : undefined
                 }
                 value={draftKeys[supported.name] ?? ""}
                 disabled={store.working}
-                onChange={(event) => onDraftChange(supported.name, event.target.value)}
+                onChange={(event) =>
+                  onDraftChange(supported.name, event.target.value)
+                }
               />
               <M3Button
                 variant="primary"
                 size="sm"
-                disabled={store.working || !(draftKeys[supported.name]?.trim())}
+                disabled={store.working || !draftKeys[supported.name]?.trim()}
                 onClick={() => onConnect(supported)}
               >
                 {credentialed ? t("settings.update") : t("settings.connect")}

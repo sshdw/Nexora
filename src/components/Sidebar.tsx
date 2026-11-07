@@ -77,7 +77,10 @@ export default function Sidebar() {
             Nexora
           </span>
         </div>
-        <NewConversationButton onClick={() => onNewConversation()} disabled={creating}>
+        <NewConversationButton
+          onClick={() => onNewConversation()}
+          disabled={creating}
+        >
           {t("nav.newConversation")}
         </NewConversationButton>
         <SearchBox conversations={conversations} onSelectResult={onSelect} />
@@ -110,7 +113,10 @@ export default function Sidebar() {
         data-slot="sidebar-footer"
         className="mt-auto flex flex-col gap-0.5 border-t border-border px-2 pb-2 pt-1.5"
       >
-        <VersionControlEntry active={vcsActive} onClick={() => onOpenVersionControl()} />
+        <VersionControlEntry
+          active={vcsActive}
+          onClick={() => onOpenVersionControl()}
+        />
         <TaskEntry active={tasksActive} onClick={() => onOpenTasks()} />
         <SettingsEntry onClick={() => onOpenSettings()} />
       </div>

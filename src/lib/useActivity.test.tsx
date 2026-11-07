@@ -101,90 +101,93 @@ const { mockInvoke, failNext } = vi.hoisted(() => {
       },
     ],
   };
-  const mockInvoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
-    void args;
-    if (failNext.command === command) {
-      failNext.command = "";
-      throw { kind: "io", message: "backend refused" };
+  const mockInvoke = vi.fn(
+    async (command: string, args?: Record<string, unknown>) => {
+      void args;
+      if (failNext.command === command) {
+        failNext.command = "";
+        throw { kind: "io", message: "backend refused" };
+      }
+      switch (command) {
+        case "activity_feed":
+          return JSON.parse(JSON.stringify(fixtures.feed));
+        case "list_conversations":
+          return JSON.parse(JSON.stringify(fixtures.conversations));
+        case "supported_providers":
+          return JSON.parse(JSON.stringify(fixtures.providers));
+        case "provider_health":
+          return {
+            provider: (args as { name: string }).name,
+            status: "healthy",
+            has_configuration: true,
+            has_credential: true,
+            last_checked: 1000,
+          };
+        case "flags_status":
+          return { flags: {}, notice: null };
+        case "git_info":
+          return { branch: "main", files: [], files_overflow: 0, commits: [] };
+        case "get_setting":
+          return null;
+        case "diagnostics_bundle":
+          return JSON.parse(JSON.stringify(fixtures.bundle));
+        case "privacy_status":
+          return JSON.parse(JSON.stringify(fixtures.privacy));
+        case "conversation_context_stats":
+          return {
+            conversation_id: (args as { conversationId: number })
+              .conversationId,
+            title: "chat",
+            provider: "openai",
+            provider_display: "OpenAI",
+            model: "gpt",
+            context_limit: 128000,
+            total_tokens: 1,
+            input_tokens: 1,
+            output_tokens: 0,
+            reasoning_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            has_token_data: true,
+            total_cost_micro_usd: 0,
+            usage_percent: 1,
+            message_count: 1,
+            user_message_count: 1,
+            assistant_message_count: 0,
+            tool_call_count: 0,
+            other_step_count: 0,
+            created_at: 1,
+            updated_at: 2,
+          };
+        case "privacy_export":
+          return { exported_at: 1, retention_days: 30, stats: [] };
+        case "request_confirmation":
+          return "confirm-id-1";
+        case "privacy_wipe":
+          return fixtures.wiped;
+        case "update_check":
+          return {
+            owner: "shdw",
+            repo: "nx",
+            current_version: "2.0.0",
+            latest_tag: null,
+            latest_name: "",
+            latest_url: null,
+            published_at: null,
+            update_available: false,
+            authenticated: false,
+            rate_limited: false,
+            rate_limit: { limit: null, remaining: null, reset: null },
+          };
+        case "snapshot_database":
+          return { file_name: "nx.db", size_bytes: 1, created_at: 1 };
+        case "list_tasks":
+          return JSON.parse(JSON.stringify(fixtures.tasks));
+        default:
+          throw new Error(`unexpected command ${command}`);
+      }
     }
-    switch (command) {
-      case "activity_feed":
-        return JSON.parse(JSON.stringify(fixtures.feed));
-      case "list_conversations":
-        return JSON.parse(JSON.stringify(fixtures.conversations));
-      case "supported_providers":
-        return JSON.parse(JSON.stringify(fixtures.providers));
-      case "provider_health":
-        return {
-          provider: (args as { name: string }).name,
-          status: "healthy",
-          has_configuration: true,
-          has_credential: true,
-          last_checked: 1000,
-        };
-      case "flags_status":
-        return { flags: {}, notice: null };
-      case "git_info":
-        return { branch: "main", files: [], files_overflow: 0, commits: [] };
-      case "get_setting":
-        return null;
-      case "diagnostics_bundle":
-        return JSON.parse(JSON.stringify(fixtures.bundle));
-      case "privacy_status":
-        return JSON.parse(JSON.stringify(fixtures.privacy));
-      case "conversation_context_stats":
-        return {
-          conversation_id: (args as { conversationId: number }).conversationId,
-          title: "chat",
-          provider: "openai",
-          provider_display: "OpenAI",
-          model: "gpt",
-          context_limit: 128000,
-          total_tokens: 1,
-          input_tokens: 1,
-          output_tokens: 0,
-          reasoning_tokens: 0,
-          cache_read_tokens: 0,
-          cache_write_tokens: 0,
-          has_token_data: true,
-          total_cost_micro_usd: 0,
-          usage_percent: 1,
-          message_count: 1,
-          user_message_count: 1,
-          assistant_message_count: 0,
-          tool_call_count: 0,
-          other_step_count: 0,
-          created_at: 1,
-          updated_at: 2,
-        };
-      case "privacy_export":
-        return { exported_at: 1, retention_days: 30, stats: [] };
-      case "request_confirmation":
-        return "confirm-id-1";
-      case "privacy_wipe":
-        return fixtures.wiped;
-      case "update_check":
-        return {
-          owner: "shdw",
-          repo: "nx",
-          current_version: "2.0.0",
-          latest_tag: null,
-          latest_name: "",
-          latest_url: null,
-          published_at: null,
-          update_available: false,
-          authenticated: false,
-          rate_limited: false,
-          rate_limit: { limit: null, remaining: null, reset: null },
-        };
-      case "snapshot_database":
-        return { file_name: "nx.db", size_bytes: 1, created_at: 1 };
-      case "list_tasks":
-        return JSON.parse(JSON.stringify(fixtures.tasks));
-      default:
-        throw new Error(`unexpected command ${command}`);
-    }
-  });
+  );
   return { mockInvoke, failNext };
 });
 
@@ -198,7 +201,7 @@ beforeEach(() => {
 describe("useActivity — health panel store", () => {
   it("loads the feed batch and the whole health aggregate on mount", async () => {
     const { result } = renderHook(() =>
-      useActivity({ activeConversationId: 5 }),
+      useActivity({ activeConversationId: 5 })
     );
     await waitFor(() => expect(result.current.healthLoading).toBe(false));
     await waitFor(() => expect(result.current.activityLoading).toBe(false));
@@ -210,11 +213,17 @@ describe("useActivity — health panel store", () => {
     expect(result.current.conversations[0].id).toBe(5);
     // Health: every supported provider probed, plus flags/git/limit/bundle/privacy.
     expect(mockInvoke).toHaveBeenCalledWith("supported_providers");
-    expect(mockInvoke).toHaveBeenCalledWith("provider_health", { name: "openai" });
-    expect(mockInvoke).toHaveBeenCalledWith("provider_health", { name: "anthropic" });
+    expect(mockInvoke).toHaveBeenCalledWith("provider_health", {
+      name: "openai",
+    });
+    expect(mockInvoke).toHaveBeenCalledWith("provider_health", {
+      name: "anthropic",
+    });
     expect(mockInvoke).toHaveBeenCalledWith("flags_status");
     expect(mockInvoke).toHaveBeenCalledWith("git_info", { limit: 5 });
-    expect(mockInvoke).toHaveBeenCalledWith("get_setting", { key: SPEND_LIMIT_KEY });
+    expect(mockInvoke).toHaveBeenCalledWith("get_setting", {
+      key: SPEND_LIMIT_KEY,
+    });
     expect(mockInvoke).toHaveBeenCalledWith("diagnostics_bundle");
     expect(mockInvoke).toHaveBeenCalledWith("privacy_status");
     expect(mockInvoke).toHaveBeenCalledWith("conversation_context_stats", {
@@ -227,10 +236,13 @@ describe("useActivity — health panel store", () => {
   });
 
   it("runs the update check and the snapshot on their buttons only", async () => {
-    const { result } = renderHook(() => useActivity({ activeConversationId: null }));
+    const { result } = renderHook(() =>
+      useActivity({ activeConversationId: null })
+    );
     await waitFor(() => expect(result.current.healthLoading).toBe(false));
     const calls = mockInvoke.mock.calls.filter(
-      ([command]) => command === "update_check" || command === "snapshot_database",
+      ([command]) =>
+        command === "update_check" || command === "snapshot_database"
     ).length;
     expect(calls).toBe(0);
 
@@ -249,10 +261,12 @@ describe("useActivity — health panel store", () => {
   });
 
   it("wipes the ledger through the mint gate and reloads the status", async () => {
-    const { result } = renderHook(() => useActivity({ activeConversationId: null }));
+    const { result } = renderHook(() =>
+      useActivity({ activeConversationId: null })
+    );
     await waitFor(() => expect(result.current.healthLoading).toBe(false));
     const privacyCalls = mockInvoke.mock.calls.filter(
-      ([command]) => command === "privacy_status",
+      ([command]) => command === "privacy_status"
     ).length;
     await act(async () => {
       const result2 = await result.current.wipe();
@@ -264,16 +278,19 @@ describe("useActivity — health panel store", () => {
       cwd: null,
       targetId: null,
     });
-    expect(mockInvoke).toHaveBeenCalledWith("privacy_wipe", { confirmationId: "confirm-id-1" });
+    expect(mockInvoke).toHaveBeenCalledWith("privacy_wipe", {
+      confirmationId: "confirm-id-1",
+    });
     expect(
-      mockInvoke.mock.calls.filter(([command]) => command === "privacy_status").length,
+      mockInvoke.mock.calls.filter(([command]) => command === "privacy_status")
+        .length
     ).toBeGreaterThan(privacyCalls);
   });
 
   it("degrades a failed context probe to the section error", async () => {
     failNext.command = "conversation_context_stats";
     const { result } = renderHook(() =>
-      useActivity({ activeConversationId: 5 }),
+      useActivity({ activeConversationId: 5 })
     );
     await waitFor(() => expect(result.current.healthLoading).toBe(false));
     expect(result.current.contextError).toBe("backend refused");
@@ -290,10 +307,14 @@ describe("useActivity — dock queue store", () => {
     expect(result.current.queue?.[0].title).toBe("queued");
     expect(result.current.queueError).toBeNull();
     // The health slices never ran.
-    expect(mockInvoke.mock.calls.some(([command]) => command === "supported_providers")).toBe(
-      false,
-    );
-    expect(mockInvoke.mock.calls.some(([command]) => command === "activity_feed")).toBe(false);
+    expect(
+      mockInvoke.mock.calls.some(
+        ([command]) => command === "supported_providers"
+      )
+    ).toBe(false);
+    expect(
+      mockInvoke.mock.calls.some(([command]) => command === "activity_feed")
+    ).toBe(false);
   });
 
   it("surfaces a failed queue fetch with the honest fallback", async () => {

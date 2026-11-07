@@ -15,7 +15,10 @@ import EmptyState from "./components/EmptyState";
 import ReleasePanel from "./components/ReleasePanel";
 import { ExportModal, ImportModal } from "./components/ImportExportModals";
 import IssuesPanel from "./components/IssuesPanel";
-import { NavigationProvider, type Navigation } from "./components/NavigationContext";
+import {
+  NavigationProvider,
+  type Navigation,
+} from "./components/NavigationContext";
 import NexoraMark from "./components/NexoraMark";
 import OnboardingFlow from "./components/OnboardingFlow";
 import PromptLibraryView from "./components/PromptLibraryView";
@@ -24,11 +27,7 @@ import ShortcutsDialog from "./components/ShortcutsDialog";
 import { SnackbarProvider } from "./components/SnackbarHost";
 import TaskPanel from "./components/TaskPanel";
 import VersionControlPanel from "./components/VersionControlPanel";
-import {
-  buildCommands,
-  recordUse,
-  type PaletteCommand,
-} from "./lib/commands";
+import { buildCommands, recordUse, type PaletteCommand } from "./lib/commands";
 import {
   COMBO_HELP_F1,
   COMBO_HELP_QUESTION,
@@ -129,16 +128,17 @@ function AppShell() {
   const replayOnboardingFlow = onboarding.replay;
   // A palette-chosen command runs after the palette unmounts (see the
   // deferred-run effect below), so focus moves land on live targets.
-  const [pendingPaletteRun, setPendingPaletteRun] = useState<(() => void) | null>(null);
+  const [pendingPaletteRun, setPendingPaletteRun] = useState<
+    (() => void) | null
+  >(null);
 
-  const draftFor = useCallback(
-    (id: number) => drafts[id] ?? "",
-    [drafts],
-  );
+  const draftFor = useCallback((id: number) => drafts[id] ?? "", [drafts]);
   const setDraftFor = useCallback(
     (id: number) => (value: string) =>
-      setDrafts((prev) => (prev[id] === value ? prev : { ...prev, [id]: value })),
-    [],
+      setDrafts((prev) =>
+        prev[id] === value ? prev : { ...prev, [id]: value }
+      ),
+    []
   );
 
   // Model list + selection dispatch for the composer's model picker
@@ -147,7 +147,7 @@ function AppShell() {
   // so there is no second copy of the selection anywhere.
   const providerModels = useMemo<string[]>(() => {
     const match = providers.providers.find(
-      (entry) => entry.supported.name === providers.selectedProvider,
+      (entry) => entry.supported.name === providers.selectedProvider
     );
     return match ? match.supported.models : [];
   }, [providers.providers, providers.selectedProvider]);
@@ -155,7 +155,7 @@ function AppShell() {
     (model: string) => {
       void providers.selectModel(model);
     },
-    [providers],
+    [providers]
   );
   const modelError = providers.error ? providers.error.message : null;
 
@@ -271,7 +271,7 @@ function AppShell() {
       }
       setDockPanel((prev) => (prev === panel ? null : panel));
     },
-    [router],
+    [router]
   );
   const closeDockPanel = useCallback(() => setDockPanel(null), []);
 
@@ -286,7 +286,7 @@ function AppShell() {
       setDockPanel(null);
       router.closeAll();
     },
-    [tabs, router],
+    [tabs, router]
   );
 
   // FR-007 "Use": stage the prompt's content into the active pane's composer,
@@ -306,7 +306,9 @@ function AppShell() {
       return;
     }
     if (tabs.activeId === null) return;
-    const other = [...tabs.openIds].reverse().find((id) => id !== tabs.activeId);
+    const other = [...tabs.openIds]
+      .reverse()
+      .find((id) => id !== tabs.activeId);
     if (other !== undefined) tabs.openInSplit(other);
   }, [tabs]);
 
@@ -404,7 +406,9 @@ function AppShell() {
             event.preventDefault();
             router.closeAll();
             const position =
-              event.key === "9" ? tabs.openIds.length - 1 : Number(event.key) - 1;
+              event.key === "9"
+                ? tabs.openIds.length - 1
+                : Number(event.key) - 1;
             tabs.jumpTo(position);
           }
         }
@@ -498,11 +502,7 @@ function AppShell() {
   useEffect(() => {
     if (onboarding.completed || onboarding.open) return;
     if (providers.loading || workspace.loading) return;
-    if (
-      router.hasOverlay ||
-      paletteOpen ||
-      shortcutsOpen
-    ) {
+    if (router.hasOverlay || paletteOpen || shortcutsOpen) {
       return;
     }
     if (anyProviderAvailable || workspace.root !== null) return;
@@ -558,7 +558,7 @@ function AppShell() {
           },
           tabCount: () => tabs.openIds.length,
         },
-        locale,
+        locale
       ),
     [
       router,
@@ -571,7 +571,7 @@ function AppShell() {
       replayOnboarding,
       workspace,
       locale,
-    ],
+    ]
   );
 
   // Choosing a command closes the palette first; the command itself runs
@@ -651,20 +651,28 @@ function AppShell() {
         // With history present but nothing open, the copy says so instead of
         // claiming there are no conversations (data honesty).
         <EmptyState
-          title={conversations.length === 0 ? undefined : t("app.noSessionTitle")}
-          description={conversations.length === 0 ? undefined : t("app.noSessionText")}
+          title={
+            conversations.length === 0 ? undefined : t("app.noSessionTitle")
+          }
+          description={
+            conversations.length === 0 ? undefined : t("app.noSessionText")
+          }
         />
       ) : (
         // Tabs exist but the active id has no list entry yet (reload in
         // flight after delete/import) — hold the calm placeholder.
         <div className="nex-main-placeholder nex-empty-enter">
           <span className="nex-placeholder-mark-wrap" aria-hidden="true">
-            <NexoraMark className="nex-placeholder-mark" width={30} height={30} />
+            <NexoraMark
+              className="nex-placeholder-mark"
+              width={30}
+              height={30}
+            />
           </span>
-          <p className="nex-placeholder-title">{t("app.noConversationTitle")}</p>
-          <p className="nex-placeholder-text">
-            {t("app.noConversationText")}
+          <p className="nex-placeholder-title">
+            {t("app.noConversationTitle")}
           </p>
+          <p className="nex-placeholder-text">{t("app.noConversationText")}</p>
         </div>
       )
     ) : splitVisible && splitConversation ? (
@@ -739,87 +747,87 @@ function AppShell() {
       archive,
       restore,
       remove,
-    ],
+    ]
   );
 
   return (
     <SnackbarProvider>
-    <div className="nex-app">
-      <a className="nex-skip-link" href="#nex-main-content">
-        {t("app.skipLink")}
-      </a>
-      {/* The Dock is the shell's navigation, and every overlay (Settings,
+      <div className="nex-app">
+        <a className="nex-skip-link" href="#nex-main-content">
+          {t("app.skipLink")}
+        </a>
+        {/* The Dock is the shell's navigation, and every overlay (Settings,
           VCS, Tasks, …) is a full-bleed surface that owns the whole window:
           the rail used to paint on top of the Settings navigation and clip
           its labels. While an overlay is up it is the only navigation, and
           each one carries its own way back ("Back to conversations", close). */}
-      {!showOverlays && (
-        <NavigationProvider value={navigation}>
-          <Dock
-            onNew={handleNewConversation}
-            onPanelToggle={handlePanelToggle}
-            activePanel={dockPanel}
-          />
-        </NavigationProvider>
-      )}
-      {/* Dock panels (D-06). They sit beside the rail, above the stage, and
+        {!showOverlays && (
+          <NavigationProvider value={navigation}>
+            <Dock
+              onNew={handleNewConversation}
+              onPanelToggle={handlePanelToggle}
+              activePanel={dockPanel}
+            />
+          </NavigationProvider>
+        )}
+        {/* Dock panels (D-06). They sit beside the rail, above the stage, and
           never move it: the thread and the composer keep their geometry while
           one is open. Settings is the exception — it is the 720 px modal. */}
-      {!showOverlays && dockPanel === "sessions" && (
-        <DockPanel
-          id="sessions"
-          title={t("dock.sessions")}
-          onClose={closeDockPanel}
-        >
-          <SessionsPanel
-            conversations={conversations}
-            loading={loading}
-            activeId={tabs.activeId}
-            busy={working}
-            onOpen={handleSelect}
-            onRename={rename}
-            onArchive={archive}
-            onRestore={restore}
-            onDelete={remove}
-          />
-        </DockPanel>
-      )}
-      {!showOverlays && dockPanel === "activity" && (
-        <DockPanel
-          id="activity"
-          title={t("dock.activity")}
-          onClose={closeDockPanel}
-        >
-          <ActivityPanel
-            onOpenTasks={() => {
-              setDockPanel(null);
-              router.openTasks();
-            }}
-            onOpenConversation={handleSelect}
-          />
-        </DockPanel>
-      )}
-      <div className="nex-main" id="nex-main-content" tabIndex={-1}>
-        {!showOverlays && (
-          <ConversationTabs
-            tabs={tabs.openIds.map(resolveTab)}
-            activeId={tabs.activeId}
-            splitId={tabs.splitId}
-            onActivate={(id) => {
-              tabs.activate(id);
-              router.closeAll();
-            }}
-            onClose={tabs.close}
-            splitOpen={tabs.splitId !== null}
-            onToggleSplit={handleToggleSplit}
-            workspaceRoot={workspace.root}
-            workspaceLoading={workspace.loading}
-            onExport={setExportTargetId}
-          />
+        {!showOverlays && dockPanel === "sessions" && (
+          <DockPanel
+            id="sessions"
+            title={t("dock.sessions")}
+            onClose={closeDockPanel}
+          >
+            <SessionsPanel
+              conversations={conversations}
+              loading={loading}
+              activeId={tabs.activeId}
+              busy={working}
+              onOpen={handleSelect}
+              onRename={rename}
+              onArchive={archive}
+              onRestore={restore}
+              onDelete={remove}
+            />
+          </DockPanel>
         )}
-        {showOverlays ? (
-          <>
-            {/* Live panes stay mounted under Settings/Library: hidden via
+        {!showOverlays && dockPanel === "activity" && (
+          <DockPanel
+            id="activity"
+            title={t("dock.activity")}
+            onClose={closeDockPanel}
+          >
+            <ActivityPanel
+              onOpenTasks={() => {
+                setDockPanel(null);
+                router.openTasks();
+              }}
+              onOpenConversation={handleSelect}
+            />
+          </DockPanel>
+        )}
+        <div className="nex-main" id="nex-main-content" tabIndex={-1}>
+          {!showOverlays && (
+            <ConversationTabs
+              tabs={tabs.openIds.map(resolveTab)}
+              activeId={tabs.activeId}
+              splitId={tabs.splitId}
+              onActivate={(id) => {
+                tabs.activate(id);
+                router.closeAll();
+              }}
+              onClose={tabs.close}
+              splitOpen={tabs.splitId !== null}
+              onToggleSplit={handleToggleSplit}
+              workspaceRoot={workspace.root}
+              workspaceLoading={workspace.loading}
+              onExport={setExportTargetId}
+            />
+          )}
+          {showOverlays ? (
+            <>
+              {/* Live panes stay mounted under Settings/Library: hidden via
                 CSS (display:none drops them from layout, tab order, and the
                 a11y tree while the overlay owns the view) but never
                 unmounted, so ConversationView instances keep scroll position
@@ -830,110 +838,113 @@ function AppShell() {
                 router flag is set, and nothing sets it any more. They are
                 kept (not dead code to delete) so re-adding a rail row or a
                 palette command revives the panel unchanged. */}
-            <div className="nex-main-hidden" aria-hidden="true">
-              {conversationContent}
-            </div>
-            {router.libraryOpen ? (
-              <PromptLibraryView
-                onClose={router.closeLibrary}
-                hasActiveConversation={hasActiveConversation}
-                onUse={handleUsePrompt}
-                initialEditId={router.promptToEditId}
+              <div className="nex-main-hidden" aria-hidden="true">
+                {conversationContent}
+              </div>
+              {router.libraryOpen ? (
+                <PromptLibraryView
+                  onClose={router.closeLibrary}
+                  hasActiveConversation={hasActiveConversation}
+                  onUse={handleUsePrompt}
+                  initialEditId={router.promptToEditId}
+                />
+              ) : router.vcsOpen ? (
+                <VersionControlPanel
+                  onClose={router.closeVcs}
+                  request={router.vcsRequest}
+                />
+              ) : router.activityOpen ? (
+                <ActivityHealthPanel
+                  onClose={router.closeActivity}
+                  initialTab={router.activityTab}
+                  tabRequest={router.activityRequest}
+                  activeConversationId={tabs.activeId}
+                />
+              ) : router.tasksOpen ? (
+                <TaskPanel
+                  onClose={router.closeTasks}
+                  defaultProvider={providers.selectedProvider}
+                  defaultModel={providers.selectedModel}
+                />
+              ) : router.auditOpen ? (
+                <AuditPanel onClose={router.closeAudit} />
+              ) : router.debtOpen ? (
+                <DebtPanel onClose={router.closeDebt} />
+              ) : router.ghOpen ? (
+                <IssuesPanel onClose={router.closeGh} />
+              ) : router.docsOpen ? (
+                <DocsPanel onClose={router.closeDocs} />
+              ) : router.releaseOpen ? (
+                <ReleasePanel onClose={router.closeRelease} />
+              ) : (
+                <SettingsView
+                  store={providers}
+                  appearance={appearance}
+                  locale={locale}
+                  onLocaleChange={setLocale}
+                  workspaceRoot={workspace.root}
+                  workspaceLoading={workspace.loading}
+                  spendLimit={spendLimit}
+                  autonomy={autonomy}
+                  onClose={router.closeSettings}
+                  onDataCleared={() => void reload()}
+                  initialSection={router.settingsSection}
+                  onOpenImport={() => setImportOpen(true)}
+                  onExportActive={exportActiveConversation}
+                  onReplayOnboarding={replayOnboarding}
+                />
+              )}
+            </>
+          ) : (
+            conversationContent
+          )}
+        </div>
+        {exportTargetId !== null &&
+          (() => {
+            const target = conversations.find((c) => c.id === exportTargetId);
+            if (!target) return null;
+            return (
+              <ExportModal
+                conversationId={target.id}
+                conversationTitle={target.title}
+                store={io}
+                onClose={() => {
+                  setExportTargetId(null);
+                  io.clearStatus();
+                }}
               />
-            ) : router.vcsOpen ? (
-              <VersionControlPanel onClose={router.closeVcs} request={router.vcsRequest} />
-            ) : router.activityOpen ? (
-              <ActivityHealthPanel
-                onClose={router.closeActivity}
-                initialTab={router.activityTab}
-                tabRequest={router.activityRequest}
-                activeConversationId={tabs.activeId}
-              />
-            ) : router.tasksOpen ? (
-              <TaskPanel
-                onClose={router.closeTasks}
-                defaultProvider={providers.selectedProvider}
-                defaultModel={providers.selectedModel}
-              />
-            ) : router.auditOpen ? (
-              <AuditPanel onClose={router.closeAudit} />
-            ) : router.debtOpen ? (
-              <DebtPanel onClose={router.closeDebt} />
-            ) : router.ghOpen ? (
-              <IssuesPanel onClose={router.closeGh} />
-            ) : router.docsOpen ? (
-              <DocsPanel onClose={router.closeDocs} />
-            ) : router.releaseOpen ? (
-              <ReleasePanel onClose={router.closeRelease} />
-            ) : (
-              <SettingsView
-                store={providers}
-                appearance={appearance}
-                locale={locale}
-                onLocaleChange={setLocale}
-                workspaceRoot={workspace.root}
-                workspaceLoading={workspace.loading}
-                spendLimit={spendLimit}
-                autonomy={autonomy}
-                onClose={router.closeSettings}
-                onDataCleared={() => void reload()}
-                initialSection={router.settingsSection}
-                onOpenImport={() => setImportOpen(true)}
-                onExportActive={exportActiveConversation}
-                onReplayOnboarding={replayOnboarding}
-              />
-            )}
-          </>
-        ) : (
-          conversationContent
+            );
+          })()}
+        {importOpen && (
+          <ImportModal
+            store={io}
+            onImported={(newId) => void handleImported(newId)}
+            onClose={() => {
+              setImportOpen(false);
+              io.clearStatus();
+            }}
+          />
+        )}
+        {paletteOpen && (
+          <CommandPalette
+            commands={paletteCommands}
+            onClose={() => setPaletteOpen(false)}
+            onRun={handlePaletteRun}
+          />
+        )}
+        {shortcutsOpen && (
+          <ShortcutsDialog onClose={() => setShortcutsOpen(false)} />
+        )}
+        {onboarding.open && (
+          <OnboardingFlow
+            key={onboarding.runId}
+            providers={providers}
+            workspace={workspace}
+            onClose={dismissOnboarding}
+            onOpenSettings={handleOnboardingOpenSettings}
+          />
         )}
       </div>
-      {exportTargetId !== null &&
-        (() => {
-          const target = conversations.find((c) => c.id === exportTargetId);
-          if (!target) return null;
-          return (
-            <ExportModal
-              conversationId={target.id}
-              conversationTitle={target.title}
-              store={io}
-              onClose={() => {
-                setExportTargetId(null);
-                io.clearStatus();
-              }}
-            />
-          );
-        })()}
-      {importOpen && (
-        <ImportModal
-          store={io}
-          onImported={(newId) => void handleImported(newId)}
-          onClose={() => {
-            setImportOpen(false);
-            io.clearStatus();
-          }}
-        />
-      )}
-      {paletteOpen && (
-        <CommandPalette
-          commands={paletteCommands}
-          onClose={() => setPaletteOpen(false)}
-          onRun={handlePaletteRun}
-        />
-      )}
-      {shortcutsOpen && (
-        <ShortcutsDialog onClose={() => setShortcutsOpen(false)} />
-      )}
-      {onboarding.open && (
-        <OnboardingFlow
-          key={onboarding.runId}
-          providers={providers}
-          workspace={workspace}
-          onClose={dismissOnboarding}
-          onOpenSettings={handleOnboardingOpenSettings}
-        />
-      )}
-    </div>
     </SnackbarProvider>
   );
 }

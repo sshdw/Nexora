@@ -1,10 +1,6 @@
 import { useEffect, useState } from "react";
 
-import type {
-  CommandError,
-  Conversation,
-  SearchResults,
-} from "../lib/tauri";
+import type { CommandError, Conversation, SearchResults } from "../lib/tauri";
 import { search } from "../lib/tauri";
 import { getLocale, tr } from "../lib/strings";
 import { useStrings } from "../lib/useLocale";
@@ -172,7 +168,10 @@ export default function SearchBox({
                   data-slot="search-empty"
                   className="flex flex-col items-center gap-2 px-2 py-4 text-center text-xs text-muted-foreground"
                 >
-                  <SearchIcon aria-hidden="true" className="size-5 opacity-60" />
+                  <SearchIcon
+                    aria-hidden="true"
+                    className="size-5 opacity-60"
+                  />
                   <span>{t("search.noResults", { q: value.trim() })}</span>
                 </div>
               )}
@@ -200,7 +199,9 @@ export default function SearchBox({
                         {conversation.title}
                       </span>
                       <span className="w-full truncate text-xs text-muted-foreground font-normal">
-                        {conversation.status === "archived" ? t("search.metaArchived") : t("search.metaConversation")}
+                        {conversation.status === "archived"
+                          ? t("search.metaArchived")
+                          : t("search.metaConversation")}
                       </span>
                     </M3Button>
                   ))}
@@ -248,9 +249,16 @@ function toCommandError(error: unknown): CommandError {
     typeof (error as CommandError).kind === "string" &&
     typeof (error as CommandError).message === "string"
   ) {
-    return { kind: (error as CommandError).kind, message: (error as CommandError).message };
+    return {
+      kind: (error as CommandError).kind,
+      message: (error as CommandError).message,
+    };
   }
   if (typeof error === "string") return { kind: "unknown", message: error };
-  if (error instanceof Error) return { kind: "unknown", message: error.message };
-  return { kind: "unknown", message: tr(getLocale(), "common.searchUnreachable") };
+  if (error instanceof Error)
+    return { kind: "unknown", message: error.message };
+  return {
+    kind: "unknown",
+    message: tr(getLocale(), "common.searchUnreachable"),
+  };
 }

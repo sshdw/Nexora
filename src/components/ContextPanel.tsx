@@ -85,7 +85,11 @@ function formatCount(value: number): string {
   return value.toLocaleString("en-US").replace(/,/g, " ");
 }
 
-function formatTokens(value: number, known: boolean, locale: Locale = getLocale()): string {
+function formatTokens(
+  value: number,
+  known: boolean,
+  locale: Locale = getLocale()
+): string {
   if (!known) return tr(locale, "common.na");
   return formatCount(value);
 }
@@ -106,7 +110,10 @@ function formatDateTime(ts: number): string {
   });
 }
 
-export default function ContextPanel({ conversationId, stats }: ContextPanelProps) {
+export default function ContextPanel({
+  conversationId,
+  stats,
+}: ContextPanelProps) {
   const { t } = useStrings();
   const [files, setFiles] = useState<ChangedFile[]>([]);
   const [filesLoading, setFilesLoading] = useState<boolean>(true);
@@ -135,7 +142,13 @@ export default function ContextPanel({ conversationId, stats }: ContextPanelProp
         // ONLY winners instead of every write_file step sequentially.
         const winners = new Map<
           string,
-          { path: string; preview: string; runId: number; seq: number; stepId: number }
+          {
+            path: string;
+            preview: string;
+            runId: number;
+            seq: number;
+            stepId: number;
+          }
         >();
         for (const run of runs) {
           let steps: AgentStep[] = [];
@@ -145,11 +158,15 @@ export default function ContextPanel({ conversationId, stats }: ContextPanelProp
             steps = [];
           }
           for (const step of steps) {
-            if (step.kind !== "tool_call" || step.tool_name !== "write_file") continue;
+            if (step.kind !== "tool_call" || step.tool_name !== "write_file")
+              continue;
             if (!step.observation) continue;
             const path =
               parseWritePath(step.arguments) ??
-              tr(getLocale(), "ctx.runStepFallback", { run: run.id, seq: step.seq });
+              tr(getLocale(), "ctx.runStepFallback", {
+                run: run.id,
+                seq: step.seq,
+              });
             const prev = winners.get(path);
             if (!prev || step.seq >= prev.seq) {
               winners.set(path, {
@@ -178,16 +195,22 @@ export default function ContextPanel({ conversationId, stats }: ContextPanelProp
               // Keep the preview fallback.
             }
             return { ...win, observation };
-          }),
+          })
         );
         if (cancelled) return;
         setFiles(
           loaded
-            .map(({ path, observation, runId, seq }) => ({ path, observation, runId, seq }))
-            .sort((a, b) => a.path.localeCompare(b.path)),
+            .map(({ path, observation, runId, seq }) => ({
+              path,
+              observation,
+              runId,
+              seq,
+            }))
+            .sort((a, b) => a.path.localeCompare(b.path))
         );
       } catch (e) {
-        if (!cancelled) setFilesError(e instanceof Error ? e.message : String(e));
+        if (!cancelled)
+          setFilesError(e instanceof Error ? e.message : String(e));
       } finally {
         if (!cancelled) setFilesLoading(false);
       }
@@ -229,7 +252,9 @@ export default function ContextPanel({ conversationId, stats }: ContextPanelProp
   // progress). Over budget it pins at 100% and the readout below — not the
   // bar — carries the over-budget verdict.
   const budgetShare =
-    budgetUsed === null || budget <= 0 ? 0 : Math.min(100, (budgetUsed / budget) * 100);
+    budgetUsed === null || budget <= 0
+      ? 0
+      : Math.min(100, (budgetUsed / budget) * 100);
 
   // A ROW IS A FACT, and a row of "n/a" is not one. The token counters only
   // exist once a provider has reported usage (`has_token_data`); before that
@@ -271,7 +296,10 @@ export default function ContextPanel({ conversationId, stats }: ContextPanelProp
       value: stats.provider_display ?? stats.provider ?? t("common.na"),
     },
     { label: t("ctx.labelModel"), value: stats.model ?? t("common.na") },
-    { label: t("ctx.labelContextLimit"), value: formatCount(stats.context_limit) },
+    {
+      label: t("ctx.labelContextLimit"),
+      value: formatCount(stats.context_limit),
+    },
     {
       label: t("ctx.labelUsage"),
       value: stats.has_token_data
@@ -279,10 +307,22 @@ export default function ContextPanel({ conversationId, stats }: ContextPanelProp
         : t("common.na"),
     },
     ...tokenRows,
-    { label: t("ctx.labelUserMessages"), value: formatCount(stats.user_message_count) },
-    { label: t("ctx.labelAssistantMessages"), value: formatCount(stats.assistant_message_count) },
-    { label: t("ctx.labelSessionCreated"), value: formatDateTime(stats.created_at) },
-    { label: t("ctx.labelLastActivity"), value: formatDateTime(stats.updated_at) },
+    {
+      label: t("ctx.labelUserMessages"),
+      value: formatCount(stats.user_message_count),
+    },
+    {
+      label: t("ctx.labelAssistantMessages"),
+      value: formatCount(stats.assistant_message_count),
+    },
+    {
+      label: t("ctx.labelSessionCreated"),
+      value: formatDateTime(stats.created_at),
+    },
+    {
+      label: t("ctx.labelLastActivity"),
+      value: formatDateTime(stats.updated_at),
+    },
   ];
   // Cost rides on the budget readout and the hairline's accessible name,
   // not on a sixteenth permanent row (SYSTEM §8: "Cost on hover … details
@@ -309,7 +349,10 @@ export default function ContextPanel({ conversationId, stats }: ContextPanelProp
           below still explains the absence in words, and the changed-files
           list is independent of token accounting. */}
       {stats.has_token_data && (
-        <section className="nex-context-breakdown" aria-label={t("ctx.breakdown")}>
+        <section
+          className="nex-context-breakdown"
+          aria-label={t("ctx.breakdown")}
+        >
           <h3 className="nex-context-section-title">{t("ctx.breakdown")}</h3>
           <div
             className="nex-context-bar"
@@ -340,26 +383,41 @@ export default function ContextPanel({ conversationId, stats }: ContextPanelProp
           </div>
           <ul className="nex-context-legend">
             <li>
-              <span className="nex-context-dot nex-context-seg-user" aria-hidden="true" />
+              <span
+                className="nex-context-dot nex-context-seg-user"
+                aria-hidden="true"
+              />
               {t("ctx.legendUser")} {pct(user).toFixed(1)}%
             </li>
             <li>
-              <span className="nex-context-dot nex-context-seg-assistant" aria-hidden="true" />
+              <span
+                className="nex-context-dot nex-context-seg-assistant"
+                aria-hidden="true"
+              />
               {t("ctx.legendAssistant")} {pct(assistant).toFixed(1)}%
             </li>
             <li>
-              <span className="nex-context-dot nex-context-seg-tools" aria-hidden="true" />
+              <span
+                className="nex-context-dot nex-context-seg-tools"
+                aria-hidden="true"
+              />
               {t("ctx.legendTools")} {pct(tools).toFixed(1)}%
             </li>
             <li>
-              <span className="nex-context-dot nex-context-seg-other" aria-hidden="true" />
+              <span
+                className="nex-context-dot nex-context-seg-other"
+                aria-hidden="true"
+              />
               {t("ctx.legendOther")} {pct(other).toFixed(1)}%
             </li>
           </ul>
         </section>
       )}
 
-      <section className="nex-context-budget" aria-labelledby={`${hintId}-title`}>
+      <section
+        className="nex-context-budget"
+        aria-labelledby={`${hintId}-title`}
+      >
         <h3 className="nex-context-section-title" id={`${hintId}-title`}>
           {t("ctx.budgetTitle")}
         </h3>
@@ -370,7 +428,10 @@ export default function ContextPanel({ conversationId, stats }: ContextPanelProp
             max={CONTEXT_BUDGET_MAX}
             step={CONTEXT_BUDGET_STEP}
             // On the THUMB, where `role="slider"` actually lives.
-            thumbProps={{ "aria-label": t("ctx.budgetLabel"), "aria-describedby": hintId }}
+            thumbProps={{
+              "aria-label": t("ctx.budgetLabel"),
+              "aria-describedby": hintId,
+            }}
             // Live while dragging; persisted only on release, so a
             // drag across the track is one write, not two hundred.
             onValueChange={(next) => budgetStore.setBudget(next[0])}
@@ -408,7 +469,10 @@ export default function ContextPanel({ conversationId, stats }: ContextPanelProp
             t("ctx.totalCostTitle", { cost })
           }
         >
-          <span className="nex-context-meter-fill" style={{ width: `${budgetShare}%` }} />
+          <span
+            className="nex-context-meter-fill"
+            style={{ width: `${budgetShare}%` }}
+          />
         </div>
         {/* The live reading. Over budget it is announced as a status
             (the value changed under a control that was already there)
@@ -418,7 +482,9 @@ export default function ContextPanel({ conversationId, stats }: ContextPanelProp
             and in the hairline's accessible name above, so the detail is
             never hover-only. */}
         <p
-          className={"nex-context-budget-reading" + (overBudget ? " is-over" : "")}
+          className={
+            "nex-context-budget-reading" + (overBudget ? " is-over" : "")
+          }
           role={overBudget ? "status" : undefined}
           title={t("ctx.totalCostTitle", { cost })}
         >
@@ -441,7 +507,10 @@ export default function ContextPanel({ conversationId, stats }: ContextPanelProp
         )}
       </section>
 
-      <section className="nex-context-files" aria-label={t("vcs.changedTitle", { n: files.length })}>
+      <section
+        className="nex-context-files"
+        aria-label={t("vcs.changedTitle", { n: files.length })}
+      >
         <h3 className="nex-context-section-title">
           {t("vcs.changedTitle", { n: files.length })}
         </h3>
@@ -456,9 +525,15 @@ export default function ContextPanel({ conversationId, stats }: ContextPanelProp
         ) : (
           <ul className="nex-context-file-list">
             {files.map((file) => (
-              <li key={`${file.runId}-${file.seq}-${file.path}`} className="nex-context-file">
+              <li
+                key={`${file.runId}-${file.seq}-${file.path}`}
+                className="nex-context-file"
+              >
                 <header className="nex-context-file-header">
-                  <span className="nex-tag nex-tag-mono" title={t("ctx.changedPath")}>
+                  <span
+                    className="nex-tag nex-tag-mono"
+                    title={t("ctx.changedPath")}
+                  >
                     {file.path}
                   </span>
                 </header>

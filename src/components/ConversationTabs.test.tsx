@@ -40,7 +40,9 @@ const TABS: TabEntry[] = [
   { id: 2, title: "Обзор миграции схемы", archived: false },
 ];
 
-function tabStrip(overrides: Partial<Parameters<typeof ConversationTabs>[0]> = {}) {
+function tabStrip(
+  overrides: Partial<Parameters<typeof ConversationTabs>[0]> = {}
+) {
   const props = {
     tabs: TABS,
     activeId: TABS[0]!.id,
@@ -57,7 +59,7 @@ function tabStrip(overrides: Partial<Parameters<typeof ConversationTabs>[0]> = {
   const view = render(
     <LocaleProvider>
       <ConversationTabs {...props} />
-    </LocaleProvider>,
+    </LocaleProvider>
   );
   return { props, view };
 }
@@ -82,7 +84,9 @@ const autonomy = {
   dailyUsd: 0,
 } as unknown as AutonomyStore;
 
-function workspaceStub(overrides: Partial<WorkspaceStore> = {}): WorkspaceStore {
+function workspaceStub(
+  overrides: Partial<WorkspaceStore> = {}
+): WorkspaceStore {
   return {
     root: null,
     recent: [],
@@ -121,7 +125,7 @@ function pane(overrides: Partial<Parameters<typeof ConversationPane>[0]> = {}) {
   render(
     <LocaleProvider>
       <ConversationPane {...props} />
-    </LocaleProvider>,
+    </LocaleProvider>
   );
   return props;
 }
@@ -177,22 +181,22 @@ describe("tab strip grammar (MAP row 4)", () => {
     // Dock's first destination and forbids the duplicate entry point, so
     // the strip's trailing group is Export + Split and nothing else.
     expect(
-      screen.queryByRole("button", { name: "New conversation" }),
+      screen.queryByRole("button", { name: "New conversation" })
     ).not.toBeInTheDocument();
     // Zen is deleted outright (R6-04): no control, no leftover tab-strip
     // affordance.
     expect(screen.queryByRole("button", { name: "Zen" })).toBeNull();
     const focusable = Array.from(
-      document.querySelectorAll('.nex-tabstrip button, .nex-tabstrip a[href]'),
+      document.querySelectorAll(".nex-tabstrip button, .nex-tabstrip a[href]")
     );
     expect(focusable[focusable.length - 1]).toHaveTextContent("Split");
   });
 
   it("marks the active tab with aria-selected and nothing else", () => {
     tabStrip();
-    const selected = screen.getAllByRole("tab").filter(
-      (tab) => tab.getAttribute("aria-selected") === "true",
-    );
+    const selected = screen
+      .getAllByRole("tab")
+      .filter((tab) => tab.getAttribute("aria-selected") === "true");
     expect(selected).toHaveLength(1);
     expect(selected[0]).toHaveAccessibleName("Refactor the parser");
   });
@@ -217,9 +221,12 @@ describe("tab strip grammar (MAP row 4)", () => {
           workspaceLoading={false}
           onExport={vi.fn()}
         />
-      </LocaleProvider>,
+      </LocaleProvider>
     );
-    expect(scroll).toHaveBeenCalledWith({ block: "nearest", inline: "nearest" });
+    expect(scroll).toHaveBeenCalledWith({
+      block: "nearest",
+      inline: "nearest",
+    });
   });
 
   it("moves and activates with the arrow keys, and closes per tab", () => {
@@ -239,14 +246,18 @@ describe("tab strip grammar (MAP row 4)", () => {
     fireEvent.keyDown(first!, { key: "End" });
     expect(second).toHaveFocus();
 
-    fireEvent.click(screen.getByRole("button", { name: "Close Обзор миграции схемы" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Close Обзор миграции схемы" })
+    );
     expect(props.onClose).toHaveBeenCalledWith(2);
   });
 
   it("annotates the tab shown in the split pane", () => {
     tabStrip({ splitId: 2 });
     const splitTab = screen.getAllByRole("tab")[1]!;
-    expect(splitTab).toHaveAccessibleName("Обзор миграции схемы (open in split pane)");
+    expect(splitTab).toHaveAccessibleName(
+      "Обзор миграции схемы (open in split pane)"
+    );
   });
 });
 
@@ -277,8 +288,8 @@ describe("quiet control tone — no control takes the UA's `buttontext` (Defect 
     // reasoning above stops holding.
     const restColours = classes.filter((token) =>
       /^text-(?:foreground|background|card-foreground|popover-foreground|primary|primary-foreground|secondary-foreground|muted-foreground|accent-foreground|destructive|tick|ring|border|input)$/.test(
-        token,
-      ),
+        token
+      )
     );
     expect(restColours).toEqual([]);
   }
@@ -286,7 +297,7 @@ describe("quiet control tone — no control takes the UA's `buttontext` (Defect 
   it("covers the tab close and Split", () => {
     tabStrip();
     expectQuietControl(
-      screen.getByRole("button", { name: "Close Refactor the parser" }),
+      screen.getByRole("button", { name: "Close Refactor the parser" })
     );
     expectQuietControl(screen.getByRole("button", { name: "Split" }));
   });
@@ -314,7 +325,7 @@ describe("workspace chip (MAP row 5, SYSTEM §4)", () => {
     const { container } = render(
       <LocaleProvider>
         <WorkspaceChip {...props} />
-      </LocaleProvider>,
+      </LocaleProvider>
     );
     return container;
   }
@@ -329,19 +340,28 @@ describe("workspace chip (MAP row 5, SYSTEM §4)", () => {
   });
 
   it("names a POSIX root the same way", () => {
-    const container = chip({ root: "/home/gogog/projects/nx/", loading: false });
-    expect(container.querySelector(".nex-workspace-chip")).toHaveTextContent("nx");
+    const container = chip({
+      root: "/home/gogog/projects/nx/",
+      loading: false,
+    });
+    expect(container.querySelector(".nex-workspace-chip")).toHaveTextContent(
+      "nx"
+    );
   });
 
   it("carries no glyph: no aria-hidden slot and no pictographic character", () => {
     const container = chip({ root: "D:\\projects\\nx", loading: false });
     // The emoji this chip used to render lived in exactly such a slot.
     expect(container.querySelector('[aria-hidden="true"]')).toBeNull();
-    expect(container.textContent ?? "").not.toMatch(/\p{Extended_Pictographic}/u);
+    expect(container.textContent ?? "").not.toMatch(
+      /\p{Extended_Pictographic}/u
+    );
   });
 
   it("shows the loading and unset states whole", () => {
     expect(chip({ root: null, loading: true })).toHaveTextContent("Workspace…");
-    expect(chip({ root: null, loading: false })).toHaveTextContent("Workspace unset");
+    expect(chip({ root: null, loading: false })).toHaveTextContent(
+      "Workspace unset"
+    );
   });
 });

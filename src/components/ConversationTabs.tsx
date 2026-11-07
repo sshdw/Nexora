@@ -112,7 +112,7 @@ export default function ConversationTabs({
   // inline (the focused tab IS the scope; see lib/shortcuts.ts).
   const handleTabKeyDown = (
     event: React.KeyboardEvent<HTMLButtonElement>,
-    index: number,
+    index: number
   ) => {
     switch (event.key) {
       case "ArrowRight":
@@ -155,8 +155,7 @@ export default function ConversationTabs({
               key={tab.id}
               role="presentation"
               className={
-                "nex-tab nex-tab-enter" +
-                (selected ? " is-active" : "")
+                "nex-tab nex-tab-enter" + (selected ? " is-active" : "")
               }
             >
               <button

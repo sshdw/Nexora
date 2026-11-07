@@ -66,18 +66,62 @@ export const HIDDEN_PANEL_DOC_IDS: readonly string[] = [
 // Ten rows name hidden panels and are exempt from the honesty rule for as
 // long as they are hidden — see HIDDEN_PANEL_DOC_IDS above.
 export const DOC_FEATURES: readonly DocsFeature[] = [
-  { paletteId: "chat.new", titleKey: "docs.featChat", bodyKey: "docs.featChatBody" },
-  { paletteId: "go.library", titleKey: "docs.featLibrary", bodyKey: "docs.featLibraryBody" },
-  { paletteId: "go.vcs", titleKey: "docs.featVcs", bodyKey: "docs.featVcsBody" },
-  { paletteId: "go.terminal", titleKey: "docs.featTerminal", bodyKey: "docs.featTerminalBody" },
-  { paletteId: "go.tasks", titleKey: "docs.featTasks", bodyKey: "docs.featTasksBody" },
-  { paletteId: "go.audit", titleKey: "docs.featAudit", bodyKey: "docs.featAuditBody" },
-  { paletteId: "go.debt", titleKey: "docs.featDebt", bodyKey: "docs.featDebtBody" },
+  {
+    paletteId: "chat.new",
+    titleKey: "docs.featChat",
+    bodyKey: "docs.featChatBody",
+  },
+  {
+    paletteId: "go.library",
+    titleKey: "docs.featLibrary",
+    bodyKey: "docs.featLibraryBody",
+  },
+  {
+    paletteId: "go.vcs",
+    titleKey: "docs.featVcs",
+    bodyKey: "docs.featVcsBody",
+  },
+  {
+    paletteId: "go.terminal",
+    titleKey: "docs.featTerminal",
+    bodyKey: "docs.featTerminalBody",
+  },
+  {
+    paletteId: "go.tasks",
+    titleKey: "docs.featTasks",
+    bodyKey: "docs.featTasksBody",
+  },
+  {
+    paletteId: "go.audit",
+    titleKey: "docs.featAudit",
+    bodyKey: "docs.featAuditBody",
+  },
+  {
+    paletteId: "go.debt",
+    titleKey: "docs.featDebt",
+    bodyKey: "docs.featDebtBody",
+  },
   { paletteId: "go.gh", titleKey: "docs.featGh", bodyKey: "docs.featGhBody" },
-  { paletteId: "go.activity", titleKey: "docs.featActivity", bodyKey: "docs.featActivityBody" },
-  { paletteId: "go.health", titleKey: "docs.featHealth", bodyKey: "docs.featHealthBody" },
-  { paletteId: "go.privacy", titleKey: "docs.featPrivacy", bodyKey: "docs.featPrivacyBody" },
-  { paletteId: "go.diagnostics", titleKey: "docs.featDiag", bodyKey: "docs.featDiagBody" },
+  {
+    paletteId: "go.activity",
+    titleKey: "docs.featActivity",
+    bodyKey: "docs.featActivityBody",
+  },
+  {
+    paletteId: "go.health",
+    titleKey: "docs.featHealth",
+    bodyKey: "docs.featHealthBody",
+  },
+  {
+    paletteId: "go.privacy",
+    titleKey: "docs.featPrivacy",
+    bodyKey: "docs.featPrivacyBody",
+  },
+  {
+    paletteId: "go.diagnostics",
+    titleKey: "docs.featDiag",
+    bodyKey: "docs.featDiagBody",
+  },
 ];
 
 /** Catalog key for a migration version's note (`docs.mig1` … `docs.migN`).

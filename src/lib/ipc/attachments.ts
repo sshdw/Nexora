@@ -29,7 +29,7 @@ export function attachFile(
   conversationId: number,
   fileName: string,
   filePath: string,
-  mimeType: string | null,
+  mimeType: string | null
 ): Promise<Attachment> {
   return invoke<Attachment>("attach_file", {
     conversationId,

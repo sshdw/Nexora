@@ -43,7 +43,10 @@ import { applyMotionLevel } from "./lib/motionLevel";
 // the real UI renders against representative data in a plain browser.
 // Production builds dead-code-eliminate this branch entirely.
 async function bootstrap(): Promise<void> {
-  if (import.meta.env.DEV && new URLSearchParams(window.location.search).has("mock")) {
+  if (
+    import.meta.env.DEV &&
+    new URLSearchParams(window.location.search).has("mock")
+  ) {
     await import("./lib/mockBackend");
   }
   applyMotionLevel();
@@ -52,7 +55,7 @@ async function bootstrap(): Promise<void> {
       <ErrorBoundary root>
         <App />
       </ErrorBoundary>
-    </React.StrictMode>,
+    </React.StrictMode>
   );
 }
 

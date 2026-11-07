@@ -26,7 +26,7 @@ function renderDock(overrides: Partial<DockProps> = {}) {
       onNew={vi.fn()}
       onPanelToggle={vi.fn()}
       {...rest}
-    />,
+    />
   );
 }
 
@@ -40,9 +40,15 @@ describe("dock — shell", () => {
   it("renders New → Sessions → Activity → Settings, and no Workspace", () => {
     renderDock();
     expect(screen.getByRole("button", { name: "New" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Sessions" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Activity" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Settings" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Sessions" })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Activity" })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Settings" })
+    ).toBeInTheDocument();
     // R6-03/R6-07: the workspace picker lives in the composer now, so the
     // Dock destination is gone — absent, not disabled.
     expect(screen.queryByRole("button", { name: "Workspace" })).toBeNull();
@@ -70,7 +76,10 @@ describe("dock — panel buttons", () => {
 
     const activity = screen.getByRole("button", { name: "Activity" });
     expect(activity).toHaveAttribute("aria-expanded", "false");
-    expect(activity).toHaveAttribute("aria-controls", "nex-dock-panel-activity");
+    expect(activity).toHaveAttribute(
+      "aria-controls",
+      "nex-dock-panel-activity"
+    );
   });
 
   it("omits aria-expanded / aria-controls from the New command button", () => {
@@ -91,8 +100,12 @@ describe("dock — panel buttons", () => {
 describe("dock — attention dot", () => {
   it("renders a static amber dot on Activity when attention is set", () => {
     renderDock({ attentionCount: 3 });
-    const activity = screen.getByRole("button", { name: "Activity, 3 needs you" });
-    const dot = activity.querySelector('span[class*="bg-[var(--color-primary)]"]');
+    const activity = screen.getByRole("button", {
+      name: "Activity, 3 needs you",
+    });
+    const dot = activity.querySelector(
+      'span[class*="bg-[var(--color-primary)]"]'
+    );
     expect(dot).not.toBeNull();
     expect(dot).toHaveClass("bg-[var(--color-primary)]");
     // static: no animation or transition classes on the dot
@@ -103,7 +116,9 @@ describe("dock — attention dot", () => {
   it("omits the dot when there is no attention", () => {
     renderDock({ attentionCount: 0 });
     const activity = screen.getByRole("button", { name: "Activity" });
-    const dot = activity.querySelector('span[class*="bg-[var(--color-primary)]"]');
+    const dot = activity.querySelector(
+      'span[class*="bg-[var(--color-primary)]"]'
+    );
     expect(dot).toBeNull();
   });
 });
@@ -142,8 +157,12 @@ describe("dock — tooltip", () => {
 
 describe("dock — reduced-motion gate", () => {
   it("collapses transition duration under prefers-reduced-motion", () => {
-    const css = readRepoFile("src/styles/motion.css").replace(/\/\*[\s\S]*?\*\//g, "");
-    const block = /@media \(prefers-reduced-motion: reduce\) \{([\s\S]*?)\n\}/.exec(css);
+    const css = readRepoFile("src/styles/motion.css").replace(
+      /\/\*[\s\S]*?\*\//g,
+      ""
+    );
+    const block =
+      /@media \(prefers-reduced-motion: reduce\) \{([\s\S]*?)\n\}/.exec(css);
     expect(block).not.toBeNull();
     const declarations = block![1];
     expect(declarations).toMatch(/transition-duration:\s*0\.01ms\s*!important/);

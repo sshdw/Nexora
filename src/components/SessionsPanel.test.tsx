@@ -6,7 +6,14 @@
 //! two empty states, the store's own grouping, and `aria-current` on the row
 //! that is already open.
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Conversation } from "../lib/tauri";
@@ -47,7 +54,7 @@ function renderPanel(overrides: Partial<SessionsPanelProps> = {}) {
   const view = render(
     <LocaleProvider>
       <SessionsPanel {...props} />
-    </LocaleProvider>,
+    </LocaleProvider>
   );
   return { ...props, ...view };
 }
@@ -57,20 +64,26 @@ const filter = () => screen.getByRole("searchbox", { name: "Filter sessions" });
 describe("sessions panel — list", () => {
   it("lists every conversation with its title", () => {
     renderPanel();
-    expect(screen.getByRole("button", { name: /Alpha thread/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Beta thread/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Old alpha notes/ })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Alpha thread/ })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Beta thread/ })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Old alpha notes/ })
+    ).toBeInTheDocument();
   });
 
   it("groups active and archived without re-sorting", () => {
     const { container } = renderPanel();
     const groups = [...container.querySelectorAll(".nex-dock-panel-group")].map(
-      (node) => node.textContent,
+      (node) => node.textContent
     );
     expect(groups).toEqual(["Active", "Archived"]);
     // The store is already `updated_at DESC`; the partition keeps that order.
     const rows = [...container.querySelectorAll(".nex-sessions-row-title")].map(
-      (node) => node.textContent,
+      (node) => node.textContent
     );
     expect(rows).toEqual(["Alpha thread", "Beta thread", "Old alpha notes"]);
   });
@@ -79,11 +92,11 @@ describe("sessions panel — list", () => {
     renderPanel({ activeId: 2 });
     expect(screen.getByRole("button", { name: /Beta thread/ })).toHaveAttribute(
       "aria-current",
-      "true",
+      "true"
     );
-    expect(screen.getByRole("button", { name: /Alpha thread/ })).not.toHaveAttribute(
-      "aria-current",
-    );
+    expect(
+      screen.getByRole("button", { name: /Alpha thread/ })
+    ).not.toHaveAttribute("aria-current");
   });
 
   it("opens the conversation the row names", () => {
@@ -97,27 +110,37 @@ describe("sessions panel — filter", () => {
   it("filters by title, case-insensitively and across both groups", () => {
     renderPanel();
     fireEvent.change(filter(), { target: { value: "ALPHA" } });
-    expect(screen.getByRole("button", { name: /Alpha thread/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Old alpha notes/ })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Alpha thread/ })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Old alpha notes/ })
+    ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Beta thread/ })).toBeNull();
   });
 
   it("trims the query and restores the full list when cleared", () => {
     renderPanel();
     fireEvent.change(filter(), { target: { value: "   " } });
-    expect(screen.getByRole("button", { name: /Beta thread/ })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Beta thread/ })
+    ).toBeInTheDocument();
 
     fireEvent.change(filter(), { target: { value: "beta" } });
     expect(screen.queryByRole("button", { name: /Alpha thread/ })).toBeNull();
 
     fireEvent.change(filter(), { target: { value: "" } });
-    expect(screen.getByRole("button", { name: /Alpha thread/ })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Alpha thread/ })
+    ).toBeInTheDocument();
   });
 
   it("says the filter matched nothing — distinct from an empty store", () => {
     renderPanel();
     fireEvent.change(filter(), { target: { value: "no such title" } });
-    expect(screen.getByText("No sessions match that filter")).toBeInTheDocument();
+    expect(
+      screen.getByText("No sessions match that filter")
+    ).toBeInTheDocument();
     expect(screen.queryByText("No sessions yet")).toBeNull();
   });
 
@@ -144,7 +167,13 @@ describe("sessions panel — loading", () => {
 describe("sessions panel — row meta", () => {
   it("names the conversation's last activity on every row", () => {
     renderPanel({
-      conversations: [conversation({ id: 1, title: "Alpha thread", updated_at: 1_700_000_000 })],
+      conversations: [
+        conversation({
+          id: 1,
+          title: "Alpha thread",
+          updated_at: 1_700_000_000,
+        }),
+      ],
     });
     const row = screen.getByRole("button", { name: /Alpha thread/ });
     const meta = row.querySelector(".nex-sessions-row-meta");
@@ -178,7 +207,9 @@ describe("sessions panel — rename", () => {
     fireEvent.change(input, { target: { value: "  Renamed thread  " } });
     fireEvent.keyDown(input, { key: "Enter" });
 
-    await waitFor(() => expect(onRename).toHaveBeenCalledWith(1, "Renamed thread"));
+    await waitFor(() =>
+      expect(onRename).toHaveBeenCalledWith(1, "Renamed thread")
+    );
     const row = await screen.findByRole("button", { name: /Alpha thread/ });
     await waitFor(() => expect(document.activeElement).toBe(row));
   });
@@ -191,9 +222,13 @@ describe("sessions panel — rename", () => {
     fireEvent.keyDown(input, { key: "Escape" });
 
     expect(onRename).not.toHaveBeenCalled();
-    expect(screen.queryByRole("textbox", { name: "Rename conversation" })).toBeNull();
+    expect(
+      screen.queryByRole("textbox", { name: "Rename conversation" })
+    ).toBeNull();
     await waitFor(() =>
-      expect(document.activeElement).toBe(screen.getByRole("button", { name: /Alpha thread/ })),
+      expect(document.activeElement).toBe(
+        screen.getByRole("button", { name: /Alpha thread/ })
+      )
     );
   });
 
@@ -205,7 +240,9 @@ describe("sessions panel — rename", () => {
     fireEvent.keyDown(input, { key: "Enter" });
 
     expect(onRename).not.toHaveBeenCalled();
-    expect(screen.getByRole("button", { name: /Alpha thread/ })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Alpha thread/ })
+    ).toBeInTheDocument();
   });
 
   it("does not write a title that did not change", () => {
@@ -215,7 +252,9 @@ describe("sessions panel — rename", () => {
     fireEvent.keyDown(input, { key: "Enter" });
 
     expect(onRename).not.toHaveBeenCalled();
-    expect(screen.getByRole("button", { name: /Alpha thread/ })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Alpha thread/ })
+    ).toBeInTheDocument();
   });
 
   it("commits on blur, the way a click elsewhere expects, without stealing focus back", async () => {
@@ -229,7 +268,9 @@ describe("sessions panel — rename", () => {
     elsewhere.focus();
     fireEvent.blur(input);
 
-    await waitFor(() => expect(onRename).toHaveBeenCalledWith(1, "Blurred thread"));
+    await waitFor(() =>
+      expect(onRename).toHaveBeenCalledWith(1, "Blurred thread")
+    );
     expect(document.activeElement).toBe(elsewhere);
   });
 
@@ -238,7 +279,9 @@ describe("sessions panel — rename", () => {
     // blur), so renaming Beta + Enter returned early — 0 store calls.
     const { onRename } = renderPanel();
     fireEvent.click(action("Alpha thread", "Rename conversation"));
-    const abandoned = screen.getByRole("textbox", { name: "Rename conversation" });
+    const abandoned = screen.getByRole("textbox", {
+      name: "Rename conversation",
+    });
     fireEvent.change(abandoned, { target: { value: "Discarded title" } });
     fireEvent.keyDown(abandoned, { key: "Escape" });
     expect(onRename).not.toHaveBeenCalled();
@@ -252,7 +295,9 @@ describe("sessions panel — rename", () => {
     // swallowed this Enter and left the input mounted; the pending
     // return-focus timer later blur-committed it, which is exactly how a
     // waitFor-based assertion passed on the old code.
-    expect(screen.queryByRole("textbox", { name: "Rename conversation" })).toBeNull();
+    expect(
+      screen.queryByRole("textbox", { name: "Rename conversation" })
+    ).toBeNull();
     expect(onRename).toHaveBeenCalledTimes(1);
     expect(onRename).toHaveBeenCalledWith(2, "Beta renamed");
   });
@@ -271,7 +316,9 @@ describe("sessions panel — rename", () => {
     fireEvent.keyDown(input, { key: "Enter" });
 
     // Same synchronous contract: no waitFor, no timer advance.
-    expect(screen.queryByRole("textbox", { name: "Rename conversation" })).toBeNull();
+    expect(
+      screen.queryByRole("textbox", { name: "Rename conversation" })
+    ).toBeNull();
     expect(onRename).toHaveBeenCalledTimes(1);
     expect(onRename).toHaveBeenCalledWith(2, "Beta renamed");
   });
@@ -279,7 +326,9 @@ describe("sessions panel — rename", () => {
   it("does not poison the next Enter commit after an unchanged-title cancel", () => {
     const { onRename } = renderPanel();
     fireEvent.click(action("Alpha thread", "Rename conversation"));
-    const unchanged = screen.getByRole("textbox", { name: "Rename conversation" });
+    const unchanged = screen.getByRole("textbox", {
+      name: "Rename conversation",
+    });
     fireEvent.keyDown(unchanged, { key: "Enter" });
     expect(onRename).not.toHaveBeenCalled();
 
@@ -289,7 +338,9 @@ describe("sessions panel — rename", () => {
     fireEvent.keyDown(input, { key: "Enter" });
 
     // Same synchronous contract: no waitFor, no timer advance.
-    expect(screen.queryByRole("textbox", { name: "Rename conversation" })).toBeNull();
+    expect(
+      screen.queryByRole("textbox", { name: "Rename conversation" })
+    ).toBeNull();
     expect(onRename).toHaveBeenCalledTimes(1);
     expect(onRename).toHaveBeenCalledWith(2, "Beta renamed");
   });
@@ -311,12 +362,12 @@ describe("sessions panel — archive and restore", () => {
     expect(
       within(rowActions("Alpha thread")).queryByRole("button", {
         name: "Restore conversation",
-      }),
+      })
     ).toBeNull();
     expect(
       within(rowActions("Old alpha notes")).queryByRole("button", {
         name: "Archive conversation",
-      }),
+      })
     ).toBeNull();
   });
 
@@ -337,9 +388,13 @@ describe("sessions panel — delete", () => {
     const { onDelete } = renderPanel();
     fireEvent.click(action("Alpha thread", "Delete conversation"));
 
-    expect(screen.getByRole("dialog", { name: "Delete conversation" })).toBeInTheDocument();
     expect(
-      screen.getByText("Delete “Alpha thread” permanently? This cannot be undone."),
+      screen.getByRole("dialog", { name: "Delete conversation" })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Delete “Alpha thread” permanently? This cannot be undone."
+      )
     ).toBeInTheDocument();
     expect(onDelete).not.toHaveBeenCalled();
   });
@@ -352,7 +407,9 @@ describe("sessions panel — delete", () => {
     expect(onDelete).not.toHaveBeenCalled();
     expect(screen.queryByRole("dialog")).toBeNull();
     // The row is still there — cancel is not a quiet delete.
-    expect(screen.getByRole("button", { name: /Alpha thread/ })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Alpha thread/ })
+    ).toBeInTheDocument();
   });
 
   it("deletes only after the explicit confirm, then closes the dialog", async () => {
@@ -388,10 +445,12 @@ describe("sessions panel — action reveal", () => {
     expect(body).not.toMatch(/visibility:\s*hidden/);
 
     const reveal = sheet.slice(
-      sheet.indexOf(".nex-sessions-item:hover .nex-sessions-row-actions,"),
+      sheet.indexOf(".nex-sessions-item:hover .nex-sessions-row-actions,")
     );
     expect(reveal.slice(0, reveal.indexOf("}"))).toMatch(/opacity:\s*1/);
-    expect(reveal).toContain(".nex-sessions-item:focus-within .nex-sessions-row-actions");
+    expect(reveal).toContain(
+      ".nex-sessions-item:focus-within .nex-sessions-row-actions"
+    );
   });
 
   it("fades the viewport's bottom edge into the panel surface", () => {
@@ -403,15 +462,17 @@ describe("sessions panel — action reveal", () => {
     // pointer.
     const sheet = readRepoFile("src/styles/dockPanels.css");
     expect(sheet, "the painted fade overlay still exists").not.toContain(
-      ".nex-sessions::after",
+      ".nex-sessions::after"
     );
     // The mask is the sheet's only ramp — nothing is painted with a gradient.
     expect(sheet).not.toMatch(/background:[^;]*gradient/);
     const start = sheet.indexOf(".nex-sessions .nex-sessions-scroll {");
     expect(start, "sessions scroll mask rule is missing").toBeGreaterThan(-1);
     const body = sheet.slice(start, sheet.indexOf("}", start));
+    // Whitespace-tolerant at the printer's wrap points; the value's
+    // token sequence stays exact (incl. the calc() spacing CSS needs).
     expect(body).toMatch(
-      /mask-image:\s*linear-gradient\(to bottom, black calc\(100% - var\(--space-xl\)\), transparent\)/,
+      /mask-image:\s*linear-gradient\(\s*to\s+bottom,\s*black\s+calc\(100% - var\(--space-xl\)\),\s*transparent\s*\)/
     );
   });
 
@@ -432,11 +493,13 @@ describe("sessions panel — action reveal", () => {
     expect(scroll).not.toBeNull();
     expect(scroll?.querySelector('[data-slot="tooltip-bubble"]')).toBeNull();
 
-    const bubbles = [...document.body.querySelectorAll('[data-slot="tooltip-bubble"]')];
+    const bubbles = [
+      ...document.body.querySelectorAll('[data-slot="tooltip-bubble"]'),
+    ];
     expect(bubbles.length).toBeGreaterThan(0);
-    expect(bubbles.some((bubble) => bubble.textContent === "Rename conversation")).toBe(
-      true,
-    );
+    expect(
+      bubbles.some((bubble) => bubble.textContent === "Rename conversation")
+    ).toBe(true);
 
     // Second guard: the sheet refuses sideways overflow even if a future
     // always-mounted child tries to widen the list again.

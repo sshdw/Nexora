@@ -40,14 +40,20 @@ function code(path: string): string {
 /** The body of a top-level rule, matched by its EXACT selector. */
 function ruleBody(css: string, selector: string): string {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = new RegExp(`(?:^|\\n)${escaped}\\s*\\{([\\s\\S]*?)\\n\\}`).exec(css);
+  const match = new RegExp(`(?:^|\\n)${escaped}\\s*\\{([\\s\\S]*?)\\n\\}`).exec(
+    css
+  );
   if (!match) throw new Error(`no top-level rule for ${selector}`);
   return match[1];
 }
 
 /** The last declaration of `property` in a rule body. */
 function declaration(body: string, property: string): string | undefined {
-  const matches = [...body.matchAll(new RegExp(`(?:^|[;{\\s])${property}\\s*:\\s*([^;]+);`, "gi"))];
+  const matches = [
+    ...body.matchAll(
+      new RegExp(`(?:^|[;{\\s])${property}\\s*:\\s*([^;]+);`, "gi")
+    ),
+  ];
   const last = matches[matches.length - 1];
   return last?.[1].trim();
 }
@@ -109,7 +115,10 @@ describe("THEME §6 chrome freeze — the 40px header", () => {
 
   for (const [label, selector] of CHROME_ROWS) {
     it(`${label} (${selector}) resolves to 40px through the token`, () => {
-      const height = declaration(ruleBody(code("src/styles/tabs.css"), selector), "min-height");
+      const height = declaration(
+        ruleBody(code("src/styles/tabs.css"), selector),
+        "min-height"
+      );
       expect(height).toBe("var(--chrome-height)");
       expect(resolve(height)).toBe("40px");
     });
@@ -133,7 +142,7 @@ describe("THEME §6 chrome freeze — the 40px header", () => {
     const padding = (declaration(header, "padding") ?? "").split(/\s+/);
     const blockPad = Number.parseFloat(resolve(padding[0]) ?? "");
     const border = Number.parseFloat(
-      /([\d.]+)px/.exec(declaration(header, "border-bottom") ?? "")?.[1] ?? "",
+      /([\d.]+)px/.exec(declaration(header, "border-bottom") ?? "")?.[1] ?? ""
     );
     expect(Number.isFinite(blockPad)).toBe(true);
     expect(Number.isFinite(border)).toBe(true);
@@ -143,7 +152,9 @@ describe("THEME §6 chrome freeze — the 40px header", () => {
   it("keeps the shared legacy token at 52px", () => {
     // The token cannot be deleted or retargeted: five sheets below
     // still resolve it, and it dies with tokens.css in Phase 6.
-    expect(declaration(code("src/index.css"), "--layout-header-height")).toBe("52px");
+    expect(declaration(code("src/index.css"), "--layout-header-height")).toBe(
+      "52px"
+    );
     expect(resolve("var(--layout-header-height)")).toBe("52px");
   });
 

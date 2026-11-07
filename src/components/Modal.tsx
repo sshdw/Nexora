@@ -17,7 +17,13 @@
 //! plain opacity transition on the utilities layer, collapsed by the
 //! global reduced-motion gate; `EXIT_MS` stays in sync with it.
 
-import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 
 import { cn } from "../lib/utils";
 
@@ -96,7 +102,9 @@ export default function ModalShell({
     // and AT virtual cursor both excluded). The walk stops below
     // <html> so <head> is never touched.
     const inerted: HTMLElement[] = [];
-    let node: HTMLElement | null = sheet ? sheetRef.current : backdropRef.current;
+    let node: HTMLElement | null = sheet
+      ? sheetRef.current
+      : backdropRef.current;
     while (node) {
       const parent = node.parentElement;
       if (!parent || parent === document.documentElement) break;
@@ -138,7 +146,7 @@ export default function ModalShell({
     const card = cardRef.current;
     if (!card) return;
     const focusable = Array.from(
-      card.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
+      card.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)
     );
     if (focusable.length === 0) {
       event.preventDefault();
@@ -169,8 +177,10 @@ export default function ModalShell({
           ref={backdropRef}
           className={cn(
             "fixed inset-0 z-50 flex bg-background/80 p-4 transition-opacity duration-200",
-            align === "top" ? "items-start justify-center pt-12" : "items-center justify-center",
-            closing ? "opacity-0" : "opacity-100",
+            align === "top"
+              ? "items-start justify-center pt-12"
+              : "items-center justify-center",
+            closing ? "opacity-0" : "opacity-100"
           )}
           role="presentation"
           onClick={busy ? undefined : requestClose}
@@ -182,7 +192,7 @@ export default function ModalShell({
               "relative w-full max-w-lg",
               cardBase,
               "transition-opacity duration-200",
-              closing ? "opacity-0" : "opacity-100",
+              closing ? "opacity-0" : "opacity-100"
             )}
             role="dialog"
             aria-modal="true"
@@ -190,7 +200,9 @@ export default function ModalShell({
             tabIndex={-1}
             onClick={(event) => event.stopPropagation()}
           >
-            <h3 className="mb-3 text-base font-medium text-foreground">{title}</h3>
+            <h3 className="mb-3 text-base font-medium text-foreground">
+              {title}
+            </h3>
             {children}
           </div>
         </div>
@@ -199,7 +211,7 @@ export default function ModalShell({
           ref={sheetRef}
           className={cn(
             "fixed inset-0 z-50 p-4",
-            closing ? "opacity-0" : "opacity-100",
+            closing ? "opacity-0" : "opacity-100"
           )}
           role="presentation"
           onKeyDown={handleKeyDown}
@@ -210,7 +222,7 @@ export default function ModalShell({
               "fixed inset-y-0 right-0 w-full max-w-[480px] h-full border-l",
               cardBase,
               "rounded-none overflow-y-auto transition-opacity duration-200",
-              closing ? "opacity-0" : "opacity-100",
+              closing ? "opacity-0" : "opacity-100"
             )}
             role="dialog"
             aria-modal="true"
@@ -218,11 +230,13 @@ export default function ModalShell({
             tabIndex={-1}
             onClick={(event) => event.stopPropagation()}
           >
-            <h3 className="mb-3 text-base font-medium text-foreground">{title}</h3>
+            <h3 className="mb-3 text-base font-medium text-foreground">
+              {title}
+            </h3>
             {children}
           </div>
         </div>
       )}
     </>
-    );
+  );
 }

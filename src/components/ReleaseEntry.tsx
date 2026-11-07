@@ -13,7 +13,10 @@ export interface ReleaseEntryProps {
 // `aria-current` (not `aria-pressed`): this is a navigation destination.
 // Unrendered since #219 (the nav trim) — the panel, this entry and its hooks
 // stay, so re-adding the rail row is a one-line change.
-export default function ReleaseEntry({ active = false, onClick }: ReleaseEntryProps) {
+export default function ReleaseEntry({
+  active = false,
+  onClick,
+}: ReleaseEntryProps) {
   const { t } = useStrings();
   return (
     <M3RailItem

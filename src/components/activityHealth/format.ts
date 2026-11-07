@@ -3,13 +3,20 @@
 //! No React: fixed-vocabulary labels, compact dollar/byte formats, and the
 //! shared error classifier.
 
-import type { CommandError, PrivacySurface, ProviderHealth } from "../../lib/tauri";
+import type {
+  CommandError,
+  PrivacySurface,
+  ProviderHealth,
+} from "../../lib/tauri";
 import { getLocale, tr, type Locale } from "../../lib/strings";
 
 /** Fixed-vocabulary run-status label; unknown values fall back to a
  * capitalized echo of the backend token (defensive — the backend only
  * sends its `agent_runs.status` vocabulary). */
-export function runStatusLabel(status: string, locale: Locale = getLocale()): string {
+export function runStatusLabel(
+  status: string,
+  locale: Locale = getLocale()
+): string {
   switch (status) {
     case "running":
       return tr(locale, "activity.runRunning");
@@ -29,7 +36,10 @@ export function runStatusLabel(status: string, locale: Locale = getLocale()): st
 }
 
 /** Fixed-vocabulary provider-health label. */
-export function healthLabel(status: ProviderHealth["status"], locale: Locale = getLocale()): string {
+export function healthLabel(
+  status: ProviderHealth["status"],
+  locale: Locale = getLocale()
+): string {
   switch (status) {
     case "healthy":
       return tr(locale, "activity.healthHealthy");
@@ -44,14 +54,20 @@ export function healthLabel(status: ProviderHealth["status"], locale: Locale = g
 }
 
 /** Compact dollars from micro-USD (`null` = not recorded → "n/a"). */
-export function formatMicroUsd(micros: number | null, locale: Locale = getLocale()): string {
+export function formatMicroUsd(
+  micros: number | null,
+  locale: Locale = getLocale()
+): string {
   if (micros === null) return tr(locale, "common.na");
   const dollars = micros / 1_000_000;
   return `$${dollars >= 1 ? dollars.toFixed(2) : dollars.toFixed(4)}`;
 }
 
 /** Human byte size (`null` = unknown → the catalog "unknown"). */
-export function formatBytes(bytes: number | null, locale: Locale = getLocale()): string {
+export function formatBytes(
+  bytes: number | null,
+  locale: Locale = getLocale()
+): string {
   if (bytes === null) return tr(locale, "diag.sizeUnknown");
   if (bytes < 1024) return `${bytes} B`;
   const kb = bytes / 1024;
@@ -62,7 +78,7 @@ export function formatBytes(bytes: number | null, locale: Locale = getLocale()):
 /** Fixed-vocabulary surface-state label. */
 export function surfaceStateLabel(
   state: PrivacySurface["state"],
-  locale: Locale = getLocale(),
+  locale: Locale = getLocale()
 ): string {
   switch (state) {
     case "on":
@@ -78,7 +94,10 @@ export function surfaceStateLabel(
 }
 
 /** Fixed-vocabulary ledger-kind label; unknown kinds echo defensively. */
-export function ledgerKindLabel(kind: string, locale: Locale = getLocale()): string {
+export function ledgerKindLabel(
+  kind: string,
+  locale: Locale = getLocale()
+): string {
   switch (kind) {
     case "agent_run":
       return tr(locale, "privacy.kind_agent_run");

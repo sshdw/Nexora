@@ -9,7 +9,15 @@
 //! failures degrade to EN). Only `en`/`ru` are accepted; anything else
 //! resolves to EN and never reaches persistence.
 
-import { createContext, createElement, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import {
+  createContext,
+  createElement,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import type { ReactNode } from "react";
 
 import {
@@ -110,6 +118,6 @@ export function useStrings(): Strings {
       t: (key, vars) => tr(locale, key, vars),
       tp: (key, count, vars) => tp(locale, key, count, vars),
     }),
-    [locale],
+    [locale]
   );
 }

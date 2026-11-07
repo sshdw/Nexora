@@ -175,7 +175,8 @@ export const ru: Record<StringKey, string> = {
   "conv.contextAria": "Контекстное окно: использовано {percent}%",
   "conv.contextAriaNa": "Контекстное окно: н/д",
   "conv.hintSend": "Enter — отправить · Shift+Enter — новая строка",
-  "conv.hintSetup": "Чтобы отправлять сообщения, выберите провайдера и модель в настройках.",
+  "conv.hintSetup":
+    "Чтобы отправлять сообщения, выберите провайдера и модель в настройках.",
   "conv.openSettings": "Открыть настройки",
   "conv.autonomyLabel": "Автономность",
   "conv.autonomyAria": "Режим автономности",
@@ -197,15 +198,19 @@ export const ru: Record<StringKey, string> = {
   "conv.modelNoMatch": "Ни одна модель не подходит",
   "conv.modelSwitchFailed": "Не удалось сохранить выбор модели",
   "conv.modelOpenSettings": "Настройки провайдера",
-  "conv.autonomyExplainSupervised": "Под присмотром: каждый вызов инструмента ждёт вашего подтверждения.",
-  "conv.autonomyExplainSemi": "Полуавто: рутинные шаги идут сами, запись файлов всё равно спросит.",
-  "conv.autonomyExplainFull": "Полный авто: агент дорабатывает задачу без остановок.",
+  "conv.autonomyExplainSupervised":
+    "Под присмотром: каждый вызов инструмента ждёт вашего подтверждения.",
+  "conv.autonomyExplainSemi":
+    "Полуавто: рутинные шаги идут сами, запись файлов всё равно спросит.",
+  "conv.autonomyExplainFull":
+    "Полный авто: агент дорабатывает задачу без остановок.",
 
   "md.copyLink": "Скопировать ссылку",
   "md.linkCopied": "Скопировано",
   "md.codeTruncated": "Код обрезан — показаны первые {limit} символов.",
 
-  "err.boundaryBody": "Этот экран не удалось отрисовать — ничего не пропало, можно попробовать снова.",
+  "err.boundaryBody":
+    "Этот экран не удалось отрисовать — ничего не пропало, можно попробовать снова.",
 
   "agent.statusRunning": "Выполняется",
   "agent.statusPaused": "На паузе",
@@ -226,7 +231,8 @@ export const ru: Record<StringKey, string> = {
   "agent.approvalTitle": "Требуется подтверждение",
   "agent.approvalSuffix": "запрашивает подтверждение",
   "agent.approvalText": "{name} запрашивает подтверждение",
-  "agent.approvalTimeoutNotice": "Если никто не ответит, запуск будет отменён автоматически.",
+  "agent.approvalTimeoutNotice":
+    "Если никто не ответит, запуск будет отменён автоматически.",
   "agent.approvalExpiresIn": "Истекает через {time}",
   "agent.approvalExpiresInMin": "Истекает через {n} мин",
   "agent.approvalExpired": "Время подтверждения истекло — запуск отменён.",
@@ -263,12 +269,14 @@ export const ru: Record<StringKey, string> = {
   "agent.durationSeconds": "{n} с",
   "agent.durationMinutes": "{m} мин {s} с",
   "agent.errorWhat": "Что произошло",
-  "agent.errorWhatUnknown": "Причина не сообщена: запуск остановился, не указав почему.",
+  "agent.errorWhatUnknown":
+    "Причина не сообщена: запуск остановился, не указав почему.",
   "agent.errorSurvived": "Что сохранилось",
   "agent.errorNext": "Что делать",
   "agent.errorSurvivedNone": "Из этого запуска ничего не сохранилось.",
   "agent.errorNextRetry": "Отправьте сообщение ещё раз.",
-  "agent.errorNextSpend": "Поднимите лимит трат в настройках и запустите снова.",
+  "agent.errorNextSpend":
+    "Поднимите лимит трат в настройках и запустите снова.",
   "agent.errorNextGeneric": "Отправьте сообщение ещё раз.",
   "agent.runStarting": "Запуск…",
   "agent.toolArgs": "Аргументы инструмента",
@@ -312,7 +320,8 @@ export const ru: Record<StringKey, string> = {
   "ctx.noTokenData": "Нет сохранённых данных об использовании токенов",
   "ctx.runStepFallback": "запуск {run} · шаг {seq}",
   "ctx.breakdown": "Разбивка контекста",
-  "ctx.breakdownAria": "Пользователь {u}%, ассистент {a}%, вызовы инструментов {t}%, прочее {o}%",
+  "ctx.breakdownAria":
+    "Пользователь {u}%, ассистент {a}%, вызовы инструментов {t}%, прочее {o}%",
   "ctx.legendUser": "Пользователь",
   "ctx.legendAssistant": "Ассистент",
   "ctx.legendTools": "Вызовы инструментов",
@@ -321,7 +330,8 @@ export const ru: Record<StringKey, string> = {
   "ctx.changedPath": "Путь изменённого файла",
   "ctx.budgetTitle": "Бюджет контекста",
   "ctx.budgetLabel": "Бюджет контекста",
-  "ctx.budgetHint": "Сколько токенов учитывать в этом разговоре. Больше бюджета — он считается превышенным.",
+  "ctx.budgetHint":
+    "Сколько токенов учитывать в этом разговоре. Больше бюджета — он считается превышенным.",
   "ctx.budgetTokens": "{n} токенов",
   "ctx.budgetUsed": "использовано {used} из {budget} токенов",
   "ctx.budgetExceeded": "Бюджет превышен — больше {budget} токенов.",
@@ -351,7 +361,8 @@ export const ru: Record<StringKey, string> = {
   "settings.themeLabel": "Тема",
   "settings.themeDark": "Тёмная",
   "settings.themeLight": "Светлая",
-  "settings.themeProvisional": "Светлая тема предварительная — финальная палитра ещё открыта.",
+  "settings.themeProvisional":
+    "Светлая тема предварительная — финальная палитра ещё открыта.",
   "settings.languageLabel": "Язык",
   "settings.languageHint":
     "Язык интерфейса этого устройства. Применяется сразу и сохраняется между сессиями.",
@@ -383,7 +394,8 @@ export const ru: Record<StringKey, string> = {
   "settings.autonomySaveFail": "Не удалось сохранить режим автономности.",
   "settings.spendLabel": "Лимит трат на запуск (микро-USD)",
   "settings.spendPh": "Пусто = без лимита",
-  "settings.spendHint": "Пусто = без лимита. 1 USD = 1000000 микро-USD. Применяется к новым запускам.",
+  "settings.spendHint":
+    "Пусто = без лимита. 1 USD = 1000000 микро-USD. Применяется к новым запускам.",
   "settings.workspaceHint":
     "Папка, которой ограничены инструменты агента. Меняется через выбор папки в боковой панели; там же хранятся 5 последних папок.",
   "settings.currentRoot": "Текущий корень",
@@ -425,16 +437,20 @@ export const ru: Record<StringKey, string> = {
   "settings.resolvedOnly": "Только резолвится",
   "settings.flagSnapshots": "Захват снапшотов запуска, чекпоинты и откат.",
   "settings.flagSelfAudit": "Запись итогов самоаудита в аудит-трейл.",
-  "settings.flagInjection": "Конверты недоверенного вывода и пауза на подтверждение при срабатывании маркер-скана.",
-  "settings.flagAssembly": "Бюджетированная умная сборка контекста для старта запуска.",
+  "settings.flagInjection":
+    "Конверты недоверенного вывода и пауза на подтверждение при срабатывании маркер-скана.",
+  "settings.flagAssembly":
+    "Бюджетированная умная сборка контекста для старта запуска.",
   "settings.flagSaveFail": "Не удалось сохранить флаг {name}.",
   "settings.routingTitle": "Профили роутинга",
   "settings.routingHint":
     "Явный порядок провайдеров/моделей для чата и задач агента. Управляется через setup-импорт; здесь — только чтение.",
   "settings.chatProfile": "Профиль чата (routing.profile.chat)",
   "settings.agentProfile": "Профиль агента (routing.profile.agent)",
-  "settings.routingUnset": "Не задан — применяется порядок провайдеров по умолчанию.",
-  "settings.routingBadJson": "Сохранённое значение — не валидный JSON, применяется порядок по умолчанию.",
+  "settings.routingUnset":
+    "Не задан — применяется порядок провайдеров по умолчанию.",
+  "settings.routingBadJson":
+    "Сохранённое значение — не валидный JSON, применяется порядок по умолчанию.",
   "settings.routingSummary": "{count}{details}.",
   "settings.summaryExtra": " (+ещё {n})",
   "settings.mcpTitle": "MCP-серверы",
@@ -442,12 +458,16 @@ export const ru: Record<StringKey, string> = {
     "Внешние серверы инструментов для запусков агента. Управляются через setup-импорт; здесь — только чтение.",
   "settings.mcpServers": "Серверы (mcp.servers)",
   "settings.mcpUnset": "Не заданы — внешние серверы инструментов не настроены.",
-  "settings.mcpBadJson": "Сохранённое значение — не валидный JSON, оно игнорируется.",
-  "settings.mcpNotList": "Сохранённое значение — не список серверов, оно игнорируется.",
-  "settings.mcpEmpty": "Пустой список — внешние серверы инструментов не настроены.",
+  "settings.mcpBadJson":
+    "Сохранённое значение — не валидный JSON, оно игнорируется.",
+  "settings.mcpNotList":
+    "Сохранённое значение — не список серверов, оно игнорируется.",
+  "settings.mcpEmpty":
+    "Пустой список — внешние серверы инструментов не настроены.",
   "settings.mcpSummary": "{count}{details}.",
   "settings.presetTitle": "Пресет агента",
-  "settings.presetHint": "Сохранённое переопределение пресета агента. Не задан — действует встроенный по умолчанию.",
+  "settings.presetHint":
+    "Сохранённое переопределение пресета агента. Не задан — действует встроенный по умолчанию.",
   "settings.presetLabel": "Пресет (agent.preset)",
   "settings.presetUnset": "Не задан — применяется встроенный по умолчанию.",
   "settings.replayLabel": "Переиграть вводный тур",
@@ -495,13 +515,15 @@ export const ru: Record<StringKey, string> = {
   "onboarding.wsNone": "Папка пока не выбрана.",
   "onboarding.chooseFolder": "Выбрать папку…",
   "onboarding.recentLabel": "Недавние папки",
-  "onboarding.summaryNone": "Настройка пропущена — её можно пройти в любой момент из настроек.",
+  "onboarding.summaryNone":
+    "Настройка пропущена — её можно пройти в любой момент из настроек.",
   "onboarding.summaryProvider": "Провайдер: {name}",
   "onboarding.summaryNoProvider": "Провайдер пока не подключён",
   "onboarding.summaryWorkspace": "Папка: {root}",
   "onboarding.summaryNoWorkspace": "Папка пока не выбрана",
   "onboarding.tipPaletteA": "Нажмите ",
-  "onboarding.tipPaletteB": ", чтобы открыть палитру команд — все действия живут там.",
+  "onboarding.tipPaletteB":
+    ", чтобы открыть палитру команд — все действия живут там.",
   "onboarding.tipKeysA": "Нажмите ",
   "onboarding.tipKeysB": " + ",
   "onboarding.tipKeysC": " (или ",
@@ -560,7 +582,8 @@ export const ru: Record<StringKey, string> = {
   "palette.cmd.help_show-shortcuts": "Показать горячие клавиши",
   "palette.cmd.help_replay-onboarding": "Переиграть вводный тур",
   "palette.cmd.vcs_refresh": "Версионный контроль: обновить статус",
-  "palette.cmd.vcs_commit-focus": "Версионный контроль: написать коммит-сообщение",
+  "palette.cmd.vcs_commit-focus":
+    "Версионный контроль: написать коммит-сообщение",
   "palette.cmd.tabJump": "Перейти к вкладке {n}",
   "palette.cmd.tabJumpLast": "Перейти к вкладке 9 (последней)",
 
@@ -576,31 +599,38 @@ export const ru: Record<StringKey, string> = {
   "shortcuts.groupOptions": "Навигация по опциям",
   "shortcuts.groupDialogs": "Диалоги",
   "shortcuts.scopePalette": "Глобально (любой фокус, без открытого диалога)",
-  "shortcuts.scopeTyping": "Глобально (включая поля ввода — Ctrl+Tab не печатает текст)",
+  "shortcuts.scopeTyping":
+    "Глобально (включая поля ввода — Ctrl+Tab не печатает текст)",
   "shortcuts.scopeTypingShort": "Глобально (включая поля ввода)",
-  "shortcuts.scopeAltDigits": "Глобально, кроме полей ввода (Alt+цифры могут печатать символы)",
-  "shortcuts.scopeAltNoText": "Глобально, включая поля ввода (Alt+W не печатает текст)",
+  "shortcuts.scopeAltDigits":
+    "Глобально, кроме полей ввода (Alt+цифры могут печатать символы)",
+  "shortcuts.scopeAltNoText":
+    "Глобально, включая поля ввода (Alt+W не печатает текст)",
   "shortcuts.scopeAltTyping": "Глобально, включая поля ввода",
   "shortcuts.scopeComposer": "Поле ввода сообщения",
   "shortcuts.scopeRename": "Поле переименования разговора",
   "shortcuts.scopePromptTitle": "Поле названия промпта",
   "shortcuts.scopeCustomModel": "Поле своего ID модели",
   "shortcuts.scopeSpend": "Поле лимита трат",
-  
+
   "shortcuts.scopeSettingsSearch": "Поле поиска настроек (есть совпадения)",
   "shortcuts.scopeSettingsSearchEsc": "Поле поиска настроек",
   "shortcuts.scopeSegmented": "Сфокусированная сегмент-группа (автоактивация)",
   "shortcuts.scopeSegmentedEdges": "Сфокусированная сегмент-группа",
-  "shortcuts.scopeTabstrip": "Сфокусированная вкладка разговора (автоактивация)",
+  "shortcuts.scopeTabstrip":
+    "Сфокусированная вкладка разговора (автоактивация)",
   "shortcuts.scopeTabstripEdges": "Сфокусированная вкладка разговора",
   "shortcuts.scopeToolbar": "Сфокусированный тулбар",
-  "shortcuts.scopeToolbarFloat": "Только плавающий тулбар (док-панели остаются)",
+  "shortcuts.scopeToolbarFloat":
+    "Только плавающий тулбар (док-панели остаются)",
   "shortcuts.scopePaletteNav": "Результаты палитры команд",
   "shortcuts.scopeDialog": "Любой открытый диалог (кроме занятого/в полёте)",
   "shortcuts.scopeDialogTrap": "Любой открытый диалог",
-  "shortcuts.scopeButton": "Сфокусированная кнопка (нативное поведение, без своего обработчика)",
+  "shortcuts.scopeButton":
+    "Сфокусированная кнопка (нативное поведение, без своего обработчика)",
   "shortcuts.desc.palette.toggle": "Открыть / закрыть палитру команд",
-  "shortcuts.desc.help.show-shortcuts": "Открыть эту справку по горячим клавишам",
+  "shortcuts.desc.help.show-shortcuts":
+    "Открыть эту справку по горячим клавишам",
   "shortcuts.desc.go.tasks": "Открыть менеджер задач",
   "shortcuts.desc.tabs.next": "Следующая вкладка разговора",
   "shortcuts.desc.tabs.prev": "Предыдущая вкладка разговора",
@@ -614,7 +644,7 @@ export const ru: Record<StringKey, string> = {
   "shortcuts.desc.prompt.save": "Сохранить промпт",
   "shortcuts.desc.settings.custom-model-commit": "Применить свой ID модели",
   "shortcuts.desc.settings.spend-commit": "Применить лимит трат",
-  
+
   "shortcuts.desc.settings.search-jump": "Перейти к лучшей совпавшей группе",
   "shortcuts.desc.settings.search-clear": "Очистить поиск",
   "shortcuts.desc.segmented.move": "Переместить и выбрать опцию",
@@ -632,14 +662,16 @@ export const ru: Record<StringKey, string> = {
   "shortcuts.desc.button.activate": "Активировать кнопку",
 
   "prompts.title": "Библиотека промптов",
-  "prompts.subtitle": "Переиспользуемые шаблоны сообщений для любого разговора.",
+  "prompts.subtitle":
+    "Переиспользуемые шаблоны сообщений для любого разговора.",
   "prompts.toolbar": "Действия библиотеки промптов",
   "prompts.searchLabel": "Поиск промптов",
   "prompts.searchPh": "Поиск промптов",
   "prompts.newPrompt": "Новый промпт",
   "prompts.loading": "Загрузка промптов",
   "prompts.emptyTitle": "Пока нет промптов",
-  "prompts.emptyText": "Создавайте переиспользуемые шаблоны сообщений и вставляйте их в любой разговор кнопкой «Использовать».",
+  "prompts.emptyText":
+    "Создавайте переиспользуемые шаблоны сообщений и вставляйте их в любой разговор кнопкой «Использовать».",
   "prompts.noMatch": "Промпты по запросу «{q}» не найдены.",
   "prompts.use": "Использовать",
   "prompts.useAria": "Использовать «{title}» в активном разговоре",
@@ -662,7 +694,8 @@ export const ru: Record<StringKey, string> = {
   "vcs.title": "Версионный контроль",
   "vcs.subtitleBare": "Git-статус открытого воркспейса.",
   "vcs.subtitleBranch": "На ветке {branch}.",
-  "vcs.subtitleSuffix": "Только ручное обновление — записи спрашивают сначала и никогда не делают force-push.",
+  "vcs.subtitleSuffix":
+    "Только ручное обновление — записи спрашивают сначала и никогда не делают force-push.",
   "vcs.refresh": "Обновить",
   "vcs.refreshing": "Обновление…",
   "vcs.tabsAria": "Виды версионного контроля",
@@ -672,7 +705,8 @@ export const ru: Record<StringKey, string> = {
   "vcs.unavailable": "Версионный контроль недоступен.",
   "vcs.changedTitle": "Изменённых файлов: {n}",
   "vcs.cleanTree": "Изменений нет — рабочее дерево чистое.",
-  "vcs.filesCapped": "+{n} больше — список обрезан; уточните или закоммитьте, чтобы сократить его.",
+  "vcs.filesCapped":
+    "+{n} больше — список обрезан; уточните или закоммитьте, чтобы сократить его.",
   "vcs.filesCappedShort": "+{n} больше — список обрезан.",
   "vcs.diffAria": "Дифф для {path}",
   "vcs.diffTitle": "Дифф:",
@@ -702,7 +736,8 @@ export const ru: Record<StringKey, string> = {
   "vcs.push": "Пуш в origin",
   "vcs.pushing": "Выполняется пуш…",
   "vcs.confirmPush": "Подтвердить пуш в origin",
-  "vcs.pushNotice": "Пуш отправляет текущую ветку в origin — кликните ещё раз для подтверждения.",
+  "vcs.pushNotice":
+    "Пуш отправляет текущую ветку в origin — кликните ещё раз для подтверждения.",
   "vcs.detached": "Detached HEAD — пуш недоступен.",
   "vcs.timelineTitle": "Таймлайн: {n}",
   "vcs.noCommits": "Коммитов пока нет.",
@@ -793,17 +828,22 @@ export const ru: Record<StringKey, string> = {
   "gh.runByLine": "#{id} · {branch}",
   "gh.noBranch": "ветка неизвестна",
   "gh.jobsTitle": "Упавшие джобы ({n})",
-  "gh.jobsTruncated": "Другие упавшие джобы опущены — смотрите запуск на GitHub.",
-  "gh.noFailedJobs": "Упавших джоб с логами в этом запуске нет — смотрите запуск на GitHub.",
+  "gh.jobsTruncated":
+    "Другие упавшие джобы опущены — смотрите запуск на GitHub.",
+  "gh.noFailedJobs":
+    "Упавших джоб с логами в этом запуске нет — смотрите запуск на GitHub.",
   "gh.logTitle": "Хвост лога",
   "gh.logTruncated": "Лог обрезан — показаны последние 200 строк.",
   "gh.logRedacted": "Возможные секреты вырезаны.",
-  "gh.logUnavailable": "Лог недоступен (истёк или не загружен) — смотрите запуск на GitHub.",
-  "gh.logNeedsAuth": "Войдите, чтобы прочитать лог — логи приватного репозитория требуют токен GitHub.",
+  "gh.logUnavailable":
+    "Лог недоступен (истёк или не загружен) — смотрите запуск на GitHub.",
+  "gh.logNeedsAuth":
+    "Войдите, чтобы прочитать лог — логи приватного репозитория требуют токен GitHub.",
   "gh.showLog": "Показать лог",
   "gh.logLoading": "Загрузка лога…",
   "gh.githubRun": "Запуск на GitHub:",
-  "gh.rerunNote": "После починки перезапустите воркфлоу на GitHub — Nexora никогда не перезапускает воркфлоу сама.",
+  "gh.rerunNote":
+    "После починки перезапустите воркфлоу на GitHub — Nexora никогда не перезапускает воркфлоу сама.",
   "gh.createFixTask": "Создать задачу на починку",
   "gh.creatingFixTask": "Создание…",
   "gh.fixTaskCreated":
@@ -822,11 +862,13 @@ export const ru: Record<StringKey, string> = {
   "gh.runnerBusy": "занят",
   "gh.runnerIdle": "свободен",
   "gh.localTitle": "Эта машина",
-  "gh.localHint": "Только поиск в PATH — инструменты никогда не запускаются. Используется унаследованный PATH приложения, который может отличаться от терминала.",
+  "gh.localHint":
+    "Только поиск в PATH — инструменты никогда не запускаются. Используется унаследованный PATH приложения, который может отличаться от терминала.",
   "gh.toolFound": "найден",
   "gh.toolMissing": "нет",
 
-  "term.needProviderExplain": "Сначала выберите провайдера и модель (настройки), затем объясняйте.",
+  "term.needProviderExplain":
+    "Сначала выберите провайдера и модель (настройки), затем объясняйте.",
 
   "task.group": "Задачи",
   "task.title": "Задачи",
@@ -857,7 +899,8 @@ export const ru: Record<StringKey, string> = {
   "task.hideReport": "Скрыть отчёт",
   "task.reportTitle": "Отчёт",
   "task.noTasksTitle": "Пока нет задач",
-  "task.noTasksText": "Создайте список задач выше — автономный цикл выполнит каждый шаг через агента и отчитается здесь.",
+  "task.noTasksText":
+    "Создайте список задач выше — автономный цикл выполнит каждый шаг через агента и отчитается здесь.",
   "task.unavailable": "Задачи недоступны.",
   "task.needProvider": "Перед запуском выберите провайдера и модель.",
   "task.statusPending": "Ожидает",
@@ -884,7 +927,8 @@ export const ru: Record<StringKey, string> = {
   "kanban.viewLabel": "Вид задач",
   "kanban.moveTo": "Переместить: {status}",
   "kanban.takeOver": "Перехватить",
-  "kanban.runningManaged": "Управляется автономным циклом — остановите запуск, чтобы переместить.",
+  "kanban.runningManaged":
+    "Управляется автономным циклом — остановите запуск, чтобы переместить.",
   "kanban.emptyColumn": "Нет задач",
 
   "audit.group": "Аудит кода",
@@ -915,8 +959,10 @@ export const ru: Record<StringKey, string> = {
   "audit.skippedTitle": "Пропущенные файлы",
   "audit.moreFindings": "(ещё +{n} находок опущено)",
   "audit.moreSkipped": "(ещё +{n})",
-  "audit.emptyText": "Запустите аудит для сканирования исходников рабочей папки (.rs, .ts, .tsx).",
-  "audit.noFindingsText": "Сканирование завершено без находок для этого фильтра.",
+  "audit.emptyText":
+    "Запустите аудит для сканирования исходников рабочей папки (.rs, .ts, .tsx).",
+  "audit.noFindingsText":
+    "Сканирование завершено без находок для этого фильтра.",
   "audit.skipTooLarge": "слишком большой",
   "audit.skipUnreadable": "нечитаемый",
   "audit.skipFileCap": "сверх лимита файлов",
@@ -959,7 +1005,8 @@ export const ru: Record<StringKey, string> = {
     "«{title}» будет навсегда удалена из журнала. Это действие необратимо.",
   "debt.deleteConfirm": "Удалить",
   "debt.needTitle": "Сначала введите название.",
-  "debt.emptyText": "Пока ничего не отслеживается — добавьте запись вручную или импортируйте текущие находки аудита.",
+  "debt.emptyText":
+    "Пока ничего не отслеживается — добавьте запись вручную или импортируйте текущие находки аудита.",
   "debt.noMatchText": "Нет записей под этот фильтр.",
   "debt.count": "Записей: {n}",
 
@@ -979,23 +1026,32 @@ export const ru: Record<StringKey, string> = {
   "release.pass": "ок",
   "release.warn": "внимание",
   "release.fail": "ошибка",
-  "release.versionsAgree": "package.json, Cargo.toml и tauri.conf.json совпадают: {v}.",
+  "release.versionsAgree":
+    "package.json, Cargo.toml и tauri.conf.json совпадают: {v}.",
   "release.versionsDiffer": "Версии манифестов расходятся — см. версии ниже.",
-  "release.versionsUnknown": "Некоторые манифесты отсутствуют в рабочей папке — версии неизвестны.",
+  "release.versionsUnknown":
+    "Некоторые манифесты отсутствуют в рабочей папке — версии неизвестны.",
   "release.migrationsCurrent": "Применено миграций: {applied} из {target}.",
-  "release.migrationsPending": "Ожидают применения: {n} — перезапустите приложение.",
+  "release.migrationsPending":
+    "Ожидают применения: {n} — перезапустите приложение.",
   "release.snapshotFound": "Новейший снапшот: {name} ({size}).",
-  "release.snapshotMissing": "Предрелизного снапшота пока нет — сделайте его перед релизом.",
-  "release.updateCurrent": "Запущенная сборка совпадает с последним вышестоящим релизом ({tag}).",
+  "release.snapshotMissing":
+    "Предрелизного снапшота пока нет — сделайте его перед релизом.",
+  "release.updateCurrent":
+    "Запущенная сборка совпадает с последним вышестоящим релизом ({tag}).",
   "release.updateAvailable": "Вышестоящий {tag} новее этой сборки — см. {url}.",
-  "release.updateUnknown": "Состояние обновлений неизвестно — обновите, чтобы проверить.",
-  "release.updateNoReleases": "Вышестоящих релизов пока нет — новее этой сборки ничего нет.",
+  "release.updateUnknown":
+    "Состояние обновлений неизвестно — обновите, чтобы проверить.",
+  "release.updateNoReleases":
+    "Вышестоящих релизов пока нет — новее этой сборки ничего нет.",
   "release.ghReady": "gh {v} доступен для подачи задач.",
-  "release.ghMissing": "gh нет в PATH — установите GitHub CLI и выполните `gh auth login`, чтобы подавать задачи.",
+  "release.ghMissing":
+    "gh нет в PATH — установите GitHub CLI и выполните `gh auth login`, чтобы подавать задачи.",
   "release.fileIssue": "Подать задачу",
   "release.filing": "Подача…",
   "release.issueTitle": "Проверка релиза не прошла: {check}",
-  "release.versionsLine": "package.json {a} · Cargo.toml {b} · tauri.conf.json {c}",
+  "release.versionsLine":
+    "package.json {a} · Cargo.toml {b} · tauri.conf.json {c}",
   "release.unknownVersion": "неизвестно",
   "release.issueCreated": "Задача #{n} подана: {url}",
   "issue.fileIssue": "Подать задачу",
@@ -1017,11 +1073,14 @@ export const ru: Record<StringKey, string> = {
   "testgen.regenerate": "Сгенерировать снова",
   "testgen.targets": "Цели: {considered} · черновики: {n}",
   "testgen.moreDrafts": "(ещё +{n} черновиков опущено — лимит 20)",
-  "testgen.auditOverflow": "(аудит обрезан выше: +{n} находок опущено, остальные цели не рассмотрены)",
-  "testgen.noTargets": "Нет подходящих целей — только недокументированные или неиспользуемые публичные функции Rust.",
+  "testgen.auditOverflow":
+    "(аудит обрезан выше: +{n} находок опущено, остальные цели не рассмотрены)",
+  "testgen.noTargets":
+    "Нет подходящих целей — только недокументированные или неиспользуемые публичные функции Rust.",
   "testgen.copy": "Копировать",
   "testgen.copied": "Скопировано",
-  "testgen.draftNote": "Только черновик — заполните TODO, проверьте намерение и скопируйте вручную.",
+  "testgen.draftNote":
+    "Только черновик — заполните TODO, проверьте намерение и скопируйте вручную.",
 
   // ---- dependency inventory (read-only lockfile tables, no install/update)
   "dep.sectionTitle": "Зависимости",
@@ -1065,7 +1124,8 @@ export const ru: Record<StringKey, string> = {
 
   "activity.group": "Активность и здоровье",
   "activity.title": "Активность и здоровье",
-  "activity.subtitle": "Недавние запуски, траты и состояние проекта — обновление вручную.",
+  "activity.subtitle":
+    "Недавние запуски, траты и состояние проекта — обновление вручную.",
   "activity.refreshTitle": "Перезагрузить активность и здоровье из бэкенда",
   "activity.tabsLabel": "Виды активности и здоровья",
   "activity.tabActivity": "Активность",
@@ -1079,7 +1139,8 @@ export const ru: Record<StringKey, string> = {
   "activity.loadingActivity": "Загрузка активности",
   "activity.loadingHealth": "Загрузка здоровья проекта",
   "activity.emptyTitle": "Пока нет активности",
-  "activity.emptyText": "Разговоры и запуски агента будут появляться здесь по мере событий.",
+  "activity.emptyText":
+    "Разговоры и запуски агента будут появляться здесь по мере событий.",
   "activity.runIn": "Запуск в «{title}»",
   "activity.runHash": "Запуск #{id}",
   "activity.convCreated": "Разговор «{title}» создан",
@@ -1135,7 +1196,8 @@ export const ru: Record<StringKey, string> = {
   "diag.dbSize": "Размер базы данных",
   "diag.sizeUnknown": "неизвестно",
   "diag.counts": "Хранимые строки",
-  "diag.countsValue": "{conversations} чатов · {messages} сообщений · {prompts} промптов · {runs} запусков",
+  "diag.countsValue":
+    "{conversations} чатов · {messages} сообщений · {prompts} промптов · {runs} запусков",
   "diag.fts": "Поисковый индекс",
   "diag.ftsOk": "есть",
   "diag.ftsMissing": "отсутствует",
@@ -1145,23 +1207,27 @@ export const ru: Record<StringKey, string> = {
   "diag.errorRuns": "всего неудачных запусков: {n}",
   "diag.copy": "Скопировать отчёт",
   "diag.copied": "Скопировано.",
-  "diag.copyHint": "Копирует версии, счётчики и строки сбоев как JSON — без содержимого, ключей и путей.",
+  "diag.copyHint":
+    "Копирует версии, счётчики и строки сбоев как JSON — без содержимого, ключей и путей.",
   "diag.updateSection": "Обновления",
   "diag.check": "Проверить обновления",
   "diag.checking": "Проверка…",
   "diag.noRelease": "У {repo} пока нет опубликованных релизов.",
   "diag.upToDate": "Актуально ({version}).",
   "diag.updateFound": "Доступно {latest} (установлено {current}).",
-  "diag.downloadNote": "Только проверка — ничего не скачивается и не устанавливается само. Откройте страницу релиза сами, чтобы скачать:",
+  "diag.downloadNote":
+    "Только проверка — ничего не скачивается и не устанавливается само. Откройте страницу релиза сами, чтобы скачать:",
   "diag.snapshotSection": "Резервная копия перед обновлением",
-  "diag.snapshotHint": "Копирует базу данных в один файл с меткой времени перед обновлением. Ничего не удаляется; копия создаётся только по вашей команде.",
+  "diag.snapshotHint":
+    "Копирует базу данных в один файл с меткой времени перед обновлением. Ничего не удаляется; копия создаётся только по вашей команде.",
   "diag.snapshot": "Создать копию",
   "diag.snapshotBusy": "Копирование…",
   "diag.snapshotOk": "Сохранено {file} ({size}).",
   "diag.updateUnavailable": "Проверка обновлений недоступна.",
 
   "privacy.section": "Приватность и телеметрия",
-  "privacy.subtitle": "Что именно покидает это устройство — и локальные счётчики, которые никуда не уходят.",
+  "privacy.subtitle":
+    "Что именно покидает это устройство — и локальные счётчики, которые никуда не уходят.",
   "privacy.loading": "Загрузка данных приватности",
   "privacy.unavailable": "Данные приватности недоступны.",
   "privacy.surfaces": "Каналы передачи данных",
@@ -1170,7 +1236,8 @@ export const ru: Record<StringKey, string> = {
   "privacy.stateManual": "Вручную",
   "privacy.stateLocal": "Только локально",
   "privacy.ledger": "Локальный журнал использования",
-  "privacy.emptyLedger": "Использование пока не записано — счётчики появятся после запусков, сообщений и проверок.",
+  "privacy.emptyLedger":
+    "Использование пока не записано — счётчики появятся после запусков, сообщений и проверок.",
   "privacy.total": "{n} событий · хранится {days} дн.",
   "privacy.kind_agent_run": "Запуски агента",
   "privacy.kind_message": "Отправленные сообщения",
@@ -1178,7 +1245,8 @@ export const ru: Record<StringKey, string> = {
   "privacy.kind_update_check": "Проверки обновлений",
   "privacy.copy": "Скопировать журнал",
   "privacy.copied": "Скопировано.",
-  "privacy.copyHint": "Копирует посуточные счётчики в JSON — без содержимого, ключей и путей.",
+  "privacy.copyHint":
+    "Копирует посуточные счётчики в JSON — без содержимого, ключей и путей.",
   "privacy.download": "Скачать журнал",
   "privacy.wipe": "Очистить журнал…",
   "privacy.wipeConfirm": "Подтвердить очистку",
@@ -1186,7 +1254,8 @@ export const ru: Record<StringKey, string> = {
   "privacy.wiped": "Журнал очищен (удалено строк: {n}).",
 
   "io.exportTitle": "Экспорт разговора",
-  "io.exportOk": "Экспорт завершён. Разговор записан в выбранный вами файл. Хранимые данные не менялись.",
+  "io.exportOk":
+    "Экспорт завершён. Разговор записан в выбранный вами файл. Хранимые данные не менялись.",
   "io.exportHint":
     "Сохраняет «{title}» как локальный JSON-файл разговора Nexora. Сообщения экспортируются в порядке хранения.",
   "io.exporting": "Экспорт…",
@@ -1211,7 +1280,8 @@ export const ru: Record<StringKey, string> = {
 
   "docs.group": "Документация продукта",
   "docs.title": "Доки",
-  "docs.subtitle": "Руководства, построенные из самого приложения — функции, горячие клавиши и заметки о миграции 1.x → 2.0.",
+  "docs.subtitle":
+    "Руководства, построенные из самого приложения — функции, горячие клавиши и заметки о миграции 1.x → 2.0.",
   "docs.searchLabel": "Фильтр заголовков документации",
   "docs.searchPh": "Фильтр заголовков…",
   "docs.noMatch": "Ничего не подходит под фильтр.",
@@ -1219,61 +1289,94 @@ export const ru: Record<StringKey, string> = {
   "docs.secFeatures": "Функции",
   "docs.secMigration": "Миграция 1.x → 2.0",
   "docs.secShortcuts": "Горячие клавиши",
-  "docs.startIntro": "Три шага до рабочей настройки. Каждый шаг использует штатные экраны приложения.",
+  "docs.startIntro":
+    "Три шага до рабочей настройки. Каждый шаг использует штатные экраны приложения.",
   "docs.start1t": "Подключите провайдера",
-  "docs.start1b": "Откройте Настройки → Учётные данные и вставьте API-ключ. Ключи живут только в системном хранилище — никогда в базе, логах или экспортах.",
+  "docs.start1b":
+    "Откройте Настройки → Учётные данные и вставьте API-ключ. Ключи живут только в системном хранилище — никогда в базе, логах или экспортах.",
   "docs.start2t": "Выберите рабочую папку",
-  "docs.start2b": "Выберите папку, в которой работает агент. Недавние папки запоминаются на этом устройстве.",
+  "docs.start2b":
+    "Выберите папку, в которой работает агент. Недавние папки запоминаются на этом устройстве.",
   "docs.start3t": "Начните общаться",
-  "docs.start3b": "Создайте разговор и отправьте сообщение. Ctrl+K — переход куда угодно, Ctrl+/ — все горячие клавиши.",
+  "docs.start3b":
+    "Создайте разговор и отправьте сообщение. Ctrl+K — переход куда угодно, Ctrl+/ — все горячие клавиши.",
   "docs.featChat": "Чат",
-  "docs.featChatBody": "Разговоры с переименованием, архивом и историей по папкам. Сообщения хранятся локально в SQLite.",
+  "docs.featChatBody":
+    "Разговоры с переименованием, архивом и историей по папкам. Сообщения хранятся локально в SQLite.",
   "docs.featLibrary": "Библиотека промптов",
-  "docs.featLibraryBody": "Сохранённые шаблоны промптов — вставляются в поле ввода любого разговора.",
+  "docs.featLibraryBody":
+    "Сохранённые шаблоны промптов — вставляются в поле ввода любого разговора.",
   "docs.featVcs": "Версионный контроль",
-  "docs.featVcsBody": "Рабочее дерево, диффы файлов, stage / unstage, коммит, push — плюс сообщения коммитов и объяснения коммитов от ИИ.",
+  "docs.featVcsBody":
+    "Рабочее дерево, диффы файлов, stage / unstage, коммит, push — плюс сообщения коммитов и объяснения коммитов от ИИ.",
   "docs.featTerminal": "Терминал",
-  "docs.featTerminalBody": "Запуск команд рабочей папки в одной управляемой сессии, с объяснениями ошибок от ИИ.",
+  "docs.featTerminalBody":
+    "Запуск команд рабочей папки в одной управляемой сессии, с объяснениями ошибок от ИИ.",
   "docs.featTasks": "Задачи",
-  "docs.featTasksBody": "Списки задач пользователя с канбан-доской и истекающими блокировками правок; шаги выполняет автономный цикл через запуски агента.",
+  "docs.featTasksBody":
+    "Списки задач пользователя с канбан-доской и истекающими блокировками правок; шаги выполняет автономный цикл через запуски агента.",
   "docs.featAudit": "Аудит кода",
-  "docs.featAuditBody": "Сканеры репозитория только для чтения с находками по серьёзности — ничего никогда не изменяется.",
+  "docs.featAuditBody":
+    "Сканеры репозитория только для чтения с находками по серьёзности — ничего никогда не изменяется.",
   "docs.featDebt": "Журнал долга",
-  "docs.featDebtBody": "Учтённый технический долг: ручные записи плюс идемпотентный импорт находок аудита.",
+  "docs.featDebtBody":
+    "Учтённый технический долг: ручные записи плюс идемпотентный импорт находок аудита.",
   "docs.featGh": "Issues и PR",
-  "docs.featGhBody": "Issues, пул-реквесты, запуски Actions и статус раннеров GitHub — только чтение.",
+  "docs.featGhBody":
+    "Issues, пул-реквесты, запуски Actions и статус раннеров GitHub — только чтение.",
   "docs.featActivity": "Активность",
-  "docs.featActivityBody": "Лента запусков агента: каждый запуск с шагами, стоимостью и исходом.",
+  "docs.featActivityBody":
+    "Лента запусков агента: каждый запуск с шагами, стоимостью и исходом.",
   "docs.featHealth": "Здоровье проекта",
-  "docs.featHealthBody": "Статус провайдеров, траты против бюджета, давление контекста, флаги функций, состояние git, плюс обновления и диагностика.",
+  "docs.featHealthBody":
+    "Статус провайдеров, траты против бюджета, давление контекста, флаги функций, состояние git, плюс обновления и диагностика.",
   "docs.featPrivacy": "Приватность",
-  "docs.featPrivacyBody": "Каждое сетевое назначение с живым статусом, локальный журнал использования, экспорт и очистка.",
+  "docs.featPrivacyBody":
+    "Каждое сетевое назначение с живым статусом, локальный журнал использования, экспорт и очистка.",
   "docs.featDiag": "Диагностика",
-  "docs.featDiagBody": "Системный пакет для баг-репортов, проверки релизов и снапшоты базы данных.",
-  "docs.migIntro": "Обновление с 1.x — автоматическое: при старте приложение применяет все недостающие миграции по порядку, каждую в своей транзакции. Если база новее приложения, оно откажется стартовать, а не станет гадать.",
+  "docs.featDiagBody":
+    "Системный пакет для баг-репортов, проверки релизов и снапшоты базы данных.",
+  "docs.migIntro":
+    "Обновление с 1.x — автоматическое: при старте приложение применяет все недостающие миграции по порядку, каждую в своей транзакции. Если база новее приложения, оно откажется стартовать, а не станет гадать.",
   "docs.migSchema": "Версия схемы {n}",
-  "docs.mig1": "Базовые таблицы — провайдеры, разговоры, сообщения, промпты, вложения, настройки — плюс рабочие индексы.",
-  "docs.mig2": "Полнотекстовый поиск — индексы FTS5 по разговорам, сообщениям и промптам с триггерами синхронизации.",
-  "docs.mig3": "Триггеры свежести — updated_at актуален при правках разговоров и промптов.",
-  "docs.mig4": "Запуски агента — таблицы agent_runs и agent_steps хранят каждый запуск и ход модели.",
-  "docs.mig5": "Лимит трат — колонки стоимости запуска и статус spend_limit_exceeded.",
-  "docs.mig6": "Рабочие папки — каждый разговор помнит папку, к которой относится.",
-  "docs.mig7": "Разрешения — постоянные правила доступа плюс происхождение каждого шага (какое правило решило).",
+  "docs.mig1":
+    "Базовые таблицы — провайдеры, разговоры, сообщения, промпты, вложения, настройки — плюс рабочие индексы.",
+  "docs.mig2":
+    "Полнотекстовый поиск — индексы FTS5 по разговорам, сообщениям и промптам с триггерами синхронизации.",
+  "docs.mig3":
+    "Триггеры свежести — updated_at актуален при правках разговоров и промптов.",
+  "docs.mig4":
+    "Запуски агента — таблицы agent_runs и agent_steps хранят каждый запуск и ход модели.",
+  "docs.mig5":
+    "Лимит трат — колонки стоимости запуска и статус spend_limit_exceeded.",
+  "docs.mig6":
+    "Рабочие папки — каждый разговор помнит папку, к которой относится.",
+  "docs.mig7":
+    "Разрешения — постоянные правила доступа плюс происхождение каждого шага (какое правило решило).",
   "docs.mig8": "Менеджер задач — списки задач и их исполняемые шаги.",
-  "docs.mig9": "Журнал использования — только локальные счётчики по дням (без содержимого сообщений). Питает экран приватности.",
-  "docs.mig10": "Журнал долга — таблица учтённого долга за ручными записями и импортом аудита.",
-  "docs.mig11": "Блокировки правок — таблица task_locks: не более одной истекающей блокировки на задачу, параллельные правки не конфликтуют.",
+  "docs.mig9":
+    "Журнал использования — только локальные счётчики по дням (без содержимого сообщений). Питает экран приватности.",
+  "docs.mig10":
+    "Журнал долга — таблица учтённого долга за ручными записями и импортом аудита.",
+  "docs.mig11":
+    "Блокировки правок — таблица task_locks: не более одной истекающей блокировки на задачу, параллельные правки не конфликтуют.",
   "docs.newTitle": "Что изменилось в 2.0",
   "docs.newProfilesT": "Папки проекта .nexora/",
-  "docs.newProfilesB": "Рабочая папка может содержать каталог проекта .nexora/ (манифест, правила игнорирования, заготовки профилей) — создаётся только явной инициализацией. Файлы папки важнее глобальных настроек там, где есть оба; в экспорты он никогда не входит.",
+  "docs.newProfilesB":
+    "Рабочая папка может содержать каталог проекта .nexora/ (манифест, правила игнорирования, заготовки профилей) — создаётся только явной инициализацией. Файлы папки важнее глобальных настроек там, где есть оба; в экспорты он никогда не входит.",
   "docs.newRoutingT": "Профили маршрутизации",
-  "docs.newRoutingB": "Настройки → Продвинутые показывают профили маршрутизации агента и чата (routing.profile.agent / chat): проверяемый выбор модели с fallback по возможностям.",
+  "docs.newRoutingB":
+    "Настройки → Продвинутые показывают профили маршрутизации агента и чата (routing.profile.agent / chat): проверяемый выбор модели с fallback по возможностям.",
   "docs.newFlagsT": "Флаги функций",
-  "docs.newFlagsB": "Настройки → Продвинутые переключают флаги раскатки; файл .nexora/flags.json в папке важнее глобальных ключей. Экран здоровья показывает действующее значение и источник каждого флага.",
+  "docs.newFlagsB":
+    "Настройки → Продвинутые переключают флаги раскатки; файл .nexora/flags.json в папке важнее глобальных ключей. Экран здоровья показывает действующее значение и источник каждого флага.",
   "docs.newKeyringT": "API-ключи только в keyring",
-  "docs.newKeyringB": "Ключи провайдеров живут исключительно в системном хранилище (Настройки → Учётные данные). В SQLite, логи и экспорты они не попадают.",
+  "docs.newKeyringB":
+    "Ключи провайдеров живут исключительно в системном хранилище (Настройки → Учётные данные). В SQLite, логи и экспорты они не попадают.",
   "docs.newSettingsT": "Компактные настройки",
-  "docs.newSettingsB": "Семь групп — внешний вид, провайдер, агент, папка, учётные данные, данные, продвинутые — с поиском по странице. Силовые ключи (флаги, маршрутизация, MCP, пресет), у которых не было UI, видны в «Продвинутых».",
+  "docs.newSettingsB":
+    "Семь групп — внешний вид, провайдер, агент, папка, учётные данные, данные, продвинутые — с поиском по странице. Силовые ключи (флаги, маршрутизация, MCP, пресет), у которых не было UI, видны в «Продвинутых».",
   "docs.newRootsT": "Рабочие папки",
-  "docs.newRootsB": "Несколько зарегистрированных рабочих папок с переключателем; разговоры помнят свою папку (миграция v6)."
+  "docs.newRootsB":
+    "Несколько зарегистрированных рабочих папок с переключателем; разговоры помнят свою папку (миграция v6).",
 };

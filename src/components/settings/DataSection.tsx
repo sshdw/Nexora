@@ -29,9 +29,7 @@ export default function DataSection({
       <h3 id="data-heading" className="nex-settings-heading">
         {t("settings.sectionData")}
       </h3>
-      <p className="nex-settings-hint">
-        {t("settings.dataHint")}
-      </p>
+      <p className="nex-settings-hint">{t("settings.dataHint")}</p>
 
       {(onOpenImport || onExportActive) && (
         <div className="nex-settings-field">
@@ -53,9 +51,7 @@ export default function DataSection({
 
       <div className="nex-danger-zone">
         <h4 className="nex-danger-title">{t("settings.dangerTitle")}</h4>
-        <p className="nex-danger-text">
-          {t("settings.dangerText")}
-        </p>
+        <p className="nex-danger-text">{t("settings.dangerText")}</p>
         <M3Button
           variant="destructive"
           loading={clearing}

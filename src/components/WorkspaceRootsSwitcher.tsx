@@ -14,22 +14,21 @@ export interface WorkspaceRootsSwitcherProps {
  * values (paths are user data and render raw). Removing the active root
  * falls back to the default — every root-aware feature follows on its next
  * manual refresh. */
-export default function WorkspaceRootsSwitcher({ store }: WorkspaceRootsSwitcherProps) {
+export default function WorkspaceRootsSwitcher({
+  store,
+}: WorkspaceRootsSwitcherProps) {
   const { t } = useStrings();
   const [open, setOpen] = useState(false);
 
   const count = store.roots.length;
-  const label = count === 0 ? t("roots.title") : `${t("roots.title")} (${count})`;
+  const label =
+    count === 0 ? t("roots.title") : `${t("roots.title")} (${count})`;
 
   return (
     <div className="nex-roots">
       <M3RailItem
         label={label}
-        icon={
-          <span aria-hidden="true">
-            🗂
-          </span>
-        }
+        icon={<span aria-hidden="true">🗂</span>}
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
       >
@@ -50,7 +49,9 @@ export default function WorkspaceRootsSwitcher({ store }: WorkspaceRootsSwitcher
                     </span>
                     <span className="nex-roots-actions">
                       {isActive ? (
-                        <span className="nex-roots-badge">{t("roots.active")}</span>
+                        <span className="nex-roots-badge">
+                          {t("roots.active")}
+                        </span>
                       ) : (
                         <button
                           type="button"

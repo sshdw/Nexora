@@ -32,7 +32,10 @@ import {
 
 /** Install a matchMedia that answers `matches` for the reduced-motion
  *  query and records every listener registration. */
-function mockReducedMotion(matches: boolean): { queries: string[]; added: string[] } {
+function mockReducedMotion(matches: boolean): {
+  queries: string[];
+  added: string[];
+} {
   const queries: string[] = [];
   const added: string[] = [];
   vi.stubGlobal("matchMedia", (query: string) => {
@@ -68,7 +71,8 @@ describe("reduced-motion gate — CSS half", () => {
   // have kept reading whichever one they were written against, so
   // #218 folded both into motion.css and the entry points here.
   const css = readRepoFile("src/styles/motion.css");
-  const reducedBlock = /@media \(prefers-reduced-motion: reduce\) \{([\s\S]*?)\n\}/.exec(css);
+  const reducedBlock =
+    /@media \(prefers-reduced-motion: reduce\) \{([\s\S]*?)\n\}/.exec(css);
   // Comments are stripped before matching: these assertions are
   // about declarations, and a prose line that happens to contain
   // "animation-fill-mode: forwards !important" must not satisfy
@@ -85,8 +89,13 @@ describe("reduced-motion gate — CSS half", () => {
     // block. motion.css is the one that ships. (Comments stripped:
     // the entry POINTS at the gate in prose, and prose is not a
     // rule.)
-    const entry = readRepoFile("src/index.css").replace(/\/\*[\s\S]*?\*\//g, "");
-    expect(entry).not.toMatch(/@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*?\n\}/);
+    const entry = readRepoFile("src/index.css").replace(
+      /\/\*[\s\S]*?\*\//g,
+      ""
+    );
+    expect(entry).not.toMatch(
+      /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*?\n\}/
+    );
   });
 
   it("collapses durations and delays to a single frame", () => {
@@ -104,7 +113,9 @@ describe("reduced-motion gate — CSS half", () => {
   });
 
   it("holds the end frame so a collapsed entrance cannot flash back to its start", () => {
-    expect(declarations).toMatch(/animation-fill-mode:\s*forwards\s*!important/);
+    expect(declarations).toMatch(
+      /animation-fill-mode:\s*forwards\s*!important/
+    );
   });
 
   it("reaches pseudo-elements and wins over utilities", () => {
@@ -159,10 +170,16 @@ describe("reduced-motion gate — JS half", () => {
  * between neighbours would clip it (§7.1).
  */
 describe("motion contract — spring tokens (OD-D9 §7.1)", () => {
-  const css = readRepoFile("src/styles/motion.css").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readRepoFile("src/styles/motion.css").replace(
+    /\/\*[\s\S]*?\*\//g,
+    ""
+  );
 
   /** Re-derivation of the §7.1 table from the contract's (ζ, ωₙ). */
-  function derive(zeta: number, wn: number): { T: number; peak: number; tp: number } {
+  function derive(
+    zeta: number,
+    wn: number
+  ): { T: number; peak: number; tp: number } {
     return {
       T: -Math.log(0.001) / (zeta * wn),
       peak: Math.exp((-Math.PI * zeta) / Math.sqrt(1 - zeta * zeta)),
@@ -172,13 +189,19 @@ describe("motion contract — spring tokens (OD-D9 §7.1)", () => {
 
   /** Parse a token's linear() stop list as (progress, percent) pairs. */
   function stops(token: string): Array<[number, number]> {
-    const match = new RegExp(`--nex-sys-motion-spring-${token}:\\s*linear\\(([^)]*)\\)`).exec(
-      css,
-    );
-    expect(match, `--nex-sys-motion-spring-${token} must carry a linear() value`).not.toBeNull();
+    const match = new RegExp(
+      `--nex-sys-motion-spring-${token}:\\s*linear\\(([^)]*)\\)`
+    ).exec(css);
+    expect(
+      match,
+      `--nex-sys-motion-spring-${token} must carry a linear() value`
+    ).not.toBeNull();
     return match![1].split(",").map((entry) => {
       const parts = entry.trim().split(/\s+/);
-      return [Number(parts[0]), parts.length > 1 ? Number(parts[1].replace("%", "")) : 0];
+      return [
+        Number(parts[0]),
+        parts.length > 1 ? Number(parts[1].replace("%", "")) : 0,
+      ];
     });
   }
 
@@ -191,7 +214,9 @@ describe("motion contract — spring tokens (OD-D9 §7.1)", () => {
       // The paired duration is the settle time, rounded to the ms the
       // contract table prints (343 / 411).
       expect(css).toMatch(
-        new RegExp(`--nex-sys-motion-spring-${token}-duration:\\s*${Math.round(T * 1000)}ms`),
+        new RegExp(
+          `--nex-sys-motion-spring-${token}-duration:\\s*${Math.round(T * 1000)}ms`
+        )
       );
       const list = stops(token);
       // The trajectory starts at 0 and lands exactly at rest.
@@ -200,7 +225,9 @@ describe("motion contract — spring tokens (OD-D9 §7.1)", () => {
       expect(list[list.length - 1][0]).toBe(1);
       // The crest is its own stop, at the re-derived t_p (as a percent
       // of T, 2dp) with the re-derived overshoot (1 + peak, 4dp).
-      const crestPercent = Number(((tp * 1000 / Math.round(T * 1000)) * 100).toFixed(2));
+      const crestPercent = Number(
+        (((tp * 1000) / Math.round(T * 1000)) * 100).toFixed(2)
+      );
       const crest = list.find(([, percent]) => percent === crestPercent);
       expect(crest, `crest stop missing at ${crestPercent}%`).toBeDefined();
       expect(crest![0]).toBeCloseTo(1 + peak, 4);
@@ -212,18 +239,17 @@ describe("motion contract — spring tokens (OD-D9 §7.1)", () => {
 
   it("pairs snap's fallback with emphasized-decelerate at 410ms, 0% overshoot", () => {
     // §7.1 fallback row, verbatim.
+    expect(css).toMatch(/--nex-sys-motion-spring-snap-duration:\s*410ms/);
     expect(css).toMatch(
-      /--nex-sys-motion-spring-snap-duration:\s*410ms/,
-    );
-    expect(css).toMatch(
-      /--nex-sys-motion-spring-snap:\s*var\(--motion-easing-emphasized-decelerate\)/,
+      /--nex-sys-motion-spring-snap:\s*var\(\s*--motion-easing-emphasized-decelerate\s*\)/
     );
     // settle's fallback is the expressive-default-spatial pair (1.39%).
+    // (var() args are whitespace-tolerant: the printer may wrap the call.)
     expect(css).toMatch(
-      /--nex-sys-motion-spring-settle:\s*var\(--motion-spring-expressive-default-spatial-curve\)/,
+      /--nex-sys-motion-spring-settle:\s*var\(\s*--motion-spring-expressive-default-spatial-curve\s*\)/
     );
     expect(css).toMatch(
-      /--nex-sys-motion-spring-settle-duration:\s*var\(--motion-spring-expressive-default-spatial-duration\)/,
+      /--nex-sys-motion-spring-settle-duration:\s*var\(\s*--motion-spring-expressive-default-spatial-duration\s*\)/
     );
   });
 
@@ -235,24 +261,29 @@ describe("motion contract — spring tokens (OD-D9 §7.1)", () => {
 });
 
 describe("motion contract — adaptive levels (OD-D10 §7.3)", () => {
-  const css = readRepoFile("src/styles/motion.css").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readRepoFile("src/styles/motion.css").replace(
+    /\/\*[\s\S]*?\*\//g,
+    ""
+  );
 
   it("declares exactly three tier blocks on the html attribute", () => {
     // Exactly THREE override blocks (§7.3). Tier blocks sit at column 0;
     // the reduced-motion guard's selector list also names the attribute
     // but indented, so the line-start anchor counts blocks only.
     expect(
-      css.match(/^:root\[data-motion-level="l[123]"\]\s*\{/gm)?.length,
+      css.match(/^:root\[data-motion-level="l[123]"\]\s*\{/gm)?.length
     ).toBe(3);
     for (const level of ["l3", "l2", "l1"]) {
-      expect(css).toMatch(new RegExp(`:root\\[data-motion-level="${level}"\\]\\s*\\{`));
+      expect(css).toMatch(
+        new RegExp(`:root\\[data-motion-level="${level}"\\]\\s*\\{`)
+      );
     }
   });
 
   it("keeps L2 «плавный» as the no-attribute default", () => {
     // Before src/lib/motionLevel.ts writes the attribute, :root IS l2.
     expect(css).toMatch(
-      /--nex-sys-motion-entrance-easing:\s*var\(--nex-sys-motion-spring-settle\)/,
+      /--nex-sys-motion-entrance-easing:\s*var\(\s*--nex-sys-motion-spring-settle\s*\)/
     );
     expect(css).toMatch(/--nex-sys-motion-entrance-travel:\s*8px/);
     expect(css).toMatch(/--motion-scale-press:\s*0\.97/);
@@ -261,22 +292,25 @@ describe("motion contract — adaptive levels (OD-D10 §7.3)", () => {
   it("maps character values per level — snap/settle/220ms, 12/8/4px, 0.955/0.97/0.985", () => {
     // Only CHARACTER adapts (§7.3): press, entrances, travel.
     const block = (level: string): string =>
-      new RegExp(`:root\\[data-motion-level="${level}"\\]\\s*\\{([^}]*)\\}`).exec(css)?.[1] ??
-      "";
+      new RegExp(
+        `:root\\[data-motion-level="${level}"\\]\\s*\\{([^}]*)\\}`
+      ).exec(css)?.[1] ?? "";
     const l3 = block("l3");
     expect(l3).toMatch(/--motion-scale-press:\s*0\.955/);
-    expect(l3).toMatch(/--nex-sys-motion-entrance-easing:\s*var\(--nex-sys-motion-spring-snap\)/);
+    expect(l3).toMatch(
+      /--nex-sys-motion-entrance-easing:\s*var\(\s*--nex-sys-motion-spring-snap\s*\)/
+    );
     expect(l3).toMatch(/--nex-sys-motion-entrance-travel:\s*12px/);
     const l2 = block("l2");
     expect(l2).toMatch(/--motion-scale-press:\s*0\.97/);
     expect(l2).toMatch(
-      /--nex-sys-motion-entrance-easing:\s*var\(--nex-sys-motion-spring-settle\)/,
+      /--nex-sys-motion-entrance-easing:\s*var\(\s*--nex-sys-motion-spring-settle\s*\)/
     );
     expect(l2).toMatch(/--nex-sys-motion-entrance-travel:\s*8px/);
     const l1 = block("l1");
     expect(l1).toMatch(/--motion-scale-press:\s*0\.985/);
     expect(l1).toMatch(
-      /--nex-sys-motion-entrance-easing:\s*var\(--nex-sys-motion-easing-emphasized-decelerate\)/,
+      /--nex-sys-motion-entrance-easing:\s*var\(\s*--nex-sys-motion-easing-emphasized-decelerate\s*\)/
     );
     expect(l1).toMatch(/--nex-sys-motion-entrance-duration:\s*220ms/);
     expect(l1).toMatch(/--nex-sys-motion-entrance-travel:\s*4px/);
@@ -284,7 +318,7 @@ describe("motion contract — adaptive levels (OD-D10 §7.3)", () => {
     // emphasized-decelerate (§7.3 derivation).
     expect(l1).toMatch(/--nex-sys-motion-press-release-duration:\s*220ms/);
     expect(l1).toMatch(
-      /--nex-sys-motion-press-release-easing:\s*var\(--nex-sys-motion-easing-emphasized-decelerate\)/,
+      /--nex-sys-motion-press-release-easing:\s*var\(\s*--nex-sys-motion-easing-emphasized-decelerate\s*\)/
     );
     // L2/L3 keep the snap release (no release override in their blocks).
     expect(block("l2")).not.toMatch(/press-release/);
@@ -297,7 +331,9 @@ describe("motion contract — adaptive levels (OD-D10 §7.3)", () => {
     // :root AND on every tier attribute, so a manual l3 attribute
     // cannot out-rank the OS preference and the values hold pre-JS.
     const blocks = [
-      ...css.matchAll(/@media \(prefers-reduced-motion: reduce\) \{([\s\S]*?)\n\}/g),
+      ...css.matchAll(
+        /@media \(prefers-reduced-motion: reduce\) \{([\s\S]*?)\n\}/g
+      ),
     ];
     expect(blocks.length).toBe(2);
     const guard = blocks[1][1];
@@ -305,7 +341,7 @@ describe("motion contract — adaptive levels (OD-D10 §7.3)", () => {
     expect(guard).toMatch(/--motion-scale-press:\s*0\.985/);
     expect(guard).toMatch(/--nex-sys-motion-entrance-travel:\s*4px/);
     expect(guard).toMatch(
-      /--nex-sys-motion-entrance-easing:\s*var\(--nex-sys-motion-easing-emphasized-decelerate\)/,
+      /--nex-sys-motion-entrance-easing:\s*var\(\s*--nex-sys-motion-easing-emphasized-decelerate\s*\)/
     );
     expect(guard).toMatch(/--nex-sys-motion-press-release-duration:\s*220ms/);
   });

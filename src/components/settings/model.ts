@@ -4,7 +4,13 @@
 //! summarizers the Advanced section reads. No React.
 
 import type { AutonomyMode } from "../../lib/tauri";
-import { getLocale, tp, tr, type Locale, type StringKey } from "../../lib/strings";
+import {
+  getLocale,
+  tp,
+  tr,
+  type Locale,
+  type StringKey,
+} from "../../lib/strings";
 
 /** Settings groups (slim surface: 7 top-level groups, in-page search, and an
  * Advanced section for power keys).
@@ -125,14 +131,17 @@ export function parseRecentList(raw: string | null): string[] {
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
     return parsed.filter(
-      (entry): entry is string => typeof entry === "string" && entry.length > 0,
+      (entry): entry is string => typeof entry === "string" && entry.length > 0
     );
   } catch {
     return [];
   }
 }
 
-export function summarizeRoutingProfile(raw: string | null, locale: Locale = getLocale()): string {
+export function summarizeRoutingProfile(
+  raw: string | null,
+  locale: Locale = getLocale()
+): string {
   if (raw === null) return tr(locale, "settings.routingUnset");
   let parsed: unknown;
   try {
@@ -147,14 +156,20 @@ export function summarizeRoutingProfile(raw: string | null, locale: Locale = get
     .map((entry) => {
       if (typeof entry !== "object" || entry === null) return null;
       const record = entry as Record<string, unknown>;
-      if (typeof record.provider !== "string" || typeof record.model !== "string") {
+      if (
+        typeof record.provider !== "string" ||
+        typeof record.model !== "string"
+      ) {
         return null;
       }
       return `${record.provider} / ${record.model}`;
     })
     .filter((name): name is string => name !== null);
   const shown = names.slice(0, 4).join(", ");
-  const extra = names.length > 4 ? tr(locale, "settings.summaryExtra", { n: names.length - 4 }) : "";
+  const extra =
+    names.length > 4
+      ? tr(locale, "settings.summaryExtra", { n: names.length - 4 })
+      : "";
   const details = shown ? `: ${shown}${extra}` : "";
   return tr(locale, "settings.routingSummary", {
     count: tp(locale, "entries", parsed.length),
@@ -162,7 +177,10 @@ export function summarizeRoutingProfile(raw: string | null, locale: Locale = get
   });
 }
 
-export function summarizeMcpServers(raw: string | null, locale: Locale = getLocale()): string {
+export function summarizeMcpServers(
+  raw: string | null,
+  locale: Locale = getLocale()
+): string {
   if (raw === null) return tr(locale, "settings.mcpUnset");
   let parsed: unknown;
   try {
@@ -180,7 +198,10 @@ export function summarizeMcpServers(raw: string | null, locale: Locale = getLoca
     })
     .filter((name): name is string => name !== null);
   const shown = names.slice(0, 5).join(", ");
-  const extra = names.length > 5 ? tr(locale, "settings.summaryExtra", { n: names.length - 5 }) : "";
+  const extra =
+    names.length > 5
+      ? tr(locale, "settings.summaryExtra", { n: names.length - 5 })
+      : "";
   const details = shown ? `: ${shown}${extra}` : "";
   return tr(locale, "settings.mcpSummary", {
     count: tp(locale, "servers", parsed.length),

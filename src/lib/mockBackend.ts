@@ -38,7 +38,15 @@ const supported = [
   {
     name: "gemini",
     display_name: "Gemini",
-    models: ["gemini-3.6-flash", "gemini-3.1-flash-lite", "gemini-3.1-pro-preview", "gemini-flash-lite-latest", "gemini-pro-latest", "gemini-3.5-flash", "gemini-3.5-flash-lite"],
+    models: [
+      "gemini-3.6-flash",
+      "gemini-3.1-flash-lite",
+      "gemini-3.1-pro-preview",
+      "gemini-flash-lite-latest",
+      "gemini-pro-latest",
+      "gemini-3.5-flash",
+      "gemini-3.5-flash-lite",
+    ],
   },
   {
     name: "xkiro",
@@ -95,23 +103,89 @@ const MOCK_DEFAULT_PROVIDER = supported[2].name;
 const MOCK_DEFAULT_MODEL = supported[2].models[0];
 
 const conversations = [
-  { id: 1, title: "Designing the composer", status: "active", created_at: hoursAgo(30), updated_at: hoursAgo(1), workspace_root: null as string | null },
-  { id: 2, title: "Rust migration notes", status: "active", created_at: hoursAgo(50), updated_at: hoursAgo(5), workspace_root: null as string | null },
-  { id: 3, title: "Old research thread", status: "archived", created_at: hoursAgo(200), updated_at: hoursAgo(96), workspace_root: null as string | null },
+  {
+    id: 1,
+    title: "Designing the composer",
+    status: "active",
+    created_at: hoursAgo(30),
+    updated_at: hoursAgo(1),
+    workspace_root: null as string | null,
+  },
+  {
+    id: 2,
+    title: "Rust migration notes",
+    status: "active",
+    created_at: hoursAgo(50),
+    updated_at: hoursAgo(5),
+    workspace_root: null as string | null,
+  },
+  {
+    id: 3,
+    title: "Old research thread",
+    status: "archived",
+    created_at: hoursAgo(200),
+    updated_at: hoursAgo(96),
+    workspace_root: null as string | null,
+  },
 ];
 
 const messages: MockMessage[] = [
-  { id: 1, conversation_id: 1, role: "user", content: "Hello", provider_id: null, model_name: null, created_at: hoursAgo(1) },
-  { id: 2, conversation_id: 1, role: "assistant", content: "Hello! How can I help you today?", provider_id: 1, model_name: MOCK_DEFAULT_MODEL, created_at: hoursAgo(1) + 20 },
-  { id: 3, conversation_id: 1, role: "user", content: "Summarize the Material 3 Expressive motion system in two sentences.", provider_id: null, model_name: null, created_at: hoursAgo(1) + 60 },
+  {
+    id: 1,
+    conversation_id: 1,
+    role: "user",
+    content: "Hello",
+    provider_id: null,
+    model_name: null,
+    created_at: hoursAgo(1),
+  },
+  {
+    id: 2,
+    conversation_id: 1,
+    role: "assistant",
+    content: "Hello! How can I help you today?",
+    provider_id: 1,
+    model_name: MOCK_DEFAULT_MODEL,
+    created_at: hoursAgo(1) + 20,
+  },
+  {
+    id: 3,
+    conversation_id: 1,
+    role: "user",
+    content:
+      "Summarize the Material 3 Expressive motion system in two sentences.",
+    provider_id: null,
+    model_name: null,
+    created_at: hoursAgo(1) + 60,
+  },
 ];
 
 const prompts = [
-  { id: 1, title: "Weekly review", content: "Summarize this week's progress, list blockers, and propose the top three priorities for next week.", created_at: hoursAgo(20), updated_at: hoursAgo(2) },
-  { id: 2, title: "Code review checklist", content: "Review the attached diff for correctness, edge cases, naming, and test coverage. Flag anything that changes public behavior.", created_at: hoursAgo(40), updated_at: hoursAgo(10) },
+  {
+    id: 1,
+    title: "Weekly review",
+    content:
+      "Summarize this week's progress, list blockers, and propose the top three priorities for next week.",
+    created_at: hoursAgo(20),
+    updated_at: hoursAgo(2),
+  },
+  {
+    id: 2,
+    title: "Code review checklist",
+    content:
+      "Review the attached diff for correctness, edge cases, naming, and test coverage. Flag anything that changes public behavior.",
+    created_at: hoursAgo(40),
+    updated_at: hoursAgo(10),
+  },
 ];
 
-const providers = [{ id: 1, name: MOCK_DEFAULT_PROVIDER, display_name: supported[2].display_name }];
+const providers = [
+  {
+    id: 1,
+    name: MOCK_DEFAULT_PROVIDER,
+    display_name: supported[2].display_name,
+  },
+];
 const credentialed = new Set<string>([MOCK_DEFAULT_PROVIDER]);
 const settings = new Map<string, string>([
   ["provider.selected", MOCK_DEFAULT_PROVIDER],
@@ -180,11 +254,61 @@ const mockTasks = [
 ];
 
 const mockTaskSteps = [
-  { id: 1, task_id: 1, seq: 1, title: "Read settings.css", status: "completed" as const, result: null, run_id: null, started_at: hoursAgo(2), finished_at: hoursAgo(2) + 30 },
-  { id: 2, task_id: 1, seq: 2, title: "Map legacy tokens", status: "completed" as const, result: null, run_id: null, started_at: hoursAgo(2) + 60, finished_at: hoursAgo(2) + 90 },
-  { id: 3, task_id: 1, seq: 3, title: "Rewrite the token block", status: "running" as const, result: null, run_id: null, started_at: hoursAgo(1), finished_at: null },
-  { id: 4, task_id: 1, seq: 4, title: "Verify contrast pairs", status: "pending" as const, result: null, run_id: null, started_at: hoursAgo(1), finished_at: null },
-  { id: 5, task_id: 1, seq: 5, title: "Run the theme test", status: "pending" as const, result: null, run_id: null, started_at: hoursAgo(1), finished_at: null },
+  {
+    id: 1,
+    task_id: 1,
+    seq: 1,
+    title: "Read settings.css",
+    status: "completed" as const,
+    result: null,
+    run_id: null,
+    started_at: hoursAgo(2),
+    finished_at: hoursAgo(2) + 30,
+  },
+  {
+    id: 2,
+    task_id: 1,
+    seq: 2,
+    title: "Map legacy tokens",
+    status: "completed" as const,
+    result: null,
+    run_id: null,
+    started_at: hoursAgo(2) + 60,
+    finished_at: hoursAgo(2) + 90,
+  },
+  {
+    id: 3,
+    task_id: 1,
+    seq: 3,
+    title: "Rewrite the token block",
+    status: "running" as const,
+    result: null,
+    run_id: null,
+    started_at: hoursAgo(1),
+    finished_at: null,
+  },
+  {
+    id: 4,
+    task_id: 1,
+    seq: 4,
+    title: "Verify contrast pairs",
+    status: "pending" as const,
+    result: null,
+    run_id: null,
+    started_at: hoursAgo(1),
+    finished_at: null,
+  },
+  {
+    id: 5,
+    task_id: 1,
+    seq: 5,
+    title: "Run the theme test",
+    status: "pending" as const,
+    result: null,
+    run_id: null,
+    started_at: hoursAgo(1),
+    finished_at: null,
+  },
 ];
 
 const attachments: Array<{
@@ -235,7 +359,9 @@ let mockNextStepId = 1;
  * (NEX-PERF-003): mock observations are short, so every mock step lists
  * untruncated with its exact byte total. */
 function mockObsLen(observation: string | null): number | null {
-  return observation === null ? null : new TextEncoder().encode(observation).length;
+  return observation === null
+    ? null
+    : new TextEncoder().encode(observation).length;
 }
 
 type ActiveMockRun = {
@@ -256,7 +382,11 @@ function emitAgentEvent(frame: unknown) {
   if (!listeners) return;
   for (const [, cb] of listeners) {
     try {
-      (cb as (v: unknown) => void)({ event: "agent-run-event", id: 0, payload: frame });
+      (cb as (v: unknown) => void)({
+        event: "agent-run-event",
+        id: 0,
+        payload: frame,
+      });
     } catch {
       // ignore handler errors
     }
@@ -266,9 +396,16 @@ function emitAgentEvent(frame: unknown) {
 /** Strict camelCase-only argument reader for the agent commands. Mirrors the
  * Tauri v2 IPC contract (arguments are deserialized by camelCase name) so the
  * mock enforces the same contract instead of forgiving snake_case fallbacks. */
-function requireArg(args: Record<string, unknown>, command: string, key: string): unknown {
+function requireArg(
+  args: Record<string, unknown>,
+  command: string,
+  key: string
+): unknown {
   if (!(key in args) || args[key] === undefined || args[key] === null) {
-    throw { kind: "invalidInput", message: `command ${command} missing required key ${key}` };
+    throw {
+      kind: "invalidInput",
+      message: `command ${command} missing required key ${key}`,
+    };
   }
   return args[key];
 }
@@ -277,7 +414,10 @@ function fail(message: string): never {
   throw { kind: "unknown", message };
 }
 
-async function invoke(command: string, args: Record<string, unknown> = {}): Promise<unknown> {
+async function invoke(
+  command: string,
+  args: Record<string, unknown> = {}
+): Promise<unknown> {
   // Small delay so loading/skeleton states are observable.
   await new Promise((resolve) => setTimeout(resolve, 120));
   switch (command) {
@@ -321,7 +461,10 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
       return null;
     }
     case "delete_conversation_permanently": {
-      if (typeof args.confirmationId !== "string" || args.confirmationId.length === 0) {
+      if (
+        typeof args.confirmationId !== "string" ||
+        args.confirmationId.length === 0
+      ) {
         fail("Mock backend: a confirmation id is required.");
       }
       const id = Number(args.id);
@@ -331,7 +474,8 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
         if (messages[i].conversation_id === id) messages.splice(i, 1);
       }
       // cascade agent runs
-      for (let i = agentRuns.length - 1; i >= 0; i--) if (agentRuns[i].conversation_id === id) agentRuns.splice(i, 1);
+      for (let i = agentRuns.length - 1; i >= 0; i--)
+        if (agentRuns[i].conversation_id === id) agentRuns.splice(i, 1);
       return null;
     }
     case "list_providers":
@@ -354,7 +498,10 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
       return null;
     }
     case "is_provider_available":
-      return providers.some((p) => p.name === (args.name as string)) && credentialed.has(String(args.name));
+      return (
+        providers.some((p) => p.name === (args.name as string)) &&
+        credentialed.has(String(args.name))
+      );
     case "has_provider_credential":
       return credentialed.has(String(args.provider));
     case "add_provider_credential":
@@ -374,13 +521,23 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
       } else {
         const strVal = String(val);
         if (key === "agent.autonomy") {
-          if (!["supervised", "semi_autonomous", "full_autonomous"].includes(strVal)) {
-            throw { kind: "invalidInput", message: `value '${strVal}' is not a valid 'agent.autonomy' setting` };
+          if (
+            !["supervised", "semi_autonomous", "full_autonomous"].includes(
+              strVal
+            )
+          ) {
+            throw {
+              kind: "invalidInput",
+              message: `value '${strVal}' is not a valid 'agent.autonomy' setting`,
+            };
           }
         }
         if (key === "agent.spend_limit_micro_usd") {
           if (!/^\d+$/.test(strVal.trim()) || Number(strVal.trim()) <= 0) {
-            throw { kind: "invalidInput", message: `value '${strVal}' is not a valid 'agent.spend_limit_micro_usd' setting` };
+            throw {
+              kind: "invalidInput",
+              message: `value '${strVal}' is not a valid 'agent.spend_limit_micro_usd' setting`,
+            };
           }
         }
         // Mirror the Rust custom model rule (commands/settings.rs): a listed
@@ -393,7 +550,10 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
             !strVal.includes("..") &&
             /^[A-Za-z0-9._/:+-]+$/.test(strVal);
           if (!listed && !custom) {
-            throw { kind: "invalidInput", message: `value '${strVal}' is not a valid 'provider.model' setting` };
+            throw {
+              kind: "invalidInput",
+              message: `value '${strVal}' is not a valid 'provider.model' setting`,
+            };
           }
         }
         settings.set(key, strVal);
@@ -424,7 +584,10 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
       return "mock-confirmation-id";
     }
     case "clear_application_data": {
-      if (typeof args.confirmationId !== "string" || args.confirmationId.length === 0) {
+      if (
+        typeof args.confirmationId !== "string" ||
+        args.confirmationId.length === 0
+      ) {
         fail("Mock backend: a confirmation id is required.");
       }
       conversations.length = 0;
@@ -442,11 +605,16 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
     case "search": {
       const q = String(args.query).toLowerCase();
       return {
-        conversations: conversations.filter((c) => c.title.toLowerCase().includes(q)),
-        message_matches: messages.filter((m) => m.content.toLowerCase().includes(q)),
+        conversations: conversations.filter((c) =>
+          c.title.toLowerCase().includes(q)
+        ),
+        message_matches: messages.filter((m) =>
+          m.content.toLowerCase().includes(q)
+        ),
         prompts: prompts.filter(
           (p) =>
-            p.title.toLowerCase().includes(q) || p.content.toLowerCase().includes(q),
+            p.title.toLowerCase().includes(q) ||
+            p.content.toLowerCase().includes(q)
         ),
       };
     }
@@ -472,7 +640,10 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
       return null;
     }
     case "delete_prompt_permanently": {
-      if (typeof args.confirmationId !== "string" || args.confirmationId.length === 0) {
+      if (
+        typeof args.confirmationId !== "string" ||
+        args.confirmationId.length === 0
+      ) {
         fail("Mock backend: a confirmation id is required.");
       }
       const index = prompts.findIndex((p) => p.id === Number(args.id));
@@ -512,13 +683,19 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
         file_name: String(args.fileName ?? args.file_name),
         file_path: String(args.filePath ?? args.file_path),
         file_size_bytes: 1024,
-        mime_type: typeof (args.mimeType ?? args.mime_type) === "string" ? (args.mimeType ?? args.mime_type) as string : null,
+        mime_type:
+          typeof (args.mimeType ?? args.mime_type) === "string"
+            ? ((args.mimeType ?? args.mime_type) as string)
+            : null,
       });
       return attachments[attachments.length - 1];
     }
     case "list_attachments":
       return attachments.filter(
-        (a) => a.conversation_id === Number(args.conversationId ?? args.conversation_id) && a.message_id === null,
+        (a) =>
+          a.conversation_id ===
+            Number(args.conversationId ?? args.conversation_id) &&
+          a.message_id === null
       );
     case "remove_attachment": {
       const index = attachments.findIndex((a) => a.id === Number(args.id));
@@ -526,7 +703,9 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
       return null;
     }
     case "send_message": {
-      const conversationId = Number(args.conversationId ?? args.conversation_id);
+      const conversationId = Number(
+        args.conversationId ?? args.conversation_id
+      );
       const content = String(args.content);
       const userId = nextMessageId++;
       messages.push({
@@ -550,7 +729,8 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
       });
       const conversation = conversations.find((c) => c.id === conversationId);
       if (conversation) conversation.updated_at = now();
-      for (const id of ((args.attachmentIds ?? args.attachment_ids) as number[]) ?? []) {
+      for (const id of ((args.attachmentIds ??
+        args.attachment_ids) as number[]) ?? []) {
         const draft = attachments.find((a) => a.id === id);
         if (draft) draft.message_id = userId;
       }
@@ -562,20 +742,41 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
     case "set_workspace_root": {
       const raw = String(args.path ?? "");
       const trimmed = raw.trim();
-      if (!trimmed) throw { kind: "invalidInput", message: "invalid workspace root: path must not be empty" };
-      if (trimmed.length > 1024) throw { kind: "invalidInput", message: "invalid workspace root: path exceeds 1024 characters" };
+      if (!trimmed)
+        throw {
+          kind: "invalidInput",
+          message: "invalid workspace root: path must not be empty",
+        };
+      if (trimmed.length > 1024)
+        throw {
+          kind: "invalidInput",
+          message: "invalid workspace root: path exceeds 1024 characters",
+        };
       const lowered = trimmed.toLowerCase().replace(/\//g, "\\");
       const noTrail = lowered.replace(/\\+$/, "");
       if (noTrail === "c:\\windows" || noTrail.startsWith("c:\\windows\\")) {
-        throw { kind: "invalidInput", message: "invalid workspace root: the Windows system directory is not allowed" };
+        throw {
+          kind: "invalidInput",
+          message:
+            "invalid workspace root: the Windows system directory is not allowed",
+        };
       }
       if (/^[a-z]:$/.test(noTrail) || noTrail === "" || noTrail === "\\") {
-        throw { kind: "invalidInput", message: "invalid workspace root: a drive root is not allowed" };
+        throw {
+          kind: "invalidInput",
+          message: "invalid workspace root: a drive root is not allowed",
+        };
       }
       mockWorkspaceRoot = trimmed;
-      mockWorkspaceRecent = [trimmed, ...mockWorkspaceRecent.filter((p) => p !== trimmed)].slice(0, 5);
+      mockWorkspaceRecent = [
+        trimmed,
+        ...mockWorkspaceRecent.filter((p) => p !== trimmed),
+      ].slice(0, 5);
       settings.set("agent.workspace_root", trimmed);
-      settings.set("agent.workspace_recent", JSON.stringify(mockWorkspaceRecent));
+      settings.set(
+        "agent.workspace_recent",
+        JSON.stringify(mockWorkspaceRecent)
+      );
       return mockWorkspaceRoot;
     }
     case "list_workspace_recent":
@@ -588,25 +789,42 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
     case "roots_list":
       return {
         active: mockWorkspaceRoot,
-        roots: [mockWorkspaceRoot, ...mockWorkspaceRecent.filter((p) => p !== mockWorkspaceRoot)],
+        roots: [
+          mockWorkspaceRoot,
+          ...mockWorkspaceRecent.filter((p) => p !== mockWorkspaceRoot),
+        ],
       };
     case "roots_add": {
       const path = String(args.path ?? "").trim();
-      if (!path) throw { kind: "invalidInput", message: "invalid workspace root: path must not be empty" };
+      if (!path)
+        throw {
+          kind: "invalidInput",
+          message: "invalid workspace root: path must not be empty",
+        };
       mockWorkspaceRoot = path;
-      mockWorkspaceRecent = [path, ...mockWorkspaceRecent.filter((p) => p !== path)].slice(0, 5);
+      mockWorkspaceRecent = [
+        path,
+        ...mockWorkspaceRecent.filter((p) => p !== path),
+      ].slice(0, 5);
       return {
         active: mockWorkspaceRoot,
-        roots: [mockWorkspaceRoot, ...mockWorkspaceRecent.filter((p) => p !== mockWorkspaceRoot)],
+        roots: [
+          mockWorkspaceRoot,
+          ...mockWorkspaceRecent.filter((p) => p !== mockWorkspaceRoot),
+        ],
       };
     }
     case "roots_remove": {
       const path = String(args.path ?? "");
       mockWorkspaceRecent = mockWorkspaceRecent.filter((p) => p !== path);
-      if (mockWorkspaceRoot === path) mockWorkspaceRoot = mockWorkspaceRecent[0] ?? mockWorkspaceRoot;
+      if (mockWorkspaceRoot === path)
+        mockWorkspaceRoot = mockWorkspaceRecent[0] ?? mockWorkspaceRoot;
       return {
         active: mockWorkspaceRoot,
-        roots: [mockWorkspaceRoot, ...mockWorkspaceRecent.filter((p) => p !== mockWorkspaceRoot)],
+        roots: [
+          mockWorkspaceRoot,
+          ...mockWorkspaceRecent.filter((p) => p !== mockWorkspaceRoot),
+        ],
       };
     }
     // ---- Agent task queue (G-03) ----
@@ -616,22 +834,37 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
     case "list_tasks":
       return [...mockTasks].sort((a, b) => b.updated_at - a.updated_at);
     case "list_task_steps":
-      return mockTaskSteps.filter((step) => step.task_id === Number(args.taskId));
+      return mockTaskSteps.filter(
+        (step) => step.task_id === Number(args.taskId)
+      );
     // ---- Agent runs (Task 5.1/5.2) ----
     case "start_agent_run": {
-      const conversationId = Number(requireArg(args, "start_agent_run", "conversationId"));
+      const conversationId = Number(
+        requireArg(args, "start_agent_run", "conversationId")
+      );
       const content = String(requireArg(args, "start_agent_run", "content"));
       const provider = String(requireArg(args, "start_agent_run", "provider"));
       const model = String(requireArg(args, "start_agent_run", "model"));
       const convId = conversationId;
       if (!conversations.some((c) => c.id === convId)) {
-        throw { kind: "notFound", message: `conversation ${convId} does not exist` };
+        throw {
+          kind: "notFound",
+          message: `conversation ${convId} does not exist`,
+        };
       }
       for (const [rid] of activeRuns) {
         const ar = agentRuns.find((x) => x.id === rid);
-        if (ar && ar.conversation_id === convId) throw { kind: "invalidInput", message: `an agent run is already active for conversation ${convId}` };
+        if (ar && ar.conversation_id === convId)
+          throw {
+            kind: "invalidInput",
+            message: `an agent run is already active for conversation ${convId}`,
+          };
       }
-      if (content.trim() === "") throw { kind: "invalidInput", message: "the user message must not be empty" };
+      if (content.trim() === "")
+        throw {
+          kind: "invalidInput",
+          message: "the user message must not be empty",
+        };
       // Persist user message immediately
       const userId = nextMessageId++;
       messages.push({
@@ -649,7 +882,12 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
       const runId = nextAgentRunId++;
       const resolvedMode = (() => {
         const stored = settings.get("agent.autonomy");
-        if (stored === "supervised" || stored === "semi_autonomous" || stored === "full_autonomous") return stored;
+        if (
+          stored === "supervised" ||
+          stored === "semi_autonomous" ||
+          stored === "full_autonomous"
+        )
+          return stored;
         return "semi_autonomous";
       })();
       const run: MockAgentRun = {
@@ -668,18 +906,34 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
       };
       agentRuns.push(run);
       agentSteps.set(runId, []);
-      const active: ActiveMockRun = { status: "running", timers: [], pendingApproval: null, budgetExhausted: false, paused: false };
+      const active: ActiveMockRun = {
+        status: "running",
+        timers: [],
+        pendingApproval: null,
+        budgetExhausted: false,
+        paused: false,
+      };
       activeRuns.set(runId, active);
 
       // Helper to append persisted step and emit live frame
-      const appendStep = (kind: string, tool_name: string | null, argsStr: string | null, observation: string | null, status: string | null, duration_ms: number | null) => {
+      const appendStep = (
+        kind: string,
+        tool_name: string | null,
+        argsStr: string | null,
+        observation: string | null,
+        status: string | null,
+        duration_ms: number | null
+      ) => {
         const steps = agentSteps.get(runId)!;
         const seq = steps.length + 1;
         const stepId = mockNextStepId++;
         // DEV-ONLY mirror of the backend preview contract (NEX-PERF-003):
         // the frame and the listing carry the preview; the full text is
         // served by the `get_agent_step_observation` case below.
-        const observation_len = observation === null ? null : new TextEncoder().encode(observation).length;
+        const observation_len =
+          observation === null
+            ? null
+            : new TextEncoder().encode(observation).length;
         const step: MockAgentStep = {
           id: stepId,
           run_id: runId,
@@ -696,10 +950,29 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
         };
         steps.push(step);
         run.total_steps = steps.length;
-        emitAgentEvent({ type: "step", run_id: runId, event: { step_id: stepId, seq, kind, tool_name, arguments: argsStr, observation, observation_len, observation_truncated: false, status, duration_ms } });
+        emitAgentEvent({
+          type: "step",
+          run_id: runId,
+          event: {
+            step_id: stepId,
+            seq,
+            kind,
+            tool_name,
+            arguments: argsStr,
+            observation,
+            observation_len,
+            observation_truncated: false,
+            status,
+            duration_ms,
+          },
+        });
       };
 
-      const finishRun = (status: string, finalContent: string | null, error: string | null) => {
+      const finishRun = (
+        status: string,
+        finalContent: string | null,
+        error: string | null
+      ) => {
         // Clear timers
         for (const t of active.timers) clearTimeout(t);
         active.timers = [];
@@ -722,53 +995,130 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
           const c = conversations.find((x) => x.id === convId);
           if (c) c.updated_at = now();
         }
-        emitAgentEvent({ type: "finished", run_id: runId, event: { conversation_id: convId, status, final_content: finalContent, error } });
+        emitAgentEvent({
+          type: "finished",
+          run_id: runId,
+          event: {
+            conversation_id: convId,
+            status,
+            final_content: finalContent,
+            error,
+          },
+        });
       };
 
       // Synthetic stream: terminal (execute_command) + diff (write_file) + approval park
       // Step 1: model_turn thinking (400ms)
-      active.timers.push(window.setTimeout(() => {
-        if (!activeRuns.has(runId)) return;
-        appendStep("model_turn", null, null, "Thinking about your request…", null, 120);
-        emitAgentEvent({ type: "governance", run_id: runId, event: { type: "completed", steps: 1 } });
-      }, 400) as unknown as number);
+      active.timers.push(
+        window.setTimeout(() => {
+          if (!activeRuns.has(runId)) return;
+          appendStep(
+            "model_turn",
+            null,
+            null,
+            "Thinking about your request…",
+            null,
+            120
+          );
+          emitAgentEvent({
+            type: "governance",
+            run_id: runId,
+            event: { type: "completed", steps: 1 },
+          });
+        }, 400) as unknown as number
+      );
 
       // Step 2: execute_command terminal (900ms) — demonstrates terminal view
-      active.timers.push(window.setTimeout(() => {
-        if (!activeRuns.has(runId)) return;
-        const cmd = "cargo test";
-        const observation = "running 3 tests\ntest ok\n--- stderr ---\nwarning: unused variable";
-        appendStep("tool_call", "execute_command", JSON.stringify({ command: cmd }), observation, "succeeded", 210);
-      }, 900) as unknown as number);
+      active.timers.push(
+        window.setTimeout(() => {
+          if (!activeRuns.has(runId)) return;
+          const cmd = "cargo test";
+          const observation =
+            "running 3 tests\ntest ok\n--- stderr ---\nwarning: unused variable";
+          appendStep(
+            "tool_call",
+            "execute_command",
+            JSON.stringify({ command: cmd }),
+            observation,
+            "succeeded",
+            210
+          );
+        }, 900) as unknown as number
+      );
 
       // Step 3: approval park for write_file (1400ms) -> emit ApprovalRequested, park until resolved
-      active.timers.push(window.setTimeout(() => {
-        if (!activeRuns.has(runId)) return;
-        const callId = `call-${runId}-approval`;
-        const writeArgs = JSON.stringify({ path: "output.txt", content: "hello world\nsecond line" });
-        active.pendingApproval = { call_id: callId, name: "write_file", arguments: writeArgs };
-        emitAgentEvent({ type: "governance", run_id: runId, event: { type: "approval_requested", call_id: callId, name: "write_file", arguments: writeArgs, timeout_secs: 600 } });
-        // Auto-resolve after ~2s if not manually resolved
-        const auto = window.setTimeout(() => {
-          if (!activeRuns.has(runId) || !active.pendingApproval) return;
-          const approved = true;
-          emitAgentEvent({ type: "governance", run_id: runId, event: { type: "approval_resolved", call_id: callId, approved } });
-          appendStep("approval", "write_file", writeArgs, approved ? "approved" : "denied", approved ? "succeeded" : "denied", null);
-          active.pendingApproval = null;
-          // After approval, continue with write_file diff and final model_turn
-          window.setTimeout(() => {
-            if (!activeRuns.has(runId)) return;
-            const diff = "--- a/output.txt\n+++ b/output.txt\n@@ -0,0 +1,2 @@\n+hello world\n+second line\n";
-            appendStep("tool_call", "write_file", writeArgs, diff, "succeeded", 12);
-          }, 400);
-          window.setTimeout(() => {
-            if (!activeRuns.has(runId)) return;
-            appendStep("model_turn", null, null, `Mock agent reply to “${content}”.`, null, 80);
-            finishRun("completed", `Mock agent reply to “${content}”.`, null);
-          }, 900);
-        }, 2000);
-        active.timers.push(auto as unknown as number);
-      }, 1400) as unknown as number);
+      active.timers.push(
+        window.setTimeout(() => {
+          if (!activeRuns.has(runId)) return;
+          const callId = `call-${runId}-approval`;
+          const writeArgs = JSON.stringify({
+            path: "output.txt",
+            content: "hello world\nsecond line",
+          });
+          active.pendingApproval = {
+            call_id: callId,
+            name: "write_file",
+            arguments: writeArgs,
+          };
+          emitAgentEvent({
+            type: "governance",
+            run_id: runId,
+            event: {
+              type: "approval_requested",
+              call_id: callId,
+              name: "write_file",
+              arguments: writeArgs,
+              timeout_secs: 600,
+            },
+          });
+          // Auto-resolve after ~2s if not manually resolved
+          const auto = window.setTimeout(() => {
+            if (!activeRuns.has(runId) || !active.pendingApproval) return;
+            const approved = true;
+            emitAgentEvent({
+              type: "governance",
+              run_id: runId,
+              event: { type: "approval_resolved", call_id: callId, approved },
+            });
+            appendStep(
+              "approval",
+              "write_file",
+              writeArgs,
+              approved ? "approved" : "denied",
+              approved ? "succeeded" : "denied",
+              null
+            );
+            active.pendingApproval = null;
+            // After approval, continue with write_file diff and final model_turn
+            window.setTimeout(() => {
+              if (!activeRuns.has(runId)) return;
+              const diff =
+                "--- a/output.txt\n+++ b/output.txt\n@@ -0,0 +1,2 @@\n+hello world\n+second line\n";
+              appendStep(
+                "tool_call",
+                "write_file",
+                writeArgs,
+                diff,
+                "succeeded",
+                12
+              );
+            }, 400);
+            window.setTimeout(() => {
+              if (!activeRuns.has(runId)) return;
+              appendStep(
+                "model_turn",
+                null,
+                null,
+                `Mock agent reply to “${content}”.`,
+                null,
+                80
+              );
+              finishRun("completed", `Mock agent reply to “${content}”.`, null);
+            }, 900);
+          }, 2000);
+          active.timers.push(auto as unknown as number);
+        }, 1400) as unknown as number
+      );
 
       // For mock simplicity, provider/model args already captured
       void provider;
@@ -778,7 +1128,11 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
     case "cancel_agent_run": {
       const runId = Number(requireArg(args, "cancel_agent_run", "runId"));
       const active = activeRuns.get(runId);
-      if (!active) throw { kind: "notFound", message: `no active agent run with id ${runId}` };
+      if (!active)
+        throw {
+          kind: "notFound",
+          message: `no active agent run with id ${runId}`,
+        };
       for (const t of active.timers) clearTimeout(t);
       active.timers = [];
       const run = agentRuns.find((r) => r.id === runId);
@@ -792,26 +1146,83 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
         const steps = agentSteps.get(runId)!;
         const seq = steps.length + 1;
         const sid = mockNextStepId++;
-        steps.push({ id: sid, run_id: runId, seq, kind: "approval", tool_name: active.pendingApproval.name, arguments: active.pendingApproval.arguments, observation: "cancelled by the user", observation_len: mockObsLen("cancelled by the user"), observation_truncated: false, status: "cancelled", started_at: now(), duration_ms: null });
-        emitAgentEvent({ type: "step", run_id: runId, event: { step_id: sid, seq, kind: "approval", tool_name: active.pendingApproval.name, arguments: active.pendingApproval.arguments, observation: "cancelled by the user", observation_len: mockObsLen("cancelled by the user"), observation_truncated: false, status: "cancelled", duration_ms: null } });
+        steps.push({
+          id: sid,
+          run_id: runId,
+          seq,
+          kind: "approval",
+          tool_name: active.pendingApproval.name,
+          arguments: active.pendingApproval.arguments,
+          observation: "cancelled by the user",
+          observation_len: mockObsLen("cancelled by the user"),
+          observation_truncated: false,
+          status: "cancelled",
+          started_at: now(),
+          duration_ms: null,
+        });
+        emitAgentEvent({
+          type: "step",
+          run_id: runId,
+          event: {
+            step_id: sid,
+            seq,
+            kind: "approval",
+            tool_name: active.pendingApproval.name,
+            arguments: active.pendingApproval.arguments,
+            observation: "cancelled by the user",
+            observation_len: mockObsLen("cancelled by the user"),
+            observation_truncated: false,
+            status: "cancelled",
+            duration_ms: null,
+          },
+        });
         active.pendingApproval = null;
-        emitAgentEvent({ type: "governance", run_id: runId, event: { type: "cancelled" } });
+        emitAgentEvent({
+          type: "governance",
+          run_id: runId,
+          event: { type: "cancelled" },
+        });
       } else {
-        emitAgentEvent({ type: "governance", run_id: runId, event: { type: "cancelled" } });
+        emitAgentEvent({
+          type: "governance",
+          run_id: runId,
+          event: { type: "cancelled" },
+        });
       }
       activeRuns.delete(runId);
       const run2 = agentRuns.find((r) => r.id === runId);
       const convId = run2?.conversation_id ?? 0;
-      emitAgentEvent({ type: "finished", run_id: runId, event: { conversation_id: convId, status: "cancelled", final_content: null, error: null } });
+      emitAgentEvent({
+        type: "finished",
+        run_id: runId,
+        event: {
+          conversation_id: convId,
+          status: "cancelled",
+          final_content: null,
+          error: null,
+        },
+      });
       return null;
     }
     case "resolve_agent_approval": {
       const runId = Number(requireArg(args, "resolve_agent_approval", "runId"));
-      const callId = String(requireArg(args, "resolve_agent_approval", "callId"));
-      const approved = Boolean(requireArg(args, "resolve_agent_approval", "approved"));
+      const callId = String(
+        requireArg(args, "resolve_agent_approval", "callId")
+      );
+      const approved = Boolean(
+        requireArg(args, "resolve_agent_approval", "approved")
+      );
       const active = activeRuns.get(runId);
-      if (!active) throw { kind: "notFound", message: `no active agent run with id ${runId}` };
-      if (!active.pendingApproval || active.pendingApproval.call_id !== callId) throw { kind: "notFound", message: "the run has no pending approval for that call" };
+      if (!active)
+        throw {
+          kind: "notFound",
+          message: `no active agent run with id ${runId}`,
+        };
+      if (!active.pendingApproval || active.pendingApproval.call_id !== callId)
+        throw {
+          kind: "notFound",
+          message: "the run has no pending approval for that call",
+        };
       // Clear auto-resolve timer? The pending was inside timers; easiest: mark pending null and emit.
       // We will clear all timers that would auto-resolve and handle now.
       // Find and clear the auto timer? We stored it as last timer; clear all for simplicity and re-schedule remaining steps manually.
@@ -820,75 +1231,285 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
       active.timers = [];
       const pending = active.pendingApproval;
       active.pendingApproval = null;
-      emitAgentEvent({ type: "governance", run_id: runId, event: { type: "approval_resolved", call_id: callId, approved } });
+      emitAgentEvent({
+        type: "governance",
+        run_id: runId,
+        event: { type: "approval_resolved", call_id: callId, approved },
+      });
       const steps = agentSteps.get(runId)!;
       const seq = steps.length + 1;
       const approvalText = approved ? "approved" : "denied";
       const sid = mockNextStepId++;
-      steps.push({ id: sid, run_id: runId, seq, kind: "approval", tool_name: pending.name, arguments: pending.arguments, observation: approvalText, observation_len: mockObsLen(approvalText), observation_truncated: false, status: approved ? "succeeded" : "denied", started_at: now(), duration_ms: null });
-      emitAgentEvent({ type: "step", run_id: runId, event: { step_id: sid, seq, kind: "approval", tool_name: pending.name, arguments: pending.arguments, observation: approvalText, observation_len: mockObsLen(approvalText), observation_truncated: false, status: approved ? "succeeded" : "denied", duration_ms: null } });
+      steps.push({
+        id: sid,
+        run_id: runId,
+        seq,
+        kind: "approval",
+        tool_name: pending.name,
+        arguments: pending.arguments,
+        observation: approvalText,
+        observation_len: mockObsLen(approvalText),
+        observation_truncated: false,
+        status: approved ? "succeeded" : "denied",
+        started_at: now(),
+        duration_ms: null,
+      });
+      emitAgentEvent({
+        type: "step",
+        run_id: runId,
+        event: {
+          step_id: sid,
+          seq,
+          kind: "approval",
+          tool_name: pending.name,
+          arguments: pending.arguments,
+          observation: approvalText,
+          observation_len: mockObsLen(approvalText),
+          observation_truncated: false,
+          status: approved ? "succeeded" : "denied",
+          duration_ms: null,
+        },
+      });
       const run = agentRuns.find((r) => r.id === runId);
       const convId = run?.conversation_id ?? 0;
-      const content = messages.find((m) => m.conversation_id === convId && m.role === "user")?.content ?? "request";
+      const content =
+        messages.find((m) => m.conversation_id === convId && m.role === "user")
+          ?.content ?? "request";
       if (approved) {
-        active.timers.push(window.setTimeout(() => {
-          if (!activeRuns.has(runId)) return;
-          const seq2 = (agentSteps.get(runId)!.length) + 1;
-          const diff = "--- a/output.txt\n+++ b/output.txt\n@@ -0,0 +1,2 @@\n+hello world\n+second line\n";
-          const sid2 = mockNextStepId++;
-          agentSteps.get(runId)!.push({ id: sid2, run_id: runId, seq: seq2, kind: "tool_call", tool_name: "write_file", arguments: pending.arguments, observation: diff, observation_len: mockObsLen(diff), observation_truncated: false, status: "succeeded", started_at: now(), duration_ms: 12 });
-          emitAgentEvent({ type: "step", run_id: runId, event: { step_id: sid2, seq: seq2, kind: "tool_call", tool_name: "write_file", arguments: pending.arguments, observation: diff, observation_len: mockObsLen(diff), observation_truncated: false, status: "succeeded", duration_ms: 12 } });
-        }, 400) as unknown as number);
-        active.timers.push(window.setTimeout(() => {
-          if (!activeRuns.has(runId)) return;
-          const seq3 = (agentSteps.get(runId)!.length) + 1;
-          const reply = `Mock agent reply to “${content}”.`;
-          const sid3 = mockNextStepId++;
-          agentSteps.get(runId)!.push({ id: sid3, run_id: runId, seq: seq3, kind: "model_turn", tool_name: null, arguments: null, observation: reply, observation_len: mockObsLen(reply), observation_truncated: false, status: null, started_at: now(), duration_ms: 80 });
-          emitAgentEvent({ type: "step", run_id: runId, event: { step_id: sid3, seq: seq3, kind: "model_turn", tool_name: null, arguments: null, observation: reply, observation_len: mockObsLen(reply), observation_truncated: false, status: null, duration_ms: 80 } });
-          if (run) { run.status = "completed"; run.finished_at = now(); run.final_content = `Mock agent reply to “${content}”.`; }
-          activeRuns.delete(runId);
-          messages.push({ id: nextMessageId++, conversation_id: convId, role: "assistant", content: `Mock agent reply to “${content}”.`, provider_id: 1, model_name: run?.model ?? "test", created_at: now() });
-          emitAgentEvent({ type: "finished", run_id: runId, event: { conversation_id: convId, status: "completed", final_content: `Mock agent reply to “${content}”.`, error: null } });
-        }, 900) as unknown as number);
+        active.timers.push(
+          window.setTimeout(() => {
+            if (!activeRuns.has(runId)) return;
+            const seq2 = agentSteps.get(runId)!.length + 1;
+            const diff =
+              "--- a/output.txt\n+++ b/output.txt\n@@ -0,0 +1,2 @@\n+hello world\n+second line\n";
+            const sid2 = mockNextStepId++;
+            agentSteps.get(runId)!.push({
+              id: sid2,
+              run_id: runId,
+              seq: seq2,
+              kind: "tool_call",
+              tool_name: "write_file",
+              arguments: pending.arguments,
+              observation: diff,
+              observation_len: mockObsLen(diff),
+              observation_truncated: false,
+              status: "succeeded",
+              started_at: now(),
+              duration_ms: 12,
+            });
+            emitAgentEvent({
+              type: "step",
+              run_id: runId,
+              event: {
+                step_id: sid2,
+                seq: seq2,
+                kind: "tool_call",
+                tool_name: "write_file",
+                arguments: pending.arguments,
+                observation: diff,
+                observation_len: mockObsLen(diff),
+                observation_truncated: false,
+                status: "succeeded",
+                duration_ms: 12,
+              },
+            });
+          }, 400) as unknown as number
+        );
+        active.timers.push(
+          window.setTimeout(() => {
+            if (!activeRuns.has(runId)) return;
+            const seq3 = agentSteps.get(runId)!.length + 1;
+            const reply = `Mock agent reply to “${content}”.`;
+            const sid3 = mockNextStepId++;
+            agentSteps.get(runId)!.push({
+              id: sid3,
+              run_id: runId,
+              seq: seq3,
+              kind: "model_turn",
+              tool_name: null,
+              arguments: null,
+              observation: reply,
+              observation_len: mockObsLen(reply),
+              observation_truncated: false,
+              status: null,
+              started_at: now(),
+              duration_ms: 80,
+            });
+            emitAgentEvent({
+              type: "step",
+              run_id: runId,
+              event: {
+                step_id: sid3,
+                seq: seq3,
+                kind: "model_turn",
+                tool_name: null,
+                arguments: null,
+                observation: reply,
+                observation_len: mockObsLen(reply),
+                observation_truncated: false,
+                status: null,
+                duration_ms: 80,
+              },
+            });
+            if (run) {
+              run.status = "completed";
+              run.finished_at = now();
+              run.final_content = `Mock agent reply to “${content}”.`;
+            }
+            activeRuns.delete(runId);
+            messages.push({
+              id: nextMessageId++,
+              conversation_id: convId,
+              role: "assistant",
+              content: `Mock agent reply to “${content}”.`,
+              provider_id: 1,
+              model_name: run?.model ?? "test",
+              created_at: now(),
+            });
+            emitAgentEvent({
+              type: "finished",
+              run_id: runId,
+              event: {
+                conversation_id: convId,
+                status: "completed",
+                final_content: `Mock agent reply to “${content}”.`,
+                error: null,
+              },
+            });
+          }, 900) as unknown as number
+        );
       } else {
         // Denied: record observation and finish with denied flow but still completed? For mock, treat as completed with denial note.
-        active.timers.push(window.setTimeout(() => {
-          if (!activeRuns.has(runId)) return;
-          const seq2 = (agentSteps.get(runId)!.length) + 1;
-          const sid2 = mockNextStepId++;
-          agentSteps.get(runId)!.push({ id: sid2, run_id: runId, seq: seq2, kind: "model_turn", tool_name: null, arguments: null, observation: `Request denied.`, observation_len: mockObsLen(`Request denied.`), observation_truncated: false, status: null, started_at: now(), duration_ms: 80 });
-          emitAgentEvent({ type: "step", run_id: runId, event: { step_id: sid2, seq: seq2, kind: "model_turn", tool_name: null, arguments: null, observation: `Request denied.`, observation_len: mockObsLen(`Request denied.`), observation_truncated: false, status: null, duration_ms: 80 } });
-          if (run) { run.status = "completed"; run.finished_at = now(); run.final_content = `Request denied.`; }
-          activeRuns.delete(runId);
-          emitAgentEvent({ type: "finished", run_id: runId, event: { conversation_id: convId, status: "completed", final_content: `Request denied.`, error: null } });
-        }, 500) as unknown as number);
+        active.timers.push(
+          window.setTimeout(() => {
+            if (!activeRuns.has(runId)) return;
+            const seq2 = agentSteps.get(runId)!.length + 1;
+            const sid2 = mockNextStepId++;
+            agentSteps.get(runId)!.push({
+              id: sid2,
+              run_id: runId,
+              seq: seq2,
+              kind: "model_turn",
+              tool_name: null,
+              arguments: null,
+              observation: `Request denied.`,
+              observation_len: mockObsLen(`Request denied.`),
+              observation_truncated: false,
+              status: null,
+              started_at: now(),
+              duration_ms: 80,
+            });
+            emitAgentEvent({
+              type: "step",
+              run_id: runId,
+              event: {
+                step_id: sid2,
+                seq: seq2,
+                kind: "model_turn",
+                tool_name: null,
+                arguments: null,
+                observation: `Request denied.`,
+                observation_len: mockObsLen(`Request denied.`),
+                observation_truncated: false,
+                status: null,
+                duration_ms: 80,
+              },
+            });
+            if (run) {
+              run.status = "completed";
+              run.finished_at = now();
+              run.final_content = `Request denied.`;
+            }
+            activeRuns.delete(runId);
+            emitAgentEvent({
+              type: "finished",
+              run_id: runId,
+              event: {
+                conversation_id: convId,
+                status: "completed",
+                final_content: `Request denied.`,
+                error: null,
+              },
+            });
+          }, 500) as unknown as number
+        );
       }
       return null;
     }
     case "extend_agent_run": {
       const runId = Number(requireArg(args, "extend_agent_run", "runId"));
       const extra = Number(requireArg(args, "extend_agent_run", "extraSteps"));
-      if (extra <= 0) throw { kind: "invalidInput", message: "extra steps must be greater than zero" };
+      if (extra <= 0)
+        throw {
+          kind: "invalidInput",
+          message: "extra steps must be greater than zero",
+        };
       const active = activeRuns.get(runId);
-      if (!active) throw { kind: "notFound", message: `no active agent run with id ${runId}` };
+      if (!active)
+        throw {
+          kind: "notFound",
+          message: `no active agent run with id ${runId}`,
+        };
       // If budget exhausted, clear flag and emit continuation steps
       if (active.budgetExhausted) {
         active.budgetExhausted = false;
         const run = agentRuns.find((r) => r.id === runId);
         if (run) run.status = "running";
         // Simulate extended steps
-        active.timers.push(window.setTimeout(() => {
-          if (!activeRuns.has(runId)) return;
-          const steps = agentSteps.get(runId)!;
-          const seq = steps.length + 1;
-          const sid = mockNextStepId++;
-          steps.push({ id: sid, run_id: runId, seq, kind: "model_turn", tool_name: null, arguments: null, observation: "Continued after budget.", observation_len: mockObsLen("Continued after budget."), observation_truncated: false, status: null, started_at: now(), duration_ms: 80 });
-          emitAgentEvent({ type: "step", run_id: runId, event: { step_id: sid, seq, kind: "model_turn", tool_name: null, arguments: null, observation: "Continued after budget.", observation_len: mockObsLen("Continued after budget."), observation_truncated: false, status: null, duration_ms: 80 } });
-          if (run) { run.status = "completed"; run.finished_at = now(); run.final_content = "Continued after budget."; }
-          activeRuns.delete(runId);
-          emitAgentEvent({ type: "finished", run_id: runId, event: { conversation_id: run?.conversation_id ?? 0, status: "completed", final_content: "Continued after budget.", error: null } });
-        }, 600) as unknown as number);
+        active.timers.push(
+          window.setTimeout(() => {
+            if (!activeRuns.has(runId)) return;
+            const steps = agentSteps.get(runId)!;
+            const seq = steps.length + 1;
+            const sid = mockNextStepId++;
+            steps.push({
+              id: sid,
+              run_id: runId,
+              seq,
+              kind: "model_turn",
+              tool_name: null,
+              arguments: null,
+              observation: "Continued after budget.",
+              observation_len: mockObsLen("Continued after budget."),
+              observation_truncated: false,
+              status: null,
+              started_at: now(),
+              duration_ms: 80,
+            });
+            emitAgentEvent({
+              type: "step",
+              run_id: runId,
+              event: {
+                step_id: sid,
+                seq,
+                kind: "model_turn",
+                tool_name: null,
+                arguments: null,
+                observation: "Continued after budget.",
+                observation_len: mockObsLen("Continued after budget."),
+                observation_truncated: false,
+                status: null,
+                duration_ms: 80,
+              },
+            });
+            if (run) {
+              run.status = "completed";
+              run.finished_at = now();
+              run.final_content = "Continued after budget.";
+            }
+            activeRuns.delete(runId);
+            emitAgentEvent({
+              type: "finished",
+              run_id: runId,
+              event: {
+                conversation_id: run?.conversation_id ?? 0,
+                status: "completed",
+                final_content: "Continued after budget.",
+                error: null,
+              },
+            });
+          }, 600) as unknown as number
+        );
       } else {
         // Extend budget while running: just log, no immediate effect
       }
@@ -897,11 +1518,20 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
     case "agent_set_mode": {
       const runId = Number(requireArg(args, "agent_set_mode", "runId"));
       const mode = String(requireArg(args, "agent_set_mode", "mode"));
-      if (!["supervised", "semi_autonomous", "full_autonomous"].includes(mode)) {
-        throw { kind: "invalidInput", message: `value '${mode}' is not a valid 'agent.autonomy' setting` };
+      if (
+        !["supervised", "semi_autonomous", "full_autonomous"].includes(mode)
+      ) {
+        throw {
+          kind: "invalidInput",
+          message: `value '${mode}' is not a valid 'agent.autonomy' setting`,
+        };
       }
       const active = activeRuns.get(runId);
-      if (!active) throw { kind: "notFound", message: `no active agent run with id ${runId}` };
+      if (!active)
+        throw {
+          kind: "notFound",
+          message: `no active agent run with id ${runId}`,
+        };
       const run = agentRuns.find((r) => r.id === runId);
       if (run) run.mode = mode;
       // Mode switch never auto-resolves a parked approval (DP-AUTONOMY): do nothing to pendingApproval
@@ -910,20 +1540,36 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
     case "pause_agent_run": {
       const runId = Number(requireArg(args, "pause_agent_run", "runId"));
       const active = activeRuns.get(runId);
-      if (!active) throw { kind: "notFound", message: `no active agent run with id ${runId}` };
+      if (!active)
+        throw {
+          kind: "notFound",
+          message: `no active agent run with id ${runId}`,
+        };
       if (!active.paused) {
         active.paused = true;
-        emitAgentEvent({ type: "governance", run_id: runId, event: { type: "paused" } });
+        emitAgentEvent({
+          type: "governance",
+          run_id: runId,
+          event: { type: "paused" },
+        });
       }
       return null;
     }
     case "resume_agent_run": {
       const runId = Number(requireArg(args, "resume_agent_run", "runId"));
       const active = activeRuns.get(runId);
-      if (!active) throw { kind: "notFound", message: `no active agent run with id ${runId}` };
+      if (!active)
+        throw {
+          kind: "notFound",
+          message: `no active agent run with id ${runId}`,
+        };
       if (active.paused) {
         active.paused = false;
-        emitAgentEvent({ type: "governance", run_id: runId, event: { type: "resumed" } });
+        emitAgentEvent({
+          type: "governance",
+          run_id: runId,
+          event: { type: "resumed" },
+        });
         // If we paused during a pending approval auto-resolve, the timers are still pending; resuming will let them fire
         // For budget-pending, simulate continuation if needed
         if (active.budgetExhausted) {
@@ -933,14 +1579,26 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
       return null;
     }
     case "conversation_context_stats": {
-      const convId = Number(requireArg(args, "conversation_context_stats", "conversationId"));
+      const convId = Number(
+        requireArg(args, "conversation_context_stats", "conversationId")
+      );
       const conv = conversations.find((c) => c.id === convId);
-      if (!conv) throw { kind: "notFound", message: `conversation ${convId} does not exist` };
+      if (!conv)
+        throw {
+          kind: "notFound",
+          message: `conversation ${convId} does not exist`,
+        };
       const convMessages = messages.filter((m) => m.conversation_id === convId);
       const userCount = convMessages.filter((m) => m.role === "user").length;
-      const assistantCount = convMessages.filter((m) => m.role === "assistant").length;
-      const lastAssistant = [...convMessages].reverse().find((m) => m.role === "assistant");
-      const runIds = agentRuns.filter((r) => r.conversation_id === convId).map((r) => r.id);
+      const assistantCount = convMessages.filter(
+        (m) => m.role === "assistant"
+      ).length;
+      const lastAssistant = [...convMessages]
+        .reverse()
+        .find((m) => m.role === "assistant");
+      const runIds = agentRuns
+        .filter((r) => r.conversation_id === convId)
+        .map((r) => r.id);
       let toolCallCount = 0;
       let otherStepCount = 0;
       for (const rid of runIds) {
@@ -953,7 +1611,9 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
         conversation_id: conv.id,
         title: conv.title,
         provider: MOCK_DEFAULT_PROVIDER,
-        provider_display: supported.find((p) => p.name === MOCK_DEFAULT_PROVIDER)?.display_name ?? null,
+        provider_display:
+          supported.find((p) => p.name === MOCK_DEFAULT_PROVIDER)
+            ?.display_name ?? null,
         model: lastAssistant?.model_name ?? MOCK_DEFAULT_MODEL,
         context_limit: 128000,
         total_tokens: 0,
@@ -975,8 +1635,12 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
       };
     }
     case "list_agent_runs": {
-      const convId = Number(requireArg(args, "list_agent_runs", "conversationId"));
-      return [...agentRuns].filter((r) => r.conversation_id === convId).sort((a, b) => b.started_at - a.started_at);
+      const convId = Number(
+        requireArg(args, "list_agent_runs", "conversationId")
+      );
+      return [...agentRuns]
+        .filter((r) => r.conversation_id === convId)
+        .sort((a, b) => b.started_at - a.started_at);
     }
     case "list_agent_steps": {
       const runId = Number(requireArg(args, "list_agent_steps", "runId"));
@@ -984,7 +1648,9 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
       return [...steps].sort((a, b) => a.seq - b.seq);
     }
     case "get_agent_step_observation": {
-      const stepId = Number(requireArg(args, "get_agent_step_observation", "stepId"));
+      const stepId = Number(
+        requireArg(args, "get_agent_step_observation", "stepId")
+      );
       for (const steps of agentSteps.values()) {
         const found = steps.find((s) => s.id === stepId);
         if (found) return found.observation ?? "";
@@ -1001,7 +1667,9 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
           ? Math.floor(rawLimit)
           : 50;
       const count = Math.min(100, Math.max(1, parsed));
-      const ordered = [...agentRuns].sort((a, b) => b.started_at - a.started_at);
+      const ordered = [...agentRuns].sort(
+        (a, b) => b.started_at - a.started_at
+      );
       const runs = ordered.slice(0, count).map((r) => ({
         run_id: r.id,
         conversation_id: r.conversation_id,
@@ -1066,11 +1734,41 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
       const day = Math.floor(Date.now() / 1000 / 86400);
       return {
         surfaces: [
-          { id: "provider:openai", title: "OpenAI API", destination: "api.openai.com", state: "off", detail: "no key stored — sends nothing" },
-          { id: "github_api", title: "GitHub issues / PRs / Actions", destination: "api.github.com", state: "manual", detail: "no token — unauthenticated reads on panel open only" },
-          { id: "release_check", title: "Release check", destination: "api.github.com (releases/latest)", state: "manual", detail: "button only — never automatic" },
-          { id: "crash_upload", title: "Crash upload", destination: "none", state: "off", detail: "no crash upload exists" },
-          { id: "usage_ledger", title: "Usage ledger", destination: "local SQLite (usage_ledger, 90 days)", state: "local", detail: "per-day counters only" },
+          {
+            id: "provider:openai",
+            title: "OpenAI API",
+            destination: "api.openai.com",
+            state: "off",
+            detail: "no key stored — sends nothing",
+          },
+          {
+            id: "github_api",
+            title: "GitHub issues / PRs / Actions",
+            destination: "api.github.com",
+            state: "manual",
+            detail: "no token — unauthenticated reads on panel open only",
+          },
+          {
+            id: "release_check",
+            title: "Release check",
+            destination: "api.github.com (releases/latest)",
+            state: "manual",
+            detail: "button only — never automatic",
+          },
+          {
+            id: "crash_upload",
+            title: "Crash upload",
+            destination: "none",
+            state: "off",
+            detail: "no crash upload exists",
+          },
+          {
+            id: "usage_ledger",
+            title: "Usage ledger",
+            destination: "local SQLite (usage_ledger, 90 days)",
+            state: "local",
+            detail: "per-day counters only",
+          },
         ],
         stats: [{ kind: "message", day, count: 3 }],
         total_events: 3,
@@ -1103,18 +1801,19 @@ async function invoke(command: string, args: Record<string, unknown> = {}): Prom
   }
 }
 
-if (
-  !(
-    "__TAURI_INTERNALS__" in window &&
-    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
-  )
-) {
+if (!(
+  "__TAURI_INTERNALS__" in window &&
+  (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+)) {
   Object.defineProperty(window, "__TAURI_INTERNALS__", {
     configurable: true,
     value: {
       invoke,
       transformCallback: (callback: unknown) => callback,
-      metadata: { currentWindow: { label: "mock" }, currentWebview: { label: "mock" } },
+      metadata: {
+        currentWindow: { label: "mock" },
+        currentWebview: { label: "mock" },
+      },
     },
   });
 }

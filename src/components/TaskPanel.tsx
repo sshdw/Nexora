@@ -53,7 +53,10 @@ function taskStatusLabel(status: AgentTask["status"], t: Strings["t"]): string {
 }
 
 /** Fixed-vocabulary step-status label (masculine — шаг); unknown values echo defensively. */
-function stepStatusLabel(status: AgentTaskStep["status"], t: Strings["t"]): string {
+function stepStatusLabel(
+  status: AgentTaskStep["status"],
+  t: Strings["t"]
+): string {
   switch (status) {
     case "pending":
       return t("task.stepStatusPending");
@@ -81,7 +84,10 @@ interface TaskFormState {
   cap: string;
 }
 
-function blankForm(defaultProvider: string | null, defaultModel: string | null): TaskFormState {
+function blankForm(
+  defaultProvider: string | null,
+  defaultModel: string | null
+): TaskFormState {
   return {
     title: "",
     description: "",
@@ -99,15 +105,25 @@ function parseSteps(text: string): string[] {
     .filter((line) => line !== "");
 }
 
-export default function TaskPanel({ onClose, defaultProvider, defaultModel }: TaskPanelProps) {
+export default function TaskPanel({
+  onClose,
+  defaultProvider,
+  defaultModel,
+}: TaskPanelProps) {
   const { t } = useStrings();
   const store = useTasks();
   const [view, setView] = useState<"list" | "board">("list");
   const [formOpen, setFormOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
-  const [form, setForm] = useState<TaskFormState>(() => blankForm(defaultProvider, defaultModel));
-  const [expandedSteps, setExpandedSteps] = useState<Record<number, boolean>>({});
-  const [expandedReport, setExpandedReport] = useState<Record<number, boolean>>({});
+  const [form, setForm] = useState<TaskFormState>(() =>
+    blankForm(defaultProvider, defaultModel)
+  );
+  const [expandedSteps, setExpandedSteps] = useState<Record<number, boolean>>(
+    {}
+  );
+  const [expandedReport, setExpandedReport] = useState<Record<number, boolean>>(
+    {}
+  );
   const [busyId, setBusyId] = useState<number | null>(null);
   // In-app delete confirmation target (ConfirmDialog); the hard delete it
   // guards is the one truly irreversible op here, so it keeps an explicit
@@ -133,7 +149,7 @@ export default function TaskPanel({ onClose, defaultProvider, defaultModel }: Ta
     () => () => {
       pendingRef.current = null;
     },
-    [],
+    []
   );
 
   const openCreate = useCallback(() => {
@@ -164,7 +180,8 @@ export default function TaskPanel({ onClose, defaultProvider, defaultModel }: Ta
     const title = form.title.trim();
     if (title === "") return;
     if (editingId !== null) {
-      const description = form.description.trim() === "" ? null : form.description.trim();
+      const description =
+        form.description.trim() === "" ? null : form.description.trim();
       setBusyId(editingId);
       try {
         await store.update(editingId, title, description);
@@ -179,12 +196,20 @@ export default function TaskPanel({ onClose, defaultProvider, defaultModel }: Ta
     const capRaw = form.cap.trim();
     const maxSteps = capRaw === "" ? steps.length : Number(capRaw);
     if (!Number.isInteger(maxSteps) || maxSteps < 1 || maxSteps > 25) return;
-    const description = form.description.trim() === "" ? null : form.description.trim();
+    const description =
+      form.description.trim() === "" ? null : form.description.trim();
     const provider = form.provider.trim() === "" ? null : form.provider.trim();
     const model = form.model.trim() === "" ? null : form.model.trim();
     setBusyId(-1);
     try {
-      const id = await store.create(title, description, provider, model, steps, maxSteps);
+      const id = await store.create(
+        title,
+        description,
+        provider,
+        model,
+        steps,
+        maxSteps
+      );
       if (id !== null) {
         setExpandedSteps((prev) => ({ ...prev, [id]: true }));
       }
@@ -204,7 +229,7 @@ export default function TaskPanel({ onClose, defaultProvider, defaultModel }: Ta
         setBusyId(null);
       }
     },
-    [store],
+    [store]
   );
 
   const handleStop = useCallback(
@@ -216,7 +241,7 @@ export default function TaskPanel({ onClose, defaultProvider, defaultModel }: Ta
         setBusyId(null);
       }
     },
-    [store],
+    [store]
   );
 
   const commitPendingDelete = useCallback(() => {
@@ -264,7 +289,14 @@ export default function TaskPanel({ onClose, defaultProvider, defaultModel }: Ta
       onAction: cancelPendingDelete,
       timeoutMs: UNDO_WINDOW_MS,
     });
-  }, [deleteTarget, commitPendingDelete, store, showSnack, t, cancelPendingDelete]);
+  }, [
+    deleteTarget,
+    commitPendingDelete,
+    store,
+    showSnack,
+    t,
+    cancelPendingDelete,
+  ]);
 
   const toggleSteps = useCallback((taskId: number) => {
     setExpandedSteps((prev) => ({ ...prev, [taskId]: !prev[taskId] }));
@@ -274,12 +306,15 @@ export default function TaskPanel({ onClose, defaultProvider, defaultModel }: Ta
     setExpandedReport((prev) => ({ ...prev, [taskId]: !prev[taskId] }));
   }, []);
 
-  const doneCount = (view: TaskView) => view.steps.filter((s) => s.status === "completed").length;
+  const doneCount = (view: TaskView) =>
+    view.steps.filter((s) => s.status === "completed").length;
 
   // Rows with a pending (still-undoable) delete stay out of the list until
   // the window commits or Undo brings them back.
   const visibleTasks =
-    pendingId === null ? store.tasks : store.tasks.filter((view) => view.task.id !== pendingId);
+    pendingId === null
+      ? store.tasks
+      : store.tasks.filter((view) => view.task.id !== pendingId);
 
   return (
     <div className="nex-term" role="group" aria-label={t("task.group")}>
@@ -313,197 +348,280 @@ export default function TaskPanel({ onClose, defaultProvider, defaultModel }: Ta
       {view === "board" ? (
         <KanbanBoard store={store} hiddenTaskId={pendingId} />
       ) : (
-      <div className="nex-term-body">
-        {store.error && (
-          <div className="nex-composer-error nex-fade-in" role="alert">
-            {store.error}
-          </div>
-        )}
-
-        {formOpen && (
-          <section className="nex-agent-terminal" aria-label={editingId !== null ? t("task.editTitle") : t("task.new")}>
-            <div className="nex-agent-terminal-header">
-              <span className="nex-agent-terminal-command">
-                {editingId !== null ? t("task.editTitle") : t("task.new")}
-              </span>
+        <div className="nex-term-body">
+          {store.error && (
+            <div className="nex-composer-error nex-fade-in" role="alert">
+              {store.error}
             </div>
-            <div className="nex-agent-terminal-body">
-              <label className="nex-vcs-notice" htmlFor="nex-task-title">
-                {t("task.titleLabel")}
-              </label>
-              <input
-                id="nex-task-title"
-                className="nex-input"
-                type="text"
-                value={form.title}
-                placeholder={t("task.titlePh")}
-                onChange={(event) => setForm((prev) => ({ ...prev, title: event.target.value }))}
-              />
-              <label className="nex-vcs-notice" htmlFor="nex-task-desc">
-                {t("task.descLabel")}
-              </label>
-              <input
-                id="nex-task-desc"
-                className="nex-input"
-                type="text"
-                value={form.description}
-                placeholder={t("task.descPh")}
-                onChange={(event) => setForm((prev) => ({ ...prev, description: event.target.value }))}
-              />
-              {editingId === null && (
-                <>
-                  <label className="nex-vcs-notice" htmlFor="nex-task-steps">
-                    {t("task.stepsLabel")}
-                  </label>
-                  <textarea
-                    id="nex-task-steps"
-                    className="nex-input"
-                    rows={4}
-                    value={form.stepsText}
-                    placeholder={t("task.stepsPh")}
-                    onChange={(event) => setForm((prev) => ({ ...prev, stepsText: event.target.value }))}
-                  />
-                  <label className="nex-vcs-notice" htmlFor="nex-task-provider">
-                    {t("task.providerLabel")}
-                  </label>
-                  <input
-                    id="nex-task-provider"
-                    className="nex-input"
-                    type="text"
-                    value={form.provider}
-                    placeholder={t("task.providerPh")}
-                    onChange={(event) => setForm((prev) => ({ ...prev, provider: event.target.value }))}
-                  />
-                  <label className="nex-vcs-notice" htmlFor="nex-task-model">
-                    {t("task.modelLabel")}
-                  </label>
-                  <input
-                    id="nex-task-model"
-                    className="nex-input"
-                    type="text"
-                    value={form.model}
-                    placeholder={t("task.modelPh")}
-                    onChange={(event) => setForm((prev) => ({ ...prev, model: event.target.value }))}
-                  />
-                  <label className="nex-vcs-notice" htmlFor="nex-task-cap">
-                    {t("task.capLabel")}
-                  </label>
-                  <input
-                    id="nex-task-cap"
-                    className="nex-input"
-                    type="number"
-                    min={1}
-                    max={25}
-                    value={form.cap}
-                    onChange={(event) => setForm((prev) => ({ ...prev, cap: event.target.value }))}
-                  />
-                </>
-              )}
-              <div className="nex-vcs-header-actions">
-                <M3Button
-                  variant="primary"
-                  size="sm"
-                  disabled={busyId !== null || form.title.trim() === ""}
-                  onClick={() => void submitForm()}
-                >
-                  {editingId !== null ? t("task.save") : t("task.create")}
-                </M3Button>
-                <M3Button variant="quiet" size="sm" onClick={closeForm}>
-                  {t("common.cancel")}
-                </M3Button>
+          )}
+
+          {formOpen && (
+            <section
+              className="nex-agent-terminal"
+              aria-label={
+                editingId !== null ? t("task.editTitle") : t("task.new")
+              }
+            >
+              <div className="nex-agent-terminal-header">
+                <span className="nex-agent-terminal-command">
+                  {editingId !== null ? t("task.editTitle") : t("task.new")}
+                </span>
               </div>
-            </div>
-          </section>
-        )}
-
-        {store.loading && visibleTasks.length === 0 ? (
-          <M3LoadingIndicator label={t("common.loading")} />
-        ) : visibleTasks.length === 0 ? (
-          <div className="nex-agent-empty">
-            <p>{t("task.noTasksTitle")}</p>
-            <p>{t("task.noTasksText")}</p>
-          </div>
-        ) : (
-          visibleTasks.map((view) => {
-            const running = view.task.status === "running";
-            const busy = busyId === view.task.id;
-            const canRun =
-              !running && view.task.provider !== null && view.task.model !== null && view.steps.length > 0;
-            return (
-              <article
-                key={view.task.id}
-                className="nex-agent-terminal"
-                aria-label={`${view.task.title} — ${taskStatusLabel(view.task.status, t)}`}
-              >
-                <div className="nex-agent-terminal-header">
-                  <span className="nex-agent-terminal-command">{view.task.title}</span>
-                  <span className="nex-tag nex-tag-mono">{taskStatusLabel(view.task.status, t)}</span>
-                  {view.steps.length > 0 && (
-                    <span className="nex-tag nex-tag-mono">
-                      {t("task.progress", { done: doneCount(view), total: view.steps.length })}
-                    </span>
-                  )}
+              <div className="nex-agent-terminal-body">
+                <label className="nex-vcs-notice" htmlFor="nex-task-title">
+                  {t("task.titleLabel")}
+                </label>
+                <input
+                  id="nex-task-title"
+                  className="nex-input"
+                  type="text"
+                  value={form.title}
+                  placeholder={t("task.titlePh")}
+                  onChange={(event) =>
+                    setForm((prev) => ({ ...prev, title: event.target.value }))
+                  }
+                />
+                <label className="nex-vcs-notice" htmlFor="nex-task-desc">
+                  {t("task.descLabel")}
+                </label>
+                <input
+                  id="nex-task-desc"
+                  className="nex-input"
+                  type="text"
+                  value={form.description}
+                  placeholder={t("task.descPh")}
+                  onChange={(event) =>
+                    setForm((prev) => ({
+                      ...prev,
+                      description: event.target.value,
+                    }))
+                  }
+                />
+                {editingId === null && (
+                  <>
+                    <label className="nex-vcs-notice" htmlFor="nex-task-steps">
+                      {t("task.stepsLabel")}
+                    </label>
+                    <textarea
+                      id="nex-task-steps"
+                      className="nex-input"
+                      rows={4}
+                      value={form.stepsText}
+                      placeholder={t("task.stepsPh")}
+                      onChange={(event) =>
+                        setForm((prev) => ({
+                          ...prev,
+                          stepsText: event.target.value,
+                        }))
+                      }
+                    />
+                    <label
+                      className="nex-vcs-notice"
+                      htmlFor="nex-task-provider"
+                    >
+                      {t("task.providerLabel")}
+                    </label>
+                    <input
+                      id="nex-task-provider"
+                      className="nex-input"
+                      type="text"
+                      value={form.provider}
+                      placeholder={t("task.providerPh")}
+                      onChange={(event) =>
+                        setForm((prev) => ({
+                          ...prev,
+                          provider: event.target.value,
+                        }))
+                      }
+                    />
+                    <label className="nex-vcs-notice" htmlFor="nex-task-model">
+                      {t("task.modelLabel")}
+                    </label>
+                    <input
+                      id="nex-task-model"
+                      className="nex-input"
+                      type="text"
+                      value={form.model}
+                      placeholder={t("task.modelPh")}
+                      onChange={(event) =>
+                        setForm((prev) => ({
+                          ...prev,
+                          model: event.target.value,
+                        }))
+                      }
+                    />
+                    <label className="nex-vcs-notice" htmlFor="nex-task-cap">
+                      {t("task.capLabel")}
+                    </label>
+                    <input
+                      id="nex-task-cap"
+                      className="nex-input"
+                      type="number"
+                      min={1}
+                      max={25}
+                      value={form.cap}
+                      onChange={(event) =>
+                        setForm((prev) => ({
+                          ...prev,
+                          cap: event.target.value,
+                        }))
+                      }
+                    />
+                  </>
+                )}
+                <div className="nex-vcs-header-actions">
+                  <M3Button
+                    variant="primary"
+                    size="sm"
+                    disabled={busyId !== null || form.title.trim() === ""}
+                    onClick={() => void submitForm()}
+                  >
+                    {editingId !== null ? t("task.save") : t("task.create")}
+                  </M3Button>
+                  <M3Button variant="quiet" size="sm" onClick={closeForm}>
+                    {t("common.cancel")}
+                  </M3Button>
                 </div>
-                <div className="nex-agent-terminal-body">
-                  <div className="nex-vcs-header-actions">
-                    {running ? (
-                      <M3Button variant="destructive" size="sm" disabled={busy} onClick={() => void handleStop(view.task.id)}>
-                        {t("task.stop")}
-                      </M3Button>
-                    ) : (
-                      <M3Button
-                        variant="primary"
-                        size="sm"
-                        disabled={busy || !canRun}
-                        title={canRun ? undefined : t("task.needProvider")}
-                        onClick={() => void handleRun(view)}
-                      >
-                        {t("task.run")}
-                      </M3Button>
-                    )}
-                    <M3Button variant="quiet" size="sm" disabled={busy || running} onClick={() => openEdit(view)}>
-                      {t("task.edit")}
-                    </M3Button>
-                    <M3Button variant="quiet" size="sm" disabled={busy || running} onClick={() => setDeleteTarget(view)}>
-                      {t("task.delete")}
-                    </M3Button>
+              </div>
+            </section>
+          )}
+
+          {store.loading && visibleTasks.length === 0 ? (
+            <M3LoadingIndicator label={t("common.loading")} />
+          ) : visibleTasks.length === 0 ? (
+            <div className="nex-agent-empty">
+              <p>{t("task.noTasksTitle")}</p>
+              <p>{t("task.noTasksText")}</p>
+            </div>
+          ) : (
+            visibleTasks.map((view) => {
+              const running = view.task.status === "running";
+              const busy = busyId === view.task.id;
+              const canRun =
+                !running &&
+                view.task.provider !== null &&
+                view.task.model !== null &&
+                view.steps.length > 0;
+              return (
+                <article
+                  key={view.task.id}
+                  className="nex-agent-terminal"
+                  aria-label={`${view.task.title} — ${taskStatusLabel(view.task.status, t)}`}
+                >
+                  <div className="nex-agent-terminal-header">
+                    <span className="nex-agent-terminal-command">
+                      {view.task.title}
+                    </span>
+                    <span className="nex-tag nex-tag-mono">
+                      {taskStatusLabel(view.task.status, t)}
+                    </span>
                     {view.steps.length > 0 && (
-                      <M3Button variant="quiet" size="sm" onClick={() => toggleSteps(view.task.id)}>
-                        {expandedSteps[view.task.id] ? t("task.hideSteps") : t("task.showSteps")}
-                      </M3Button>
-                    )}
-                    {view.task.report !== null && (
-                      <M3Button variant="quiet" size="sm" onClick={() => toggleReport(view.task.id)}>
-                        {expandedReport[view.task.id] ? t("task.hideReport") : t("task.showReport")}
-                      </M3Button>
+                      <span className="nex-tag nex-tag-mono">
+                        {t("task.progress", {
+                          done: doneCount(view),
+                          total: view.steps.length,
+                        })}
+                      </span>
                     )}
                   </div>
-                  {expandedSteps[view.task.id] === true && (
-                    <ol className="nex-task-steps">
-                      {view.steps.map((step) => (
-                        <li key={step.id} className="nex-task-step">
-                          <span className="nex-tag nex-tag-mono">{step.seq}</span>
-                          <span>{step.title}</span>
-                          <span className="nex-tag nex-tag-mono">{stepStatusLabel(step.status, t)}</span>
-                          {step.result !== null && step.result !== "" && (
-                            <pre className="nex-agent-terminal-stdout">{step.result}</pre>
-                          )}
-                        </li>
-                      ))}
-                    </ol>
-                  )}
-                  {expandedReport[view.task.id] === true && view.task.report !== null && (
-                    <div>
-                      <p className="nex-vcs-notice">{t("task.reportTitle")}</p>
-                      <pre className="nex-agent-terminal-stdout">{view.task.report}</pre>
+                  <div className="nex-agent-terminal-body">
+                    <div className="nex-vcs-header-actions">
+                      {running ? (
+                        <M3Button
+                          variant="destructive"
+                          size="sm"
+                          disabled={busy}
+                          onClick={() => void handleStop(view.task.id)}
+                        >
+                          {t("task.stop")}
+                        </M3Button>
+                      ) : (
+                        <M3Button
+                          variant="primary"
+                          size="sm"
+                          disabled={busy || !canRun}
+                          title={canRun ? undefined : t("task.needProvider")}
+                          onClick={() => void handleRun(view)}
+                        >
+                          {t("task.run")}
+                        </M3Button>
+                      )}
+                      <M3Button
+                        variant="quiet"
+                        size="sm"
+                        disabled={busy || running}
+                        onClick={() => openEdit(view)}
+                      >
+                        {t("task.edit")}
+                      </M3Button>
+                      <M3Button
+                        variant="quiet"
+                        size="sm"
+                        disabled={busy || running}
+                        onClick={() => setDeleteTarget(view)}
+                      >
+                        {t("task.delete")}
+                      </M3Button>
+                      {view.steps.length > 0 && (
+                        <M3Button
+                          variant="quiet"
+                          size="sm"
+                          onClick={() => toggleSteps(view.task.id)}
+                        >
+                          {expandedSteps[view.task.id]
+                            ? t("task.hideSteps")
+                            : t("task.showSteps")}
+                        </M3Button>
+                      )}
+                      {view.task.report !== null && (
+                        <M3Button
+                          variant="quiet"
+                          size="sm"
+                          onClick={() => toggleReport(view.task.id)}
+                        >
+                          {expandedReport[view.task.id]
+                            ? t("task.hideReport")
+                            : t("task.showReport")}
+                        </M3Button>
+                      )}
                     </div>
-                  )}
-                </div>
-              </article>
-            );
-          })
-        )}
-      </div>
+                    {expandedSteps[view.task.id] === true && (
+                      <ol className="nex-task-steps">
+                        {view.steps.map((step) => (
+                          <li key={step.id} className="nex-task-step">
+                            <span className="nex-tag nex-tag-mono">
+                              {step.seq}
+                            </span>
+                            <span>{step.title}</span>
+                            <span className="nex-tag nex-tag-mono">
+                              {stepStatusLabel(step.status, t)}
+                            </span>
+                            {step.result !== null && step.result !== "" && (
+                              <pre className="nex-agent-terminal-stdout">
+                                {step.result}
+                              </pre>
+                            )}
+                          </li>
+                        ))}
+                      </ol>
+                    )}
+                    {expandedReport[view.task.id] === true &&
+                      view.task.report !== null && (
+                        <div>
+                          <p className="nex-vcs-notice">
+                            {t("task.reportTitle")}
+                          </p>
+                          <pre className="nex-agent-terminal-stdout">
+                            {view.task.report}
+                          </pre>
+                        </div>
+                      )}
+                  </div>
+                </article>
+              );
+            })
+          )}
+        </div>
       )}
       {deleteTarget !== null && (
         <ConfirmDialog

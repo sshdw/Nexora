@@ -14,28 +14,26 @@ import { useConversation } from "./useConversation";
 
 type TauriEvent = { payload: AgentRunEventPayload };
 
-const { mockInvoke, mockListen, listeners, emitAgentEvent } = vi.hoisted(
-  () => {
-    const listeners: Array<(event: TauriEvent) => void> = [];
-    const mockInvoke = vi.fn();
-    const mockListen = vi.fn(
-      async (
-        _eventName: string,
-        handler: (event: TauriEvent) => void,
-      ): Promise<() => void> => {
-        listeners.push(handler);
-        return () => {
-          const i = listeners.indexOf(handler);
-          if (i >= 0) listeners.splice(i, 1);
-        };
-      },
-    );
-    const emitAgentEvent = (payload: AgentRunEventPayload): void => {
-      for (const handler of [...listeners]) handler({ payload });
-    };
-    return { mockInvoke, mockListen, listeners, emitAgentEvent };
-  },
-);
+const { mockInvoke, mockListen, listeners, emitAgentEvent } = vi.hoisted(() => {
+  const listeners: Array<(event: TauriEvent) => void> = [];
+  const mockInvoke = vi.fn();
+  const mockListen = vi.fn(
+    async (
+      _eventName: string,
+      handler: (event: TauriEvent) => void
+    ): Promise<() => void> => {
+      listeners.push(handler);
+      return () => {
+        const i = listeners.indexOf(handler);
+        if (i >= 0) listeners.splice(i, 1);
+      };
+    }
+  );
+  const emitAgentEvent = (payload: AgentRunEventPayload): void => {
+    for (const handler of [...listeners]) handler({ payload });
+  };
+  return { mockInvoke, mockListen, listeners, emitAgentEvent };
+});
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mockInvoke }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: mockListen }));
@@ -119,7 +117,7 @@ describe("useConversation", () => {
     // Channel contract: production subscribes to "agent-run-event".
     expect(mockListen).toHaveBeenCalledWith(
       "agent-run-event",
-      expect.any(Function),
+      expect.any(Function)
     );
   });
 

@@ -67,7 +67,11 @@ export default function PromptLibraryView({
     if (store.loading) return;
     const target = store.prompts.find((prompt) => prompt.id === initialEditId);
     if (!target) return;
-    setEditor({ editing: target, title: target.title, content: target.content });
+    setEditor({
+      editing: target,
+      title: target.title,
+      content: target.content,
+    });
     setOpenedInitial(initialEditId);
   }, [initialEditId, openedInitial, store.loading, store.prompts]);
 
@@ -75,7 +79,11 @@ export default function PromptLibraryView({
     setEditor({ editing: null, title: "", content: "" });
   };
   const openEdit = (prompt: Prompt) => {
-    setEditor({ editing: prompt, title: prompt.title, content: prompt.content });
+    setEditor({
+      editing: prompt,
+      title: prompt.title,
+      content: prompt.content,
+    });
   };
   const closeEditor = () => setEditor(null);
 
@@ -120,9 +128,7 @@ export default function PromptLibraryView({
       <header className="nex-prompt-library-header">
         <div className="nex-prompt-library-heading">
           <h2 className="nex-prompt-library-title">{t("prompts.title")}</h2>
-          <p className="nex-prompt-library-subtitle">
-            {t("prompts.subtitle")}
-          </p>
+          <p className="nex-prompt-library-subtitle">{t("prompts.subtitle")}</p>
         </div>
         <M3Button variant="quiet" onClick={onClose}>
           {t("common.backToConversations")}
@@ -194,10 +200,10 @@ export default function PromptLibraryView({
             <span className="nex-empty-mark-wrap" aria-hidden="true">
               <NexoraMark className="nex-empty-mark" width={26} height={26} />
             </span>
-            <h3 className="nex-prompt-empty-title">{t("prompts.emptyTitle")}</h3>
-            <p className="nex-prompt-empty-text">
-              {t("prompts.emptyText")}
-            </p>
+            <h3 className="nex-prompt-empty-title">
+              {t("prompts.emptyTitle")}
+            </h3>
+            <p className="nex-prompt-empty-text">{t("prompts.emptyText")}</p>
             <div className="nex-empty-actions">
               <M3Button
                 variant="primary"
@@ -320,7 +326,11 @@ function PromptEditor({
     >
       <div className="nex-io-body">
         {error && (
-          <p id="nex-prompt-editor-error" className="nex-dialog-error nex-fade-in" role="alert">
+          <p
+            id="nex-prompt-editor-error"
+            className="nex-dialog-error nex-fade-in"
+            role="alert"
+          >
             {error.message}
           </p>
         )}
@@ -353,7 +363,10 @@ function PromptEditor({
         </div>
 
         <div className="nex-prompt-field">
-          <label className="nex-prompt-label" htmlFor="nex-prompt-content-input">
+          <label
+            className="nex-prompt-label"
+            htmlFor="nex-prompt-content-input"
+          >
             {t("prompts.contentLabel")}
           </label>
           <textarea
@@ -379,13 +392,12 @@ function PromptEditor({
         <M3Button
           variant="primary"
           loading={saving}
-          disabled={
-            editor.title.trim() === "" ||
-            editor.content.trim() === ""
-          }
+          disabled={editor.title.trim() === "" || editor.content.trim() === ""}
           onClick={onSave}
         >
-          {editor.editing ? t("prompts.saveChanges") : t("prompts.createPrompt")}
+          {editor.editing
+            ? t("prompts.saveChanges")
+            : t("prompts.createPrompt")}
         </M3Button>
       </div>
     </ModalShell>
@@ -398,8 +410,6 @@ function filterPrompts(prompts: Prompt[], query: string): Prompt[] {
   return prompts.filter(
     (prompt) =>
       prompt.title.toLowerCase().includes(q) ||
-      prompt.content.toLowerCase().includes(q),
+      prompt.content.toLowerCase().includes(q)
   );
 }
-
-

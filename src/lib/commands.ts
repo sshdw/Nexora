@@ -115,7 +115,10 @@ export interface PaletteDeps {
   tabCount: () => number;
 }
 
-export function buildCommands(deps: PaletteDeps, locale: Locale = "en"): PaletteCommand[] {
+export function buildCommands(
+  deps: PaletteDeps,
+  locale: Locale = "en"
+): PaletteCommand[] {
   const tabCount = deps.tabCount();
   const go = tr(locale, "palette.sectionGo");
   const chat = tr(locale, "palette.sectionChat");
@@ -134,21 +137,43 @@ export function buildCommands(deps: PaletteDeps, locale: Locale = "en"): Palette
       id: "go.vcs",
       title: tr(locale, "palette.cmd.go_vcs"),
       section: go,
-      keywords: ["git", "vcs", "version control", "source control", "commits", "status"],
+      keywords: [
+        "git",
+        "vcs",
+        "version control",
+        "source control",
+        "commits",
+        "status",
+      ],
       run: () => deps.openVcs(),
     },
     {
       id: "go.tasks",
       title: tr(locale, "palette.cmd.go_tasks"),
       section: go,
-      keywords: ["tasks", "todo", "autonomous", "plan", "checklist", "agent tasks", "run tasks"],
+      keywords: [
+        "tasks",
+        "todo",
+        "autonomous",
+        "plan",
+        "checklist",
+        "agent tasks",
+        "run tasks",
+      ],
       run: () => deps.openTasks(),
     },
     {
       id: "go.settings",
       title: tr(locale, "palette.cmd.go_settings"),
       section: go,
-      keywords: ["settings", "setings", "preferences", "options", "setup", "config"],
+      keywords: [
+        "settings",
+        "setings",
+        "preferences",
+        "options",
+        "setup",
+        "config",
+      ],
       run: () => deps.openSettings(),
     },
     {
@@ -162,14 +187,29 @@ export function buildCommands(deps: PaletteDeps, locale: Locale = "en"): Palette
       id: "settings.provider",
       title: tr(locale, "palette.cmd.settings_provider"),
       section: go,
-      keywords: ["provider", "model", "ai model", "llm", "openai", "anthropic", "gemini"],
+      keywords: [
+        "provider",
+        "model",
+        "ai model",
+        "llm",
+        "openai",
+        "anthropic",
+        "gemini",
+      ],
       run: () => deps.openSettings("provider"),
     },
     {
       id: "settings.agent",
       title: tr(locale, "palette.cmd.settings_agent"),
       section: go,
-      keywords: ["agent", "autonomy", "budget", "spend", "cost limit", "supervised"],
+      keywords: [
+        "agent",
+        "autonomy",
+        "budget",
+        "spend",
+        "cost limit",
+        "supervised",
+      ],
       run: () => deps.openSettings("agent"),
     },
     {
@@ -183,7 +223,15 @@ export function buildCommands(deps: PaletteDeps, locale: Locale = "en"): Palette
       id: "workspace.add-root",
       title: tr(locale, "palette.cmd.workspace_add-root"),
       section: go,
-      keywords: ["workspace", "add", "folder", "register", "root", "multi-root", "project path"],
+      keywords: [
+        "workspace",
+        "add",
+        "folder",
+        "register",
+        "root",
+        "multi-root",
+        "project path",
+      ],
       run: deps.addWorkspaceRoot,
     },
     {
@@ -204,14 +252,31 @@ export function buildCommands(deps: PaletteDeps, locale: Locale = "en"): Palette
       id: "settings.advanced",
       title: tr(locale, "palette.cmd.settings_advanced"),
       section: go,
-      keywords: ["advanced", "power", "flags", "routing", "mcp", "preset", "internals"],
+      keywords: [
+        "advanced",
+        "power",
+        "flags",
+        "routing",
+        "mcp",
+        "preset",
+        "internals",
+      ],
       run: () => deps.openSettings("advanced"),
     },
     {
       id: "settings.language",
       title: tr(locale, "palette.cmd.settings_language"),
       section: go,
-      keywords: ["language", "язык", "locale", "russian", "english", "русский", "английский", "переключить язык"],
+      keywords: [
+        "language",
+        "язык",
+        "locale",
+        "russian",
+        "english",
+        "русский",
+        "английский",
+        "переключить язык",
+      ],
       run: deps.toggleLanguage,
     },
     {
@@ -225,7 +290,15 @@ export function buildCommands(deps: PaletteDeps, locale: Locale = "en"): Palette
       id: "chat.focus-composer",
       title: tr(locale, "palette.cmd.chat_focus-composer"),
       section: chat,
-      keywords: ["type", "message", "input", "composer", "write", "send", "focus"],
+      keywords: [
+        "type",
+        "message",
+        "input",
+        "composer",
+        "write",
+        "send",
+        "focus",
+      ],
       run: deps.focusComposer,
     },
     {
@@ -371,7 +444,11 @@ function subsequenceScore(needle: string, haystack: string): number | null {
     }
     if (found === -1) return null;
     // Word-start and consecutive bonuses: exact/prefix hits rank first.
-    if (found === 0 || haystack[found - 1] === " " || haystack[found - 1] === ":") {
+    if (
+      found === 0 ||
+      haystack[found - 1] === " " ||
+      haystack[found - 1] === ":"
+    ) {
       score += 12;
     } else if (found === hi) {
       consecutive += 1;
@@ -388,7 +465,10 @@ function subsequenceScore(needle: string, haystack: string): number | null {
 }
 
 /** Score one command against the query (title weighted above keywords). */
-export function scoreCommand(query: string, command: PaletteCommand): number | null {
+export function scoreCommand(
+  query: string,
+  command: PaletteCommand
+): number | null {
   const needle = query.trim().toLowerCase();
   if (needle === "") return 0;
   const title = command.title.toLowerCase();
@@ -414,7 +494,7 @@ export function scoreCommand(query: string, command: PaletteCommand): number | n
 export function filterCommands(
   query: string,
   commands: PaletteCommand[],
-  mru: string[],
+  mru: string[]
 ): ScoredCommand[] {
   const rank = new Map(mru.map((id, index) => [id, mru.length - index]));
   const scored: ScoredCommand[] = [];
@@ -423,7 +503,10 @@ export function filterCommands(
     if (score === null) continue;
     scored.push({ command, score: score + (rank.get(command.id) ?? 0) * 8 });
   }
-  scored.sort((a, b) => b.score - a.score || a.command.title.localeCompare(b.command.title));
+  scored.sort(
+    (a, b) =>
+      b.score - a.score || a.command.title.localeCompare(b.command.title)
+  );
   return scored;
 }
 

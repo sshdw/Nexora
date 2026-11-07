@@ -12,7 +12,13 @@
 //! jsdom computes no cascade: what is asserted is presence/absence and ARIA
 //! state, which is what decides the mode the user is in.
 
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { tr } from "../lib/strings";
@@ -137,7 +143,7 @@ describe("pane default mode (R4-02)", () => {
     expect(within(group).getAllByRole("radio")).toHaveLength(2);
     expect(within(group).getByRole("radio", { name: "Agent" })).toHaveAttribute(
       "aria-checked",
-      "true",
+      "true"
     );
 
     // Agent mode renders no attach control at all (R4-02: the run path takes
@@ -146,7 +152,9 @@ describe("pane default mode (R4-02)", () => {
 
     // …and the pill group describes itself as the switch it now is, not as
     // an opt-in beside a Chat default.
-    expect(screen.getByTitle(tr("en", "conv.agentToggleTitle"))).toBeInTheDocument();
+    expect(
+      screen.getByTitle(tr("en", "conv.agentToggleTitle"))
+    ).toBeInTheDocument();
   });
 
   it("keeps Chat one click away and holds the choice for the session", () => {
@@ -155,21 +163,25 @@ describe("pane default mode (R4-02)", () => {
     fireEvent.click(
       within(modeGroup()).getByRole("radio", {
         name: "Chat mode — one answer per message",
-      }),
+      })
     );
 
     expect(
       within(modeGroup()).getByRole("radio", {
         name: "Chat mode — one answer per message",
-      }),
+      })
     ).toHaveAttribute("aria-checked", "true");
-    expect(screen.getByRole("button", { name: "Add file" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Add file" })
+    ).toBeInTheDocument();
 
     // The mode is pane state, not a per-render constant: a re-render of the
     // same pane (here via the lifted draft) does not send the user back to
     // Agent, and nothing is persisted to the database.
     rerender(pane("half-typed"));
-    expect(screen.getByRole("button", { name: "Add file" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Add file" })
+    ).toBeInTheDocument();
   });
 
   it("opens on a real, typeable field with Send unarmed until there is a draft", () => {
@@ -183,7 +195,10 @@ describe("pane default mode (R4-02)", () => {
     const field = screen.getByLabelText("Message");
     expect(field.tagName).toBe("TEXTAREA");
     expect(field).toBeEnabled();
-    expect(field).toHaveAttribute("placeholder", "Ask anything, or describe a task");
+    expect(field).toHaveAttribute(
+      "placeholder",
+      "Ask anything, or describe a task"
+    );
 
     const send = screen.getByRole("button", { name: /Send/ });
     expect(send).toBeDisabled();
@@ -250,7 +265,7 @@ describe("message bodies (ADD-01)", () => {
     expect(assistantBody?.querySelector("a")).toBeNull();
     expect(assistantBody?.querySelector("[href]")).toBeNull();
     expect(
-      within(assistantBody!).getByRole("button", { name: "Copy link" }),
+      within(assistantBody!).getByRole("button", { name: "Copy link" })
     ).toBeInTheDocument();
 
     // User side: the same syntax survives literally as one escaped text
@@ -262,7 +277,7 @@ describe("message bodies (ADD-01)", () => {
     expect(userBody?.querySelector("strong")).toBeNull();
     expect(userBody?.querySelector("a")).toBeNull();
     expect(
-      within(userBody!).queryByRole("button", { name: "Copy link" }),
+      within(userBody!).queryByRole("button", { name: "Copy link" })
     ).toBeNull();
   });
 });

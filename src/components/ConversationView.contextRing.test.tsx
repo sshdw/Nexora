@@ -12,13 +12,17 @@
 //! message array without a backend. `conversationContextStats` is the one
 //! Tauri command that is counted — it is the effect under test.
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type {
-  AgentRunView,
-  AgentStepView,
-} from "../lib/useAgentRun";
+import type { AgentRunView, AgentStepView } from "../lib/useAgentRun";
 import type { ConversationContextStats, Message } from "../lib/tauri";
 import type { AutonomyStore } from "../lib/useAutonomy";
 import type { WorkspaceStore } from "../lib/useWorkspace";
@@ -208,7 +212,7 @@ describe("context ring — Chat-mode revision", () => {
     const view = render(pane());
     await waitFor(() => expect(mockStats).toHaveBeenCalledTimes(1));
     expect(
-      await screen.findByRole("button", { name: "Context window: n/a" }),
+      await screen.findByRole("button", { name: "Context window: n/a" })
     ).toBeInTheDocument();
 
     // The finding's scenario: Chat mode, no run ever starts, so only the
@@ -225,7 +229,7 @@ describe("context ring — Chat-mode revision", () => {
 
     await waitFor(() => expect(mockStats).toHaveBeenCalledTimes(2));
     expect(
-      await screen.findByRole("button", { name: "Context window: 6% used" }),
+      await screen.findByRole("button", { name: "Context window: 6% used" })
     ).toBeInTheDocument();
   });
 

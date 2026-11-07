@@ -58,8 +58,12 @@ function toCommandError(error: unknown): CommandError {
     return { kind: e.kind, message: e.message };
   }
   if (typeof error === "string") return { kind: "unknown", message: error };
-  if (error instanceof Error) return { kind: "unknown", message: error.message };
-  return { kind: "unknown", message: tr(getLocale(), "common.workspaceUnreachable") };
+  if (error instanceof Error)
+    return { kind: "unknown", message: error.message };
+  return {
+    kind: "unknown",
+    message: tr(getLocale(), "common.workspaceUnreachable"),
+  };
 }
 
 export function useWorkspace(): WorkspaceStore {
@@ -101,32 +105,29 @@ export function useWorkspace(): WorkspaceStore {
     return registry.roots;
   }, []);
 
-  const persist = useCallback(
-    async (path: string): Promise<string | null> => {
-      setSaving(true);
-      setError(null);
-      try {
-        // `set_workspace_root` runs the identical registry validation as
-        // `roots_add` backend-side (including the nesting refusal) and joins
-        // the registry, so refresh the registry view alongside root+recent.
-        const canonical = await setWorkspaceRoot(path);
-        const [recents, registry] = await Promise.all([
-          listWorkspaceRecent(),
-          rootsList(),
-        ]);
-        setRoot(canonical);
-        setRecent(recents);
-        setRoots(registry.roots);
-        return canonical;
-      } catch (e) {
-        setError(toCommandError(e));
-        return null;
-      } finally {
-        setSaving(false);
-      }
-    },
-    [],
-  );
+  const persist = useCallback(async (path: string): Promise<string | null> => {
+    setSaving(true);
+    setError(null);
+    try {
+      // `set_workspace_root` runs the identical registry validation as
+      // `roots_add` backend-side (including the nesting refusal) and joins
+      // the registry, so refresh the registry view alongside root+recent.
+      const canonical = await setWorkspaceRoot(path);
+      const [recents, registry] = await Promise.all([
+        listWorkspaceRecent(),
+        rootsList(),
+      ]);
+      setRoot(canonical);
+      setRecent(recents);
+      setRoots(registry.roots);
+      return canonical;
+    } catch (e) {
+      setError(toCommandError(e));
+      return null;
+    } finally {
+      setSaving(false);
+    }
+  }, []);
 
   const pickFolder = useCallback(async (): Promise<string | null> => {
     const selected = await open({ directory: true, multiple: false });
@@ -136,7 +137,7 @@ export function useWorkspace(): WorkspaceStore {
 
   const selectRecent = useCallback(
     async (path: string): Promise<string | null> => persist(path),
-    [persist],
+    [persist]
   );
 
   const addRoot = useCallback(
@@ -153,7 +154,7 @@ export function useWorkspace(): WorkspaceStore {
         setSaving(false);
       }
     },
-    [applyRegistry],
+    [applyRegistry]
   );
 
   const removeRoot = useCallback(
@@ -170,7 +171,7 @@ export function useWorkspace(): WorkspaceStore {
         setSaving(false);
       }
     },
-    [applyRegistry],
+    [applyRegistry]
   );
 
   const addRootFolder = useCallback(async (): Promise<string[] | null> => {
@@ -214,6 +215,6 @@ export function useWorkspace(): WorkspaceStore {
       addRoot,
       removeRoot,
       addRootFolder,
-    ],
+    ]
   );
 }

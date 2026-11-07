@@ -100,7 +100,8 @@ export const en = {
   "roots.use": "Use",
   "roots.useTitle": "Switch the active root to this folder",
   "roots.remove": "Remove",
-  "roots.removeTitle": "Unregister this folder (the folder itself is never deleted)",
+  "roots.removeTitle":
+    "Unregister this folder (the folder itself is never deleted)",
   "roots.add": "Add folder…",
   "roots.empty": "No registered folders yet.",
   "roots.coverageNote":
@@ -220,9 +221,12 @@ export const en = {
   "conv.modelNoMatch": "No models match your search",
   "conv.modelSwitchFailed": "Could not save the model choice",
   "conv.modelOpenSettings": "Provider settings",
-  "conv.autonomyExplainSupervised": "Supervised: every tool call waits for your approval.",
-  "conv.autonomyExplainSemi": "Semi-auto: routine steps run alone, writes still ask first.",
-  "conv.autonomyExplainFull": "Full-auto: the agent runs to the end without stopping.",
+  "conv.autonomyExplainSupervised":
+    "Supervised: every tool call waits for your approval.",
+  "conv.autonomyExplainSemi":
+    "Semi-auto: routine steps run alone, writes still ask first.",
+  "conv.autonomyExplainFull":
+    "Full-auto: the agent runs to the end without stopping.",
 
   // ---- message markdown (MessageMarkdown.tsx, ADD-01) -------------------------
   // Copy-only link affordance + fence render cap (02-SECURITY §4.2 req 3/4).
@@ -233,7 +237,8 @@ export const en = {
   // ---- error boundaries (ErrorBoundary.tsx, ADD-05) ---------------------------
   // One sentence for every boundary level (root, dock slot, thread pane);
   // the action reuses common.retry.
-  "err.boundaryBody": "This screen failed to render — nothing was lost, and you can try again.",
+  "err.boundaryBody":
+    "This screen failed to render — nothing was lost, and you can try again.",
 
   // ---- agent runs (AgentRunSteps.tsx) --------------------------------------------
   "agent.statusRunning": "Running",
@@ -255,11 +260,13 @@ export const en = {
   "agent.approvalTitle": "Approval required",
   "agent.approvalSuffix": "requested approval",
   "agent.approvalText": "{name} requested approval",
-  "agent.approvalTimeoutNotice": "If nobody responds, the run is cancelled automatically.",
+  "agent.approvalTimeoutNotice":
+    "If nobody responds, the run is cancelled automatically.",
   "agent.approvalExpiresIn": "Expires in {time}",
   "agent.approvalExpiresInMin": "Expires in {n} min",
   "agent.approvalExpired": "Approval expired — the run was cancelled.",
-  "agent.approvalElapsed": "Approval window elapsed — the run is being cancelled.",
+  "agent.approvalElapsed":
+    "Approval window elapsed — the run is being cancelled.",
   // `model_turn` reads as a human state, not the backend's row name
   // (#230 P3, MAP row 8: "states human-readable"). The row itself is
   // collapsed by default — the raw narration is the model's monologue
@@ -309,7 +316,8 @@ export const en = {
   "agent.durationSeconds": "{n}s",
   "agent.durationMinutes": "{m}m {s}s",
   "agent.errorWhat": "What happened",
-  "agent.errorWhatUnknown": "No cause reported; the run stopped before saying why.",
+  "agent.errorWhatUnknown":
+    "No cause reported; the run stopped before saying why.",
   "agent.errorSurvived": "What survived",
   "agent.errorNext": "Next",
   "agent.errorSurvivedNone": "Nothing was saved from this run.",
@@ -370,7 +378,8 @@ export const en = {
   // conversation is measured against, next to the model's own context limit.
   "ctx.budgetTitle": "Context budget",
   "ctx.budgetLabel": "Context budget",
-  "ctx.budgetHint": "Tokens this conversation is measured against. Above it the budget reads as over.",
+  "ctx.budgetHint":
+    "Tokens this conversation is measured against. Above it the budget reads as over.",
   "ctx.budgetTokens": "{n} tokens",
   "ctx.budgetUsed": "{used} of {budget} tokens used",
   "ctx.budgetExceeded": "Over budget — past {budget} tokens.",
@@ -404,7 +413,8 @@ export const en = {
   "settings.themeLabel": "Theme",
   "settings.themeDark": "Dark",
   "settings.themeLight": "Light",
-  "settings.themeProvisional": "The light theme is provisional — the final palette is still open.",
+  "settings.themeProvisional":
+    "The light theme is provisional — the final palette is still open.",
   "settings.languageLabel": "Language",
   "settings.languageHint":
     "Interface language for this device. Applied immediately and persisted between sessions.",
@@ -436,7 +446,8 @@ export const en = {
   "settings.autonomySaveFail": "Unable to save the autonomy mode.",
   "settings.spendLabel": "Run cost limit (micro-USD)",
   "settings.spendPh": "Empty = no limit",
-  "settings.spendHint": "Empty = no limit. 1 USD = 1000000 micro-USD. Applies to new runs.",
+  "settings.spendHint":
+    "Empty = no limit. 1 USD = 1000000 micro-USD. Applies to new runs.",
   "settings.workspaceHint":
     "The folder the agent's tools are scoped to. Change it from the sidebar folder picker; the 5 most recent folders are kept there.",
   "settings.currentRoot": "Current root",
@@ -478,8 +489,10 @@ export const en = {
   "settings.resolvedOnly": "Resolved only",
   "settings.flagSnapshots": "Run snapshot capture, checkpoints, and rollback.",
   "settings.flagSelfAudit": "Self-audit outcome recording on the audit trail.",
-  "settings.flagInjection": "Untrusted-output envelopes and the marker-scan approval hold.",
-  "settings.flagAssembly": "Budgeted smart context assembly of the run opening.",
+  "settings.flagInjection":
+    "Untrusted-output envelopes and the marker-scan approval hold.",
+  "settings.flagAssembly":
+    "Budgeted smart context assembly of the run opening.",
   "settings.flagSaveFail": "Unable to save the {name} flag.",
   "settings.routingTitle": "Routing profiles",
   "settings.routingHint":
@@ -487,19 +500,23 @@ export const en = {
   "settings.chatProfile": "Chat profile (routing.profile.chat)",
   "settings.agentProfile": "Agent profile (routing.profile.agent)",
   "settings.routingUnset": "Not set — the default provider order applies.",
-  "settings.routingBadJson": "The stored value is not valid JSON — the default order applies.",
+  "settings.routingBadJson":
+    "The stored value is not valid JSON — the default order applies.",
   "settings.routingSummary": "{count}{details}.",
   "settings.summaryExtra": " (+{n} more)",
   "settings.mcpTitle": "MCP servers",
-  "settings.mcpHint": "External tool servers for agent runs. Managed via setup import; shown here read-only.",
+  "settings.mcpHint":
+    "External tool servers for agent runs. Managed via setup import; shown here read-only.",
   "settings.mcpServers": "Servers (mcp.servers)",
   "settings.mcpUnset": "Not set — no external tool servers configured.",
   "settings.mcpBadJson": "The stored value is not valid JSON — it is ignored.",
-  "settings.mcpNotList": "The stored value is not a server list — it is ignored.",
+  "settings.mcpNotList":
+    "The stored value is not a server list — it is ignored.",
   "settings.mcpEmpty": "Empty list — no external tool servers configured.",
   "settings.mcpSummary": "{count}{details}.",
   "settings.presetTitle": "Agent preset",
-  "settings.presetHint": "Stored agent preset override. Unset means the built-in default applies.",
+  "settings.presetHint":
+    "Stored agent preset override. Unset means the built-in default applies.",
   "settings.presetLabel": "Preset (agent.preset)",
   "settings.presetUnset": "Not set — the built-in default applies.",
   "settings.replayLabel": "Replay onboarding walkthrough",
@@ -549,13 +566,15 @@ export const en = {
   "onboarding.wsNone": "No folder chosen yet.",
   "onboarding.chooseFolder": "Choose folder…",
   "onboarding.recentLabel": "Recent folders",
-  "onboarding.summaryNone": "Skipped setup — you can do it any time from Settings.",
+  "onboarding.summaryNone":
+    "Skipped setup — you can do it any time from Settings.",
   "onboarding.summaryProvider": "Provider: {name}",
   "onboarding.summaryNoProvider": "No provider connected yet",
   "onboarding.summaryWorkspace": "Workspace: {root}",
   "onboarding.summaryNoWorkspace": "No workspace folder yet",
   "onboarding.tipPaletteA": "Press ",
-  "onboarding.tipPaletteB": " to open the command palette — every action lives there.",
+  "onboarding.tipPaletteB":
+    " to open the command palette — every action lives there.",
   "onboarding.tipKeysA": "Press ",
   "onboarding.tipKeysB": " + ",
   "onboarding.tipKeysC": " (or ",
@@ -632,18 +651,20 @@ export const en = {
   "shortcuts.groupOptions": "Option navigation",
   "shortcuts.groupDialogs": "Dialogs",
   "shortcuts.scopePalette": "Global (any focus, no open dialog)",
-  "shortcuts.scopeTyping": "Global (typing targets included — Ctrl+Tab inserts no text)",
+  "shortcuts.scopeTyping":
+    "Global (typing targets included — Ctrl+Tab inserts no text)",
   "shortcuts.scopeTypingShort": "Global (typing targets included)",
   "shortcuts.scopeAltDigits":
     "Global except typing targets (Alt+digits can compose characters)",
-  "shortcuts.scopeAltNoText": "Global, typing targets included (Alt+W produces no text)",
+  "shortcuts.scopeAltNoText":
+    "Global, typing targets included (Alt+W produces no text)",
   "shortcuts.scopeAltTyping": "Global, typing targets included",
   "shortcuts.scopeComposer": "Composer textarea",
   "shortcuts.scopeRename": "Conversation rename input",
   "shortcuts.scopePromptTitle": "Prompt title field",
   "shortcuts.scopeCustomModel": "Custom model id field",
   "shortcuts.scopeSpend": "Spend-limit field",
-  
+
   "shortcuts.scopeSettingsSearch": "Settings search field (matches present)",
   "shortcuts.scopeSettingsSearchEsc": "Settings search field",
   "shortcuts.scopeSegmented": "Focused segmented group (automatic activation)",
@@ -655,9 +676,11 @@ export const en = {
   "shortcuts.scopePaletteNav": "Command-palette results",
   "shortcuts.scopeDialog": "Any open dialog (except busy/in-flight)",
   "shortcuts.scopeDialogTrap": "Any open dialog",
-  "shortcuts.scopeButton": "Focused button (native behaviour, no custom handler)",
+  "shortcuts.scopeButton":
+    "Focused button (native behaviour, no custom handler)",
   "shortcuts.desc.palette.toggle": "Open / close the command palette",
-  "shortcuts.desc.help.show-shortcuts": "Open this keyboard-shortcuts reference",
+  "shortcuts.desc.help.show-shortcuts":
+    "Open this keyboard-shortcuts reference",
   "shortcuts.desc.go.tasks": "Open the Task manager",
   "shortcuts.desc.tabs.next": "Next conversation tab",
   "shortcuts.desc.tabs.prev": "Previous conversation tab",
@@ -671,7 +694,7 @@ export const en = {
   "shortcuts.desc.prompt.save": "Save prompt",
   "shortcuts.desc.settings.custom-model-commit": "Commit custom model id",
   "shortcuts.desc.settings.spend-commit": "Commit spend limit",
-  
+
   "shortcuts.desc.settings.search-jump": "Jump to best matching group",
   "shortcuts.desc.settings.search-clear": "Clear search",
   "shortcuts.desc.segmented.move": "Move and select option",
@@ -722,7 +745,8 @@ export const en = {
   "vcs.title": "Version Control",
   "vcs.subtitleBare": "Git status for the open workspace.",
   "vcs.subtitleBranch": "On branch {branch}.",
-  "vcs.subtitleSuffix": "Manual refresh only — writes ask first and never force-push.",
+  "vcs.subtitleSuffix":
+    "Manual refresh only — writes ask first and never force-push.",
   "vcs.refresh": "Refresh",
   "vcs.refreshing": "Refreshing…",
   "vcs.tabsAria": "Version control views",
@@ -732,7 +756,8 @@ export const en = {
   "vcs.unavailable": "Version control is unavailable.",
   "vcs.changedTitle": "Changed files: {n}",
   "vcs.cleanTree": "No changes — the working tree is clean.",
-  "vcs.filesCapped": "+{n} more — the list is capped; refine or commit to shrink it.",
+  "vcs.filesCapped":
+    "+{n} more — the list is capped; refine or commit to shrink it.",
   "vcs.filesCappedShort": "+{n} more — the list is capped.",
   "vcs.diffAria": "Diff for {path}",
   "vcs.diffTitle": "Diff:",
@@ -762,7 +787,8 @@ export const en = {
   "vcs.push": "Push to origin",
   "vcs.pushing": "Pushing…",
   "vcs.confirmPush": "Confirm push to origin",
-  "vcs.pushNotice": "Push sends the current branch to origin — click again to confirm.",
+  "vcs.pushNotice":
+    "Push sends the current branch to origin — click again to confirm.",
   "vcs.detached": "Detached HEAD — pushing is unavailable.",
   "vcs.timelineTitle": "Timeline: {n}",
   "vcs.noCommits": "No commits yet.",
@@ -793,8 +819,10 @@ export const en = {
   "vcs.riskBinary": "Binary",
   "vcs.riskMerge": "Merge",
   "vcs.riskUnfamiliar": "Unfamiliar author",
-  "vcs.needProviderGenerate": "Select a provider and model first (Settings), then generate.",
-  "vcs.noFilesExplain": "This commit changed no files — there is nothing to explain.",
+  "vcs.needProviderGenerate":
+    "Select a provider and model first (Settings), then generate.",
+  "vcs.noFilesExplain":
+    "This commit changed no files — there is nothing to explain.",
   "vcs.binarySuffix": " · includes binary content",
   "vcs.commitDiffRegion": "Unified diff for commit {hash}",
 
@@ -854,16 +882,20 @@ export const en = {
   "gh.noBranch": "unknown branch",
   "gh.jobsTitle": "Failed jobs ({n})",
   "gh.jobsTruncated": "More failed jobs omitted — see the run on GitHub.",
-  "gh.noFailedJobs": "No failed jobs with logs under this run — see the run on GitHub.",
+  "gh.noFailedJobs":
+    "No failed jobs with logs under this run — see the run on GitHub.",
   "gh.logTitle": "Log tail",
   "gh.logTruncated": "Log truncated — showing the last 200 lines.",
   "gh.logRedacted": "Possible secrets redacted.",
-  "gh.logUnavailable": "Log unavailable (expired or never uploaded) — see the run on GitHub.",
-  "gh.logNeedsAuth": "Sign in to read this log — private repository logs need a GitHub token.",
+  "gh.logUnavailable":
+    "Log unavailable (expired or never uploaded) — see the run on GitHub.",
+  "gh.logNeedsAuth":
+    "Sign in to read this log — private repository logs need a GitHub token.",
   "gh.showLog": "Show log",
   "gh.logLoading": "Loading log…",
   "gh.githubRun": "GitHub run:",
-  "gh.rerunNote": "Re-run the workflow on GitHub after fixing — Nexora never re-runs workflows.",
+  "gh.rerunNote":
+    "Re-run the workflow on GitHub after fixing — Nexora never re-runs workflows.",
   "gh.createFixTask": "Create fix task",
   "gh.creatingFixTask": "Creating…",
   "gh.fixTaskCreated":
@@ -882,7 +914,8 @@ export const en = {
   "gh.runnerBusy": "busy",
   "gh.runnerIdle": "idle",
   "gh.localTitle": "This machine",
-  "gh.localHint": "PATH lookup only — tools are never executed. Uses the app's inherited PATH, which may differ from the terminal.",
+  "gh.localHint":
+    "PATH lookup only — tools are never executed. Uses the app's inherited PATH, which may differ from the terminal.",
   "gh.toolFound": "found",
   "gh.toolMissing": "missing",
 
@@ -890,7 +923,8 @@ export const en = {
   // The terminal panel is gone (#219: TerminalPanel.tsx deleted). This single
   // key survives because VersionControlPanel renders it; the rest of the
   // terminal chrome returns with the panel.
-  "term.needProviderExplain": "Select a provider and model first (Settings), then explain.",
+  "term.needProviderExplain":
+    "Select a provider and model first (Settings), then explain.",
 
   // ---- tasks (task manager + autonomous mode) ---------------------------------
   "task.group": "Tasks",
@@ -922,7 +956,8 @@ export const en = {
   "task.hideReport": "Hide report",
   "task.reportTitle": "Report",
   "task.noTasksTitle": "No tasks yet",
-  "task.noTasksText": "Create a task list above — the autonomous loop runs each step through the agent and reports back here.",
+  "task.noTasksText":
+    "Create a task list above — the autonomous loop runs each step through the agent and reports back here.",
   "task.unavailable": "Tasks are unavailable.",
   "task.needProvider": "Choose a provider and model before running.",
   "task.statusPending": "Pending",
@@ -950,7 +985,8 @@ export const en = {
   "kanban.viewLabel": "Task view",
   "kanban.moveTo": "Move to {status}",
   "kanban.takeOver": "Take over",
-  "kanban.runningManaged": "Managed by the autonomous loop — stop the run to move it.",
+  "kanban.runningManaged":
+    "Managed by the autonomous loop — stop the run to move it.",
   "kanban.emptyColumn": "No tasks",
 
   // ---- code audit (read-only repo audit engine, findings only) -------------
@@ -982,8 +1018,10 @@ export const en = {
   "audit.skippedTitle": "Skipped files",
   "audit.moreFindings": "(+{n} more findings omitted)",
   "audit.moreSkipped": "(+{n} more)",
-  "audit.emptyText": "Run the audit to scan workspace sources (.rs, .ts, .tsx).",
-  "audit.noFindingsText": "The scan completed without findings under this filter.",
+  "audit.emptyText":
+    "Run the audit to scan workspace sources (.rs, .ts, .tsx).",
+  "audit.noFindingsText":
+    "The scan completed without findings under this filter.",
   "audit.skipTooLarge": "too large",
   "audit.skipUnreadable": "unreadable",
   "audit.skipFileCap": "over the file cap",
@@ -1027,7 +1065,8 @@ export const en = {
     "“{title}” will be permanently removed from the backlog. This cannot be undone.",
   "debt.deleteConfirm": "Delete",
   "debt.needTitle": "Enter a title first.",
-  "debt.emptyText": "Nothing tracked yet — add an entry manually or import the current audit findings.",
+  "debt.emptyText":
+    "Nothing tracked yet — add an entry manually or import the current audit findings.",
   "debt.noMatchText": "No items match this filter.",
   "debt.count": "{n} items",
 
@@ -1048,23 +1087,34 @@ export const en = {
   "release.pass": "pass",
   "release.warn": "attention",
   "release.fail": "failed",
-  "release.versionsAgree": "package.json, Cargo.toml, and tauri.conf.json agree on {v}.",
-  "release.versionsDiffer": "Manifest versions disagree \u2014 see the versions below.",
-  "release.versionsUnknown": "Some manifests are missing below the workspace folder \u2014 versions unknown.",
+  "release.versionsAgree":
+    "package.json, Cargo.toml, and tauri.conf.json agree on {v}.",
+  "release.versionsDiffer":
+    "Manifest versions disagree \u2014 see the versions below.",
+  "release.versionsUnknown":
+    "Some manifests are missing below the workspace folder \u2014 versions unknown.",
   "release.migrationsCurrent": "{applied} of {target} migrations applied.",
-  "release.migrationsPending": "{n} migrations pending \u2014 restart the app to apply them.",
+  "release.migrationsPending":
+    "{n} migrations pending \u2014 restart the app to apply them.",
   "release.snapshotFound": "Newest snapshot: {name} ({size}).",
-  "release.snapshotMissing": "No pre-update snapshot yet \u2014 take one before releasing.",
-  "release.updateCurrent": "Running build matches the latest upstream release ({tag}).",
-  "release.updateAvailable": "Upstream {tag} is newer than this build \u2014 see {url}.",
-  "release.updateUnknown": "The update state is unknown \u2014 refresh to check upstream.",
-  "release.updateNoReleases": "No upstream releases published \u2014 nothing is newer than this build.",
+  "release.snapshotMissing":
+    "No pre-update snapshot yet \u2014 take one before releasing.",
+  "release.updateCurrent":
+    "Running build matches the latest upstream release ({tag}).",
+  "release.updateAvailable":
+    "Upstream {tag} is newer than this build \u2014 see {url}.",
+  "release.updateUnknown":
+    "The update state is unknown \u2014 refresh to check upstream.",
+  "release.updateNoReleases":
+    "No upstream releases published \u2014 nothing is newer than this build.",
   "release.ghReady": "gh {v} is available for filing issues.",
-  "release.ghMissing": "gh is not on PATH \u2014 install the GitHub CLI and run `gh auth login` to file issues.",
+  "release.ghMissing":
+    "gh is not on PATH \u2014 install the GitHub CLI and run `gh auth login` to file issues.",
   "release.fileIssue": "File issue",
   "release.filing": "Filing\u2026",
   "release.issueTitle": "Release check failed: {check}",
-  "release.versionsLine": "package.json {a} \u00b7 Cargo.toml {b} \u00b7 tauri.conf.json {c}",
+  "release.versionsLine":
+    "package.json {a} \u00b7 Cargo.toml {b} \u00b7 tauri.conf.json {c}",
   "release.unknownVersion": "unknown",
   "release.issueCreated": "Issue #{n} filed: {url}",
   "issue.fileIssue": "File issue",
@@ -1087,11 +1137,14 @@ export const en = {
   "testgen.regenerate": "Regenerate",
   "testgen.targets": "Targets {considered} · drafts {n}",
   "testgen.moreDrafts": "(+{n} more drafts omitted — capped at 20)",
-  "testgen.auditOverflow": "(audit capped upstream: +{n} findings omitted, further targets unconsidered)",
-  "testgen.noTargets": "No eligible targets — undocumented or unused public Rust functions only.",
+  "testgen.auditOverflow":
+    "(audit capped upstream: +{n} findings omitted, further targets unconsidered)",
+  "testgen.noTargets":
+    "No eligible targets — undocumented or unused public Rust functions only.",
   "testgen.copy": "Copy",
   "testgen.copied": "Copied",
-  "testgen.draftNote": "Draft only — fill the TODOs, review intent, then copy manually.",
+  "testgen.draftNote":
+    "Draft only — fill the TODOs, review intent, then copy manually.",
 
   // ---- dependency inventory (read-only lockfile tables, no install/update)
   "dep.sectionTitle": "Dependencies",
@@ -1103,7 +1156,8 @@ export const en = {
   "dep.cargoTitle": "Cargo ({n})",
   "dep.npmTitle": "npm ({n})",
   "dep.moreDeps": "(+{n} more — the table is capped)",
-  "dep.empty": "No dependencies listed — the lockfiles are missing or unreadable.",
+  "dep.empty":
+    "No dependencies listed — the lockfiles are missing or unreadable.",
   "dep.srcCratesIo": "crates.io",
   "dep.srcRegistry": "registry",
   "dep.srcGit": "git",
@@ -1136,7 +1190,8 @@ export const en = {
   // ---- activity & health -----------------------------------------------------------------------------------------------
   "activity.group": "Activity and health",
   "activity.title": "Activity & Health",
-  "activity.subtitle": "Recent runs, spend, and project state — refresh manually.",
+  "activity.subtitle":
+    "Recent runs, spend, and project state — refresh manually.",
   "activity.refreshTitle": "Reload activity and health from the backend",
   "activity.tabsLabel": "Activity and health views",
   "activity.tabActivity": "Activity",
@@ -1150,7 +1205,8 @@ export const en = {
   "activity.loadingActivity": "Loading activity",
   "activity.loadingHealth": "Loading project health",
   "activity.emptyTitle": "No activity yet",
-  "activity.emptyText": "Conversations and agent runs will appear here as they happen.",
+  "activity.emptyText":
+    "Conversations and agent runs will appear here as they happen.",
   "activity.runIn": "Run in “{title}”",
   "activity.runHash": "Run #{id}",
   "activity.convCreated": "Conversation “{title}” created",
@@ -1207,7 +1263,8 @@ export const en = {
   "diag.dbSize": "Database size",
   "diag.sizeUnknown": "unknown",
   "diag.counts": "Stored rows",
-  "diag.countsValue": "{conversations} chats · {messages} messages · {prompts} prompts · {runs} runs",
+  "diag.countsValue":
+    "{conversations} chats · {messages} messages · {prompts} prompts · {runs} runs",
   "diag.fts": "Search index",
   "diag.ftsOk": "present",
   "diag.ftsMissing": "missing",
@@ -1217,16 +1274,19 @@ export const en = {
   "diag.errorRuns": "{n} failed runs total",
   "diag.copy": "Copy bundle",
   "diag.copied": "Copied.",
-  "diag.copyHint": "Copies versions, counts, and crash rows as JSON — no content, keys, or paths.",
+  "diag.copyHint":
+    "Copies versions, counts, and crash rows as JSON — no content, keys, or paths.",
   "diag.updateSection": "Updates",
   "diag.check": "Check for updates",
   "diag.checking": "Checking…",
   "diag.noRelease": "No release published for {repo} yet.",
   "diag.upToDate": "Up to date ({version}).",
   "diag.updateFound": "{latest} available (running {current}).",
-  "diag.downloadNote": "Check only — nothing downloads or installs by itself. Open the release page yourself to download:",
+  "diag.downloadNote":
+    "Check only — nothing downloads or installs by itself. Open the release page yourself to download:",
   "diag.snapshotSection": "Pre-update backup",
-  "diag.snapshotHint": "Copies the database to one timestamped file before you update. Nothing is deleted; the copy is user-initiated only.",
+  "diag.snapshotHint":
+    "Copies the database to one timestamped file before you update. Nothing is deleted; the copy is user-initiated only.",
   "diag.snapshot": "Back up now",
   "diag.snapshotBusy": "Backing up…",
   "diag.snapshotOk": "Saved {file} ({size}).",
@@ -1234,7 +1294,8 @@ export const en = {
 
   // ---- privacy center (health-panel Privacy section) ------------------------------------------------------------------
   "privacy.section": "Privacy & telemetry",
-  "privacy.subtitle": "Exactly what leaves this machine — and the local counters that never do.",
+  "privacy.subtitle":
+    "Exactly what leaves this machine — and the local counters that never do.",
   "privacy.loading": "Loading privacy facts",
   "privacy.unavailable": "Privacy facts unavailable.",
   "privacy.surfaces": "Egress surfaces",
@@ -1243,7 +1304,8 @@ export const en = {
   "privacy.stateManual": "Manual",
   "privacy.stateLocal": "Local only",
   "privacy.ledger": "Local usage ledger",
-  "privacy.emptyLedger": "No usage recorded yet — counters appear after runs, messages, and checks.",
+  "privacy.emptyLedger":
+    "No usage recorded yet — counters appear after runs, messages, and checks.",
   "privacy.total": "{n} events · kept {days} days",
   "privacy.kind_agent_run": "Agent runs started",
   "privacy.kind_message": "Messages sent",
@@ -1251,7 +1313,8 @@ export const en = {
   "privacy.kind_update_check": "Update checks",
   "privacy.copy": "Copy ledger",
   "privacy.copied": "Copied.",
-  "privacy.copyHint": "Copies per-day counters as JSON — no content, keys, or paths.",
+  "privacy.copyHint":
+    "Copies per-day counters as JSON — no content, keys, or paths.",
   "privacy.download": "Download ledger",
   "privacy.wipe": "Wipe ledger…",
   "privacy.wipeConfirm": "Confirm wipe",
@@ -1260,7 +1323,8 @@ export const en = {
 
   // ---- import / export -------------------------------------------------------------------------------------------------------
   "io.exportTitle": "Export conversation",
-  "io.exportOk": "Export complete. The conversation was written to the file you chose. Stored data was not modified.",
+  "io.exportOk":
+    "Export complete. The conversation was written to the file you chose. Stored data was not modified.",
   "io.exportHint":
     "Saves “{title}” as a local Nexora conversation JSON file. Messages are exported in their stored order.",
   "io.exporting": "Exporting…",
@@ -1288,7 +1352,8 @@ export const en = {
   // ---- in-app docs (Docs panel: curated guides, migration notes) ----------------------------------------------------------------
   "docs.group": "Product documentation",
   "docs.title": "Docs",
-  "docs.subtitle": "Guides built from the app itself — features, shortcuts, and the 1.x → 2.0 migration notes.",
+  "docs.subtitle":
+    "Guides built from the app itself — features, shortcuts, and the 1.x → 2.0 migration notes.",
   "docs.searchLabel": "Filter documentation headings",
   "docs.searchPh": "Filter headings…",
   "docs.noMatch": "Nothing matches this filter.",
@@ -1296,63 +1361,96 @@ export const en = {
   "docs.secFeatures": "Features",
   "docs.secMigration": "Migration 1.x → 2.0",
   "docs.secShortcuts": "Shortcuts",
-  "docs.startIntro": "Three steps to a working setup. Every step reuses the app's own flows.",
+  "docs.startIntro":
+    "Three steps to a working setup. Every step reuses the app's own flows.",
   "docs.start1t": "Connect a provider",
-  "docs.start1b": "Open Settings → Credentials and paste an API key. Keys live only in the OS keyring — never in the database, logs, or exports.",
+  "docs.start1b":
+    "Open Settings → Credentials and paste an API key. Keys live only in the OS keyring — never in the database, logs, or exports.",
   "docs.start2t": "Pick a workspace folder",
-  "docs.start2b": "Choose the folder the agent works in. Recent folders are remembered per device.",
+  "docs.start2b":
+    "Choose the folder the agent works in. Recent folders are remembered per device.",
   "docs.start3t": "Start chatting",
-  "docs.start3b": "Create a conversation and send a message. Press Ctrl+K anytime to jump anywhere; Ctrl+/ shows every shortcut.",
+  "docs.start3b":
+    "Create a conversation and send a message. Press Ctrl+K anytime to jump anywhere; Ctrl+/ shows every shortcut.",
   "docs.featChat": "Chat",
-  "docs.featChatBody": "Conversations with rename, archive, and per-folder history. Messages persist locally in SQLite.",
+  "docs.featChatBody":
+    "Conversations with rename, archive, and per-folder history. Messages persist locally in SQLite.",
   "docs.featLibrary": "Prompt library",
-  "docs.featLibraryBody": "Saved prompt templates you can insert into any conversation's composer.",
+  "docs.featLibraryBody":
+    "Saved prompt templates you can insert into any conversation's composer.",
   "docs.featVcs": "Version control",
-  "docs.featVcsBody": "Working tree, file diffs, stage / unstage, commit, push — plus AI-written commit messages and commit explanations.",
+  "docs.featVcsBody":
+    "Working tree, file diffs, stage / unstage, commit, push — plus AI-written commit messages and commit explanations.",
   "docs.featTerminal": "Terminal",
-  "docs.featTerminalBody": "Run workspace commands in a single managed session, with AI explanations for failures.",
+  "docs.featTerminalBody":
+    "Run workspace commands in a single managed session, with AI explanations for failures.",
   "docs.featTasks": "Tasks",
-  "docs.featTasksBody": "User task lists with a kanban board and expiring edit locks, whose steps the autonomous loop executes through the agent run path.",
+  "docs.featTasksBody":
+    "User task lists with a kanban board and expiring edit locks, whose steps the autonomous loop executes through the agent run path.",
   "docs.featAudit": "Code audit",
-  "docs.featAuditBody": "Read-only repository scanners reporting findings by severity — nothing is ever modified.",
+  "docs.featAuditBody":
+    "Read-only repository scanners reporting findings by severity — nothing is ever modified.",
   "docs.featDebt": "Debt backlog",
-  "docs.featDebtBody": "Tracked technical debt: hand-added entries plus idempotent imports of audit findings.",
+  "docs.featDebtBody":
+    "Tracked technical debt: hand-added entries plus idempotent imports of audit findings.",
   "docs.featGh": "Issues & PRs",
-  "docs.featGhBody": "Read-only GitHub issues, pull requests, Actions runs, and runner status.",
+  "docs.featGhBody":
+    "Read-only GitHub issues, pull requests, Actions runs, and runner status.",
   "docs.featActivity": "Activity",
-  "docs.featActivityBody": "The agent-run feed: every run with its steps, cost, and outcome.",
+  "docs.featActivityBody":
+    "The agent-run feed: every run with its steps, cost, and outcome.",
   "docs.featHealth": "Project health",
-  "docs.featHealthBody": "Provider status, spend versus budget, context pressure, feature flags, git state, plus update and diagnostics tools.",
+  "docs.featHealthBody":
+    "Provider status, spend versus budget, context pressure, feature flags, git state, plus update and diagnostics tools.",
   "docs.featPrivacy": "Privacy",
-  "docs.featPrivacyBody": "Every network destination with its live state, the local-only usage ledger, export, and wipe.",
+  "docs.featPrivacyBody":
+    "Every network destination with its live state, the local-only usage ledger, export, and wipe.",
   "docs.featDiag": "Diagnostics",
-  "docs.featDiagBody": "System bundle for bug reports, release checks, and database snapshots.",
-  "docs.migIntro": "Upgrading from 1.x is automatic: the app applies every missing migration on startup, in order, one transaction each. If the database is newer than the app, it refuses to start rather than guess.",
+  "docs.featDiagBody":
+    "System bundle for bug reports, release checks, and database snapshots.",
+  "docs.migIntro":
+    "Upgrading from 1.x is automatic: the app applies every missing migration on startup, in order, one transaction each. If the database is newer than the app, it refuses to start rather than guess.",
   "docs.migSchema": "Schema version {n}",
-  "docs.mig1": "Base tables — providers, conversations, messages, prompts, attachments, settings — plus the working indexes.",
-  "docs.mig2": "Full-text search — FTS5 indexes over conversations, messages, and prompts with sync triggers.",
-  "docs.mig3": "Freshness triggers — updated_at stays current on conversation and prompt edits.",
-  "docs.mig4": "Agent runs — agent_runs and agent_steps persist every run and model turn.",
-  "docs.mig5": "Spend guard — per-run cost columns and a spend_limit_exceeded status.",
-  "docs.mig6": "Workspace folders — each conversation remembers the workspace root it belongs to.",
-  "docs.mig7": "Permissions — persistent permission rules plus per-step provenance (which rule decided).",
+  "docs.mig1":
+    "Base tables — providers, conversations, messages, prompts, attachments, settings — plus the working indexes.",
+  "docs.mig2":
+    "Full-text search — FTS5 indexes over conversations, messages, and prompts with sync triggers.",
+  "docs.mig3":
+    "Freshness triggers — updated_at stays current on conversation and prompt edits.",
+  "docs.mig4":
+    "Agent runs — agent_runs and agent_steps persist every run and model turn.",
+  "docs.mig5":
+    "Spend guard — per-run cost columns and a spend_limit_exceeded status.",
+  "docs.mig6":
+    "Workspace folders — each conversation remembers the workspace root it belongs to.",
+  "docs.mig7":
+    "Permissions — persistent permission rules plus per-step provenance (which rule decided).",
   "docs.mig8": "Task manager — task lists and their executable steps.",
-  "docs.mig9": "Usage ledger — local-only per-day counters (no message content, ever). Powers the privacy view.",
-  "docs.mig10": "Debt backlog — the tracked-debt table behind manual entries and audit imports.",
-  "docs.mig11": "Edit locks — the task_locks table: at most one expiring lock row per task, so concurrent edits never collide.",
+  "docs.mig9":
+    "Usage ledger — local-only per-day counters (no message content, ever). Powers the privacy view.",
+  "docs.mig10":
+    "Debt backlog — the tracked-debt table behind manual entries and audit imports.",
+  "docs.mig11":
+    "Edit locks — the task_locks table: at most one expiring lock row per task, so concurrent edits never collide.",
   "docs.newTitle": "What changed in 2.0",
   "docs.newProfilesT": ".nexora/ project folders",
-  "docs.newProfilesB": "A workspace can hold a .nexora/ project directory (manifest, ignore rules, profiles scaffold), created on explicit init only. Workspace-scoped files take precedence over app-global settings where both exist; exports never include it.",
+  "docs.newProfilesB":
+    "A workspace can hold a .nexora/ project directory (manifest, ignore rules, profiles scaffold), created on explicit init only. Workspace-scoped files take precedence over app-global settings where both exist; exports never include it.",
   "docs.newRoutingT": "Routing profiles",
-  "docs.newRoutingB": "Settings → Advanced shows the agent and chat routing profiles (routing.profile.agent / chat): validated model choice with capability-aware fallback.",
+  "docs.newRoutingB":
+    "Settings → Advanced shows the agent and chat routing profiles (routing.profile.agent / chat): validated model choice with capability-aware fallback.",
   "docs.newFlagsT": "Feature flags",
-  "docs.newFlagsB": "Settings → Advanced toggles the rollout flags; a workspace .nexora/flags.json wins over the global keys. The Health view shows every flag's effective value and source.",
+  "docs.newFlagsB":
+    "Settings → Advanced toggles the rollout flags; a workspace .nexora/flags.json wins over the global keys. The Health view shows every flag's effective value and source.",
   "docs.newKeyringT": "Keyring-only API keys",
-  "docs.newKeyringB": "Provider keys live exclusively in the OS keyring (Settings → Credentials). They never touch SQLite, logs, or exports.",
+  "docs.newKeyringB":
+    "Provider keys live exclusively in the OS keyring (Settings → Credentials). They never touch SQLite, logs, or exports.",
   "docs.newSettingsT": "Slimmer settings",
-  "docs.newSettingsB": "Seven groups — Appearance, Provider, Agent, Workspace, Credentials, Data, Advanced — with in-page search. Power keys (flags, routing, MCP, preset) that had no UI are visible under Advanced.",
+  "docs.newSettingsB":
+    "Seven groups — Appearance, Provider, Agent, Workspace, Credentials, Data, Advanced — with in-page search. Power keys (flags, routing, MCP, preset) that had no UI are visible under Advanced.",
   "docs.newRootsT": "Workspace roots",
-  "docs.newRootsB": "Multiple registered workspace roots with a switcher; conversations remember their root (migration v6)."
+  "docs.newRootsB":
+    "Multiple registered workspace roots with a switcher; conversations remember their root (migration v6).",
 } as const;
 
 export type StringKey = keyof typeof en;

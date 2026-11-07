@@ -104,7 +104,8 @@
    the weight step below. Token durations, so the global
    reduced-motion gate collapses it to the end frame. */
 .nex-tab-enter {
-  animation: nex-tab-in var(--nex-sys-motion-spring-expressive-fast-spatial-duration)
+  animation: nex-tab-in
+    var(--nex-sys-motion-spring-expressive-fast-spatial-duration)
     var(--nex-sys-motion-spring-expressive-fast-spatial-curve);
 }
 
@@ -141,7 +142,8 @@
   font-weight: var(--type-weight-medium);
   cursor: pointer;
   padding: 0;
-  transition: color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard);
+  transition: color var(--nex-sys-motion-duration-fast)
+    var(--nex-sys-motion-easing-standard);
 }
 
 /* Selected: the tone step on the label itself. The tick below is
@@ -344,4 +346,3 @@
 .nex-main-hidden {
   display: none;
 }
-
