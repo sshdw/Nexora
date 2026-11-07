@@ -75,15 +75,24 @@ function oklchToLinearSrgb({ l, c, h }: Oklch): [number, number, number] {
  * sRGB-encoded channel (0..1) → linear-light. Used only for hex
  * input, which arrives already gamma-encoded.
  */
-function srgbToLinear(channel: number): number {
+export function srgbToLinear(channel: number): number {
   const clamped = Math.min(1, Math.max(0, channel));
   return clamped <= 0.04045 ? clamped / 12.92 : ((clamped + 0.055) / 1.055) ** 2.4;
 }
 
-/** Linear-light → sRGB-encoded. */
-function linearToSrgb(channel: number): number {
+/**
+ * Linear-light → sRGB-encoded.
+ *
+ * The 0.0031308 threshold is the ENCODE-side knee of the sRGB curve
+ * (0.04045 is its DECODE-side twin). Using the decode knee here made
+ * `srgbToLinear(linearToSrgb(x))` lossy for linear x in
+ * (0.0031308, 0.04045] — e.g. 0.0238 round-tripped to 0.0769 — which
+ * distorted every dark-surface value compositedLuminance blends.
+ * (Review 06 D-02 found this while wiring the hex-token chroma sweep.)
+ */
+export function linearToSrgb(channel: number): number {
   const clamped = Math.min(1, Math.max(0, channel));
-  return clamped <= 0.04045 ? clamped * 12.92 : 1.055 * clamped ** (1 / 2.4) - 0.055;
+  return clamped <= 0.0031308 ? clamped * 12.92 : 1.055 * clamped ** (1 / 2.4) - 0.055;
 }
 
 /** `#rrggbb` → `[r, g, b]` in 0..1 sRGB. */
@@ -101,6 +110,101 @@ export function parseHexColor(hex: string): [number, number, number] {
     parseInt(expand.slice(2, 4), 16) / 255,
     parseInt(expand.slice(4, 6), 16) / 255,
   ];
+}
+
+/** A parsed colour with its alpha, 0..1. */
+export interface Rgba {
+  r: number;
+  g: number;
+  b: number;
+  a: number;
+}
+
+/**
+ * `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa` → channels in 0..1 sRGB.
+ * Null for anything else, so the caller can classify non-colours.
+ */
+export function parseHexRgba(hex: string): Rgba | null {
+  const match = /^#([0-9a-fA-F]{3,8})$/.exec(hex.trim());
+  if (!match) return null;
+  let value = match[1];
+  if (value.length === 3 || value.length === 4) {
+    value = value
+      .split("")
+      .map((c) => c + c)
+      .join("");
+  }
+  if (value.length !== 6 && value.length !== 8) return null;
+  const channel = (i: number) => parseInt(value.slice(i, i + 2), 16) / 255;
+  return {
+    r: channel(0),
+    g: channel(2),
+    b: channel(4),
+    a: value.length === 8 ? channel(6) : 1,
+  };
+}
+
+/** `rgb()`/`rgba()` with comma-separated channels → channels in 0..1. */
+export function parseRgbaFunctional(value: string): Rgba | null {
+  const match =
+    /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*([\d.]+))?\s*\)$/.exec(
+      value.trim(),
+    );
+  if (!match) return null;
+  return {
+    r: Number(match[1]) / 255,
+    g: Number(match[2]) / 255,
+    b: Number(match[3]) / 255,
+    a: match[4] === undefined ? 1 : Math.min(1, Math.max(0, Number(match[4]))),
+  };
+}
+
+/** OKLab components (Ottosson). `l` is perceptual lightness; the
+ *  chroma of a colour is `Math.hypot(a, b)`. */
+export interface Oklab {
+  l: number;
+  a: number;
+  b: number;
+}
+
+/**
+ * sRGB-ENCODED channels → OKLab (Björn Ottosson's inverse matrices —
+ * the exact reverse of `oklchToLinearSrgb`'s forward path).
+ */
+export function srgbToOklab(rgb: [number, number, number]): Oklab {
+  const [lr, lg, lb] = rgb.map(srgbToLinear);
+  const l_ = Math.cbrt(0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb);
+  const m_ = Math.cbrt(0.2119034982 * lr + 0.6806995451 * lg + 0.1073969566 * lb);
+  const s_ = Math.cbrt(0.0883024619 * lr + 0.2817188376 * lg + 0.6299787005 * lb);
+  return {
+    l: 0.2104542553 * l_ + 0.793617785 * m_ - 0.0040720468 * s_,
+    a: 1.9779984951 * l_ - 2.428592205 * m_ + 0.4505937099 * s_,
+    b: 0.0259040371 * l_ + 0.7827717662 * m_ - 0.808675766 * s_,
+  };
+}
+
+/** OKLCH-style chroma of an OKLab colour: the (a, b) radius. */
+export function oklabChroma(lab: Oklab): number {
+  return Math.hypot(lab.a, lab.b);
+}
+
+/**
+ * Alpha-composite `color` over an opaque `backdrop`, both already in
+ * 0..1 sRGB-ENCODED channels — the space CSS alpha compositing
+ * happens in (same convention as `compositedLuminance`).
+ */
+export function compositedSrgb(color: Rgba, backdrop: [number, number, number]): [number, number, number] {
+  const blend = (fg: number, bg: number) => color.a * fg + (1 - color.a) * bg;
+  return [blend(color.r, backdrop[0]), blend(color.g, backdrop[1]), blend(color.b, backdrop[2])];
+}
+
+/**
+ * OKLCH → clamped sRGB-ENCODED channels. The backdrop half of the
+ * composited-chroma sweep: an oklch theme role (the canvas) becomes
+ * the channels an rgba/hex literal alpha-blends over.
+ */
+export function oklchToSrgbChannels(color: Oklch): [number, number, number] {
+  return oklchToLinearSrgb(color).map(linearToSrgb) as [number, number, number];
 }
 
 /**

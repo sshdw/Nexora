@@ -41,19 +41,33 @@ import { Slot } from "radix-ui"
 // reads as a nudge (a pixel of travel, not a press), and it is
 // the base's only active transform, so it lands on every variant
 // while `transition-all` gives it the 150ms state-fade duration
-// the contract reserves for hover/focus. The contract is ONE
-// press — scale(0.985), 90ms in, instant out, on ALL controls —
-// so the base string now:
+// the contract reserves for hover/focus.
+//
+// P7 UPDATE (OD-D9·motion, owner-approved 2026-10-20; review 06
+// D-03 — the 2026-10-15 press was marked SUPERSEDED, "do not
+// implement"): the contract is still ONE press on ALL controls,
+// but the clocks changed — 90ms in to scale(0.97) (L2 «плавный»
+// default of the adaptive levels; l3 presses to 0.955, l1 to
+// 0.985, via the data-motion-level tier blocks in
+// styles/motion.css, all overriding `--motion-scale-press` whose
+// canonical alias this string consumes), and the release is no
+// longer instant: 411ms spring-snap (`--nex-sys-motion-press-
+// release-*`, L1 swaps to 220ms emphasized-decelerate). The
+// release spring owns only the `scale` entry — snap is never
+// applied to opacity/color (§7.1). Hover/focus/disabled paint
+// moves onto the 120ms `--nex-sys-motion-duration-hover` (§7.2
+// hover row, off-ladder), replacing the 150ms state-fade token.
+// So the base string now:
 //   - transitions an explicit property list instead of `all`, so
-//     the press owns its own clock. A `transition-duration` list
-//     aligns positionally with `transition-property` (the same
-//     mechanic .nex-morph-pill uses in styles/components.css);
-//   - gives `scale` 0s at rest (instant release) and
-//     `var(--nex-sys-motion-duration-press)` while held, and
-//     leaves every paint transition on
-//     `--nex-sys-motion-duration-fast` — the same 150ms value
-//     Tailwind's `transition-all` was already using, so nothing
-//     about hover/focus/disabled changes;
+//     the press owns its own clock. The `transition-duration` and
+//     `transition-timing-function` lists align positionally with
+//     `transition-property` (the same mechanic .nex-morph-pill
+//     uses in styles/components.css);
+//   - gives `scale` the snap-release duration/easing at rest
+//     (transform only — snap's overshoot is invisible on opacity,
+//     so it never rides the paint entries) and the 90ms press
+//     token with the standard easing while held, and leaves every
+//     paint transition on the 120ms hover token;
 //   - presses with `var(--nex-sys-motion-scale-press)`;
 //   - drops the registry's `not-aria-[haspopup]` guard, because
 //     the contract says ALL controls. No element in src/ sets
@@ -63,12 +77,11 @@ import { Slot } from "radix-ui"
 //     global gate in styles/motion.css, which collapses the
 //     durations themselves. Both halves are needed: the gate
 //     makes the press instant, this makes it not move at all.
-// The two `--nex-sys-motion-*` names are declared in
-// styles/motion.css (motion tokens live in their own sheet, not
-// in the theme blocks) and are registered for the theme gate in
-// src/theme.test.ts.
+// The `--nex-sys-motion-*` names are declared in styles/motion.css
+// (motion tokens live in their own sheet, not in the theme blocks)
+// and are registered for the theme gate in src/theme.test.ts.
 const buttonVariants = cva(
-  "group/button inline-flex shrink-0 items-center justify-center rounded-lg border border-transparent bg-clip-padding text-sm font-medium whitespace-nowrap transition-[scale,background-color,color,border-color,box-shadow,opacity] [transition-duration:0s,var(--nex-sys-motion-duration-fast),var(--nex-sys-motion-duration-fast),var(--nex-sys-motion-duration-fast),var(--nex-sys-motion-duration-fast),var(--nex-sys-motion-duration-fast)] outline-none select-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background active:scale-[var(--nex-sys-motion-scale-press)] active:[transition-duration:var(--nex-sys-motion-duration-press),var(--nex-sys-motion-duration-fast),var(--nex-sys-motion-duration-fast),var(--nex-sys-motion-duration-fast),var(--nex-sys-motion-duration-fast),var(--nex-sys-motion-duration-fast)] motion-reduce:active:scale-none disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-2 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+  "group/button inline-flex shrink-0 items-center justify-center rounded-lg border border-transparent bg-clip-padding text-sm font-medium whitespace-nowrap transition-[scale,background-color,color,border-color,box-shadow,opacity] [transition-duration:var(--nex-sys-motion-press-release-duration),var(--nex-sys-motion-duration-hover),var(--nex-sys-motion-duration-hover),var(--nex-sys-motion-duration-hover),var(--nex-sys-motion-duration-hover),var(--nex-sys-motion-duration-hover)] [transition-timing-function:var(--nex-sys-motion-press-release-easing),var(--nex-sys-motion-easing-standard),var(--nex-sys-motion-easing-standard),var(--nex-sys-motion-easing-standard),var(--nex-sys-motion-easing-standard),var(--nex-sys-motion-easing-standard)] outline-none select-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background active:scale-[var(--nex-sys-motion-scale-press)] active:[transition-duration:var(--nex-sys-motion-duration-press),var(--nex-sys-motion-duration-hover),var(--nex-sys-motion-duration-hover),var(--nex-sys-motion-duration-hover),var(--nex-sys-motion-duration-hover),var(--nex-sys-motion-duration-hover)] active:[transition-timing-function:var(--nex-sys-motion-easing-standard),var(--nex-sys-motion-easing-standard),var(--nex-sys-motion-easing-standard),var(--nex-sys-motion-easing-standard),var(--nex-sys-motion-easing-standard),var(--nex-sys-motion-easing-standard)] motion-reduce:active:scale-none disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-2 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
   {
     variants: {
       variant: {

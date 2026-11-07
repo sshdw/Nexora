@@ -7,7 +7,7 @@ import { useEffect, useState } from "react";
  * src/styles/motion.css: under `prefers-reduced-motion: reduce`
  * every CSS animation and transition collapses to a single frame.
  * A stylesheet cannot reach a clock that JavaScript owns — a
- * requestAnimationFrame loop, a GSAP tween, a setTimeout chain —
+ * requestAnimationFrame loop, a tween library, a setTimeout chain —
  * so every animated component in the stack branches on this hook
  * instead and renders its final static frame directly.
  *

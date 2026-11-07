@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { render } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { readRepoFile } from "../test/readRepoFile";
@@ -19,14 +19,15 @@ import {
  *   - CSS:  the ONE global block, in src/styles/motion.css,
  *           collapses duration, delay and iteration-count, and
  *           holds the end frame.
- *   - JS:   a vendored React Bits component (TextType, copied in
- *           #218) branches on useReducedMotion() and renders its
- *           final static frame WITHOUT starting GSAP or the
- *           typing timer chain.
+ *   - JS:   useReducedMotion() is the fail-closed clock every
+ *           non-CSS animator branches on.
  *
- * The JS half is asserted with a matchMedia mock and a GSAP
- * spy: "no timeline was created" is the assertion, not "the
- * text happened to look finished".
+ * The JS half used to be asserted against the vendored per-character
+ * typing component and its timeline library with a tween spy; P7
+ * deleted both from the tree (review 06 D-15) — no product component
+ * imports a JS timeline any more, so the hook tests below are the
+ * surviving JS half, alongside the P7 motion-contract gates for the
+ * token sheet.
  */
 
 /** Install a matchMedia that answers `matches` for the reduced-motion
@@ -136,81 +137,176 @@ describe("reduced-motion gate — JS half", () => {
     expect(added).toContain(`change:${REDUCED_MOTION_QUERY}`);
   });
 
-  it("renders TextType's final static frame and starts no GSAP tween", async () => {
-    // GSAP is mocked rather than driven: the assertion is that no
-    // timeline is ever created, so a spy is the honest check.
-    const gsapMock = { set: vi.fn(), to: vi.fn() };
-    vi.doMock("gsap", () => ({ gsap: gsapMock }));
-    mockReducedMotion(true);
-    vi.resetModules();
+  // P7 (review 06 D-15): the three component tests that lived here —
+  // the reduced-motion static frame, the motion-allowed tween, and the
+  // empty-list guard — tested the vendored per-character typing
+  // component. That component and its timeline library left the tree
+  // with zero product importers, so those tests left with it (tests of
+  // deleted code, not of live code). The JS half of the gate is now the
+  // three useReducedMotion tests above; the CSS half below is unchanged.
+});
 
-    const { default: ReducedTextType } = await import("../components/TextType");
+/**
+ * P7 motion contract — OD-D9·motion / OD-D10·motion
+ * (NEXORA-DESIGN-SYSTEM.md §7.1–§7.3, review 06 D-03/D-10).
+ *
+ * The spring tokens are DERIVED, not invented: T = −ln(0.001)/(ζωₙ)
+ * (0.1% settle time), peak = e^(−πζ/√(1−ζ²)), t_p = π/(ωₙ·√(1−ζ²)).
+ * These tests re-derive all three from (ζ, ωₙ) and hold the
+ * declarations in src/styles/motion.css against them, so a
+ * hand-tuned "spring" that drifts from the contract fails here.
+ * The t_p crest must be its own linear() stop — interpolation
+ * between neighbours would clip it (§7.1).
+ */
+describe("motion contract — spring tokens (OD-D9 §7.1)", () => {
+  const css = readRepoFile("src/styles/motion.css").replace(/\/\*[\s\S]*?\*\//g, "");
 
-    render(<ReducedTextType text={["first", "final sentence"]} loop />);
+  /** Re-derivation of the §7.1 table from the contract's (ζ, ωₙ). */
+  function derive(zeta: number, wn: number): { T: number; peak: number; tp: number } {
+    return {
+      T: -Math.log(0.001) / (zeta * wn),
+      peak: Math.exp((-Math.PI * zeta) / Math.sqrt(1 - zeta * zeta)),
+      tp: Math.PI / (wn * Math.sqrt(1 - zeta * zeta)),
+    };
+  }
 
-    await act(async () => {
-      // No timing assertion: a real reduced-motion render is
-      // synchronous, and the timers below would never fire.
-      await Promise.resolve();
+  /** Parse a token's linear() stop list as (progress, percent) pairs. */
+  function stops(token: string): Array<[number, number]> {
+    const match = new RegExp(`--nex-sys-motion-spring-${token}:\\s*linear\\(([^)]*)\\)`).exec(
+      css,
+    );
+    expect(match, `--nex-sys-motion-spring-${token} must carry a linear() value`).not.toBeNull();
+    return match![1].split(",").map((entry) => {
+      const parts = entry.trim().split(/\s+/);
+      return [Number(parts[0]), parts.length > 1 ? Number(parts[1].replace("%", "")) : 0];
     });
+  }
 
-    // The information the animation would have revealed is all
-    // present in the static frame.
-    expect(screen.getByText("final sentence")).toBeInTheDocument();
-    // No GSAP blink loop, and no typing cursor left behind.
-    expect(gsapMock.to).not.toHaveBeenCalled();
-    expect(gsapMock.set).not.toHaveBeenCalled();
-    expect(document.body.textContent).not.toContain("|");
+  for (const [token, zeta, wn] of [
+    ["settle", 0.84, 24],
+    ["snap", 0.7, 24],
+  ] as const) {
+    it(`re-derives ${token} (ζ=${zeta}, ωₙ=${wn}) from the declaration`, () => {
+      const { T, peak, tp } = derive(zeta, wn);
+      // The paired duration is the settle time, rounded to the ms the
+      // contract table prints (343 / 411).
+      expect(css).toMatch(
+        new RegExp(`--nex-sys-motion-spring-${token}-duration:\\s*${Math.round(T * 1000)}ms`),
+      );
+      const list = stops(token);
+      // The trajectory starts at 0 and lands exactly at rest.
+      expect(list[0][0]).toBe(0);
+      expect(list[list.length - 1][1]).toBe(100);
+      expect(list[list.length - 1][0]).toBe(1);
+      // The crest is its own stop, at the re-derived t_p (as a percent
+      // of T, 2dp) with the re-derived overshoot (1 + peak, 4dp).
+      const crestPercent = Number(((tp * 1000 / Math.round(T * 1000)) * 100).toFixed(2));
+      const crest = list.find(([, percent]) => percent === crestPercent);
+      expect(crest, `crest stop missing at ${crestPercent}%`).toBeDefined();
+      expect(crest![0]).toBeCloseTo(1 + peak, 4);
+      // ...and it IS the crest: nothing in the list overshoots further.
+      const max = Math.max(...list.map(([value]) => value));
+      expect(max).toBeCloseTo(1 + peak, 4);
+    });
+  }
 
-    vi.doUnmock("gsap");
+  it("pairs snap's fallback with emphasized-decelerate at 410ms, 0% overshoot", () => {
+    // §7.1 fallback row, verbatim.
+    expect(css).toMatch(
+      /--nex-sys-motion-spring-snap-duration:\s*410ms/,
+    );
+    expect(css).toMatch(
+      /--nex-sys-motion-spring-snap:\s*var\(--motion-easing-emphasized-decelerate\)/,
+    );
+    // settle's fallback is the expressive-default-spatial pair (1.39%).
+    expect(css).toMatch(
+      /--nex-sys-motion-spring-settle:\s*var\(--motion-spring-expressive-default-spatial-curve\)/,
+    );
+    expect(css).toMatch(
+      /--nex-sys-motion-spring-settle-duration:\s*var\(--motion-spring-expressive-default-spatial-duration\)/,
+    );
   });
 
-  it("runs the TextType timeline when motion is allowed", async () => {
-    const gsapMock = { set: vi.fn(), to: vi.fn() };
-    vi.doMock("gsap", () => ({ gsap: gsapMock }));
-    mockReducedMotion(false);
-    vi.resetModules();
+  it("adds the 120ms hover token as the off-ladder freeze exception", () => {
+    // §7.2 hover row + NEXORA-THEME.md §6 2026-10-20 amendment:
+    // hover/focus is 120 ms, not the 150ms short3 stop.
+    expect(css).toMatch(/--nex-sys-motion-duration-hover:\s*120ms/);
+  });
+});
 
-    const { default: AnimatedTextType } = await import("../components/TextType");
+describe("motion contract — adaptive levels (OD-D10 §7.3)", () => {
+  const css = readRepoFile("src/styles/motion.css").replace(/\/\*[\s\S]*?\*\//g, "");
 
-    render(<AnimatedTextType text="typing" />);
-
-    // The cursor blink tween is created on mount when motion is
-    // allowed — the counterpart to the assertion above.
-    expect(gsapMock.set).toHaveBeenCalledTimes(1);
-    expect(gsapMock.to).toHaveBeenCalledTimes(1);
-
-    vi.doUnmock("gsap");
+  it("declares exactly three tier blocks on the html attribute", () => {
+    // Exactly THREE override blocks (§7.3). Tier blocks sit at column 0;
+    // the reduced-motion guard's selector list also names the attribute
+    // but indented, so the line-start anchor counts blocks only.
+    expect(
+      css.match(/^:root\[data-motion-level="l[123]"\]\s*\{/gm)?.length,
+    ).toBe(3);
+    for (const level of ["l3", "l2", "l1"]) {
+      expect(css).toMatch(new RegExp(`:root\\[data-motion-level="${level}"\\]\\s*\\{`));
+    }
   });
 
-  it("renders nothing and starts no tween for an empty text list", async () => {
-    // Upstream reads `textArray[finalIndex]` unconditionally, so
-    // `text={[]}` threw on the static-frame path (and again in the
-    // typing effect). Both are guarded; this is the half that would
-    // have thrown first, under reduced motion.
-    const gsapMock = { set: vi.fn(), to: vi.fn() };
-    vi.doMock("gsap", () => ({ gsap: gsapMock }));
-    mockReducedMotion(true);
-    vi.resetModules();
+  it("keeps L2 «плавный» as the no-attribute default", () => {
+    // Before src/lib/motionLevel.ts writes the attribute, :root IS l2.
+    expect(css).toMatch(
+      /--nex-sys-motion-entrance-easing:\s*var\(--nex-sys-motion-spring-settle\)/,
+    );
+    expect(css).toMatch(/--nex-sys-motion-entrance-travel:\s*8px/);
+    expect(css).toMatch(/--motion-scale-press:\s*0\.97/);
+  });
 
-    const { default: EmptyTextType } = await import("../components/TextType");
+  it("maps character values per level — snap/settle/220ms, 12/8/4px, 0.955/0.97/0.985", () => {
+    // Only CHARACTER adapts (§7.3): press, entrances, travel.
+    const block = (level: string): string =>
+      new RegExp(`:root\\[data-motion-level="${level}"\\]\\s*\\{([^}]*)\\}`).exec(css)?.[1] ??
+      "";
+    const l3 = block("l3");
+    expect(l3).toMatch(/--motion-scale-press:\s*0\.955/);
+    expect(l3).toMatch(/--nex-sys-motion-entrance-easing:\s*var\(--nex-sys-motion-spring-snap\)/);
+    expect(l3).toMatch(/--nex-sys-motion-entrance-travel:\s*12px/);
+    const l2 = block("l2");
+    expect(l2).toMatch(/--motion-scale-press:\s*0\.97/);
+    expect(l2).toMatch(
+      /--nex-sys-motion-entrance-easing:\s*var\(--nex-sys-motion-spring-settle\)/,
+    );
+    expect(l2).toMatch(/--nex-sys-motion-entrance-travel:\s*8px/);
+    const l1 = block("l1");
+    expect(l1).toMatch(/--motion-scale-press:\s*0\.985/);
+    expect(l1).toMatch(
+      /--nex-sys-motion-entrance-easing:\s*var\(--nex-sys-motion-easing-emphasized-decelerate\)/,
+    );
+    expect(l1).toMatch(/--nex-sys-motion-entrance-duration:\s*220ms/);
+    expect(l1).toMatch(/--nex-sys-motion-entrance-travel:\s*4px/);
+    // L1 has no spring, so the press RELEASE is also 220ms
+    // emphasized-decelerate (§7.3 derivation).
+    expect(l1).toMatch(/--nex-sys-motion-press-release-duration:\s*220ms/);
+    expect(l1).toMatch(
+      /--nex-sys-motion-press-release-easing:\s*var\(--nex-sys-motion-easing-emphasized-decelerate\)/,
+    );
+    // L2/L3 keep the snap release (no release override in their blocks).
+    expect(block("l2")).not.toMatch(/press-release/);
+    expect(block("l3")).not.toMatch(/press-release/);
+  });
 
-    // No `expect(...).not.toThrow()` wrapper: an exception fails this
-    // test on its own. What matters is what it renders.
-    const { container } = render(<EmptyTextType text={[]} />);
-
-    await act(async () => {
-      await Promise.resolve();
-    });
-
-    // Nothing to reveal, so nothing is rendered — no frame, no
-    // cursor. (Scoped to this render's own container: this file has
-    // no global cleanup, so document.body still holds earlier
-    // tests' nodes.)
-    expect(container.innerHTML).toBe("");
-    expect(gsapMock.set).not.toHaveBeenCalled();
-    expect(gsapMock.to).not.toHaveBeenCalled();
-
-    vi.doUnmock("gsap");
+  it("always yields L1 under prefers-reduced-motion, manual choice included", () => {
+    // The SECOND reduced-motion block in motion.css (the first is the
+    // global gate, pinned by the tests above) pins the L1 character on
+    // :root AND on every tier attribute, so a manual l3 attribute
+    // cannot out-rank the OS preference and the values hold pre-JS.
+    const blocks = [
+      ...css.matchAll(/@media \(prefers-reduced-motion: reduce\) \{([\s\S]*?)\n\}/g),
+    ];
+    expect(blocks.length).toBe(2);
+    const guard = blocks[1][1];
+    expect(guard).toMatch(/:root,\s*:root\[data-motion-level="l3"\]/);
+    expect(guard).toMatch(/--motion-scale-press:\s*0\.985/);
+    expect(guard).toMatch(/--nex-sys-motion-entrance-travel:\s*4px/);
+    expect(guard).toMatch(
+      /--nex-sys-motion-entrance-easing:\s*var\(--nex-sys-motion-easing-emphasized-decelerate\)/,
+    );
+    expect(guard).toMatch(/--nex-sys-motion-press-release-duration:\s*220ms/);
   });
 });

@@ -578,10 +578,12 @@ describe("components.css contract (G-18)", () => {
     expect(marker![1]).toContain("transform: translateX(var(--seg-indicator-x");
     expect(marker![1]).toContain("background: var(--background)");
     expect(marker![1]).toContain("border-radius: var(--seg-radius)");
+    // D-10 (review 06): the sheet consumes the canonical
+    // --nex-sys-motion-* names after the call-site rename.
     expect(marker![1]).toContain(
-      "transition: transform var(--motion-duration-short4)",
+      "transition: transform var(--nex-sys-motion-duration-short4)",
     );
-    expect(marker![1]).toContain("var(--motion-easing-standard)");
+    expect(marker![1]).toContain("var(--nex-sys-motion-easing-standard)");
     // The gate in motion.css reaches transitions only, never keyframes.
     expect(marker![1]).not.toContain("animation");
   });

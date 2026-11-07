@@ -32,6 +32,11 @@ import "@fontsource/cascadia-code";
 // unlayered, and unlayered normal declarations outrank every Tailwind
 // utility, which is the bug the single entry exists to prevent.
 import "./index.css";
+// Adaptive motion level (OD-D10·motion, NEXORA-DESIGN-SYSTEM.md §7.3):
+// writes data-motion-level on <html> before the first animated surface
+// paints. Tier override blocks live in src/styles/motion.css; storage is
+// the device-local `nexora.motion` localStorage key (zero Rust).
+import { applyMotionLevel } from "./lib/motionLevel";
 
 // DEV-ONLY visual-QA hook: with ?mock in the URL (dev builds only), install
 // the in-memory IPC stand-in from src/lib/mockBackend.ts before mounting so
@@ -41,6 +46,7 @@ async function bootstrap(): Promise<void> {
   if (import.meta.env.DEV && new URLSearchParams(window.location.search).has("mock")) {
     await import("./lib/mockBackend");
   }
+  applyMotionLevel();
   ReactDOM.createRoot(document.getElementById("root")!).render(
     <React.StrictMode>
       <ErrorBoundary root>

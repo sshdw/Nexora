@@ -16,7 +16,7 @@
 //! Motion (R4-07): CSS transitions/keyframes only — transform/opacity, never
 //! width/height/top/left. Durations/easings from src/styles/motion.css
 //! (--motion-duration-short2 100 ms hover/focus, --motion-duration-press 90 ms,
-//! --motion-easing-standard). No motion/framer-motion/gsap/react-spring/auto-animate.
+//! --motion-easing-standard). No motion/framer-motion/react-spring/auto-animate.
 //! Reduced motion honoured by the global gate in src/styles/motion.css.
 //!
 //! Tokens: every colour/duration/radius/shape/space comes from
@@ -85,10 +85,10 @@ function DockButton({
         "group/dock-btn relative flex size-11 shrink-0 items-center justify-center rounded-[var(--shape-full)] border border-transparent outline-none [&_svg]:pointer-events-none [&_svg]:shrink-0",
         /* hover/focus tone — 100 ms, standard easing (transform/opacity only) */
         "transition-[transform,opacity]",
-        "[transition-duration:var(--motion-duration-short2)]",
+        "[transition-duration:var(--nex-sys-motion-duration-short2)]",
         /* press — 90 ms scale in, instant release */
-        "active:[transform:scale(var(--motion-scale-press))]",
-        "active:[transition-duration:var(--motion-duration-press),var(--motion-duration-short2),var(--motion-duration-short2)]",
+        "active:[transform:scale(var(--nex-sys-motion-scale-press))]",
+        "active:[transition-duration:var(--nex-sys-motion-duration-press),var(--nex-sys-motion-duration-short2),var(--nex-sys-motion-duration-short2)]",
         /* rest */
         "bg-transparent text-[var(--color-on-surface-variant)]",
         "hover:bg-[var(--state-hover)] hover:text-[var(--color-on-surface)]",
@@ -124,8 +124,8 @@ function DockButton({
             "px-[var(--space-xs)] py-[var(--space-xxs)]",
             "text-[var(--color-popover-foreground)] text-sm font-medium whitespace-nowrap",
             "opacity-0 transition-opacity",
-            "[transition-duration:var(--motion-duration-short2)]",
-            "[transition-timing-function:var(--motion-easing-standard)]",
+            "[transition-duration:var(--nex-sys-motion-duration-short2)]",
+            "[transition-timing-function:var(--nex-sys-motion-easing-standard)]",
             "group-hover/dock-btn:opacity-100 group-focus-within/dock-btn:opacity-100"
           )}
         >

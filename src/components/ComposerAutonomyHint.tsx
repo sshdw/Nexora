@@ -6,12 +6,13 @@
    ("Supervised", "Semi-auto", "Full-auto") are labels nobody can
    act on without that sentence.
 
-   PLAIN TEXT ALWAYS. The per-character TextType typing is
-   ornament on a static sentence, so it is removed: switching
-   modes swaps the sentence instantly, with no re-typing
-   animation, and there is no JS timeline to collapse under
-   reduced motion. (`TextType` stays vendored for genuine
-   streaming/progress semantics elsewhere; it is not used here.)
+   PLAIN TEXT ALWAYS. The per-character typing ornament was
+   removed from this sentence, so switching modes swaps it
+   instantly, with no re-typing animation and no JS timeline to
+   collapse under reduced motion. P7 went further and removed the
+   vendored typing component and its timeline library from the
+   tree entirely (review 06 D-15 — zero product importers), so
+   there is no animated-render path anywhere to fall back to.
 
    One line, clamped with `title=` fallback so the full sentence
    is still reachable on hover/focus when it overflows.

@@ -82,13 +82,15 @@
 /* ---- Tab: a quiet TEXT row, not a container. No radius and no
    fill at any state — the tab is a label with a tick under it,
    so nothing reads as a pill to click. max-width stays the
-   pre-existing sidebar-width token: that IS the tab-width
-   contract, and narrowing it was not in scope. ---- */
+   pre-existing sidebar-width token — renamed to
+   --layout-tab-label-max by D-07 (review 06): the sidebar itself is
+   w-64 (256px) in Sidebar.tsx, so the 280px clamp is now named for
+   the tab strip it actually sizes. ---- */
 .nex-tab {
   display: flex;
   align-items: center;
   gap: var(--space-xxs);
-  max-width: var(--layout-sidebar-width);
+  max-width: var(--layout-tab-label-max);
   min-height: var(--space-2xl);
   padding: 0 var(--space-xs);
   color: var(--color-on-surface-variant);
@@ -287,7 +289,7 @@
 .nex-workspace-chip {
   display: inline-flex;
   align-items: center;
-  max-width: var(--layout-sidebar-width);
+  max-width: var(--layout-tab-label-max);
   min-width: 0;
   padding: var(--space-xxxs) var(--space-xxs);
   border-radius: var(--shape-extra-small);

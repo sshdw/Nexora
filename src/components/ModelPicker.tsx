@@ -141,7 +141,16 @@ export default function ModelPicker({
           ref={layout.triggerRef}
           variant="ghost"
           size="sm"
-          className="nex-composer-model-trigger"
+          /* `shrink` is load-bearing, not decorative: the vendored button
+             base ships `shrink-0` (ui/button.tsx base string), and
+             composer.css is `layer(base)` — it cannot outrank a utility.
+             tailwind-merge evicts `shrink-0` for this later `shrink`, so on
+             a narrow card (F5 defect, frame 09-narrow-900) the trigger can
+             shrink and `.nex-composer-model-name`'s ellipsis cuts the label
+             instead of the whole row running past the card edge and pushing
+             the chevron and Send out of view. Pinned in
+             src/components/Composer.test.tsx ("lets the trigger shrink"). */
+          className="nex-composer-model-trigger shrink"
           aria-label={t("conv.modePickerAria")}
           title={selectedModel ?? t("conv.modelTagTitle")}
         >

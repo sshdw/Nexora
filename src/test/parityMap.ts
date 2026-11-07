@@ -5,8 +5,11 @@
 // exists in src/index.css. Values are the resolved literals, not names.
 // Exception (owner decision R4-11): the two `--type-family*` rows are the
 // post-rebrand values — see the inline note beside them.
+// Exception (review 06 D-01, P7): `--color-on-surface-tertiary` was
+// re-pointed achromatic — the old dark/hc literals measured OKLCH
+// c=0.0274 / 0.0208, over the c<0.02 pin — so its base literals are the
+// shipped post-fix values, not the base-commit migration values.
 export const PARITY_CASES = [
-  { old: "--nex-sys-color-accent-indicator", new: "--color-accent-indicator", dark: "#c9a66b", light: "#a9824a", hc: "#e3c07c" },
   { old: "--nex-sys-color-error", new: "--color-error", dark: "#c98375", light: "#a8503f", hc: "#e09a8b" },
   { old: "--nex-sys-color-error-container", new: "--color-error-container", dark: "rgba(201, 131, 117, 0.14)", light: "rgba(168, 80, 63, 0.1)", hc: "rgba(224, 154, 139, 0.22)" },
   { old: "--nex-sys-color-error-filled", new: "--color-error-filled", dark: "#a8503f", light: "#a8503f", hc: "#e09a8b" },
@@ -21,7 +24,8 @@ export const PARITY_CASES = [
   { old: "--nex-sys-color-on-success-container", new: "--color-on-success-container", dark: "#c3d2ba", light: "#3c5a36", hc: "#cfdcc6" },
   { old: "--nex-sys-color-on-surface", new: "--color-on-surface", dark: "#edeae7", light: "#262420", hc: "#faf7f1" },
   { old: "--nex-sys-color-on-surface-faint", new: "--color-on-surface-faint", dark: "#9f988c", light: "#665f55", hc: "#b3aca0" },
-  { old: "--nex-sys-color-on-surface-tertiary", new: "--color-on-surface-tertiary", dark: "#a89d8c", light: "#615c53", hc: "#c9c2b4" },
+  // D-01: dark/hc re-pointed achromatic (same lightness, family chroma); light was already under the pin.
+  { old: "--nex-sys-color-on-surface-tertiary", new: "--color-on-surface-tertiary", dark: "#a29e97", light: "#615c53", hc: "#c6c2bb" },
   { old: "--nex-sys-color-on-surface-variant", new: "--color-on-surface-variant", dark: "#a19d96", light: "#5f5b54", hc: "#d8d3c8" },
   { old: "--nex-sys-color-outline", new: "--color-outline", dark: "rgba(255, 255, 255, 0.1)", light: "rgba(0, 0, 0, 0.14)", hc: "#8a8478" },
   { old: "--nex-sys-color-outline-variant", new: "--color-outline-variant", dark: "rgba(255, 255, 255, 0.06)", light: "rgba(0, 0, 0, 0.08)", hc: "#57534a" },
@@ -48,7 +52,6 @@ export const PARITY_CASES = [
   { old: "--nex-sys-layout-content-max", new: "--layout-content-max", dark: "680px", light: "680px", hc: "680px" },
   { old: "--nex-sys-layout-header-height", new: "--layout-header-height", dark: "52px", light: "52px", hc: "52px" },
   { old: "--nex-sys-layout-measure-max", new: "--layout-measure-max", dark: "760px", light: "760px", hc: "760px" },
-  { old: "--nex-sys-layout-sidebar-width", new: "--layout-sidebar-width", dark: "280px", light: "280px", hc: "280px" },
   { old: "--nex-sys-nav-indicator-height", new: "--nav-indicator-height", dark: "16px", light: "16px", hc: "16px" },
   { old: "--nex-sys-nav-indicator-width", new: "--nav-indicator-width", dark: "3px", light: "3px", hc: "3px" },
   { old: "--nex-sys-scrollbar-thumb", new: "--scrollbar-thumb", dark: "rgba(255, 255, 255, 0.3)", light: "rgba(0, 0, 0, 0.45)", hc: "rgba(255, 255, 255, 0.35)" },

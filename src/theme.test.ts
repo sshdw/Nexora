@@ -4,7 +4,21 @@ import { createElement } from "react";
 import { render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import { contrastOnWash, contrastOver, contrastRatio, parseOklch, type Oklch } from "./test/color";
+import {
+  compositedSrgb,
+  contrastOnWash,
+  contrastOver,
+  contrastRatio,
+  linearToSrgb,
+  oklabChroma,
+  oklchToSrgbChannels,
+  parseHexRgba,
+  parseOklch,
+  parseRgbaFunctional,
+  srgbToLinear,
+  srgbToOklab,
+  type Oklch,
+} from "./test/color";
 import { readRepoFile } from "./test/readRepoFile";
 import { PARITY_CASES } from "./test/parityMap";
 
@@ -40,7 +54,6 @@ const cssCode = css.replace(/\/\*[\s\S]*?\*\//g, "");
  */
 const componentSources: Record<string, string> = {
   button: readRepoFile("src/components/ui/button.tsx"),
-  textType: readRepoFile("src/components/TextType.tsx"),
   input: readRepoFile("src/components/ui/input.tsx"),
   textarea: readRepoFile("src/components/ui/textarea.tsx"),
   nativeSelect: readRepoFile("src/components/ui/native-select.tsx"),
@@ -173,6 +186,14 @@ const externalVars = new Map<string, string>([
   ["--nex-sys-motion-duration-fast", "src/styles/motion.css :root"],
   ["--nex-sys-motion-duration-press", "src/styles/motion.css :root"],
   ["--nex-sys-motion-scale-press", "src/styles/motion.css :root"],
+  // P7 motion contract (OD-D9·motion): the 120ms hover clock and the
+  // spring-snap press release the button base string consumes, plus the
+  // standard easing its press-in and paint entries share. All declared
+  // in src/styles/motion.css :root (motion owns motion).
+  ["--nex-sys-motion-duration-hover", "src/styles/motion.css :root"],
+  ["--nex-sys-motion-press-release-duration", "src/styles/motion.css :root"],
+  ["--nex-sys-motion-press-release-easing", "src/styles/motion.css :root"],
+  ["--nex-sys-motion-easing-standard", "src/styles/motion.css :root"],
 ]);
 
 /**
@@ -199,8 +220,9 @@ const NON_COLOUR_VARS = new Set([
   /* #230 Phase 6: the legacy-format tokens relocated from tokens.css into
      src/index.css. They keep their legacy hex/rgba/px literals (not oklch())
      so the per-(theme, token) parity test can compare resolved literals as
-     strings. They are therefore outside the okLCH achromatic sweep. */
-  "--color-accent-indicator",
+     strings. They are outside the okLCH achromatic sweep above — but NOT
+     unswept: the D-02 composited-chroma sweep below classifies every
+     non-oklch value and holds the colour literals under the same pin. */
   "--color-error",
   "--color-error-container",
   "--color-error-filled",
@@ -240,7 +262,7 @@ const NON_COLOUR_VARS = new Set([
   "--layout-content-max",
   "--layout-header-height",
   "--layout-measure-max",
-  "--layout-sidebar-width",
+  "--layout-tab-label-max",
   "--nav-indicator-height",
   "--nav-indicator-width",
   "--nex-sys-elevation-level1",
@@ -556,7 +578,6 @@ describe("black theme — variable coverage", () => {
       "nativeSelect",
       "skeleton",
       "spinner",
-      "textType",
       "textarea",
     ]);
 
@@ -610,12 +631,6 @@ describe("black theme — variable coverage", () => {
       "text-primary-foreground",
       "text-secondary-foreground",
     ]);
-
-    // TextType is scanned too. It paints no colour of its own — its
-    // classes are layout, and the colour arrives as a `style={{ color }}`
-    // prop — so what is pinned there is that the scan SEES the file,
-    // not what it happens to find in it today.
-    expect(classTokens(componentSources.textType)).toContain("inline-block");
 
     // Same for the #230 Phase 1 skeleton: its one colour utility has to
     // route through a defined var like any other copied component, and
@@ -765,10 +780,12 @@ describe("cascade — the merged sheets load inside a layer", () => {
     // One exception, named: tw-animate-css ships `@utility` at-rules
     // and Tailwind refuses to parse one inside a layer
     // ("`@utility` cannot be nested"), so its import cannot carry
-    // `layer(...)`. Its `@utility` classes WOULD land in the
-    // utilities layer, but nothing in src/ uses an `animate-*` class,
-    // so today it contributes none — 0 `@utility` and 0 `.animate-*`
-    // in the built CSS. What it does emit is 56 `@property --tw-*`
+    // `layer(...)`. Its `@utility` classes land in the utilities
+    // layer, where they rank correctly — ui/popover.tsx uses the
+    // `animate-in`/`animate-out` data-state variants (review 06
+    // D-05 records this against the older "nothing uses animate-*"
+    // claim, which the popover invalidated). What the unlayered
+    // import position contributes beyond that is 56 `@property --tw-*`
     // registrations, unlayered at top level after the utilities
     // layer closes, and that is inert: an `@property` registers a
     // custom property and declares no rule, so there is nothing there
@@ -1201,6 +1218,172 @@ describe("black theme — direction", () => {
     expect(css).toMatch(/^:root\[data-theme="light"\] \{/m);
     expect(css).not.toMatch(/^\.dark \{/m);
     expect(css).not.toMatch(/^\.light \{/m);
+  });
+});
+
+/* ----------------------------------------------------------
+   Legacy hex tokens — the D-02 blind spot, closed (review 06).
+
+   The oklch sweep above parses only oklch() values, so the
+   relocated legacy tokens — hex/rgba literals, all parked in
+   NON_COLOUR_VARS — dodged it entirely. That was the documented
+   blind spot where legacy chroma survived: the amber set, and the
+   pre-fix `#a89d8c` tertiary text (D-01) that painted eight sheets.
+
+   This sweep closes it structurally. Every var in every theme
+   block must classify as exactly one of:
+     - oklch()            → swept by the oklch sweep above
+     - NON_COLOUR_VARS    → not a colour (fonts, radii, spaces, …)
+     - a colour literal   → swept HERE: alpha-composited over the
+                            theme canvas, then held under the same
+                            c < 0.02 pin — except the chromatic
+                            survivors, who are named and reasoned
+                            in CHROMATIC_SURVIVORS below
+     - anything else      → the suite FAILS, so a future token can
+                            never reopen the blind spot by accident
+   ---------------------------------------------------------- */
+describe("black theme — legacy hex tokens (D-02 composited-chroma sweep)", () => {
+  // The HC root carries a co-selector (`.nex-theme-high-contrast`),
+  // so the pattern spans the whole selector list — the top-level
+  // ruleBody appends the brace itself.
+  const hcBlock = ruleBody(
+    /:root\[data-theme="high-contrast"\],\s*\.nex-theme-high-contrast/,
+    "high-contrast theme block",
+  );
+
+  const themes = [
+    ["dark/default", DARK_BLOCK],
+    ["light", LIGHT_BLOCK],
+    ["high-contrast", hcBlock],
+  ] as const;
+
+  /** The theme canvas as sRGB-encoded channels: the backdrop every
+   *  token composites over. Achromatic by contract (the sweep above
+   *  pins it), so an alpha wash's chroma scales by its alpha and the
+   *  composite reads the chroma that actually paints. The HC block
+   *  only overrides — like the browser, fall back to the dark root's
+   *  canvas for anything it does not redeclare. */
+  function canvasOf(body: string): [number, number, number] {
+    const value =
+      /--background\s*:\s*([^;]+);/.exec(body)?.[1] ??
+      /--background\s*:\s*([^;]+);/.exec(DARK_BLOCK)?.[1];
+    const parsed = parseOklch(value ?? "");
+    if (!parsed) throw new Error(`--background is not oklch(): "${value ?? ""}"`);
+    return oklchToSrgbChannels(parsed);
+  }
+
+  /**
+   * The chromatic survivors, named with their reason. Everything NOT
+   * in this map must composite to c < 0.02 (THEME §1's pin).
+   *
+   * Two families only:
+   *   - the STATE signals (THEME §1: green/red/yellow exist ONLY as
+   *     state signals) — the same family the oklch sweep exempts via
+   *     `--state-ok/warn/err` + `--destructive`, in their legacy hex
+   *     spellings;
+   *   - the legacy AMBER infrastructure (06 §3), still var()-
+   *     referenced by live sheets awaiting their migration
+   *     (activityHealth, versionControl, context, onboarding,
+   *     settings, theme.css, styles.css, components.css, Dock.tsx —
+   *     comment-stripped grep, run this session). Re-pointing or
+   *     pruning it here would restyle legacy sheets beyond this
+   *     package's contract; it lands with D-11 + the re-skin PRs.
+   */
+  const CHROMATIC_SURVIVORS: ReadonlyMap<string, string> = new Map([
+    ["--color-error", "state signal (THEME §1)"],
+    ["--color-error-container", "state-signal wash (THEME §1)"],
+    ["--color-error-filled", "state signal (THEME §1)"],
+    ["--color-error-outline", "state-signal outline (THEME §1)"],
+    ["--color-on-error", "state-signal companion (hc #201004, c=0.036)"],
+    ["--color-on-error-container", "state-signal companion (THEME §1)"],
+    ["--color-success", "state signal (THEME §1)"],
+    ["--color-success-container", "state-signal wash (THEME §1)"],
+    ["--color-on-success-container", "state-signal companion (THEME §1)"],
+    [
+      "--color-secondary-container",
+      "success-family wash — the sage rgba(143,168,135,…) IS --state-ok's hex",
+    ],
+    ["--color-on-secondary-container", "success-family companion (sage tint)"],
+    ["--color-primary", "legacy amber (06 §3); live legacy consumers; pruned by D-11/re-skin"],
+    ["--color-primary-hover", "legacy amber (06 §3); as above"],
+    ["--color-primary-container", "legacy amber wash (06 §3); as above"],
+    ["--color-on-primary", "amber fill's on-colour (hc #1c1408, c=0.0253)"],
+    ["--color-on-primary-container", "legacy amber companion (06 §3)"],
+  ]);
+
+  it("sweeps every colour literal: composited chroma under the pin, survivors named", () => {
+    for (const [label, body] of themes) {
+      const canvas = canvasOf(body);
+      for (const [name, value] of definedVars(body)) {
+        if (NON_COLOUR_VARS.has(name)) continue;
+        if (parseOklch(value)) continue; // the oklch sweep above owns these
+        const rgba = parseHexRgba(value) ?? parseRgbaFunctional(value);
+        if (!rgba) {
+          throw new Error(
+            `src/index.css ${label}: ${name} = "${value}" is neither oklch(), a colour ` +
+              `literal, nor in NON_COLOUR_VARS — the D-02 blind spot is reopening`,
+          );
+        }
+        const chroma = oklabChroma(srgbToOklab(compositedSrgb(rgba, canvas)));
+        if (CHROMATIC_SURVIVORS.has(name)) continue;
+        expect(
+          chroma,
+          `${name} (${value}) composites to c=${chroma.toFixed(4)} on the ${label} canvas — ` +
+            `over the c<0.02 pin. Re-point it achromatic (D-01's pattern), or, if it is a ` +
+            `sanctioned survivor, name it in CHROMATIC_SURVIVORS with the reason`,
+        ).toBeLessThan(0.02);
+      }
+    }
+  });
+
+  it("pins the tertiary text token under the pin in all three themes (D-01)", () => {
+    // Belt around the sweep: D-01's defect lived exactly here (dark
+    // #a89d8c = c 0.0274, as text in eight sheets; hc #c9c2b4 = 0.0208).
+    // A future exempt-list edit must not be able to re-warm this name.
+    for (const [label, body] of themes) {
+      const value = definedVars(body).get("--color-on-surface-tertiary");
+      expect(value, `--color-on-surface-tertiary missing in ${label}`).toBeDefined();
+      const rgba = parseHexRgba(value!);
+      expect(rgba, `--color-on-surface-tertiary is not a hex literal in ${label}`).not.toBeNull();
+      const chroma = oklabChroma(
+        srgbToOklab(compositedSrgb(rgba!, canvasOf(body))),
+      );
+      expect(chroma, `${label} tertiary`).toBeLessThan(0.02);
+    }
+  });
+
+  it("round-trips the sRGB encoder the sweep relies on", () => {
+    // linearToSrgb used the decode-side knee (0.04045) on the linear
+    // value, so srgbToLinear(linearToSrgb(x)) was lossy for x in
+    // (0.0031308, 0.04045] — 0.0238 round-tripped to 0.0769 — and
+    // every dark-surface composite inherited the distortion. Fixed in
+    // src/test/color.ts; this pin keeps both knees honest.
+    for (let i = 0; i <= 255; i++) {
+      const x = i / 255;
+      expect(srgbToLinear(linearToSrgb(x))).toBeCloseTo(x, 12);
+    }
+  });
+
+  it("finds no colour literal in any merged sheet (06 §4 raw-values sweep)", () => {
+    // 06 §4 swept the 18 sheets + styles.css and found every hex hit
+    // inside comments. This keeps that true: tokens only, no raw
+    // hex/rgb/hsl in live declarations anywhere downstream of the
+    // theme blocks. Comments are stripped first — the sheets document
+    // issue ids (#230/#235/#220) and contrast arithmetic in prose.
+    const sheets = [
+      "src/styles.css",
+      ...readdirSync(resolve(process.cwd(), "src/styles"))
+        .filter((f) => f.endsWith(".css"))
+        .map((f) => `src/styles/${f}`)
+        .sort(),
+    ];
+    expect(sheets.length).toBe(19);
+    for (const sheet of sheets) {
+      const code = readRepoFile(sheet).replace(/\/\*[\s\S]*?\*\//g, "");
+      expect(code, `${sheet}: raw hex`).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
+      expect(code, `${sheet}: rgb()/rgba()`).not.toMatch(/\brgba?\(/);
+      expect(code, `${sheet}: hsl()/hsla()`).not.toMatch(/\bhsla?\(/);
+    }
   });
 });
 
