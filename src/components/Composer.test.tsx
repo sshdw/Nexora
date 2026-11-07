@@ -1478,9 +1478,12 @@ describe("composer sheet — theme linkage (src/styles/composer.css)", () => {
     // …and the cap has to cover the longest id the catalogs can hand the
     // composer. Read out of the Rust lists rather than restated here, so a
     // longer id added there fails THIS test instead of truncating on screen.
-    const catalogs = ["openai", "anthropic", "gemini"]
-      .map((provider) =>
-        readRepoFile(`src-tauri/src/infrastructure/providers/${provider}.rs`),
+    // AC-302 moved the OpenAI and Gemini lists into `catalog.rs` (the
+    // executor modules keep only re-exports); Anthropic still holds its
+    // list inline, so the pin reads those two files.
+    const catalogs = ["catalog", "anthropic"]
+      .map((file) =>
+        readRepoFile(`src-tauri/src/infrastructure/providers/${file}.rs`),
       )
       .join("\n");
     const ids = [
