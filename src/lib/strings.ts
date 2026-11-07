@@ -42,7 +42,6 @@ export function setCurrentLocale(locale: Locale): void {
   currentLocale = locale;
 }
 
-
 // AC-301 split: the en/ru dictionaries and the plural tables are pure data
 // and live in strings/en.ts, strings/ru.ts and strings/plural.ts. This file
 // stays the tr/tp facade — every importer keeps importing from "./strings",
@@ -65,7 +64,7 @@ type Vars = Record<string, string | number>;
 function interpolate(template: string, vars?: Vars): string {
   if (!vars) return template;
   return template.replace(/\{(\w+)\}/g, (match, name: string) =>
-    name in vars ? String(vars[name]) : match,
+    name in vars ? String(vars[name]) : match
   );
 }
 
@@ -75,7 +74,9 @@ function lookup(locale: Locale, key: StringKey): string {
   if (hit !== undefined) return hit;
   if (locale !== "en") {
     if (typeof import.meta !== "undefined" && import.meta.env?.DEV) {
-      console.warn(`[i18n] missing RU string for key "${key}" — falling back to EN`);
+      console.warn(
+        `[i18n] missing RU string for key "${key}" — falling back to EN`
+      );
     }
     return en[key];
   }
@@ -97,8 +98,13 @@ export function hasString(key: string): key is StringKey {
 }
 
 /** Plural-aware translate: picks one/few/many by locale rules, then
-* interpolates `{n}` plus extra vars. */
-export function tp(locale: Locale, key: PluralKey, count: number, vars?: Vars): string {
+ * interpolates `{n}` plus extra vars. */
+export function tp(
+  locale: Locale,
+  key: PluralKey,
+  count: number,
+  vars?: Vars
+): string {
   const table: PluralTable = locale === "ru" ? ruPlural : enPlural;
   const forms = table[key] ?? enPlural[key];
   return interpolate(forms[pluralForm(locale, count)], { ...vars, n: count });
@@ -156,17 +162,20 @@ const SHORTCUT_GROUP_KEY: Record<string, StringKey> = {
 
 const SHORTCUT_SCOPE_KEY: Record<string, StringKey> = {
   "Global (any focus, no open dialog)": "shortcuts.scopePalette",
-  "Global (typing targets included — Ctrl+Tab inserts no text)": "shortcuts.scopeTyping",
+  "Global (typing targets included — Ctrl+Tab inserts no text)":
+    "shortcuts.scopeTyping",
   "Global (typing targets included)": "shortcuts.scopeTypingShort",
-  "Global except typing targets (Alt+digits can compose characters)": "shortcuts.scopeAltDigits",
-  "Global, typing targets included (Alt+W produces no text)": "shortcuts.scopeAltNoText",
+  "Global except typing targets (Alt+digits can compose characters)":
+    "shortcuts.scopeAltDigits",
+  "Global, typing targets included (Alt+W produces no text)":
+    "shortcuts.scopeAltNoText",
   "Global, typing targets included": "shortcuts.scopeAltTyping",
   "Composer textarea": "shortcuts.scopeComposer",
   "Conversation rename input": "shortcuts.scopeRename",
   "Prompt title field": "shortcuts.scopePromptTitle",
   "Custom model id field": "shortcuts.scopeCustomModel",
   "Spend-limit field": "shortcuts.scopeSpend",
-  
+
   "Settings search field (matches present)": "shortcuts.scopeSettingsSearch",
   "Settings search field": "shortcuts.scopeSettingsSearchEsc",
   "Focused segmented group (automatic activation)": "shortcuts.scopeSegmented",
@@ -178,10 +187,15 @@ const SHORTCUT_SCOPE_KEY: Record<string, StringKey> = {
   "Command-palette results": "shortcuts.scopePaletteNav",
   "Any open dialog (except busy/in-flight)": "shortcuts.scopeDialog",
   "Any open dialog": "shortcuts.scopeDialogTrap",
-  "Focused button (native behaviour, no custom handler)": "shortcuts.scopeButton",
+  "Focused button (native behaviour, no custom handler)":
+    "shortcuts.scopeButton",
 };
 
-export function shortcutDesc(locale: Locale, id: string, fallback: string): string {
+export function shortcutDesc(
+  locale: Locale,
+  id: string,
+  fallback: string
+): string {
   const key = SHORTCUT_DESC_KEY[id];
   return key ? tr(locale, key) : fallback;
 }

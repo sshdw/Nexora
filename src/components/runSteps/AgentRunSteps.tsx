@@ -87,7 +87,10 @@ function ApprovalTimeoutNotice({
   const { locale, t } = useStrings();
   if (expired) {
     return (
-      <p className="nex-agent-approval-timeout nex-agent-approval-timeout-expired" role="status">
+      <p
+        className="nex-agent-approval-timeout nex-agent-approval-timeout-expired"
+        role="status"
+      >
         {t("agent.approvalElapsed")}
       </p>
     );
@@ -98,7 +101,9 @@ function ApprovalTimeoutNotice({
   const expiry =
     remaining > 60
       ? t("agent.approvalExpiresInMin", { n: Math.ceil(remaining / 60) })
-      : t("agent.approvalExpiresIn", { time: formatCountdown(remaining, locale) });
+      : t("agent.approvalExpiresIn", {
+          time: formatCountdown(remaining, locale),
+        });
   return (
     <p className="nex-agent-approval-timeout">
       {t("agent.approvalTimeoutNotice")}{" "}
@@ -119,7 +124,10 @@ function AgentRunSteps({
   onLoadRunSteps,
 }: AgentRunStepsProps) {
   const { locale, t } = useStrings();
-  const sorted = useMemo(() => [...run.steps].sort((a, b) => a.seq - b.seq), [run.steps]);
+  const sorted = useMemo(
+    () => [...run.steps].sort((a, b) => a.seq - b.seq),
+    [run.steps]
+  );
   const isRunning = run.status === "running";
   const isPaused = run.status === "paused";
   const isActive = isRunning || isPaused;
@@ -140,7 +148,11 @@ function AgentRunSteps({
     setNow(Date.now() / 1000);
   }, [pendingId]);
   const remaining = pendingDeadline
-    ? remainingSecs(pendingDeadline.timeout_secs, pendingDeadline.requested_at, now)
+    ? remainingSecs(
+        pendingDeadline.timeout_secs,
+        pendingDeadline.requested_at,
+        now
+      )
     : null;
   // 1s tick only under the final 60s; coarser above. The boolean bucket flips
   // the interval exactly once as the countdown crosses the minute mark.
@@ -158,7 +170,10 @@ function AgentRunSteps({
   useEffect(() => {
     if (!pendingDeadline || !reduceMotion) return;
     if (remaining === null || remaining <= 0) return;
-    const id = window.setTimeout(() => setNow(Date.now() / 1000), remaining * 1000);
+    const id = window.setTimeout(
+      () => setNow(Date.now() / 1000),
+      remaining * 1000
+    );
     return () => window.clearTimeout(id);
   }, [pendingDeadline, pendingId, reduceMotion, remaining]);
   // Client-math expiry: the window elapsed with no server confirmation. The
@@ -236,7 +251,8 @@ function AgentRunSteps({
   const changedFiles = new Set<string>();
   for (const step of sorted) {
     if (step.kind !== "tool_call") continue;
-    if (step.tool_name !== "write_file" && step.tool_name !== "edit_file") continue;
+    if (step.tool_name !== "write_file" && step.tool_name !== "edit_file")
+      continue;
     if (isFailedStatus(step)) continue;
     const target = stepTarget(step);
     if (target === null) continue;
@@ -245,9 +261,17 @@ function AgentRunSteps({
   const filesChanged = changedFiles.size;
   const finishedClean = run.status === "completed";
   const summaryParts: string[] = [];
-  if (filesChanged > 0) summaryParts.push(tp(locale, "changedFiles", filesChanged));
+  if (filesChanged > 0)
+    summaryParts.push(tp(locale, "changedFiles", filesChanged));
   if (counts.commands > 0) {
-    summaryParts.push(countedPhrase(locale, "agent.summaryCommands", counts.commands, NOUN_COMMANDS));
+    summaryParts.push(
+      countedPhrase(
+        locale,
+        "agent.summaryCommands",
+        counts.commands,
+        NOUN_COMMANDS
+      )
+    );
   }
   if (summaryParts.length === 0) {
     summaryParts.push(
@@ -257,7 +281,7 @@ function AgentRunSteps({
           : tr(locale, "agent.summaryNothing")
         : ranCalls > 0
           ? tp(locale, "toolCalls", ranCalls)
-          : tr(locale, "agent.summaryNothing"),
+          : tr(locale, "agent.summaryNothing")
     );
   } else if (ranCalls > 0) {
     summaryParts.push(tp(locale, "toolCalls", ranCalls));
@@ -282,7 +306,11 @@ function AgentRunSteps({
   // The line's own sentence. `tp(locale, "steps", n)` carries the declensed
   // noun; the duration is appended only when `finished_at` is real.
   const stepPhrase = tp(locale, "steps", lineStepCount);
-  const durationText = formatRunDuration(run.started_at, run.finished_at, locale);
+  const durationText = formatRunDuration(
+    run.started_at,
+    run.finished_at,
+    locale
+  );
   let lineText: string;
   if (isRunning && lineStepCount === 0) {
     lineText = tr(locale, "agent.runStarting");
@@ -296,7 +324,8 @@ function AgentRunSteps({
     lineText = `${statusLabel(run.status, locale)} · ${stepPhrase}`;
   }
   if (durationText !== null) lineText = `${lineText} · ${durationText}`;
-  if (cancelledNote) lineText = `${lineText} · ${tr(locale, "agent.cancelledNote")}`;
+  if (cancelledNote)
+    lineText = `${lineText} · ${tr(locale, "agent.cancelledNote")}`;
 
   // ---- THE ERROR BLOCK (SYSTEM §8) --------------------------------------
   // "Errors answer: what happened / what survived / next action."
@@ -313,11 +342,14 @@ function AgentRunSteps({
   // the run for a state that is waiting on a decision the user is being
   // offered. `error` and `spend_limit_exceeded` stopped on their own and
   // get the block.
-  const isErrorRun = run.status === "error" || run.status === "spend_limit_exceeded";
+  const isErrorRun =
+    run.status === "error" || run.status === "spend_limit_exceeded";
   const survived =
     ranCalls > 0 || sorted.length > 0
       ? [
-          ...(filesChanged > 0 ? [tp(locale, "changedFiles", filesChanged)] : []),
+          ...(filesChanged > 0
+            ? [tp(locale, "changedFiles", filesChanged)]
+            : []),
           ...(ranCalls > 0 ? [tp(locale, "toolCalls", ranCalls)] : []),
         ].join(" · ")
       : tr(locale, "agent.errorSurvivedNone");
@@ -329,7 +361,9 @@ function AgentRunSteps({
   return (
     <section
       className={
-        "nex-agent-run " + runStateClass(run.status) + (parked ? " nex-agent-run-parked" : "")
+        "nex-agent-run " +
+        runStateClass(run.status) +
+        (parked ? " nex-agent-run-parked" : "")
       }
       aria-label={t("agent.runAria", { id: run.run_id })}
     >
@@ -346,9 +380,14 @@ function AgentRunSteps({
         {sorted.length === 0 && !(foldable && !run.steps_loaded) ? (
           <span className="nex-agent-run-disclosure is-static" role="status">
             {isRunning && !parked && (
-              <span className="nex-spinner nex-agent-spinner" aria-hidden="true" />
+              <span
+                className="nex-spinner nex-agent-spinner"
+                aria-hidden="true"
+              />
             )}
-            {isPaused && <span className="nex-agent-paused-dot" aria-hidden="true" />}
+            {isPaused && (
+              <span className="nex-agent-paused-dot" aria-hidden="true" />
+            )}
             <span className="nex-agent-run-status">{lineText}</span>
           </span>
         ) : (
@@ -360,9 +399,14 @@ function AgentRunSteps({
             onClick={handleLineToggle}
           >
             {isRunning && !parked && (
-              <span className="nex-spinner nex-agent-spinner" aria-hidden="true" />
+              <span
+                className="nex-spinner nex-agent-spinner"
+                aria-hidden="true"
+              />
             )}
-            {isPaused && <span className="nex-agent-paused-dot" aria-hidden="true" />}
+            {isPaused && (
+              <span className="nex-agent-paused-dot" aria-hidden="true" />
+            )}
             <span className="nex-agent-run-status" role="status">
               {lineText}
             </span>
@@ -373,22 +417,38 @@ function AgentRunSteps({
           className="nex-agent-run-actions"
         >
           {isRunning && onPause && (
-            <M3Button variant="quiet" size="sm" onClick={() => onPause(run.run_id)}>
+            <M3Button
+              variant="quiet"
+              size="sm"
+              onClick={() => onPause(run.run_id)}
+            >
               {t("agent.pause")}
             </M3Button>
           )}
           {isPaused && onResume && (
-            <M3Button variant="secondary" size="sm" onClick={() => onResume(run.run_id)}>
+            <M3Button
+              variant="secondary"
+              size="sm"
+              onClick={() => onResume(run.run_id)}
+            >
               {t("agent.resume")}
             </M3Button>
           )}
           {isActive && (
-            <M3Button variant="quiet" size="sm" onClick={() => onCancel(run.run_id)}>
+            <M3Button
+              variant="quiet"
+              size="sm"
+              onClick={() => onCancel(run.run_id)}
+            >
               {t("agent.cancel")}
             </M3Button>
           )}
           {run.status === "budget_exhausted" && (
-            <M3Button variant="secondary" size="sm" onClick={() => onContinue(run.run_id)}>
+            <M3Button
+              variant="secondary"
+              size="sm"
+              onClick={() => onContinue(run.run_id)}
+            >
               {t("agent.continue")}
             </M3Button>
           )}
@@ -402,34 +462,48 @@ function AgentRunSteps({
       {isErrorRun && (
         <div className="nex-agent-failure" role="alert">
           <p className="nex-agent-failure-line">
-            <span className="nex-agent-failure-key">{t("agent.errorWhat")}</span>
+            <span className="nex-agent-failure-key">
+              {t("agent.errorWhat")}
+            </span>
             <span className="nex-agent-failure-value">
               {run.error ?? t("agent.errorWhatUnknown")}
             </span>
           </p>
           <p className="nex-agent-failure-line">
-            <span className="nex-agent-failure-key">{t("agent.errorSurvived")}</span>
+            <span className="nex-agent-failure-key">
+              {t("agent.errorSurvived")}
+            </span>
             <span className="nex-agent-failure-value">{survived}</span>
           </p>
           <p className="nex-agent-failure-line">
-            <span className="nex-agent-failure-key">{t("agent.errorNext")}</span>
+            <span className="nex-agent-failure-key">
+              {t("agent.errorNext")}
+            </span>
             <span className="nex-agent-failure-value">{nextAction}</span>
           </p>
         </div>
       )}
 
       {pending && (
-        <div className="nex-agent-approval nex-fade-in" role="region" aria-label={t("agent.approvalTitle")}>
+        <div
+          className="nex-agent-approval nex-fade-in"
+          role="region"
+          aria-label={t("agent.approvalTitle")}
+        >
           <div className="nex-agent-approval-text">
             <strong>{pending.name}</strong> {t("agent.approvalSuffix")}
-            <pre className="nex-agent-step-args nex-tag-mono">{pending.arguments}</pre>
+            <pre className="nex-agent-step-args nex-tag-mono">
+              {pending.arguments}
+            </pre>
           </div>
           {!approvalElapsed && (
             <div className="nex-agent-approval-actions">
               <M3Button
                 variant="primary"
                 size="sm"
-                onClick={() => onResolveApproval(run.run_id, pending.call_id, true)}
+                onClick={() =>
+                  onResolveApproval(run.run_id, pending.call_id, true)
+                }
               >
                 {t("agent.approve")}
               </M3Button>
@@ -441,19 +515,27 @@ function AgentRunSteps({
               <M3Button
                 variant="quiet"
                 size="sm"
-                onClick={() => onResolveApproval(run.run_id, pending.call_id, false)}
+                onClick={() =>
+                  onResolveApproval(run.run_id, pending.call_id, false)
+                }
               >
                 {t("agent.deny")}
               </M3Button>
             </div>
           )}
           {pendingDeadline && remaining !== null && (
-            <ApprovalTimeoutNotice remaining={remaining} expired={approvalElapsed} />
+            <ApprovalTimeoutNotice
+              remaining={remaining}
+              expired={approvalElapsed}
+            />
           )}
         </div>
       )}
       {!pending && run.status === "cancelled" && elapsedSeen && (
-        <p className="nex-agent-approval-timeout nex-agent-approval-timeout-confirmed" role="status">
+        <p
+          className="nex-agent-approval-timeout nex-agent-approval-timeout-confirmed"
+          role="status"
+        >
           {t("agent.approvalExpired")}
         </p>
       )}
@@ -462,7 +544,10 @@ function AgentRunSteps({
         <div className="nex-agent-run-detail">
           <span className="nex-agent-run-summary">{summaryText}</span>
           <span className="nex-agent-run-meta">
-            <span className="nex-tag nex-tag-mono" title={t("agent.modelTitle")}>
+            <span
+              className="nex-tag nex-tag-mono"
+              title={t("agent.modelTitle")}
+            >
               {run.model || "agent"}
             </span>
             <span className="nex-agent-run-id">run {run.run_id}</span>
@@ -478,7 +563,11 @@ function AgentRunSteps({
               folded sequence out of sight and out of the a11y tree. The id
               is what the line's `aria-controls` points at, and is qualified
               by run id so two runs in one thread never collide. */}
-          <div className="nex-agent-timeline" id={timelineId} hidden={collapsed}>
+          <div
+            className="nex-agent-timeline"
+            id={timelineId}
+            hidden={collapsed}
+          >
             <AgentSpine live={spineLive} />
             <div className="nex-agent-steps">
               {groupSteps(sorted).map((item, idx, all) => {
@@ -491,11 +580,14 @@ function AgentRunSteps({
                   : isFailedStatus(item);
                 const slotClass =
                   "nex-agent-step-slot" +
-                  (isLast && isActive && !protectedRow ? " nex-agent-step-slot-current" : "") +
+                  (isLast && isActive && !protectedRow
+                    ? " nex-agent-step-slot-current"
+                    : "") +
                   // The same predicate the fold gate and the fade ladder read:
                   // a denied or cancelled call keeps the failure tone too.
                   (failed ? " nex-agent-step-slot-failed" : "");
-                const fade = isLast || protectedRow ? "" : fadeClass(all.length - 1 - idx);
+                const fade =
+                  isLast || protectedRow ? "" : fadeClass(all.length - 1 - idx);
                 // #230 P3: "NO model monologue". A `model_turn`'s
                 // observation is the model's own narration, and the old
                 // rule auto-opened the current row — so on a live run the
@@ -510,7 +602,10 @@ function AgentRunSteps({
                   (isGroup(item) ? true : item.kind !== "model_turn");
                 if (!isGroup(item)) {
                   return (
-                    <div key={`${run.run_id}-${item.seq}`} className={slotClass}>
+                    <div
+                      key={`${run.run_id}-${item.seq}`}
+                      className={slotClass}
+                    >
                       <StepSection
                         step={item}
                         defaultOpen={autoOpen}
@@ -527,7 +622,10 @@ function AgentRunSteps({
                 // row, so the extra disclosure never wraps a single item.
                 if (item.steps.length === 1) {
                   return (
-                    <div key={`${run.run_id}-${item.steps[0].seq}`} className={slotClass}>
+                    <div
+                      key={`${run.run_id}-${item.steps[0].seq}`}
+                      className={slotClass}
+                    >
                       <StepSection
                         step={item.steps[0]}
                         defaultOpen={autoOpen}

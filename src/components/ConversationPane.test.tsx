@@ -85,19 +85,25 @@ describe("thread boundary (ADD-05)", () => {
   it("degrades a crashing conversation subtree to the strip inside the pane, header intact", () => {
     // The boundary and React report the crash on console.error; the spy
     // keeps the output clean and pins that the crash is logged.
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
 
     render(pane());
 
     // The thread slot degraded to the boundary strip with its Retry action.
-    expect(screen.getByRole("alert")).toHaveTextContent(tr("en", "err.boundaryBody"));
-    expect(screen.getByRole("button", { name: tr("en", "common.retry") })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      tr("en", "err.boundaryBody")
+    );
+    expect(
+      screen.getByRole("button", { name: tr("en", "common.retry") })
+    ).toBeInTheDocument();
 
     // The pane shell survived: title header and the export action are still
     // mounted — a thread crash is contained to the pane body.
     expect(screen.getByRole("heading", { name: "Ops" })).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: tr("en", "app.exportConversation") }),
+      screen.getByRole("button", { name: tr("en", "app.exportConversation") })
     ).toBeInTheDocument();
     expect(consoleError).toHaveBeenCalled();
   });

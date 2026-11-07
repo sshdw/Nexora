@@ -67,7 +67,12 @@ const HIDDEN_DESTINATION_IDS: readonly string[] = [
 // The five destinations #219 keeps reachable: Chat (the conversation list +
 // its palette entry), Version Control, Tasks, Settings, and Search (which
 // lives in the sidebar, not the palette).
-const KEPT_GO_IDS: readonly string[] = ["go.conversations", "go.vcs", "go.tasks", "go.settings"];
+const KEPT_GO_IDS: readonly string[] = [
+  "go.conversations",
+  "go.vcs",
+  "go.tasks",
+  "go.settings",
+];
 
 // Words a user types for a trimmed destination that no kept destination
 // answers to. Empirically these return zero results against the trimmed
@@ -208,7 +213,11 @@ describe("command palette nav trim (#219)", () => {
         ...command.keywords.map((k) => k.toLowerCase()),
       ];
       for (const word of FORBIDDEN_TOPIC_WORDS) {
-        expect({ id: command.id, word, hit: haystack.some((t) => t.includes(word)) }).toEqual({
+        expect({
+          id: command.id,
+          word,
+          hit: haystack.some((t) => t.includes(word)),
+        }).toEqual({
           id: command.id,
           word,
           hit: false,
@@ -249,7 +258,7 @@ describe("command palette nav trim (#219)", () => {
     try {
       buildCommands(depsStub(), "ru");
       const fallbacks = warn.mock.calls.filter((call) =>
-        String(call[0]).includes("[i18n] missing RU string"),
+        String(call[0]).includes("[i18n] missing RU string")
       );
       expect(fallbacks).toEqual([]);
     } finally {
@@ -260,7 +269,9 @@ describe("command palette nav trim (#219)", () => {
   it("still scores typo-tolerant queries for the kept commands", () => {
     const commands = buildCommands(depsStub(), "en");
     const byId = new Map(commands.map((command) => [command.id, command]));
-    expect(scoreCommand("commmit", byId.get("vcs.commit-focus")!)).not.toBeNull();
+    expect(
+      scoreCommand("commmit", byId.get("vcs.commit-focus")!)
+    ).not.toBeNull();
     expect(scoreCommand("setings", byId.get("go.settings")!)).not.toBeNull();
     expect(scoreCommand("tas", byId.get("go.tasks")!)).not.toBeNull();
     expect(scoreCommand("verson control", byId.get("go.vcs")!)).not.toBeNull();

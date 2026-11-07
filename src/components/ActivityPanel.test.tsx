@@ -32,7 +32,8 @@ const { mockUseActivity, setQueueState } = vi.hoisted(() => {
   }));
   return {
     mockUseActivity,
-    setQueueState: (patch: Partial<typeof state>) => Object.assign(state, patch),
+    setQueueState: (patch: Partial<typeof state>) =>
+      Object.assign(state, patch),
   };
 });
 
@@ -70,14 +71,20 @@ function renderPanel() {
   const onOpenConversation = vi.fn();
   const view = render(
     <LocaleProvider>
-      <ActivityPanel onOpenTasks={onOpenTasks} onOpenConversation={onOpenConversation} />
-    </LocaleProvider>,
+      <ActivityPanel
+        onOpenTasks={onOpenTasks}
+        onOpenConversation={onOpenConversation}
+      />
+    </LocaleProvider>
   );
   const rerender = () =>
     view.rerender(
       <LocaleProvider>
-        <ActivityPanel onOpenTasks={onOpenTasks} onOpenConversation={onOpenConversation} />
-      </LocaleProvider>,
+        <ActivityPanel
+          onOpenTasks={onOpenTasks}
+          onOpenConversation={onOpenConversation}
+        />
+      </LocaleProvider>
     );
   return { ...view, rerender, onOpenTasks, onOpenConversation };
 }
@@ -100,7 +107,9 @@ describe("activity panel — fetch states", () => {
     await screen.findByText("Nothing running");
     expect(screen.queryByRole("alert")).toBeNull();
     // The footer to the queue's real home is always present.
-    expect(screen.getByRole("button", { name: "Open tasks" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Open tasks" })
+    ).toBeInTheDocument();
   });
 
   it("surfaces a failed fetch in words and still renders the empty state", async () => {
@@ -116,7 +125,14 @@ describe("activity panel — grouping", () => {
   it("groups running, queued and settled rows under their own headings", async () => {
     setQueueState({
       queue: [
-        task({ id: 1, title: "Running one", status: "running", conversation_id: 10, current_step: 2, total_steps: 5 }),
+        task({
+          id: 1,
+          title: "Running one",
+          status: "running",
+          conversation_id: 10,
+          current_step: 2,
+          total_steps: 5,
+        }),
         task({ id: 2, title: "Queued one", status: "pending" }),
         task({ id: 3, title: "Done one", status: "completed" }),
         task({ id: 4, title: "Failed one", status: "failed" }),
@@ -126,7 +142,7 @@ describe("activity panel — grouping", () => {
     await screen.findByText("Running one");
 
     const groups = [...container.querySelectorAll(".nex-dock-panel-group")].map(
-      (node) => node.textContent,
+      (node) => node.textContent
     );
     expect(groups).toEqual(["Running", "Queued", "Recent"]);
     // A running row's meta is the real step count, not a fabricated bar.
@@ -139,7 +155,7 @@ describe("activity panel — grouping", () => {
   it("caps the settled list at four rows", async () => {
     setQueueState({
       queue: Array.from({ length: 6 }, (_, i) =>
-        task({ id: i + 1, title: `Settled ${i + 1}`, status: "completed" }),
+        task({ id: i + 1, title: `Settled ${i + 1}`, status: "completed" })
       ),
     });
     renderPanel();
@@ -152,7 +168,14 @@ describe("activity panel — grouping", () => {
 describe("activity panel — rows", () => {
   it("opens the conversation a task belongs to", async () => {
     setQueueState({
-      queue: [task({ id: 1, title: "Linked task", status: "running", conversation_id: 42 })],
+      queue: [
+        task({
+          id: 1,
+          title: "Linked task",
+          status: "running",
+          conversation_id: 42,
+        }),
+      ],
     });
     const { onOpenConversation } = renderPanel();
     fireEvent.click(await screen.findByRole("button", { name: /Linked task/ }));
@@ -161,14 +184,23 @@ describe("activity panel — rows", () => {
 
   it("renders a task with no conversation as a statement, not a dead button", async () => {
     setQueueState({
-      queue: [task({ id: 1, title: "Standalone task", status: "running", conversation_id: null })],
+      queue: [
+        task({
+          id: 1,
+          title: "Standalone task",
+          status: "running",
+          conversation_id: null,
+        }),
+      ],
     });
     const { container } = renderPanel();
     await screen.findByText("Standalone task");
-    expect(screen.queryByRole("button", { name: /Standalone task/ })).toBeNull();
-    expect(container.querySelector(".nex-sessions-row.is-static")).toHaveTextContent(
-      "Standalone task",
-    );
+    expect(
+      screen.queryByRole("button", { name: /Standalone task/ })
+    ).toBeNull();
+    expect(
+      container.querySelector(".nex-sessions-row.is-static")
+    ).toHaveTextContent("Standalone task");
   });
 
   it("hands the full surface to the Tasks overlay", async () => {

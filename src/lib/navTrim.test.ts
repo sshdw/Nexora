@@ -101,7 +101,9 @@ describe("hidden panels stay on disk (#219)", () => {
       "releaseOpen",
     ]) {
       expect(router).toContain(`${flag}: boolean;`);
-      expect(router).toContain(`const [${flag}, set${flag[0].toUpperCase()}${flag.slice(1)}]`);
+      expect(router).toContain(
+        `const [${flag}, set${flag[0].toUpperCase()}${flag.slice(1)}]`
+      );
     }
     for (const opener of [
       "openLibrary",
@@ -144,11 +146,9 @@ describe("hidden panels stay on disk (#219)", () => {
     // migrated the rail group off `.nex-sidebar-footer` onto its
     // `data-slot` hook, so the slice anchor moves with it; the order
     // contract below is unchanged.
-    const rail = sidebar.slice(
-      sidebar.indexOf('data-slot="sidebar-footer"'),
-    );
-    const order = ["VersionControlEntry", "TaskEntry", "SettingsEntry"].map((name) =>
-      rail.indexOf(`<${name}`),
+    const rail = sidebar.slice(sidebar.indexOf('data-slot="sidebar-footer"'));
+    const order = ["VersionControlEntry", "TaskEntry", "SettingsEntry"].map(
+      (name) => rail.indexOf(`<${name}`)
     );
     expect(order.every((index) => index > -1)).toBe(true);
     expect(order).toEqual([...order].sort((a, b) => a - b));
@@ -159,7 +159,7 @@ describe("hidden panels stay on disk (#219)", () => {
     const commands = source("commands.ts");
     const depsBlock = commands.slice(
       commands.indexOf("export interface PaletteDeps"),
-      commands.indexOf("export function buildCommands"),
+      commands.indexOf("export function buildCommands")
     );
     for (const opener of [
       "openLibrary",
@@ -182,7 +182,13 @@ describe("hidden panels stay on disk (#219)", () => {
     const goEntries = SHORTCUTS.filter((entry) => entry.group === "Go");
     expect(goEntries.map((entry) => entry.id)).toEqual(["go.tasks"]);
     expect(COMBO_TASKS_OPEN.key).toBe("t");
-    for (const id of ["go.activity", "go.health", "go.audit", "go.gh", "go.terminal"]) {
+    for (const id of [
+      "go.activity",
+      "go.health",
+      "go.audit",
+      "go.gh",
+      "go.terminal",
+    ]) {
       expect(SHORTCUTS.some((entry) => entry.id === id)).toBe(false);
     }
   });
@@ -231,7 +237,7 @@ describe("hidden panels stay on disk (#219)", () => {
   // blanket-skipped.
   describe("DOC_FEATURES paletteId honesty", () => {
     const registered = new Set(
-      buildCommands(DEPS_STUB, "en").map((command) => command.id),
+      buildCommands(DEPS_STUB, "en").map((command) => command.id)
     );
     const isExempt = (paletteId: string): boolean =>
       HIDDEN_PANEL_DOC_IDS.includes(paletteId);
@@ -255,7 +261,7 @@ describe("hidden panels stay on disk (#219)", () => {
       // must cover every unregistered row — so neither side can drift
       // without this gate noticing.
       const exemptRows = DOC_FEATURES.filter((f) => isExempt(f.paletteId)).map(
-        (f) => f.paletteId,
+        (f) => f.paletteId
       );
       expect([...exemptRows].sort()).toEqual([
         "go.activity",
@@ -274,10 +280,12 @@ describe("hidden panels stay on disk (#219)", () => {
       }
       // Every unregistered row in the content model is on the allowlist:
       // no unclassified drift is tolerated.
-      const unregistered = DOC_FEATURES.filter((f) => !registered.has(f.paletteId)).map(
-        (f) => f.paletteId,
+      const unregistered = DOC_FEATURES.filter(
+        (f) => !registered.has(f.paletteId)
+      ).map((f) => f.paletteId);
+      expect([...unregistered].sort()).toEqual(
+        [...HIDDEN_PANEL_DOC_IDS].sort()
       );
-      expect([...unregistered].sort()).toEqual([...HIDDEN_PANEL_DOC_IDS].sort());
     });
   });
 });

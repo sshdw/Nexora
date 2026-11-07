@@ -46,9 +46,9 @@
    (`--muted`, `--primary`, `--ring`), so the control
    re-themes from src/index.css with no edit here.
    ============================================================ */
-import * as React from "react"
-import { cn } from "@/lib/utils"
-import { Slider as SliderPrimitive } from "radix-ui"
+import * as React from "react";
+import { cn } from "@/lib/utils";
+import { Slider as SliderPrimitive } from "radix-ui";
 
 function Slider({
   className,
@@ -65,7 +65,7 @@ function Slider({
    *  on a `<span>` that is not the control and is never announced
    *  as one. Radix puts the thumb's own `aria-label` in the right
    *  place; this wrapper renders the thumbs, so it takes them here. */
-  thumbProps?: React.ComponentProps<typeof SliderPrimitive.Thumb>
+  thumbProps?: React.ComponentProps<typeof SliderPrimitive.Thumb>;
 }) {
   // Radix renders one thumb per value. The recipe's fallback —
   // `[min, max]` for a single-thumb slider — would give a
@@ -79,7 +79,7 @@ function Slider({
           ? defaultValue
           : [min],
     [value, defaultValue, min]
-  )
+  );
 
   return (
     <SliderPrimitive.Root
@@ -112,7 +112,7 @@ function Slider({
         />
       ))}
     </SliderPrimitive.Root>
-  )
+  );
 }
 
-export { Slider }
+export { Slider };

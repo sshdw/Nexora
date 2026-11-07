@@ -38,7 +38,11 @@ interface BubblePosition {
   left: number;
 }
 
-export default function Tooltip({ label, children, portal = false }: TooltipProps) {
+export default function Tooltip({
+  label,
+  children,
+  portal = false,
+}: TooltipProps) {
   const anchorRef = useRef<HTMLSpanElement>(null);
   const [position, setPosition] = useState<BubblePosition | null>(null);
 
@@ -65,7 +69,7 @@ export default function Tooltip({ label, children, portal = false }: TooltipProp
             "pointer-events-none absolute top-full left-1/2 z-50 mt-1.5 -translate-x-1/2",
             "rounded-md border border-border bg-popover px-2 py-1 text-xs whitespace-nowrap text-popover-foreground shadow-md",
             "opacity-0 transition-opacity duration-150",
-            "group-hover/tooltip:opacity-100 group-focus-within/tooltip:opacity-100",
+            "group-hover/tooltip:opacity-100 group-focus-within/tooltip:opacity-100"
           )}
           aria-hidden="true"
         >
@@ -91,14 +95,18 @@ export default function Tooltip({ label, children, portal = false }: TooltipProp
           className={cn(
             "pointer-events-none fixed z-50 -translate-x-full",
             "rounded-md border border-border bg-popover px-2 py-1 text-xs whitespace-nowrap text-popover-foreground shadow-md",
-            position === null ? "hidden" : "block",
+            position === null ? "hidden" : "block"
           )}
-          style={position === null ? undefined : { top: position.top, left: position.left }}
+          style={
+            position === null
+              ? undefined
+              : { top: position.top, left: position.left }
+          }
           aria-hidden="true"
         >
           {label}
         </span>,
-        document.body,
+        document.body
       )}
     </span>
   );

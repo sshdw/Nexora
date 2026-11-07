@@ -19,11 +19,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import {
-  filterCommands,
-  getMru,
-  type PaletteCommand,
-} from "../lib/commands";
+import { filterCommands, getMru, type PaletteCommand } from "../lib/commands";
 import ModalShell from "./Modal";
 import { useStrings } from "../lib/useLocale";
 
@@ -36,7 +32,11 @@ export interface CommandPaletteProps {
   onRun: (command: PaletteCommand) => void;
 }
 
-export default function CommandPalette({ commands, onClose, onRun }: CommandPaletteProps) {
+export default function CommandPalette({
+  commands,
+  onClose,
+  onRun,
+}: CommandPaletteProps) {
   const { t } = useStrings();
   const [query, setQuery] = useState("");
   const [highlight, setHighlight] = useState(0);
@@ -48,7 +48,7 @@ export default function CommandPalette({ commands, onClose, onRun }: CommandPale
   const mru = useMemo(() => getMru(), []);
   const results = useMemo(
     () => filterCommands(query, commands, mru),
-    [query, commands, mru],
+    [query, commands, mru]
   );
 
   // Clamp the highlight as the result set shrinks/grows.
@@ -86,7 +86,7 @@ export default function CommandPalette({ commands, onClose, onRun }: CommandPale
       case "ArrowDown":
         event.preventDefault();
         setHighlight((prev) =>
-          results.length === 0 ? 0 : (prev + 1) % results.length,
+          results.length === 0 ? 0 : (prev + 1) % results.length
         );
         break;
       case "ArrowUp":
@@ -94,7 +94,7 @@ export default function CommandPalette({ commands, onClose, onRun }: CommandPale
         setHighlight((prev) =>
           results.length === 0
             ? 0
-            : (prev - 1 + results.length) % results.length,
+            : (prev - 1 + results.length) % results.length
         );
         break;
       case "Home":

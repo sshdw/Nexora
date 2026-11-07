@@ -76,7 +76,7 @@ export interface GhStore {
   /** Create the prefilled fix task; the caller builds the strings. */
   createFixTask: (
     runId: number,
-    task: { title: string; description: string; steps: string[] },
+    task: { title: string; description: string; steps: string[] }
   ) => Promise<void>;
 }
 
@@ -253,7 +253,7 @@ export function useGh(): GhStore {
         });
       }
     },
-    [jobLogs, logsLoading],
+    [jobLogs, logsLoading]
   );
 
   /** Create the prefilled fix task (the fix loop entry). Creating the task
@@ -262,7 +262,7 @@ export function useGh(): GhStore {
   const createFixTask = useCallback(
     async (
       runId: number,
-      task: { title: string; description: string; steps: string[] },
+      task: { title: string; description: string; steps: string[] }
     ) => {
       if (fixBusy !== null) return;
       setFixBusy(runId);
@@ -276,7 +276,7 @@ export function useGh(): GhStore {
           null,
           null,
           task.steps,
-          task.steps.length,
+          task.steps.length
         );
         setFixCreated(id);
       } catch {
@@ -285,7 +285,7 @@ export function useGh(): GhStore {
         setFixBusy(null);
       }
     },
-    [fixBusy],
+    [fixBusy]
   );
 
   const selectItem = useCallback((number_: number) => {

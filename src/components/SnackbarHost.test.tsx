@@ -6,7 +6,13 @@
 //! auto-dismisses. Fake timers bound the waits — presence/absence only, no
 //! elapsed-time assertions (policy).
 
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LocaleProvider } from "../lib/useLocale";
@@ -44,7 +50,7 @@ function renderHost(onAction: () => void = vi.fn()) {
       <SnackbarProvider>
         <ShowButton onAction={onAction} />
       </SnackbarProvider>
-    </LocaleProvider>,
+    </LocaleProvider>
   );
 }
 
@@ -58,9 +64,7 @@ describe("SnackbarProvider", () => {
     renderHost();
     fireEvent.click(screen.getByRole("button", { name: "show" }));
     expect(screen.getByRole("status")).toHaveTextContent("“Report” deleted.");
-    expect(
-      screen.getByRole("button", { name: "Undo" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
   });
 
   it("runs the action then dismisses on action press", () => {
@@ -101,7 +105,7 @@ describe("SnackbarProvider", () => {
         <SnackbarProvider>
           <ShowTwo />
         </SnackbarProvider>
-      </LocaleProvider>,
+      </LocaleProvider>
     );
     fireEvent.click(screen.getByRole("button", { name: "first-btn" }));
     expect(screen.getByRole("status")).toHaveTextContent("first");
@@ -115,7 +119,7 @@ describe("SnackbarProvider", () => {
       return null;
     }
     expect(() => render(<Lonely />)).toThrow(
-      "useSnackbar must be used inside SnackbarProvider",
+      "useSnackbar must be used inside SnackbarProvider"
     );
   });
 });

@@ -62,7 +62,7 @@ export function workspaceFolderName(root: string): string {
  *  A short name stays whole (no empty tail element is rendered). */
 export function splitForMiddleEllipsis(
   name: string,
-  tailLength = 10,
+  tailLength = 10
 ): [head: string, tail: string] {
   const chars = [...name];
   if (chars.length <= tailLength * 2) return [name, ""];
@@ -80,7 +80,7 @@ export function recentWithoutRegistered(
   recent: readonly string[],
   roots: readonly string[],
   root: string | null,
-  limit = 5,
+  limit = 5
 ): string[] {
   const registered = new Set(roots);
   return recent
@@ -99,7 +99,9 @@ function FolderName({ path }: { path: string }) {
   );
 }
 
-export default function WorkspaceContextRow({ workspace }: WorkspaceContextRowProps) {
+export default function WorkspaceContextRow({
+  workspace,
+}: WorkspaceContextRowProps) {
   const { t } = useStrings();
   const {
     root,
@@ -159,7 +161,9 @@ export default function WorkspaceContextRow({ workspace }: WorkspaceContextRowPr
         >
           <FolderIcon size={16} aria-hidden="true" />
           {root === null ? (
-            <span className="nex-composer-context-none">{t("workspace.none")}</span>
+            <span className="nex-composer-context-none">
+              {t("workspace.none")}
+            </span>
           ) : (
             <FolderName path={root} />
           )}
@@ -190,7 +194,9 @@ export default function WorkspaceContextRow({ workspace }: WorkspaceContextRowPr
           <PopoverTitle>{t("workspace.menuTitle")}</PopoverTitle>
         </PopoverHeader>
 
-        {loading && <p className="nex-composer-model-empty">{t("common.loading")}</p>}
+        {loading && (
+          <p className="nex-composer-model-empty">{t("common.loading")}</p>
+        )}
         {error !== null && (
           <p className="nex-composer-model-empty" role="alert">
             {error.message}
@@ -199,9 +205,15 @@ export default function WorkspaceContextRow({ workspace }: WorkspaceContextRowPr
 
         {root !== null && (
           <div className="nex-workspace-menu-current">
-            <CheckIcon size={16} className="nex-workspace-menu-check" aria-hidden="true" />
+            <CheckIcon
+              size={16}
+              className="nex-workspace-menu-check"
+              aria-hidden="true"
+            />
             <span className="nex-workspace-menu-text">
-              <span className="nex-workspace-menu-name">{workspaceFolderName(root)}</span>
+              <span className="nex-workspace-menu-name">
+                {workspaceFolderName(root)}
+              </span>
               <span className="nex-workspace-menu-path" title={root}>
                 {root}
               </span>
@@ -210,7 +222,10 @@ export default function WorkspaceContextRow({ workspace }: WorkspaceContextRowPr
         )}
 
         {recentOthers.length > 0 && (
-          <section className="nex-workspace-menu-section" aria-label={t("workspace.recent")}>
+          <section
+            className="nex-workspace-menu-section"
+            aria-label={t("workspace.recent")}
+          >
             <p className="nex-workspace-menu-group">{t("workspace.recent")}</p>
             <ul className="nex-workspace-menu-list">
               {recentOthers.map((path) => (
@@ -237,7 +252,10 @@ export default function WorkspaceContextRow({ workspace }: WorkspaceContextRowPr
         )}
 
         {registryOthers.length > 0 && (
-          <section className="nex-workspace-menu-section" aria-label={t("workspace.roots")}>
+          <section
+            className="nex-workspace-menu-section"
+            aria-label={t("workspace.roots")}
+          >
             <p className="nex-workspace-menu-group">{t("workspace.roots")}</p>
             <ul className="nex-workspace-menu-list">
               {registryOthers.map((path) => (

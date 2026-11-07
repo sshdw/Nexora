@@ -44,7 +44,9 @@ export interface AttachmentsStore {
   refresh: () => Promise<void>;
 }
 
-export function useAttachments(conversationId: number | null): AttachmentsStore {
+export function useAttachments(
+  conversationId: number | null
+): AttachmentsStore {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [error, setError] = useState<CommandError | null>(null);
   const [busy, setBusy] = useState<boolean>(false);
@@ -84,7 +86,10 @@ export function useAttachments(conversationId: number | null): AttachmentsStore 
     let selection: string | string[] | null = null;
     try {
       // Native OS file picker; local files only, no upload path exists.
-      selection = await open({ multiple: true, title: tr(getLocale(), "conv.attachDialogTitle") });
+      selection = await open({
+        multiple: true,
+        title: tr(getLocale(), "conv.attachDialogTitle"),
+      });
     } catch (e) {
       setError(toCommandError(e));
       return;
@@ -100,7 +105,12 @@ export function useAttachments(conversationId: number | null): AttachmentsStore 
         // SEC-01: the size is derived backend-side from the picked file's own
         // metadata and arrives in the persisted row (reloaded via refresh()
         // below) — the webview never stats the file.
-        await attachFile(conversationId, fileName, filePath, guessMimeType(fileName));
+        await attachFile(
+          conversationId,
+          fileName,
+          filePath,
+          guessMimeType(fileName)
+        );
       }
       // The backend is the source of truth: reload the whole draft list so
       // the visible order/ids match the persisted rows.
@@ -127,7 +137,7 @@ export function useAttachments(conversationId: number | null): AttachmentsStore 
         setBusy(false);
       }
     },
-    [refresh],
+    [refresh]
   );
 
   return { attachments, error, busy, pickAndAttach, remove, refresh };
@@ -147,12 +157,19 @@ function toCommandError(error: unknown): CommandError {
     typeof (error as CommandError).kind === "string" &&
     typeof (error as CommandError).message === "string"
   ) {
-    return { kind: (error as CommandError).kind, message: (error as CommandError).message };
+    return {
+      kind: (error as CommandError).kind,
+      message: (error as CommandError).message,
+    };
   }
   if (typeof error === "string") return { kind: "unknown", message: error };
-  if (error instanceof Error) return { kind: "unknown", message: error.message };
+  if (error instanceof Error)
+    return { kind: "unknown", message: error.message };
   // Accepted: the fallback message is built in the locale active when the
   // error fired (transient — cleared on the next retry, so it never pins
   // the UI to a stale language).
-  return { kind: "unknown", message: tr(getLocale(), "common.backendUnreachable") };
+  return {
+    kind: "unknown",
+    message: tr(getLocale(), "common.backendUnreachable"),
+  };
 }

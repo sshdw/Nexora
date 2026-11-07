@@ -403,7 +403,8 @@
   border-radius: var(--radius-2xl);
   background: var(--card);
   border: 1px solid var(--border);
-  transition: border-color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard);
+  transition: border-color var(--nex-sys-motion-duration-fast)
+    var(--nex-sys-motion-easing-standard);
 }
 
 /* Focus-within lifts the seam to the light hairline — a tone
@@ -622,8 +623,11 @@
   padding: 4px 10px;
   font-size: var(--type-size-body-small);
   color: var(--muted-foreground);
-  transition: background-color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard),
-    color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard);
+  transition:
+    background-color var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard),
+    color var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard);
 }
 
 /* Hover is for the segment the pill is NOT under: painting `--accent`
@@ -969,8 +973,11 @@
   border-radius: var(--radius-md);
   background: var(--muted);
   border-color: var(--border);
-  transition: background-color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard),
-    border-color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard);
+  transition:
+    background-color var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard),
+    border-color var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard);
 }
 
 .nex-composer-attachments .nex-chip:hover {
@@ -1024,8 +1031,11 @@
   padding: 4px 10px;
   font-size: var(--type-size-body-small);
   color: var(--muted-foreground);
-  transition: background-color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard),
-    color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard);
+  transition:
+    background-color var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard),
+    color var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard);
 }
 
 .nex-composer-autonomy.nex-seg button:hover:not(.is-active) {

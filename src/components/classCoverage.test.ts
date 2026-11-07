@@ -47,7 +47,9 @@ function classNames(css: string): string[] {
     .replace(/^[ \t]*\/\/.*$/gm, "");
   return [
     ...new Set(
-      [...uncommented.matchAll(/\.([_a-zA-Z][\w-]*)/g)].map((match) => match[1] ?? ""),
+      [...uncommented.matchAll(/\.([_a-zA-Z][\w-]*)/g)].map(
+        (match) => match[1] ?? ""
+      )
     ),
   ].sort();
 }
@@ -105,12 +107,13 @@ function emittedClasses(source: string): string[] {
     const lists = [
       body,
       ...[...body.matchAll(/(["'`])((?:\\.|(?!\1)[\s\S])*?)\1/g)].map(
-        (literal) => literal[2] ?? "",
+        (literal) => literal[2] ?? ""
       ),
     ];
     for (const list of lists) {
       for (const token of list.split(/\s+/)) {
-        if (/^(?:nex|is)-[a-z0-9]+(?:-[a-z0-9]+)*$/.test(token)) tokens.add(token);
+        if (/^(?:nex|is)-[a-z0-9]+(?:-[a-z0-9]+)*$/.test(token))
+          tokens.add(token);
       }
     }
   }
@@ -126,15 +129,15 @@ function stripComments(source: string): string {
 }
 
 function componentFiles(dir: string): string[] {
-  return readdirSync(resolve(process.cwd(), dir), { withFileTypes: true }).flatMap(
-    (entry) => {
-      const path = `${dir}/${entry.name}`;
-      if (entry.isDirectory()) return componentFiles(path);
-      return entry.name.endsWith(".tsx") && !entry.name.endsWith(".test.tsx")
-        ? [path]
-        : [];
-    },
-  );
+  return readdirSync(resolve(process.cwd(), dir), {
+    withFileTypes: true,
+  }).flatMap((entry) => {
+    const path = `${dir}/${entry.name}`;
+    if (entry.isDirectory()) return componentFiles(path);
+    return entry.name.endsWith(".tsx") && !entry.name.endsWith(".test.tsx")
+      ? [path]
+      : [];
+  });
 }
 
 /** Classes that are markers, not paint. Each one must say why it has no rule
@@ -180,10 +183,14 @@ describe("class coverage — used → defined", () => {
   it("extracts class tokens from literals and braced expressions", () => {
     // Anti-vacuity: an extractor that quietly returns nothing would make the
     // whole-tree pin pass on an empty set forever.
-    expect(emittedClasses('className="nex-a nex-b"')).toEqual(["nex-a", "nex-b"]);
-    expect(
-      emittedClasses('className={cn("nex-a", ok && "nex-b")}'),
-    ).toEqual(["nex-a", "nex-b"]);
+    expect(emittedClasses('className="nex-a nex-b"')).toEqual([
+      "nex-a",
+      "nex-b",
+    ]);
+    expect(emittedClasses('className={cn("nex-a", ok && "nex-b")}')).toEqual([
+      "nex-a",
+      "nex-b",
+    ]);
     expect(emittedClasses("className={`nex-a ${fade}`}")).toEqual(["nex-a"]);
     expect(emittedClasses('className={ok ? "nex-a" : "nex-b"}')).toEqual([
       "nex-a",
@@ -191,7 +198,7 @@ describe("class coverage — used → defined", () => {
     ]);
     // A braced expression's inner brace must not cut the scan short.
     expect(
-      emittedClasses('className={ok ? cn("nex-a", { "nex-b": on }) : "nex-c"}'),
+      emittedClasses('className={ok ? cn("nex-a", { "nex-b": on }) : "nex-c"}')
     ).toEqual(["nex-a", "nex-b", "nex-c"]);
     // `id`, `htmlFor` and prose are not class emissions.
     expect(emittedClasses('<input id="nex-task-title" />')).toEqual([]);
@@ -223,18 +230,21 @@ describe("class coverage — used → defined", () => {
       expect(reason.length, `${hook} needs a reason`).toBeGreaterThan(20);
       // A hook that gains a rule must leave the allowlist, so the exemption
       // can never quietly cover a class that is styled after all.
-      expect(DEFINED.has(hook), `${hook} now has a rule — drop it from the allowlist`).toBe(
-        false,
-      );
+      expect(
+        DEFINED.has(hook),
+        `${hook} now has a rule — drop it from the allowlist`
+      ).toBe(false);
     }
   });
 
   it("keeps the shared panel empty-state line styled (the regression pin)", () => {
     // The exact class Round 5 deleted. Eight panels render it; it is not part
     // of the run card and must keep its own rule.
-    expect(EMITTED.get("nex-agent-empty")?.length ?? 0).toBeGreaterThanOrEqual(8);
+    expect(EMITTED.get("nex-agent-empty")?.length ?? 0).toBeGreaterThanOrEqual(
+      8
+    );
     const rule = /\.nex-agent-empty\s*\{([\s\S]*?)\}/.exec(
-      CSS.replace(/\/\*[\s\S]*?\*\//g, ""),
+      CSS.replace(/\/\*[\s\S]*?\*\//g, "")
     )?.[1];
     expect(rule, ".nex-agent-empty has no rule").toBeDefined();
     expect(rule).toMatch(/font-size:\s*var\(--type-size-body-small\)/);

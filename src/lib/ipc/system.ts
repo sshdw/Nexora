@@ -4,7 +4,11 @@
 //! controls (commands/privacy.rs).
 
 import { invoke } from "./core";
-import { OP_CREATE_ISSUE, OP_PRIVACY_WIPE, requestConfirmation } from "./confirmations";
+import {
+  OP_CREATE_ISSUE,
+  OP_PRIVACY_WIPE,
+  requestConfirmation,
+} from "./confirmations";
 import type { GhRateLimit } from "./github";
 
 // ---- Diagnostics / update check / pre-update snapshot ---------------------
@@ -152,7 +156,7 @@ export async function createIssueForFinding(
   title: string,
   source: IssueSource,
   location?: string | null,
-  detail?: string | null,
+  detail?: string | null
 ): Promise<CreatedIssue> {
   const confirmationId = await requestConfirmation("release", OP_CREATE_ISSUE);
   return invoke<CreatedIssue>("create_issue_for_finding", {

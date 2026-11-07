@@ -37,37 +37,39 @@ const { mockInvoke, failNext, state } = vi.hoisted(() => {
       },
     ],
   };
-  const mockInvoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
-    void args;
-    if (failNext.command === command) {
-      failNext.command = "";
-      throw { kind: "db", message: "backend refused" };
+  const mockInvoke = vi.fn(
+    async (command: string, args?: Record<string, unknown>) => {
+      void args;
+      if (failNext.command === command) {
+        failNext.command = "";
+        throw { kind: "db", message: "backend refused" };
+      }
+      switch (command) {
+        case "list_conversations":
+          return JSON.parse(JSON.stringify(state.conversations));
+        case "create_conversation":
+          state.conversations.unshift({
+            id: 3,
+            title: (args as { title: string }).title,
+            status: "active" as const,
+            created_at: 1000,
+            updated_at: 1000,
+            workspace_root: null,
+          });
+          return 3;
+        case "rename_conversation":
+        case "archive_conversation":
+        case "restore_conversation":
+          return null;
+        case "request_confirmation":
+          return "confirm-id-1";
+        case "delete_conversation_permanently":
+          return null;
+        default:
+          throw new Error(`unexpected command ${command}`);
+      }
     }
-    switch (command) {
-      case "list_conversations":
-        return JSON.parse(JSON.stringify(state.conversations));
-      case "create_conversation":
-        state.conversations.unshift({
-          id: 3,
-          title: (args as { title: string }).title,
-          status: "active" as const,
-          created_at: 1000,
-          updated_at: 1000,
-          workspace_root: null,
-        });
-        return 3;
-      case "rename_conversation":
-      case "archive_conversation":
-      case "restore_conversation":
-        return null;
-      case "request_confirmation":
-        return "confirm-id-1";
-      case "delete_conversation_permanently":
-        return null;
-      default:
-        throw new Error(`unexpected command ${command}`);
-    }
-  });
+  );
   return { mockInvoke, failNext, state };
 });
 
@@ -84,7 +86,9 @@ describe("useConversations — load", () => {
     const { result } = renderHook(() => useConversations());
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(mockInvoke).toHaveBeenCalledWith("list_conversations");
-    expect(result.current.conversations.map((conversation) => conversation.id)).toEqual([2, 1]);
+    expect(
+      result.current.conversations.map((conversation) => conversation.id)
+    ).toEqual([2, 1]);
     expect(result.current.error).toBeNull();
   });
 
@@ -93,7 +97,10 @@ describe("useConversations — load", () => {
     const { result } = renderHook(() => useConversations());
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.conversations).toEqual([]);
-    expect(result.current.error).toEqual({ kind: "db", message: "backend refused" });
+    expect(result.current.error).toEqual({
+      kind: "db",
+      message: "backend refused",
+    });
   });
 });
 
@@ -111,7 +118,11 @@ describe("useConversations — create and manage", () => {
       title: "New Conversation",
     });
     // The list refreshed from the backend after the write.
-    expect(mockInvoke.mock.calls.filter(([command]) => command === "list_conversations")).toHaveLength(2);
+    expect(
+      mockInvoke.mock.calls.filter(
+        ([command]) => command === "list_conversations"
+      )
+    ).toHaveLength(2);
     expect(result.current.conversations[0].id).toBe(3);
     expect(result.current.creating).toBe(false);
   });
@@ -125,7 +136,10 @@ describe("useConversations — create and manage", () => {
       ok = await result.current.rename(2, "renamed");
     });
     expect(ok).toBe(true);
-    expect(mockInvoke).toHaveBeenCalledWith("rename_conversation", { id: 2, title: "renamed" });
+    expect(mockInvoke).toHaveBeenCalledWith("rename_conversation", {
+      id: 2,
+      title: "renamed",
+    });
 
     await act(async () => {
       ok = await result.current.archive(2);
@@ -153,7 +167,10 @@ describe("useConversations — create and manage", () => {
       ok = await result.current.rename(2, "nope");
     });
     expect(ok).toBe(false);
-    expect(result.current.error).toEqual({ kind: "db", message: "backend refused" });
+    expect(result.current.error).toEqual({
+      kind: "db",
+      message: "backend refused",
+    });
     expect(result.current.working).toBe(false);
   });
 });
@@ -162,7 +179,9 @@ describe("useConversations — permanent delete (native confirm gate)", () => {
   it("mints the row-bound confirmation, deletes, and reloads", async () => {
     const { result } = renderHook(() => useConversations());
     await waitFor(() => expect(result.current.loading).toBe(false));
-    const lists = mockInvoke.mock.calls.filter(([command]) => command === "list_conversations").length;
+    const lists = mockInvoke.mock.calls.filter(
+      ([command]) => command === "list_conversations"
+    ).length;
 
     let ok = false;
     await act(async () => {
@@ -180,7 +199,9 @@ describe("useConversations — permanent delete (native confirm gate)", () => {
       confirmationId: "confirm-id-1",
     });
     expect(
-      mockInvoke.mock.calls.filter(([command]) => command === "list_conversations").length,
+      mockInvoke.mock.calls.filter(
+        ([command]) => command === "list_conversations"
+      ).length
     ).toBeGreaterThan(lists);
   });
 
@@ -201,7 +222,9 @@ describe("useConversations — permanent delete (native confirm gate)", () => {
     });
     expect(ok).toBe(false);
     expect(
-      mockInvoke.mock.calls.some(([command]) => command === "delete_conversation_permanently"),
+      mockInvoke.mock.calls.some(
+        ([command]) => command === "delete_conversation_permanently"
+      )
     ).toBe(false);
     expect(result.current.error?.kind).toBe("confirmationRequired");
   });

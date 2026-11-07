@@ -9,7 +9,14 @@
 //! equality and attribute absence — which is what decides whether a
 //! model-authored payload can reach a sink (script, anchor href, img src).
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { LocaleProvider } from "../lib/useLocale";
@@ -19,7 +26,7 @@ function md(content: string) {
   return render(
     <LocaleProvider>
       <MessageMarkdown messageId={1} content={content} />
-    </LocaleProvider>,
+    </LocaleProvider>
   );
 }
 
@@ -27,7 +34,9 @@ function md(content: string) {
  *  `navigator.clipboard.writeText` (AuditPanel.tsx:299-310), so the stub
  *  replaces exactly that seam. */
 function stubClipboard(): ReturnType<typeof vi.fn> {
-  const writeText = vi.fn<(text: string) => Promise<void>>(() => Promise.resolve());
+  const writeText = vi.fn<(text: string) => Promise<void>>(() =>
+    Promise.resolve()
+  );
   Object.defineProperty(window.navigator, "clipboard", {
     value: { writeText },
     configurable: true,
@@ -55,7 +64,7 @@ describe("markdown structure (GFM)", () => {
         "",
         "- [x] done",
         "- [ ] todo",
-      ].join("\n"),
+      ].join("\n")
     );
 
     const lists = screen.getAllByRole("list");
@@ -78,14 +87,20 @@ describe("markdown structure (GFM)", () => {
     const table = screen.getByRole("table");
     const rows = within(table).getAllByRole("row");
     expect(rows).toHaveLength(2);
-    expect(within(rows[1]!).getByRole("cell", { name: "mode" })).toBeInTheDocument();
-    expect(within(rows[1]!).getByRole("cell", { name: "chat" })).toBeInTheDocument();
+    expect(
+      within(rows[1]!).getByRole("cell", { name: "mode" })
+    ).toBeInTheDocument();
+    expect(
+      within(rows[1]!).getByRole("cell", { name: "chat" })
+    ).toBeInTheDocument();
   });
 
   it("renders strikethrough, blockquote and a thematic break", () => {
     const { container } = md("~~gone~~\n\n> quoted line\n\n---");
     expect(container.querySelector("del")?.textContent).toBe("gone");
-    expect(container.querySelector("blockquote")?.textContent).toContain("quoted line");
+    expect(container.querySelector("blockquote")?.textContent).toContain(
+      "quoted line"
+    );
     expect(container.querySelector("hr")).not.toBeNull();
   });
 
@@ -103,7 +118,9 @@ describe("markdown structure (GFM)", () => {
   it("renders an UNTERMINATED fence (mid-stream reply) as a code block, not prose", () => {
     // §3.1 streaming pin: a half-streamed fence must never flash as prose.
     const { container } = md("```ts\nconst x = 1;");
-    expect(container.querySelector("pre code")?.textContent).toContain("const x = 1;");
+    expect(container.querySelector("pre code")?.textContent).toContain(
+      "const x = 1;"
+    );
     expect(container.querySelector("p")).toBeNull();
   });
 
@@ -116,15 +133,20 @@ describe("markdown structure (GFM)", () => {
     const code = container.querySelector("pre code");
     expect(code?.textContent?.length).toBe(32_768);
     expect(code?.textContent).not.toContain("hidden");
-    expect(container.querySelector(".nex-md-code-note")?.textContent).toContain("32,768");
+    expect(container.querySelector(".nex-md-code-note")?.textContent).toContain(
+      "32,768"
+    );
   });
 
   it("re-renders when the message changes and memoizes on (messageId, content)", () => {
     // Direct pin on the memo comparator (§3.1): same id+content skips,
     // either changing re-renders. The export is a memo object, so its
     // comparator is callable as data.
-    const compare = (MessageMarkdown as unknown as { compare?: (a: unknown, b: unknown) => boolean })
-      .compare;
+    const compare = (
+      MessageMarkdown as unknown as {
+        compare?: (a: unknown, b: unknown) => boolean;
+      }
+    ).compare;
     expect(typeof compare).toBe("function");
     const a = { messageId: 7, content: "x" };
     expect(compare?.(a, { messageId: 7, content: "x" })).toBe(true);
@@ -153,7 +175,7 @@ describe("raw HTML in model output is text (§4.2 req 2)", () => {
 
   it("passes no markup through for iframe/embed/object payloads", () => {
     const { container } = md(
-      "<iframe src=\"https://evil.example\"></iframe><object data=\"x\"></object><embed src=\"x\">",
+      '<iframe src="https://evil.example"></iframe><object data="x"></object><embed src="x">'
     );
     expect(container.querySelector("iframe, object, embed")).toBeNull();
     expect(container.querySelector("[src]")).toBeNull();
@@ -175,20 +197,28 @@ describe("links are copy-only (§4.2 req 3, owner default for 2.0.0)", () => {
     // The copy affordance copies the destination verbatim — the user sees
     // and controls exactly what goes to the clipboard.
     fireEvent.click(screen.getByRole("button", { name: "Copy link" }));
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith("javascript:alert(1)"));
-    expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(writeText).toHaveBeenCalledWith("javascript:alert(1)")
+    );
+    expect(
+      await screen.findByRole("button", { name: "Copied" })
+    ).toBeInTheDocument();
   });
 
   it("renders [x](data:text/html,...) copy-only with the scheme visible", () => {
     const { container } = md("[x](data:text/html;base64,PHNjcmlwdD4)");
     expect(container.querySelector("a")).toBeNull();
     expect(container.querySelector("[href]")).toBeNull();
-    expect(container.textContent).toContain("data:text/html;base64,PHNjcmlwdD4");
+    expect(container.textContent).toContain(
+      "data:text/html;base64,PHNjcmlwdD4"
+    );
   });
 
   it("renders an https link copy-only: label emphasized, destination visible, copy works", async () => {
     const writeText = stubClipboard();
-    const { container } = md("read the [docs](https://example.com/a?b=1) first");
+    const { container } = md(
+      "read the [docs](https://example.com/a?b=1) first"
+    );
 
     expect(container.querySelector("a")).toBeNull();
     expect(container.querySelector("[href]")).toBeNull();
@@ -196,22 +226,30 @@ describe("links are copy-only (§4.2 req 3, owner default for 2.0.0)", () => {
     expect(container.textContent).toContain("https://example.com/a?b=1");
 
     fireEvent.click(screen.getByRole("button", { name: "Copy link" }));
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith("https://example.com/a?b=1"));
+    await waitFor(() =>
+      expect(writeText).toHaveBeenCalledWith("https://example.com/a?b=1")
+    );
   });
 
   it("shows a GFM autolink once (label IS the destination) and still copy-only", () => {
     const { container } = md("see https://example.com today");
     expect(container.querySelector("a")).toBeNull();
     // The URL appears exactly once — no duplicated label/destination pair.
-    expect(container.textContent?.split("https://example.com").length - 1).toBe(1);
-    expect(screen.getByRole("button", { name: "Copy link" })).toBeInTheDocument();
+    expect(container.textContent?.split("https://example.com").length - 1).toBe(
+      1
+    );
+    expect(
+      screen.getByRole("button", { name: "Copy link" })
+    ).toBeInTheDocument();
   });
 
   it("falls back to the catalog copy-failure string when the clipboard rejects", async () => {
     stubClipboard().mockRejectedValue(new Error("denied"));
     md("[x](https://example.com)");
     fireEvent.click(screen.getByRole("button", { name: "Copy link" }));
-    expect(await screen.findByText("Copy failed — select the text manually.")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Copy failed — select the text manually.")
+    ).toBeInTheDocument();
   });
 });
 
@@ -247,7 +285,9 @@ describe("images are app-source-only (§4.2 req 5)", () => {
     const { container } = md("![](https://cdn.example.com/pic.png)");
     expect(container.querySelector("img")).toBeNull();
     expect(container.querySelector("[src]")).toBeNull();
-    expect(container.textContent).not.toContain("https://cdn.example.com/pic.png");
+    expect(container.textContent).not.toContain(
+      "https://cdn.example.com/pic.png"
+    );
   });
 });
 
@@ -255,6 +295,8 @@ describe("locale (EN+RU catalog)", () => {
   it("renders the copy affordance in the active locale", () => {
     window.localStorage.setItem("nexora.locale", "ru");
     md("[x](https://example.com)");
-    expect(screen.getByRole("button", { name: "Скопировать ссылку" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Скопировать ссылку" })
+    ).toBeInTheDocument();
   });
 });

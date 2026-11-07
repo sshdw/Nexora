@@ -125,9 +125,10 @@ function parseSpendLimit(value: string | null): number | null {
   return parsed;
 }
 
-export function useActivity(
-  options?: { taskQueueOnly?: boolean; activeConversationId?: number | null },
-): ActivityStore {
+export function useActivity(options?: {
+  taskQueueOnly?: boolean;
+  activeConversationId?: number | null;
+}): ActivityStore {
   const taskQueueOnly = options?.taskQueueOnly === true;
   const activeConversationId = options?.activeConversationId ?? null;
   const [feed, setFeed] = useState<ActivityFeed | null>(null);
@@ -165,7 +166,9 @@ export function useActivity(
   const [privacyError, setPrivacyError] = useState<string | null>(null);
 
   // Dock task queue (one-shot, not subscribed — G-23).
-  const [queue, setQueue] = useState<import("./tauri").AgentTask[] | null>(null);
+  const [queue, setQueue] = useState<import("./tauri").AgentTask[] | null>(
+    null
+  );
   const [queueError, setQueueError] = useState<string | null>(null);
 
   const loadPrivacy = useCallback(async () => {
@@ -216,7 +219,7 @@ export function useActivity(
           } catch {
             return null;
           }
-        }),
+        })
       );
       const next: Record<string, ProviderHealth> = {};
       defs.forEach((def, index) => {
@@ -286,7 +289,7 @@ export function useActivity(
         if (!cancelled) {
           setQueue([]);
           setQueueError(
-            e instanceof Error ? e.message : tr(getLocale(), "task.unavailable"),
+            e instanceof Error ? e.message : tr(getLocale(), "task.unavailable")
           );
         }
       });

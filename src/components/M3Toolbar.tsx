@@ -68,9 +68,8 @@ export default function M3Toolbar({
         ? document.activeElement
         : null;
     if (autoFocus) {
-      const first = barRef.current?.querySelector<HTMLElement>(
-        FOCUSABLE_SELECTOR,
-      );
+      const first =
+        barRef.current?.querySelector<HTMLElement>(FOCUSABLE_SELECTOR);
       first?.focus();
     }
     return () => {
@@ -101,7 +100,7 @@ export default function M3Toolbar({
       return;
     }
     const items = Array.from(
-      bar.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
+      bar.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)
     );
     if (items.length === 0) return;
     const active = document.activeElement;
@@ -134,8 +133,9 @@ export default function M3Toolbar({
       style={style}
       onKeyDown={handleKeyDown}
       className={
-        (floating ? "nex-m3-toolbar-floating nex-pop-enter" : "nex-m3-toolbar-docked") +
-        (className ? " " + className : "")
+        (floating
+          ? "nex-m3-toolbar-floating nex-pop-enter"
+          : "nex-m3-toolbar-docked") + (className ? " " + className : "")
       }
     >
       {children}

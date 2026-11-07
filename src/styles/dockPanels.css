@@ -284,8 +284,16 @@
   /* Stops are alpha-only (match-source masks read the alpha channel), so the
      achromatic keywords carry no theme colour and the height is the space
      token. The -webkit- alias keeps older WebView2 builds fading. */
-  -webkit-mask-image: linear-gradient(to bottom, black calc(100% - var(--space-xl)), transparent); /* design-lint-disable gradient-hero — mask erases, it never paints */
-  mask-image: linear-gradient(to bottom, black calc(100% - var(--space-xl)), transparent);
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    black calc(100% - var(--space-xl)),
+    transparent
+  ); /* design-lint-disable gradient-hero — mask erases, it never paints */
+  mask-image: linear-gradient(
+    to bottom,
+    black calc(100% - var(--space-xl)),
+    transparent
+  );
 }
 
 /* ---- Session row actions (R6-06) ----
@@ -317,8 +325,11 @@
   background: var(--popover);
   opacity: 0;
   pointer-events: none;
-  transition: opacity var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard),
-    background-color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard);
+  transition:
+    opacity var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard),
+    background-color var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard);
 }
 
 /* Three 28px buttons at zero gap: the plate claims ~88px of a 260px

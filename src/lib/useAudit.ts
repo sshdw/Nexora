@@ -58,7 +58,7 @@ export interface AuditStore {
     pathRaw: string,
     startRaw: string,
     endRaw: string,
-    confirmed: boolean,
+    confirmed: boolean
   ) => Promise<void>;
   /** Route a caller-side failure (the shared issue-filing dialog) into the
    * same scan-level error slot this store renders. */
@@ -89,7 +89,9 @@ export function useAudit(): AuditStore {
   const [depsRunning, setDepsRunning] = useState(false);
   const [depsError, setDepsError] = useState<string | null>(null);
   const [applyRunning, setApplyRunning] = useState(false);
-  const [applyResult, setApplyResult] = useState<RefactorApplyResult | null>(null);
+  const [applyResult, setApplyResult] = useState<RefactorApplyResult | null>(
+    null
+  );
   const [applyError, setApplyError] = useState<string | null>(null);
 
   // Synchronous in-flight guard: rapid Run presses collapse into the active
@@ -151,7 +153,12 @@ export function useAudit(): AuditStore {
   // validation mirrors the backend guards (non-empty path, positive integer
   // range, explicit tick); the backend re-verifies everything before writing.
   const applyRemoval = useCallback(
-    async (pathRaw: string, startRaw: string, endRaw: string, confirmed: boolean) => {
+    async (
+      pathRaw: string,
+      startRaw: string,
+      endRaw: string,
+      confirmed: boolean
+    ) => {
       if (applyRunning) return;
       const path = pathRaw.trim();
       const start = Number(startRaw);
@@ -174,14 +181,16 @@ export function useAudit(): AuditStore {
       setApplyError(null);
       setApplyResult(null);
       try {
-        setApplyResult(await refactorApply(path, start, end, "dead-code-candidate"));
+        setApplyResult(
+          await refactorApply(path, start, end, "dead-code-candidate")
+        );
       } catch (err) {
         setApplyError(toMessage(err));
       } finally {
         setApplyRunning(false);
       }
     },
-    [applyRunning],
+    [applyRunning]
   );
 
   return {

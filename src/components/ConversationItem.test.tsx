@@ -9,7 +9,13 @@
 //! stays on the native OS prompt (NEX-SEC-004) and is untouched here. No
 //! timing assertions (policy).
 
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Conversation } from "../lib/tauri";
@@ -58,7 +64,7 @@ function renderItem(props: {
           />
         </ul>
       </SnackbarProvider>
-    </LocaleProvider>,
+    </LocaleProvider>
   );
 }
 
@@ -68,14 +74,14 @@ describe("ConversationItem archive undo", () => {
     const onRestore = vi.fn(async () => true);
     renderItem({ onArchive, onRestore });
     fireEvent.click(
-      screen.getByRole("button", { name: "Archive conversation" }),
+      screen.getByRole("button", { name: "Archive conversation" })
     );
     // The success snackbar is gated on the threaded archive result.
     await screen.findByRole("status");
     expect(onArchive).toHaveBeenCalledTimes(1);
     expect(onArchive).toHaveBeenCalledWith(3);
     expect(screen.getByRole("status")).toHaveTextContent(
-      "“Trip plan” archived.",
+      "“Trip plan” archived."
     );
     fireEvent.click(screen.getByRole("button", { name: "Undo" }));
     await act(async () => {});
@@ -89,7 +95,7 @@ describe("ConversationItem archive undo", () => {
     const onRestore = vi.fn(async () => true);
     renderItem({ onArchive, onRestore });
     fireEvent.click(
-      screen.getByRole("button", { name: "Archive conversation" }),
+      screen.getByRole("button", { name: "Archive conversation" })
     );
     await act(async () => {});
     expect(onArchive).toHaveBeenCalledTimes(1);
@@ -104,7 +110,7 @@ describe("ConversationItem archive undo", () => {
     const onRestore = vi.fn(async () => false);
     renderItem({ onArchive, onRestore });
     fireEvent.click(
-      screen.getByRole("button", { name: "Archive conversation" }),
+      screen.getByRole("button", { name: "Archive conversation" })
     );
     await screen.findByRole("status");
     fireEvent.click(screen.getByRole("button", { name: "Undo" }));

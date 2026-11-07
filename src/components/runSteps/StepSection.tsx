@@ -23,7 +23,8 @@ import {
 function TerminalView({ step }: { step: AgentStepView }) {
   const { t } = useStrings();
   const args = parseToolArgs(step.arguments);
-  const command = typeof args?.command === "string" ? (args.command as string) : "";
+  const command =
+    typeof args?.command === "string" ? (args.command as string) : "";
   const cwd = typeof args?.cwd === "string" ? (args.cwd as string) : null;
   const observation = step.observation ?? "";
   const sep = "--- stderr ---\n";
@@ -32,14 +33,22 @@ function TerminalView({ step }: { step: AgentStepView }) {
   const stderr = sepIdx >= 0 ? observation.slice(sepIdx + sep.length) : null;
   const hasStderr = stderr !== null && stderr.length > 0;
   return (
-    <div className="nex-agent-terminal" role="group" aria-label={t("agent.terminalOut")}>
+    <div
+      className="nex-agent-terminal"
+      role="group"
+      aria-label={t("agent.terminalOut")}
+    >
       {command && (
         <div className="nex-agent-terminal-header">
           <span className="nex-agent-terminal-prompt" aria-hidden="true">
             $
           </span>
-          <span className="nex-agent-terminal-command nex-tag-mono">{command}</span>
-          {cwd && <span className="nex-agent-terminal-cwd nex-tag-mono">({cwd})</span>}
+          <span className="nex-agent-terminal-command nex-tag-mono">
+            {command}
+          </span>
+          {cwd && (
+            <span className="nex-agent-terminal-cwd nex-tag-mono">({cwd})</span>
+          )}
         </div>
       )}
       <div className="nex-agent-terminal-body">
@@ -52,7 +61,9 @@ function TerminalView({ step }: { step: AgentStepView }) {
             <pre className="nex-agent-terminal-stderr">{stderr}</pre>
           </>
         )}
-        {!stdout && !hasStderr && <span className="nex-agent-step-empty">{t("agent.noOutput")}</span>}
+        {!stdout && !hasStderr && (
+          <span className="nex-agent-step-empty">{t("agent.noOutput")}</span>
+        )}
       </div>
     </div>
   );
@@ -73,25 +84,36 @@ function TerminalView({ step }: { step: AgentStepView }) {
  *  can never claim "+12 −3" over a diff that shows none. */
 export function DiffView({ observation }: { observation: string | null }) {
   const { locale, t } = useStrings();
-  if (!observation) return <span className="nex-agent-step-empty">{t("agent.noChanges")}</span>;
+  if (!observation)
+    return <span className="nex-agent-step-empty">{t("agent.noChanges")}</span>;
   const lines = observation.split("\n");
   const counts = diffCounts(observation);
   if (counts === null) {
     // Headers or context only: there is no change to show, and saying so
     // is more honest than framing an empty box as a diff.
     return (
-      <span className="nex-agent-step-empty" aria-label={t("agent.noChangesAria")}>
+      <span
+        className="nex-agent-step-empty"
+        aria-label={t("agent.noChangesAria")}
+      >
         {t("agent.noChanges")}
       </span>
     );
   }
   return (
-    <div className="nex-agent-diff" role="group" aria-label={t("agent.fileDiff")}>
+    <div
+      className="nex-agent-diff"
+      role="group"
+      aria-label={t("agent.fileDiff")}
+    >
       {/* The compact action line MAP row 9 asks for, carrying the counts as
           OUTLINE badges rather than filled pills. The label says what the
           numbers are, so the badges are never the only carrier. */}
       <div className="nex-agent-diff-header-line">
-        <span className="nex-agent-diff-counts" title={t("agent.diffCountsTitle", counts)}>
+        <span
+          className="nex-agent-diff-counts"
+          title={t("agent.diffCountsTitle", counts)}
+        >
           <span className="nex-agent-diff-count nex-agent-diff-count-added">
             +{counts.added}
           </span>
@@ -193,7 +215,9 @@ export function StepLine({
   const action = (() => {
     if (isCall) return toolVerb(step, locale);
     if (step.kind === "approval") {
-      return tr(locale, "agent.kindApproval", { tool: step.tool_name ?? "" }).trim();
+      return tr(locale, "agent.kindApproval", {
+        tool: step.tool_name ?? "",
+      }).trim();
     }
     return tr(locale, "agent.kindModelTurn");
   })();
@@ -201,25 +225,30 @@ export function StepLine({
   // one has to spend it on its OWN NAME, because the verb alone ("Called")
   // names nothing — the reader must be able to see which tool ran. Its
   // arguments, including any path, are on the expanded row either way.
-  const identity =
-    !isCall
-      ? null
-      : known
-        ? target
-        : step.tool_name !== null
-          ? { text: step.tool_name, title: tr(locale, "agent.toolArgs") }
-          : null;
+  const identity = !isCall
+    ? null
+    : known
+      ? target
+      : step.tool_name !== null
+        ? { text: step.tool_name, title: tr(locale, "agent.toolArgs") }
+        : null;
   // Only genuine file targets get the directory/name split. Commands,
   // queries and unknown-tool names render whole as the file-name slot so a
   // non-path value is never forced through a path split. `identity.text` is
   // the single source of truth for both parts.
   const isFilePath = step.tool_name !== null && FILE_TOOLS.has(step.tool_name);
-  const { dir, name } = isFilePath && identity !== null ? splitPathTarget(identity.text) : { dir: "", name: "" };
+  const { dir, name } =
+    isFilePath && identity !== null
+      ? splitPathTarget(identity.text)
+      : { dir: "", name: "" };
   return (
     <>
       <span className="nex-agent-step-action">{action}</span>
       {identity !== null && (
-        <span className="nex-agent-step-target nex-tag-mono" title={identity.title}>
+        <span
+          className="nex-agent-step-target nex-tag-mono"
+          title={identity.title}
+        >
           {isFilePath ? (
             <>
               <span className="nex-agent-step-target-dir">{dir}</span>
@@ -273,7 +302,8 @@ export const StepSection = memo(function StepSection({
   // render tree stays bounded no matter how long the run is.
   const expanded = step.observation_full !== null;
   const displayObservation = step.observation_full ?? step.observation ?? "";
-  const isTerminal = step.kind === "tool_call" && step.tool_name === "execute_command";
+  const isTerminal =
+    step.kind === "tool_call" && step.tool_name === "execute_command";
   // Both file WRITERS produce a diff, not just `write_file`: an edit that
   // changed nothing still shows "No changes needed", which is the honest
   // read for a tool whose whole job is to change a file.
@@ -316,13 +346,23 @@ export const StepSection = memo(function StepSection({
           ) : (
             <>
               {step.arguments && (
-                <pre className="nex-agent-step-args nex-tag-mono" role="group" aria-label={t("agent.toolArgs")}>
+                <pre
+                  className="nex-agent-step-args nex-tag-mono"
+                  role="group"
+                  aria-label={t("agent.toolArgs")}
+                >
                   {step.arguments}
                 </pre>
               )}
-              {displayObservation && <pre className="nex-agent-step-observation">{displayObservation}</pre>}
+              {displayObservation && (
+                <pre className="nex-agent-step-observation">
+                  {displayObservation}
+                </pre>
+              )}
               {step.kind === "model_turn" && !displayObservation && (
-                <span className="nex-agent-step-empty">{t("agent.noContent")}</span>
+                <span className="nex-agent-step-empty">
+                  {t("agent.noContent")}
+                </span>
               )}
             </>
           )}
@@ -339,7 +379,11 @@ export const StepSection = memo(function StepSection({
                     bytes: step.observation_len ?? 0,
                     unit:
                       locale === "ru"
-                        ? ruPlural(step.observation_len ?? 0, ["байт", "байта", "байтов"])
+                        ? ruPlural(step.observation_len ?? 0, [
+                            "байт",
+                            "байта",
+                            "байтов",
+                          ])
                         : (step.observation_len ?? 0) === 1
                           ? "byte"
                           : "bytes",

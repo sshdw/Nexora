@@ -40,8 +40,13 @@ export interface TerminalRunResult {
  * `cwd` is workspace-relative (`null` = workspace root); absolute escape is
  * refused backend-side, and a refused `cwd` does not consume the id.
  */
-export async function terminalRun(command: string, cwd: string | null): Promise<TerminalRunResult> {
-  const confirmationId = await requestConfirmation("terminal", command, { cwd });
+export async function terminalRun(
+  command: string,
+  cwd: string | null
+): Promise<TerminalRunResult> {
+  const confirmationId = await requestConfirmation("terminal", command, {
+    cwd,
+  });
   return invoke<TerminalRunResult>("terminal_run", {
     command,
     cwd,
@@ -74,7 +79,7 @@ export function terminalExplain(
   output: string,
   exitContext: string | null,
   provider: string,
-  model: string,
+  model: string
 ): Promise<ErrorExplanation> {
   return invoke<ErrorExplanation>("terminal_explain", {
     output,

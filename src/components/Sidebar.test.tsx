@@ -65,7 +65,7 @@ function renderSidebar(navigation: Navigation) {
       <NavigationProvider value={navigation}>
         <Sidebar />
       </NavigationProvider>
-    </LocaleProvider>,
+    </LocaleProvider>
   );
 }
 
@@ -80,22 +80,27 @@ function conversation(id: number, title: string): Conversation {
   };
 }
 
-const RAIL_ENTRIES: ReadonlyArray<readonly [string, (navigation: Navigation) => (...args: never[]) => void]> = [
+const RAIL_ENTRIES: ReadonlyArray<
+  readonly [string, (navigation: Navigation) => (...args: never[]) => void]
+> = [
   ["Version Control", (navigation) => navigation.onOpenVersionControl],
   ["Tasks", (navigation) => navigation.onOpenTasks],
   ["Settings", (navigation) => navigation.onOpenSettings],
 ];
 
 describe("Sidebar rail entries", () => {
-  it.each(RAIL_ENTRIES)("%s invokes its opener with no arguments", (name, pick) => {
-    const navigation = navigationStub();
-    renderSidebar(navigation);
-    fireEvent.click(screen.getByRole("button", { name }));
-    const opener = pick(navigation) as ReturnType<typeof vi.fn>;
-    expect(opener).toHaveBeenCalledTimes(1);
-    // The native click event must not leak into the opener's parameters.
-    expect(opener.mock.calls[0]).toEqual([]);
-  });
+  it.each(RAIL_ENTRIES)(
+    "%s invokes its opener with no arguments",
+    (name, pick) => {
+      const navigation = navigationStub();
+      renderSidebar(navigation);
+      fireEvent.click(screen.getByRole("button", { name }));
+      const opener = pick(navigation) as ReturnType<typeof vi.fn>;
+      expect(opener).toHaveBeenCalledTimes(1);
+      // The native click event must not leak into the opener's parameters.
+      expect(opener.mock.calls[0]).toEqual([]);
+    }
+  );
 });
 
 // The EN catalog value each trimmed control carried, so these assertions
@@ -144,7 +149,7 @@ describe("Sidebar nav trim (#219)", () => {
     const rail = document.querySelector('[data-slot="sidebar-footer"]');
     expect(rail).not.toBeNull();
     const railLabels = Array.from(
-      rail!.querySelectorAll<HTMLButtonElement>("button"),
+      rail!.querySelectorAll<HTMLButtonElement>("button")
     ).map((button) => button.getAttribute("aria-label"));
     expect(railLabels).toEqual(["Version Control", "Tasks", "Settings"]);
   });
@@ -179,13 +184,15 @@ describe("Sidebar migrated surface (#230 Phase 1)", () => {
     const header = sheet.indexOf("SIDEBAR — the migrated rail");
     return sheet.slice(
       sheet.lastIndexOf("/* =", header),
-      sheet.indexOf("TEXT FIELDS (input / textarea / select)"),
+      sheet.indexOf("TEXT FIELDS (input / textarea / select)")
     );
   }
   // Comments name the retired classes on purpose (the WHY of each
   // migration), so the check runs against the JSX only.
   const markup = [source, listSource, itemSource, searchSource, newSource]
-    .map((code) => code.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/^\s*\/\/.*$/gm, " "))
+    .map((code) =>
+      code.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/^\s*\/\/.*$/gm, " ")
+    )
     .join("\n");
 
   it("carries no legacy nex-* class in the migrated markup", () => {
@@ -247,9 +254,11 @@ describe("Sidebar migrated surface (#230 Phase 1)", () => {
             <Sidebar />
           </NavigationProvider>
         </SnackbarProvider>
-      </LocaleProvider>,
+      </LocaleProvider>
     );
-    const exportButton = screen.getByRole("button", { name: "Export conversation" });
+    const exportButton = screen.getByRole("button", {
+      name: "Export conversation",
+    });
     exportButton.focus();
     expect(document.activeElement).toBe(exportButton);
     // Nothing may hide the actions from the tab order: the reveal is
@@ -258,9 +267,12 @@ describe("Sidebar migrated surface (#230 Phase 1)", () => {
     const actions = document.querySelector('[data-slot="row-actions"]');
     expect(actions).not.toBeNull();
     expect(actions!.getAttribute("aria-hidden")).toBeNull();
-    expect(actions!.querySelector('[hidden]')).toBeNull();
+    expect(actions!.querySelector("[hidden]")).toBeNull();
     const reveal = sheet.slice(sheet.indexOf('[data-slot="row-actions"]'));
-    const revealRules = reveal.slice(0, reveal.indexOf("Rail scroll container"));
+    const revealRules = reveal.slice(
+      0,
+      reveal.indexOf("Rail scroll container")
+    );
     expect(revealRules).not.toMatch(/visibility\s*:/);
     expect(revealRules).not.toMatch(/display\s*:\s*none/);
     expect(revealRules).toContain("opacity: 1");
@@ -275,16 +287,16 @@ describe("Sidebar migrated surface (#230 Phase 1)", () => {
     // selected row's own tone.
     const block = sheet.slice(
       sheet.indexOf('[data-slot="row-actions"] {'),
-      sheet.indexOf("Rail scroll container"),
+      sheet.indexOf("Rail scroll container")
     );
     expect(block).toMatch(/background:\s*var\(--card\)/);
     expect(block).toMatch(
-      /\[data-slot="conversation-row"\]:hover \[data-slot="row-actions"\] \{\s*background:\s*var\(--muted\)/,
+      /\[data-slot="conversation-row"\]:hover \[data-slot="row-actions"\] \{\s*background:\s*var\(--muted\)/
     );
     // The selected tone comes LAST so a selected row that is also hovered
     // keeps `--accent` instead of dropping back to the hover step.
     expect(block).toMatch(
-      /\[data-slot="conversation-row"\]\[data-selected="true"\] \[data-slot="row-actions"\] \{\s*background:\s*var\(--accent\)/,
+      /\[data-slot="conversation-row"\]\[data-selected="true"\] \[data-slot="row-actions"\] \{\s*background:\s*var\(--accent\)/
     );
   });
 
@@ -307,12 +319,16 @@ describe("Sidebar migrated surface (#230 Phase 1)", () => {
     // motion.css still collapses all of it. No keyframes here.
     const section = sidebarSection();
     expect(section).not.toMatch(/@keyframes/);
-    const animations = [...section.matchAll(/animation:\s*([^;]+);/g)].map((m) => m[1]);
+    const animations = [...section.matchAll(/animation:\s*([^;]+);/g)].map(
+      (m) => m[1]
+    );
     expect(animations.length).toBeGreaterThan(0);
     for (const declaration of animations) {
       expect(declaration).toContain("var(--nex-sys-motion-");
     }
-    const transitions = [...section.matchAll(/transition:\s*([^;]+);/g)].map((m) => m[1]);
+    const transitions = [...section.matchAll(/transition:\s*([^;]+);/g)].map(
+      (m) => m[1]
+    );
     expect(transitions.length).toBeGreaterThan(0);
     for (const declaration of transitions) {
       expect(declaration).toContain("var(--nex-sys-motion-");

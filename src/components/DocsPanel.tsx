@@ -25,8 +25,18 @@ import {
   type DocsSectionId,
 } from "../lib/docs";
 import { SHORTCUT_GROUPS, shortcutsInGroup } from "../lib/shortcuts";
-import { hasString, shortcutDesc, shortcutGroup, shortcutScope, type StringKey } from "../lib/strings";
-import { docsManifest, type CommandError, type DocsManifest } from "../lib/tauri";
+import {
+  hasString,
+  shortcutDesc,
+  shortcutGroup,
+  shortcutScope,
+  type StringKey,
+} from "../lib/strings";
+import {
+  docsManifest,
+  type CommandError,
+  type DocsManifest,
+} from "../lib/tauri";
 import { useStrings } from "../lib/useLocale";
 import M3Button from "./M3Button";
 import M3LoadingIndicator from "./M3LoadingIndicator";
@@ -114,10 +124,10 @@ export default function DocsPanel({ onClose }: DocsPanelProps) {
     () =>
       DOC_FEATURES.filter((feature) =>
         matches(
-          `${t(feature.titleKey)} ${t(feature.bodyKey)} ${feature.paletteId}`,
-        ),
+          `${t(feature.titleKey)} ${t(feature.bodyKey)} ${feature.paletteId}`
+        )
       ),
-    [needle, t],
+    [needle, t]
   );
 
   const visibleMigrations = useMemo(() => {
@@ -132,12 +142,13 @@ export default function DocsPanel({ onClose }: DocsPanelProps) {
   const visibleWhatsNew = useMemo(
     () =>
       WHATS_NEW.filter((item) => matches(`${t(item.title)} ${t(item.body)}`)),
-    [needle, t],
+    [needle, t]
   );
 
   const visibleStarts = useMemo(
-    () => START_STEPS.filter((step) => matches(`${t(step.title)} ${t(step.body)}`)),
-    [needle, t],
+    () =>
+      START_STEPS.filter((step) => matches(`${t(step.title)} ${t(step.body)}`)),
+    [needle, t]
   );
 
   const visibleShortcutGroups = useMemo(
@@ -146,11 +157,11 @@ export default function DocsPanel({ onClose }: DocsPanelProps) {
         group,
         rows: shortcutsInGroup(group).filter((entry) =>
           matches(
-            `${entry.keys.join(" ")} ${shortcutDesc(locale, entry.id, entry.description)} ${entry.scope}`,
-          ),
+            `${entry.keys.join(" ")} ${shortcutDesc(locale, entry.id, entry.description)} ${entry.scope}`
+          )
         ),
       })).filter((grouped) => grouped.rows.length > 0),
-    [needle, locale],
+    [needle, locale]
   );
 
   // With an active filter, sections without a hit drop out (except while the
@@ -230,18 +241,25 @@ export default function DocsPanel({ onClose }: DocsPanelProps) {
         ) : (
           <>
             {(section === "start" || filtering) && showStart && (
-              <section className="nex-vcs-section" aria-label={t("docs.secStart")}>
+              <section
+                className="nex-vcs-section"
+                aria-label={t("docs.secStart")}
+              >
                 {!filtering && (
-                  <h3 className="nex-vcs-section-title">{t("docs.secStart")}</h3>
+                  <h3 className="nex-vcs-section-title">
+                    {t("docs.secStart")}
+                  </h3>
                 )}
                 <p className="nex-vcs-notice">{t("docs.startIntro")}</p>
                 <ol>
-                  {(filtering ? visibleStarts : [...START_STEPS]).map((step) => (
-                    <li key={step.title}>
-                      <p className="nex-vcs-notice">{t(step.title)}</p>
-                      <p className="nex-vcs-notice">{t(step.body)}</p>
-                    </li>
-                  ))}
+                  {(filtering ? visibleStarts : [...START_STEPS]).map(
+                    (step) => (
+                      <li key={step.title}>
+                        <p className="nex-vcs-notice">{t(step.title)}</p>
+                        <p className="nex-vcs-notice">{t(step.body)}</p>
+                      </li>
+                    )
+                  )}
                 </ol>
               </section>
             )}
@@ -266,7 +284,7 @@ export default function DocsPanel({ onClose }: DocsPanelProps) {
                           {feature.paletteId}
                         </span>
                       </li>
-                    ),
+                    )
                   )}
                 </ul>
               </section>
@@ -285,12 +303,14 @@ export default function DocsPanel({ onClose }: DocsPanelProps) {
                 <p className="nex-vcs-notice">{t("docs.migIntro")}</p>
                 <h4 className="nex-vcs-section-title">{t("docs.newTitle")}</h4>
                 <ul className="nex-vcs-file-list">
-                  {(filtering ? visibleWhatsNew : [...WHATS_NEW]).map((item) => (
-                    <li key={item.title} className="nex-vcs-file-row">
-                      <p className="nex-vcs-notice">{t(item.title)}</p>
-                      <p className="nex-vcs-notice">{t(item.body)}</p>
-                    </li>
-                  ))}
+                  {(filtering ? visibleWhatsNew : [...WHATS_NEW]).map(
+                    (item) => (
+                      <li key={item.title} className="nex-vcs-file-row">
+                        <p className="nex-vcs-notice">{t(item.title)}</p>
+                        <p className="nex-vcs-notice">{t(item.body)}</p>
+                      </li>
+                    )
+                  )}
                 </ul>
                 {loading && <M3LoadingIndicator label={t("common.loading")} />}
                 {error && (
@@ -304,25 +324,23 @@ export default function DocsPanel({ onClose }: DocsPanelProps) {
                       {t("docs.migSchema", { n: manifest.schema_version })}
                     </p>
                     <ul className="nex-vcs-file-list">
-                      {(filtering ? visibleMigrations : manifest.migrations).map(
-                        (entry) => {
-                          const key = migrationNoteKey(entry.version);
-                          const note = hasString(key)
-                            ? t(key)
-                            : `v${entry.version}`;
-                          return (
-                            <li
-                              key={entry.version}
-                              className="nex-vcs-file-row"
-                            >
-                              <span className="nex-tag nex-tag-mono">
-                                v{entry.version}
-                              </span>{" "}
-                              <span className="nex-vcs-notice">{note}</span>
-                            </li>
-                          );
-                        },
-                      )}
+                      {(filtering
+                        ? visibleMigrations
+                        : manifest.migrations
+                      ).map((entry) => {
+                        const key = migrationNoteKey(entry.version);
+                        const note = hasString(key)
+                          ? t(key)
+                          : `v${entry.version}`;
+                        return (
+                          <li key={entry.version} className="nex-vcs-file-row">
+                            <span className="nex-tag nex-tag-mono">
+                              v{entry.version}
+                            </span>{" "}
+                            <span className="nex-vcs-notice">{note}</span>
+                          </li>
+                        );
+                      })}
                     </ul>
                   </>
                 )}
@@ -357,7 +375,7 @@ export default function DocsPanel({ onClose }: DocsPanelProps) {
                             const description = shortcutDesc(
                               locale,
                               entry.id,
-                              entry.description,
+                              entry.description
                             );
                             const scope = shortcutScope(locale, entry.scope);
                             return (

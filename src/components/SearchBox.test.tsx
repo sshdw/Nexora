@@ -10,7 +10,14 @@
 //! No timing assertions (policy): the debounced call is awaited with
 //! `waitFor`, never against a clock.
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LocaleProvider } from "../lib/useLocale";
@@ -55,7 +62,7 @@ function renderSearchBox() {
   render(
     <LocaleProvider>
       <SearchBox conversations={[]} onSelectResult={onSelectResult} />
-    </LocaleProvider>,
+    </LocaleProvider>
   );
   return { onSelectResult, input: screen.getByRole("searchbox") };
 }
@@ -95,7 +102,9 @@ describe("SearchBox loading / panel-open contract (#228)", () => {
     const field = input.parentElement;
     expect(field).not.toBeNull();
     expect(field!.contains(spinner)).toBe(true);
-    expect(field!.querySelector('[data-slot="search-adornment"]')).toBe(spinner);
+    expect(field!.querySelector('[data-slot="search-adornment"]')).toBe(
+      spinner
+    );
   });
 
   it("opens the panel once results arrive", async () => {
@@ -115,10 +124,9 @@ describe("SearchBox loading / panel-open contract (#228)", () => {
     expect(screen.queryByRole("status")).toBeNull();
     // …and the panel is the floating layer it was before: it renders the
     // result rows, never a bare status line.
-    expect(screen.getByRole("group", { name: "Search results" })).toHaveAttribute(
-      "data-slot",
-      "search-results",
-    );
+    expect(
+      screen.getByRole("group", { name: "Search results" })
+    ).toHaveAttribute("data-slot", "search-results");
   });
 
   it("drops the previous results when a new query starts", async () => {
@@ -153,8 +161,8 @@ describe("SearchBox loading / panel-open contract (#228)", () => {
 
     await waitFor(() =>
       expect(screen.getByRole("alert")).toHaveTextContent(
-        "search backend unreachable",
-      ),
+        "search backend unreachable"
+      )
     );
     expect(resultsPanel()).not.toBeNull();
   });
@@ -246,7 +254,9 @@ describe("SearchBox in-flight identity guard (#233)", () => {
       await second.promise;
     });
 
-    await waitFor(() => expect(screen.getByText("New hit")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByText("New hit")).toBeInTheDocument()
+    );
     expect(screen.queryByText("Old hit")).toBeNull();
     expect(screen.queryByRole("status")).toBeNull();
   });

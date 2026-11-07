@@ -101,29 +101,31 @@ const { mockInvoke, failNext, fixtures } = vi.hoisted(() => {
     },
   };
   const failNext = { command: "" };
-  const mockInvoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
-    void args;
-    if (failNext.command === command) {
-      failNext.command = "";
-      throw { kind: "network", message: "no route to origin" };
+  const mockInvoke = vi.fn(
+    async (command: string, args?: Record<string, unknown>) => {
+      void args;
+      if (failNext.command === command) {
+        failNext.command = "";
+        throw { kind: "network", message: "no route to origin" };
+      }
+      switch (command) {
+        case "gh_issues":
+          return fixtures.issues;
+        case "gh_pulls":
+          return { ...fixtures.issues, items: [] };
+        case "gh_actions":
+          return fixtures.runs;
+        case "gh_action_log":
+          return fixtures.log;
+        case "gh_runners":
+          return fixtures.runners;
+        case "create_task":
+          return 77;
+        default:
+          throw new Error(`unexpected command ${command}`);
+      }
     }
-    switch (command) {
-      case "gh_issues":
-        return fixtures.issues;
-      case "gh_pulls":
-        return { ...fixtures.issues, items: [] };
-      case "gh_actions":
-        return fixtures.runs;
-      case "gh_action_log":
-        return fixtures.log;
-      case "gh_runners":
-        return fixtures.runners;
-      case "create_task":
-        return 77;
-      default:
-        throw new Error(`unexpected command ${command}`);
-    }
-  });
+  );
   return { mockInvoke, failNext, fixtures };
 });
 
@@ -204,7 +206,10 @@ describe("useGh", () => {
     await act(async () => {
       await result.current.showJobLog(job);
     });
-    expect(mockInvoke).toHaveBeenCalledWith("gh_action_log", { runId: 309, jobId: 900 });
+    expect(mockInvoke).toHaveBeenCalledWith("gh_action_log", {
+      runId: 309,
+      jobId: 900,
+    });
     expect(result.current.jobLogs[900]?.log_excerpt).toBe("tail");
 
     // Unknown job whose fetch fails: the store inserts the honest

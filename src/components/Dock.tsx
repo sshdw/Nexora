@@ -100,7 +100,10 @@ function DockButton({
       )}
       onClick={onClick}
     >
-      <span className="inline-flex items-center justify-center" aria-hidden="true">
+      <span
+        className="inline-flex items-center justify-center"
+        aria-hidden="true"
+      >
         {icon}
       </span>
       {hasAttention && (
@@ -177,10 +180,10 @@ export default function Dock({
         border: `1px solid var(--color-shell-seam)`,
         borderLeft: "none",
         borderRadius: "0 30px 30px 0",
-        paddingTop: "var(--space-2xl)",    // 32 px — clears the 30 px top curve
+        paddingTop: "var(--space-2xl)", // 32 px — clears the 30 px top curve
         paddingBottom: "var(--space-2xl)", // 32 px — clears the 30 px bottom curve
-        paddingLeft: "var(--space-xs)",    // 8 px
-        paddingRight: "var(--space-xs)",   // 8 px
+        paddingLeft: "var(--space-xs)", // 8 px
+        paddingRight: "var(--space-xs)", // 8 px
         // R4-01: 60 px rail, from the ONE layout token the conversation
         // stage also reserves (`padding-inline: var(--dock-width)`).
         width: "var(--dock-width)",

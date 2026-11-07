@@ -34,7 +34,14 @@
 //! before/after screenshots are in the PR body; no timing
 //! assertions anywhere (repo policy).
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -91,7 +98,9 @@ function autonomyStub(overrides: Partial<AutonomyStore> = {}): AutonomyStore {
 
 /** The composer only reads the workspace store through the context row; a
  *  root-less store is the honest default for a send-flow test. */
-function workspaceStub(overrides: Partial<WorkspaceStore> = {}): WorkspaceStore {
+function workspaceStub(
+  overrides: Partial<WorkspaceStore> = {}
+): WorkspaceStore {
   return {
     root: null,
     recent: [],
@@ -163,7 +172,7 @@ function renderComposer(overrides: Partial<ComposerProps> = {}) {
   const view = render(
     <LocaleProvider>
       <Composer {...props} />
-    </LocaleProvider>,
+    </LocaleProvider>
   );
   return { ...view, props };
 }
@@ -172,7 +181,11 @@ function renderComposer(overrides: Partial<ComposerProps> = {}) {
  *  switch and a draft only exist through an owner that holds both —
  *  exactly how ConversationView wires it (one draft per pane, one
  *  mode for the composer). Nothing here clears or sends on its own. */
-function StatefulComposer({ overrides = {} }: { overrides?: Partial<ComposerProps> }) {
+function StatefulComposer({
+  overrides = {},
+}: {
+  overrides?: Partial<ComposerProps>;
+}) {
   const [draft, setDraft] = useState(overrides.draft ?? "");
   const [agentMode, setAgentMode] = useState(overrides.agentMode ?? true);
   return (
@@ -212,12 +225,17 @@ describe("composer — send flow", () => {
 
   it("reports every draft change upward", () => {
     const { props } = renderComposer();
-    fireEvent.change(screen.getByLabelText("Message"), { target: { value: "next" } });
+    fireEvent.change(screen.getByLabelText("Message"), {
+      target: { value: "next" },
+    });
     expect(props.onDraftChange).toHaveBeenCalledWith("next");
   });
 
   it("disables send unless the caller says it can send", () => {
-    const { rerender, props } = renderComposer({ draft: "hello", canSend: false });
+    const { rerender, props } = renderComposer({
+      draft: "hello",
+      canSend: false,
+    });
     const send = screen.getByRole("button", { name: /Send/ });
     expect(send).toBeDisabled();
     expect(screen.getByLabelText("Message")).toBeEnabled();
@@ -225,19 +243,22 @@ describe("composer — send flow", () => {
     rerender(
       <LocaleProvider>
         <Composer {...props} canSend />
-      </LocaleProvider>,
+      </LocaleProvider>
     );
     expect(screen.getByRole("button", { name: /Send/ })).toBeEnabled();
   });
 
   it("disables the field while a send or an agent run is in flight", () => {
-    const { rerender, props } = renderComposer({ sending: true, agentBusy: false });
+    const { rerender, props } = renderComposer({
+      sending: true,
+      agentBusy: false,
+    });
     expect(screen.getByLabelText("Message")).toBeDisabled();
 
     rerender(
       <LocaleProvider>
         <Composer {...props} sending={false} agentBusy />
-      </LocaleProvider>,
+      </LocaleProvider>
     );
     expect(screen.getByLabelText("Message")).toBeDisabled();
   });
@@ -254,8 +275,14 @@ describe("composer — send flow", () => {
 
     rerender(
       <LocaleProvider>
-        <Composer {...props} sending={false} agentBusy canSend={false} agentMode />
-      </LocaleProvider>,
+        <Composer
+          {...props}
+          sending={false}
+          agentBusy
+          canSend={false}
+          agentMode
+        />
+      </LocaleProvider>
     );
     const running = screen.getByRole("button", { name: "Send message" });
     expect(running).toBeDisabled();
@@ -263,20 +290,28 @@ describe("composer — send flow", () => {
   });
 
   it("disables attach while sending or while attachments are loading", () => {
-    const { rerender, props } = renderComposer({ sending: true, agentMode: false });
+    const { rerender, props } = renderComposer({
+      sending: true,
+      agentMode: false,
+    });
     expect(screen.getByRole("button", { name: "Add file" })).toBeDisabled();
 
     rerender(
       <LocaleProvider>
         <Composer {...props} sending={false} attachmentsBusy />
-      </LocaleProvider>,
+      </LocaleProvider>
     );
     expect(screen.getByRole("button", { name: "Add file" })).toBeDisabled();
 
     rerender(
       <LocaleProvider>
-        <Composer {...props} sending={false} attachmentsBusy={false} agentBusy />
-      </LocaleProvider>,
+        <Composer
+          {...props}
+          sending={false}
+          attachmentsBusy={false}
+          agentBusy
+        />
+      </LocaleProvider>
     );
     expect(screen.getByRole("button", { name: "Add file" })).toBeDisabled();
   });
@@ -306,20 +341,26 @@ describe("composer — send flow", () => {
       sending: true,
       agentMode: false,
     });
-    expect(screen.getByRole("button", { name: "Remove notes.md" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Remove notes.md" })
+    ).toBeDisabled();
 
     rerender(
       <LocaleProvider>
         <Composer {...props} sending={false} attachmentsBusy />
-      </LocaleProvider>,
+      </LocaleProvider>
     );
-    expect(screen.getByRole("button", { name: "Remove notes.md" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Remove notes.md" })
+    ).toBeDisabled();
   });
 
   it("lists attached files by name and size", () => {
     renderComposer({
       agentMode: false,
-      attachments: [attachmentStub({ id: 3, file_name: "spec.pdf", file_size_bytes: 4096 })],
+      attachments: [
+        attachmentStub({ id: 3, file_name: "spec.pdf", file_size_bytes: 4096 }),
+      ],
     });
     const list = screen.getByLabelText("Attached files");
     expect(within(list).getByText("spec.pdf")).toBeInTheDocument();
@@ -335,7 +376,7 @@ describe("composer — the one action (D2 / R5-07)", () => {
     rerender(
       <LocaleProvider>
         <Composer {...props} draft="hello" canSend />
-      </LocaleProvider>,
+      </LocaleProvider>
     );
     expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
 
@@ -344,7 +385,7 @@ describe("composer — the one action (D2 / R5-07)", () => {
     rerender(
       <LocaleProvider>
         <Composer {...props} draft="" canSend={false} liveRunId={7} />
-      </LocaleProvider>,
+      </LocaleProvider>
     );
     const stop = screen.getByRole("button", { name: "Stop agent run" });
     expect(stop).toBeEnabled();
@@ -369,7 +410,7 @@ describe("composer — the one action (D2 / R5-07)", () => {
     rerender(
       <LocaleProvider>
         <Composer {...props} liveRunId={null} onStop={onStop} />
-      </LocaleProvider>,
+      </LocaleProvider>
     );
     const send = screen.getByRole("button", { name: "Send message" });
     expect(send).toHaveAttribute("data-state", "armed");
@@ -391,7 +432,7 @@ describe("composer — the one action (D2 / R5-07)", () => {
     rerender(
       <LocaleProvider>
         <Composer {...props} draft="hello" canSend />
-      </LocaleProvider>,
+      </LocaleProvider>
     );
     const armed = screen.getByRole("button", { name: "Send message" });
     expect(armed).toHaveAttribute("data-state", "armed");
@@ -401,7 +442,7 @@ describe("composer — the one action (D2 / R5-07)", () => {
     rerender(
       <LocaleProvider>
         <Composer {...props} draft="hello" canSend liveRunId={7} />
-      </LocaleProvider>,
+      </LocaleProvider>
     );
     const stop = screen.getByRole("button", { name: "Stop agent run" });
     expect(stop).toHaveAttribute("data-state", "stop");
@@ -442,10 +483,10 @@ describe("composer — context ring placement (D4)", () => {
 
     // Reference order in the row: ring → model → Send.
     expect(
-      ring.compareDocumentPosition(model) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ring.compareDocumentPosition(model) & Node.DOCUMENT_POSITION_FOLLOWING
     ).toBeTruthy();
     expect(
-      model.compareDocumentPosition(send) & Node.DOCUMENT_POSITION_FOLLOWING,
+      model.compareDocumentPosition(send) & Node.DOCUMENT_POSITION_FOLLOWING
     ).toBeTruthy();
   });
 
@@ -471,30 +512,38 @@ describe("composer — modes", () => {
     const group = screen.getByRole("radiogroup", { name: "Agent mode" });
     expect(within(group).getByRole("radio", { name: "Agent" })).toHaveAttribute(
       "aria-checked",
-      "true",
+      "true"
     );
     expect(
-      within(group).getByRole("radio", { name: "Chat mode — one answer per message" }),
+      within(group).getByRole("radio", {
+        name: "Chat mode — one answer per message",
+      })
     ).toHaveAttribute("aria-checked", "false");
     // Autonomy is reachable from the Agent pane, but it is a popover now
     // (D-03): the control row carries one trigger naming the live mode, and
     // the three choices exist only while it is open.
     expect(
-      screen.getByRole("button", { name: "Autonomy mode" }),
+      screen.getByRole("button", { name: "Autonomy mode" })
     ).toHaveTextContent("Semi-auto");
     expect(
-      screen.queryByRole("radiogroup", { name: "Autonomy mode" }),
+      screen.queryByRole("radiogroup", { name: "Autonomy mode" })
     ).not.toBeInTheDocument();
   });
 
   it("keeps the typed draft through a Chat → Agent round trip, and sends nothing", () => {
     const onSubmit = vi.fn();
-    render(<StatefulComposer overrides={{ draft: "half a thought", canSend: true, onSubmit }} />);
+    render(
+      <StatefulComposer
+        overrides={{ draft: "half a thought", canSend: true, onSubmit }}
+      />
+    );
     const field = screen.getByLabelText("Message");
     expect(field).toHaveValue("half a thought");
     expect(field).toBeEnabled();
 
-    fireEvent.click(screen.getByRole("radio", { name: "Chat mode — one answer per message" }));
+    fireEvent.click(
+      screen.getByRole("radio", { name: "Chat mode — one answer per message" })
+    );
     expect(field).toHaveValue("half a thought");
     expect(field).toBeEnabled();
 
@@ -510,7 +559,9 @@ describe("composer — modes", () => {
   it("exposes the two primary modes as one radio group", () => {
     renderComposer({ agentMode: false });
     const group = screen.getByRole("radiogroup", { name: "Agent mode" });
-    const chat = within(group).getByRole("radio", { name: "Chat mode — one answer per message" });
+    const chat = within(group).getByRole("radio", {
+      name: "Chat mode — one answer per message",
+    });
     const agent = within(group).getByRole("radio", { name: "Agent" });
 
     expect(chat).toHaveAttribute("aria-checked", "true");
@@ -553,19 +604,20 @@ describe("composer — modes", () => {
 
   it("shows the autonomy trigger in agent mode only, and opens the choices", () => {
     const { rerender, props } = renderComposer({ agentMode: false });
-    expect(screen.queryByRole("button", { name: "Autonomy mode" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Autonomy mode" })
+    ).not.toBeInTheDocument();
 
     rerender(
       <LocaleProvider>
         <Composer {...props} agentMode />
-      </LocaleProvider>,
+      </LocaleProvider>
     );
     fireEvent.click(screen.getByRole("button", { name: "Autonomy mode" }));
     const autonomy = screen.getByRole("radiogroup", { name: "Autonomy mode" });
-    expect(within(autonomy).getByRole("radio", { name: "Semi-autonomous" })).toHaveAttribute(
-      "aria-checked",
-      "true",
-    );
+    expect(
+      within(autonomy).getByRole("radio", { name: "Semi-autonomous" })
+    ).toHaveAttribute("aria-checked", "true");
   });
 
   it("dispatches autonomy changes from the store's own value", () => {
@@ -580,10 +632,13 @@ describe("composer — modes", () => {
     // Reduced motion, so the sentence renders as its finished frame
     // and can be read at all — under motion it is still typing.
     mockReducedMotion(true);
-    renderComposer({ agentMode: true, autonomy: autonomyStub({ mode: "full_autonomous" }) });
+    renderComposer({
+      agentMode: true,
+      autonomy: autonomyStub({ mode: "full_autonomous" }),
+    });
     fireEvent.click(screen.getByRole("button", { name: "Autonomy mode" }));
     expect(
-      screen.getByText("Full-auto: the agent runs to the end without stopping."),
+      screen.getByText("Full-auto: the agent runs to the end without stopping.")
     ).toBeInTheDocument();
   });
 
@@ -593,7 +648,7 @@ describe("composer — modes", () => {
     const { rerender, props } = renderComposer({ agentMode: true, autonomy });
     fireEvent.click(screen.getByRole("button", { name: "Autonomy mode" }));
     expect(
-      screen.getByText("Supervised: every tool call waits for your approval."),
+      screen.getByText("Supervised: every tool call waits for your approval.")
     ).toBeInTheDocument();
 
     // The store answering is the only thing that changes the text —
@@ -602,10 +657,12 @@ describe("composer — modes", () => {
     rerender(
       <LocaleProvider>
         <Composer {...props} autonomy={autonomy} />
-      </LocaleProvider>,
+      </LocaleProvider>
     );
     expect(
-      screen.getByText("Semi-auto: routine steps run alone, writes still ask first."),
+      screen.getByText(
+        "Semi-auto: routine steps run alone, writes still ask first."
+      )
     ).toBeInTheDocument();
   });
 });
@@ -613,15 +670,19 @@ describe("composer — modes", () => {
 describe("composer — attachment policy (R4-02 / G-20)", () => {
   it("renders the attach control in Chat mode only", () => {
     const { rerender, props } = renderComposer();
-    expect(screen.queryByRole("button", { name: "Add file" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Add file" })
+    ).not.toBeInTheDocument();
     expect(screen.queryByTitle("Add file")).not.toBeInTheDocument();
 
     rerender(
       <LocaleProvider>
         <Composer {...props} agentMode={false} />
-      </LocaleProvider>,
+      </LocaleProvider>
     );
-    expect(screen.getByRole("button", { name: "Add file" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Add file" })
+    ).toBeInTheDocument();
   });
 
   it("shows nothing about attachments in Agent mode — the absence is the statement", () => {
@@ -630,7 +691,9 @@ describe("composer — attachment policy (R4-02 / G-20)", () => {
     // Absent — not disabled, not dead, not chipped, not hinted.
     renderComposer({ attachments: [attachmentStub()] });
 
-    expect(screen.queryByRole("button", { name: "Add file" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Add file" })
+    ).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Attached files")).not.toBeInTheDocument();
     expect(screen.queryByText("notes.md")).not.toBeInTheDocument();
 
@@ -641,7 +704,8 @@ describe("composer — attachment policy (R4-02 / G-20)", () => {
 });
 
 describe("composer — model picker (R6-02)", () => {
-  const trigger = () => screen.getByRole("button", { name: "Agent mode and model" });
+  const trigger = () =>
+    screen.getByRole("button", { name: "Agent mode and model" });
   const openPicker = () => fireEvent.click(trigger());
   const list = () => screen.getByRole("listbox", { name: "Model" });
   const search = () => screen.getByRole("searchbox", { name: "Search models" });
@@ -659,8 +723,12 @@ describe("composer — model picker (R6-02)", () => {
     expect(options[0]).toHaveAttribute("aria-selected", "true");
     expect(options[1]).toHaveAttribute("aria-selected", "false");
     // The selected row carries the one check; the other row does not.
-    expect(options[0]?.querySelector(".nex-composer-model-option-check")).not.toBeNull();
-    expect(options[1]?.querySelector(".nex-composer-model-option-check")).toBeNull();
+    expect(
+      options[0]?.querySelector(".nex-composer-model-option-check")
+    ).not.toBeNull();
+    expect(
+      options[1]?.querySelector(".nex-composer-model-option-check")
+    ).toBeNull();
   });
 
   it("lets the trigger shrink on a narrow card, so the label truncates before Send leaves", () => {
@@ -701,7 +769,9 @@ describe("composer — model picker (R6-02)", () => {
     openPicker();
     expect(screen.getByText("No models configured")).toBeInTheDocument();
     // Nothing to search when there is nothing to list.
-    expect(screen.queryByRole("searchbox", { name: "Search models" })).toBeNull();
+    expect(
+      screen.queryByRole("searchbox", { name: "Search models" })
+    ).toBeNull();
   });
 
   it("says the search matched nothing without claiming the catalog is empty", () => {
@@ -760,7 +830,9 @@ describe("composer — model picker (R6-02)", () => {
     const onSelectModel = vi.fn();
     renderComposer({ onSelectModel });
     openPicker();
-    fireEvent.click(screen.getByRole("option", { name: "gemini-3.1-pro-preview" }));
+    fireEvent.click(
+      screen.getByRole("option", { name: "gemini-3.1-pro-preview" })
+    );
 
     expect(onSelectModel).toHaveBeenCalledWith("gemini-3.1-pro-preview");
     expect(trigger()).toHaveTextContent("gemini-3.6-flash");
@@ -813,16 +885,20 @@ describe("composer — model picker (R6-02)", () => {
     // is a block list plus `overflow-x: hidden`, and rows that wrap.
     const sheet = readRepoFile("src/styles/composer.css").replace(
       /\/\*[\s\S]*?\*\//g,
-      "",
+      ""
     );
-    const menu = /\.nex-composer-model-menu\s*\{([\s\S]*?)\n\}/.exec(sheet)?.[1] ?? "";
+    const menu =
+      /\.nex-composer-model-menu\s*\{([\s\S]*?)\n\}/.exec(sheet)?.[1] ?? "";
     expect(menu).toContain("overflow-x: hidden");
 
-    const listBlock = /\.nex-composer-model-list\s*\{([\s\S]*?)\n\}/.exec(sheet)?.[1] ?? "";
+    const listBlock =
+      /\.nex-composer-model-list\s*\{([\s\S]*?)\n\}/.exec(sheet)?.[1] ?? "";
     expect(listBlock).toContain("overflow-x: hidden");
     expect(listBlock).toContain("flex-direction: column");
 
-    const option = /\.nex-composer-model-option-name\s*\{([\s\S]*?)\n\}/.exec(sheet)?.[1] ?? "";
+    const option =
+      /\.nex-composer-model-option-name\s*\{([\s\S]*?)\n\}/.exec(sheet)?.[1] ??
+      "";
     expect(option).toContain("overflow-wrap: anywhere");
 
     // No `.nex-seg` re-point survives: the list is a plain listbox now, so
@@ -838,14 +914,23 @@ describe("composer — hint row", () => {
     // ready composer now ends at its own border.
     renderComposer({ ready: true });
     expect(document.querySelector(".nex-composer-hint")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Open Settings" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Open Settings" })
+    ).not.toBeInTheDocument();
   });
 
   it("offers Settings when no provider or model is configured", () => {
     const onOpenSettings = vi.fn();
-    renderComposer({ ready: false, selectedModel: null, models: [], onOpenSettings });
+    renderComposer({
+      ready: false,
+      selectedModel: null,
+      models: [],
+      onOpenSettings,
+    });
     expect(
-      screen.getByText("Choose a provider and model in Settings to send messages."),
+      screen.getByText(
+        "Choose a provider and model in Settings to send messages."
+      )
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Open Settings" }));
     expect(onOpenSettings).toHaveBeenCalled();
@@ -875,11 +960,16 @@ describe("composer — no teaching line (D-03)", () => {
     const field = screen.getByLabelText("Message");
     // The placeholder says what to do (Phase C round 4: a bare noun read as
     // a form label, not as an invitation to type)…
-    expect(field).toHaveAttribute("placeholder", "Ask anything, or describe a task");
+    expect(field).toHaveAttribute(
+      "placeholder",
+      "Ask anything, or describe a task"
+    );
     // …and the accessible name stays the short noun, deliberately different:
     // a name names the control, it is not the instruction repeated.
     expect(field).toHaveAttribute("aria-label", "Message");
-    expect(field.getAttribute("placeholder")).not.toBe(field.getAttribute("aria-label"));
+    expect(field.getAttribute("placeholder")).not.toBe(
+      field.getAttribute("aria-label")
+    );
   });
 
   it("keeps the shortcut registry as the one source for the help dialog", () => {
@@ -889,7 +979,9 @@ describe("composer — no teaching line (D-03)", () => {
     expect(shortcutById("palette.toggle")).toBeDefined();
     expect(shortcutById("help.show-shortcuts")).toBeDefined();
     expect(shortcutKeys("no.such.shortcut")).toEqual([]);
-    expect(SHORTCUTS.some((entry) => entry.id === "no.such.shortcut")).toBe(false);
+    expect(SHORTCUTS.some((entry) => entry.id === "no.such.shortcut")).toBe(
+      false
+    );
   });
 });
 
@@ -911,7 +1003,10 @@ describe("composer — the field the user types in (Phase C round 2)", () => {
       // The element itself: a real textarea, editable, focusable, named.
       expect(field.tagName).toBe("TEXTAREA");
       expect(field).toBeEnabled();
-      expect(field).toHaveAttribute("placeholder", "Ask anything, or describe a task");
+      expect(field).toHaveAttribute(
+        "placeholder",
+        "Ask anything, or describe a task"
+      );
       (field as HTMLTextAreaElement).focus();
       expect(field).toHaveFocus();
 
@@ -928,23 +1023,41 @@ describe("composer — the field the user types in (Phase C round 2)", () => {
     // sheet: composer.css declares NO media query, so no breakpoint can
     // drop the field at a narrower window. The runtime half proves the
     // state path — the field exists and dispatches at that window size.
-    const sheet = readRepoFile("src/styles/composer.css").replace(/\/\*[\s\S]*?\*\//g, "");
+    const sheet = readRepoFile("src/styles/composer.css").replace(
+      /\/\*[\s\S]*?\*\//g,
+      ""
+    );
     expect(sheet).not.toContain("@media");
 
     const width = window.innerWidth;
     const height = window.innerHeight;
-    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1024 });
-    Object.defineProperty(window, "innerHeight", { configurable: true, value: 720 });
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 1024,
+    });
+    Object.defineProperty(window, "innerHeight", {
+      configurable: true,
+      value: 720,
+    });
     try {
       const { props } = renderComposer({ agentMode: true });
       const field = screen.getByLabelText("Message");
       expect(field).toBeEnabled();
-      expect(field).toHaveAttribute("placeholder", "Ask anything, or describe a task");
+      expect(field).toHaveAttribute(
+        "placeholder",
+        "Ask anything, or describe a task"
+      );
       fireEvent.change(field, { target: { value: "at 1024" } });
       expect(props.onDraftChange).toHaveBeenCalledWith("at 1024");
     } finally {
-      Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
-      Object.defineProperty(window, "innerHeight", { configurable: true, value: height });
+      Object.defineProperty(window, "innerWidth", {
+        configurable: true,
+        value: width,
+      });
+      Object.defineProperty(window, "innerHeight", {
+        configurable: true,
+        value: height,
+      });
     }
   });
 
@@ -1002,7 +1115,7 @@ describe("composer — the field's affordance (Phase C round 4)", () => {
     }
     // The RU sentence is the translated instruction, not a transliteration.
     expect(tr("ru", "conv.messagePlaceholder")).toBe(
-      "Спросите что угодно или опишите задачу",
+      "Спросите что угодно или опишите задачу"
     );
   });
 });
@@ -1019,8 +1132,15 @@ describe("composer — Send's three states (R6-01)", () => {
   // composer's own background. It sits on the muted plate now; the light
   // plate is armed and stop, and stop swaps the arrow for a filled square.
   const BORDER_TOKENS = ["border-transparent", "border-border"] as const;
-  const SURFACE_TOKENS = ["bg-transparent", "bg-primary", "bg-secondary"] as const;
-  const LABEL_TOKENS = ["text-muted-foreground", "text-primary-foreground"] as const;
+  const SURFACE_TOKENS = [
+    "bg-transparent",
+    "bg-primary",
+    "bg-secondary",
+  ] as const;
+  const LABEL_TOKENS = [
+    "text-muted-foreground",
+    "text-primary-foreground",
+  ] as const;
 
   /** The token that actually paints one property in one state, resolved the
    *  way the browser resolves it: `disabled:` utilities apply only while the
@@ -1030,7 +1150,7 @@ describe("composer — Send's three states (R6-01)", () => {
   function paintToken(
     className: string,
     disabled: boolean,
-    tokens: readonly string[],
+    tokens: readonly string[]
   ): string {
     let found = "";
     for (const cls of className.split(/\s+/)) {
@@ -1073,7 +1193,7 @@ describe("composer — Send's three states (R6-01)", () => {
     rerender(
       <LocaleProvider>
         <Composer {...props} draft="ready" canSend />
-      </LocaleProvider>,
+      </LocaleProvider>
     );
     const armed = screen.getByRole("button", { name: /Send/ });
     expect(armed).toBeEnabled();
@@ -1100,8 +1220,11 @@ describe("composer — reduced-motion gate (plain-text explainer)", () => {
     mockReducedMotion(true);
     render(
       <LocaleProvider>
-        <ComposerAutonomyHint mode="semi_autonomous" text="Semi-auto: routine steps run alone." />
-      </LocaleProvider>,
+        <ComposerAutonomyHint
+          mode="semi_autonomous"
+          text="Semi-auto: routine steps run alone."
+        />
+      </LocaleProvider>
     );
 
     // The whole sentence, present in the first frame — the explainer
@@ -1112,7 +1235,9 @@ describe("composer — reduced-motion gate (plain-text explainer)", () => {
     // the property this test guards is structural: there is no JS
     // timeline machinery left to gate, and the finished sentence is the
     // only render there is.
-    expect(screen.getByText("Semi-auto: routine steps run alone.")).toBeInTheDocument();
+    expect(
+      screen.getByText("Semi-auto: routine steps run alone.")
+    ).toBeInTheDocument();
   });
 
   it("renders no explainer for a mode it does not know", () => {
@@ -1120,7 +1245,7 @@ describe("composer — reduced-motion gate (plain-text explainer)", () => {
     const { container } = render(
       <LocaleProvider>
         <ComposerAutonomyHint mode={"nonsense" as never} text="unused" />
-      </LocaleProvider>,
+      </LocaleProvider>
     );
     expect(container.innerHTML).toBe("");
   });
@@ -1130,14 +1255,20 @@ describe("composer — reduced-motion gate (plain-text explainer)", () => {
     // be the one gate: one block, in one file, holding the end
     // frame and freezing loops. Asserted against the file that
     // ships, exactly like src/lib/motion.test.tsx does.
-    const css = readRepoFile("src/styles/motion.css").replace(/\/\*[\s\S]*?\*\//g, "");
-    const block = /@media \(prefers-reduced-motion: reduce\) \{([\s\S]*?)\n\}/.exec(css);
+    const css = readRepoFile("src/styles/motion.css").replace(
+      /\/\*[\s\S]*?\*\//g,
+      ""
+    );
+    const block =
+      /@media \(prefers-reduced-motion: reduce\) \{([\s\S]*?)\n\}/.exec(css);
     expect(block).not.toBeNull();
     const declarations = block![1];
     expect(declarations).toMatch(/animation-duration:\s*0\.01ms\s*!important/);
     expect(declarations).toMatch(/transition-duration:\s*0\.01ms\s*!important/);
     expect(declarations).toMatch(/animation-iteration-count:\s*1\s*!important/);
-    expect(declarations).toMatch(/animation-fill-mode:\s*forwards\s*!important/);
+    expect(declarations).toMatch(
+      /animation-fill-mode:\s*forwards\s*!important/
+    );
     expect(declarations).toMatch(/\*,\s*\*::before,\s*\*::after/);
   });
 });
@@ -1150,7 +1281,9 @@ describe("composer sheet — theme linkage (src/styles/composer.css)", () => {
 
   /** The declaration block of one rule, or "" when it is not there. */
   const ruleBody = (selector: string): string =>
-    new RegExp(`${selector.replace(/\./g, "\\.")}\\s*\\{([\\s\\S]*?)\\n\\}`).exec(code)?.[1] ?? "";
+    new RegExp(
+      `${selector.replace(/\./g, "\\.")}\\s*\\{([\\s\\S]*?)\\n\\}`
+    ).exec(code)?.[1] ?? "";
 
   it("paints from shadcn semantic tokens only", () => {
     // The ban is on the M3E COLOUR system reaching this sheet —
@@ -1176,9 +1309,17 @@ describe("composer sheet — theme linkage (src/styles/composer.css)", () => {
   });
 
   it("resolves every var() it uses against the black theme", () => {
-    const theme = readRepoFile("src/index.css").replace(/\/\*[\s\S]*?\*\//g, "");
-    const dark = /:root,\s*:root\[data-theme="dark"\]\s*\{([\s\S]*?)\n\}/.exec(theme)?.[1] ?? "";
-    const defined = new Set([...dark.matchAll(/(--[a-z0-9-]+)\s*:/gi)].map((m) => m[1]));
+    const theme = readRepoFile("src/index.css").replace(
+      /\/\*[\s\S]*?\*\//g,
+      ""
+    );
+    const dark =
+      /:root,\s*:root\[data-theme="dark"\]\s*\{([\s\S]*?)\n\}/.exec(
+        theme
+      )?.[1] ?? "";
+    const defined = new Set(
+      [...dark.matchAll(/(--[a-z0-9-]+)\s*:/gi)].map((m) => m[1])
+    );
     // `--radius-*` steps and the motion vars come from the Tailwind
     // theme mapping / src/styles/motion.css, not the colour block.
     const known = new Set([
@@ -1210,7 +1351,9 @@ describe("composer sheet — theme linkage (src/styles/composer.css)", () => {
     // motion.css still has to catch.
     expect(code).not.toMatch(/@keyframes/);
     expect(code).not.toMatch(/animation(-name)?\s*:/);
-    const transitions = [...code.matchAll(/transition:[^;]+;/g)].map((m) => m[0]);
+    const transitions = [...code.matchAll(/transition:[^;]+;/g)].map(
+      (m) => m[0]
+    );
     expect(transitions.length).toBeGreaterThan(0);
     for (const declaration of transitions) {
       expect(declaration).toContain("var(--nex-sys-motion-");
@@ -1236,7 +1379,7 @@ describe("composer sheet — theme linkage (src/styles/composer.css)", () => {
     // actually paint.
     const primitive = readRepoFile("src/components/ui/popover.tsx").replace(
       /\/\*[\s\S]*?\*\//g,
-      "",
+      ""
     );
     expect(primitive).not.toMatch(/\bw-72\b/);
     for (const [selector, width] of [
@@ -1265,7 +1408,6 @@ describe("composer sheet — theme linkage (src/styles/composer.css)", () => {
       expect(block).not.toContain("background");
     }
   });
-
 
   it("gives the pill and its seat ONE radius, re-pointed on the group", () => {
     // G-18: the primitive's pill and the segment it covers both consume
@@ -1300,12 +1442,13 @@ describe("composer sheet — theme linkage (src/styles/composer.css)", () => {
     // on both shapes: one re-point here moves the pill and the seat.
     const primitive = readRepoFile("src/styles/components.css").replace(
       /\/\*[\s\S]*?\*\//g,
-      "",
+      ""
     );
-    const pill = /\.nex-seg-indicator\s*\{([\s\S]*?)\n\}/.exec(primitive)?.[1] ?? "";
+    const pill =
+      /\.nex-seg-indicator\s*\{([\s\S]*?)\n\}/.exec(primitive)?.[1] ?? "";
     const seat =
       /\.nex-seg:not\(\.nex-seg-connected\) button\s*\{([\s\S]*?)\n\}/.exec(
-        primitive,
+        primitive
       )?.[1] ?? "";
     expect(pill).toContain("border-radius: var(--seg-radius)");
     expect(seat).toContain("border-radius: var(--seg-radius)");
@@ -1353,7 +1496,7 @@ describe("composer sheet — theme linkage (src/styles/composer.css)", () => {
 
     // The other bare ghost button in the same popover had the same hole.
     expect(ruleBody(".nex-composer-model-footer button")).toContain(
-      "color: var(--muted-foreground)",
+      "color: var(--muted-foreground)"
     );
   });
 
@@ -1373,7 +1516,7 @@ describe("composer sheet — theme linkage (src/styles/composer.css)", () => {
 
   it("keeps the composer's reading measure equal to the thread's", () => {
     const thread = /--layout-measure-max:\s*([^;]+);/.exec(
-      readRepoFile("src/index.css"),
+      readRepoFile("src/index.css")
     )?.[1];
     expect(thread).toBe("760px");
     expect(code).toMatch(/max-width:\s*760px/);
@@ -1398,7 +1541,12 @@ describe("composer sheet — theme linkage (src/styles/composer.css)", () => {
         const parts = raw.split(/\s+/);
         // 1 value: all sides · 2: block inline · 3: top inline bottom ·
         // 4: top right bottom left. `padding-block*` cannot touch this axis.
-        value = parts.length === 1 ? parts[0]! : parts.length === 4 ? parts[3]! : parts[1]!;
+        value =
+          parts.length === 1
+            ? parts[0]!
+            : parts.length === 4
+              ? parts[3]!
+              : parts[1]!;
       }
     }
     return value;
@@ -1430,7 +1578,7 @@ describe("composer sheet — theme linkage (src/styles/composer.css)", () => {
     // (otherwise the reset below would be vacuous and the test meaningless).
     const sharedSheet = readRepoFile("src/styles/conversation.css").replace(
       /\/\*[\s\S]*?\*\//g,
-      "",
+      ""
     );
     const sharedField =
       /\.nex-composer-input\s*\{([\s\S]*?)\n\}/.exec(sharedSheet)?.[1] ?? "";
@@ -1460,7 +1608,9 @@ describe("composer sheet — theme linkage (src/styles/composer.css)", () => {
       expect(block).not.toMatch(/padding-(left|right)/);
       expect(addedInline(block)).toBe("none");
     }
-    expect(addedInline(fieldBlock)).toBe(addedInline(ruleBody(".nex-composer-teach")));
+    expect(addedInline(fieldBlock)).toBe(
+      addedInline(ruleBody(".nex-composer-teach"))
+    );
     for (const selector of rows) {
       expect(addedInline(fieldBlock)).toBe(addedInline(ruleBody(selector)));
     }
@@ -1483,12 +1633,14 @@ describe("composer sheet — theme linkage (src/styles/composer.css)", () => {
     // list inline, so the pin reads those two files.
     const catalogs = ["catalog", "anthropic"]
       .map((file) =>
-        readRepoFile(`src-tauri/src/infrastructure/providers/${file}.rs`),
+        readRepoFile(`src-tauri/src/infrastructure/providers/${file}.rs`)
       )
       .join("\n");
     const ids = [
       ...catalogs.matchAll(/const \w*MODELS\w*: &\[&str\] = &\[([\s\S]*?)\];/g),
-    ].flatMap((block) => [...block[1]!.matchAll(/"([^"]+)"/g)].map((match) => match[1]!));
+    ].flatMap((block) =>
+      [...block[1]!.matchAll(/"([^"]+)"/g)].map((match) => match[1]!)
+    );
     expect(ids.length).toBeGreaterThan(10);
     const longest = ids.reduce((a, b) => (b.length > a.length ? b : a));
     expect(longest.length).toBeLessThanOrEqual(cap);
@@ -1528,13 +1680,22 @@ describe("composer sheet — theme linkage (src/styles/composer.css)", () => {
     const row = ruleBody(".nex-composer-context");
     expect(row).toContain("max-width: 100%");
     expect(row).toContain("min-width: 0");
-    expect(ruleBody(".nex-composer-context-head")).toContain("text-overflow: ellipsis");
-    expect(ruleBody(".nex-composer-context-branch")).toContain("text-overflow: ellipsis");
+    expect(ruleBody(".nex-composer-context-head")).toContain(
+      "text-overflow: ellipsis"
+    );
+    expect(ruleBody(".nex-composer-context-branch")).toContain(
+      "text-overflow: ellipsis"
+    );
   });
 
   it("registers no second stylesheet entry or unlayered import", () => {
-    const entry = readRepoFile("src/index.css").replace(/\/\*[\s\S]*?\*\//g, "");
-    expect(entry).toMatch(/@import\s+"\.\/styles\/composer\.css"\s+layer\(base\);/);
+    const entry = readRepoFile("src/index.css").replace(
+      /\/\*[\s\S]*?\*\//g,
+      ""
+    );
+    expect(entry).toMatch(
+      /@import\s+"\.\/styles\/composer\.css"\s+layer\(base\);/
+    );
   });
 });
 
@@ -1548,11 +1709,11 @@ describe("shared-class scope — the failure strip stays shared", () => {
   // composer has its own strip.
   const conversation = readRepoFile("src/styles/conversation.css").replace(
     /\/\*[\s\S]*?\*\//g,
-    "",
+    ""
   );
   const composerSheet = readRepoFile("src/styles/composer.css").replace(
     /\/\*[\s\S]*?\*\//g,
-    "",
+    ""
   );
 
   it("keeps the shared strip in the shell sheet, on the M3E error tokens", () => {
@@ -1570,7 +1731,11 @@ describe("shared-class scope — the failure strip stays shared", () => {
   });
 
   it("gives the composer its own strip, and that is the only destructive strip here", () => {
-    const strips = [...composerSheet.matchAll(/\.(nex-composer-strip-error)\s*\{([\s\S]*?)\n\}/g)];
+    const strips = [
+      ...composerSheet.matchAll(
+        /\.(nex-composer-strip-error)\s*\{([\s\S]*?)\n\}/g
+      ),
+    ];
     expect(strips).toHaveLength(1);
     expect(strips[0][2]).toContain("var(--destructive)");
   });
@@ -1586,7 +1751,9 @@ describe("shared-class scope — the failure strip stays shared", () => {
     expect(block![1]).toContain("var(--color-on-surface)");
     expect(block![1]).toContain("min-height: 48px");
     // …and the composer sheet has no UNSCOPED rule for it.
-    expect(composerSheet).not.toMatch(/(?<!shell )\.nex-composer-input\s*[,{:]/);
+    expect(composerSheet).not.toMatch(
+      /(?<!shell )\.nex-composer-input\s*[,{:]/
+    );
     for (const hook of [
       ".nex-composer-shell .nex-composer-input",
       ".nex-composer-shell .nex-composer-input::placeholder",
@@ -1608,7 +1775,9 @@ describe("shared-class scope — the failure strip stays shared", () => {
       expect(composerSheet).toMatch(new RegExp(`\\.${hook}\\.nex-seg`));
     }
     expect(composerSheet).toMatch(/\.nex-composer-attachments \.nex-chip/);
-    expect(composerSheet).toMatch(/\.nex-composer \.nex-seg button:focus-visible/);
+    expect(composerSheet).toMatch(
+      /\.nex-composer \.nex-seg button:focus-visible/
+    );
   });
 });
 
@@ -1658,7 +1827,7 @@ describe("composer — empty-screen focus (D1)", () => {
     rerender(
       <LocaleProvider>
         <Composer {...props} autoFocusField />
-      </LocaleProvider>,
+      </LocaleProvider>
     );
     expect(field).toHaveFocus();
 
@@ -1667,12 +1836,12 @@ describe("composer — empty-screen focus (D1)", () => {
     rerender(
       <LocaleProvider>
         <Composer {...props} autoFocusField={false} />
-      </LocaleProvider>,
+      </LocaleProvider>
     );
     rerender(
       <LocaleProvider>
         <Composer {...props} autoFocusField />
-      </LocaleProvider>,
+      </LocaleProvider>
     );
     expect(field).not.toHaveFocus();
   });

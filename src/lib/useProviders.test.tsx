@@ -21,8 +21,16 @@ const { mockInvoke, failNext, state } = vi.hoisted(() => {
   const failNext = { command: "" };
   const state = {
     supported: [
-      { name: "openai", display_name: "OpenAI", models: ["gpt-5.2", "gpt-5.2-mini"] },
-      { name: "anthropic", display_name: "Anthropic", models: ["claude-sonnet-4"] },
+      {
+        name: "openai",
+        display_name: "OpenAI",
+        models: ["gpt-5.2", "gpt-5.2-mini"],
+      },
+      {
+        name: "anthropic",
+        display_name: "Anthropic",
+        models: ["claude-sonnet-4"],
+      },
     ],
     configured: [{ id: 7, name: "openai", display_name: "OpenAI" }],
     credentialed: new Set<string>(["openai"]),
@@ -31,49 +39,53 @@ const { mockInvoke, failNext, state } = vi.hoisted(() => {
       ["provider.model", "gpt-5.2"],
     ]),
   };
-  const mockInvoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
-    if (failNext.command === command) {
-      failNext.command = "";
-      throw { kind: "db", message: "backend refused" };
-    }
-    switch (command) {
-      case "supported_providers":
-        return JSON.parse(JSON.stringify(state.supported));
-      case "list_providers":
-        return JSON.parse(JSON.stringify(state.configured));
-      case "get_setting":
-        return state.settings.get((args as { key: string }).key) ?? null;
-      case "set_setting": {
-        const { key, value } = args as { key: string; value: string | null };
-        if (value === null) state.settings.delete(key);
-        else state.settings.set(key, value);
-        return null;
+  const mockInvoke = vi.fn(
+    async (command: string, args?: Record<string, unknown>) => {
+      if (failNext.command === command) {
+        failNext.command = "";
+        throw { kind: "db", message: "backend refused" };
       }
-      case "has_provider_credential":
-        return state.credentialed.has((args as { provider: string }).provider);
-      case "create_provider":
-        state.configured.push({
-          id: state.configured.length + 7,
-          name: (args as { name: string }).name,
-          display_name: (args as { displayName: string }).displayName,
-        });
-        return state.configured.length + 6;
-      case "add_provider_credential":
-      case "update_provider_credential":
-        state.credentialed.add((args as { provider: string }).provider);
-        return null;
-      case "remove_provider_credential":
-        state.credentialed.delete((args as { provider: string }).provider);
-        return null;
-      case "remove_provider":
-        state.configured = state.configured.filter(
-          (provider) => provider.id !== (args as { id: number }).id,
-        );
-        return null;
-      default:
-        throw new Error(`unexpected command ${command}`);
+      switch (command) {
+        case "supported_providers":
+          return JSON.parse(JSON.stringify(state.supported));
+        case "list_providers":
+          return JSON.parse(JSON.stringify(state.configured));
+        case "get_setting":
+          return state.settings.get((args as { key: string }).key) ?? null;
+        case "set_setting": {
+          const { key, value } = args as { key: string; value: string | null };
+          if (value === null) state.settings.delete(key);
+          else state.settings.set(key, value);
+          return null;
+        }
+        case "has_provider_credential":
+          return state.credentialed.has(
+            (args as { provider: string }).provider
+          );
+        case "create_provider":
+          state.configured.push({
+            id: state.configured.length + 7,
+            name: (args as { name: string }).name,
+            display_name: (args as { displayName: string }).displayName,
+          });
+          return state.configured.length + 6;
+        case "add_provider_credential":
+        case "update_provider_credential":
+          state.credentialed.add((args as { provider: string }).provider);
+          return null;
+        case "remove_provider_credential":
+          state.credentialed.delete((args as { provider: string }).provider);
+          return null;
+        case "remove_provider":
+          state.configured = state.configured.filter(
+            (provider) => provider.id !== (args as { id: number }).id
+          );
+          return null;
+        default:
+          throw new Error(`unexpected command ${command}`);
+      }
     }
-  });
+  );
   return { mockInvoke, failNext, state };
 });
 
@@ -83,8 +95,16 @@ beforeEach(() => {
   mockInvoke.mockClear();
   failNext.command = "";
   state.supported = [
-    { name: "openai", display_name: "OpenAI", models: ["gpt-5.2", "gpt-5.2-mini"] },
-    { name: "anthropic", display_name: "Anthropic", models: ["claude-sonnet-4"] },
+    {
+      name: "openai",
+      display_name: "OpenAI",
+      models: ["gpt-5.2", "gpt-5.2-mini"],
+    },
+    {
+      name: "anthropic",
+      display_name: "Anthropic",
+      models: ["claude-sonnet-4"],
+    },
   ];
   state.configured = [{ id: 7, name: "openai", display_name: "OpenAI" }];
   state.credentialed = new Set<string>(["openai"]);
@@ -116,10 +136,18 @@ describe("useProviders — load", () => {
 
     expect(mockInvoke).toHaveBeenCalledWith("supported_providers");
     expect(mockInvoke).toHaveBeenCalledWith("list_providers");
-    expect(mockInvoke).toHaveBeenCalledWith("get_setting", { key: "provider.selected" });
-    expect(mockInvoke).toHaveBeenCalledWith("get_setting", { key: "provider.model" });
-    expect(mockInvoke).toHaveBeenCalledWith("has_provider_credential", { provider: "openai" });
-    expect(mockInvoke).toHaveBeenCalledWith("has_provider_credential", { provider: "anthropic" });
+    expect(mockInvoke).toHaveBeenCalledWith("get_setting", {
+      key: "provider.selected",
+    });
+    expect(mockInvoke).toHaveBeenCalledWith("get_setting", {
+      key: "provider.model",
+    });
+    expect(mockInvoke).toHaveBeenCalledWith("has_provider_credential", {
+      provider: "openai",
+    });
+    expect(mockInvoke).toHaveBeenCalledWith("has_provider_credential", {
+      provider: "anthropic",
+    });
 
     expect(result.current.providers).toHaveLength(2);
     expect(result.current.providers[0]).toMatchObject({
@@ -163,7 +191,10 @@ describe("useProviders — load", () => {
     failNext.command = "supported_providers";
     const { result } = renderHook(() => useProviders());
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.error).toEqual({ kind: "db", message: "backend refused" });
+    expect(result.current.error).toEqual({
+      kind: "db",
+      message: "backend refused",
+    });
     expect(result.current.providers).toEqual([]);
     expect(result.current.selectedProvider).toBeNull();
   });
@@ -173,7 +204,9 @@ describe("useProviders — select", () => {
   it("persists the selected provider and keeps a custom-valid model", async () => {
     state.settings.set("provider.model", "team/custom-model:v2");
     const { result } = renderHook(() => useProviders());
-    await waitFor(() => expect(result.current.selectedModel).toBe("team/custom-model:v2"));
+    await waitFor(() =>
+      expect(result.current.selectedModel).toBe("team/custom-model:v2")
+    );
 
     await act(async () => {
       await result.current.selectProvider("anthropic");
@@ -183,9 +216,13 @@ describe("useProviders — select", () => {
       value: "anthropic",
     });
     // The custom id is provider-independent: never dropped by a switch.
-    expect(mockInvoke.mock.calls.some(([command, args]) =>
-      command === "set_setting" && (args as { key: string }).key === "provider.model",
-    )).toBe(false);
+    expect(
+      mockInvoke.mock.calls.some(
+        ([command, args]) =>
+          command === "set_setting" &&
+          (args as { key: string }).key === "provider.model"
+      )
+    ).toBe(false);
     expect(result.current.selectedProvider).toBe("anthropic");
     expect(result.current.selectedModel).toBe("team/custom-model:v2");
   });
@@ -232,7 +269,11 @@ describe("useProviders — connect / disconnect (credential lifecycle)", () => {
 
     let ok = false;
     await act(async () => {
-      ok = await result.current.connect("anthropic", "Anthropic", "sk-anthropic");
+      ok = await result.current.connect(
+        "anthropic",
+        "Anthropic",
+        "sk-anthropic"
+      );
     });
     expect(ok).toBe(true);
     expect(mockInvoke).toHaveBeenCalledWith("create_provider", {
@@ -245,7 +286,7 @@ describe("useProviders — connect / disconnect (credential lifecycle)", () => {
     });
     // The store reloads, so the new provider reads as usable.
     await waitFor(() =>
-      expect(result.current.providers[1]).toMatchObject({ available: true }),
+      expect(result.current.providers[1]).toMatchObject({ available: true })
     );
     expect(result.current.working).toBe(false);
   });
@@ -260,13 +301,17 @@ describe("useProviders — connect / disconnect (credential lifecycle)", () => {
     });
     expect(ok).toBe(true);
     // Already configured and credentialed: no create, no add.
-    expect(mockInvoke.mock.calls.some(([command]) => command === "create_provider")).toBe(false);
+    expect(
+      mockInvoke.mock.calls.some(([command]) => command === "create_provider")
+    ).toBe(false);
     expect(mockInvoke).toHaveBeenCalledWith("update_provider_credential", {
       provider: "openai",
       credential: "sk-rotated",
     });
     expect(
-      mockInvoke.mock.calls.some(([command]) => command === "add_provider_credential"),
+      mockInvoke.mock.calls.some(
+        ([command]) => command === "add_provider_credential"
+      )
     ).toBe(false);
   });
 
@@ -277,10 +322,17 @@ describe("useProviders — connect / disconnect (credential lifecycle)", () => {
 
     let ok = true;
     await act(async () => {
-      ok = await result.current.connect("anthropic", "Anthropic", "sk-anthropic");
+      ok = await result.current.connect(
+        "anthropic",
+        "Anthropic",
+        "sk-anthropic"
+      );
     });
     expect(ok).toBe(false);
-    expect(result.current.error).toEqual({ kind: "db", message: "backend refused" });
+    expect(result.current.error).toEqual({
+      kind: "db",
+      message: "backend refused",
+    });
     expect(result.current.working).toBe(false);
   });
 
@@ -300,11 +352,13 @@ describe("useProviders — connect / disconnect (credential lifecycle)", () => {
       key: "provider.model",
       value: null,
     });
-    expect(mockInvoke).toHaveBeenCalledWith("remove_provider_credential", { provider: "openai" });
+    expect(mockInvoke).toHaveBeenCalledWith("remove_provider_credential", {
+      provider: "openai",
+    });
     expect(mockInvoke).toHaveBeenCalledWith("remove_provider", { id: 7 });
     expect(result.current.selectedProvider).toBeNull();
     await waitFor(() =>
-      expect(result.current.providers[0]).toMatchObject({ available: false }),
+      expect(result.current.providers[0]).toMatchObject({ available: false })
     );
   });
 
@@ -316,9 +370,11 @@ describe("useProviders — connect / disconnect (credential lifecycle)", () => {
       await result.current.disconnect("anthropic");
     });
     expect(
-      mockInvoke.mock.calls.some(([command, args]) =>
-        command === "set_setting" && (args as { key: string }).key === "provider.selected",
-      ),
+      mockInvoke.mock.calls.some(
+        ([command, args]) =>
+          command === "set_setting" &&
+          (args as { key: string }).key === "provider.selected"
+      )
     ).toBe(false);
     expect(result.current.selectedProvider).toBe("openai");
   });

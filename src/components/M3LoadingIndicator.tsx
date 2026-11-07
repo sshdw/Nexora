@@ -28,11 +28,14 @@ export default function M3LoadingIndicator({
     <div
       className={cn(
         "inline-flex items-center gap-2 text-muted-foreground",
-        size === "sm" ? "text-xs" : "text-sm",
+        size === "sm" ? "text-xs" : "text-sm"
       )}
       role="status"
     >
-      <Spinner className={size === "sm" ? "size-3" : "size-4"} aria-hidden="true" />
+      <Spinner
+        className={size === "sm" ? "size-3" : "size-4"}
+        aria-hidden="true"
+      />
       <span>{label}</span>
     </div>
   );

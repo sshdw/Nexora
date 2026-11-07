@@ -19,17 +19,20 @@ export default function WorkspaceSection({
 }: WorkspaceSectionProps) {
   const { t } = useStrings();
   return (
-    <section className="nex-settings-section" aria-labelledby="workspace-heading">
+    <section
+      className="nex-settings-section"
+      aria-labelledby="workspace-heading"
+    >
       <h3 id="workspace-heading" className="nex-settings-heading">
         {t("settings.sectionWorkspace")}
       </h3>
-      <p className="nex-settings-hint">
-        {t("settings.workspaceHint")}
-      </p>
+      <p className="nex-settings-hint">{t("settings.workspaceHint")}</p>
       <div className="nex-settings-field">
         <span className="nex-settings-label">{t("settings.currentRoot")}</span>
         <p className="nex-settings-value" title={workspaceRoot ?? ""}>
-          {workspaceLoading ? t("common.loading") : (workspaceRoot ?? t("settings.unset"))}
+          {workspaceLoading
+            ? t("common.loading")
+            : (workspaceRoot ?? t("settings.unset"))}
         </p>
       </div>
       <div className="nex-settings-field">

@@ -9,7 +9,14 @@
 //! `inert` while open, and the sheet variant carrying no backdrop click
 //! path. No business logic lives here — flows stay with callers.
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import ModalShell from "./Modal";
@@ -25,20 +32,22 @@ describe("ModalShell — dialog semantics", () => {
       <ModalShell title="Delete file?" onClose={() => {}}>
         <button type="button">Cancel</button>
         <button type="button">Delete</button>
-      </ModalShell>,
+      </ModalShell>
     );
     const dialog = screen.getByRole("dialog", { name: "Delete file?" });
     expect(dialog).toHaveAttribute("aria-modal", "true");
     expect(screen.getByText("Delete file?")).toBeInTheDocument();
     // Initial focus: the first focusable control in the card.
-    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Cancel" }));
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Cancel" })
+    );
   });
 
   it("falls back to focusing the card when it has no focusable child", () => {
     render(
       <ModalShell title="Nothing to press" onClose={() => {}}>
         <p>plain text</p>
-      </ModalShell>,
+      </ModalShell>
     );
     const dialog = screen.getByRole("dialog", { name: "Nothing to press" });
     expect(document.activeElement).toBe(dialog);
@@ -49,9 +58,11 @@ describe("ModalShell — dialog semantics", () => {
     render(
       <ModalShell title="Delete file?" onClose={onClose}>
         <button type="button">Cancel</button>
-      </ModalShell>,
+      </ModalShell>
     );
-    fireEvent.keyDown(screen.getByRole("dialog", { name: "Delete file?" }), { key: "Escape" });
+    fireEvent.keyDown(screen.getByRole("dialog", { name: "Delete file?" }), {
+      key: "Escape",
+    });
     // The shell stays mounted while the exit fade runs; the parent's
     // onClose fires once the window expires.
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
@@ -62,7 +73,7 @@ describe("ModalShell — dialog semantics", () => {
     render(
       <ModalShell title="Delete file?" onClose={onClose}>
         <button type="button">Cancel</button>
-      </ModalShell>,
+      </ModalShell>
     );
     const dialog = screen.getByRole("dialog", { name: "Delete file?" });
     fireEvent.keyDown(dialog, { key: "Escape" });
@@ -75,7 +86,7 @@ describe("ModalShell — dialog semantics", () => {
     render(
       <ModalShell title="Delete file?" onClose={onClose}>
         <button type="button">Cancel</button>
-      </ModalShell>,
+      </ModalShell>
     );
     // The card stops propagation: pressing inside must not dismiss.
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
@@ -90,12 +101,14 @@ describe("ModalShell — dialog semantics", () => {
     render(
       <ModalShell title="Working…" onClose={onClose} busy>
         <button type="button">Cancel</button>
-      </ModalShell>,
+      </ModalShell>
     );
     // Fake timers so the assertion covers the whole (never-armed) exit
     // window: even after advancing past it, no close may have fired.
     vi.useFakeTimers();
-    fireEvent.keyDown(screen.getByRole("dialog", { name: "Working…" }), { key: "Escape" });
+    fireEvent.keyDown(screen.getByRole("dialog", { name: "Working…" }), {
+      key: "Escape",
+    });
     fireEvent.click(screen.getByRole("presentation"));
     act(() => {
       vi.advanceTimersByTime(300);
@@ -110,12 +123,16 @@ describe("ModalShell — focus trap and restoration", () => {
       <ModalShell title="Delete file?" onClose={() => {}}>
         <button type="button">Cancel</button>
         <button type="button">Delete</button>
-      </ModalShell>,
+      </ModalShell>
     );
     const last = screen.getByRole("button", { name: "Delete" });
     last.focus();
-    fireEvent.keyDown(screen.getByRole("dialog", { name: "Delete file?" }), { key: "Tab" });
-    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.keyDown(screen.getByRole("dialog", { name: "Delete file?" }), {
+      key: "Tab",
+    });
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Cancel" })
+    );
   });
 
   it("cycles Shift+Tab from the first control back to the last", () => {
@@ -123,14 +140,16 @@ describe("ModalShell — focus trap and restoration", () => {
       <ModalShell title="Delete file?" onClose={() => {}}>
         <button type="button">Cancel</button>
         <button type="button">Delete</button>
-      </ModalShell>,
+      </ModalShell>
     );
     // Initial focus already sits on the first control.
     fireEvent.keyDown(screen.getByRole("dialog", { name: "Delete file?" }), {
       key: "Tab",
       shiftKey: true,
     });
-    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Delete" }));
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Delete" })
+    );
   });
 
   it("restores focus to the opener after closing", async () => {
@@ -143,9 +162,11 @@ describe("ModalShell — focus trap and restoration", () => {
     const modal = render(
       <ModalShell title="Delete file?" onClose={onClose}>
         <button type="button">Cancel</button>
-      </ModalShell>,
+      </ModalShell>
     );
-    fireEvent.keyDown(screen.getByRole("dialog", { name: "Delete file?" }), { key: "Escape" });
+    fireEvent.keyDown(screen.getByRole("dialog", { name: "Delete file?" }), {
+      key: "Escape",
+    });
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
     // The caller answers onClose by unmounting the shell; the cleanup
     // effect restores focus to the captured opener.
@@ -161,12 +182,14 @@ describe("ModalShell — focus trap and restoration", () => {
         <ModalShell title="Delete file?" onClose={onClose}>
           <button type="button">Cancel</button>
         </ModalShell>
-      </div>,
+      </div>
     );
     const background = screen.getByRole("button", { name: "Background" });
     expect(background.inert).toBe(true);
 
-    fireEvent.keyDown(screen.getByRole("dialog", { name: "Delete file?" }), { key: "Escape" });
+    fireEvent.keyDown(screen.getByRole("dialog", { name: "Delete file?" }), {
+      key: "Escape",
+    });
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
     // Unmounting the shell (the caller's response to onClose) releases the
     // inert background.
@@ -181,16 +204,19 @@ describe("ModalShell — sheet variant", () => {
     render(
       <ModalShell title="Composer options" onClose={onClose} sheet>
         <button type="button">Done</button>
-      </ModalShell>,
+      </ModalShell>
     );
     const presentation = screen.getByRole("presentation");
     // A sheet has no backdrop: clicking outside the card dismisses nothing.
     fireEvent.click(presentation);
     expect(onClose).not.toHaveBeenCalled();
 
-    fireEvent.keyDown(screen.getByRole("dialog", { name: "Composer options" }), {
-      key: "Escape",
-    });
+    fireEvent.keyDown(
+      screen.getByRole("dialog", { name: "Composer options" }),
+      {
+        key: "Escape",
+      }
+    );
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
   });
 });

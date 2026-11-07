@@ -36,16 +36,15 @@ export default function ProviderSection({
 }: ProviderSectionProps) {
   const { t } = useStrings();
   return (
-    <section className="nex-settings-section" aria-labelledby="selection-heading">
+    <section
+      className="nex-settings-section"
+      aria-labelledby="selection-heading"
+    >
       <h3 id="selection-heading" className="nex-settings-heading">
         {t("settings.sectionProvider")}
       </h3>
-      <p className="nex-settings-hint">
-        {t("settings.providerHint")}
-      </p>
-      <p className="nex-settings-hint">
-        {t("settings.providerStaleHint")}
-      </p>
+      <p className="nex-settings-hint">{t("settings.providerHint")}</p>
+      <p className="nex-settings-hint">{t("settings.providerStaleHint")}</p>
 
       <div className="nex-settings-field">
         <label className="nex-settings-label" htmlFor="provider-select">
@@ -63,7 +62,9 @@ export default function ProviderSection({
           {store.providers.map(({ supported, available }) => (
             <option key={supported.name} value={supported.name}>
               {supported.display_name}
-              {available ? t("settings.readySuffix") : t("settings.notConnectedSuffix")}
+              {available
+                ? t("settings.readySuffix")
+                : t("settings.notConnectedSuffix")}
             </option>
           ))}
         </select>
@@ -112,9 +113,7 @@ export default function ProviderSection({
               if (event.key === "Enter") onCustomCommit();
             }}
           />
-          <p className="nex-settings-hint">
-            {t("settings.customModelHint")}
-          </p>
+          <p className="nex-settings-hint">{t("settings.customModelHint")}</p>
         </div>
       )}
     </section>

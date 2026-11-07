@@ -33,38 +33,40 @@ function debtRow(overrides: Partial<DebtItem> = {}): DebtItem {
 const { mockInvoke, rows, failNext } = vi.hoisted(() => {
   const rows: DebtItem[] = [];
   const failNext = { command: "" };
-  const mockInvoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
-    void args;
-    if (failNext.command === command) {
-      failNext.command = "";
-      throw { kind: "io", message: "backend refused" };
+  const mockInvoke = vi.fn(
+    async (command: string, args?: Record<string, unknown>) => {
+      void args;
+      if (failNext.command === command) {
+        failNext.command = "";
+        throw { kind: "io", message: "backend refused" };
+      }
+      switch (command) {
+        case "list_debt_items":
+          return [...rows];
+        case "create_debt_item": {
+          const id = rows.length + 100;
+          rows.push(debtRow(id, args));
+          return id;
+        }
+        case "update_debt_item_status": {
+          const { debtId, status } = args as { debtId: number; status: string };
+          const row = rows.find((item) => item.id === debtId);
+          if (row) row.status = status as DebtItem["status"];
+          return null;
+        }
+        case "delete_debt_item": {
+          const { debtId } = args as { debtId: number };
+          const index = rows.findIndex((item) => item.id === debtId);
+          if (index >= 0) rows.splice(index, 1);
+          return null;
+        }
+        case "import_debt_from_audit":
+          return { inserted: 2, skipped: 1 };
+        default:
+          throw new Error(`unexpected command ${command}`);
+      }
     }
-    switch (command) {
-      case "list_debt_items":
-        return [...rows];
-      case "create_debt_item": {
-        const id = rows.length + 100;
-        rows.push(debtRow(id, args));
-        return id;
-      }
-      case "update_debt_item_status": {
-        const { debtId, status } = args as { debtId: number; status: string };
-        const row = rows.find((item) => item.id === debtId);
-        if (row) row.status = status as DebtItem["status"];
-        return null;
-      }
-      case "delete_debt_item": {
-        const { debtId } = args as { debtId: number };
-        const index = rows.findIndex((item) => item.id === debtId);
-        if (index >= 0) rows.splice(index, 1);
-        return null;
-      }
-      case "import_debt_from_audit":
-        return { inserted: 2, skipped: 1 };
-      default:
-        throw new Error(`unexpected command ${command}`);
-    }
-  });
+  );
   // Small helper hoisted alongside: build a row for create with the args.
   function debtRow(id: number, args?: Record<string, unknown>): DebtItem {
     const input = (args ?? {}) as {
@@ -119,7 +121,7 @@ describe("useDebt", () => {
     const { result } = renderHook(() => useDebt());
     await waitFor(() => expect(result.current.loading).toBe(false));
     const listCalls = mockInvoke.mock.calls.filter(
-      ([command]) => command === "list_debt_items",
+      ([command]) => command === "list_debt_items"
     ).length;
 
     await act(async () => {
@@ -129,8 +131,10 @@ describe("useDebt", () => {
       debtId: 1,
       status: "accepted",
     });
-    expect(mockInvoke.mock.calls.filter(([command]) => command === "list_debt_items").length)
-      .toBe(listCalls + 1);
+    expect(
+      mockInvoke.mock.calls.filter(([command]) => command === "list_debt_items")
+        .length
+    ).toBe(listCalls + 1);
     expect(result.current.items[0].status).toBe("accepted");
     expect(result.current.busyId).toBeNull();
     expect(result.current.loading).toBe(false);
@@ -176,7 +180,12 @@ describe("useDebt", () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
     let failure: string | null = "unset";
     await act(async () => {
-      failure = await result.current.create("new row", "info", "src/a.rs:1", "note");
+      failure = await result.current.create(
+        "new row",
+        "info",
+        "src/a.rs:1",
+        "note"
+      );
     });
     expect(failure).toBeNull();
     expect(mockInvoke).toHaveBeenCalledWith("create_debt_item", {
@@ -185,7 +194,9 @@ describe("useDebt", () => {
       location: "src/a.rs:1",
       note: "note",
     });
-    expect(result.current.items.some((item) => item.title === "new row")).toBe(true);
+    expect(result.current.items.some((item) => item.title === "new row")).toBe(
+      true
+    );
     // The shared list error stays untouched — the form owns create failures.
     expect(result.current.error).toBeNull();
     expect(result.current.saving).toBe(false);

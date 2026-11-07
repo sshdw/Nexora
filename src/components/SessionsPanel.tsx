@@ -30,7 +30,13 @@ import { useStrings } from "../lib/useLocale";
 import ConfirmDialog from "./ConfirmDialog";
 import M3IconButton from "./M3IconButton";
 import M3Toolbar from "./M3Toolbar";
-import { ArchiveIcon, PencilIcon, SearchIcon, TrashIcon, UnarchiveIcon } from "./icons";
+import {
+  ArchiveIcon,
+  PencilIcon,
+  SearchIcon,
+  TrashIcon,
+  UnarchiveIcon,
+} from "./icons";
 
 export interface SessionsPanelProps {
   conversations: readonly Conversation[];
@@ -98,7 +104,10 @@ export default function SessionsPanel({
     if (restoreFocus) returnFocus(id);
   };
 
-  const commitRename = async (conversation: Conversation, restoreFocus: boolean) => {
+  const commitRename = async (
+    conversation: Conversation,
+    restoreFocus: boolean
+  ) => {
     if (skipBlur.current) {
       skipBlur.current = false;
       return;
@@ -158,13 +167,14 @@ export default function SessionsPanel({
                 if (element === null) rowRefs.current.delete(conversation.id);
                 else rowRefs.current.set(conversation.id, element);
               }}
-              className={
-                "nex-sessions-row" + (isCurrent ? " is-current" : "")
-              }
+              className={"nex-sessions-row" + (isCurrent ? " is-current" : "")}
               aria-current={isCurrent ? "true" : undefined}
               onClick={() => onOpen(conversation.id)}
             >
-              <span className="nex-sessions-row-title" title={conversation.title}>
+              <span
+                className="nex-sessions-row-title"
+                title={conversation.title}
+              >
                 {conversation.title}
               </span>
               <span className="nex-sessions-row-meta">
@@ -243,7 +253,9 @@ export default function SessionsPanel({
         <p className="nex-dock-panel-note">{t("common.loading")}</p>
       ) : filtered.length === 0 ? (
         <p className="nex-dock-panel-note">
-          {conversations.length === 0 ? t("dock.sessionsEmpty") : t("dock.sessionsNoMatch")}
+          {conversations.length === 0
+            ? t("dock.sessionsEmpty")
+            : t("dock.sessionsNoMatch")}
         </p>
       ) : (
         <div className="nex-sessions-scroll">

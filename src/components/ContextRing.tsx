@@ -53,7 +53,10 @@ export function formatCompactTokens(value: number): string {
   return `${trim(value / 1_000_000)}M`;
 }
 
-export default function ContextRing({ conversationId, revision }: ContextRingProps) {
+export default function ContextRing({
+  conversationId,
+  revision,
+}: ContextRingProps) {
   const { t } = useStrings();
   const [stats, setStats] = useState<ConversationContextStats | null>(null);
   const layout = useComposerPopoverLayout();
@@ -74,12 +77,14 @@ export default function ContextRing({ conversationId, revision }: ContextRingPro
 
   const known = stats !== null && stats.has_token_data;
   const percent = known && stats !== null ? stats.usage_percent : null;
-  const usage = known && stats !== null
-    ? `${formatCompactTokens(stats.total_tokens)} / ${formatCompactTokens(stats.context_limit)} (${Math.round(stats.usage_percent)}%)`
-    : t("common.na");
-  const label = known && stats !== null
-    ? t("conv.contextAria", { percent: Math.round(stats.usage_percent) })
-    : t("conv.contextAriaNa");
+  const usage =
+    known && stats !== null
+      ? `${formatCompactTokens(stats.total_tokens)} / ${formatCompactTokens(stats.context_limit)} (${Math.round(stats.usage_percent)}%)`
+      : t("common.na");
+  const label =
+    known && stats !== null
+      ? t("conv.contextAria", { percent: Math.round(stats.usage_percent) })
+      : t("conv.contextAriaNa");
 
   return (
     <Popover
@@ -108,7 +113,11 @@ export default function ContextRing({ conversationId, revision }: ContextRingPro
         sideOffset={layout.sideOffset}
         collisionPadding={8}
         className="nex-composer-context-menu"
-        style={layout.maxHeight === undefined ? undefined : { maxHeight: layout.maxHeight }}
+        style={
+          layout.maxHeight === undefined
+            ? undefined
+            : { maxHeight: layout.maxHeight }
+        }
       >
         <PopoverHeader>
           <PopoverTitle>{t("conv.contextWindow")}</PopoverTitle>

@@ -105,7 +105,7 @@ export default function DebtPanel({ onClose }: DebtPanelProps) {
     setImportNotice(
       result.skipped > 0
         ? `${base} ${t("debt.importSkipped", { n: result.skipped })}`
-        : base,
+        : base
     );
   }, [debt, t]);
 
@@ -128,7 +128,7 @@ export default function DebtPanel({ onClose }: DebtPanelProps) {
       title,
       formSeverity,
       formLocation.trim() === "" ? null : formLocation.trim(),
-      formNote.trim() === "" ? null : formNote.trim(),
+      formNote.trim() === "" ? null : formNote.trim()
     );
     if (failure !== null) {
       setFormError(failure);
@@ -144,7 +144,7 @@ export default function DebtPanel({ onClose }: DebtPanelProps) {
   const visible = items.filter(
     (item) =>
       (severityFilter === "all" || item.severity === severityFilter) &&
-      (statusFilter === "all" || item.status === statusFilter),
+      (statusFilter === "all" || item.status === statusFilter)
   );
 
   return (
@@ -235,14 +235,19 @@ export default function DebtPanel({ onClose }: DebtPanelProps) {
                         {sourceLabel(item.source, t)}
                       </span>{" "}
                       {item.location && (
-                        <span className="nex-tag nex-tag-mono" title={item.location}>
+                        <span
+                          className="nex-tag nex-tag-mono"
+                          title={item.location}
+                        >
                           {item.location}
                         </span>
                       )}
                     </div>
                     <p className="nex-vcs-notice">{item.title}</p>
                     {item.note && (
-                      <pre className="nex-agent-terminal-stdout">{item.note}</pre>
+                      <pre className="nex-agent-terminal-stdout">
+                        {item.note}
+                      </pre>
                     )}
                     <div>
                       <label
@@ -256,7 +261,9 @@ export default function DebtPanel({ onClose }: DebtPanelProps) {
                         className="nex-input"
                         value={item.status}
                         disabled={busyId === item.id}
-                        onChange={(event) => void debt.changeStatus(item, event.target.value)}
+                        onChange={(event) =>
+                          void debt.changeStatus(item, event.target.value)
+                        }
                       >
                         {STATUS_ORDER.map((status) => (
                           <option key={status} value={status}>
@@ -319,7 +326,10 @@ export default function DebtPanel({ onClose }: DebtPanelProps) {
                 placeholder={t("debt.titlePh")}
                 onChange={(event) => setFormTitle(event.target.value)}
               />
-              <label className="nex-vcs-notice" htmlFor="nex-debt-form-severity">
+              <label
+                className="nex-vcs-notice"
+                htmlFor="nex-debt-form-severity"
+              >
                 {t("debt.severityLabel")}
               </label>
               <select

@@ -13,8 +13,10 @@ import type { ButtonHTMLAttributes, ReactNode } from "react";
 import { Button } from "./ui/button";
 import Tooltip from "./Tooltip";
 
-export interface M3IconButtonProps
-  extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, "children"> {
+export interface M3IconButtonProps extends Omit<
+  ButtonHTMLAttributes<HTMLButtonElement>,
+  "children"
+> {
   /** Accessible name (required): aria-label + tooltip + title. */
   label: string;
   size?: "sm" | "md" | "lg";

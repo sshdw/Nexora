@@ -185,9 +185,15 @@ export default function Composer({
   // this field already) may be claimed, and a modal on top always wins.
   useEffect(() => {
     if (!autoFocusField || autoFocusedRef.current) return;
-    if (document.querySelector('[role="dialog"][aria-modal="true"]') !== null) return;
+    if (document.querySelector('[role="dialog"][aria-modal="true"]') !== null)
+      return;
     const active = document.activeElement;
-    if (active !== null && active !== document.body && active !== fieldRef.current) return;
+    if (
+      active !== null &&
+      active !== document.body &&
+      active !== fieldRef.current
+    )
+      return;
     fieldRef.current?.focus();
     autoFocusedRef.current = true;
   }, [autoFocusField]);
@@ -204,12 +210,18 @@ export default function Composer({
               the run would silently drop is a promise the backend
               cannot keep. */}
           {!agentMode && attachments.length > 0 && (
-            <ul className="nex-composer-attachments" aria-label={t("conv.attachedFiles")}>
+            <ul
+              className="nex-composer-attachments"
+              aria-label={t("conv.attachedFiles")}
+            >
               {attachments.map((attachment) => (
                 <li key={attachment.id} className="nex-chip">
                   <PaperclipIcon className="nex-chip-icon" />
                   <span className="nex-attachment-text">
-                    <span className="nex-chip-name" title={attachment.file_name}>
+                    <span
+                      className="nex-chip-name"
+                      title={attachment.file_name}
+                    >
                       {attachment.file_name}
                     </span>
                     {formatBytes(attachment.file_size_bytes) !== null && (
@@ -291,12 +303,22 @@ export default function Composer({
                     value: "chat",
                     label: t("conv.modeChat"),
                     ariaLabel: t("conv.modeChatAria"),
-                    leading: <span className="nex-composer-pill-dot" aria-hidden="true" />,
+                    leading: (
+                      <span
+                        className="nex-composer-pill-dot"
+                        aria-hidden="true"
+                      />
+                    ),
                   },
                   {
                     value: "agent",
                     label: t("conv.agentToggle"),
-                    leading: <span className="nex-composer-pill-dot" aria-hidden="true" />,
+                    leading: (
+                      <span
+                        className="nex-composer-pill-dot"
+                        aria-hidden="true"
+                      />
+                    ),
                   },
                 ]}
               />
@@ -310,92 +332,108 @@ export default function Composer({
                 Wrapped together, the group moves as a unit and keeps its
                 internal rhythm. */}
             <span className="nex-composer-bar-trailing">
-
-            {/* Autonomy is a MODE, not a row of pills under the field (D-03
+              {/* Autonomy is a MODE, not a row of pills under the field (D-03
                 rejects the always-open autonomy row; O-12 puts it in
                 "Settings + compact run meta"). The trigger names the live
                 mode in one word and the three choices plus their explainer
                 live behind it, so the composer keeps one control row and the
                 sentence that explains a mode is only on screen while the
                 user is choosing one. */}
-            {agentMode && (
-              <Popover>
-                <PopoverTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="nex-composer-autonomy-trigger"
-                    aria-label={t("conv.autonomyAria")}
-                    title={t("conv.autonomyLabel")}
+              {agentMode && (
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="nex-composer-autonomy-trigger"
+                      aria-label={t("conv.autonomyAria")}
+                      title={t("conv.autonomyLabel")}
+                    >
+                      <span
+                        className="nex-composer-autonomy-dot"
+                        aria-hidden="true"
+                      />
+                      <span className="nex-composer-autonomy-name">
+                        {autonomy.mode === "supervised"
+                          ? t("conv.autonomySupervised")
+                          : autonomy.mode === "semi_autonomous"
+                            ? t("conv.autonomySemi")
+                            : t("conv.autonomyFull")}
+                      </span>
+                      <ChevronDownIcon />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent
+                    align="end"
+                    side="top"
+                    sideOffset={8}
+                    className="nex-composer-autonomy-menu"
                   >
-                    <span className="nex-composer-autonomy-dot" aria-hidden="true" />
-                    <span className="nex-composer-autonomy-name">
-                      {autonomy.mode === "supervised"
-                        ? t("conv.autonomySupervised")
-                        : autonomy.mode === "semi_autonomous"
-                          ? t("conv.autonomySemi")
-                          : t("conv.autonomyFull")}
-                    </span>
-                    <ChevronDownIcon />
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent align="end" side="top" sideOffset={8} className="nex-composer-autonomy-menu">
-                  <PopoverHeader>
-                    <PopoverTitle>{t("conv.autonomyLabel")}</PopoverTitle>
-                  </PopoverHeader>
-                  <M3SegmentedGroup
-                    className="nex-composer-autonomy"
-                    label={t("conv.autonomyAria")}
-                    semantics="radio"
-                    indicator={false}
-                    value={autonomy.mode}
-                    onChange={(mode) => onAutonomyChange(mode)}
-                    options={[
-                      { value: "supervised", label: t("conv.autonomySupervised") },
-                      {
-                        value: "semi_autonomous",
-                        label: t("conv.autonomySemi"),
-                        ariaLabel: t("conv.autonomySemiAria"),
-                      },
-                      { value: "full_autonomous", label: t("conv.autonomyFull") },
-                    ]}
-                  />
-                  <ComposerAutonomyHint
-                    mode={autonomy.mode}
-                    text={
-                      autonomy.mode === "supervised"
-                        ? t("conv.autonomyExplainSupervised")
-                        : autonomy.mode === "semi_autonomous"
-                          ? t("conv.autonomyExplainSemi")
-                          : t("conv.autonomyExplainFull")
-                    }
-                  />
-                </PopoverContent>
-              </Popover>
-            )}
+                    <PopoverHeader>
+                      <PopoverTitle>{t("conv.autonomyLabel")}</PopoverTitle>
+                    </PopoverHeader>
+                    <M3SegmentedGroup
+                      className="nex-composer-autonomy"
+                      label={t("conv.autonomyAria")}
+                      semantics="radio"
+                      indicator={false}
+                      value={autonomy.mode}
+                      onChange={(mode) => onAutonomyChange(mode)}
+                      options={[
+                        {
+                          value: "supervised",
+                          label: t("conv.autonomySupervised"),
+                        },
+                        {
+                          value: "semi_autonomous",
+                          label: t("conv.autonomySemi"),
+                          ariaLabel: t("conv.autonomySemiAria"),
+                        },
+                        {
+                          value: "full_autonomous",
+                          label: t("conv.autonomyFull"),
+                        },
+                      ]}
+                    />
+                    <ComposerAutonomyHint
+                      mode={autonomy.mode}
+                      text={
+                        autonomy.mode === "supervised"
+                          ? t("conv.autonomyExplainSupervised")
+                          : autonomy.mode === "semi_autonomous"
+                            ? t("conv.autonomyExplainSemi")
+                            : t("conv.autonomyExplainFull")
+                      }
+                    />
+                  </PopoverContent>
+                </Popover>
+              )}
 
-            {/* The context ring sits left of the model trigger — the
+              {/* The context ring sits left of the model trigger — the
                 reference order is ring → model → Send. It is the composer's
                 only reading of the context window, and it reads `n/a` rather
                 than inventing 0%. Inside the trailing group, so the bar still
                 wraps ring+model+Send as one unit in a split pane. */}
-            <ContextRing conversationId={conversationId} revision={contextRevision} />
+              <ContextRing
+                conversationId={conversationId}
+                revision={contextRevision}
+              />
 
-            {/* Model picker (R6-02). A real searchable listbox now: the
+              {/* Model picker (R6-02). A real searchable listbox now: the
                 segmented primitive's inline-grid root resolved its implicit
                 column to max-content and grew wider than the popover, which
                 is where the UA's horizontal bar came from. The picker owns
                 its own search + keyboard contract; this component only
                 dispatches the choice. */}
-            <ModelPicker
-              selectedModel={selectedModel}
-              models={models}
-              onSelectModel={onSelectModel}
-              modelError={modelError}
-              onOpenSettings={onOpenSettings}
-            />
+              <ModelPicker
+                selectedModel={selectedModel}
+                models={models}
+                onSelectModel={onSelectModel}
+                modelError={modelError}
+                onOpenSettings={onOpenSettings}
+              />
 
-            {/* Send. ONE button, ONE geometry, three states (R6-01):
+              {/* Send. ONE button, ONE geometry, three states (R6-01):
                   idle   muted plate + arrow (no draft, no run)
                   armed  light plate + arrow
                   stop   light plate + FILLED square, click stops the run
@@ -409,28 +447,28 @@ export default function Composer({
                 classes below replace the variant's disabled utilities
                 instead of stacking with them —
                 src/components/Composer.test.tsx asserts the merge. */}
-            <Button
-              size="icon"
-              variant="default"
-              className={
-                "nex-composer-send disabled:border-transparent " +
-                (live || canSend
-                  ? "bg-primary text-primary-foreground hover:bg-primary-hover active:bg-primary-pressed"
-                  : "bg-secondary text-muted-foreground disabled:bg-secondary disabled:text-muted-foreground disabled:opacity-100")
-              }
-              disabled={!live && !canSend}
-              aria-busy={(!live && busy) || undefined}
-              aria-label={live ? t("conv.stopAria") : t("conv.sendAria")}
-              title={live ? t("conv.stopAria") : t("conv.sendAria")}
-              data-state={live ? "stop" : canSend ? "armed" : "idle"}
-              onClick={live ? onStop : onSubmit}
-            >
-              {live ? (
-                <StopIcon size={16} />
-              ) : (
-                <ArrowUpIcon size={20} className="size-5" />
-              )}
-            </Button>
+              <Button
+                size="icon"
+                variant="default"
+                className={
+                  "nex-composer-send disabled:border-transparent " +
+                  (live || canSend
+                    ? "bg-primary text-primary-foreground hover:bg-primary-hover active:bg-primary-pressed"
+                    : "bg-secondary text-muted-foreground disabled:bg-secondary disabled:text-muted-foreground disabled:opacity-100")
+                }
+                disabled={!live && !canSend}
+                aria-busy={(!live && busy) || undefined}
+                aria-label={live ? t("conv.stopAria") : t("conv.sendAria")}
+                title={live ? t("conv.stopAria") : t("conv.sendAria")}
+                data-state={live ? "stop" : canSend ? "armed" : "idle"}
+                onClick={live ? onStop : onSubmit}
+              >
+                {live ? (
+                  <StopIcon size={16} />
+                ) : (
+                  <ArrowUpIcon size={20} className="size-5" />
+                )}
+              </Button>
             </span>
           </div>
         </div>
@@ -441,7 +479,9 @@ export default function Composer({
             the composer cannot work and says what to do about it. */}
         {!ready && (
           <p className="nex-composer-hint">
-            <span className="nex-composer-shortcut">{t("conv.hintSetup")} </span>
+            <span className="nex-composer-shortcut">
+              {t("conv.hintSetup")}{" "}
+            </span>
             <M3Button variant="quiet" size="sm" onClick={onOpenSettings}>
               {t("conv.openSettings")}
             </M3Button>

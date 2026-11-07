@@ -57,7 +57,9 @@ export default function ActivityTab({
   }, [conversations]);
 
   const rows = useMemo<FeedRow[]>(() => {
-    const toRunRow = (run: NonNullable<ActivityFeed["runs"]>[number]): FeedRow => {
+    const toRunRow = (
+      run: NonNullable<ActivityFeed["runs"]>[number]
+    ): FeedRow => {
       const convTitle =
         run.conversation_id !== null
           ? titles.get(run.conversation_id)
@@ -74,7 +76,9 @@ export default function ActivityTab({
         runId: run.run_id,
         conversationId: run.conversation_id,
         title:
-          convTitle !== undefined ? t("activity.runIn", { title: convTitle }) : t("activity.runHash", { id: run.run_id }),
+          convTitle !== undefined
+            ? t("activity.runIn", { title: convTitle })
+            : t("activity.runHash", { id: run.run_id }),
         detail: parts.join(" · "),
         status: run.status,
         time: run.started_at,
@@ -101,7 +105,10 @@ export default function ActivityTab({
         kind: "conversation",
         conversationId: conv.id,
         title: t("activity.convCreated", { title: conv.title }),
-        detail: conv.status === "archived" ? t("common.archived") : t("common.active"),
+        detail:
+          conv.status === "archived"
+            ? t("common.archived")
+            : t("common.active"),
         time: conv.created_at,
       });
     }
@@ -136,9 +143,7 @@ export default function ActivityTab({
       ) : rows.length === 0 ? (
         <div className="nex-activity-empty">
           <p className="nex-activity-empty-title">{t("activity.emptyTitle")}</p>
-          <p className="nex-activity-empty-text">
-            {t("activity.emptyText")}
-          </p>
+          <p className="nex-activity-empty-text">{t("activity.emptyText")}</p>
         </div>
       ) : (
         <ul className="nex-activity-list">

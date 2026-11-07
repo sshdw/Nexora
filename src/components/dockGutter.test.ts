@@ -53,7 +53,9 @@ function code(path: string): string {
 /** Body of a top-level rule, matched by its EXACT selector. */
 function ruleBody(sheet: string, selector: string): string {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = new RegExp(`(?:^|\\n)${escaped}\\s*\\{([\\s\\S]*?)\\n\\}`).exec(sheet);
+  const match = new RegExp(`(?:^|\\n)${escaped}\\s*\\{([\\s\\S]*?)\\n\\}`).exec(
+    sheet
+  );
   if (!match) throw new Error(`no top-level rule for ${selector}`);
   return match[1];
 }
@@ -64,7 +66,9 @@ function ruleBody(sheet: string, selector: string): string {
 function lastRuleBody(sheet: string, selector: string): string {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const matches = [
-    ...sheet.matchAll(new RegExp(`(?:^|\\n)${escaped}\\s*\\{([\\s\\S]*?)\\n\\}`, "g")),
+    ...sheet.matchAll(
+      new RegExp(`(?:^|\\n)${escaped}\\s*\\{([\\s\\S]*?)\\n\\}`, "g")
+    ),
   ];
   const last = matches[matches.length - 1];
   if (!last) throw new Error(`no top-level rule for ${selector}`);
@@ -73,13 +77,19 @@ function lastRuleBody(sheet: string, selector: string): string {
 
 /** The LAST declaration of `property` in a rule body — last wins in CSS. */
 function declaration(body: string, property: string): string | undefined {
-  const matches = [...body.matchAll(new RegExp(`(?:^|[;{\\s])${property}\\s*:\\s*([^;]+);`, "gi"))];
+  const matches = [
+    ...body.matchAll(
+      new RegExp(`(?:^|[;{\\s])${property}\\s*:\\s*([^;]+);`, "gi")
+    ),
+  ];
   return matches[matches.length - 1]?.[1]?.trim();
 }
 
 /** Every custom property declared in src/index.css, last declaration wins. */
 const TOKENS = new Map<string, string>();
-for (const match of code("src/index.css").matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+);/gi)) {
+for (const match of code("src/index.css").matchAll(
+  /(--[a-z0-9-]+)\s*:\s*([^;]+);/gi
+)) {
   TOKENS.set(match[1] ?? "", (match[2] ?? "").trim());
 }
 
@@ -100,11 +110,14 @@ function resolve(value: string | undefined): string | undefined {
 
 /** Replace every `var(--token)` in a value with its resolved literal. */
 function resolveInline(value: string): string {
-  return value.replace(/var\(\s*(--[a-z0-9-]+)\s*\)/g, (_match, name: string) => {
-    const resolved = resolve(`var(${name})`);
-    if (resolved === undefined) throw new Error(`unresolved token: ${name}`);
-    return resolved;
-  });
+  return value.replace(
+    /var\(\s*(--[a-z0-9-]+)\s*\)/g,
+    (_match, name: string) => {
+      const resolved = resolve(`var(${name})`);
+      if (resolved === undefined) throw new Error(`unresolved token: ${name}`);
+      return resolved;
+    }
+  );
 }
 
 /** The rail's width, as the sheets resolve it. The ONE concrete number in
@@ -115,7 +128,9 @@ const RAIL_WIDTH = resolve("var(--dock-width)") ?? "";
 
 /** `60px` as written by hand instead of `var(--dock-width)`. */
 function railLiteral(): RegExp {
-  return new RegExp(`\\b${RAIL_WIDTH.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`);
+  return new RegExp(
+    `\\b${RAIL_WIDTH.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`
+  );
 }
 
 /** The reading measure — the ONE column the thread's rows, the empty state
@@ -126,7 +141,7 @@ const MEASURE = resolve("var(--layout-measure-max)") ?? "";
 /** The narrowest window the app ships at (`tauri.conf.json`), so the axis
  *  can be proved where it is tightest without inventing a width. */
 const MIN_WINDOW_WIDTH = Number(
-  /"minWidth"\s*:\s*(\d+)/.exec(readRepoFile("src-tauri/tauri.conf.json"))?.[1],
+  /"minWidth"\s*:\s*(\d+)/.exec(readRepoFile("src-tauri/tauri.conf.json"))?.[1]
 );
 
 /** Where the shared column lands at a given window width: the stage's
@@ -216,14 +231,22 @@ describe("conversation stage reserves the rail at the container", () => {
     // there.
     const ownedBlocks: Array<[string, string]> = [
       ["composer.css .nex-composer", ruleBody(composerSheet, ".nex-composer")],
-      ["composer.css .nex-composer-inner", ruleBody(composerSheet, ".nex-composer-inner")],
+      [
+        "composer.css .nex-composer-inner",
+        ruleBody(composerSheet, ".nex-composer-inner"),
+      ],
     ];
     for (const [label, body] of ownedBlocks) {
       expect(body, label).not.toMatch(/--dock-width/);
     }
     // The composer's reading column stays centred in whatever box the stage
     // hands it, so it shares the thread's axis instead of its own.
-    expect(declaration(ruleBody(composerSheet, ".nex-composer-inner"), "margin-inline")).toBe("auto");
+    expect(
+      declaration(
+        ruleBody(composerSheet, ".nex-composer-inner"),
+        "margin-inline"
+      )
+    ).toBe("auto");
   });
 
   it("clears the empty state past the rail by arithmetic, not by eye", () => {
@@ -232,10 +255,18 @@ describe("conversation stage reserves the rail at the container", () => {
     // the centring offset, with no per-text padding left to add into the
     // sum. Proved at the window's own minimum width — the tightest case the
     // app ships — rather than at a comfortable one.
-    expect(Number.isFinite(MIN_WINDOW_WIDTH), "minWidth is readable").toBe(true);
+    expect(Number.isFinite(MIN_WINDOW_WIDTH), "minWidth is readable").toBe(
+      true
+    );
     const column = sharedColumn(MIN_WINDOW_WIDTH);
-    expect(Number.isFinite(column.left), "the column's left edge is a length").toBe(true);
-    expect(Number.isFinite(column.width), "the column's width is a length").toBe(true);
+    expect(
+      Number.isFinite(column.left),
+      "the column's left edge is a length"
+    ).toBe(true);
+    expect(
+      Number.isFinite(column.width),
+      "the column's width is a length"
+    ).toBe(true);
 
     // THE CONTRACT: the column's left edge starts strictly right of the
     // rail's right edge, and the centring alone is what puts it there.
@@ -243,7 +274,10 @@ describe("conversation stage reserves the rail at the container", () => {
 
     // …and the empty stage adds no inline offset of its own, so the sum
     // above is complete: what places the composer is the column.
-    const emptyBand = lastRuleBody(stageSheet, ".nex-main-conversation.is-empty > .nex-composer");
+    const emptyBand = lastRuleBody(
+      stageSheet,
+      ".nex-main-conversation.is-empty > .nex-composer"
+    );
     expect(declaration(emptyBand, "margin-inline")).toBeUndefined();
     expect(declaration(emptyBand, "padding-inline")).toBeUndefined();
   });
@@ -266,9 +300,15 @@ describe("thread and composer share one stage box", () => {
   it("renders the thread and the composer as children of the stage container", () => {
     expect(containerAt).toBeGreaterThan(-1);
     // One stage per view; split panes each render their own.
-    expect([...viewSource.matchAll(/"nex-main-conversation"/g)]).toHaveLength(1);
+    expect([...viewSource.matchAll(/"nex-main-conversation"/g)]).toHaveLength(
+      1
+    );
 
-    const threadAt = viewSource.indexOf('<div className="nex-thread"');
+    // Whitespace-tolerant between the tag and its class attribute: the
+    // printer may wrap the opening tag. match.index still anchors at the
+    // `<div` itself, which is what divDepthAt measures from.
+    const threadAt =
+      /<div\s+className="nex-thread"/.exec(viewSource)?.index ?? -1;
     const composerAt = viewSource.indexOf("<Composer");
     expect(threadAt).toBeGreaterThan(containerAt);
     expect(composerAt).toBeGreaterThan(threadAt);
@@ -311,12 +351,18 @@ describe("the composer band keeps its paint full-bleed (round 2)", () => {
   const band = ruleBody(stageSheet, ".nex-main-conversation > .nex-composer");
 
   it("cancels the stage reserve on the band, from the one rail token", () => {
-    expect(declaration(band, "margin-inline")).toBe("calc(-1 * var(--dock-width))");
-    expect(resolveInline(declaration(band, "margin-inline") ?? "")).toBe(`calc(-1 * ${RAIL_WIDTH})`);
+    expect(declaration(band, "margin-inline")).toBe(
+      "calc(-1 * var(--dock-width))"
+    );
+    expect(resolveInline(declaration(band, "margin-inline") ?? "")).toBe(
+      `calc(-1 * ${RAIL_WIDTH})`
+    );
   });
 
   it("spends the borrowed width on transparent border, so content stays reserved", () => {
-    expect(declaration(band, "border-inline")).toBe("var(--dock-width) solid transparent");
+    expect(declaration(band, "border-inline")).toBe(
+      "var(--dock-width) solid transparent"
+    );
     const resolved = resolveInline(declaration(band, "border-inline") ?? "");
     expect(resolved).toBe(`${RAIL_WIDTH} solid transparent`);
     // The border width IS the reserve: content box = stage content box, so
@@ -389,7 +435,9 @@ describe("stage sweep — no surface may be left ending at the inset", () => {
    *  checked against that component's own source. */
   function stageChildRoots(): string[] {
     const roots = new Set<string>();
-    for (const match of viewSource.matchAll(/<div className="(nex-[a-z-]+)(?: [^"]*)?"/g)) {
+    for (const match of viewSource.matchAll(
+      /<div\s+className="(nex-[a-z-]+)(?: [^"]*)?"/g
+    )) {
       if (divDepthAt(match.index ?? 0) === 1) roots.add(match[1] ?? "");
     }
     const components: Array<[string, string, string]> = [
@@ -399,7 +447,9 @@ describe("stage sweep — no surface may be left ending at the inset", () => {
       const at = viewSource.indexOf(tag);
       if (at > -1 && divDepthAt(at) === 1) {
         // The root element of the component itself, not a nested element.
-        expect(source, tag).toMatch(new RegExp(`<div className="${root}(?:[ "]|$)`));
+        expect(source, tag).toMatch(
+          new RegExp(`<div\\s+className="${root}(?:[ "]|$)`)
+        );
         roots.add(root);
       }
     }
@@ -407,16 +457,21 @@ describe("stage sweep — no surface may be left ending at the inset", () => {
   }
 
   it("accounts for every direct child of the stage", () => {
-    expect(stageChildRoots()).toEqual(SURFACES.map((surface) => surface.root).sort());
+    expect(stageChildRoots()).toEqual(
+      SURFACES.map((surface) => surface.root).sort()
+    );
   });
 
   it("opts every band out of the inset, with the token and no literal", () => {
     for (const surface of SURFACES.filter((entry) => entry.kind === "band")) {
       const body = ruleBody(surface.sheet, surface.selector);
-      expect(declaration(body, "margin-inline"), surface.note).toBe("calc(-1 * var(--dock-width))");
-      expect(resolveInline(declaration(body, "margin-inline") ?? ""), surface.note).toBe(
-        `calc(-1 * ${RAIL_WIDTH})`,
+      expect(declaration(body, "margin-inline"), surface.note).toBe(
+        "calc(-1 * var(--dock-width))"
       );
+      expect(
+        resolveInline(declaration(body, "margin-inline") ?? ""),
+        surface.note
+      ).toBe(`calc(-1 * ${RAIL_WIDTH})`);
       // The literal the token replaces must not come back as a hand-typed
       // rail width; a 1px hairline elsewhere in the rule is not a rail width.
       expect(body, surface.note).not.toMatch(railLiteral());
@@ -424,13 +479,16 @@ describe("stage sweep — no surface may be left ending at the inset", () => {
   });
 
   it("opts every scroll viewport out with a margin/padding pair, never a border", () => {
-    const stageInset = declaration(ruleBody(stageSheet, ".nex-main-conversation"), "padding-inline");
+    const stageInset = declaration(
+      ruleBody(stageSheet, ".nex-main-conversation"),
+      "padding-inline"
+    );
     for (const surface of SURFACES.filter((entry) => entry.kind === "scroll")) {
       const body = ruleBody(surface.sheet, surface.selector);
       // Half one, shared with the bands: cancel exactly the reserve the
       // stage applies, so the border box reaches both window edges.
       expect(declaration(body, "margin-inline"), surface.note).toBe(
-        `calc(-1 * ${stageInset})`,
+        `calc(-1 * ${stageInset})`
       );
       // Half two is PADDING here. A scrollbar is painted in the padding box,
       // so a transparent border would leave it at width − 60 (measured in
@@ -443,20 +501,27 @@ describe("stage sweep — no surface may be left ending at the inset", () => {
     }
     // The thread's inline padding was 0, so its padding is exactly the
     // reserve: content box = stage content box, unchanged.
-    expect(declaration(ruleBody(stageSheet, ".nex-main-conversation > .nex-thread"), "padding-inline")).toBe(
-      stageInset,
-    );
+    expect(
+      declaration(
+        ruleBody(stageSheet, ".nex-main-conversation > .nex-thread"),
+        "padding-inline"
+      )
+    ).toBe(stageInset);
   });
 
   it("keeps the reading column reserved inside a full-bleed band", () => {
     // The band that CARRIES the reading column keeps the content box: the
     // transparent border spends exactly the width the margin bought.
     const band = ruleBody(stageSheet, ".nex-main-conversation > .nex-composer");
-    expect(declaration(band, "border-inline")).toBe("var(--dock-width) solid transparent");
+    expect(declaration(band, "border-inline")).toBe(
+      "var(--dock-width) solid transparent"
+    );
   });
 
   it("leaves every content row on the inset, with no opt-out of its own", () => {
-    for (const surface of SURFACES.filter((entry) => entry.kind === "content")) {
+    for (const surface of SURFACES.filter(
+      (entry) => entry.kind === "content"
+    )) {
       const body = ruleBody(surface.sheet, surface.selector);
       expect(body, surface.note).not.toMatch(/--dock-width/);
       expect(body, surface.note).not.toMatch(/calc\(\s*-1\s*\*/);
@@ -518,17 +583,27 @@ describe("one reading measure — the thread and the composer share one column",
    *  INSIDE the measure, which is why its padding is untouched here. */
   const COLUMN_ROWS: Array<[string, string]> = [
     ["conversation.css .nex-message", ruleBody(stageSheet, ".nex-message")],
-    ["conversation.css .nex-thread-status", ruleBody(stageSheet, ".nex-thread-status")],
-    ["conversation.css .nex-thread-waiting", ruleBody(stageSheet, ".nex-thread-waiting")],
+    [
+      "conversation.css .nex-thread-status",
+      ruleBody(stageSheet, ".nex-thread-status"),
+    ],
+    [
+      "conversation.css .nex-thread-waiting",
+      ruleBody(stageSheet, ".nex-thread-waiting"),
+    ],
     ["conversation.css .nex-agent-run", ruleBody(stageSheet, ".nex-agent-run")],
   ];
 
   it("bounds every thread row by the composer's measure", () => {
-    expect(MEASURE, "the measure resolves to a length").toMatch(/^\d+(?:\.\d+)?px$/);
+    expect(MEASURE, "the measure resolves to a length").toMatch(
+      /^\d+(?:\.\d+)?px$/
+    );
     expect(Number.parseFloat(MEASURE)).toBeGreaterThan(0);
 
     for (const [label, body] of COLUMN_ROWS) {
-      expect(declaration(body, "max-width"), label).toBe("var(--layout-measure-max)");
+      expect(declaration(body, "max-width"), label).toBe(
+        "var(--layout-measure-max)"
+      );
       expect(declaration(body, "margin-inline"), label).toBe("auto");
     }
 
@@ -536,7 +611,10 @@ describe("one reading measure — the thread and the composer share one column",
     // it. composer.css writes it as a literal on purpose (that sheet depends
     // on no M3E var), so the pin is the RESOLVED equality, not the spelling.
     const composerMeasure = resolveInline(
-      declaration(ruleBody(composerSheet, ".nex-composer-inner"), "max-width") ?? "",
+      declaration(
+        ruleBody(composerSheet, ".nex-composer-inner"),
+        "max-width"
+      ) ?? ""
     );
     expect(composerMeasure).toBe(MEASURE);
   });
@@ -556,30 +634,46 @@ describe("one reading measure — the thread and the composer share one column",
 
     // …and the pair that does touch it nets to zero: the margin takes the
     // reserve away, the padding gives back exactly the same width.
-    const viewport = ruleBody(stageSheet, ".nex-main-conversation > .nex-thread");
-    expect(resolveInline(declaration(viewport, "padding-inline") ?? "")).toBe(RAIL_WIDTH);
-    expect(declaration(viewport, "margin-inline")).toBe("calc(-1 * var(--dock-width))");
+    const viewport = ruleBody(
+      stageSheet,
+      ".nex-main-conversation > .nex-thread"
+    );
+    expect(resolveInline(declaration(viewport, "padding-inline") ?? "")).toBe(
+      RAIL_WIDTH
+    );
+    expect(declaration(viewport, "margin-inline")).toBe(
+      "calc(-1 * var(--dock-width))"
+    );
 
     // The composer band's opt-out spends the width its negative margin buys
     // on transparent border, so the box its children are centred in is that
     // same stage content box (round 2, unchanged).
     const band = ruleBody(stageSheet, ".nex-main-conversation > .nex-composer");
-    expect(declaration(band, "border-inline")).toBe("var(--dock-width) solid transparent");
+    expect(declaration(band, "border-inline")).toBe(
+      "var(--dock-width) solid transparent"
+    );
   });
 
   it("keeps the shared column's centre exactly on the window centre", () => {
     // Symmetry, not arithmetic luck: the reserve is equal on both sides, so
     // the column's centre is 50vw at every width — including below the
     // measure, where both children clamp to the stage's content box.
-    expect(Number.isFinite(MIN_WINDOW_WIDTH), "minWidth is readable").toBe(true);
+    expect(Number.isFinite(MIN_WINDOW_WIDTH), "minWidth is readable").toBe(
+      true
+    );
     for (const width of [MIN_WINDOW_WIDTH, 1200, 1536, 2560]) {
       const column = sharedColumn(width);
-      expect(column.centre, `${width}px column centre`).toBeCloseTo(width / 2, 6);
+      expect(column.centre, `${width}px column centre`).toBeCloseTo(
+        width / 2,
+        6
+      );
       // Neither side of the column ever crosses the rail.
-      expect(column.left, `${width}px left`).toBeGreaterThanOrEqual(Number.parseFloat(RAIL_WIDTH));
+      expect(column.left, `${width}px left`).toBeGreaterThanOrEqual(
+        Number.parseFloat(RAIL_WIDTH)
+      );
       expect(
         column.left + column.width,
-        `${width}px right`,
+        `${width}px right`
       ).toBeLessThanOrEqual(width - Number.parseFloat(RAIL_WIDTH));
     }
   });
@@ -589,12 +683,18 @@ describe("one reading measure — the thread and the composer share one column",
     // IS the composer. The stage rules may therefore move the pair up and
     // drop the footer tone, but they must not touch the inline axis — that is
     // the shared column's job, and a second placement would be a second edge.
-    const thread = lastRuleBody(stageSheet, ".nex-main-conversation.is-empty .nex-thread");
+    const thread = lastRuleBody(
+      stageSheet,
+      ".nex-main-conversation.is-empty .nex-thread"
+    );
     expect(declaration(thread, "margin-top")).toBe("auto");
     expect(declaration(thread, "margin-inline")).toBeUndefined();
     expect(declaration(thread, "padding-inline")).toBeUndefined();
 
-    const band = lastRuleBody(stageSheet, ".nex-main-conversation.is-empty > .nex-composer");
+    const band = lastRuleBody(
+      stageSheet,
+      ".nex-main-conversation.is-empty > .nex-composer"
+    );
     // The composer drops the footer tone it wears under real history, but
     // keeps its own padding-bottom rhythm (a block value, not inline).
     expect(declaration(band, "background")).toBe("transparent");
@@ -603,7 +703,10 @@ describe("one reading measure — the thread and the composer share one column",
     expect(declaration(band, "padding-inline")).toBeUndefined();
     expect(declaration(band, "margin-inline")).toBeUndefined();
     // The vertical anchor is declared in the earlier rule of the same pair.
-    const anchor = ruleBody(stageSheet, ".nex-main-conversation.is-empty > .nex-composer");
+    const anchor = ruleBody(
+      stageSheet,
+      ".nex-main-conversation.is-empty > .nex-composer"
+    );
     expect(declaration(anchor, "margin-bottom")).toBe("auto");
     expect(declaration(anchor, "margin-inline")).toBeUndefined();
   });
@@ -644,9 +747,11 @@ describe("the thread's scroll viewport spans the window; its content box does no
     // the margin is exactly the stage's reserve, and the padding is exactly
     // the width that margin borrowed.
     expect(declaration(viewport, "margin-inline")).toBe(
-      `calc(-1 * ${declaration(stage, "padding-inline")})`,
+      `calc(-1 * ${declaration(stage, "padding-inline")})`
     );
-    expect(declaration(viewport, "padding-inline")).toBe(declaration(stage, "padding-inline"));
+    expect(declaration(viewport, "padding-inline")).toBe(
+      declaration(stage, "padding-inline")
+    );
     // No inline border: the scrollbar paints at the padding box's inline end,
     // so nothing may sit between that edge and the border box.
     expect(declaration(viewport, "border-inline")).toBeUndefined();
@@ -662,21 +767,29 @@ describe("the thread's scroll viewport spans the window; its content box does no
         width: stageContent.width + 2 * inset,
       };
       expect(border.left, `${width}px viewport left`).toBe(0);
-      expect(border.left + border.width, `${width}px scrollbar edge`).toBe(width);
+      expect(border.left + border.width, `${width}px scrollbar edge`).toBe(
+        width
+      );
 
       // Its content box: the border box less the padding — the stage content
       // box again, unchanged by the opt-out.
-      const content = { left: border.left + inset, width: border.width - 2 * inset };
+      const content = {
+        left: border.left + inset,
+        width: border.width - 2 * inset,
+      };
       expect(content, `${width}px content box`).toEqual(stageContent);
 
       // …so the 760 column is centred in the same box as the composer card
       // and lands on the same left edge and centre it always did.
       const column = sharedColumn(width);
-      expect(content.left + (content.width - column.width) / 2, `${width}px column left`).toBeCloseTo(
-        column.left,
-        6,
+      expect(
+        content.left + (content.width - column.width) / 2,
+        `${width}px column left`
+      ).toBeCloseTo(column.left, 6);
+      expect(column.centre, `${width}px column centre`).toBeCloseTo(
+        width / 2,
+        6
       );
-      expect(column.centre, `${width}px column centre`).toBeCloseTo(width / 2, 6);
     }
   });
 });

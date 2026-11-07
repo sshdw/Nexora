@@ -24,14 +24,11 @@
    Every colour resolves to a shadcn semantic token in
    src/index.css; there is no raw value here.
    ============================================================ */
-import * as React from "react"
-import { cn } from "@/lib/utils"
-import { ChevronDownIcon } from "../icons"
+import * as React from "react";
+import { cn } from "@/lib/utils";
+import { ChevronDownIcon } from "../icons";
 
-function NativeSelect({
-  className,
-  ...props
-}: React.ComponentProps<"select">) {
+function NativeSelect({ className, ...props }: React.ComponentProps<"select">) {
   return (
     <div
       data-slot="native-select-wrapper"
@@ -53,15 +50,15 @@ function NativeSelect({
         aria-hidden="true"
       />
     </div>
-  )
+  );
 }
 
 function NativeSelectOption({ ...props }: React.ComponentProps<"option">) {
-  return <option data-slot="native-select-option" {...props} />
+  return <option data-slot="native-select-option" {...props} />;
 }
 
 function NativeSelectOptGroup({ ...props }: React.ComponentProps<"optgroup">) {
-  return <optgroup data-slot="native-select-optgroup" {...props} />
+  return <optgroup data-slot="native-select-optgroup" {...props} />;
 }
 
-export { NativeSelect, NativeSelectOption, NativeSelectOptGroup }
+export { NativeSelect, NativeSelectOption, NativeSelectOptGroup };

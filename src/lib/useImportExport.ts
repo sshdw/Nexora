@@ -56,7 +56,12 @@ export function useImportExport(): ImportExportStore {
         path = await save({
           title: tr(getLocale(), "io.dlgExportTitle"),
           defaultPath: suggestedFileName(title),
-          filters: [{ name: tr(getLocale(), "io.dlgExportFilter"), extensions: ["json"] }],
+          filters: [
+            {
+              name: tr(getLocale(), "io.dlgExportFilter"),
+              extensions: ["json"],
+            },
+          ],
         });
       } catch (e) {
         setError(toCommandError(e));
@@ -77,7 +82,7 @@ export function useImportExport(): ImportExportStore {
         setBusy(false);
       }
     },
-    [],
+    []
   );
 
   const importFrom = useCallback(async (): Promise<number | null> => {
@@ -88,7 +93,9 @@ export function useImportExport(): ImportExportStore {
       selection = await open({
         multiple: false,
         title: tr(getLocale(), "io.dlgImportTitle"),
-        filters: [{ name: tr(getLocale(), "io.dlgImportFilter"), extensions: ["json"] }],
+        filters: [
+          { name: tr(getLocale(), "io.dlgImportFilter"), extensions: ["json"] },
+        ],
       });
     } catch (e) {
       setError(toCommandError(e));
@@ -122,8 +129,24 @@ export function useImportExport(): ImportExportStore {
   // Memoized store identity (NEX-FE-002 audit): App passes the store
   // object as a prop to the import/export modals.
   return useMemo(
-    () => ({ busy, error, exportSucceeded, importedId, exportTo, importFrom, clearStatus }),
-    [busy, error, exportSucceeded, importedId, exportTo, importFrom, clearStatus],
+    () => ({
+      busy,
+      error,
+      exportSucceeded,
+      importedId,
+      exportTo,
+      importFrom,
+      clearStatus,
+    }),
+    [
+      busy,
+      error,
+      exportSucceeded,
+      importedId,
+      exportTo,
+      importFrom,
+      clearStatus,
+    ]
   );
 }
 
@@ -145,9 +168,13 @@ function toCommandError(error: unknown): CommandError {
     typeof (error as CommandError).kind === "string" &&
     typeof (error as CommandError).message === "string"
   ) {
-    return { kind: (error as CommandError).kind, message: (error as CommandError).message };
+    return {
+      kind: (error as CommandError).kind,
+      message: (error as CommandError).message,
+    };
   }
   if (typeof error === "string") return { kind: "unknown", message: error };
-  if (error instanceof Error) return { kind: "unknown", message: error.message };
+  if (error instanceof Error)
+    return { kind: "unknown", message: error.message };
   return { kind: "unknown", message: tr(getLocale(), "common.dbUnreachable") };
 }

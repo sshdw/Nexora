@@ -14,7 +14,10 @@ export interface PromptLibraryEntryProps {
 // `aria-current` (not `aria-pressed`): this is a navigation destination.
 // Unrendered since #219 (the nav trim) — the panel, this entry and its hooks
 // stay, so re-adding the rail row is a one-line change.
-export default function PromptLibraryEntry({ active = false, onClick }: PromptLibraryEntryProps) {
+export default function PromptLibraryEntry({
+  active = false,
+  onClick,
+}: PromptLibraryEntryProps) {
   const { t } = useStrings();
   return (
     <M3RailItem

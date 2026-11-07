@@ -37,10 +37,16 @@ export default function ShortcutsDialog({ onClose }: ShortcutsDialogProps) {
         <ul className="nex-shortcuts-groups">
           {SHORTCUT_GROUPS.map((group) => (
             <li key={group} className="nex-shortcuts-group">
-              <h4 className="nex-shortcuts-heading">{shortcutGroup(locale, group)}</h4>
+              <h4 className="nex-shortcuts-heading">
+                {shortcutGroup(locale, group)}
+              </h4>
               <ul className="nex-shortcuts-rows">
                 {shortcutsInGroup(group).map((entry) => {
-                  const description = shortcutDesc(locale, entry.id, entry.description);
+                  const description = shortcutDesc(
+                    locale,
+                    entry.id,
+                    entry.description
+                  );
                   const scope = shortcutScope(locale, entry.scope);
                   return (
                     <li
@@ -54,7 +60,9 @@ export default function ShortcutsDialog({ onClose }: ShortcutsDialogProps) {
                         ))}
                       </span>
                       <span className="nex-shortcuts-text">
-                        <span className="nex-shortcuts-desc">{description}</span>
+                        <span className="nex-shortcuts-desc">
+                          {description}
+                        </span>
                         <span className="nex-shortcuts-scope">{scope}</span>
                       </span>
                     </li>

@@ -36,12 +36,16 @@ function folderName(root: string): string {
  *  on a monochrome chrome row, on a 12px slot. */
 export default function WorkspaceChip({ root, loading }: WorkspaceChipProps) {
   const { t } = useStrings();
-  const label = loading ? t("nav.workspaceLoading") : (root ?? t("nav.workspaceUnset"));
+  const label = loading
+    ? t("nav.workspaceLoading")
+    : (root ?? t("nav.workspaceUnset"));
   // Loading/unset labels are not paths, so they are shown whole.
   const name = loading || root === null ? label : folderName(root);
   const visible = name === "" ? label : name;
   const short =
-    visible.length > MAX_LABEL ? `${visible.slice(0, MAX_LABEL - 1)}…` : visible;
+    visible.length > MAX_LABEL
+      ? `${visible.slice(0, MAX_LABEL - 1)}…`
+      : visible;
   return (
     <span
       className="nex-workspace-chip"

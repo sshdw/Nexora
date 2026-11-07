@@ -28,7 +28,10 @@ export const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)";
 
 /** Current OS-level motion preference, read synchronously. */
 export function prefersReducedMotion(): boolean {
-  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+  if (
+    typeof window === "undefined" ||
+    typeof window.matchMedia !== "function"
+  ) {
     return true;
   }
   return window.matchMedia(REDUCED_MOTION_QUERY).matches;
@@ -45,11 +48,15 @@ export function useReducedMotion(): boolean {
   const [reduced, setReduced] = useState<boolean>(prefersReducedMotion);
 
   useEffect(() => {
-    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    if (
+      typeof window === "undefined" ||
+      typeof window.matchMedia !== "function"
+    ) {
       return;
     }
     const list = window.matchMedia(REDUCED_MOTION_QUERY);
-    const onChange = (event: MediaQueryListEvent): void => setReduced(event.matches);
+    const onChange = (event: MediaQueryListEvent): void =>
+      setReduced(event.matches);
     setReduced(list.matches);
     // Safari below 14 only implements the deprecated listener API.
     if (typeof list.addEventListener === "function") {

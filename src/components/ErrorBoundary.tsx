@@ -75,7 +75,11 @@ export default class ErrorBoundary extends Component<
     // Local diagnostics only — the webview console, nothing persisted, no
     // IPC, and no message content copied anywhere. Resetting is the only
     // recovery this component offers (the ask's Retry action).
-    console.error("[nexora boundary] render error:", error, info.componentStack);
+    console.error(
+      "[nexora boundary] render error:",
+      error,
+      info.componentStack
+    );
   }
 
   /** Retry: forget the error and re-render the same children. The crashing
@@ -88,7 +92,12 @@ export default class ErrorBoundary extends Component<
 
   render(): ReactNode {
     if (this.state.error !== null) {
-      return <BoundaryFallback onRetry={this.reset} root={this.props.root ?? false} />;
+      return (
+        <BoundaryFallback
+          onRetry={this.reset}
+          root={this.props.root ?? false}
+        />
+      );
     }
     return this.props.children;
   }

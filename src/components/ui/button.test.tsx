@@ -35,7 +35,7 @@ import { Button } from "./button";
  *  not be able to satisfy one. */
 const source = readRepoFile("src/components/ui/button.tsx").replace(
   /(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)/g,
-  "",
+  ""
 );
 
 /** The base class string as it is written, whitespace collapsed. */
@@ -44,7 +44,7 @@ const BASE = /"([^"]*group\/button[^"]*)"/.exec(source)?.[1] ?? "";
 /** The token sheet, comments stripped, same reason. */
 const motion = readRepoFile("src/styles/motion.css").replace(
   /(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)/g,
-  "",
+  ""
 );
 
 describe("press token — declared", () => {
@@ -67,10 +67,10 @@ describe("press token — declared", () => {
     // Canonical aliases — new code consumes the --nex-sys-motion-*
     // names, which is what the class string below references.
     expect(motion).toMatch(
-      /--nex-sys-motion-duration-press:\s*var\(--motion-duration-press\)/,
+      /--nex-sys-motion-duration-press:\s*var\(\s*--motion-duration-press\s*\)/
     );
     expect(motion).toMatch(
-      /--nex-sys-motion-scale-press:\s*var\(--motion-scale-press\)/,
+      /--nex-sys-motion-scale-press:\s*var\(\s*--motion-scale-press\s*\)/
     );
   });
 
@@ -83,25 +83,31 @@ describe("press token — declared", () => {
     expect(motion).toMatch(/--nex-sys-motion-spring-snap-duration:\s*411ms/);
     expect(motion).toMatch(/--nex-sys-motion-duration-hover:\s*120ms/);
     expect(motion).toMatch(
-      /--nex-sys-motion-press-release-duration:\s*var\(--nex-sys-motion-spring-snap-duration\)/,
+      /--nex-sys-motion-press-release-duration:\s*var\(\s*--nex-sys-motion-spring-snap-duration\s*\)/
     );
     expect(motion).toMatch(
-      /--nex-sys-motion-press-release-easing:\s*var\(--nex-sys-motion-spring-snap\)/,
+      /--nex-sys-motion-press-release-easing:\s*var\(\s*--nex-sys-motion-spring-snap\s*\)/
     );
   });
 
   it("keeps the §7.1 fallback declarations ahead of the linear() ones", () => {
     // Fallback FIRST, linear() SECOND, no @supports (§7.1 verbatim).
     // settle's fallback is the expressive-default-spatial pair; snap's
-    // is emphasized-decelerate at 410ms, 0% overshoot.
-    const settleFallback = motion.indexOf(
-      "--nex-sys-motion-spring-settle: var(--motion-spring-expressive-default-spatial-curve)",
+    // is emphasized-decelerate at 410ms, 0% overshoot. Patterns, not
+    // substrings: the printer may wrap a var() call across lines, and
+    // only whitespace may sit between the tokens the contract names.
+    const settleFallback = motion.search(
+      /--nex-sys-motion-spring-settle:\s*var\(\s*--motion-spring-expressive-default-spatial-curve\s*\)/
     );
-    const settleLinear = motion.indexOf("--nex-sys-motion-spring-settle: linear(");
-    const snapFallback = motion.indexOf(
-      "--nex-sys-motion-spring-snap: var(--motion-easing-emphasized-decelerate)",
+    const settleLinear = motion.search(
+      /--nex-sys-motion-spring-settle:\s*linear\(/
     );
-    const snapLinear = motion.indexOf("--nex-sys-motion-spring-snap: linear(");
+    const snapFallback = motion.search(
+      /--nex-sys-motion-spring-snap:\s*var\(\s*--motion-easing-emphasized-decelerate\s*\)/
+    );
+    const snapLinear = motion.search(
+      /--nex-sys-motion-spring-snap:\s*linear\(/
+    );
     expect(settleFallback).toBeGreaterThanOrEqual(0);
     expect(settleFallback).toBeLessThan(settleLinear);
     expect(snapFallback).toBeGreaterThanOrEqual(0);
@@ -121,7 +127,8 @@ describe("press token — consumed by the button", () => {
     // `scale` is the FIRST entry of the property list, so the first
     // duration is its own — that alignment is the whole mechanic
     // (and the reason the lists are spelled out per state).
-    const properties = /transition-\[([^\]]+)\]/.exec(BASE)?.[1].split(",") ?? [];
+    const properties =
+      /transition-\[([^\]]+)\]/.exec(BASE)?.[1].split(",") ?? [];
     expect(properties[0]).toBe("scale");
     // The rest of the list is paint only: fill, text, border, shadow,
     // opacity. Nothing that moves, so nothing a press can re-clock —
@@ -129,7 +136,7 @@ describe("press token — consumed by the button", () => {
     // scale moments only, never opacity).
     for (const property of properties.slice(1)) {
       expect(property).toMatch(
-        /^(background-color|color|border-color|box-shadow|opacity)$/,
+        /^(background-color|color|border-color|box-shadow|opacity)$/
       );
     }
     // Duration and timing lists line up with the property list
@@ -166,7 +173,7 @@ describe("press token — consumed by the button", () => {
       ...properties.slice(1).map(() => HOVER),
     ]);
     expect(list("active:", "timing-function")).toEqual(
-      properties.map(() => STANDARD),
+      properties.map(() => STANDARD)
     );
   });
 
@@ -201,27 +208,35 @@ describe("press token — reduced motion", () => {
     // `scale` is transitioned, so the gate's
     // `transition-duration: 0.01ms !important` is what flattens the
     // 90ms. Both halves are needed and neither is optional.
-    const gate = /@media \(prefers-reduced-motion: reduce\) \{([\s\S]*?)\n\}/.exec(
-      motion,
-    )?.[1] ?? "";
+    const gate =
+      /@media \(prefers-reduced-motion: reduce\) \{([\s\S]*?)\n\}/.exec(
+        motion
+      )?.[1] ?? "";
     expect(gate).toMatch(/transition-duration:\s*0\.01ms\s*!important/);
     // And it must be the ONLY such block in the tree.
     expect(readRepoFile("src/index.css")).not.toMatch(
-      /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{/,
+      /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{/
     );
   });
 });
 
 describe("press token — on the rendered control", () => {
   it("reaches every adapter variant, so M3Button and M3IconButton inherit it", () => {
-    for (const variant of ["default", "secondary", "ghost", "destructive"] as const) {
+    for (const variant of [
+      "default",
+      "secondary",
+      "ghost",
+      "destructive",
+    ] as const) {
       const { container, unmount } = render(
         <Button variant={variant} size={variant === "ghost" ? "icon-sm" : "sm"}>
           press
-        </Button>,
+        </Button>
       );
       const className = container.querySelector("button")?.className ?? "";
-      expect(className).toContain("active:scale-[var(--nex-sys-motion-scale-press)]");
+      expect(className).toContain(
+        "active:scale-[var(--nex-sys-motion-scale-press)]"
+      );
       expect(className).toContain("motion-reduce:active:scale-none");
       unmount();
     }
