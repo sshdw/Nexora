@@ -54,6 +54,25 @@ export interface ConversationPaneProps {
   hideHeader?: boolean;
 }
 
+/** The props every pane receives identically (AC-305, review 03 §2): App
+ * builds ONE `PaneSlot` object and each `ConversationPane` call site spreads
+ * it, contributing only what differs per pane — the conversation, its draft
+ * pair, and the placement flags. Keeps the three call sites from repeating
+ * the same ten props. */
+export type PaneSlot = Pick<
+  ConversationPaneProps,
+  | "selectedProvider"
+  | "selectedModel"
+  | "models"
+  | "onSelectModel"
+  | "modelError"
+  | "autonomy"
+  | "onOpenSettings"
+  | "onMessageSent"
+  | "onExport"
+  | "workspace"
+>;
+
 export default function ConversationPane({
   conversation,
   selectedProvider,

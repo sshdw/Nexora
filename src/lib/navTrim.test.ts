@@ -188,7 +188,11 @@ describe("hidden panels stay on disk (#219)", () => {
   });
 
   it("keeps the hidden panels' i18n keys in both locales", () => {
-    const strings = source("strings.ts");
+    // AC-301 split: the EN and RU dictionaries moved verbatim from strings.ts
+    // into strings/en.ts and strings/ru.ts; the same exactly-once-per-locale
+    // pin now runs against each dictionary file.
+    const en = source("strings/en.ts");
+    const ru = source("strings/ru.ts");
     for (const key of [
       "palette.cmd.go_library",
       "palette.cmd.go_activity",
@@ -207,9 +211,8 @@ describe("hidden panels stay on disk (#219)", () => {
       "nav.workspaceFolder",
       "docs.featTerminal",
     ]) {
-      expect(strings).toContain(`"${key}":`);
-      // Each key appears in the EN table and the RU table.
-      expect(strings.split(`"${key}":`).length - 1).toBe(2);
+      expect(en).toContain(`"${key}":`);
+      expect(ru).toContain(`"${key}":`);
     }
   });
 

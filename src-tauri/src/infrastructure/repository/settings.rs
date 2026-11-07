@@ -174,3 +174,189 @@ impl SettingsRepository<'_> {
         Ok(settings)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::infrastructure::database::in_memory_database;
+
+    fn repo(db: &Database) -> SettingsRepository<'_> {
+        SettingsRepository::new(db)
+    }
+
+    #[test]
+    fn create_read_round_trip_preserves_the_three_states() {
+        let db = in_memory_database();
+        let settings = repo(&db);
+
+        // An absent key reads as Missing and does not exist...
+        assert_eq!(
+            settings.read("appearance").expect("read missing"),
+            SettingValue::Missing
+        );
+        assert!(!settings.exists("appearance").expect("exists missing"));
+
+        // ...a key with a value reads as Value...
+        settings
+            .create("appearance", Some("mono"))
+            .expect("create with a value");
+        assert_eq!(
+            settings.read("appearance").expect("read with value"),
+            SettingValue::Value("mono".to_owned())
+        );
+        assert!(settings.exists("appearance").expect("exists with value"));
+
+        // ...and a key with an explicit NULL reads as Null, not Missing.
+        settings
+            .create("onboarding_done", None)
+            .expect("create with NULL value");
+        assert_eq!(
+            settings.read("onboarding_done").expect("read NULL value"),
+            SettingValue::Null
+        );
+        assert!(settings
+            .exists("onboarding_done")
+            .expect("exists NULL value"));
+    }
+
+    #[test]
+    fn create_rejects_a_duplicate_key_instead_of_upserting() {
+        let db = in_memory_database();
+        let settings = repo(&db);
+
+        settings
+            .create("appearance", Some("mono"))
+            .expect("first insert");
+        assert!(
+            settings.create("appearance", Some("warm")).is_err(),
+            "app_settings.key is the PRIMARY KEY: a duplicate insert must fail, not upsert"
+        );
+        // The failed duplicate left the original value in place.
+        assert_eq!(
+            settings.read("appearance").expect("read after duplicate"),
+            SettingValue::Value("mono".to_owned())
+        );
+    }
+
+    #[test]
+    fn update_changes_existing_keys_and_ignores_missing_ones() {
+        let db = in_memory_database();
+        let settings = repo(&db);
+
+        settings.create("appearance", Some("mono")).expect("create");
+        settings
+            .update("appearance", Some("high-contrast"))
+            .expect("update to a new value");
+        assert_eq!(
+            settings.read("appearance").expect("read updated value"),
+            SettingValue::Value("high-contrast".to_owned())
+        );
+
+        // Updating to NULL preserves the row (Null, not Missing).
+        settings.update("appearance", None).expect("update to NULL");
+        assert_eq!(
+            settings.read("appearance").expect("read updated NULL"),
+            SettingValue::Null
+        );
+
+        // Updating an unknown key changes nothing and is not an error.
+        settings
+            .update("absent", Some("value"))
+            .expect("update of a missing key");
+        assert_eq!(
+            settings.read("absent").expect("read absent after update"),
+            SettingValue::Missing
+        );
+    }
+
+    #[test]
+    fn delete_removes_the_row_and_missing_delete_is_a_no_op() {
+        let db = in_memory_database();
+        let settings = repo(&db);
+
+        settings.create("appearance", Some("mono")).expect("create");
+        settings.delete("appearance").expect("delete");
+        assert_eq!(
+            settings.read("appearance").expect("read deleted"),
+            SettingValue::Missing
+        );
+        assert!(!settings.exists("appearance").expect("exists deleted"));
+
+        // Deleting a non-existent key is a no-op.
+        settings.delete("absent").expect("delete of a missing key");
+    }
+
+    #[test]
+    fn list_returns_value_pairs_ordered_by_key() {
+        let db = in_memory_database();
+        let settings = repo(&db);
+
+        settings
+            .create("spend_limit", Some("10"))
+            .expect("create spend_limit");
+        settings.create("autonomy", None).expect("create autonomy");
+        settings
+            .create("appearance", Some("mono"))
+            .expect("create appearance");
+
+        let listed = settings.list().expect("list");
+        assert_eq!(
+            listed,
+            vec![
+                ("appearance".to_owned(), Some("mono".to_owned())),
+                ("autonomy".to_owned(), None),
+                ("spend_limit".to_owned(), Some("10".to_owned())),
+            ]
+        );
+    }
+
+    #[test]
+    fn check_constraints_reject_invalid_values() {
+        let db = in_memory_database();
+        let settings = repo(&db);
+
+        assert!(
+            settings.create("", Some("v")).is_err(),
+            "an empty key must be rejected (length(key) > 0)"
+        );
+        assert!(
+            settings
+                .create("k".repeat(201).as_str(), Some("v"))
+                .is_err(),
+            "a key over 200 chars must be rejected (length(key) <= 200)"
+        );
+        assert!(
+            settings
+                .create("k", Some("v".repeat(10001).as_str()))
+                .is_err(),
+            "a value over 10000 chars must be rejected (length(value) <= 10000)"
+        );
+
+        // Boundary values are accepted, pinning the CHECK limits.
+        settings
+            .create("k".repeat(200).as_str(), Some("v".repeat(10000).as_str()))
+            .expect("boundary key and value are accepted");
+    }
+
+    #[test]
+    fn clear_in_transaction_deletes_every_row() {
+        let db = in_memory_database();
+        let settings = repo(&db);
+
+        settings.create("appearance", Some("mono")).expect("create");
+        settings.create("spend_limit", Some("10")).expect("create");
+
+        // clear_in_transaction must run inside Repository::transaction so it
+        // participates in the atomic "clear all application data" operation
+        // (FR-013).
+        settings
+            .transaction(SettingsRepository::clear_in_transaction)
+            .expect("clear inside a transaction");
+
+        assert!(settings.list().expect("list after clear").is_empty());
+        assert_eq!(
+            settings.read("appearance").expect("read after clear"),
+            SettingValue::Missing
+        );
+    }
+}
