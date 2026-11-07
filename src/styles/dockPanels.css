@@ -28,8 +28,8 @@
   z-index: var(--nex-sys-z-popover);
   overflow: hidden;
   transform: translateY(-50%);
-  animation: nex-dock-panel-in var(--motion-duration-short3, 150ms)
-    var(--motion-easing-standard, cubic-bezier(0.2, 0, 0, 1)) both;
+  animation: nex-dock-panel-in var(--nex-sys-motion-duration-short3, 150ms)
+    var(--nex-sys-motion-easing-standard, cubic-bezier(0.2, 0, 0, 1)) both;
 }
 
 @keyframes nex-dock-panel-in {
@@ -317,8 +317,8 @@
   background: var(--popover);
   opacity: 0;
   pointer-events: none;
-  transition: opacity var(--motion-duration-fast) var(--motion-easing-standard),
-    background-color var(--motion-duration-fast) var(--motion-easing-standard);
+  transition: opacity var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard),
+    background-color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard);
 }
 
 /* Three 28px buttons at zero gap: the plate claims ~88px of a 260px

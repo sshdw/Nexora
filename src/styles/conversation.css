@@ -662,10 +662,10 @@
    Reduced motion resolves to instant append via the global gate. */
 .nex-message-enter {
   animation: nex-message-insert
-    var(--motion-spring-expressive-default-spatial-duration)
-    var(--motion-spring-expressive-default-spatial-curve);
+    var(--nex-sys-motion-spring-expressive-default-spatial-duration)
+    var(--nex-sys-motion-spring-expressive-default-spatial-curve);
   animation-delay: calc(
-    var(--nex-chat-insert-index, 0) * var(--motion-stagger-step)
+    var(--nex-chat-insert-index, 0) * var(--nex-sys-motion-stagger-step)
   );
 }
 
@@ -746,7 +746,7 @@
   font-size: var(--type-size-body-small);
   text-align: start;
   cursor: pointer;
-  transition: color var(--motion-duration-fast) var(--motion-easing-standard);
+  transition: color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard);
 }
 .nex-agent-run-disclosure:hover {
   color: var(--color-on-surface);
@@ -1410,7 +1410,7 @@
   will-change: transform, opacity;
 }
 .nex-agent-run-state-running:not(.nex-agent-run-parked) .nex-agent-spine-pulse {
-  animation: nex-agent-spine-flow var(--motion-loop-skeleton) var(--motion-easing-standard) infinite;
+  animation: nex-agent-spine-flow var(--nex-sys-motion-loop-skeleton) var(--nex-sys-motion-easing-standard) infinite;
 }
 @keyframes nex-agent-spine-flow {
   0% {
@@ -1579,7 +1579,7 @@
    aiming at. The path's own hover is colour-only for the same reason. */
 .nex-agent-step-header,
 .nex-agent-step-target {
-  transition: color var(--motion-duration-fast) var(--motion-easing-standard);
+  transition: color var(--nex-sys-motion-duration-fast) var(--nex-sys-motion-easing-standard);
 }
 
 @media (prefers-reduced-motion: reduce) {

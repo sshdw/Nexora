@@ -13,10 +13,10 @@
 //!                 changes the chip with it. The ids are asserted
 //!                 to exist — that is what keeps `shortcutKeys`'
 //!                 soft failure from going silent.
-//!   3. MOTION     the composer's one animated component renders
-//!                 its finished sentence and creates NO GSAP
-//!                 timeline under `prefers-reduced-motion`, with
-//!                 a GSAP spy. Plus the reverse check: the global
+//!   3. MOTION     the composer's autonomy explainer renders its
+//!                 finished sentence instantly (plain text, no JS
+//!                 timeline exists in the tree to gate — P7, review
+//!                 06 D-15). Plus the reverse check: the global
 //!                 gate in src/styles/motion.css still collapses
 //!                 every animation already merged.
 //!   4. THEME      src/styles/composer.css paints from shadcn
@@ -36,7 +36,7 @@
 
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { readRepoFile } from "../test/readRepoFile";
 
@@ -49,20 +49,14 @@ import { LocaleProvider } from "../lib/useLocale";
 import type { WorkspaceStore } from "../lib/useWorkspace";
 import ComposerAutonomyHint from "./ComposerAutonomyHint";
 import Composer, { type ComposerProps } from "./Composer";
-import TextType from "./TextType";
 
-// The GSAP spy is installed for the WHOLE file, hoisted, so that
-// whichever copy of the vendored TextType a component ends up
-// holding — the statically imported one or a freshly evaluated one —
-// is talking to the same spy. `vi.resetModules()` per test was the
-// alternative and it re-evaluates React itself under the already-
-// imported testing-library, which is a much bigger variable than the
-// thing being measured.
-const { gsapSpy } = vi.hoisted(() => ({
-  gsapSpy: { set: vi.fn(), to: vi.fn() },
-}));
-
-vi.mock("gsap", () => ({ gsap: gsapSpy }));
+// P7 (review 06 D-15): the vendored per-character typing component and
+// its timeline dependency left the tree, and with them the file-wide
+// tween spy this file used to prove the autonomy explainer starts no
+// timeline. The no-timeline property is structural now — no timeline
+// library exists to import — so the remaining assertions pin what the
+// stylesheet gate still owns (see the REVERSE CHECK at the bottom of
+// this file).
 
 /** matchMedia that answers the reduced-motion query, and only that one. */
 function mockReducedMotion(matches: boolean): void {
@@ -77,11 +71,6 @@ function mockReducedMotion(matches: boolean): void {
     dispatchEvent: () => false,
   }));
 }
-
-beforeEach(() => {
-  gsapSpy.set.mockClear();
-  gsapSpy.to.mockClear();
-});
 
 afterEach(() => {
   cleanup();
@@ -1084,8 +1073,8 @@ describe("composer — Send's three states (R6-01)", () => {
   });
 });
 
-describe("composer — reduced-motion gate (GSAP spy)", () => {
-  it("renders the finished sentence and creates NO timeline", () => {
+describe("composer — reduced-motion gate (plain-text explainer)", () => {
+  it("renders the finished sentence instantly", () => {
     mockReducedMotion(true);
     render(
       <LocaleProvider>
@@ -1093,38 +1082,15 @@ describe("composer — reduced-motion gate (GSAP spy)", () => {
       </LocaleProvider>,
     );
 
-    // The whole sentence the animation would have typed…
+    // The whole sentence, present in the first frame — the explainer
+    // is PLAIN TEXT ALWAYS (NEXORA-DESIGN-SYSTEM.md §5(b)). It used to
+    // be a per-character typing ornament with a tween spy proving no
+    // timeline started; P7 removed the vendored typing component and
+    // its timeline library from the tree entirely (review 06 D-15), so
+    // the property this test guards is structural: there is no JS
+    // timeline machinery left to gate, and the finished sentence is the
+    // only render there is.
     expect(screen.getByText("Semi-auto: routine steps run alone.")).toBeInTheDocument();
-    // …and the assertion that matters: no timeline was created.
-    // Not "it looked finished" — the GSAP API was never called.
-    //
-    // NOTE, and it is why the positive control below is not
-    // optional: this explainer passes `showCursor={false}`, and
-    // TextType only calls GSAP inside `if (showCursor && …)`. So
-    // these two assertions CANNOT distinguish "no timeline" from
-    // "this component never had a cursor to blink" — on their own
-    // they would survive the reduced-motion branch being deleted.
-    // What is load-bearing here is the finished-frame assertion
-    // above plus the typing counterpart below; the spy reading is
-    // the third leg, and the positive control proves the leg is
-    // attached to anything.
-    expect(gsapSpy.set).not.toHaveBeenCalled();
-    expect(gsapSpy.to).not.toHaveBeenCalled();
-  });
-
-  it("POSITIVE CONTROL — the spy is live against the real GSAP module", () => {
-    // If the spy were not wired to the module TextType imports, every
-    // `.not.toHaveBeenCalled()` above would pass forever and mean
-    // nothing. So: drive TextType itself — the REAL vendored
-    // component, with a cursor, motion allowed — and require the
-    // spy to see it. This test is what makes the negative
-    // assertions load-bearing instead of decorative.
-    mockReducedMotion(false);
-    const { unmount } = render(<TextType text="x" showCursor />);
-
-    expect(gsapSpy.set).toHaveBeenCalled();
-    expect(gsapSpy.to).toHaveBeenCalled();
-    unmount();
   });
 
   it("renders no explainer for a mode it does not know", () => {
@@ -1165,7 +1131,15 @@ describe("composer sheet — theme linkage (src/styles/composer.css)", () => {
     new RegExp(`${selector.replace(/\./g, "\\.")}\\s*\\{([\\s\\S]*?)\\n\\}`).exec(code)?.[1] ?? "";
 
   it("paints from shadcn semantic tokens only", () => {
-    const m3eRefs = [...code.matchAll(/var\(\s*(--nex-sys-[\w-]+)/g)].map((m) => m[1]);
+    // The ban is on the M3E COLOUR system reaching this sheet —
+    // `--nex-sys-color-*`. The canonical `--nex-sys-motion-*` names are
+    // not paint (they resolve through motion.css, which owns motion the
+    // way index.css owns colour) and the sheet consumes them since the
+    // D-10 call-site rename (review 06) — carved out explicitly so the
+    // carve-out is visible rather than a prefix accident.
+    const m3eRefs = [
+      ...code.matchAll(/var\(\s*(--nex-sys-(?!motion-)[\w-]+)/g),
+    ].map((m) => m[1]);
     expect([...new Set(m3eRefs)]).toEqual([]);
   });
 
@@ -1194,8 +1168,11 @@ describe("composer sheet — theme linkage (src/styles/composer.css)", () => {
       "--radius-2xl",
       "--radius-3xl",
       "--radius-4xl",
-      "--motion-duration-fast",
-      "--motion-easing-standard",
+      // D-10 (review 06): the sheet consumes the canonical
+      // --nex-sys-motion-* names after the call-site rename; they
+      // resolve through the same aliases in motion.css.
+      "--nex-sys-motion-duration-fast",
+      "--nex-sys-motion-easing-standard",
     ]);
     const missing = [...code.matchAll(/var\(\s*(--[a-z0-9-]+)/g)]
       .map((m) => m[1])
@@ -1204,7 +1181,8 @@ describe("composer sheet — theme linkage (src/styles/composer.css)", () => {
   });
 
   it("adds no animation of its own — the global gate is the only motion source", () => {
-    // Every transition must go through a `--motion-*` duration, and
+    // Every transition must go through a canonical --nex-sys-motion-*
+    // duration (D-10 rename), and
     // this sheet must declare no keyframes: a composer-local timeline
     // would be a second motion source the reduced-motion block in
     // motion.css still has to catch.
@@ -1213,7 +1191,7 @@ describe("composer sheet — theme linkage (src/styles/composer.css)", () => {
     const transitions = [...code.matchAll(/transition:[^;]+;/g)].map((m) => m[0]);
     expect(transitions.length).toBeGreaterThan(0);
     for (const declaration of transitions) {
-      expect(declaration).toContain("var(--motion-");
+      expect(declaration).toContain("var(--nex-sys-motion-");
     }
   });
 

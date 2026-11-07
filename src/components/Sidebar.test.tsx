@@ -301,7 +301,8 @@ describe("Sidebar migrated surface (#230 Phase 1)", () => {
 
   it("adds no motion of its own — the global gate is the only source", () => {
     // Every transition in the migrated section must go through a
-    // `--motion-*` duration, and its animations must reuse the keyframes
+    // canonical --nex-sys-motion-* duration (D-10 rename, review 06),
+    // and its animations must reuse the keyframes
     // the sheet already owns, so the ONE reduced-motion block in
     // motion.css still collapses all of it. No keyframes here.
     const section = sidebarSection();
@@ -309,12 +310,12 @@ describe("Sidebar migrated surface (#230 Phase 1)", () => {
     const animations = [...section.matchAll(/animation:\s*([^;]+);/g)].map((m) => m[1]);
     expect(animations.length).toBeGreaterThan(0);
     for (const declaration of animations) {
-      expect(declaration).toContain("var(--motion-");
+      expect(declaration).toContain("var(--nex-sys-motion-");
     }
     const transitions = [...section.matchAll(/transition:\s*([^;]+);/g)].map((m) => m[1]);
     expect(transitions.length).toBeGreaterThan(0);
     for (const declaration of transitions) {
-      expect(declaration).toContain("var(--motion-");
+      expect(declaration).toContain("var(--nex-sys-motion-");
     }
   });
 

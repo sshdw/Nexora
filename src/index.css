@@ -513,7 +513,12 @@
     /* On-surface content ladder */
     --color-on-surface: #edeae7;
     --color-on-surface-variant: #a19d96;
-    --color-on-surface-tertiary: #a89d8c;
+    /* D-01 (review 06): the tertiary step was #a89d8c, OKLCH c=0.0274 —
+       chromatic, above the c<0.02 achromatic pin (THEME §1), as TEXT
+       colour in eight sheets. Re-pointed at the same lightness with the
+       family chroma (c=0.0111, the #a19d96 family): #a29e97. Contrast on
+       every surface it lands on is unchanged (7.26:1 on canvas). */
+    --color-on-surface-tertiary: #a29e97;
     --color-on-surface-faint: #9f988c;
     --color-inverse-surface: #edeae7;
     --color-inverse-on-surface: #27262e;
@@ -524,7 +529,6 @@
     --color-primary-container: rgba(201, 166, 107, 0.14);
     --color-on-primary: #211c14;
     --color-on-primary-container: #e3c896;
-    --color-accent-indicator: #c9a66b;
     --color-secondary-container: rgba(143, 168, 135, 0.14);
     --color-on-secondary-container: #c3d2ba;
     --color-error: #c98375;
@@ -609,7 +613,14 @@
     --space-2xl: 32px;
 
     /* Layout */
-    --layout-sidebar-width: 280px;
+    /* D-07 (review 06): this was `--layout-sidebar-width: 280px`, a
+       ballot leftover ("sidebar default width token 256px") — but the
+       sidebar's real width lives on `w-64` (256px) in Sidebar.tsx, and
+       the only consumers of this token are the tab strip's label clamp
+       and the workspace chip (tabs.css). Renamed to what it now means;
+       280px stays as the deliberate clamp the accepted tab strip
+       renders with. */
+    --layout-tab-label-max: 280px;
     --layout-measure-max: 760px;
     --layout-header-height: 52px;
     --layout-content-max: 680px;
@@ -728,7 +739,6 @@
     --color-primary-container: rgba(169, 130, 74, 0.12);
     --color-on-primary: #1a1712;
     --color-on-primary-container: #6b5326;
-    --color-accent-indicator: #a9824a;
     --color-secondary-container: rgba(93, 125, 85, 0.12);
     --color-on-secondary-container: #3c5a36;
     --color-error: #a8503f;
@@ -786,7 +796,10 @@
   /* On-surface content ladder */
   --color-on-surface: #faf7f1;
   --color-on-surface-variant: #d8d3c8;
-  --color-on-surface-tertiary: #c9c2b4;
+  /* D-01 (review 06): #c9c2b4 measured OKLCH c=0.0208, over the pin.
+     Same lightness, family chroma: #c6c2bb (11.46:1 on the HC canvas,
+     unchanged from the old value's 11.49:1). */
+  --color-on-surface-tertiary: #c6c2bb;
   --color-on-surface-faint: #b3aca0;
   --color-inverse-surface: #faf7f1;
   --color-inverse-on-surface: #141318;
@@ -797,7 +810,6 @@
   --color-primary-container: rgba(227, 192, 124, 0.22);
   --color-on-primary: #1c1408;
   --color-on-primary-container: #f0d9a8;
-  --color-accent-indicator: #e3c07c;
   --color-secondary-container: rgba(169, 193, 158, 0.22);
   --color-on-secondary-container: #cfdcc6;
   --color-error: #e09a8b;
@@ -926,18 +938,19 @@
    one they happened to be written against. src/lib/motion.test.ts
    asserts against src/styles/motion.css — the file that ships.
 
-   CSS cannot reach a JS timeline. A rAF loop or a GSAP tween is a
-   clock the stylesheet cannot stop, so every animated component
-   in the stack branches on useReducedMotion()
-   (src/lib/useReducedMotion.ts) instead and renders its static
-   final frame. That half of the gate is pinned by the same test
-   file, with a GSAP spy: "no timeline was created" is the
-   assertion, not "the text happened to look finished".
+   CSS cannot reach a JS timeline. A rAF loop, a setTimeout chain
+   or any tween library is a clock the stylesheet cannot stop, so
+   every animated component in the stack branches on
+   useReducedMotion() (src/lib/useReducedMotion.ts) instead and
+   renders its static final frame. That half of the gate is pinned
+   by the same test file against the hook itself. (P7, review 06
+   D-15: the vendored per-character typing component and its tween
+   library were the last JS timelines in the tree and are deleted;
+   no product component imports a timeline any more.)
 
-   #220 adds the first new animated surface on this stack (the
-   composer's autonomy explainer). Its hand-written branch lives in
-   src/components/ComposerAutonomyHint.tsx and its GSAP-spy test
-   in src/components/Composer.test.tsx — and the reverse check, that every
-   animation already merged still collapses, is asserted there
-   too, against the same motion.css block.
+   The composer's autonomy explainer (the #220 animated surface)
+   renders plain text with no JS clock, and its test in
+   src/components/Composer.test.tsx keeps the reverse check — that
+   every animation already merged still collapses under the same
+   motion.css block.
    ---------------------------------------------------------- */
