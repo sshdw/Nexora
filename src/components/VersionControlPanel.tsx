@@ -3,17 +3,18 @@
 //! commit explanation, plus guarded staging, committing (with an
 //! AI-generated conventional-commit message), and pushing to `origin`.
 //!
-//! Presentational over the `git_info` / `git_file_diff` / `git_commit_diff`
-//! IPC wrappers plus the write wrappers (`git_stage` / `git_unstage` /
-//! `git_commit` / `git_push` / `git_generate_commit_message` /
-//! `git_explain_commit`): `git_info` batches branch + changed files +
-//! commits (with stats and signals) in one round trip, file and commit diffs
-//! load lazily when selected (server-side capped with a truncation notice).
-//! Every write passes the backend's explicit per-call confirmation and
-//! refreshes the panel afterwards. Diff rendering reuses the existing
-//! `DiffView` classifier from `AgentRunSteps` — no new diff engine — inside
-//! a keyboard-focusable scroll region. There is no file watching or live
-//! refresh: the panel reloads on mount and on explicit Refresh only.
+//! Presentational over the `useVcs` data hook (AC-206), which owns the
+//! `git_info` / `git_file_diff` / `git_commit_diff` reads and the write
+//! wrappers (`git_stage` / `git_unstage` / `git_commit` / `git_push` /
+//! `git_generate_commit_message` / `git_explain_commit`): `git_info` batches
+//! branch + changed files + commits (with stats and signals) in one round
+//! trip, file and commit diffs load lazily when selected (server-side capped
+//! with a truncation notice). Every write passes the backend's explicit
+//! per-call confirmation and refreshes the panel afterwards. Diff rendering
+//! reuses the existing `DiffView` classifier from `AgentRunSteps` — no new
+//! diff engine — inside a keyboard-focusable scroll region. There is no file
+//! watching or live refresh: the panel reloads on mount and on explicit
+//! Refresh only.
 //!
 //! Wiring decision (no new rail entry): the timeline lives as a tab inside
 //! this VCS screen — "Working tree" (status, file diffs, commit composer,
@@ -32,67 +33,19 @@
 //! report counts only ("+N more") — no raw backend values. The panel never
 //! animates on entry (instant render under reduced motion).
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { formatRelativeTime } from "../lib/format";
-import {
-  getSetting,
-  gitCommit,
-  gitCommitDiff,
-  gitExplainCommit,
-  gitFileDiff,
-  gitGenerateCommitMessage,
-  gitInfo,
-  gitPush,
-  gitStage,
-  gitUnstage,
-  type CommandError,
-  type CommitExplanation,
-  type GitCommit,
-  type GitCommitDiff,
-  type GitFileDiff,
-  type GitInfo,
-} from "../lib/tauri";
+import { useVcs } from "../lib/useVcs";
 import { DiffView } from "./AgentRunSteps";
 import M3Button from "./M3Button";
 import M3LoadingIndicator from "./M3LoadingIndicator";
 import { getLocale, tp, tr, type Locale } from "../lib/strings";
 import { useStrings } from "../lib/useLocale";
 
-const COMMIT_PAGE = 20;
 const SHORT_HASH_LEN = 7;
 
 type VcsTab = "working" | "timeline";
-
-/** Explain state for the selected commit: the AI explanation (copy-only),
- * or the failure. `copied` confirms the Copy press without a timer. */
-interface CommitExplainState {
-  loading: boolean;
-  explanation: string | null;
-  truncatedInput: boolean;
-  error: string | null;
-  copied: boolean;
-}
-
-const IDLE_EXPLAIN: CommitExplainState = {
-  loading: false,
-  explanation: null,
-  truncatedInput: false,
-  error: null,
-  copied: false,
-};
-
-function toMessage(error: unknown): string {
-  if (
-    typeof error === "object" &&
-    error !== null &&
-    typeof (error as CommandError).message === "string"
-  ) {
-    return (error as CommandError).message;
-  }
-  if (error instanceof Error) return error.message;
-  return String(error);
-}
 
 /** Fixed-vocabulary file status label; unknown values fall back to a
  * capitalized echo of the backend token (the backend only sends its fixed
@@ -135,7 +88,11 @@ function riskLabel(signal: string, locale: Locale = getLocale()): string {
 }
 
 /** Compact stats line for one timeline node: counts only, never content. */
-function statsLine(commit: GitCommit, locale: Locale = getLocale()): string {
+function statsLine(commit: {
+  files_changed: number;
+  insertions: number;
+  deletions: number;
+}, locale: Locale = getLocale()): string {
   const files = tp(locale, "files", commit.files_changed);
   return `${files} · +${commit.insertions} −${commit.deletions}`;
 }
@@ -154,104 +111,35 @@ export interface VersionControlPanelProps {
 
 export default function VersionControlPanel({ onClose, request = null }: VersionControlPanelProps) {
   const { locale, t, tp: tpn } = useStrings();
+  const vcs = useVcs();
+  const {
+    info,
+    loading,
+    error,
+    selectedPath,
+    diff,
+    diffLoading,
+    diffError,
+    selectedCommit,
+    commitDiff,
+    commitDiffLoading,
+    commitDiffError,
+    acting,
+    actionError,
+    commitMessage,
+    generating,
+    generatedTruncated,
+    pushArmed,
+    explain,
+  } = vcs;
   const [tab, setTab] = useState<VcsTab>("working");
-  const [info, setInfo] = useState<GitInfo | null>(null);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [error, setError] = useState<string | null>(null);
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
-  const [diff, setDiff] = useState<GitFileDiff | null>(null);
-  const [diffLoading, setDiffLoading] = useState<boolean>(false);
-  const [diffError, setDiffError] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [acting, setActing] = useState<string | null>(null);
-  const [commitMessage, setCommitMessage] = useState<string>("");
-  const [generating, setGenerating] = useState<boolean>(false);
-  const [generatedTruncated, setGeneratedTruncated] = useState<boolean>(false);
-  const [pushArmed, setPushArmed] = useState<boolean>(false);
-  const [selectedCommit, setSelectedCommit] = useState<string | null>(null);
-  const [commitDiff, setCommitDiff] = useState<GitCommitDiff | null>(null);
-  const [commitDiffLoading, setCommitDiffLoading] = useState<boolean>(false);
-  const [commitDiffError, setCommitDiffError] = useState<string | null>(null);
-  const [explain, setExplain] = useState<CommitExplainState>(IDLE_EXPLAIN);
   const commitRef = useRef<HTMLTextAreaElement>(null);
-  // Synchronous in-flight explain guard: `explain.loading` lands after
-  // re-render, so two rapid Explain presses could both pass the state guard
-  // and stack two paid AI requests. The ref flips in the same tick (same
-  // shape as the terminal panel's per-block guard, single-flight here
-  // because only the selected commit can be explained).
-  const explainingRef = useRef<string | null>(null);
-
-  const loadInfo = useCallback(async (keepSelection: boolean) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const data = await gitInfo(COMMIT_PAGE);
-      setInfo(data);
-      if (!keepSelection) {
-        setSelectedPath(null);
-        setDiff(null);
-        setDiffError(null);
-        setSelectedCommit(null);
-        setCommitDiff(null);
-        setCommitDiffError(null);
-        setExplain(IDLE_EXPLAIN);
-      }
-    } catch (e) {
-      setError(toMessage(e));
-      setInfo(null);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadInfo(false);
-  }, [loadInfo]);
-
-  const loadDiff = useCallback(async (path: string) => {
-    setSelectedPath(path);
-    setDiffLoading(true);
-    setDiffError(null);
-    setDiff(null);
-    try {
-      setDiff(await gitFileDiff(path));
-    } catch (e) {
-      setDiffError(toMessage(e));
-    } finally {
-      setDiffLoading(false);
-    }
-  }, []);
-
-  const loadCommitDiff = useCallback(async (hash: string) => {
-    setSelectedCommit(hash);
-    setCommitDiffLoading(true);
-    setCommitDiffError(null);
-    setCommitDiff(null);
-    setExplain(IDLE_EXPLAIN);
-    try {
-      setCommitDiff(await gitCommitDiff(hash));
-    } catch (e) {
-      setCommitDiffError(toMessage(e));
-    } finally {
-      setCommitDiffLoading(false);
-    }
-  }, []);
-
-  // Refresh keeps the selections (and reloads their diffs) so a manual
-  // refresh never loses the reader's place.
-  const handleRefresh = useCallback(() => {
-    setPushArmed(false);
-    void loadInfo(true).then(() => {
-      if (selectedPath) void loadDiff(selectedPath);
-      if (selectedCommit) void loadCommitDiff(selectedCommit);
-    });
-  }, [loadInfo, loadDiff, loadCommitDiff, selectedPath, selectedCommit]);
 
   // Palette requests (same handlers as the panel's own buttons — no
-  // duplicated logic). Refresh reuses handleRefresh; commit-focus moves
-  // focus to the commit composer once the panel has loaded.
-  const refreshRef = useRef(handleRefresh);
-  refreshRef.current = handleRefresh;
+  // duplicated logic). Refresh reuses the store's refresh; commit-focus
+  // moves focus to the commit composer once the panel has loaded.
+  const refreshRef = useRef(vcs.refresh);
+  refreshRef.current = vcs.refresh;
   const seenRequestRef = useRef<number | null>(null);
   useEffect(() => {
     if (!request || seenRequestRef.current === request.token) return;
@@ -270,132 +158,6 @@ export default function VersionControlPanel({ onClose, request = null }: Version
     commitRef.current?.focus();
   }, [request, loading, info]);
 
-  const handleToggleStage = useCallback(
-    async (path: string, staged: boolean) => {
-      setActing(path);
-      setActionError(null);
-      try {
-        if (staged) {
-          await gitUnstage([path]);
-        } else {
-          await gitStage([path]);
-        }
-        await loadInfo(true);
-      } catch (e) {
-        setActionError(toMessage(e));
-      } finally {
-        setActing(null);
-      }
-    },
-    [loadInfo],
-  );
-
-  const handleCommit = useCallback(async () => {
-    const message = commitMessage.trim();
-    if (message === "") return;
-    setActing("commit");
-    setActionError(null);
-    try {
-      await gitCommit(message);
-      setCommitMessage("");
-      setGeneratedTruncated(false);
-      await loadInfo(true);
-    } catch (e) {
-      setActionError(toMessage(e));
-    } finally {
-      setActing(null);
-    }
-  }, [commitMessage, loadInfo]);
-
-  const handleGenerate = useCallback(async () => {
-    setGenerating(true);
-    setActionError(null);
-    try {
-      const [provider, model] = await Promise.all([
-        getSetting("provider.selected"),
-        getSetting("provider.model"),
-      ]);
-      if (!provider || !model) {
-        setActionError(tr(getLocale(), "vcs.needProviderGenerate"));
-        return;
-      }
-      const generated = await gitGenerateCommitMessage(provider, model);
-      setCommitMessage(generated.message);
-      setGeneratedTruncated(generated.truncated_input);
-    } catch (e) {
-      setActionError(toMessage(e));
-    } finally {
-      setGenerating(false);
-    }
-  }, []);
-
-  const handlePush = useCallback(async () => {
-    if (!pushArmed) {
-      setPushArmed(true);
-      return;
-    }
-    setPushArmed(false);
-    setActing("push");
-    setActionError(null);
-    try {
-      await gitPush();
-      await loadInfo(true);
-    } catch (e) {
-      setActionError(toMessage(e));
-    } finally {
-      setActing(null);
-    }
-  }, [loadInfo, pushArmed]);
-
-  // Commit explanation: explain the selected commit's capped diff through
-  // the existing AI execution path (same persisted provider/model settings
-  // as commit-message generation). The result is copy-only — this handler
-  // never feeds it back into a write, so nothing auto-applies.
-  const handleExplainCommit = useCallback(async (hash: string) => {
-    if (explainingRef.current !== null) return;
-    explainingRef.current = hash;
-    setExplain((prev) => ({ ...prev, loading: true, error: null, copied: false }));
-    try {
-      const [provider, model] = await Promise.all([
-        getSetting("provider.selected"),
-        getSetting("provider.model"),
-      ]);
-      if (!provider || !model) {
-        setExplain((prev) => ({
-          ...prev,
-          loading: false,
-          error: tr(getLocale(), "term.needProviderExplain"),
-        }));
-        return;
-      }
-      const result: CommitExplanation = await gitExplainCommit(hash, provider, model);
-      setExplain({
-        loading: false,
-        explanation: result.explanation,
-        truncatedInput: result.truncated_input,
-        error: null,
-        copied: false,
-      });
-    } catch (e) {
-      setExplain((prev) => ({ ...prev, loading: false, error: toMessage(e) }));
-    } finally {
-      explainingRef.current = null;
-    }
-  }, []);
-
-  const handleCopyExplain = useCallback(async (text: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setExplain((prev) => ({ ...prev, copied: true }));
-    } catch {
-      setExplain((prev) => ({
-        ...prev,
-        copied: false,
-        error: tr(getLocale(), "common.copyFailed"),
-      }));
-    }
-  }, []);
-
   const stagedCount = info?.files.filter((file) => file.status === "staged").length ?? 0;
   const explainable = commitDiff !== null && commitDiff.files.length > 0;
 
@@ -410,7 +172,7 @@ export default function VersionControlPanel({ onClose, request = null }: Version
           </p>
         </div>
         <div className="nex-vcs-header-actions">
-          <M3Button variant="quiet" onClick={handleRefresh} disabled={loading}>
+          <M3Button variant="quiet" onClick={vcs.refresh} disabled={loading}>
             {loading ? t("vcs.refreshing") : t("vcs.refresh")}
           </M3Button>
           <M3Button variant="quiet" onClick={onClose}>
@@ -479,7 +241,7 @@ export default function VersionControlPanel({ onClose, request = null }: Version
                                 type="button"
                                 className={"nex-vcs-file" + (selected ? " is-selected" : "")}
                                 aria-current={selected ? "true" : undefined}
-                                onClick={() => void loadDiff(file.path)}
+                                onClick={() => void vcs.loadDiff(file.path)}
                               >
                                 <span className="nex-tag nex-tag-mono nex-vcs-file-status">
                                   {statusLabel(file.status, locale)}
@@ -495,7 +257,7 @@ export default function VersionControlPanel({ onClose, request = null }: Version
                                 variant="quiet"
                                 size="sm"
                                 disabled={busy || acting !== null}
-                                onClick={() => void handleToggleStage(file.path, staged)}
+                                onClick={() => void vcs.toggleStage(file.path, staged)}
                               >
                                 {busy ? t("vcs.working") : staged ? t("vcs.unstage") : t("vcs.stage")}
                               </M3Button>
@@ -557,7 +319,7 @@ export default function VersionControlPanel({ onClose, request = null }: Version
                     aria-label={t("vcs.commitAria")}
                     value={commitMessage}
                     disabled={acting !== null || generating}
-                    onChange={(event) => setCommitMessage(event.target.value)}
+                    onChange={(event) => vcs.setCommitMessage(event.target.value)}
                   />
                   {generatedTruncated && (
                     <p className="nex-vcs-notice" role="note">
@@ -569,7 +331,7 @@ export default function VersionControlPanel({ onClose, request = null }: Version
                       variant="quiet"
                       size="sm"
                       disabled={generating || acting !== null}
-                      onClick={() => void handleGenerate()}
+                      onClick={() => void vcs.generate()}
                     >
                       {generating ? t("vcs.generating") : t("vcs.generate")}
                     </M3Button>
@@ -579,7 +341,7 @@ export default function VersionControlPanel({ onClose, request = null }: Version
                       disabled={
                         acting !== null || generating || commitMessage.trim() === "" || stagedCount === 0
                       }
-                      onClick={() => void handleCommit()}
+                      onClick={() => void vcs.commit()}
                     >
                       {acting === "commit" ? t("vcs.committing") : t("vcs.commit")}
                     </M3Button>
@@ -596,7 +358,7 @@ export default function VersionControlPanel({ onClose, request = null }: Version
                       variant="secondary"
                       size="sm"
                       disabled={acting !== null || !info.branch}
-                      onClick={() => void handlePush()}
+                      onClick={() => void vcs.push()}
                       title={info.branch ? t("vcs.pushTitleOk") : t("vcs.pushTitleDetached")}
                     >
                       {acting === "push" ? t("vcs.pushing") : pushArmed ? t("vcs.confirmPush") : t("vcs.push")}
@@ -631,7 +393,7 @@ export default function VersionControlPanel({ onClose, request = null }: Version
                                 "nex-vcs-timeline-card" + (selected ? " is-selected" : "")
                               }
                               aria-current={selected ? "true" : undefined}
-                              onClick={() => void loadCommitDiff(commit.hash)}
+                              onClick={() => void vcs.loadCommitDiff(commit.hash)}
                             >
                               <span className="nex-vcs-timeline-row">
                                 <span
@@ -743,7 +505,7 @@ export default function VersionControlPanel({ onClose, request = null }: Version
                             variant="quiet"
                             size="sm"
                             disabled={explain.loading || !explainable}
-                            onClick={() => void handleExplainCommit(commitDiff.hash)}
+                            onClick={() => void vcs.explainCommit(commitDiff.hash)}
                             title={t("vcs.explainTitle")}
                           >
                             {explain.loading
@@ -756,7 +518,7 @@ export default function VersionControlPanel({ onClose, request = null }: Version
                             <M3Button
                               variant="quiet"
                               size="sm"
-                              onClick={() => void handleCopyExplain(explain.explanation ?? "")}
+                              onClick={() => void vcs.copyExplanation(explain.explanation ?? "")}
                             >
                               {explain.copied ? t("vcs.copied") : t("vcs.copyExplanation")}
                             </M3Button>

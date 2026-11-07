@@ -875,13 +875,40 @@ mod tests {
     // `rename_all = "snake_case"`). The 1.0.0 release shipped every agent
     // command invoked with snake_case ARG keys and was therefore dead at IPC
     // validation. These tests parse the argument object literals of every
-    // `invoke(...)` call in `src/lib/tauri.ts` (never interface/type
+    // `invoke(...)` call in the frontend IPC surface (never interface/type
     // declarations, which legitimately keep snake_case response fields) and
     // pin them against the Rust signatures above.
 
-    /// Source of the frontend IPC wrapper, resolved relative to
-    /// `src-tauri/src/commands/` (3 ups = repository root).
-    const TAURI_TS: &str = include_str!("../../../src/lib/tauri.ts");
+    /// The whole frontend IPC surface, concatenated: the `src/lib/tauri.ts`
+    /// barrel plus every `src/lib/ipc/*.ts` module. AC-205 split the wrapper
+    /// sources out of the barrel, so the pins scan the surface they actually
+    /// govern (paths resolved relative to `src-tauri/` = `CARGO_MANIFEST_DIR`;
+    /// read at test runtime so the pin always sees the current frontend).
+    fn frontend_ipc_sources() -> Vec<String> {
+        let lib = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("src")
+            .join("lib");
+        let mut sources =
+            vec![std::fs::read_to_string(lib.join("tauri.ts")).expect("read src/lib/tauri.ts")];
+        let ipc = lib.join("ipc");
+        let mut names: Vec<String> = std::fs::read_dir(&ipc)
+            .expect("read src/lib/ipc directory")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| {
+                std::path::Path::new(name)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("ts"))
+                    && !name.ends_with(".test.ts")
+            })
+            .collect();
+        names.sort();
+        for name in names {
+            sources.push(std::fs::read_to_string(ipc.join(&name)).expect("read ipc module"));
+        }
+        sources
+    }
 
     /// True when `key` looks like a `snake_case` identifier (e.g. `run_id`):
     /// a lowercase letter, an underscore, and another lowercase letter.
@@ -1043,18 +1070,23 @@ mod tests {
         keys
     }
 
-    /// Test A: no `invoke` call in `src/lib/tauri.ts` may pass a `snake_case`
-    /// argument key — command ARGS are camelCase (Tauri v2) repo-wide.
+    /// Test A: no `invoke` call in the frontend IPC surface may pass a
+    /// `snake_case` argument key — command ARGS are camelCase (Tauri v2)
+    /// repo-wide.
     #[test]
     fn ipc_args_are_camel_case() {
-        let calls = extract_invoke_arg_literals(TAURI_TS);
-        // Non-vacuous: `src/lib/tauri.ts` has far more than 38 `invoke(...)`
+        let calls: Vec<(String, Vec<String>)> = frontend_ipc_sources()
+            .iter()
+            .flat_map(|src| extract_invoke_arg_literals(src))
+            .collect();
+        // Non-vacuous: the IPC surface has far more than 38 `invoke(...)`
         // call sites across every feature module, so clearing this bound
-        // proves the parser actually walked the file (a broken parser yields
-        // zero and would otherwise pass silently).
+        // proves the parser actually walked the surface (a broken parser
+        // yields zero and would otherwise pass silently).
         assert!(
             calls.len() >= 38,
-            "naming-parity parser found only {} invoke calls in src/lib/tauri.ts; \
+            "naming-parity parser found only {} invoke calls in the frontend \
+             IPC surface (src/lib/tauri.ts + src/lib/ipc/*); \
              it must parse every call site to be a real guard",
             calls.len()
         );
@@ -1069,9 +1101,9 @@ mod tests {
         }
     }
 
-    /// Test B: the argument key set of each agent command in `tauri.ts` must
-    /// exactly equal the Rust parameter names in camelCase — no extra key,
-    /// no missing key.
+    /// Test B: the argument key set of each agent command in the frontend
+    /// IPC surface must exactly equal the Rust parameter names in camelCase
+    /// — no extra key, no missing key.
     #[test]
     fn agent_command_arg_keys_match_rust_params() {
         const AGENT_COMMANDS: [(&str, &[&str]); 17] = [
@@ -1105,12 +1137,17 @@ mod tests {
             ("remove_permission_rule", &["id"]),
             ("list_permission_rules", &[]),
         ];
-        let calls = extract_invoke_arg_literals(TAURI_TS);
+        let calls: Vec<(String, Vec<String>)> = frontend_ipc_sources()
+            .iter()
+            .flat_map(|src| extract_invoke_arg_literals(src))
+            .collect();
         for (command, want) in AGENT_COMMANDS {
             let got = &calls
                 .iter()
                 .find(|(name, _)| name == command)
-                .unwrap_or_else(|| panic!("invoke(\"{command}\") not found in src/lib/tauri.ts"))
+                .unwrap_or_else(|| {
+                    panic!("invoke(\"{command}\") not found in the frontend IPC surface")
+                })
                 .1;
             let mut got_sorted: Vec<&str> = got.iter().map(String::as_str).collect();
             got_sorted.sort_unstable();

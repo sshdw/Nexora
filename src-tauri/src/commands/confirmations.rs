@@ -142,7 +142,38 @@ async fn confirm_natively(app: &AppHandle, body: String) -> Result<bool, Command
 
 #[cfg(test)]
 mod tests {
-    const TAURI_TS: &str = include_str!("../../../src/lib/tauri.ts");
+    /// The whole frontend IPC surface, concatenated: the `src/lib/tauri.ts`
+    /// barrel plus every `src/lib/ipc/*.ts` module. AC-205 split the wrapper
+    /// sources out of the barrel (the `OP_*` operation identities now live in
+    /// `src/lib/ipc/confirmations.ts`), so the mint pin scans the surface it
+    /// actually governs (paths resolved relative to `src-tauri/` =
+    /// `CARGO_MANIFEST_DIR`; read at test runtime so the pin always sees the
+    /// current frontend).
+    fn frontend_ipc_sources() -> Vec<String> {
+        let lib = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("src")
+            .join("lib");
+        let mut sources =
+            vec![std::fs::read_to_string(lib.join("tauri.ts")).expect("read src/lib/tauri.ts")];
+        let ipc = lib.join("ipc");
+        let mut names: Vec<String> = std::fs::read_dir(&ipc)
+            .expect("read src/lib/ipc directory")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| {
+                std::path::Path::new(name)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("ts"))
+                    && !name.ends_with(".test.ts")
+            })
+            .collect();
+        names.sort();
+        for name in names {
+            sources.push(std::fs::read_to_string(ipc.join(&name)).expect("read ipc module"));
+        }
+        sources
+    }
 
     /// The frontend mints with the literal operation identity the consuming
     /// command recomputes; a drift on either side silently breaks every
@@ -150,14 +181,16 @@ mod tests {
     /// against the Rust constants.
     #[test]
     fn frontend_mints_with_the_shared_operation_identities() {
+        let surface = frontend_ipc_sources().join("\n");
         for literal in [
             crate::application::confirmations::OP_DELETE_PROMPT,
             crate::application::confirmations::OP_DELETE_CONVERSATION,
             crate::application::confirmations::OP_CLEAR_ALL_DATA,
         ] {
             assert!(
-                TAURI_TS.contains(&format!("\"{literal}\"")),
-                "src/lib/tauri.ts must mint with the literal {literal:?}"
+                surface.contains(&format!("\"{literal}\"")),
+                "the frontend IPC surface (src/lib/tauri.ts + src/lib/ipc/*) \
+                 must mint with the literal {literal:?}"
             );
         }
     }

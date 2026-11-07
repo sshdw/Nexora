@@ -1,11 +1,12 @@
 //! Code audit panel: read-only static analysis of the workspace repository.
 //!
-//! Presentational over the single `repo_audit` IPC wrapper: one batch round
-//! trip returns fixed-vocabulary findings (grouped here by kind with
-//! counts), scan accounting, and skip notices. Manual Run only — mounting
-//! never scans, and there is no watching or live re-audit. Findings never
-//! modify code: rows are copy/read-only text (no auto-fix path exists in
-//! this slice).
+//! Presentational over the `useAudit` data hook (AC-206), which owns the
+//! four manual-run machines: `repo_audit` (one batch round trip returns
+//! fixed-vocabulary findings grouped here by kind with counts, scan
+//! accounting, and skip notices), `testgen_drafts`, `dep_inventory`, and the
+//! confirmed `refactor_apply` write. Manual Run only — mounting never scans,
+//! and there is no watching or live re-audit. Findings never modify code:
+//! rows are copy/read-only text (no auto-fix path exists in this slice).
 //!
 //! Test-drafts extension (same panel, second batch command): `testgen_drafts`
 //! derives template-generated Rust `#[test]` scaffolds for undocumented or
@@ -37,20 +38,8 @@
 
 import { useCallback, useState } from "react";
 
-import {
-  depInventory,
-  refactorApply,
-  repoAudit,
-  testgenDrafts,
-  type AuditFinding,
-  type CommandError,
-  type DepEntry,
-  type DepInventory,
-  type RefactorApplyResult,
-  type RepoAuditReport,
-  type TestDraft,
-  type TestgenReport,
-} from "../lib/tauri";
+import type { AuditFinding, DepEntry, TestDraft } from "../lib/tauri";
+import { useAudit } from "../lib/useAudit";
 import { useStrings, type Strings } from "../lib/useLocale";
 import M3Button from "./M3Button";
 import M3LoadingIndicator from "./M3LoadingIndicator";
@@ -73,18 +62,6 @@ const KIND_ORDER = [
   "unchecked-result",
   "suspicious-clone",
 ] as const;
-
-function toMessage(error: unknown): string {
-  if (
-    typeof error === "object" &&
-    error !== null &&
-    typeof (error as CommandError).message === "string"
-  ) {
-    return (error as CommandError).message;
-  }
-  if (error instanceof Error) return error.message;
-  return String(error);
-}
 
 /** Fixed-vocabulary kind label; unknown tokens echo defensively (the backend
  * only sends its fixed set, so this branch is defensive). */
@@ -232,24 +209,27 @@ function DraftRow({
 
 export default function AuditPanel({ onClose }: AuditPanelProps) {
   const { t } = useStrings();
-  const [running, setRunning] = useState(false);
-  const [report, setReport] = useState<RepoAuditReport | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const audit = useAudit();
+  const {
+    report,
+    running,
+    error,
+    drafts,
+    draftsRunning,
+    draftsError,
+    copiedKey,
+    deps,
+    depsRunning,
+    depsError,
+    applyResult,
+    applyRunning,
+    applyError,
+  } = audit;
   const [kindFilter, setKindFilter] = useState<string>("all");
-  const [draftsRunning, setDraftsRunning] = useState(false);
-  const [drafts, setDrafts] = useState<TestgenReport | null>(null);
-  const [draftsError, setDraftsError] = useState<string | null>(null);
-  const [copiedKey, setCopiedKey] = useState<string | null>(null);
-  const [depsRunning, setDepsRunning] = useState(false);
-  const [deps, setDeps] = useState<DepInventory | null>(null);
-  const [depsError, setDepsError] = useState<string | null>(null);
   const [applyPath, setApplyPath] = useState("");
   const [applyStart, setApplyStart] = useState("");
   const [applyEnd, setApplyEnd] = useState("");
   const [applyConfirmed, setApplyConfirmed] = useState(false);
-  const [applyRunning, setApplyRunning] = useState(false);
-  const [applyResult, setApplyResult] = useState<RefactorApplyResult | null>(null);
-  const [applyError, setApplyError] = useState<string | null>(null);
   const [issueTarget, setIssueTarget] = useState<FileIssueTarget | null>(null);
   const [issueNotice, setIssueNotice] = useState<string | null>(null);
 
@@ -265,98 +245,6 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
       source: "audit",
     });
   }, []);
-
-  // Synchronous in-flight guard: rapid Run presses collapse into the active
-  // scan instead of stacking backend walks.
-  const run = useCallback(async () => {
-    if (running) return;
-    setRunning(true);
-    setError(null);
-    try {
-      setReport(await repoAudit());
-    } catch (err) {
-      setError(toMessage(err));
-    } finally {
-      setRunning(false);
-    }
-  }, [running]);
-
-  // Same guard shape for draft generation: one batch round trip at a time.
-  const generate = useCallback(async () => {
-    if (draftsRunning) return;
-    setDraftsRunning(true);
-    setDraftsError(null);
-    setCopiedKey(null);
-    try {
-      setDrafts(await testgenDrafts());
-    } catch (err) {
-      setDraftsError(toMessage(err));
-    } finally {
-      setDraftsRunning(false);
-    }
-  }, [draftsRunning]);
-
-  const copyDraft = useCallback(
-    async (draft: TestDraft) => {
-      const key = `${draft.path}:${draft.line}:${draft.fn_name}`;
-      try {
-        await navigator.clipboard.writeText(draft.code);
-        setCopiedKey(key);
-      } catch {
-        setDraftsError(t("common.copyFailed"));
-      }
-    },
-    [t],
-  );
-
-  // Same guard shape for the dependency inventory: one batch round trip at a
-  // time. Inventory only — the backend never writes on this path.
-  const loadDeps = useCallback(async () => {
-    if (depsRunning) return;
-    setDepsRunning(true);
-    setDepsError(null);
-    try {
-      setDeps(await depInventory());
-    } catch (err) {
-      setDepsError(toMessage(err));
-    } finally {
-      setDepsRunning(false);
-    }
-  }, [depsRunning]);
-
-  // Safe apply: one confirmed dead-code removal per press. Frontend
-  // validation mirrors the backend guards (non-empty path, positive integer
-  // range, explicit tick); the backend re-verifies everything before writing.
-  const applyRemoval = useCallback(async () => {
-    if (applyRunning) return;
-    const path = applyPath.trim();
-    const start = Number(applyStart);
-    const end = Number(applyEnd);
-    if (
-      path === "" ||
-      !Number.isInteger(start) ||
-      !Number.isInteger(end) ||
-      start < 1 ||
-      end < start
-    ) {
-      setApplyError(t("refactor.fillAll"));
-      return;
-    }
-    if (!applyConfirmed) {
-      setApplyError(t("refactor.needConfirm"));
-      return;
-    }
-    setApplyRunning(true);
-    setApplyError(null);
-    setApplyResult(null);
-    try {
-      setApplyResult(await refactorApply(path, start, end, "dead-code-candidate"));
-    } catch (err) {
-      setApplyError(toMessage(err));
-    } finally {
-      setApplyRunning(false);
-    }
-  }, [applyRunning, applyPath, applyStart, applyEnd, applyConfirmed, t]);
 
   const visibleKinds =
     kindFilter === "all"
@@ -377,7 +265,7 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
           <p className="nex-vcs-subtitle">{t("audit.subtitle")}</p>
         </div>
         <div className="nex-vcs-header-actions">
-          <M3Button variant="quiet" onClick={() => void run()} disabled={running}>
+          <M3Button variant="quiet" onClick={() => void audit.run()} disabled={running}>
             {running ? t("audit.running") : report ? t("audit.rerun") : t("audit.run")}
           </M3Button>
           <M3Button variant="quiet" onClick={onClose}>
@@ -495,7 +383,7 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
           <div>
             <M3Button
               variant="quiet"
-              onClick={() => void generate()}
+              onClick={() => void audit.generate()}
               disabled={draftsRunning}
             >
               {draftsRunning
@@ -540,7 +428,7 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
                         key={key}
                         draft={draft}
                         copied={copiedKey === key}
-                        onCopy={() => void copyDraft(draft)}
+                        onCopy={() => void audit.copyDraft(draft)}
                         t={t}
                       />
                     );
@@ -556,7 +444,7 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
             {t("dep.hint")}
           </p>
           <div>
-            <M3Button variant="quiet" onClick={() => void loadDeps()} disabled={depsRunning}>
+            <M3Button variant="quiet" onClick={() => void audit.loadDeps()} disabled={depsRunning}>
               {depsRunning ? t("dep.loading") : deps ? t("dep.reload") : t("dep.load")}
             </M3Button>
           </div>
@@ -663,7 +551,7 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
           <div>
             <M3Button
               variant="quiet"
-              onClick={() => void applyRemoval()}
+              onClick={() => void audit.applyRemoval(applyPath, applyStart, applyEnd, applyConfirmed)}
               disabled={applyRunning}
             >
               {applyRunning ? t("refactor.applying") : t("refactor.apply")}
@@ -697,7 +585,7 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
         <FileIssueDialog
           target={issueTarget}
           onFiled={(message) => setIssueNotice(message)}
-          onError={(message) => setError(message)}
+          onError={(message) => audit.reportError(message)}
           onClose={() => setIssueTarget(null)}
         />
       )}

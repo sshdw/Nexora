@@ -122,10 +122,14 @@ describe("hidden panels stay on disk (#219)", () => {
   it("keeps the terminal backend wrappers while the terminal UI is gone", () => {
     expect(readdirSync(componentsDir)).not.toContain("TerminalPanel.tsx");
     expect(readdirSync(componentsDir)).not.toContain("TerminalEntry.tsx");
-    const tauri = source("tauri.ts");
-    expect(tauri).toContain('invoke<TerminalRunResult>("terminal_run"');
-    expect(tauri).toContain('invoke<boolean>("terminal_kill")');
-    expect(tauri).toContain('invoke<ErrorExplanation>("terminal_explain"');
+    // AC-205 split: the three wrappers moved verbatim from tauri.ts to
+    // ipc/terminal.ts, so the source pins move with them.
+    const terminal = source("ipc/terminal.ts");
+    expect(terminal).toContain('invoke<TerminalRunResult>("terminal_run"');
+    expect(terminal).toContain('invoke<boolean>("terminal_kill")');
+    expect(terminal).toContain('invoke<ErrorExplanation>("terminal_explain"');
+    // ...and the barrel still re-exports them, which is what consumers see.
+    expect(source("tauri.ts")).toContain('export * from "./ipc/terminal"');
   });
 
   it("registers no sidebar rail row for a hidden destination", () => {

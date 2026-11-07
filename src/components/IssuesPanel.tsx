@@ -1,8 +1,9 @@
 //! GitHub Issues & PRs + Actions panel: read-only lists for the workspace origin repo.
 //!
-//! Presentational over the `gh_issues` / `gh_pulls` / `gh_actions` /
-//! `gh_runners` IPC wrappers:
-//! one capped page (at most 50 items) per issues/PRs kind tab + state filter
+//! Presentational over the `useGh` data hook (AC-206), which owns the
+//! `gh_issues` / `gh_pulls` / `gh_actions` / `gh_runners` wrappers plus the
+//! lazy `gh_action_log` tails and the fix-loop's `createTask` write: one
+//! capped page (at most 50 items) per issues/PRs kind tab + state filter
 //! (`open` / `closed` / `all`), plus the Actions tab (recent workflow runs
 //! with failing runs expanded to failed jobs; each job's capped,
 //! secret-scrubbed log tail loads lazily on job-expand; the Runners section
@@ -35,24 +36,18 @@
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 
-import {
-  createTask,
-  ghActionLog,
-  ghActions,
-  ghIssues,
-  ghPulls,
-  ghRunners,
-  type CommandError,
-  type GhActionJob,
-  type GhActionLog,
-  type GhActionRun,
-  type GhIssue,
-  type GhPull,
-  type GhRateLimit,
-  type GhRunner,
-  type GhState,
-  type GhToolReadiness,
+import type {
+  GhActionJob,
+  GhActionLog,
+  GhActionRun,
+  GhIssue,
+  GhPull,
+  GhRateLimit,
+  GhRunner,
+  GhState,
+  GhToolReadiness,
 } from "../lib/tauri";
+import { useGh } from "../lib/useGh";
 import { useStrings, type Strings } from "../lib/useLocale";
 import M3Button from "./M3Button";
 import M3LoadingIndicator from "./M3LoadingIndicator";
@@ -63,17 +58,6 @@ export interface IssuesPanelProps {
 }
 
 type Kind = "issues" | "pulls" | "actions";
-
-function toMessage(error: unknown): string {
-  if (
-    typeof error === "object" &&
-    error !== null &&
-    typeof (error as CommandError).message === "string"
-  ) {
-    return (error as CommandError).message;
-  }
-  return "Issues & PRs are unavailable.";
-}
 
 /** Backend state vocabulary echoed defensively (the API only ever sends
  * `open`/`closed`; anything else renders the catalog unknown tag). */
@@ -492,195 +476,78 @@ function RunnersView({ runners, total, needsAuth, local, loading, error }: Runne
 
 export default function IssuesPanel({ onClose }: IssuesPanelProps) {
   const { t } = useStrings();
+  const gh = useGh();
   const [kind, setKind] = useState<Kind>("issues");
   const [state, setState] = useState<GhState>("open");
-  const [issues, setIssues] = useState<GhIssue[]>([]);
-  const [pulls, setPulls] = useState<GhPull[]>([]);
-  const [owner, setOwner] = useState<string | null>(null);
-  const [repo, setRepo] = useState<string | null>(null);
-  const [authenticated, setAuthenticated] = useState(true);
-  const [rateLimited, setRateLimited] = useState(false);
-  const [rate, setRate] = useState<GhRateLimit | null>(null);
-  const [selected, setSelected] = useState<number | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [runs, setRuns] = useState<GhActionRun[]>([]);
-  const [totalRuns, setTotalRuns] = useState(0);
-  const [selectedRun, setSelectedRun] = useState<number | null>(null);
-  const [fixBusy, setFixBusy] = useState<number | null>(null);
-  const [fixCreated, setFixCreated] = useState<number | null>(null);
-  const [fixFailed, setFixFailed] = useState(false);
-  const [jobLogs, setJobLogs] = useState<Record<number, GhActionLog>>({});
-  const [logsLoading, setLogsLoading] = useState<Record<number, boolean>>({});
-  const [runners, setRunners] = useState<GhRunner[]>([]);
-  const [runnersTotal, setRunnersTotal] = useState(0);
-  const [runnersNeedsAuth, setRunnersNeedsAuth] = useState(false);
-  const [localTools, setLocalTools] = useState<GhToolReadiness[]>([]);
-  const [runnersLoading, setRunnersLoading] = useState(false);
-  const [actionsError, setActionsError] = useState<string | null>(null);
-  const [runnersError, setRunnersError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    if (loading) return;
-    setLoading(true);
-    setError(null);
-    try {
-      if (kind === "issues") {
-        const result = await ghIssues(state);
-        setIssues(result.items);
-        setOwner(result.owner);
-        setRepo(result.repo);
-        setAuthenticated(result.authenticated);
-        setRateLimited(result.rate_limited);
-        setRate(result.rate_limit);
-      } else {
-        const result = await ghPulls(state);
-        setPulls(result.items);
-        setOwner(result.owner);
-        setRepo(result.repo);
-        setAuthenticated(result.authenticated);
-        setRateLimited(result.rate_limited);
-        setRate(result.rate_limit);
-      }
-      setSelected(null);
-    } catch (err) {
-      setError(toMessage(err));
-    } finally {
-      setLoading(false);
-    }
-  }, [kind, state]);
-
-  const loadActions = useCallback(async () => {
-    if (loading) return;
-    setLoading(true);
-    setActionsError(null);
-    try {
-      const result = await ghActions();
-      setRuns(result.runs);
-      setTotalRuns(result.total_runs);
-      setOwner(result.owner);
-      setRepo(result.repo);
-      setAuthenticated(result.authenticated);
-      setRateLimited(result.rate_limited);
-      setRate(result.rate_limit);
-      setSelectedRun(null);
-      setFixCreated(null);
-      setFixFailed(false);
-      setJobLogs({});
-      setLogsLoading({});
-    } catch (err) {
-      setActionsError(toMessage(err));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  /** Load the runners detect batch (repo self-hosted runners + the local
-   * `PATH` probe) alongside the Actions tab. A failed fetch keeps the
-   * previous runners state and surfaces the failure as an inline notice —
-   * the section degrades to its last render plus the error instead of
-   * blanking the checklist or failing silently. */
-  const loadRunners = useCallback(async () => {
-    if (runnersLoading) return;
-    setRunnersLoading(true);
-    setRunnersError(null);
-    try {
-      const result = await ghRunners();
-      setRunners(result.runners);
-      setRunnersTotal(result.runners_total);
-      setRunnersNeedsAuth(result.runners_needs_auth);
-      setLocalTools(result.local);
-    } catch (err) {
-      setRunnersError(toMessage(err));
-    } finally {
-      setRunnersLoading(false);
-    }
-    // Fixed deps (mirrors `loadActions` above): the guard reads the render
-    // snapshot, so the identity stays stable and the tab effect below never
-    // refires on loading flips.
-  }, []);
+  // The Actions tab loads its runs and the runners detect batch together;
+  // a successful runs load clears the run selection (store-side), so the
+  // panel only mirrors that here for its own detail view.
+  const openActions = useCallback(async () => {
+    await gh.loadActions();
+    void gh.loadRunners();
+  }, [gh.loadActions, gh.loadRunners]);
 
   useEffect(() => {
     if (kind === "actions") {
-      void loadActions();
-      void loadRunners();
+      void openActions();
     } else {
-      void load();
+      void (kind === "issues" ? gh.loadIssues(state) : gh.loadPulls(state));
     }
-  }, [kind, load, loadActions, loadRunners]);
+  }, [kind, state, openActions, gh.loadIssues, gh.loadPulls]);
 
-  /** Fetch one job's log tail on job-expand (lazy `gh_action_log`). A
-   * failed fetch degrades to the unavailable state — the panel points at
-   * GitHub instead. */
-  const showJobLog = useCallback(
-    async (job: GhActionJob) => {
-      if (jobLogs[job.id] !== undefined || logsLoading[job.id] === true) return;
-      setLogsLoading((prev) => ({ ...prev, [job.id]: true }));
-      try {
-        const log = await ghActionLog(job.run_id, job.id);
-        setJobLogs((prev) => ({ ...prev, [job.id]: log }));
-      } catch {
-        setJobLogs((prev) => ({
-          ...prev,
-          [job.id]: {
-            job_id: job.id,
-            run_id: job.run_id,
-            log_excerpt: "",
-            log_truncated: false,
-            log_unavailable: true,
-            log_needs_auth: false,
-            log_redacted: false,
-          },
-        }));
-      } finally {
-        setLogsLoading((prev) => {
-          const next = { ...prev };
-          delete next[job.id];
-          return next;
-        });
-      }
-    },
-    [jobLogs, logsLoading],
-  );
-
-  /** Prefill a task-manager task from a failing run (the fix loop entry).
-   * Creating the task starts nothing — the user reviews and runs it from
-   * Tasks with approvals and budgets intact. */
-  const createFixTask = useCallback(
+  const createFixTaskFor = useCallback(
     async (run: GhActionRun) => {
-      if (fixBusy !== null) return;
-      setFixBusy(run.id);
-      setFixFailed(false);
-      setFixCreated(null);
-      try {
-        const branch = run.head_branch ?? t("gh.noBranch");
-        const title = Array.from(`Fix CI: ${run.name} #${run.id}`).slice(0, 200).join("");
-        const description = [
-          `Failing GitHub Actions run ${owner ?? "?"}/${repo ?? "?"} — ${run.name} #${run.id}.`,
-          `Branch: ${branch} · Event: ${run.event} · Conclusion: ${run.conclusion}.`,
-          ...(run.html_url !== null ? [`Run: ${run.html_url}`] : []),
-          ...(run.failed_jobs.length > 0
-            ? [`Failed jobs: ${run.failed_jobs.map((job) => job.name).join(", ")}.`]
-            : []),
-          "Log excerpts are capped tails with possible secrets redacted — read the full log on GitHub.",
-          "Re-run the workflow on GitHub after fixing (Nexora never re-runs workflows).",
-        ].join("\n");
-        const steps = [
-          "Open the failing run on GitHub and read the full log",
-          "Reproduce the failure locally",
-          "Fix the cause and verify with the workspace checks",
-          "Push and re-run the workflow on GitHub",
-        ];
-        const id = await createTask(title, description, null, null, null, steps, steps.length);
-        setFixCreated(id);
-      } catch {
-        setFixFailed(true);
-      } finally {
-        setFixBusy(null);
-      }
+      const branch = run.head_branch ?? t("gh.noBranch");
+      const title = Array.from(`Fix CI: ${run.name} #${run.id}`).slice(0, 200).join("");
+      const description = [
+        `Failing GitHub Actions run ${gh.owner ?? "?"}/${gh.repo ?? "?"} — ${run.name} #${run.id}.`,
+        `Branch: ${branch} · Event: ${run.event} · Conclusion: ${run.conclusion}.`,
+        ...(run.html_url !== null ? [`Run: ${run.html_url}`] : []),
+        ...(run.failed_jobs.length > 0
+          ? [`Failed jobs: ${run.failed_jobs.map((job) => job.name).join(", ")}.`]
+          : []),
+        "Log excerpts are capped tails with possible secrets redacted — read the full log on GitHub.",
+        "Re-run the workflow on GitHub after fixing (Nexora never re-runs workflows).",
+      ].join("\n");
+      const steps = [
+        "Open the failing run on GitHub and read the full log",
+        "Reproduce the failure locally",
+        "Fix the cause and verify with the workspace checks",
+        "Push and re-run the workflow on GitHub",
+      ];
+      await gh.createFixTask(run.id, { title, description, steps });
     },
-    [fixBusy, owner, repo, t],
+    [gh.createFixTask, gh.owner, gh.repo, t],
   );
+
+  const {
+    loading,
+    owner,
+    repo,
+    authenticated,
+    rateLimited,
+    rate,
+    issues,
+    pulls,
+    error,
+    selected,
+    runs,
+    totalRuns,
+    actionsError,
+    selectedRun,
+    runners,
+    runnersTotal,
+    runnersNeedsAuth,
+    localTools,
+    runnersLoading,
+    runnersError,
+    jobLogs,
+    logsLoading,
+    fixBusy,
+    fixCreated,
+    fixFailed,
+  } = gh;
 
   const noRemote = error !== null && error.includes("github.com");
   const actionsNoRemote =
@@ -715,10 +582,10 @@ export default function IssuesPanel({ onClose }: IssuesPanelProps) {
             variant="quiet"
             onClick={() => {
               if (kind === "actions") {
-                void loadActions();
-                void loadRunners();
+                void gh.loadActions();
+                void gh.loadRunners();
               } else {
-                void load();
+                void (kind === "issues" ? gh.loadIssues(state) : gh.loadPulls(state));
               }
             }}
             disabled={loading}
@@ -743,10 +610,7 @@ export default function IssuesPanel({ onClose }: IssuesPanelProps) {
           value={kind}
           onChange={(next) => {
             setKind(next);
-            setSelected(null);
-            setSelectedRun(null);
-            setFixCreated(null);
-            setFixFailed(false);
+            gh.clearSelections();
           }}
         />
         {kind !== "actions" ? (
@@ -760,7 +624,7 @@ export default function IssuesPanel({ onClose }: IssuesPanelProps) {
             value={state}
             onChange={(next) => {
               setState(next);
-              setSelected(null);
+              gh.clearItemSelection();
             }}
           />
         ) : (
@@ -801,17 +665,15 @@ export default function IssuesPanel({ onClose }: IssuesPanelProps) {
                   totalRuns={totalRuns}
                   selectedRun={selectedActionRun}
                   selectedRunId={selectedRun}
-                  onSelectRun={(id) =>
-                    setSelectedRun((current) => (current === id ? null : id))
-                  }
+                  onSelectRun={gh.selectRun}
                   loading={loading}
                   fixBusy={fixBusy}
                   fixCreated={fixCreated}
                   fixFailed={fixFailed}
-                  onCreateFixTask={(run) => void createFixTask(run)}
+                  onCreateFixTask={(run) => void createFixTaskFor(run)}
                   jobLogs={jobLogs}
                   logsLoading={logsLoading}
-                  onShowLog={(job) => void showJobLog(job)}
+                  onShowLog={(job) => void gh.showJobLog(job)}
                 />
               )}
               <RunnersView
@@ -847,11 +709,7 @@ export default function IssuesPanel({ onClose }: IssuesPanelProps) {
                 <li key={item.number} className="nex-vcs-file-row">
                   <M3Button
                     variant="quiet"
-                    onClick={() =>
-                      setSelected((current) =>
-                        current === item.number ? null : item.number,
-                      )
-                    }
+                    onClick={() => gh.selectItem(item.number)}
                     aria-expanded={selected === item.number}
                   >
                     #{item.number} · {item.title}

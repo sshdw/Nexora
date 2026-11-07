@@ -10,13 +10,13 @@
 //! thread that owns it, which is also where the register puts the single
 //! Approve control.
 //!
-//! The queue is fetched on open, not subscribed: tasks change when a user
+//! Presentational over the `useActivity` data hook's queue slice (AC-206):
+//! the queue is fetched on open, not subscribed — tasks change when a user
 //! starts one, and the footer link hands the full surface (start/stop/edit)
 //! to the Tasks overlay, which owns that lifecycle.
 
-import { useEffect, useState } from "react";
-
-import { listTasks, type AgentTask } from "../lib/tauri";
+import type { AgentTask } from "../lib/tauri";
+import { useActivity } from "../lib/useActivity";
 import { formatRelativeTime } from "../lib/format";
 import { useStrings } from "../lib/useLocale";
 import M3Button from "./M3Button";
@@ -30,25 +30,7 @@ export interface ActivityPanelProps {
 
 export default function ActivityPanel({ onOpenTasks, onOpenConversation }: ActivityPanelProps) {
   const { t, locale } = useStrings();
-  const [tasks, setTasks] = useState<AgentTask[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    listTasks()
-      .then((rows) => {
-        if (!cancelled) setTasks(rows);
-      })
-      .catch((e: unknown) => {
-        if (!cancelled) {
-          setTasks([]);
-          setError(e instanceof Error ? e.message : t("task.unavailable"));
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [t]);
+  const { queue: tasks, queueError: error } = useActivity({ taskQueueOnly: true });
 
   const statusWord = (status: AgentTask["status"]): string => {
     switch (status) {
