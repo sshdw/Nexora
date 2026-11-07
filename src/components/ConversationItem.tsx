@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 
 import { formatRelativeTime } from "../lib/format";
 import type { Conversation } from "../lib/tauri";
@@ -60,7 +60,10 @@ export interface ConversationItemProps {
 // because it must never hide the buttons from the tab order: `opacity` +
 // `pointer-events` only, so Tab reaches the actions and focusing one reveals
 // the group.
-export default function ConversationItem({
+// AC-203 (review 03 §2): memoized so a Sidebar re-render does not repaint
+// every listed conversation row — a row re-renders only when its own props
+// change.
+function ConversationItem({
   conversation,
   selected,
   archived,
@@ -250,3 +253,5 @@ export default function ConversationItem({
     </li>
   );
 }
+
+export default memo(ConversationItem);

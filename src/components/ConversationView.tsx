@@ -229,9 +229,9 @@ export default function ConversationView({
   // Dispatchers handed to `AgentRunSteps` (#148/#153): the run id travels in
   // the callback instead of being captured by a fresh inline arrow per run,
   // so every run keeps the same prop identity across renders and the memoized
-  // row re-renders only when its own data changes. `threadItems` is
-  // deliberately NOT memoized here — it is rebuilt each render on purpose and
-  // #148 owns that decision.
+  // row re-renders only when its own data changes. (`threadItems` below is
+  // memoized per AC-203, so a re-render no longer rebuilds the whole thread
+  // array either.)
   const dispatchAgentApprove = useCallback(
     (runId: number, callId: string, approved: boolean) => {
       void handleAgentApprove(runId, callId, approved);
@@ -354,28 +354,38 @@ export default function ConversationView({
     onMessageSent?.();
   };
 
-  // Chronological thread: messages and agent runs interleaved by timestamp (Task 5.1 DP-6).
+  // Chronological thread: messages and agent runs interleaved by timestamp
+  // (Task 5.1 DP-6). Memoized per AC-203 (review 03 §2): the array identity
+  // is stable across renders that touch neither `messages` nor `runs`, so a
+  // keystroke in the composer no longer rebuilds the whole thread.
   const threadItems: Array<
     | { kind: "message"; ts: number; message: (typeof messages)[number] }
     | { kind: "run"; ts: number; run: (typeof runs)[number] }
-  > = [
-    ...messages.map((m) => ({ kind: "message" as const, ts: m.created_at, message: m })),
-    ...runs.map((r) => ({ kind: "run" as const, ts: r.started_at, run: r })),
-  ].sort((a, b) => a.ts - b.ts);
+  > = useMemo(
+    () =>
+      [
+        ...messages.map((m) => ({ kind: "message" as const, ts: m.created_at, message: m })),
+        ...runs.map((r) => ({ kind: "run" as const, ts: r.started_at, run: r })),
+      ].sort((a, b) => a.ts - b.ts),
+    [messages, runs],
+  );
 
   // Stagger order for the spatial slide-in: genuinely inserted messages
   // animate in sequence (contract motion table streaming/insertion row);
   // reduced motion collapses to instant append via the global gate.
-  const freshOrder = new Map<number, number>();
-  {
-    let order = 0;
+  // Memoized per AC-203 alongside `threadItems` (same input set plus the
+  // fresh-message window).
+  const freshOrder = useMemo(() => {
+    const order = new Map<number, number>();
+    let index = 0;
     for (const item of threadItems) {
       if (item.kind === "message" && freshMessageIds?.has(item.message.id)) {
-        freshOrder.set(item.message.id, Math.min(order, 6));
-        order += 1;
+        order.set(item.message.id, Math.min(index, 6));
+        index += 1;
       }
     }
-  }
+    return order;
+  }, [threadItems, freshMessageIds]);
   // Tone + spacing grouping: a message that directly follows another of
   // the same role reads as one turn cluster (spacing groups, never
   // per-row borders). Runs break the chain.

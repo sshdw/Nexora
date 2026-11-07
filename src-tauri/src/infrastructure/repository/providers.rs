@@ -191,3 +191,152 @@ impl ProviderRepository<'_> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::infrastructure::database::in_memory_database;
+
+    fn repo(db: &Database) -> ProviderRepository<'_> {
+        ProviderRepository::new(db)
+    }
+
+    #[test]
+    fn create_read_round_trip_by_id_and_by_name() {
+        let db = in_memory_database();
+        let providers = repo(&db);
+
+        let id = providers.create("openai", "OpenAI").expect("create");
+        assert!(id > 0, "the surrogate id is assigned by the schema");
+
+        let by_id = providers.read(id).expect("read by id").expect("exists");
+        assert_eq!(by_id.name, "openai");
+        assert_eq!(by_id.display_name, "OpenAI");
+
+        // read_by_name resolves the same row: the application layer uses it
+        // for the keyring lookup by internal name (DATABASE.md §7.5).
+        let by_name = providers
+            .read_by_name("openai")
+            .expect("read by name")
+            .expect("exists");
+        assert_eq!(by_name, by_id);
+
+        assert!(
+            providers.read(42).expect("read unknown id").is_none(),
+            "an unknown id reads as None, not an error"
+        );
+        assert!(
+            providers
+                .read_by_name("absent")
+                .expect("read unknown name")
+                .is_none(),
+            "an unknown name reads as None, not an error"
+        );
+    }
+
+    #[test]
+    fn create_rejects_a_duplicate_name() {
+        let db = in_memory_database();
+        let providers = repo(&db);
+
+        providers.create("openai", "OpenAI").expect("first insert");
+        assert!(
+            providers.create("openai", "Second label").is_err(),
+            "providers.name is UNIQUE: a duplicate insert must fail"
+        );
+        assert_eq!(
+            providers.list().expect("list after duplicate").len(),
+            1,
+            "the failed duplicate must not create a row"
+        );
+        // The surviving row is the original one, not the duplicate's label.
+        let survivor = providers
+            .read_by_name("openai")
+            .expect("read survivor")
+            .expect("exists");
+        assert_eq!(survivor.display_name, "OpenAI");
+    }
+
+    #[test]
+    fn check_constraints_reject_invalid_values() {
+        let db = in_memory_database();
+        let providers = repo(&db);
+
+        assert!(
+            providers.create("", "OpenAI").is_err(),
+            "an empty name must be rejected (length(name) > 0)"
+        );
+        assert!(
+            providers
+                .create("p".repeat(101).as_str(), "OpenAI")
+                .is_err(),
+            "a name over 100 chars must be rejected (length(name) <= 100)"
+        );
+        assert!(
+            providers.create("openai", "").is_err(),
+            "an empty display_name must be rejected (length(display_name) > 0)"
+        );
+
+        // Boundary: a 100-char name is accepted, pinning the CHECK limit.
+        providers
+            .create("p".repeat(100).as_str(), "Boundary")
+            .expect("a 100-char name is accepted");
+    }
+
+    #[test]
+    fn list_is_in_insertion_order_and_delete_removes() {
+        let db = in_memory_database();
+        let providers = repo(&db);
+
+        let first = providers.create("openai", "OpenAI").expect("first");
+        let second = providers.create("anthropic", "Anthropic").expect("second");
+
+        // No timestamp column: rows are ordered by id ascending (insertion
+        // order), per the repository's documented listing behavior.
+        let listed = providers.list().expect("list");
+        let names: Vec<&str> = listed
+            .iter()
+            .map(|provider| provider.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["openai", "anthropic"]);
+
+        providers.delete(first).expect("delete first");
+        assert!(providers.read(first).expect("read deleted").is_none());
+        assert_eq!(providers.list().expect("list after delete").len(), 1);
+        assert_eq!(
+            providers
+                .read(second)
+                .expect("read survivor")
+                .expect("survivor exists")
+                .name,
+            "anthropic",
+            "deleting one provider must not touch the others"
+        );
+
+        // Deleting a non-existent id is a no-op.
+        providers.delete(42).expect("delete of an unknown id");
+    }
+
+    #[test]
+    fn clear_in_transaction_deletes_every_row() {
+        let db = in_memory_database();
+        let providers = repo(&db);
+
+        providers.create("openai", "OpenAI").expect("first");
+        providers.create("anthropic", "Anthropic").expect("second");
+
+        // clear_in_transaction must run inside Repository::transaction so it
+        // participates in the atomic "clear all application data" operation
+        // (FR-013). Credentials stay in the OS keyring by construction: the
+        // table holds non-sensitive metadata only.
+        providers
+            .transaction(ProviderRepository::clear_in_transaction)
+            .expect("clear inside a transaction");
+
+        assert!(providers.list().expect("list after clear").is_empty());
+        assert!(providers
+            .read_by_name("openai")
+            .expect("read after clear")
+            .is_none());
+    }
+}

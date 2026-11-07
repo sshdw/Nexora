@@ -165,3 +165,242 @@ impl SearchRepository<'_> {
         Ok(prompts)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::infrastructure::database::in_memory_database;
+    use crate::infrastructure::repository::conversations::ConversationRepository;
+    use crate::infrastructure::repository::messages::MessageRepository;
+    use crate::infrastructure::repository::prompts::PromptRepository;
+
+    fn repo(db: &Database) -> SearchRepository<'_> {
+        SearchRepository::new(db)
+    }
+
+    #[test]
+    fn conversation_index_follows_inserts_updates_and_deletes() {
+        let db = in_memory_database();
+        let search = repo(&db);
+        let conversations = ConversationRepository::new(&db);
+
+        // Insert: the conversations_fts_insert trigger indexes the title.
+        let id = conversations
+            .create("Rust async patterns", "active")
+            .expect("create conversation");
+        let hits = search
+            .search_conversations("rust")
+            .expect("search after insert");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, id);
+        assert_eq!(hits[0].title, "Rust async patterns");
+        assert_eq!(hits[0].status, "active");
+        assert!(hits[0].created_at > 0);
+        assert!(
+            hits[0].workspace_root.is_none(),
+            "rows created without a workspace root read as None"
+        );
+
+        // Update: the conversations_fts_update trigger re-indexes, so the old
+        // term goes stale and the new one matches.
+        conversations
+            .update(id, "Kanban board design", "active")
+            .expect("update title");
+        assert!(
+            search
+                .search_conversations("rust")
+                .expect("search for the stale title")
+                .is_empty(),
+            "the pre-update title must no longer match"
+        );
+        let hits = search
+            .search_conversations("kanban")
+            .expect("search for the fresh title");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, id);
+
+        // Delete: the conversations_fts_delete trigger de-indexes the row.
+        conversations.delete(id).expect("delete conversation");
+        assert!(
+            search
+                .search_conversations("kanban")
+                .expect("search after delete")
+                .is_empty(),
+            "a deleted conversation must not be searchable"
+        );
+    }
+
+    #[test]
+    fn message_index_follows_inserts_and_deletes() {
+        let db = in_memory_database();
+        let search = repo(&db);
+        let conversations = ConversationRepository::new(&db);
+        let messages = MessageRepository::new(&db);
+
+        let conversation_id = conversations
+            .create("chat", "active")
+            .expect("create conversation");
+        let id = messages
+            .create(
+                conversation_id,
+                "user",
+                "The spend guard blocks oversized requests",
+                None,
+                None,
+            )
+            .expect("create message");
+
+        // Insert: the messages_fts_insert trigger indexes the content.
+        let hits = search
+            .search_messages("spend")
+            .expect("search after insert");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, id);
+        assert_eq!(
+            hits[0].conversation_id, conversation_id,
+            "each hit carries the conversation so the caller can open it"
+        );
+        assert_eq!(hits[0].role, "user");
+        assert_eq!(hits[0].content, "The spend guard blocks oversized requests");
+
+        // Delete: the messages_fts_delete trigger de-indexes the row.
+        messages.delete(id).expect("delete message");
+        assert!(
+            search
+                .search_messages("spend")
+                .expect("search after delete")
+                .is_empty(),
+            "a deleted message must not be searchable"
+        );
+    }
+
+    #[test]
+    fn prompt_index_covers_title_and_content_and_follows_updates() {
+        let db = in_memory_database();
+        let search = repo(&db);
+        let prompts = PromptRepository::new(&db);
+
+        let id = prompts
+            .create(
+                "Refactor helper",
+                "extract pure functions from the executor",
+            )
+            .expect("create prompt");
+
+        // Both indexed columns match through the one prompts_fts index.
+        let by_title = search.search_prompts("refactor").expect("title search");
+        assert_eq!(by_title.len(), 1);
+        assert_eq!(by_title[0].id, id);
+        assert_eq!(by_title[0].title, "Refactor helper");
+        let by_content = search.search_prompts("extract").expect("content search");
+        assert_eq!(by_content.len(), 1);
+        assert_eq!(by_content[0].id, id);
+
+        // Update: the prompts_fts_update trigger re-indexes title and content.
+        prompts
+            .update(id, "Refactor helper", "split the god module now")
+            .expect("update prompt");
+        assert!(
+            search
+                .search_prompts("extract")
+                .expect("stale content search")
+                .is_empty(),
+            "the pre-update content must no longer match"
+        );
+        assert_eq!(
+            search
+                .search_prompts("split")
+                .expect("fresh content search")
+                .len(),
+            1
+        );
+
+        // Delete: the prompts_fts_delete trigger de-indexes the row.
+        prompts.delete(id).expect("delete prompt");
+        assert!(
+            search
+                .search_prompts("refactor")
+                .expect("search after delete")
+                .is_empty(),
+            "a deleted prompt must not be searchable"
+        );
+    }
+
+    #[test]
+    fn results_are_ordered_by_rank_with_id_as_tiebreaker() {
+        let db = in_memory_database();
+        let search = repo(&db);
+        let conversations = ConversationRepository::new(&db);
+        let messages = MessageRepository::new(&db);
+
+        // Identical titles produce identical FTS ranks, so the documented
+        // deterministic tiebreaker (id ascending) decides the order.
+        let first = conversations
+            .create("duplicate needle", "active")
+            .expect("create first");
+        let second = conversations
+            .create("duplicate needle", "active")
+            .expect("create second");
+        let hits = search.search_conversations("needle").expect("tie search");
+        assert_eq!(hits.len(), 2);
+        let ids: Vec<i64> = hits.iter().map(|conversation| conversation.id).collect();
+        assert_eq!(
+            ids,
+            vec![first, second],
+            "equal ranks fall back to id order"
+        );
+
+        // Equal term frequency (one hit each) with different document lengths:
+        // the shorter document scores better under bm25 and must come first.
+        let short_id = messages
+            .create(first, "user", "needle", None, None)
+            .expect("short message");
+        let long_id = messages
+            .create(
+                first,
+                "assistant",
+                "a longer message that mentions needle once among many other words",
+                None,
+                None,
+            )
+            .expect("long message");
+        let hits = search.search_messages("needle").expect("rank search");
+        assert_eq!(hits.len(), 2);
+        assert_eq!(
+            hits[0].id, short_id,
+            "the shorter document with the same term frequency ranks first"
+        );
+        assert_eq!(hits[1].id, long_id);
+    }
+
+    #[test]
+    fn unmatched_queries_return_empty_and_malformed_queries_are_errors() {
+        let db = in_memory_database();
+        let search = repo(&db);
+        let conversations = ConversationRepository::new(&db);
+        conversations
+            .create("Rust async patterns", "active")
+            .expect("create conversation");
+
+        // A query that matches nothing yields an empty result, not an error.
+        assert!(search
+            .search_conversations("zenithterm")
+            .expect("no-match search")
+            .is_empty());
+        assert!(search
+            .search_messages("zenithterm")
+            .expect("no-match search")
+            .is_empty());
+        assert!(search
+            .search_prompts("zenithterm")
+            .expect("no-match search")
+            .is_empty());
+
+        // `query` is passed to MATCH as supplied: a malformed FTS expression
+        // surfaces as a DatabaseError (documented error contract).
+        assert!(
+            search.search_conversations("\"unterminated").is_err(),
+            "an unterminated FTS phrase must be an error, not a silent miss"
+        );
+    }
+}

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import CommandPalette from "./components/CommandPalette";
-import ConversationPane from "./components/ConversationPane";
+import ConversationPane, { type PaneSlot } from "./components/ConversationPane";
 import ConversationTabs, { type TabEntry } from "./components/ConversationTabs";
 import ActivityHealthPanel from "./components/ActivityHealthPanel";
 import ActivityPanel from "./components/ActivityPanel";
@@ -622,6 +622,23 @@ function AppShell() {
   // and each needs its own export.
   const paneHeaderHidden = tabs.openIds.length > 1 && tabs.splitId === null;
 
+  // AC-305 (review 03 §2): the ten props every ConversationPane call site
+  // passes identically, built once and spread at each of the three call
+  // sites below — a pane contributes only its conversation, draft pair, and
+  // placement flags.
+  const paneSlot: PaneSlot = {
+    selectedProvider: providers.selectedProvider,
+    selectedModel: providers.selectedModel,
+    models: providerModels,
+    onSelectModel: selectModel,
+    modelError,
+    autonomy,
+    onOpenSettings: openDefaultSettings,
+    onMessageSent: () => void reload(),
+    onExport: setExportTargetId,
+    workspace,
+  };
+
   // Live pane content, extracted so Settings/Library overlays render above
   // still-mounted panes (hidden via CSS, never unmounted) instead of
   // replacing them — see the overlay branch below.
@@ -653,54 +670,27 @@ function AppShell() {
     ) : splitVisible && splitConversation ? (
       <div className="nex-split">
         <ConversationPane
+          {...paneSlot}
           conversation={activeConversation}
-          selectedProvider={providers.selectedProvider}
-          selectedModel={providers.selectedModel}
-          models={providerModels}
-          onSelectModel={selectModel}
-          modelError={modelError}
-          autonomy={autonomy}
           draft={draftFor(activeConversation.id)}
           setDraft={setDraftFor(activeConversation.id)}
-          onOpenSettings={openDefaultSettings}
-          onMessageSent={() => void reload()}
-          onExport={setExportTargetId}
-          workspace={workspace}
           secondary={false}
           hideHeader={paneHeaderHidden}
         />
         <ConversationPane
+          {...paneSlot}
           conversation={splitConversation}
-          selectedProvider={providers.selectedProvider}
-          selectedModel={providers.selectedModel}
-          models={providerModels}
-          onSelectModel={selectModel}
-          modelError={modelError}
-          autonomy={autonomy}
           draft={draftFor(splitConversation.id)}
           setDraft={setDraftFor(splitConversation.id)}
-          onOpenSettings={openDefaultSettings}
-          onMessageSent={() => void reload()}
-          onExport={setExportTargetId}
-          workspace={workspace}
           secondary
         />
       </div>
     ) : (
       <ConversationPane
+        {...paneSlot}
         conversation={activeConversation}
-        selectedProvider={providers.selectedProvider}
-        selectedModel={providers.selectedModel}
-        models={providerModels}
-        onSelectModel={selectModel}
-        modelError={modelError}
-        autonomy={autonomy}
         draft={draftFor(activeConversation.id)}
         setDraft={setDraftFor(activeConversation.id)}
-        onOpenSettings={openDefaultSettings}
-        onMessageSent={() => void reload()}
-        onExport={setExportTargetId}
-        workspace={workspace}
         secondary={false}
         hideHeader={paneHeaderHidden}
       />
