@@ -12,6 +12,7 @@
 //! process-wide resolver installed by the composition root.
 
 pub mod anthropic;
+pub mod catalog;
 pub mod credentials;
 pub mod gemini;
 pub mod openai;

@@ -65,83 +65,13 @@ use serde::{Deserialize, Serialize};
 /// `generateContent` path (the model is appended per request).
 const ENDPOINT: &str = "https://generativelanguage.googleapis.com/v1beta";
 
-/// Internal provider name (DATABASE.md В§7.5); the keyring namespace key.
-pub(crate) const PROVIDER_NAME: &str = "gemini";
-
-/// User-facing provider label.
-pub(crate) const PROVIDER_DISPLAY_NAME: &str = "Gemini";
-
-/// Gemini models currently supported by the provider (DATABASE.md В§7.5:
-/// model lists are hardcoded in the MVP and managed by the application layer).
-///
-/// The selected model is passed through unchanged and is never validated
-/// against this list at runtime (never silently substituted, never rejected):
-/// this set documents the currently supported models and anchors the
-/// model-selection tests.
-///
-/// Live-smoke-gated 1.2.2 set (rotated key, 2026-09-13; D8 rule: chat 200
-/// keep, tools 200 agent-usable, 429 stays, 404/503 dropped):
-/// `gemini-3.6-flash` (default), `gemini-3.1-flash-lite`,
-/// `gemini-3.1-pro-preview` (429), `gemini-flash-lite-latest`,
-/// `gemini-pro-latest` (429), `gemini-3.5-flash`, `gemini-3.5-flash-lite`.
-/// Dropped: `gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemini-2.5-pro`
-/// (404), `gemini-flash-latest` (503).
-///
-/// Pricing is governed by the application-layer pricing policy table
-/// (DATABASE.md В§7.8); the first entry
-/// is the provider default consumed as `models[0]` by the selection surface.
-/// The retired IDs this list replaces: `gemini-1.5-pro`, `gemini-1.5-flash`
-/// (shut down), and `gemini-2.0-flash` (retired June 1, 2026).
-pub(crate) const SUPPORTED_MODELS: &[&str] = &[
-    // Default: chat 200 + tools 200.
-    "gemini-3.6-flash",
-    // Chat 200 + tools 200.
-    "gemini-3.1-flash-lite",
-    // Chat 429 stays per D8.
-    "gemini-3.1-pro-preview",
-    // Chat 200 + tools 200.
-    "gemini-flash-lite-latest",
-    // Chat 429 stays per D8.
-    "gemini-pro-latest",
-    // Chat 200 + tools 200.
-    "gemini-3.5-flash",
-    // Chat 200 + tools 200.
-    "gemini-3.5-flash-lite",
-];
-
-/// The [`SUPPORTED_MODELS`] subset on the live-verified lite window.
-///
-/// Live-verified 2026-10-03 via the zero-token `GET
-/// /v1beta/models/{modelId}` metadata endpoint: every ID here reports
-/// `inputTokenLimit = 1048576`. Kept as an explicit subset (rather than
-/// re-derived by callers) so the application context-window table resolves
-/// the verified clamp without
-/// restating IDs — a strict subset of [`SUPPORTED_MODELS`] by construction
-/// (see the `gemini_lite_subset_of_supported` test).
-pub(crate) const GEMINI_LITE_MODELS: &[&str] = &[
-    "gemini-3.1-flash-lite",
-    "gemini-flash-lite-latest",
-    "gemini-3.5-flash",
-    "gemini-3.5-flash-lite",
-];
-
-/// Estimated cost rates per 1M tokens, micro-USD (`(model, input, output)`).
-///
-/// Hardcoded estimates in abstract micro-USD units (1 USD = `1_000_000`
-/// micro-USD), matching `RunBudget`.
-/// These are planning estimates — not live provider pricing, never fetched
-/// over the network — and only cover the native [`SUPPORTED_MODELS`] IDs.
-/// Unknown IDs yield `None` from [`rate_for_model`]: callers fall back to
-/// the policy default, never a guessed rate.
-pub(crate) const MODEL_RATES: &[(&str, u64, u64)] = &[
-    ("gemini-3.6-flash", 1_250_000, 5_000_000),
-    ("gemini-3.1-flash-lite", 300_000, 1_200_000),
-    ("gemini-3.1-pro-preview", 2_500_000, 10_000_000),
-    ("gemini-flash-lite-latest", 300_000, 1_200_000),
-    ("gemini-pro-latest", 2_500_000, 10_000_000),
-    ("gemini-3.5-flash", 1_250_000, 5_000_000),
-    ("gemini-3.5-flash-lite", 300_000, 1_200_000),
-];
+// AC-302: the Gemini catalog consts (provider name and display label,
+// supported model list, lite-window subset, rate table) moved verbatim to
+// `catalog.rs`. The paths here are re-exports so every existing consumer
+// path (`gemini::SUPPORTED_MODELS`, ...) keeps compiling unchanged.
+pub(crate) use super::catalog::gemini::{
+    GEMINI_LITE_MODELS, MODEL_RATES, PROVIDER_DISPLAY_NAME, PROVIDER_NAME, SUPPORTED_MODELS,
+};
 
 /// Look up the estimated rate for a native Gemini model ID.
 ///
