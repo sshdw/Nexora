@@ -6,6 +6,12 @@
 //! the three states of that fetch (loading, empty, error), the store's own
 //! grouping, and the row contract: a task with a conversation opens it, a
 //! task without one is a statement, not a button that does nothing.
+//!
+//! AC-206 (moved seam, not moved intent): the one-shot `list_tasks` fetch
+//! moved from this panel into the `useActivity` queue slice, so the mock
+//! seam moved with the code — the tests drive the hook's `queue` /
+//! `queueError` states instead of mocking the barrel's `listTasks`. The
+//! fetch mechanics themselves are pinned by `src/lib/useActivity.test.tsx`.
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -14,14 +20,29 @@ import type { AgentTask } from "../lib/tauri";
 import { LocaleProvider } from "../lib/useLocale";
 import ActivityPanel from "./ActivityPanel";
 
-const { mockListTasks } = vi.hoisted(() => ({ mockListTasks: vi.fn() }));
+const { mockUseActivity, setQueueState } = vi.hoisted(() => {
+  const state = {
+    queue: null as AgentTask[] | null,
+    queueError: null as string | null,
+  };
+  const mockUseActivity = vi.fn(() => ({
+    queue: state.queue,
+    queueError: state.queueError,
+    reload: () => {},
+  }));
+  return {
+    mockUseActivity,
+    setQueueState: (patch: Partial<typeof state>) => Object.assign(state, patch),
+  };
+});
 
-vi.mock("../lib/tauri", () => ({ listTasks: mockListTasks }));
+vi.mock("../lib/useActivity", () => ({ useActivity: mockUseActivity }));
 
 afterEach(cleanup);
 
 beforeEach(() => {
-  mockListTasks.mockReset();
+  mockUseActivity.mockClear();
+  setQueueState({ queue: null, queueError: null });
 });
 
 function task(overrides: Partial<AgentTask> = {}): AgentTask {
@@ -52,27 +73,29 @@ function renderPanel() {
       <ActivityPanel onOpenTasks={onOpenTasks} onOpenConversation={onOpenConversation} />
     </LocaleProvider>,
   );
-  return { ...view, onOpenTasks, onOpenConversation };
+  const rerender = () =>
+    view.rerender(
+      <LocaleProvider>
+        <ActivityPanel onOpenTasks={onOpenTasks} onOpenConversation={onOpenConversation} />
+      </LocaleProvider>,
+    );
+  return { ...view, rerender, onOpenTasks, onOpenConversation };
 }
 
 describe("activity panel — fetch states", () => {
   it("shows the loading note until the queue answers", async () => {
-    let resolve: (rows: AgentTask[]) => void = () => {};
-    mockListTasks.mockImplementation(
-      () => new Promise<AgentTask[]>((r) => {
-        resolve = r;
-      }),
-    );
-    renderPanel();
+    // Queue still in flight: the store has not answered yet.
+    const view = renderPanel();
     expect(screen.getByText(/Loading/)).toBeInTheDocument();
 
-    resolve([]);
+    setQueueState({ queue: [] });
+    view.rerender();
     await screen.findByText("Nothing running");
     expect(screen.queryByText(/Loading/)).toBeNull();
   });
 
   it("says nothing is running without inventing a feed", async () => {
-    mockListTasks.mockResolvedValue([]);
+    setQueueState({ queue: [] });
     renderPanel();
     await screen.findByText("Nothing running");
     expect(screen.queryByRole("alert")).toBeNull();
@@ -81,7 +104,7 @@ describe("activity panel — fetch states", () => {
   });
 
   it("surfaces a failed fetch in words and still renders the empty state", async () => {
-    mockListTasks.mockRejectedValue(new Error("backend offline"));
+    setQueueState({ queue: [], queueError: "backend offline" });
     renderPanel();
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("backend offline");
@@ -91,12 +114,14 @@ describe("activity panel — fetch states", () => {
 
 describe("activity panel — grouping", () => {
   it("groups running, queued and settled rows under their own headings", async () => {
-    mockListTasks.mockResolvedValue([
-      task({ id: 1, title: "Running one", status: "running", conversation_id: 10, current_step: 2, total_steps: 5 }),
-      task({ id: 2, title: "Queued one", status: "pending" }),
-      task({ id: 3, title: "Done one", status: "completed" }),
-      task({ id: 4, title: "Failed one", status: "failed" }),
-    ]);
+    setQueueState({
+      queue: [
+        task({ id: 1, title: "Running one", status: "running", conversation_id: 10, current_step: 2, total_steps: 5 }),
+        task({ id: 2, title: "Queued one", status: "pending" }),
+        task({ id: 3, title: "Done one", status: "completed" }),
+        task({ id: 4, title: "Failed one", status: "failed" }),
+      ],
+    });
     const { container } = renderPanel();
     await screen.findByText("Running one");
 
@@ -112,11 +137,11 @@ describe("activity panel — grouping", () => {
   });
 
   it("caps the settled list at four rows", async () => {
-    mockListTasks.mockResolvedValue(
-      Array.from({ length: 6 }, (_, i) =>
+    setQueueState({
+      queue: Array.from({ length: 6 }, (_, i) =>
         task({ id: i + 1, title: `Settled ${i + 1}`, status: "completed" }),
       ),
-    );
+    });
     renderPanel();
     await screen.findByText("Settled 1");
     expect(screen.queryByText("Settled 5")).toBeNull();
@@ -126,18 +151,18 @@ describe("activity panel — grouping", () => {
 
 describe("activity panel — rows", () => {
   it("opens the conversation a task belongs to", async () => {
-    mockListTasks.mockResolvedValue([
-      task({ id: 1, title: "Linked task", status: "running", conversation_id: 42 }),
-    ]);
+    setQueueState({
+      queue: [task({ id: 1, title: "Linked task", status: "running", conversation_id: 42 })],
+    });
     const { onOpenConversation } = renderPanel();
     fireEvent.click(await screen.findByRole("button", { name: /Linked task/ }));
     expect(onOpenConversation).toHaveBeenCalledWith(42);
   });
 
   it("renders a task with no conversation as a statement, not a dead button", async () => {
-    mockListTasks.mockResolvedValue([
-      task({ id: 1, title: "Standalone task", status: "running", conversation_id: null }),
-    ]);
+    setQueueState({
+      queue: [task({ id: 1, title: "Standalone task", status: "running", conversation_id: null })],
+    });
     const { container } = renderPanel();
     await screen.findByText("Standalone task");
     expect(screen.queryByRole("button", { name: /Standalone task/ })).toBeNull();
@@ -147,7 +172,7 @@ describe("activity panel — rows", () => {
   });
 
   it("hands the full surface to the Tasks overlay", async () => {
-    mockListTasks.mockResolvedValue([]);
+    setQueueState({ queue: [] });
     const { onOpenTasks } = renderPanel();
     await screen.findByText("Nothing running");
     fireEvent.click(screen.getByRole("button", { name: "Open tasks" }));

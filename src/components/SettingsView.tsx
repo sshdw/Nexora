@@ -1,9 +1,21 @@
+//! Settings groups (slim surface: 7 top-level groups, in-page search, and an
+//! Advanced section for power keys).
+//!
+//! AC-208 (review §3.1): the seven section bodies live in `settings/` (one
+//! file per section id) and the shared data model (section vocabulary,
+//! backend keys, flag definitions, parsers/summarizers) in
+//! `settings/model.ts`. This file keeps the shell, the in-page search index,
+//! and every piece of state — the once-per-mount power-key load and the
+//! cross-section persistence of drafts (custom model, spend limit, typed
+//! credentials, clear-all error) behave exactly as before the split, which
+//! is why the state did not move with the sections.
+
 import { useEffect, useMemo, useState } from "react";
 
 import { scoreCommand } from "../lib/commands";
 import type { AutonomyMode, SupportedProvider } from "../lib/tauri";
 import { clearApplicationData, getSetting, setSetting } from "../lib/tauri";
-import { getLocale, settingsSearchTitle, tp, tr, type Locale, type StringKey } from "../lib/strings";
+import { getLocale, settingsSearchTitle, tp, tr, type Locale } from "../lib/strings";
 import { useStrings } from "../lib/useLocale";
 import type { AppearanceStore } from "../lib/useAppearance";
 import type { AutonomyStore } from "../lib/useAutonomy";
@@ -11,193 +23,29 @@ import { isCustomModelId, type ProvidersStore } from "../lib/useProviders";
 import type { SpendLimitStore } from "../lib/useSpendLimit";
 import M3Button from "./M3Button";
 import M3RailItem from "./M3RailItem";
-import M3SegmentedGroup from "./M3SegmentedGroup";
-
-/** Settings groups (slim surface: 7 top-level groups, in-page search, and an
- * Advanced section for power keys).
- *
- * GROUP MAP (from the Phase-1 inventory — every user-visible key stays
- * reachable; related areas are merged, nothing is dropped):
- *
- * | Group         | Keys / controls shown                              | Backend source |
- * |---------------|----------------------------------------------------|----------------|
- * | appearance    | Theme (dark/light)                                 | `appearance.theme` (commands/settings.rs:40 THEME_KEY) |
- * | provider      | Provider select, model select, custom model ID     | `provider.selected` (:43), `provider.model` (:46) |
- * | agent         | Autonomy mode, run cost limit                      | `agent.autonomy` (:49), `agent.spend_limit_micro_usd` (application/agent/service.rs:312) |
- * | workspace     | Current root (read-only), recent folders (read-only) | `agent.workspace_root` (application/workspace.rs:28), `agent.workspace_recent` (workspace.rs:31) |
- * | credentials   | Per-provider API keys (keyring, never in settings) | provider credential commands (FR-014; keyring-only) |
- * | data          | Clear-all-data, import / export entry points       | `clear_application_data` (FR-013), ImportExportModals |
- * | advanced      | Feature flags (editable toggles), routing profiles + MCP servers + agent preset (read-only, collapsed) | `flags.*` (application/flags.rs:60), `routing.profile.chat/agent` (application/routing.rs:34,37), `mcp.servers` (application/import.rs:498), `agent.preset` (application/agent/service.rs:287) |
- *
- * Previously visible outside Settings (now also reachable here without
- * removing the original surface): the autonomy selector
- * (ConversationView.tsx:407-413) and the import/export modals (App.tsx).
- * Backend-only power keys (flags, routing profiles, MCP servers, preset)
- * had no UI at all; they are visible in Advanced. No backend key is
- * renamed, removed, or re-defaulted — this is UI-only regrouping.
- */
-type SettingsSectionId =
-  | "appearance"
-  | "provider"
-  | "agent"
-  | "workspace"
-  | "credentials"
-  | "data"
-  | "advanced";
+import AppearanceSection from "./settings/AppearanceSection";
+import ProviderSection from "./settings/ProviderSection";
+import AgentSection from "./settings/AgentSection";
+import WorkspaceSection from "./settings/WorkspaceSection";
+import CredentialsSection from "./settings/CredentialsSection";
+import DataSection from "./settings/DataSection";
+import AdvancedSection from "./settings/AdvancedSection";
+import {
+  FLAG_DEFS,
+  MCP_SERVERS_KEY,
+  PRESET_KEY,
+  RECENT_KEY,
+  ROUTING_AGENT_KEY,
+  ROUTING_CHAT_KEY,
+  SECTION_ORDER,
+  SECTION_TITLES,
+  parseFlagValue,
+  parseRecentList,
+  type SettingsSectionId,
+} from "./settings/model";
 
 /** Re-exported for the command-palette registry (deep links). */
 export type { SettingsSectionId };
-
-const SECTION_ORDER: readonly SettingsSectionId[] = [
-  "appearance",
-  "provider",
-  "agent",
-  "workspace",
-  "credentials",
-  "data",
-  "advanced",
-];
-
-const SECTION_TITLES: Record<SettingsSectionId, StringKey> = {
-  appearance: "settings.sectionAppearance",
-  provider: "settings.sectionProvider",
-  agent: "settings.sectionAgent",
-  workspace: "settings.sectionWorkspace",
-  credentials: "settings.sectionCredentials",
-  data: "settings.sectionData",
-  advanced: "settings.sectionAdvanced",
-};
-
-/** The agent-autonomy default persisted for new runs (Task 5.2, DP-AUTONOMY)
- * lives in the `autonomy` store prop (single source shared with the
- * conversation header — NEX-FE-003); this panel only renders the selector. */
-const AUTONOMY_MODES: readonly AutonomyMode[] = [
-  "supervised",
-  "semi_autonomous",
-  "full_autonomous",
-];
-const AUTONOMY_LABELS: Record<AutonomyMode, StringKey> = {
-  supervised: "settings.autonomySupervised",
-  semi_autonomous: "settings.autonomySemi",
-  full_autonomous: "settings.autonomyFull",
-};
-
-
-
-/** Feature flags exposed as toggles (application/flags.rs:89-110 FLAGS).
- * Descriptions and enforcement marks mirror the backend module docs:
- * `injection`/`assembly` are enforced in the run path; `snapshots` /
- * `self_audit` resolve but gate nothing yet. */
-const FLAG_DEFS: readonly {
-  name: string;
-  descriptionKey: StringKey;
-  enforced: boolean;
-}[] = [
-  {
-    name: "snapshots",
-    descriptionKey: "settings.flagSnapshots",
-    enforced: false,
-  },
-  {
-    name: "self_audit",
-    descriptionKey: "settings.flagSelfAudit",
-    enforced: false,
-  },
-  {
-    name: "injection",
-    descriptionKey: "settings.flagInjection",
-    enforced: true,
-  },
-  {
-    name: "assembly",
-    descriptionKey: "settings.flagAssembly",
-    enforced: true,
-  },
-];
-
-/** Parse a stored flag value like the backend: absent or unparseable degrades
- * to the hardcoded default (`true` — current behavior). */
-function parseFlagValue(value: string | null): boolean {
-  if (value === null) return true;
-  const trimmed = value.trim().toLowerCase();
-  if (trimmed === "false") return false;
-  return true;
-}
-
-const RECENT_KEY = "agent.workspace_recent";
-const ROUTING_CHAT_KEY = "routing.profile.chat";
-const ROUTING_AGENT_KEY = "routing.profile.agent";
-const MCP_SERVERS_KEY = "mcp.servers";
-const PRESET_KEY = "agent.preset";
-
-function parseRecentList(raw: string | null): string[] {
-  if (raw === null) return [];
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (entry): entry is string => typeof entry === "string" && entry.length > 0,
-    );
-  } catch {
-    return [];
-  }
-}
-
-function summarizeRoutingProfile(raw: string | null, locale: Locale = getLocale()): string {
-  if (raw === null) return tr(locale, "settings.routingUnset");
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return tr(locale, "settings.routingBadJson");
-  }
-  if (!Array.isArray(parsed) || parsed.length === 0) {
-    return tr(locale, "settings.routingUnset");
-  }
-  const names = parsed
-    .map((entry) => {
-      if (typeof entry !== "object" || entry === null) return null;
-      const record = entry as Record<string, unknown>;
-      if (typeof record.provider !== "string" || typeof record.model !== "string") {
-        return null;
-      }
-      return `${record.provider} / ${record.model}`;
-    })
-    .filter((name): name is string => name !== null);
-  const shown = names.slice(0, 4).join(", ");
-  const extra = names.length > 4 ? tr(locale, "settings.summaryExtra", { n: names.length - 4 }) : "";
-  const details = shown ? `: ${shown}${extra}` : "";
-  return tr(locale, "settings.routingSummary", {
-    count: tp(locale, "entries", parsed.length),
-    details,
-  });
-}
-
-function summarizeMcpServers(raw: string | null, locale: Locale = getLocale()): string {
-  if (raw === null) return tr(locale, "settings.mcpUnset");
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return tr(locale, "settings.mcpBadJson");
-  }
-  if (!Array.isArray(parsed)) return tr(locale, "settings.mcpNotList");
-  if (parsed.length === 0) return tr(locale, "settings.mcpEmpty");
-  const names = parsed
-    .map((entry) => {
-      if (typeof entry !== "object" || entry === null) return null;
-      const record = entry as Record<string, unknown>;
-      return typeof record.name === "string" ? record.name : null;
-    })
-    .filter((name): name is string => name !== null);
-  const shown = names.slice(0, 5).join(", ");
-  const extra = names.length > 5 ? tr(locale, "settings.summaryExtra", { n: names.length - 5 }) : "";
-  const details = shown ? `: ${shown}${extra}` : "";
-  return tr(locale, "settings.mcpSummary", {
-    count: tp(locale, "servers", parsed.length),
-    details,
-  });
-}
 
 /** One searchable settings entry: a group title or an individual key label
  * plus hand-written keyword aliases. Matched with the palette's
@@ -567,470 +415,86 @@ export default function SettingsView({
   };
 
   const renderSection = (id: SettingsSectionId) => {
-    if (id === "appearance") {
-      return (
-        <section key={id} className="nex-settings-section" aria-labelledby="appearance-heading">
-          <h3 id="appearance-heading" className="nex-settings-heading">
-            {t("settings.sectionAppearance")}
-          </h3>
-          <p className="nex-settings-hint">
-            {t("settings.appearanceHint")}
-          </p>
-          <div className="nex-settings-field">
-            <span className="nex-settings-label" id="theme-label">
-              {t("settings.themeLabel")}
-            </span>
-            <M3SegmentedGroup
-              labelledBy="theme-label"
-              value={appearance.theme}
-              onChange={(theme) => void appearance.setTheme(theme)}
-              options={[
-                { value: "dark", label: t("settings.themeDark") },
-                { value: "light", label: t("settings.themeLight") },
-              ]}
-            />
-            <p className="nex-settings-hint">
-              {t("settings.themeProvisional")}
-            </p>
-          </div>
-          <div className="nex-settings-field">
-            <span className="nex-settings-label" id="language-label">
-              {t("settings.languageLabel")}
-            </span>
-            <M3SegmentedGroup
-              labelledBy="language-label"
-              value={locale}
-              onChange={onLocaleChange}
-              options={[
-                { value: "en", label: t("settings.langEn") },
-                { value: "ru", label: t("settings.langRu") },
-              ]}
-            />
-            <p className="nex-settings-hint">
-              {t("settings.languageHint")}
-            </p>
-          </div>
-        </section>
-      );
+    switch (id) {
+      case "appearance":
+        return (
+          <AppearanceSection key={id} appearance={appearance} locale={locale} onLocaleChange={onLocaleChange} />
+        );
+      case "provider":
+        return (
+          <ProviderSection
+            key={id}
+            store={store}
+            selectedDefinition={selectedDefinition}
+            selectedModels={selectedModels}
+            effectiveModel={effectiveModel}
+            customActive={customActive}
+            customValue={customValue}
+            onProviderChange={(name) => void handleProviderChange(name)}
+            onModelSelect={handleModelSelect}
+            onCustomDraftChange={setCustomDraft}
+            onCustomCommit={commitCustom}
+          />
+        );
+      case "agent":
+        return (
+          <AgentSection
+            key={id}
+            autonomy={autonomy}
+            spendLimit={spendLimit}
+            spendValue={spendValue}
+            onSpendDraftChange={setSpendDraft}
+            onSpendCommit={commitSpendLimit}
+            onAutonomyChange={(mode) => void handleAutonomyChange(mode)}
+          />
+        );
+      case "workspace":
+        return (
+          <WorkspaceSection
+            key={id}
+            workspaceRoot={workspaceRoot}
+            workspaceLoading={workspaceLoading}
+            recentFolders={recentFolders}
+          />
+        );
+      case "credentials":
+        return (
+          <CredentialsSection
+            key={id}
+            store={store}
+            draftKeys={draftKeys}
+            onDraftChange={(name, value) =>
+              setDraftKeys((prev) => ({ ...prev, [name]: value }))
+            }
+            onConnect={(definition) => void handleConnect(definition)}
+            onDisconnect={(definition) => void handleDisconnect(definition)}
+          />
+        );
+      case "data":
+        return (
+          <DataSection
+            key={id}
+            clearing={clearing}
+            clearError={clearError}
+            onClearData={() => void handleClearData()}
+            onOpenImport={onOpenImport}
+            onExportActive={onExportActive}
+          />
+        );
+      case "advanced":
+        return (
+          <AdvancedSection
+            key={id}
+            locale={locale}
+            advancedValues={advancedValues}
+            advancedError={advancedError}
+            flagValues={flagValues}
+            flagsSaving={flagsSaving}
+            flagsError={flagsError}
+            onFlagToggle={(name, next) => void handleFlagToggle(name, next)}
+          />
+        );
     }
-
-    if (id === "provider") {
-      return (
-        <section key={id} className="nex-settings-section" aria-labelledby="selection-heading">
-          <h3 id="selection-heading" className="nex-settings-heading">
-            {t("settings.sectionProvider")}
-          </h3>
-          <p className="nex-settings-hint">
-            {t("settings.providerHint")}
-          </p>
-          <p className="nex-settings-hint">
-            {t("settings.providerStaleHint")}
-          </p>
-
-          <div className="nex-settings-field">
-            <label className="nex-settings-label" htmlFor="provider-select">
-              {t("settings.providerLabel")}
-            </label>
-            <select
-              id="provider-select"
-              className="nex-select"
-              value={selectedDefinition?.name ?? ""}
-              onChange={(event) => handleProviderChange(event.target.value)}
-            >
-              <option value="" disabled>
-                {t("settings.selectProvider")}
-              </option>
-              {store.providers.map(({ supported, available }) => (
-                <option key={supported.name} value={supported.name}>
-                  {supported.display_name}
-                  {available ? t("settings.readySuffix") : t("settings.notConnectedSuffix")}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="nex-settings-field">
-            <label className="nex-settings-label" htmlFor="model-select">
-              {t("settings.modelLabel")}
-            </label>
-            <select
-              id="model-select"
-              className="nex-select"
-              value={customActive ? "__custom__" : (effectiveModel ?? "")}
-              disabled={selectedModels.length === 0}
-              onChange={(event) => handleModelSelect(event.target.value)}
-            >
-              {selectedModels.length === 0 && (
-                <option value="">{t("settings.selectProviderFirst")}</option>
-              )}
-              {selectedModels.map((model) => (
-                <option key={model} value={model}>
-                  {model}
-                </option>
-              ))}
-              {selectedModels.length > 0 && (
-                <option value="__custom__">{t("settings.customOpt")}</option>
-              )}
-            </select>
-          </div>
-
-          {customActive && selectedModels.length > 0 && (
-            <div className="nex-settings-field">
-              <label className="nex-settings-label" htmlFor="model-custom">
-                {t("settings.customModelLabel")}
-              </label>
-              <input
-                id="model-custom"
-                className="nex-input"
-                type="text"
-                value={customValue}
-                placeholder={t("settings.customModelPh")}
-                onChange={(event) => setCustomDraft(event.target.value)}
-                onBlur={commitCustom}
-                onKeyDown={(event) => {
-                  // shortcut:settings.custom-model-commit.
-                  if (event.key === "Enter") commitCustom();
-                }}
-              />
-              <p className="nex-settings-hint">
-                {t("settings.customModelHint")}
-              </p>
-            </div>
-          )}
-        </section>
-      );
-    }
-
-    if (id === "agent") {
-      return (
-        <section key={id} className="nex-settings-section" aria-labelledby="agent-heading">
-          <h3 id="agent-heading" className="nex-settings-heading">
-            {t("settings.sectionAgent")}
-          </h3>
-          <p className="nex-settings-hint">
-            {t("settings.agentHint")}
-          </p>
-          <div className="nex-settings-field">
-            <span className="nex-settings-label" id="autonomy-label">
-              {t("settings.autonomyLabel")}
-            </span>
-            <M3SegmentedGroup
-              labelledBy="autonomy-label"
-              value={autonomy.mode}
-              onChange={(mode) => void handleAutonomyChange(mode)}
-              options={AUTONOMY_MODES.map((mode) => ({
-                value: mode,
-                label: t(AUTONOMY_LABELS[mode]),
-              }))}
-            />
-            <p className="nex-settings-hint">
-              {t("settings.autonomyHint")}
-            </p>
-            {autonomy.error && (
-              <p className="nex-settings-error nex-fade-in" role="alert">
-                {autonomy.error}
-              </p>
-            )}
-          </div>
-
-          <div className="nex-settings-field">
-            <label className="nex-settings-label" htmlFor="spend-limit">
-              {t("settings.spendLabel")}
-            </label>
-            <input
-              id="spend-limit"
-              className="nex-input"
-              type="text"
-              value={spendValue}
-              placeholder={t("settings.spendPh")}
-              onChange={(event) => setSpendDraft(event.target.value)}
-              onBlur={commitSpendLimit}
-              onKeyDown={(event) => {
-                // shortcut:settings.spend-commit.
-                if (event.key === "Enter") commitSpendLimit();
-              }}
-            />
-            <p className="nex-settings-hint">
-              {t("settings.spendHint")}
-            </p>
-            {spendLimit.error && (
-              <p className="nex-settings-error nex-fade-in" role="alert">
-                {spendLimit.error.message}
-              </p>
-            )}
-          </div>
-        </section>
-      );
-    }
-
-    if (id === "workspace") {
-      return (
-        <section key={id} className="nex-settings-section" aria-labelledby="workspace-heading">
-          <h3 id="workspace-heading" className="nex-settings-heading">
-            {t("settings.sectionWorkspace")}
-          </h3>
-          <p className="nex-settings-hint">
-            {t("settings.workspaceHint")}
-          </p>
-          <div className="nex-settings-field">
-            <span className="nex-settings-label">{t("settings.currentRoot")}</span>
-            <p className="nex-settings-value" title={workspaceRoot ?? ""}>
-              {workspaceLoading ? t("common.loading") : (workspaceRoot ?? t("settings.unset"))}
-            </p>
-          </div>
-          <div className="nex-settings-field">
-            <span className="nex-settings-label">{t("settings.recentLabel")}</span>
-            {recentFolders === null ? (
-              <p className="nex-settings-hint">{t("common.loading")}</p>
-            ) : recentFolders.length === 0 ? (
-              <p className="nex-settings-hint">{t("settings.noRecent")}</p>
-            ) : (
-              recentFolders.map((folder) => (
-                <p key={folder} className="nex-settings-value" title={folder}>
-                  {folder}
-                </p>
-              ))
-            )}
-          </div>
-        </section>
-      );
-    }
-
-    if (id === "credentials") {
-      return (
-        <section key={id} className="nex-settings-section" aria-labelledby="providers-heading">
-          <h3 id="providers-heading" className="nex-settings-heading">
-            {t("settings.searchProviderCreds")}
-          </h3>
-          <p className="nex-settings-hint">
-            {t("settings.credentialsHint")}
-          </p>
-
-          <ul className="nex-provider-list">
-            {store.providers.map(({ supported, credentialed, available }) => (
-              <li key={supported.name} className="nex-provider-row">
-                <div className="nex-provider-meta">
-                  <span className="nex-provider-name">{supported.display_name}</span>
-                  <span className="nex-provider-status">
-                    <span
-                      className={
-                        "nex-tag" +
-                        (available ? " is-connected" : "")
-                      }
-                    >
-                      <span
-                        className={
-                          "nex-tag-dot" +
-                          (available ? " is-ok" : credentialed ? "" : "")
-                        }
-                        aria-hidden="true"
-                      />
-                      {available
-                        ? t("settings.connected")
-                        : credentialed
-                          ? t("settings.credentialSaved")
-                          : t("settings.notConnected")}
-                    </span>
-                  </span>
-                </div>
-
-                <div className="nex-provider-actions">
-                  <input
-                    className="nex-input"
-                    type="password"
-                    autoComplete="new-password"
-                    placeholder={credentialed ? t("settings.apiKeyUpdatePh") : t("settings.apiKeyPh")}
-                    aria-label={t("settings.apiKeyAria", { name: supported.display_name })}
-                    aria-describedby={
-                      store.error ? "nex-settings-store-error" : undefined
-                    }
-                    value={draftKeys[supported.name] ?? ""}
-                    disabled={store.working}
-                    onChange={(event) =>
-                      setDraftKeys((prev) => ({ ...prev, [supported.name]: event.target.value }))
-                    }
-                  />
-                  <M3Button
-                    variant="primary"
-                    size="sm"
-                    disabled={store.working || !(draftKeys[supported.name]?.trim())}
-                    onClick={() => handleConnect(supported)}
-                  >
-                    {credentialed ? t("settings.update") : t("settings.connect")}
-                  </M3Button>
-                  {credentialed && (
-                    <M3Button
-                      variant="quiet"
-                      className="nex-provider-remove"
-                      disabled={store.working}
-                      onClick={() => handleDisconnect(supported)}
-                    >
-                      {t("settings.disconnect")}
-                    </M3Button>
-                  )}
-                </div>
-              </li>
-            ))}
-          </ul>
-        </section>
-      );
-    }
-
-    if (id === "data") {
-      return (
-        <section key={id} className="nex-settings-section" aria-labelledby="data-heading">
-          <h3 id="data-heading" className="nex-settings-heading">
-            {t("settings.sectionData")}
-          </h3>
-          <p className="nex-settings-hint">
-            {t("settings.dataHint")}
-          </p>
-
-          {(onOpenImport || onExportActive) && (
-            <div className="nex-settings-field">
-              <span className="nex-settings-label">{t("settings.transfer")}</span>
-              <div className="nex-provider-actions">
-                {onExportActive && (
-                  <M3Button variant="primary" size="sm" onClick={onExportActive}>
-                    {t("settings.exportActive")}
-                  </M3Button>
-                )}
-                {onOpenImport && (
-                  <M3Button variant="quiet" size="sm" onClick={onOpenImport}>
-                    {t("settings.importBtn")}
-                  </M3Button>
-                )}
-              </div>
-            </div>
-          )}
-
-          <div className="nex-danger-zone">
-            <h4 className="nex-danger-title">{t("settings.dangerTitle")}</h4>
-            <p className="nex-danger-text">
-              {t("settings.dangerText")}
-            </p>
-            <M3Button
-              variant="destructive"
-              loading={clearing}
-              onClick={() => void handleClearData()}
-            >
-              {clearing ? t("settings.clearing") : t("settings.clearBtn")}
-            </M3Button>
-            {clearError && (
-              <p className="nex-settings-error nex-fade-in" role="alert">
-                {clearError}
-              </p>
-            )}
-          </div>
-        </section>
-      );
-    }
-
-    // Advanced: power keys, demarked and collapsed. Flags are simple booleans
-    // (same true/false domain the backend gate accepts) so they get toggles;
-    // routing profiles, MCP servers, and the agent preset are complex JSON
-    // the UI does not edit — they stay visible but read-only.
-    return (
-      <section key={id} className="nex-settings-section" aria-labelledby="advanced-heading">
-        <h3 id="advanced-heading" className="nex-settings-heading">
-          {t("settings.sectionAdvanced")}
-        </h3>
-        <p className="nex-settings-hint">
-          {t("settings.advancedHint")}
-        </p>
-        {advancedError && (
-          <p className="nex-settings-error nex-fade-in" role="alert">
-            {advancedError}
-          </p>
-        )}
-
-        <div className="nex-settings-field">
-          <span className="nex-settings-label" id="flags-label">
-            {t("settings.flagsLabel")}
-          </span>
-          <p className="nex-settings-hint">
-            {t("settings.flagsHint")}
-          </p>
-          {FLAG_DEFS.map((flag) => (
-            <label key={flag.name} className="nex-flag-row" htmlFor={`flag-${flag.name}`}>
-              <input
-                id={`flag-${flag.name}`}
-                type="checkbox"
-                checked={flagValues[flag.name] ?? true}
-                disabled={flagsSaving !== null}
-                onChange={(event) => void handleFlagToggle(flag.name, event.target.checked)}
-                aria-describedby={`flag-${flag.name}-hint`}
-              />
-              <span>
-                <span className="nex-provider-name">{flag.name}</span>{" "}
-                <span className="nex-tag">{flag.enforced ? t("settings.enforced") : t("settings.resolvedOnly")}</span>
-                <span id={`flag-${flag.name}-hint`} className="nex-settings-hint">
-                  {" "}{t(flag.descriptionKey)}
-                </span>
-              </span>
-            </label>
-          ))}
-          {flagsError && (
-            <p className="nex-settings-error nex-fade-in" role="alert">
-              {flagsError}
-            </p>
-          )}
-        </div>
-
-        <details className="nex-settings-details">
-          <summary>{t("settings.routingTitle")}</summary>
-          <p className="nex-settings-hint">
-            {t("settings.routingHint")}
-          </p>
-          <div className="nex-settings-field">
-            <span className="nex-settings-label">{t("settings.chatProfile")}</span>
-            <p className="nex-settings-value">
-              {advancedValues === null
-                ? t("common.loading")
-                : summarizeRoutingProfile(advancedValues[ROUTING_CHAT_KEY] ?? null, locale)}
-            </p>
-          </div>
-          <div className="nex-settings-field">
-            <span className="nex-settings-label">{t("settings.agentProfile")}</span>
-            <p className="nex-settings-value">
-              {advancedValues === null
-                ? t("common.loading")
-                : summarizeRoutingProfile(advancedValues[ROUTING_AGENT_KEY] ?? null, locale)}
-            </p>
-          </div>
-        </details>
-
-        <details className="nex-settings-details">
-          <summary>{t("settings.mcpTitle")}</summary>
-          <p className="nex-settings-hint">
-            {t("settings.mcpHint")}
-          </p>
-          <div className="nex-settings-field">
-            <span className="nex-settings-label">{t("settings.mcpServers")}</span>
-            <p className="nex-settings-value">
-              {advancedValues === null
-                ? t("common.loading")
-                : summarizeMcpServers(advancedValues[MCP_SERVERS_KEY] ?? null, locale)}
-            </p>
-          </div>
-        </details>
-
-        <details className="nex-settings-details">
-          <summary>{t("settings.presetTitle")}</summary>
-          <p className="nex-settings-hint">
-            {t("settings.presetHint")}
-          </p>
-          <div className="nex-settings-field">
-            <span className="nex-settings-label">{t("settings.presetLabel")}</span>
-            <p className="nex-settings-value">
-              {advancedValues === null
-                ? t("common.loading")
-                : (advancedValues[PRESET_KEY] ?? t("settings.presetUnset"))}
-            </p>
-          </div>
-        </details>
-      </section>
-    );
   };
 
   return (

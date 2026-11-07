@@ -7,7 +7,8 @@
 //! the rail foot already holds Settings/Library/VCS/Import, and a second
 //! entry would split one read-only story across two destinations.
 //!
-//! Sources (all pre-existing query surfaces, aggregated — never duplicated):
+//! Presentational over the `useActivity` data hook (AC-206), which owns the
+//! query machines behind every section:
 //!   activity feed .... `activity_feed` (commands/agent.rs: batch over
 //!                        persisted `agent_runs` + cross-run spend totals)
 //!   conversations .... `list_conversations` (titles for feed labels)
@@ -16,6 +17,9 @@
 //!   context pressure . `conversation_context_stats` (active conversation)
 //!   git .............. `git_info` (branch + dirty-file summary)
 //!   flags ............ `flags_status`
+//!   system ........... `diagnostics_bundle` / `update_check` /
+//!                        `snapshot_database`
+//!   privacy .......... `privacy_status` / `privacy_export` / `privacy_wipe`
 //!
 //! Display rules (secret-free): feed rows render ids, fixed-vocabulary
 //! labels, counters, and relative times only — never `final_content` /
@@ -25,49 +29,27 @@
 //! Manual Refresh only — no auto-refresh or live polling (documented).
 //! The panel never animates on entry (instant render under reduced motion);
 //! tab switches ride the segmented group's own spring, gated by motion.css.
+//!
+//! AC-208 (review §3.1): the tab bodies and the shared formatters live in
+//! `activityHealth/` (`format.ts`, `tabs.ts`, `ActivityTab.tsx`,
+//! `HealthTab.tsx`, `SystemSection.tsx`, `PrivacySection.tsx`); this file
+//! keeps the shell, the tab/filter state (owned here so a tab round trip
+//! preserves both, exactly as before the split), and the public exports.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
-import { formatRelativeTime } from "../lib/format";
-import {
-  activityFeed,
-  conversationContextStats,
-  diagnosticsBundle,
-  flagsStatus,
-  getSetting,
-  gitInfo,
-  listConversations,
-  privacyExport,
-  privacyStatus,
-  privacyWipe,
-  providerHealth,
-  snapshotDatabase,
-  supportedProviders,
-  updateCheck,
-  type ActivityFeed,
-  type CommandError,
-  type Conversation,
-  type ConversationContextStats,
-  type DiagnosticsBundle,
-  type FlagsStatus,
-  type GitInfo,
-  type LedgerExport,
-  type PrivacyStatus,
-  type PrivacySurface,
-  type ProviderHealth,
-  type SnapshotInfo,
-  type SupportedProvider,
-  type UpdateCheck,
-} from "../lib/tauri";
-import { SPEND_LIMIT_KEY } from "../lib/useSpendLimit";
-import { getLocale, tr, type Locale } from "../lib/strings";
+import { useActivity } from "../lib/useActivity";
 import { useStrings } from "../lib/useLocale";
 import M3Button from "./M3Button";
 import M3LoadingIndicator from "./M3LoadingIndicator";
 import M3SegmentedGroup from "./M3SegmentedGroup";
+import ActivityTab from "./activityHealth/ActivityTab";
+import HealthTab from "./activityHealth/HealthTab";
+import SystemSection from "./activityHealth/SystemSection";
+import PrivacySection from "./activityHealth/PrivacySection";
+import type { ActivityHealthTab, ActivityKind } from "./activityHealth/tabs";
 
-export type ActivityHealthTab = "activity" | "health";
-export type ActivityKind = "all" | "runs" | "spend" | "conversations";
+export type { ActivityHealthTab, ActivityKind };
 
 export interface ActivityHealthPanelProps {
   onClose: () => void;
@@ -79,103 +61,42 @@ export interface ActivityHealthPanelProps {
   activeConversationId?: number | null;
 }
 
-const FEED_LIMIT = 50;
-// Server-max page for the spend filter: the backend clamps `limit` to
-// 1..=100, and totals cover every persisted run, so the spend set derives
-// from this wider page (the main list keeps FEED_LIMIT).
-const FEED_MAX = 100;
-
-function toMessage(error: unknown): string {
-  if (
-    typeof error === "object" &&
-    error !== null &&
-    typeof (error as CommandError).message === "string"
-  ) {
-    return (error as CommandError).message;
-  }
-  if (error instanceof Error) return error.message;
-  return String(error);
-}
-
-/** Fixed-vocabulary run-status label; unknown values fall back to a
- * capitalized echo of the backend token (defensive — the backend only
- * sends its `agent_runs.status` vocabulary). */
-function runStatusLabel(status: string, locale: Locale = getLocale()): string {
-  switch (status) {
-    case "running":
-      return tr(locale, "activity.runRunning");
-    case "completed":
-      return tr(locale, "activity.runCompleted");
-    case "cancelled":
-      return tr(locale, "activity.runCancelled");
-    case "budget_exhausted":
-      return tr(locale, "activity.runBudget");
-    case "spend_limit_exceeded":
-      return tr(locale, "activity.runSpendHit");
-    case "error":
-      return tr(locale, "activity.runFailed");
-    default:
-      return status.charAt(0).toUpperCase() + status.slice(1);
-  }
-}
-
-/** Fixed-vocabulary provider-health label. */
-function healthLabel(status: ProviderHealth["status"], locale: Locale = getLocale()): string {
-  switch (status) {
-    case "healthy":
-      return tr(locale, "activity.healthHealthy");
-    case "degraded":
-      return tr(locale, "activity.healthDegraded");
-    case "unreachable":
-      return tr(locale, "activity.healthUnreachable");
-    case "unknown":
-    default:
-      return tr(locale, "activity.healthUnknown");
-  }
-}
-
-/** Compact dollars from micro-USD (`null` = not recorded → "n/a"). */
-function formatMicroUsd(micros: number | null, locale: Locale = getLocale()): string {
-  if (micros === null) return tr(locale, "common.na");
-  const dollars = micros / 1_000_000;
-  return `$${dollars >= 1 ? dollars.toFixed(2) : dollars.toFixed(4)}`;
-}
-
-/** Human byte size (`null` = unknown → the catalog "unknown"). */
-function formatBytes(bytes: number | null, locale: Locale = getLocale()): string {
-  if (bytes === null) return tr(locale, "diag.sizeUnknown");
-  if (bytes < 1024) return `${bytes} B`;
-  const kb = bytes / 1024;
-  if (kb < 1024) return `${kb.toFixed(1)} KB`;
-  return `${(kb / 1024).toFixed(1)} MB`;
-}
-
-function parseSpendLimit(value: string | null): number | null {
-  if (value === null) return null;
-  const parsed = Number(value.trim());
-  if (!Number.isInteger(parsed) || parsed <= 0) return null;
-  return parsed;
-}
-
-interface FeedRow {
-  key: string;
-  at: number;
-  kind: "run" | "conversation";
-  runId?: number;
-  conversationId?: number | null;
-  title: string;
-  detail: string;
-  status?: string;
-  time: number;
-}
-
 export default function ActivityHealthPanel({
   onClose,
   initialTab = "activity",
   tabRequest = null,
   activeConversationId = null,
 }: ActivityHealthPanelProps) {
-  const { locale, t, tp: tpn } = useStrings();
+  const { t } = useStrings();
+  const activity = useActivity({ activeConversationId });
+  const {
+    feed,
+    spendFeed,
+    conversations,
+    activityLoading,
+    activityError,
+    supported,
+    health,
+    healthError,
+    flags,
+    flagsError,
+    git,
+    gitError,
+    context,
+    contextError,
+    spendLimit,
+    healthLoading,
+    bundle,
+    bundleError,
+    update,
+    updateError,
+    updateBusy,
+    snapshot,
+    snapshotError,
+    snapshotBusy,
+    privacy,
+    privacyError,
+  } = activity;
   const [tab, setTab] = useState<ActivityHealthTab>(initialTab);
   const [kind, setKind] = useState<ActivityKind>("all");
   // Palette deep links retarget the tab while open (mirrors the VCS
@@ -192,217 +113,12 @@ export default function ActivityHealthPanel({
     setTab(initialTab);
   }, [initialTab]);
 
-  const [feed, setFeed] = useState<ActivityFeed | null>(null);
-  // Wider (server-max) page backing the "spend" filter only; `null` =
-  // unavailable → the filter falls back to the main `feed` page.
-  const [spendFeed, setSpendFeed] = useState<ActivityFeed | null>(null);
-  const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [activityLoading, setActivityLoading] = useState<boolean>(true);
-  const [activityError, setActivityError] = useState<string | null>(null);
-
-  const [supported, setSupported] = useState<SupportedProvider[]>([]);
-  const [health, setHealth] = useState<Record<string, ProviderHealth>>({});
-  const [healthError, setHealthError] = useState<string | null>(null);
-  const [flags, setFlags] = useState<FlagsStatus | null>(null);
-  const [flagsError, setFlagsError] = useState<string | null>(null);
-  const [git, setGit] = useState<GitInfo | null>(null);
-  const [gitError, setGitError] = useState<string | null>(null);
-  const [context, setContext] = useState<ConversationContextStats | null>(null);
-  const [contextError, setContextError] = useState<string | null>(null);
-  const [spendLimit, setSpendLimit] = useState<number | null>(null);
-  const [healthLoading, setHealthLoading] = useState<boolean>(true);
-
-  // System & diagnostics (bundle auto-loads with health — local only;
-  // the update check runs on the button press alone, never on a timer).
-  const [bundle, setBundle] = useState<DiagnosticsBundle | null>(null);
-  const [bundleError, setBundleError] = useState<string | null>(null);
+  // System section interaction states (clipboard copy of the diagnostics
+  // bundle — clipboard only, no IPC). Owned here, not by the section: the
+  // section unmounts on every tab switch and the "Copied" confirmation
+  // must survive the round trip exactly as before the split.
   const [copied, setCopied] = useState(false);
   const [copyFailed, setCopyFailed] = useState(false);
-  const [update, setUpdate] = useState<UpdateCheck | null>(null);
-  const [updateError, setUpdateError] = useState<string | null>(null);
-  const [updateBusy, setUpdateBusy] = useState(false);
-  const [snapshot, setSnapshot] = useState<SnapshotInfo | null>(null);
-  const [snapshotError, setSnapshotError] = useState<string | null>(null);
-  const [snapshotBusy, setSnapshotBusy] = useState(false);
-
-  // Privacy center: egress inventory + local ledger (read-only here; the
-  // export/wipe actions live in the PrivacySection below).
-  const [privacy, setPrivacy] = useState<PrivacyStatus | null>(null);
-  const [privacyError, setPrivacyError] = useState<string | null>(null);
-
-  const loadPrivacy = useCallback(async () => {
-    try {
-      setPrivacy(await privacyStatus());
-      setPrivacyError(null);
-    } catch (e) {
-      setPrivacyError(toMessage(e));
-      setPrivacy(null);
-    }
-  }, []);
-
-  const [refreshToken, setRefreshToken] = useState(0);
-
-  const loadActivity = useCallback(async () => {
-    setActivityLoading(true);
-    setActivityError(null);
-    try {
-      const [feedData, convs, spendData] = await Promise.all([
-        activityFeed(FEED_LIMIT),
-        listConversations(),
-        activityFeed(FEED_MAX).catch(() => null),
-      ]);
-      setFeed(feedData);
-      setConversations(convs);
-      setSpendFeed(spendData);
-    } catch (e) {
-      setActivityError(toMessage(e));
-      setFeed(null);
-      setSpendFeed(null);
-    } finally {
-      setActivityLoading(false);
-    }
-  }, []);
-
-  const loadHealth = useCallback(async () => {
-    setHealthLoading(true);
-    setHealthError(null);
-    setFlagsError(null);
-    setGitError(null);
-    setContextError(null);
-    setBundleError(null);
-    try {
-      const defs = await supportedProviders();
-      setSupported(defs);
-      const probes = await Promise.all(
-        defs.map(async (def) => {
-          try {
-            return await providerHealth(def.name);
-          } catch {
-            return null;
-          }
-        }),
-      );
-      const next: Record<string, ProviderHealth> = {};
-      defs.forEach((def, index) => {
-        const probe = probes[index];
-        if (probe) next[def.name] = probe;
-      });
-      setHealth(next);
-    } catch (e) {
-      setHealthError(toMessage(e));
-      setSupported([]);
-    }
-    try {
-      setFlags(await flagsStatus());
-    } catch (e) {
-      setFlagsError(toMessage(e));
-      setFlags(null);
-    }
-    try {
-      setGit(await gitInfo(5));
-    } catch (e) {
-      setGitError(toMessage(e));
-      setGit(null);
-    }
-    try {
-      const stored = await getSetting(SPEND_LIMIT_KEY);
-      setSpendLimit(parseSpendLimit(stored));
-    } catch {
-      setSpendLimit(null);
-    }
-    try {
-      setBundle(await diagnosticsBundle());
-    } catch (e) {
-      setBundleError(toMessage(e));
-      setBundle(null);
-    }
-    await loadPrivacy();
-    if (activeConversationId !== null) {
-      try {
-        setContext(await conversationContextStats(activeConversationId));
-      } catch (e) {
-        setContextError(toMessage(e));
-        setContext(null);
-      }
-    } else {
-      setContext(null);
-    }
-    setHealthLoading(false);
-  }, [activeConversationId, loadPrivacy]);
-
-  // Manual refresh only: the panel loads on mount / refresh click, never
-  // on a timer (no auto-refresh, no live polling — documented).
-  useEffect(() => {
-    void loadActivity();
-    void loadHealth();
-  }, [loadActivity, loadHealth, refreshToken]);
-
-  const titles = useMemo(() => {
-    const map = new Map<number, string>();
-    for (const conv of conversations) map.set(conv.id, conv.title);
-    return map;
-  }, [conversations]);
-
-  const rows = useMemo<FeedRow[]>(() => {
-    const toRunRow = (run: NonNullable<ActivityFeed["runs"]>[number]): FeedRow => {
-      const convTitle =
-        run.conversation_id !== null
-          ? titles.get(run.conversation_id)
-          : undefined;
-      const parts = [
-        `#${run.run_id} · ${run.model}`,
-        tpn("steps", run.total_steps),
-        formatMicroUsd(run.spent_micro_usd, locale),
-      ];
-      return {
-        key: `run-${run.run_id}`,
-        at: run.started_at,
-        kind: "run",
-        runId: run.run_id,
-        conversationId: run.conversation_id,
-        title:
-          convTitle !== undefined ? t("activity.runIn", { title: convTitle }) : t("activity.runHash", { id: run.run_id }),
-        detail: parts.join(" · "),
-        status: run.status,
-        time: run.started_at,
-      };
-    };
-    if (kind === "spend") {
-      // Full-history-adjacent scope: totals cover every persisted run, so
-      // derive the spent set from the server-max page, not the capped
-      // 50-row list page. Falls back to the main page when unavailable.
-      const wideRuns = spendFeed?.runs ?? feed?.runs ?? [];
-      return wideRuns
-        .filter((run) => run.spent_micro_usd !== null)
-        .map(toRunRow)
-        .sort((a, b) => b.at - a.at);
-    }
-    const merged: FeedRow[] = [];
-    for (const run of feed?.runs ?? []) {
-      merged.push(toRunRow(run));
-    }
-    for (const conv of conversations) {
-      merged.push({
-        key: `conv-${conv.id}`,
-        at: conv.created_at,
-        kind: "conversation",
-        conversationId: conv.id,
-        title: t("activity.convCreated", { title: conv.title }),
-        detail: conv.status === "archived" ? t("common.archived") : t("common.active"),
-        time: conv.created_at,
-      });
-    }
-    merged.sort((a, b) => b.at - a.at);
-    if (kind === "runs") return merged.filter((row) => row.kind === "run");
-    if (kind === "conversations")
-      return merged.filter((row) => row.kind === "conversation");
-    return merged;
-  }, [feed, spendFeed, conversations, titles, kind, locale, t, tpn]);
-
-  const flagEntries = useMemo(() => {
-    if (!flags) return [];
-    return Object.entries(flags.flags).sort(([a], [b]) => a.localeCompare(b));
-  }, [flags]);
 
   return (
     <div className="nex-activity" role="group" aria-label={t("activity.group")}>
@@ -417,7 +133,7 @@ export default function ActivityHealthPanel({
           <M3Button
             variant="quiet"
             size="sm"
-            onClick={() => setRefreshToken((token) => token + 1)}
+            onClick={activity.reload}
             title={t("activity.refreshTitle")}
           >
             {t("vcs.refresh")}
@@ -441,233 +157,33 @@ export default function ActivityHealthPanel({
       </div>
       <div className="nex-activity-body">
         {tab === "activity" ? (
-          <section aria-label={t("activity.feedAria")}>
-            <div className="nex-activity-filter">
-              <M3SegmentedGroup<ActivityKind>
-                label={t("activity.filterLabel")}
-                options={[
-                  { value: "all", label: t("activity.filterAll") },
-                  { value: "runs", label: t("activity.filterRuns") },
-                  { value: "spend", label: t("activity.filterSpend") },
-                  { value: "conversations", label: t("activity.filterChats") },
-                ]}
-                value={kind}
-                onChange={setKind}
-              />
-            </div>
-            {activityLoading ? (
-              <M3LoadingIndicator label={t("activity.loadingActivity")} />
-            ) : activityError !== null ? (
-              <p className="nex-activity-error" role="alert">
-                {activityError}
-              </p>
-            ) : rows.length === 0 ? (
-              <div className="nex-activity-empty">
-                <p className="nex-activity-empty-title">{t("activity.emptyTitle")}</p>
-                <p className="nex-activity-empty-text">
-                  {t("activity.emptyText")}
-                </p>
-              </div>
-            ) : (
-              <ul className="nex-activity-list">
-                {rows.map((row) => (
-                  <li key={row.key} className="nex-activity-row">
-                    <div className="nex-activity-row-main">
-                      <span className="nex-activity-row-title">{row.title}</span>
-                      {row.status !== undefined && (
-                        <span
-                          className={`nex-activity-pill nex-activity-pill--${row.status}`}
-                        >
-                          {runStatusLabel(row.status, locale)}
-                        </span>
-                      )}
-                    </div>
-                    <div className="nex-activity-row-meta">
-                      <span>{row.detail}</span>
-                      <time dateTime={new Date(row.time * 1000).toISOString()}>
-                        {formatRelativeTime(row.time, locale)}
-                      </time>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
+          <ActivityTab
+            feed={feed}
+            spendFeed={spendFeed}
+            conversations={conversations}
+            loading={activityLoading}
+            error={activityError}
+            kind={kind}
+            onKindChange={setKind}
+          />
         ) : healthLoading ? (
           <M3LoadingIndicator label={t("activity.loadingHealth")} />
         ) : (
           <>
-            <section className="nex-activity-section" aria-label={t("activity.providersSection")}>
-              <h3 className="nex-activity-section-title">{t("activity.providersSection")}</h3>
-              {healthError !== null ? (
-                <p className="nex-activity-error" role="alert">
-                  {healthError}
-                </p>
-              ) : supported.length === 0 ? (
-                <p className="nex-activity-muted">{t("activity.noProviders")}</p>
-              ) : (
-                <ul className="nex-activity-list">
-                  {supported.map((def) => {
-                    const probe = health[def.name];
-                    return (
-                      <li key={def.name} className="nex-activity-row">
-                        <div className="nex-activity-row-main">
-                          <span className="nex-activity-row-title">
-                            {def.display_name}
-                          </span>
-                          <span className="nex-activity-pill">
-                            {probe ? healthLabel(probe.status, locale) : t("activity.healthUnknown")}
-                          </span>
-                        </div>
-                        <div className="nex-activity-row-meta">
-                          <span>
-                            {probe
-                              ? `${probe.has_configuration ? t("activity.configured") : t("activity.notConfigured")} · ${probe.has_credential ? t("activity.keyStored") : t("activity.noKey")}`
-                              : t("activity.noProbe")}
-                          </span>
-                          <span>{tpn("models", def.models.length)}</span>
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </section>
-            <section className="nex-activity-section" aria-label={t("activity.budgetSection")}>
-              <h3 className="nex-activity-section-title">{t("activity.budgetSection")}</h3>
-              {feed === null ? (
-                <p className="nex-activity-muted">{t("activity.spendUnavailable")}</p>
-              ) : (
-                <ul className="nex-activity-list">
-                  <li className="nex-activity-row">
-                    <div className="nex-activity-row-main">
-                      <span className="nex-activity-row-title">{t("activity.allRuns")}</span>
-                    </div>
-                    <div className="nex-activity-row-meta">
-                      <span>
-                        {tpn("runs", feed.totals.runs)} · {tpn("steps", feed.totals.total_steps)} ·{" "}
-                        {t("activity.totalsTotal", { total: formatMicroUsd(feed.totals.total_spent_micro_usd, locale) })}
-                      </span>
-                      <span>
-                        {t("activity.limitValue", {
-                          limit:
-                            spendLimit === null
-                              ? t("activity.limitNone")
-                              : formatMicroUsd(spendLimit, locale),
-                        })}
-                      </span>
-                    </div>
-                  </li>
-                </ul>
-              )}
-            </section>
-            <section className="nex-activity-section" aria-label={t("activity.contextSection")}>
-              <h3 className="nex-activity-section-title">{t("activity.contextSection")}</h3>
-              {activeConversationId === null ? (
-                <p className="nex-activity-muted">
-                  {t("activity.openConv")}
-                </p>
-              ) : contextError !== null ? (
-                <p className="nex-activity-error" role="alert">
-                  {contextError}
-                </p>
-              ) : context === null ? (
-                <p className="nex-activity-muted">{t("activity.ctxUnavailable")}</p>
-              ) : (
-                <div className="nex-activity-row">
-                  <div className="nex-activity-row-main">
-                    <span className="nex-activity-row-title">{context.title}</span>
-                    <span className="nex-activity-pill">
-                      {context.has_token_data
-                        ? t("activity.ctxUsed", { n: context.usage_percent })
-                        : t("activity.ctxNa")}
-                    </span>
-                  </div>
-                  <div className="nex-activity-row-meta">
-                    <span>
-                      {t("ctx.labelMessages")}: {context.message_count} ·{" "}
-                      {t("ctx.legendTools")}: {context.tool_call_count}
-                    </span>
-                    <span>{formatMicroUsd(context.total_cost_micro_usd, locale)}</span>
-                  </div>
-                  {context.has_token_data && (
-                    <div
-                      className="nex-activity-meter"
-                      role="progressbar"
-                      aria-valuenow={context.usage_percent}
-                      aria-valuemin={0}
-                      aria-valuemax={100}
-                      aria-label={t("activity.ctxAria")}
-                    >
-                      <div
-                        className="nex-activity-meter-fill"
-                        style={{ width: `${Math.min(100, context.usage_percent)}%` }}
-                      />
-                    </div>
-                  )}
-                </div>
-              )}
-            </section>
-            <section className="nex-activity-section" aria-label={t("activity.gitSection")}>
-              <h3 className="nex-activity-section-title">{t("activity.gitSection")}</h3>
-              {gitError !== null ? (
-                <p className="nex-activity-muted">{gitError}</p>
-              ) : git === null ? (
-                <p className="nex-activity-muted">{t("activity.gitUnavailable")}</p>
-              ) : (
-                <div className="nex-activity-row">
-                  <div className="nex-activity-row-main">
-                    <span className="nex-activity-row-title">
-                      {git.branch ?? t("vcs.detachedHead")}
-                    </span>
-                    <span className="nex-activity-pill">
-                      {git.files.length === 0 ? t("activity.clean") : t("activity.dirty")}
-                    </span>
-                  </div>
-                  <div className="nex-activity-row-meta">
-                    <span>
-                      {git.files.length === 0
-                        ? t("activity.noChanged")
-                        : `${tpn("files", git.files.length)}${
-                            git.files_overflow > 0 ? ` ${t("activity.filesMore", { n: git.files_overflow })}` : ""
-                          }`}
-                    </span>
-                    <span>
-                      {git.commits.length === 0
-                        ? t("activity.noCommits")
-                        : tpn("commits", git.commits.length)}
-                    </span>
-                  </div>
-                </div>
-              )}
-            </section>
-            <section className="nex-activity-section" aria-label={t("activity.flagsSection")}>
-              <h3 className="nex-activity-section-title">{t("activity.flagsSection")}</h3>
-              {flagsError !== null ? (
-                <p className="nex-activity-error" role="alert">
-                  {flagsError}
-                </p>
-              ) : flagEntries.length === 0 ? (
-                <p className="nex-activity-muted">{t("activity.noFlags")}</p>
-              ) : (
-                <ul className="nex-activity-list">
-                  {flagEntries.map(([name, flag]) => (
-                    <li key={name} className="nex-activity-row">
-                      <div className="nex-activity-row-main">
-                        <span className="nex-activity-row-title">{name}</span>
-                        <span className="nex-activity-pill">
-                          {flag.enabled ? t("common.on") : t("common.off")}
-                        </span>
-                      </div>
-                      <div className="nex-activity-row-meta">
-                        <span>{t("activity.sourcePrefix", { source: flag.source })}</span>
-                        <span>{flag.enforced ? t("activity.enforced") : t("activity.notEnforced")}</span>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
+            <HealthTab
+              supported={supported}
+              health={health}
+              healthError={healthError}
+              feed={feed}
+              spendLimit={spendLimit}
+              activeConversationId={activeConversationId}
+              context={context}
+              contextError={contextError}
+              git={git}
+              gitError={gitError}
+              flags={flags}
+              flagsError={flagsError}
+            />
             <SystemSection
               bundle={bundle}
               bundleError={bundleError}
@@ -689,444 +205,22 @@ export default function ActivityHealthPanel({
               update={update}
               updateError={updateError}
               updateBusy={updateBusy}
-              onCheckUpdate={async () => {
-                setUpdateBusy(true);
-                setUpdateError(null);
-                try {
-                  setUpdate(await updateCheck());
-                } catch (e) {
-                  setUpdateError(toMessage(e));
-                  setUpdate(null);
-                } finally {
-                  setUpdateBusy(false);
-                }
-              }}
+              onCheckUpdate={() => void activity.checkUpdate()}
               snapshot={snapshot}
               snapshotError={snapshotError}
               snapshotBusy={snapshotBusy}
-              onSnapshot={async () => {
-                setSnapshotBusy(true);
-                setSnapshotError(null);
-                try {
-                  setSnapshot(await snapshotDatabase());
-                } catch (e) {
-                  setSnapshotError(toMessage(e));
-                  setSnapshot(null);
-                } finally {
-                  setSnapshotBusy(false);
-                }
-              }}
+              onSnapshot={() => void activity.makeSnapshot()}
             />
             <PrivacySection
               status={privacy}
               error={privacyError}
-              onReload={loadPrivacy}
+              onReload={() => void activity.loadPrivacy()}
+              onExport={() => activity.exportLedger()}
+              onWipe={() => activity.wipe()}
             />
           </>
         )}
       </div>
     </div>
-  );
-}
-
-interface SystemSectionProps {
-  bundle: DiagnosticsBundle | null;
-  bundleError: string | null;
-  copied: boolean;
-  copyFailed: boolean;
-  onCopy: () => void;
-  update: UpdateCheck | null;
-  updateError: string | null;
-  updateBusy: boolean;
-  onCheckUpdate: () => void;
-  snapshot: SnapshotInfo | null;
-  snapshotError: string | null;
-  snapshotBusy: boolean;
-  onSnapshot: () => void;
-}
-
-/** System & diagnostics section: the secret-free bundle (copyable JSON),
- * the read-only update check (button only — never automatic), and the
- * user-initiated pre-update snapshot. Renders backend facts only. */
-function SystemSection({
-  bundle,
-  bundleError,
-  copied,
-  copyFailed,
-  onCopy,
-  update,
-  updateError,
-  updateBusy,
-  onCheckUpdate,
-  snapshot,
-  snapshotError,
-  snapshotBusy,
-  onSnapshot,
-}: SystemSectionProps) {
-  const { locale, t } = useStrings();
-  return (
-    <section className="nex-activity-section" aria-label={t("diag.section")}>
-      <h3 className="nex-activity-section-title">{t("diag.section")}</h3>
-      {bundleError !== null ? (
-        <p className="nex-activity-error" role="alert">
-          {bundleError}
-        </p>
-      ) : bundle === null ? (
-        <M3LoadingIndicator label={t("diag.loading")} />
-      ) : (
-        <ul className="nex-activity-list">
-          <li className="nex-activity-row">
-            <div className="nex-activity-row-main">
-              <span className="nex-activity-row-title">{t("diag.appVersion")}</span>
-              <span className="nex-activity-pill">{bundle.app_version}</span>
-            </div>
-            <div className="nex-activity-row-meta">
-              <span>
-                {t("diag.platform")}: {bundle.platform_os}/{bundle.platform_arch}
-              </span>
-              <span>
-                {t("diag.schema")}:{" "}
-                {t("diag.schemaValue", {
-                  current: bundle.schema_version,
-                  target: bundle.schema_target,
-                })}
-              </span>
-            </div>
-          </li>
-          <li className="nex-activity-row">
-            <div className="nex-activity-row-main">
-              <span className="nex-activity-row-title">{t("diag.dbSize")}</span>
-              <span className="nex-activity-pill">
-                {formatBytes(bundle.db_size_bytes, locale)}
-              </span>
-            </div>
-            <div className="nex-activity-row-meta">
-              <span>
-                {t("diag.counts")}:{" "}
-                {t("diag.countsValue", {
-                  conversations: bundle.counts.conversations,
-                  messages: bundle.counts.messages,
-                  prompts: bundle.counts.prompts,
-                  runs: bundle.counts.agent_runs,
-                })}
-              </span>
-              <span>
-                {t("diag.fts")}:{" "}
-                {bundle.fts_present ? t("diag.ftsOk") : t("diag.ftsMissing")}
-              </span>
-            </div>
-          </li>
-          <li className="nex-activity-row">
-            <div className="nex-activity-row-main">
-              <span className="nex-activity-row-title">{t("diag.crashes")}</span>
-              <span className="nex-activity-pill">
-                {t("diag.errorRuns", { n: bundle.error_runs })}
-              </span>
-            </div>
-            {bundle.crashed_runs.length === 0 ? (
-              <div className="nex-activity-row-meta">
-                <span>{t("diag.noCrashes")}</span>
-              </div>
-            ) : (
-              <div className="nex-activity-row-meta">
-                {bundle.crashed_runs.map((run) => (
-                  <span key={run.run_id}>
-                    {t("diag.crashRow", { id: run.run_id, model: run.model })} ·{" "}
-                    <time dateTime={new Date(run.started_at * 1000).toISOString()}>
-                      {formatRelativeTime(run.started_at, locale)}
-                    </time>
-                  </span>
-                ))}
-              </div>
-            )}
-          </li>
-        </ul>
-      )}
-      {bundle !== null && (
-        <div className="nex-activity-row-meta">
-          <M3Button variant="quiet" size="sm" onClick={onCopy}>
-            {t("diag.copy")}
-          </M3Button>
-          {copied && <span>{t("diag.copied")}</span>}
-          {copyFailed && <span role="alert">{t("common.copyFailed")}</span>}
-          {!copied && !copyFailed && <span>{t("diag.copyHint")}</span>}
-        </div>
-      )}
-      <h3 className="nex-activity-section-title">{t("diag.updateSection")}</h3>
-      <div className="nex-activity-row-meta">
-        <M3Button
-          variant="quiet"
-          size="sm"
-          onClick={onCheckUpdate}
-          disabled={updateBusy}
-        >
-          {updateBusy ? t("diag.checking") : t("diag.check")}
-        </M3Button>
-        {updateError !== null ? (
-          <span role="alert">{t("diag.updateUnavailable")}</span>
-        ) : update === null ? (
-          <span>{t("diag.downloadNote")}</span>
-        ) : update.latest_tag === null ? (
-          <span>
-            {t("diag.noRelease", { repo: `${update.owner}/${update.repo}` })}
-          </span>
-        ) : update.update_available ? (
-          <span>
-            {t("diag.updateFound", {
-              latest: update.latest_tag,
-              current: update.current_version,
-            })}
-          </span>
-        ) : (
-          <span>{t("diag.upToDate", { version: update.current_version })}</span>
-        )}
-      </div>
-      {update !== null && update.update_available && update.latest_url !== null && (
-        <p className="nex-activity-muted">
-          {t("diag.downloadNote")} {update.latest_url}
-        </p>
-      )}
-      <h3 className="nex-activity-section-title">{t("diag.snapshotSection")}</h3>
-      <p className="nex-activity-muted">{t("diag.snapshotHint")}</p>
-      <div className="nex-activity-row-meta">
-        <M3Button
-          variant="quiet"
-          size="sm"
-          onClick={onSnapshot}
-          disabled={snapshotBusy}
-        >
-          {snapshotBusy ? t("diag.snapshotBusy") : t("diag.snapshot")}
-        </M3Button>
-        {snapshotError !== null && <span role="alert">{snapshotError}</span>}
-        {snapshot !== null && (
-          <span>
-            {t("diag.snapshotOk", {
-              file: snapshot.file_name,
-              size: formatBytes(snapshot.size_bytes, locale),
-            })}
-          </span>
-        )}
-      </div>
-    </section>
-  );
-}
-
-interface PrivacySectionProps {
-  status: PrivacyStatus | null;
-  error: string | null;
-  onReload: () => void;
-}
-
-/** Fixed-vocabulary surface-state label. */
-function surfaceStateLabel(state: PrivacySurface["state"], locale: Locale = getLocale()): string {
-  switch (state) {
-    case "on":
-      return tr(locale, "privacy.stateOn");
-    case "off":
-      return tr(locale, "privacy.stateOff");
-    case "manual":
-      return tr(locale, "privacy.stateManual");
-    case "local":
-    default:
-      return tr(locale, "privacy.stateLocal");
-  }
-}
-
-/** Fixed-vocabulary ledger-kind label; unknown kinds echo defensively. */
-function ledgerKindLabel(kind: string, locale: Locale = getLocale()): string {
-  switch (kind) {
-    case "agent_run":
-      return tr(locale, "privacy.kind_agent_run");
-    case "message":
-      return tr(locale, "privacy.kind_message");
-    case "github_read":
-      return tr(locale, "privacy.kind_github_read");
-    case "update_check":
-      return tr(locale, "privacy.kind_update_check");
-    default:
-      return kind;
-  }
-}
-
-/** Privacy & telemetry section: the egress inventory (every surface that
- * can leave the machine, with its live state), the local ledger counters
- * (per-kind totals — counts only, never content), the JSON export
- * (copy/download, exactly like the diagnostics bundle), and the
- * user-confirmed wipe. The export JSON is built from the backend payload
- * only — no raw values are invented in the UI. */
-function PrivacySection({ status, error, onReload }: PrivacySectionProps) {
-  const { locale, t } = useStrings();
-  const [copied, setCopied] = useState(false);
-  const [copyFailed, setCopyFailed] = useState(false);
-  const [wipeArmed, setWipeArmed] = useState(false);
-  const [wipeBusy, setWipeBusy] = useState(false);
-  const [wiped, setWiped] = useState<number | null>(null);
-  const [wipeError, setWipeError] = useState<string | null>(null);
-
-  const totals = useMemo(() => {
-    const sums = new Map<string, number>();
-    for (const row of status?.stats ?? []) {
-      sums.set(row.kind, (sums.get(row.kind) ?? 0) + row.count);
-    }
-    return [...sums.entries()].sort(([a], [b]) => a.localeCompare(b));
-  }, [status]);
-
-  const onCopy = async () => {
-    try {
-      const exported: LedgerExport = await privacyExport();
-      await navigator.clipboard.writeText(JSON.stringify(exported, null, 2));
-      setCopied(true);
-      setCopyFailed(false);
-    } catch {
-      setCopied(false);
-      setCopyFailed(true);
-    }
-  };
-
-  const onDownload = async () => {
-    try {
-      const exported: LedgerExport = await privacyExport();
-      const blob = new Blob([JSON.stringify(exported, null, 2)], {
-        type: "application/json",
-      });
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = "nexora-usage-ledger.json";
-      anchor.click();
-      URL.revokeObjectURL(url);
-    } catch {
-      setCopyFailed(true);
-    }
-  };
-
-  const onWipe = async () => {
-    if (!wipeArmed) {
-      setWipeArmed(true);
-      setWiped(null);
-      setWipeError(null);
-      return;
-    }
-    setWipeBusy(true);
-    setWipeError(null);
-    try {
-      // The confirmation is the native OS dialog the wrapper raises (SEC-03):
-      // no caller-supplied boolean exists any more.
-      const result = await privacyWipe();
-      setWiped(result.deleted_rows);
-      setWipeArmed(false);
-      onReload();
-    } catch (e) {
-      setWipeError(toMessage(e));
-    } finally {
-      setWipeBusy(false);
-    }
-  };
-
-  return (
-    <section className="nex-activity-section" aria-label={t("privacy.section")}>
-      <h3 className="nex-activity-section-title">{t("privacy.section")}</h3>
-      <p className="nex-activity-muted">{t("privacy.subtitle")}</p>
-      {error !== null ? (
-        <p className="nex-activity-error" role="alert">
-          {error}
-        </p>
-      ) : status === null ? (
-        <M3LoadingIndicator label={t("privacy.loading")} />
-      ) : (
-        <>
-          <h3 className="nex-activity-section-title">{t("privacy.surfaces")}</h3>
-          <ul className="nex-activity-list">
-            {status.surfaces.map((surface) => (
-              <li key={surface.id} className="nex-activity-row">
-                <div className="nex-activity-row-main">
-                  <span className="nex-activity-row-title">{surface.title}</span>
-                  <span className="nex-activity-pill">
-                    {surfaceStateLabel(surface.state, locale)}
-                  </span>
-                </div>
-                <div className="nex-activity-row-meta">
-                  <span>{surface.destination}</span>
-                  <span>{surface.detail}</span>
-                </div>
-              </li>
-            ))}
-          </ul>
-          <h3 className="nex-activity-section-title">{t("privacy.ledger")}</h3>
-          {totals.length === 0 ? (
-            <p className="nex-activity-muted">{t("privacy.emptyLedger")}</p>
-          ) : (
-            <ul className="nex-activity-list">
-              {totals.map(([kind, count]) => (
-                <li key={kind} className="nex-activity-row">
-                  <div className="nex-activity-row-main">
-                    <span className="nex-activity-row-title">
-                      {ledgerKindLabel(kind, locale)}
-                    </span>
-                    <span className="nex-activity-pill">{count}</span>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-          <div className="nex-activity-row-meta">
-            <span>
-              {t("privacy.total", {
-                n: status.total_events,
-                days: status.retention_days,
-              })}
-            </span>
-          </div>
-          <div className="nex-activity-row-meta">
-            <M3Button variant="quiet" size="sm" onClick={onCopy}>
-              {t("privacy.copy")}
-            </M3Button>
-            <M3Button variant="quiet" size="sm" onClick={onDownload}>
-              {t("privacy.download")}
-            </M3Button>
-            {copied && <span>{t("privacy.copied")}</span>}
-            {copyFailed && <span role="alert">{t("common.copyFailed")}</span>}
-            {!copied && !copyFailed && <span>{t("privacy.copyHint")}</span>}
-          </div>
-          <div className="nex-activity-row-meta">
-            {wipeArmed ? (
-              <M3Button
-                variant="quiet"
-                size="sm"
-                onClick={onWipe}
-                disabled={wipeBusy}
-              >
-                {t("privacy.wipeConfirm")}
-              </M3Button>
-            ) : (
-              <M3Button
-                variant="quiet"
-                size="sm"
-                onClick={onWipe}
-                disabled={wipeBusy}
-              >
-                {t("privacy.wipe")}
-              </M3Button>
-            )}
-            {wipeArmed && (
-              <M3Button
-                variant="quiet"
-                size="sm"
-                onClick={() => setWipeArmed(false)}
-              >
-                {t("common.cancel")}
-              </M3Button>
-            )}
-            {wiped !== null && !wipeArmed && (
-              <span>{t("privacy.wiped", { n: wiped })}</span>
-            )}
-            {wipeError !== null && <span role="alert">{wipeError}</span>}
-            {!wipeArmed && wiped === null && wipeError === null && (
-              <span>{t("privacy.wipeHint")}</span>
-            )}
-          </div>
-        </>
-      )}
-    </section>
   );
 }

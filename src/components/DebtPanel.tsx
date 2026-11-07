@@ -1,14 +1,15 @@
 //! Debt backlog panel: tracked technical debt — hand-added entries plus
 //! idempotent imports of the read-only `repo_audit` scanner findings.
 //!
-//! Presentational over the five `create_debt_item` / `list_debt_items` /
-//! `update_debt_item_status` / `delete_debt_item` / `import_debt_from_audit`
-//! IPC wrappers: the list loads from the persisted rows on mount and after
-//! every mutation (the backend is the single source of truth — there are no
-//! live events on this path). Importing runs the scanners manually and
-//! inserts only fresh findings (re-runs insert nothing and never touch
-//! triaged rows); rows render severity + status + source filters, a per-row
-//! status control, a manual-add form, and delete with confirmation.
+//! Presentational over the `useDebt` data hook (AC-206), which owns the five
+//! `create_debt_item` / `list_debt_items` / `update_debt_item_status` /
+//! `delete_debt_item` / `import_debt_from_audit` wrappers: the list loads
+//! from the persisted rows on mount and after every mutation (the backend is
+//! the single source of truth — there are no live events on this path).
+//! Importing runs the scanners manually and inserts only fresh findings
+//! (re-runs insert nothing and never touch triaged rows); rows render
+//! severity + status + source filters, a per-row status control, a
+//! manual-add form, and delete with confirmation.
 //!
 //! Display rules (secret-free): sources, severities, and statuses render as
 //! fixed-vocabulary catalog labels (unknown tokens echo defensively); rows
@@ -20,17 +21,10 @@
 //! on entry (instant render under reduced motion); all visuals ride the
 //! shared panel/tag primitives — zero new CSS, zero raw values.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 
-import {
-  createDebtItem,
-  deleteDebtItem,
-  importDebtFromAudit,
-  listDebtItems,
-  updateDebtItemStatus,
-  type CommandError,
-  type DebtItem,
-} from "../lib/tauri";
+import type { DebtItem } from "../lib/tauri";
+import { useDebt } from "../lib/useDebt";
 import { useStrings, type Strings } from "../lib/useLocale";
 import M3Button from "./M3Button";
 import M3LoadingIndicator from "./M3LoadingIndicator";
@@ -39,18 +33,6 @@ import FileIssueDialog, { type FileIssueTarget } from "./FileIssueDialog";
 
 export interface DebtPanelProps {
   onClose: () => void;
-}
-
-function toMessage(error: unknown): string {
-  if (
-    typeof error === "object" &&
-    error !== null &&
-    typeof (error as CommandError).message === "string"
-  ) {
-    return (error as CommandError).message;
-  }
-  if (error instanceof Error) return error.message;
-  return String(error);
 }
 
 /** Fixed-vocabulary severity label; unknown values echo defensively. */
@@ -97,12 +79,10 @@ const STATUS_ORDER = ["open", "accepted", "fixed", "wontfix"] as const;
 
 export default function DebtPanel({ onClose }: DebtPanelProps) {
   const { t } = useStrings();
-  const [items, setItems] = useState<DebtItem[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const debt = useDebt();
+  const { items, loading, error, importing, busyId, saving } = debt;
   const [severityFilter, setSeverityFilter] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<string>("all");
-  const [importing, setImporting] = useState(false);
   const [importNotice, setImportNotice] = useState<string | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const [formTitle, setFormTitle] = useState("");
@@ -110,87 +90,31 @@ export default function DebtPanel({ onClose }: DebtPanelProps) {
   const [formLocation, setFormLocation] = useState("");
   const [formNote, setFormNote] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [busyId, setBusyId] = useState<number | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<DebtItem | null>(null);
   const [issueTarget, setIssueTarget] = useState<FileIssueTarget | null>(null);
   const [issueNotice, setIssueNotice] = useState<string | null>(null);
 
-  const reload = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      setItems(await listDebtItems());
-    } catch (err) {
-      setItems([]);
-      setError(toMessage(err));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void reload();
-  }, [reload]);
-
-  // Same in-flight guard shape as the audit panel: rapid Import presses
-  // collapse into the active run instead of stacking backend scans.
   const runImport = useCallback(async () => {
-    if (importing) return;
-    setImporting(true);
-    setError(null);
     setImportNotice(null);
-    try {
-      const result = await importDebtFromAudit();
-      const base =
-        result.inserted > 0
-          ? t("debt.imported", { n: result.inserted })
-          : t("debt.importedNone");
-      setImportNotice(
-        result.skipped > 0
-          ? `${base} ${t("debt.importSkipped", { n: result.skipped })}`
-          : base,
-      );
-      setItems(await listDebtItems());
-    } catch (err) {
-      setError(toMessage(err));
-    } finally {
-      setImporting(false);
-    }
-  }, [importing, t]);
-
-  const changeStatus = useCallback(
-    async (item: DebtItem, status: string) => {
-      if (busyId !== null || item.status === status) return;
-      setBusyId(item.id);
-      setError(null);
-      try {
-        await updateDebtItemStatus(item.id, status);
-        setItems(await listDebtItems());
-      } catch (err) {
-        setError(toMessage(err));
-      } finally {
-        setBusyId(null);
-      }
-    },
-    [busyId],
-  );
+    const result = await debt.importFromAudit();
+    if (result === null) return;
+    const base =
+      result.inserted > 0
+        ? t("debt.imported", { n: result.inserted })
+        : t("debt.importedNone");
+    setImportNotice(
+      result.skipped > 0
+        ? `${base} ${t("debt.importSkipped", { n: result.skipped })}`
+        : base,
+    );
+  }, [debt, t]);
 
   const confirmDelete = useCallback(async () => {
     const target = deleteTarget;
     if (!target || busyId !== null) return;
-    setBusyId(target.id);
     setDeleteTarget(null);
-    setError(null);
-    try {
-      await deleteDebtItem(target.id);
-      setItems(await listDebtItems());
-    } catch (err) {
-      setError(toMessage(err));
-    } finally {
-      setBusyId(null);
-    }
-  }, [deleteTarget, busyId]);
+    await debt.remove(target.id);
+  }, [debt, busyId, deleteTarget]);
 
   const saveManual = useCallback(async () => {
     if (saving) return;
@@ -199,28 +123,23 @@ export default function DebtPanel({ onClose }: DebtPanelProps) {
       setFormError(t("debt.needTitle"));
       return;
     }
-    setSaving(true);
     setFormError(null);
-    setError(null);
-    try {
-      await createDebtItem(
-        title,
-        formSeverity,
-        formLocation.trim() === "" ? null : formLocation.trim(),
-        formNote.trim() === "" ? null : formNote.trim(),
-      );
-      setFormOpen(false);
-      setFormTitle("");
-      setFormSeverity("info");
-      setFormLocation("");
-      setFormNote("");
-      setItems(await listDebtItems());
-    } catch (err) {
-      setFormError(toMessage(err));
-    } finally {
-      setSaving(false);
+    const failure = await debt.create(
+      title,
+      formSeverity,
+      formLocation.trim() === "" ? null : formLocation.trim(),
+      formNote.trim() === "" ? null : formNote.trim(),
+    );
+    if (failure !== null) {
+      setFormError(failure);
+      return;
     }
-  }, [saving, formTitle, formSeverity, formLocation, formNote, t]);
+    setFormOpen(false);
+    setFormTitle("");
+    setFormSeverity("info");
+    setFormLocation("");
+    setFormNote("");
+  }, [debt, saving, formTitle, formSeverity, formLocation, formNote, t]);
 
   const visible = items.filter(
     (item) =>
@@ -337,7 +256,7 @@ export default function DebtPanel({ onClose }: DebtPanelProps) {
                         className="nex-input"
                         value={item.status}
                         disabled={busyId === item.id}
-                        onChange={(event) => void changeStatus(item, event.target.value)}
+                        onChange={(event) => void debt.changeStatus(item, event.target.value)}
                       >
                         {STATUS_ORDER.map((status) => (
                           <option key={status} value={status}>
@@ -470,7 +389,7 @@ export default function DebtPanel({ onClose }: DebtPanelProps) {
         <FileIssueDialog
           target={issueTarget}
           onFiled={(message) => setIssueNotice(message)}
-          onError={(message) => setError(message)}
+          onError={(message) => debt.reportError(message)}
           onClose={() => setIssueTarget(null)}
         />
       )}
