@@ -14,6 +14,8 @@ export interface AgentRun {
   model: string;
   mode: string;
   status: string;
+  /** Explicit startup interruption provenance; raw status remains unchanged. */
+  interrupted: boolean;
   started_at: number;
   finished_at: number | null;
   total_steps: number;

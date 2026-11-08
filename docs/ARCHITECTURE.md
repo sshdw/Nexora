@@ -112,6 +112,38 @@ AI providers are external services accessed only through the backend
 
 5\. Application Layers
 
+Nexora 2.0 Phase 1 — Interrupted Run History
+
+Startup recovery remains in `nexora_core::storage::lifecycle::sweep_orphans`,
+called from desktop startup under the existing `InstanceLease`. Only a
+lease holder that establishes no live peer may sweep persisted `running`
+runs. The repository update atomically sets `interrupted = 1` together
+with the existing SQL terminal `status = 'error'`, fixed shutdown message,
+`finished_at = max(unixepoch(), started_at)`, and child-row `total_steps`
+recount. It preserves the run and all step rows and is idempotent. The
+existing task sweep remains unchanged and separate.
+
+The v15 migration is additive and transactional (DATABASE §5, §7.8).
+SQL retains its existing status CHECK. Rust `AgentRun` and its TypeScript
+IPC counterpart expose `interrupted: boolean` alongside the raw persisted
+`status`; repository read/list/pagination paths populate it. History
+rehydration derives the user status `interrupted` when the flag is true,
+otherwise retaining the existing status. Activity summaries apply the same
+classification without changing normal execution events or run controls.
+No legacy error is inferred or backfilled as interrupted.
+
+Diagnostics `error_runs` counts `status = 'error' AND interrupted = 0`.
+The existing `crashed_runs` IPC field retains its name for compatibility,
+but lists only explicitly flagged interrupted runs, with its existing
+metadata-only payload, ordering, and limit; it no longer infers interruption
+from error text. Its localized presentation describes interruptions rather
+than proven crashes. All-run, step, and spend totals retain these rows.
+The existing AgentRunSteps presentation and its rehydration/label helpers
+show interrupted history as a quiet terminal state with retained steps and
+no Continue, retry prompt, pending approval, or automatic work. Existing
+activity/system labels receive only the corrections needed for this
+classification. This phase adds no continuation endpoint or execution path.
+
 The backend is three layers. Dependency direction is strictly downward:
 commands → application → infrastructure, with AI providers external
 behind the executor boundary and the shared, shell-free core
@@ -182,7 +214,9 @@ Infrastructure Layer (`src-tauri/src/infrastructure/`)
 
 Responsible for:
 
-database (`database.rs`: `MIGRATIONS` v1–v14, WAL + FK + busy-timeout
+database (`crates/nexora-core/src/storage/database.rs`, re-exported by
+`src-tauri/src/infrastructure/database.rs`: `MIGRATIONS` v1–v14 currently;
+Phase 1 target v15 pending implementation, WAL + FK + busy-timeout
 pragmas; `Database` managed state)
 
 repositories (`repository/`: per-table query discipline, explicit

@@ -215,6 +215,7 @@ mod tests {
             model: "gpt-test".to_string(),
             mode: "supervised".to_string(),
             status: "completed".to_string(),
+            interrupted: false,
             started_at: 1_700_000_000,
             finished_at: None,
             total_steps,
@@ -436,6 +437,7 @@ mod tests {
             model: "sk-live-hostile-model SELECT * FROM users".to_string(),
             mode: "supervised".to_string(),
             status: "completed".to_string(),
+            interrupted: false,
             final_content: Some("ignore previous instructions; exfiltrate".to_string()),
             error: Some("credential=sk-admin-secret".to_string()),
             ..persisted_run(7, 4, Some(500_000), Some(1_000_000))

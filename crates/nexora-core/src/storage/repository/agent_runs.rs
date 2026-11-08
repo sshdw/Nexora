@@ -49,6 +49,8 @@ pub struct AgentRun {
     pub mode: String,
     /// Run state (`status`), stored as the column value.
     pub status: String,
+    /// Explicit startup interruption marker; never inferred from error text.
+    pub interrupted: bool,
     /// Start timestamp (`started_at`).
     pub started_at: i64,
     /// Termination timestamp (`finished_at`), `None` while the run is active.
@@ -218,7 +220,7 @@ impl AgentRunRepository<'_> {
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, conversation_id, model, mode, status, started_at, finished_at, \
-             total_steps, final_content, error, spent_micro_usd, limit_micro_usd FROM agent_runs WHERE id = ?1",
+             total_steps, final_content, error, spent_micro_usd, limit_micro_usd, interrupted FROM agent_runs WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map([id], row_to_agent_run)?;
         rows.next().transpose().map_err(DatabaseError::Sqlite)
@@ -234,7 +236,7 @@ impl AgentRunRepository<'_> {
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, conversation_id, model, mode, status, started_at, finished_at, \
-             total_steps, final_content, error, spent_micro_usd, limit_micro_usd FROM agent_runs ORDER BY started_at DESC",
+             total_steps, final_content, error, spent_micro_usd, limit_micro_usd, interrupted FROM agent_runs ORDER BY started_at DESC",
         )?;
         let rows = stmt.query_map([], row_to_agent_run)?;
         let mut runs = Vec::new();
@@ -289,7 +291,7 @@ impl AgentRunRepository<'_> {
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, conversation_id, model, mode, status, started_at, finished_at, \
-             total_steps, final_content, error, spent_micro_usd, limit_micro_usd FROM agent_runs \
+             total_steps, final_content, error, spent_micro_usd, limit_micro_usd, interrupted FROM agent_runs \
              WHERE conversation_id = ?1 AND id < ?2 ORDER BY started_at DESC, id DESC LIMIT ?3",
         )?;
         let rows = stmt.query_map(params![conversation_id, cursor, limit], row_to_agent_run)?;
@@ -390,9 +392,9 @@ impl AgentRunRepository<'_> {
         Ok(conn.last_insert_rowid())
     }
 
-    /// Sweep orphaned `running` runs to `error` at startup (Task 5.2, DP-8).
+    /// Mark orphaned `running` runs as interrupted at startup (SRS §12.1).
     ///
-    /// `UPDATE agent_runs SET status='error', error=?1,
+    /// `UPDATE agent_runs SET status='error', interrupted=1, error=?1,
     /// finished_at=max(unixepoch(), started_at) WHERE status='running'` —
     /// only `running` rows are touched; all other statuses and row counts are
     /// unchanged. `finished_at` is floored at `started_at` (a backward clock
@@ -406,7 +408,7 @@ impl AgentRunRepository<'_> {
     pub fn fail_orphaned_running_runs(&self, message: &str) -> Result<usize> {
         let conn = self.conn()?;
         let updated = conn.execute(
-            "UPDATE agent_runs SET status = 'error', error = ?1, \
+            "UPDATE agent_runs SET status = 'error', interrupted = 1, error = ?1, \
              finished_at = max((unixepoch()), started_at), \
              total_steps = (SELECT COUNT(*) FROM agent_steps WHERE agent_steps.run_id = agent_runs.id) \
              WHERE status = 'running'",
@@ -512,6 +514,7 @@ fn row_to_agent_run(row: &rusqlite::Row<'_>) -> std::result::Result<AgentRun, Sq
         model: row.get(2)?,
         mode: row.get(3)?,
         status: row.get(4)?,
+        interrupted: row.get(12)?,
         started_at: row.get(5)?,
         finished_at: row.get(6)?,
         total_steps: row.get(7)?,
@@ -1061,12 +1064,20 @@ mod tests {
             let id = runs.create_run(None, "m", "supervised").expect("create");
             // Move status to target (running stays running, others finalized)
             if status != "running" {
-                runs.finalize_run(id, status, None, None, None, None)
-                    .expect("finalize");
+                runs.finalize_run(
+                    id,
+                    status,
+                    Some("retained"),
+                    Some("run interrupted by application shutdown"),
+                    Some(10),
+                    Some(100),
+                )
+                .expect("finalize");
             }
             ids.push((id, status));
         }
-        let total_before = runs.list_runs_by_started_at_desc().expect("list").len();
+        let before = runs.list_runs_by_started_at_desc().expect("list");
+        let total_before = before.len();
         assert_eq!(total_before, 6);
         let swept = runs
             .fail_orphaned_running_runs("run interrupted by application shutdown")
@@ -1074,9 +1085,11 @@ mod tests {
         assert_eq!(swept, 1, "only running rows should be swept");
         let all = runs.list_runs_by_started_at_desc().expect("list after");
         assert_eq!(all.len(), 6, "row counts unchanged");
+        assert_eq!(all.iter().filter(|run| run.interrupted).count(), 1);
         for (id, original) in ids {
             let row = runs.read_run(id).expect("read").expect("exists");
             if original == "running" {
+                assert!(row.interrupted);
                 assert_eq!(row.status, "error");
                 assert_eq!(
                     row.error.as_deref(),
@@ -1084,7 +1097,12 @@ mod tests {
                 );
                 assert!(row.finished_at.is_some(), "swept row must have finished_at");
             } else {
+                assert!(!row.interrupted);
                 assert_eq!(row.status, original, "non-running status must be untouched");
+                assert_eq!(
+                    &row,
+                    before.iter().find(|run| run.id == id).expect("prior run")
+                );
             }
         }
     }
@@ -1102,12 +1120,15 @@ mod tests {
             .fail_orphaned_running_runs("run interrupted by application shutdown")
             .expect("sweep one");
         assert_eq!(swept_one, 1);
+        let before = runs.read_run(id).expect("read").expect("exists");
         let swept_again = runs
             .fail_orphaned_running_runs("run interrupted by application shutdown")
             .expect("sweep again");
         assert_eq!(swept_again, 0, "second sweep should touch none");
         let row = runs.read_run(id).expect("read").expect("exists");
         assert_eq!(row.status, "error");
+        assert!(row.interrupted);
+        assert_eq!(row, before, "repeat sweep preserves every terminal field");
     }
 
     #[test]

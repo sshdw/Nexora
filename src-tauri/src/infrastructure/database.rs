@@ -133,7 +133,7 @@ mod tests {
 
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
         );
     }
 
@@ -143,7 +143,7 @@ mod tests {
 
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
         );
 
         let applied_at: i64 = conn
@@ -158,7 +158,7 @@ mod tests {
         let version_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .expect("count schema_version rows");
-        assert_eq!(version_count, 14, "one row per applied migration");
+        assert_eq!(version_count, 15, "one row per applied migration");
     }
 
     #[test]
@@ -183,14 +183,14 @@ mod tests {
         let mut conn = in_memory_migrated();
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
         );
 
         migrate(&mut conn).expect("a second migration run must succeed");
 
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
         );
         // The no-op run created or dropped nothing.
         assert!(schema_object_exists(&conn, "conversations", "table"));
@@ -383,7 +383,7 @@ mod tests {
         );
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
         );
     }
 
@@ -996,7 +996,7 @@ mod tests {
         // Schema version covers every known migration (v5 plus later ones)
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
         );
         // Row preserved, new columns NULL for pre-v5 rows
         let (status, spent, limit): (String, Option<i64>, Option<i64>) = conn
@@ -1089,7 +1089,7 @@ mod tests {
         migrate(&mut conn).expect("migrate to v6");
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
         );
         // Seeded row survives with a NULL workspace root.
         let root: Option<String> = conn
@@ -1167,7 +1167,7 @@ mod tests {
         migrate(&mut conn).expect("migrate to v7");
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
         );
         // Old rows intact with NULL provenance.
         let (kind, rule_id, group_key, decided_by): (
@@ -1396,7 +1396,7 @@ mod tests {
         let conn = db.lock().expect("lock connection");
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
         );
         let fk_on: i64 = conn
             .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
@@ -1530,6 +1530,109 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
+    fn v15_preserves_populated_v14_history_and_rolls_back_on_failure() {
+        fn rows(conn: &Connection, sql: &str) -> Vec<Vec<rusqlite::types::Value>> {
+            let mut stmt = conn.prepare(sql).expect("prepare snapshot");
+            let columns = stmt.column_count();
+            stmt.query_map([], |row| (0..columns).map(|i| row.get(i)).collect())
+                .expect("snapshot rows")
+                .collect::<Result<_, _>>()
+                .expect("snapshot values")
+        }
+        let mut conn = v13_database();
+        apply_migration(&mut conn, 14, MIGRATIONS[13].1).expect("v14 fixture");
+        conn.execute("INSERT INTO conversations (title) VALUES ('history')", [])
+            .expect("conversation");
+        for (index, status) in [
+            "running",
+            "completed",
+            "cancelled",
+            "budget_exhausted",
+            "spend_limit_exceeded",
+            "error",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let id = i64::try_from(index + 1).expect("small id");
+            conn.execute(
+                "INSERT INTO agent_runs (id, conversation_id, model, mode, status, started_at, finished_at, total_steps, final_content, error, spent_micro_usd, limit_micro_usd) \
+                 VALUES (?1, 1, 'model', 'supervised', ?2, 100, ?3, 2, 'retained output', ?4, 150, 900)",
+                params![id, status, if *status == "running" { None } else { Some(101) }, nexora_core::storage::lifecycle::ORPHAN_RUN_MESSAGE],
+            ).expect("run history");
+            for seq in 1..=2 {
+                conn.execute("INSERT INTO agent_steps (run_id, seq, kind, observation, input_tokens, output_tokens) VALUES (?1, ?2, 'model_turn', 'retained step', 12, 3)", params![id, seq]).expect("step history");
+            }
+            conn.execute("INSERT INTO agent_tasks (title, conversation_id, run_id) VALUES ('linked task', 1, ?1)", [id]).expect("task relation");
+        }
+        let old_runs = "SELECT id, conversation_id, model, mode, status, started_at, finished_at, total_steps, final_content, error, spent_micro_usd, limit_micro_usd FROM agent_runs ORDER BY id";
+        let runs_before = rows(&conn, old_runs);
+        let steps_before = rows(&conn, "SELECT * FROM agent_steps ORDER BY id");
+        let tasks_before = rows(&conn, "SELECT * FROM agent_tasks ORDER BY id");
+        let failing = format!(
+            "{}\nINSERT INTO missing_table VALUES (1);",
+            MIGRATIONS[14].1
+        );
+        assert!(apply_migration(&mut conn, 15, &failing).is_err());
+        assert_eq!(schema_version_rows(&conn), (1..=14).collect::<Vec<_>>());
+        assert!(
+            conn.prepare("SELECT interrupted FROM agent_runs").is_err(),
+            "ALTER rolls back with version bookkeeping"
+        );
+        assert_eq!(rows(&conn, old_runs), runs_before);
+        migrate(&mut conn).expect("v15 production migration");
+        assert_eq!(schema_version_rows(&conn), (1..=15).collect::<Vec<_>>());
+        assert_eq!(rows(&conn, old_runs), runs_before);
+        assert_eq!(
+            rows(&conn, "SELECT * FROM agent_steps ORDER BY id"),
+            steps_before
+        );
+        assert_eq!(
+            rows(&conn, "SELECT * FROM agent_tasks ORDER BY id"),
+            tasks_before
+        );
+        assert_eq!(
+            rows(&conn, "PRAGMA foreign_key_check"),
+            Vec::<Vec<rusqlite::types::Value>>::new()
+        );
+        let db = Database::new(conn);
+        let repository = AgentRunRepository::new(&db);
+        assert!(repository
+            .list_runs_by_started_at_desc()
+            .expect("history")
+            .iter()
+            .all(|run| !run.interrupted));
+        assert!(repository
+            .list_runs_by_conversation_paged(1, Some(2), None)
+            .expect("paged")
+            .iter()
+            .all(|run| !run.interrupted));
+        let fresh = repository
+            .create_run(Some(1), "new", "supervised")
+            .expect("new run");
+        assert!(
+            !repository
+                .read_run(fresh)
+                .expect("read")
+                .expect("run")
+                .interrupted
+        );
+        let conn = db.lock().expect("connection");
+        for invalid in [-1, 2] {
+            assert!(conn
+                .execute(
+                    "UPDATE agent_runs SET interrupted = ?1 WHERE id = 1",
+                    [invalid]
+                )
+                .is_err());
+        }
+        assert!(conn
+            .execute("UPDATE agent_runs SET interrupted = NULL WHERE id = 1", [])
+            .is_err());
+    }
+
+    #[test]
     fn v14_adds_step_token_columns_preserving_rows() {
         // NEX-AGENT-005 acceptance: a usage-less step seeded on v13 keeps
         // its values through the v14 ALTERs and reads back NULL usage
@@ -1556,7 +1659,7 @@ mod tests {
         let conn = db.lock().expect("lock connection");
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
         );
         // Pre-existing row survives with NULL usage (honest unknown).
         let (input, output): (Option<i64>, Option<i64>) = conn

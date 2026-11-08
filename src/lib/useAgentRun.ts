@@ -188,7 +188,7 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
       const views: AgentRunView[] = fetched.map((run) => ({
         run_id: run.id,
         conversation_id: run.conversation_id ?? requestedId,
-        status: run.status,
+        status: run.interrupted ? "interrupted" : run.status,
         model: run.model,
         started_at: run.started_at,
         finished_at: run.finished_at,

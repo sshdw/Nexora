@@ -1,5 +1,15 @@
 This file is a **historical record**. MVP phases 0–9 completed in 0.1.0. Agent-era phases 4.1–6.2 were planned and tracked separately (see `docs/AGENT-4.3-DESIGN.md`, `docs/AGENT-5.1-DESIGN.md`, and CHANGELOG).
 
+Nexora 2.0 Phase 1 — Interrupted Run History (supplement; pending implementation)
+
+Goal: preserve interrupted agent-run history as a distinct, non-executing terminal outcome (SRS §12.1).
+
+Scope: transactional additive v15 interruption marker; lease-protected orphan-run marking; Rust/TypeScript history DTO and rehydration mapping; existing AgentRunSteps localized quiet presentation with retained steps; correction of existing activity/diagnostic classification, counts, and labels. Current implemented schema remains v14 until migration lands. Task recovery remains legacy; continuation, automatic work, tool policy, permissions, subagents, and normal run execution are excluded.
+
+Dependencies: separate owner approval of the exact SRS, ARCHITECTURE, DATABASE, and ROADMAP amendments before source implementation.
+
+Completion criteria: populated v14 → v15 preservation across every existing run status and linked steps; default `0` and 0/1 constraint; migration rollback and newer-schema refusal; orphan-only idempotent marking with live-instance protection; restart history/step rehydration; distinct interruption/error counts and diagnostics; regression coverage that existing error filters exclude flagged interruptions and retain unflagged actual/legacy errors; localized retained-history presentation with no failed tone, retry prompt, Continue, or automatic execution.
+
 Purpose
 
 
