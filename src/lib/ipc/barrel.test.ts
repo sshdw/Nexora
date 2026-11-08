@@ -95,6 +95,9 @@ const SNAPSHOT: readonly string[] = [
   "listWorkspaceRecent",
   "moveTask",
   "nexoraInit",
+  // Post-split addition (02-SECURITY §4.2.3/§6.1): the external-open sink
+  // wrapper (open_external_url, ipc/system.ts) joins the barrel surface.
+  "openExternalUrl",
   "pauseAgentRun",
   "privacyExport",
   "privacyStatus",

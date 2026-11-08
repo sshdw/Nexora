@@ -238,3 +238,17 @@ export async function privacyWipe(): Promise<WipeResult> {
   const confirmationId = await requestConfirmation("privacy", OP_PRIVACY_WIPE);
   return invoke<WipeResult>("privacy_wipe", { confirmationId });
 }
+
+// ---- External link open (02-SECURITY-FRONTEND-IPC.md §4.2.3 / §6.1) -------
+// One command behind the message-body link affordance (MessageMarkdown.tsx):
+// `open_external_url` opens a user-clicked absolute http(s) URL in the OS
+// default browser. The backend is the sink — the command re-validates
+// scheme/absoluteness/userinfo/length (WHATWG parser) and rejects everything
+// else with a secret-free CommandError — so the renderer never navigates by
+// itself and a model-authored URL never renders as an anchor. The arg stays
+// `url` on both sides of the casing rule (single word, camelCase == snake).
+
+/** Open one user-clicked external http(s) URL via `open_external_url`. */
+export function openExternalUrl(url: string): Promise<void> {
+  return invoke<void>("open_external_url", { url });
+}

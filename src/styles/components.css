@@ -17,6 +17,12 @@
    for meaningful containers; the full radius survives only where
    the pill shape itself carries status.
 
+   Spacing: "6px micro-step ratified by owner 2026-11-07 (D-08)" —
+   the 6px gaps in this sheet (e.g. .nex-tag) are the sanctioned
+   micro-step, not off-scale drift; off-grid paddings were normalized
+   to the 6px grid in the same pass, save the optical exception
+   documented at .nex-tag.
+
    Labeling discipline (material-3-expressive skill):
    OFFICIAL          = value traceable to Google Material docs/source
    RECOMMENDATION    = chosen because Material does not prescribe it
@@ -776,7 +782,11 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 3px 10px;
+  /* D-08 (2026-11-07): inline 10px → 12px (6px grid). The 3px block
+     stays as the ratified optical exception — the tag is consumed by
+     70+ sites, and doubling it to 6px would double every metadata
+     pill's height. */
+  padding: 3px 12px;
   border-radius: var(--shape-full);
   background: var(--color-surface-container-high);
   border: 1px solid var(--color-outline-variant);

@@ -13,15 +13,22 @@
 //!      (node_modules/react-markdown/lib/index.js:360-369), which is exactly
 //!      §4.2 req 2: a model must not be able to author markup, and
 //!      HTML-looking input renders visibly as text.
-//!   2. Links are COPY-ONLY for 2.0.0 (owner default; §4.2 req 3): the `a`
-//!      override never renders an `<a>` element, so a model-authored URL can
-//!      never reach a navigation sink — it renders as styled text next to the
-//!      destination shown verbatim, plus a copy affordance that reuses the
-//!      app's clipboard pattern (`navigator.clipboard.writeText` + copied
-//!      state + `common.copyFailed` fallback, as in AuditPanel.tsx:299-310).
-//!      `urlTransform` passes `href` through UNTOUCHED only because the only
-//!      consumer is `CopyOnlyLink`, which receives it as a prop and renders
-//!      it as text; it is never placed on a DOM attribute (pinned in tests).
+//!   2. Links never render as anchors (§4.2 req 3, as amended by the owner
+//!      decision implementing 02-SECURITY-FRONTEND-IPC.md §4.2.3 / §6.1): the
+//!      `a` override never emits an `<a>` element, so a model-authored URL
+//!      can never reach a navigation sink by rendering — it shows as styled
+//!      text next to the destination verbatim, with TWO explicit affordances
+//!      reusing the app's clipboard pattern (`navigator.clipboard.writeText`
+//!      + copied state + `common.copyFailed` fallback, as in
+//!      AuditPanel.tsx:299-310): copy, and an Open button whose click is the
+//!      ONLY path a model URL can take toward the OS browser — the backend
+//!      command `open_external_url` re-validates scheme/absoluteness/
+//!      userinfo/length at the sink and rejects everything else, so a
+//!      rejection surfaces as the secret-free CommandError message and no
+//!      navigation is attempted. `urlTransform` passes `href` through
+//!      UNTOUCHED only because the only consumer is the link override, which
+//!      receives it as a prop and renders it as text; it is never placed on a
+//!      DOM attribute (pinned in tests).
 //!   3. Images are app-source-only (§4.2 req 5): `urlTransform` returns null
 //!      for every `src` that is not an app-generated `blob:`/`asset:` URL,
 //!      and the `img` override re-checks and otherwise renders the alt text
@@ -55,6 +62,7 @@ import type { Components, ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { useStrings } from "../lib/useLocale";
+import { openExternalUrl } from "../lib/tauri";
 
 /** Render cap for one fenced block — the backend's persisted-text bound
  *  (`application/agent/persistence.rs:69`); the UI never renders materially
@@ -82,28 +90,39 @@ function textOf(node: ReactNode): string {
   return "";
 }
 
-interface CopyOnlyLinkProps
+interface MdLinkProps
   extends AnchorHTMLAttributes<HTMLAnchorElement>, ExtraProps {
   /** Catalog label for the copy affordance. */
   copyLabel: string;
   /** Catalog label shown after a successful copy. */
   copiedLabel: string;
+  /** Catalog label for the explicit open affordance. */
+  openLabel: string;
+  /** Catalog fallback shown when the open rejection is not a backend
+   *  CommandError (the CommandError message itself renders as-is). */
+  openFailedLabel: string;
 }
 
-/** §4.2 req 3: a model-authored link NEVER becomes an anchor. The
- *  destination renders as visible muted text (the app-wide precedent for
- *  URLs — IssuesPanel.tsx:317-319 renders `html_url` as text) and copies
- *  verbatim on demand. If the label already is the destination (GFM
- *  autolink, bare URL) it is shown once. */
-function CopyOnlyLink({
+/** §4.2 req 3 (as amended, §4.2.3/§6.1): a model-authored link NEVER becomes
+ *  an anchor. The destination renders as visible muted text (the app-wide
+ *  precedent for URLs — IssuesPanel.tsx:317-319 renders `html_url` as text)
+ *  with two explicit affordances: copy verbatim on demand, and Open — whose
+ *  click is the only route a model URL may take toward the browser, through
+ *  the backend sink `open_external_url` (its own §4.2.3 validation, secret-free
+ *  CommandError on rejection, no navigation attempt on failure). If the label
+ *  already is the destination (GFM autolink, bare URL) it is shown once. */
+function MdLink({
   children,
   href,
   copyLabel,
   copiedLabel,
-}: CopyOnlyLinkProps) {
+  openLabel,
+  openFailedLabel,
+}: MdLinkProps) {
   const { t } = useStrings();
   const [copied, setCopied] = useState(false);
   const [failed, setFailed] = useState(false);
+  const [openError, setOpenError] = useState<string | null>(null);
   const target = typeof href === "string" && href.length > 0 ? href : null;
   const label = textOf(children);
   const visibleLabel = label.length > 0 ? label : (target ?? "");
@@ -116,6 +135,26 @@ function CopyOnlyLink({
     } catch {
       setFailed(true);
     }
+  };
+
+  const open = () => {
+    if (target === null) return;
+    setOpenError(null);
+    openExternalUrl(target).catch((err: unknown) => {
+      // The existing error path: the backend's secret-free CommandError
+      // message renders as-is (fixed-vocabulary English by security design,
+      // strings.ts header); any other rejection shape falls back to the
+      // catalog string. Either way nothing navigates.
+      const message =
+        typeof err === "object" && err !== null && "message" in err
+          ? (err as { message?: unknown }).message
+          : null;
+      setOpenError(
+        typeof message === "string" && message.length > 0
+          ? message
+          : openFailedLabel
+      );
+    });
   };
 
   return (
@@ -136,6 +175,17 @@ function CopyOnlyLink({
             {copied ? copiedLabel : copyLabel}
           </button>
         ))}
+      {target !== null && (
+        <button type="button" className="nex-md-copy" onClick={open}>
+          {openLabel}
+        </button>
+      )}
+      {/* Same muted failure-note style as the copy path (.nex-md-copy-failed
+          is the shared affordance-failure tone, conversation.css) — the
+          backend CommandError message renders verbatim. */}
+      {openError !== null && (
+        <span className="nex-md-copy-failed">{openError}</span>
+      )}
     </span>
   );
 }
@@ -189,10 +239,10 @@ function MdFence({ children, truncatedNote }: MdFenceProps) {
 /** URL hook (§4.2 req 5's "imgSrc-style allowlist"): `src` survives only for
  *  app-generated `blob:`/`asset:` values — `data:` included in the rejection
  *  because CSP `img-src` does allow `data:` and this is the only hook that
- *  sees it. `href` passes through raw because CopyOnlyLink renders it as
- *  TEXT only; the moment anything ever wants clickable links again that is a
- *  separate spec (02-SECURITY §4.2 req 3), not a default here. Every other
- *  URL attribute falls back to the library's safe default. */
+ *  sees it. `href` passes through raw because the link override renders it
+ *  as TEXT only — the §4.2.3/§6.1 click-through open is a separate explicit
+ *  affordance routed through the backend sink, never an `href` attribute.
+ *  Every other URL attribute falls back to the library's safe default. */
 function transformUrl(value: string, key: string): string | null {
   if (key === "src") return isAppImageSource(value) ? value : null;
   if (key === "href") return value;
@@ -211,10 +261,12 @@ function MessageMarkdown({ content }: MessageMarkdownProps) {
   const { t, locale } = useStrings();
   const components: Components = {
     a: (props) => (
-      <CopyOnlyLink
+      <MdLink
         {...props}
         copyLabel={t("md.copyLink")}
         copiedLabel={t("md.linkCopied")}
+        openLabel={t("md.openLink")}
+        openFailedLabel={t("md.openFailed")}
       />
     ),
     img: MdImage,

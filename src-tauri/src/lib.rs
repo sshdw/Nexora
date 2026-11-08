@@ -31,6 +31,13 @@ pub fn run() {
         // `window-state:default` capability entry covers the plugin's
         // commands per the AGENTS.md plugin rule.
         .plugin(tauri_plugin_window_state::Builder::default().build())
+        // 02-SECURITY-FRONTEND-IPC.md §4.2.3 / §6.1: the opener plugin is
+        // re-added for exactly one sink — `open_external_url` (commands/
+        // system.rs), invoked from Rust after its own validation. The webview
+        // capability grants only `opener:allow-open-url` with a https-only
+        // URL scope (`capabilities/default.json`); `opener:default` would also
+        // grant open_path / reveal_item_in_dir and http — never used here.
+        .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             commands::conversations::create_conversation,
             commands::conversations::list_conversations,
@@ -147,6 +154,7 @@ pub fn run() {
             commands::system::diagnostics_bundle,
             commands::system::update_check,
             commands::system::snapshot_database,
+            commands::system::open_external_url,
             commands::privacy::privacy_status,
             commands::privacy::privacy_export,
             commands::privacy::privacy_wipe,

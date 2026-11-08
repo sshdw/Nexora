@@ -229,9 +229,12 @@ export const en = {
     "Full-auto: the agent runs to the end without stopping.",
 
   // ---- message markdown (MessageMarkdown.tsx, ADD-01) -------------------------
-  // Copy-only link affordance + fence render cap (02-SECURITY §4.2 req 3/4).
+  // Link affordances (copy + explicit open, 02-SECURITY §4.2 req 3 as
+  // amended by the §4.2.3/§6.1 owner decision) + fence render cap (req 4).
   "md.copyLink": "Copy link",
   "md.linkCopied": "Copied",
+  "md.openLink": "Open",
+  "md.openFailed": "The link could not be opened.",
   "md.codeTruncated": "Code truncated — showing the first {limit} characters.",
 
   // ---- error boundaries (ErrorBoundary.tsx, ADD-05) ---------------------------

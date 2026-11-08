@@ -207,6 +207,8 @@ export const ru: Record<StringKey, string> = {
 
   "md.copyLink": "Скопировать ссылку",
   "md.linkCopied": "Скопировано",
+  "md.openLink": "Открыть",
+  "md.openFailed": "Не удалось открыть ссылку.",
   "md.codeTruncated": "Код обрезан — показаны первые {limit} символов.",
 
   "err.boundaryBody":

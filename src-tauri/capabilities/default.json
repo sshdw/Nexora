@@ -6,6 +6,10 @@
   "permissions": [
     "core:default",
     "dialog:default",
-    "window-state:default"
+    "window-state:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://*" }]
+    }
   ]
 }
