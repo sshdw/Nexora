@@ -17,10 +17,23 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LocaleProvider } from "../lib/useLocale";
 import MessageMarkdown from "./MessageMarkdown";
+
+// The Open affordance is the ONE navigation sink for model-authored URLs
+// (02-SECURITY §4.2.3/§6.1): its click resolves through the backend command
+// `open_external_url`, so the IPC core is mocked at exactly the seam
+// `lib/ipc/barrel.test.ts` mocks — everything above it (the real
+// react-markdown pipeline, the urlTransform hook, the link override) stays
+// completely real. The copy affordance never touches this seam.
+const { invokeMock } = vi.hoisted(() => ({
+  invokeMock: vi.fn<(command: string, args?: unknown) => Promise<unknown>>(() =>
+    Promise.resolve(null)
+  ),
+}));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
 
 function md(content: string) {
   return render(
@@ -50,6 +63,14 @@ afterEach(() => {
   // Drop the stubbed clipboard so a leaking defineProperty cannot grant a
   // clipboard to a file that expects jsdom's absent one.
   delete (window.navigator as { clipboard?: unknown }).clipboard;
+});
+
+beforeEach(() => {
+  // The existing afterEach restoreAllMocks resets the hoisted vi.fn's
+  // implementation; re-arm the resolved default and clear the call log so
+  // every test starts from a clean, working IPC seam.
+  invokeMock.mockReset();
+  invokeMock.mockImplementation(() => Promise.resolve(null));
 });
 
 describe("markdown structure (GFM)", () => {
@@ -183,7 +204,10 @@ describe("raw HTML in model output is text (§4.2 req 2)", () => {
   });
 });
 
-describe("links are copy-only (§4.2 req 3, owner default for 2.0.0)", () => {
+// Describe renamed (one-line reason): the copy-only owner default for 2.0.0
+// was amended by the §4.2.3/§6.1 owner decision — links now carry copy plus
+// an explicit open affordance; the never-an-anchor pin is unchanged.
+describe("links never render as anchors (§4.2 req 3; open per §4.2.3/§6.1)", () => {
   it("renders [x](javascript:alert(1)) as text + copy affordance, never an anchor with that href", async () => {
     const writeText = stubClipboard();
     const { container } = md("[x](javascript:alert(1))");
@@ -253,6 +277,65 @@ describe("links are copy-only (§4.2 req 3, owner default for 2.0.0)", () => {
   });
 });
 
+describe("external open affordance (§4.2.3/§6.1 — the one navigation sink)", () => {
+  it("renders the Open affordance as a BUTTON; the body carries ZERO model-authored hrefs", () => {
+    const { container } = md(
+      "read the [docs](https://example.com/a?b=1) first"
+    );
+
+    // The owner decision's sink assertion, over the whole rendered body:
+    // no anchor element, no href attribute — the URL exists only as text.
+    expect(container.querySelector("a[href]")).toBeNull();
+    expect(container.querySelector("a")).toBeNull();
+
+    const open = screen.getByRole("button", { name: "Open" });
+    expect(open.tagName).toBe("BUTTON");
+  });
+
+  it("click invokes open_external_url with the exact URL as the camelCase `url` arg", () => {
+    md("[x](https://example.com/a?b=1)");
+
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+
+    // Casing rule (AGENTS.md): invoke args are camelCase — `url` is a single
+    // word, so it maps to the Rust param verbatim.
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenCalledWith("open_external_url", {
+      url: "https://example.com/a?b=1",
+    });
+  });
+
+  it("a backend CommandError rejection surfaces its message inline — nothing navigates", async () => {
+    invokeMock.mockImplementation(() =>
+      Promise.reject({
+        kind: "InvalidInput",
+        message: "only http and https links can be opened",
+      })
+    );
+    md("[x](https://example.com)");
+
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+
+    expect(
+      await screen.findByText("only http and https links can be opened")
+    ).toBeInTheDocument();
+  });
+
+  it("a rejection that is not a CommandError falls back to the catalog string", async () => {
+    // A STRING rejection: it carries no `.message` field, so the renderer
+    // cannot surface it as a CommandError and must fall back. (An `Error`
+    // instance would not exercise the fallback — it has a message.)
+    invokeMock.mockImplementation(() => Promise.reject("ipc failure"));
+    md("[x](https://example.com)");
+
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+
+    expect(
+      await screen.findByText("The link could not be opened.")
+    ).toBeInTheDocument();
+  });
+});
+
 describe("images are app-source-only (§4.2 req 5)", () => {
   it("strips a remote image and renders its alt text instead", () => {
     const { container } = md("![screenshot](https://cdn.example.com/pic.png)");
@@ -292,11 +375,12 @@ describe("images are app-source-only (§4.2 req 5)", () => {
 });
 
 describe("locale (EN+RU catalog)", () => {
-  it("renders the copy affordance in the active locale", () => {
+  it("renders the copy and open affordances in the active locale", () => {
     window.localStorage.setItem("nexora.locale", "ru");
     md("[x](https://example.com)");
     expect(
       screen.getByRole("button", { name: "Скопировать ссылку" })
     ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Открыть" })).toBeInTheDocument();
   });
 });

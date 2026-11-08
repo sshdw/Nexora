@@ -32,6 +32,17 @@ tauri-plugin-dialog = "2.8.3"
 # exit — the fixed 1200x800 in tauri.conf.json stays only as the FIRST-run
 # default. Pinned to the same tauri 2.x line as tauri-plugin-dialog.
 tauri-plugin-window-state = "2.5.0"
+# 02-SECURITY-FRONTEND-IPC.md §4.2.3 / §6.1: the opener plugin is re-added
+# for exactly one sink — `open_external_url` (commands/system.rs), which
+# opens a user-clicked, backend-validated absolute http(s) URL. The Rust-side
+# call is the only invocation path; the webview capability grants ONLY
+# `opener:allow-open-url` with a https-only URL scope (never `opener:default`,
+# which would also grant open_path / reveal_item_in_dir and http). Pinned to
+# the same tauri 2.x line as the other plugins.
+tauri-plugin-opener = "2.5.4"
+# WHATWG URL parser for the command-side validator (§4.2.3): scheme,
+# absoluteness and userinfo checks come from the spec parser, not regex.
+url = "2"
 git2 = { version = "0.21", default-features = false, features = ["vendored-libgit2"] }
 
 [lints.rust]

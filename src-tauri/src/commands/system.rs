@@ -15,6 +15,14 @@
 //! the user's explicit button press (never silently, never on a timer).
 //! There is no download and no install anywhere on this path — the update
 //! panel renders the release URL as text for the user to open themselves.
+//!
+//! The ONE deliberate side effect beyond the snapshot is
+//! [`open_external_url`]: the OS default browser opening a user-clicked,
+//! backend-validated http(s) URL (02-SECURITY-FRONTEND-IPC.md §4.2.3 / §6.1).
+//! The URL is validated HERE, at the sink — scheme, absoluteness, userinfo,
+//! length — and only the canonical parsed form reaches the opener plugin.
+//! Model-authored URLs never render as anchors in the webview; this command
+//! is the single navigation sink, reached only on an explicit click.
 
 // Tauri command handlers must take ownership of their deserialized
 // arguments: serde cannot borrow into the wire payload, so passing by
@@ -24,6 +32,10 @@
 use std::path::PathBuf;
 
 use tauri::{AppHandle, Manager, State};
+// The one navigation sink's opener API (02-SECURITY §4.2.3/§6.1): imported
+// module-side so the command body stays statements-only (clippy
+// items_after_statements).
+use tauri_plugin_opener::OpenerExt;
 
 use crate::application::github::UpdateCheck;
 use crate::application::system::{DiagnosticsBundle, SnapshotInfo};
@@ -147,6 +159,93 @@ pub(crate) async fn snapshot_database(app: AppHandle) -> Result<SnapshotInfo, Co
     }
 }
 
+/// Maximum accepted URL length for an external open (02-SECURITY §4.2.3):
+/// a model-authored string past this bound is hostile by construction and
+/// is rejected before parsing.
+const MAX_EXTERNAL_URL_LEN: usize = 2048;
+
+/// Validate a user-clicked link destination for the external-open sink
+/// (02-SECURITY-FRONTEND-IPC.md §4.2.3 + §6.1).
+///
+/// Only an absolute `http:`/`https:` URL survives: everything else —
+/// `javascript:`, `data:`, `vbscript:`, `file:`, `ftp:` and any other
+/// scheme, relative or scheme-less values, URLs with embedded userinfo,
+/// and over-length strings — is rejected with a secret-free
+/// [`CommandError`]. The check runs on the WHATWG parser (the `url` crate),
+/// not on string matching: a scheme allow-list cannot be fooled by
+/// whitespace, escapes or casing tricks, and the returned value is the
+/// parser's canonical form — the exact string handed to the OS, with
+/// embedded control characters already removed.
+pub(crate) fn validate_external_url(url: &str) -> Result<String, CommandError> {
+    if url.len() > MAX_EXTERNAL_URL_LEN {
+        return Err(CommandError::new(
+            ErrorKind::InvalidInput,
+            "the link destination is too long to open",
+        ));
+    }
+    let parsed = url::Url::parse(url).map_err(|_| {
+        CommandError::new(
+            ErrorKind::InvalidInput,
+            "the link destination is not an absolute http(s) URL",
+        )
+    })?;
+    match parsed.scheme() {
+        "http" | "https" => {}
+        // `javascript:`, `data:`, `vbscript:`, `file:`, `ftp:` and every
+        // other scheme land here — one allow-list, no deny-list to maintain.
+        _ => {
+            return Err(CommandError::new(
+                ErrorKind::InvalidInput,
+                "only http and https links can be opened",
+            ))
+        }
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        // Worded to stay inside the module's own secret-free lexical
+        // hygiene: no "credential"/"secret"/"api_key" sentinels.
+        return Err(CommandError::new(
+            ErrorKind::InvalidInput,
+            "a link with embedded login details cannot be opened",
+        ));
+    }
+    // The canonical form is what the OS actually receives; keep it under the
+    // same bound the raw input was held to (percent-encoding can only grow a
+    // string, so a hostile padding payload cannot slip through twice).
+    let canonical = parsed.to_string();
+    if canonical.len() > MAX_EXTERNAL_URL_LEN {
+        return Err(CommandError::new(
+            ErrorKind::InvalidInput,
+            "the link destination is too long to open",
+        ));
+    }
+    Ok(canonical)
+}
+
+/// Open one user-clicked absolute http(s) URL in the OS default browser
+/// (02-SECURITY-FRONTEND-IPC.md §4.2.3 / §6.1).
+///
+/// This is the app's single navigation sink for model-authored URLs. The
+/// renderer never navigates by itself and never renders those URLs as
+/// anchors (`MessageMarkdown.tsx` — copy + explicit open affordances only),
+/// so a URL reaches this command only behind a real user click, and only
+/// the validated canonical form is opened. The opener plugin is invoked
+/// from Rust; the webview capability (`capabilities/default.json`) grants
+/// only `opener:allow-open-url` with a https-only URL scope, so the
+/// plugin's own command surface stays closed to every other scheme.
+#[tauri::command]
+pub(crate) fn open_external_url(app: AppHandle, url: String) -> Result<(), CommandError> {
+    let canonical = validate_external_url(&url)?;
+    app.opener()
+        .open_url(canonical, None::<&str>)
+        .map_err(|err| {
+            log::error!("open_external_url: the opener refused the request: {err}");
+            CommandError::new(
+                ErrorKind::Request,
+                "the link could not be opened in the default browser",
+            )
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,5 +366,144 @@ mod tests {
                 "commands/system.rs must not write processes or mutate over HTTP, found {needle:?}"
             );
         }
+    }
+
+    // ---- open_external_url: the §4.2.3 validator table (§4.2.8 fixtures) --
+    // One row per hostile class the owner decision names: every rejected
+    // fixture must come back as a classified, secret-free InvalidInput, and
+    // every accepted fixture must survive as the parser's canonical form.
+
+    fn assert_rejected(url: &str) {
+        let err = validate_external_url(url).expect_err(url);
+        assert_eq!(err.kind, ErrorKind::InvalidInput, "fixture {url:?}");
+        assert!(
+            safe_message(&err),
+            "rejection message must stay secret-free for {url:?}"
+        );
+    }
+
+    #[test]
+    fn validator_rejects_every_non_http_scheme() {
+        for url in [
+            "javascript:alert(1)",
+            "data:text/html;base64,PHNjcmlwdD4=",
+            "vbscript:msgbox(1)",
+            "file:///C:/Windows/System32",
+            "ftp://example.com/pub",
+            // Any other scheme: one allow-list, not a deny-list.
+            "chrome://settings",
+        ] {
+            assert_rejected(url);
+        }
+    }
+
+    #[test]
+    fn validator_rejects_scheme_tricks_through_the_parser_not_string_match() {
+        // WHATWG parsing strips tab/newline and leading/trailing spaces
+        // BEFORE the scheme is read, so these all parse — as javascript:.
+        // A regex deny-list would miss them; the scheme allow-list cannot.
+        for url in [
+            "java\nscript:alert(1)",
+            "java\tscript:alert(1)",
+            " javascript:alert(1)",
+            "JAVASCRIPT:alert(1)",
+        ] {
+            assert_rejected(url);
+        }
+    }
+
+    #[test]
+    fn validator_rejects_relative_and_schemeless_values() {
+        for url in [
+            "",
+            "example.com/page",
+            "./relative/page",
+            // Protocol-relative: NOT an absolute URL (RelativeUrlWithoutBase).
+            "//example.com/page",
+            "/absolute/path",
+            // Empty host after the scheme fails to parse.
+            "https://",
+        ] {
+            assert_rejected(url);
+        }
+    }
+
+    #[test]
+    fn validator_rejects_userinfo() {
+        for url in [
+            "https://user:pass@example.com/repo",
+            "https://user@example.com",
+            "http://token@example.com/x",
+        ] {
+            assert_rejected(url);
+        }
+    }
+
+    #[test]
+    fn validator_rejects_oversize_urls() {
+        let oversize = format!("https://example.com/?q={}", "a".repeat(2049));
+        assert_rejected(&oversize);
+        // Exactly at the bound is fine — the limit is inclusive.
+        let at_bound = format!("https://example.com/?q={}", "a".repeat(2025));
+        assert!(validate_external_url(&at_bound).is_ok());
+    }
+
+    #[test]
+    fn validator_accepts_absolute_http_and_https_canonically() {
+        let canonical = validate_external_url("https://example.com").expect("https accepts");
+        assert_eq!(canonical, "https://example.com/");
+
+        let canonical = validate_external_url("http://example.com/a?b=1#c").expect("http accepts");
+        assert_eq!(canonical, "http://example.com/a?b=1#c");
+
+        // Scheme and host are case-insensitive per WHATWG; the canonical
+        // form is what the OS actually receives.
+        let canonical = validate_external_url("HTTPS://EXAMPLE.COM").expect("case accepts");
+        assert_eq!(canonical, "https://example.com/");
+
+        // Embedded tab/newline are stripped by the parser before the scheme
+        // check, so this survives as the clean https URL it canonically is.
+        let canonical = validate_external_url("ht\ntps://example.com").expect("stripped");
+        assert_eq!(canonical, "https://example.com/");
+
+        // WHATWG quirk pinned on purpose: the extra slashes collapse into the
+        // authority, so `http:///a` is an absolute http URL with host "a" —
+        // inside the §4.2.3 allow-list, not a rejection.
+        let canonical = validate_external_url("http:///a").expect("collapsed slashes");
+        assert_eq!(canonical, "http://a/");
+    }
+
+    /// Wiring pin: the command exists, validates BEFORE opening, and the
+    /// webview capability carries only the narrow https-scoped permission —
+    /// never `opener:default` (which would grant `open_path` and http).
+    /// Read from the real capability file so a scope edit cannot silently
+    /// widen the surface.
+    #[test]
+    fn open_external_url_wiring_is_narrow() {
+        assert!(
+            SOURCE.contains("fn open_external_url"),
+            "the open_external_url command must exist"
+        );
+        assert!(
+            SOURCE.contains("use tauri_plugin_opener::OpenerExt"),
+            "the open must go through the opener plugin's Rust API"
+        );
+        let capability = include_str!("../../capabilities/default.json");
+        assert!(
+            capability.contains("\"opener:allow-open-url\""),
+            "the capability must grant allow-open-url"
+        );
+        assert!(
+            capability.contains("\"https://*\""),
+            "the URL scope must be restricted to https"
+        );
+        assert!(
+            !capability.contains("opener:default"),
+            "opener:default is too broad (grants open_path + http) — §6.1"
+        );
+        assert!(
+            !capability.contains("allow-open-path"),
+            "open_path must never be granted"
+        );
     }
 }
