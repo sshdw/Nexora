@@ -1370,6 +1370,18 @@ mod core_storage_tests {
 
     static COUNTER: AtomicU64 = AtomicU64::new(0);
 
+    #[test]
+    fn linked_sqlite_includes_cve_2026_119375_fix() {
+        // RUSTSEC-2026-0459 requires SQLite >= 3.54.0 for the bundled build:
+        // https://rustsec.org/advisories/RUSTSEC-2026-0459.html
+        // Check the linked native runtime, rather than only Cargo's resolution.
+        assert!(
+            rusqlite::version_number() >= 3_054_000,
+            "linked SQLite {} predates the CVE-2026-119375 fix (3.54.0)",
+            rusqlite::version()
+        );
+    }
+
     struct TempDb {
         dir: PathBuf,
         path: PathBuf,
