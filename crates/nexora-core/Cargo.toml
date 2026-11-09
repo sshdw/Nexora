@@ -20,7 +20,7 @@ serde_json = "1"
 # Storage foundation (issue #161): the SAME SQLite build the desktop links
 # (`src-tauri/Cargo.toml`). The database bootstrap and migrations are shared,
 # not reimplemented per shell.
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 # Migration/leadership diagnostics. Not a shell dependency: `log` is a facade
 # with no runtime.
 log = "0.4"
