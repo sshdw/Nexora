@@ -24,3 +24,15 @@ Native startup observation: original orphan 91001 becomes raw error/interrupted=
 Independent code review: MERGE. Final local gate: root Rust 131 passed; desktop Rust 1251 passed/1 existing env-gated real-provider smoke ignored; TypeScript PASS; Vitest 1051 passed; fmt/clippy PASS for both workspaces. Real Tauri debug build with embedded production frontend PASS. One Windows linker library-creation message is a build warning; clippy with -D warnings passed.
 
 This is P01 history/status evidence, not UI redesign, provider execution, manual continuation, or three-platform release validation. Other seeded budget states intentionally retain their existing Continue affordance; scope no-Continue assertions to marked interrupted runs.
+
+## Patched SQLite verification
+
+After prerequisite PR #321 merged, P01 was rebased without conflicts. Frame 05 was captured from source commit `84535ed` using the same isolated child APPDATA and the embedded production frontend. Executable SHA-256: `bf0dd2918af88109fbc12ba6918156954aeb3142d3a3c8ba650cb7b808552747`.
+
+| Frame | MD5 | Colors | What I saw |
+|---|---|---:|---|
+| 05-patched-sqlite-restart-ru.png | `33e526c7e1fb91f5f8f68b9cde183a1a` | 22356 | Russian interrupted run 91007 retains its expanded synthetic tool result; Activity says no work is running; disabled Send and no Continue/retry control are visible. |
+
+Read-only native database comparison before/after this startup found exactly the same 7 runs, 14 steps, status markers, terminal timestamps, spend and step contents; foreign-key check stayed clean. No input was submitted to the agent. The frame does not establish the SQLite engine version; the dependency lockfiles and linked-runtime regression guard cover that separately.
+
+Final gate after rebase: root Rust 132 passed; desktop Rust 1251 passed/1 existing provider-gated test ignored; TypeScript PASS; Vitest 1051 passed across 56 files; fmt and clippy with warnings denied PASS in both workspaces. Real Tauri build PASS. The known Windows linker library-creation warning remains. This supplemental capture changes no application code.
