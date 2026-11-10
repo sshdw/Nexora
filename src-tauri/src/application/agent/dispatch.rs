@@ -369,6 +369,13 @@ fn handle_sticky_group_decision(
     if let Some(gate) = ctx.approval_gate {
         if let Some(sticky) = gate.group_decision(group_key) {
             let approved = matches!(sticky, ApprovalDecision::Approved);
+            // NEX-SEC-001: group consent for a previous shell call cannot
+            // authorize this call. Keep denials sticky, but let an approved
+            // shell reach the store and per-call consent path. Exact-call
+            // injection-hold consent is tracked separately by `hold_approved`.
+            if approved && RiskClass::classify(&call.name) == RiskClass::DangerousShell {
+                return false;
+            }
             if let Some(rec) = record.as_mut() {
                 if approved {
                     rec.approval_with_provenance(call, true, StepProvenance::user(Some(group_key)));

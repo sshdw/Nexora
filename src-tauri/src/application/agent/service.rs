@@ -1571,6 +1571,172 @@ mod tests {
         let _ = std::fs::remove_dir_all(temp_workspace("approval-second"));
     }
 
+    /// Production start and IPC resolver: group consent for A cannot dispatch B.
+    #[test]
+    #[allow(clippy::too_many_lines)] // Keep the ordered consent/marker/history proof together.
+    fn shell_group_consent_requires_a_separate_production_resolution_for_each_call() {
+        use crate::application::agent::permissions::resolve_approval;
+
+        for resolution in ["approve", "deny", "cancel"] {
+            let (db, workspace, rx, host) = setup(&format!("shell-group-{resolution}"));
+            let registry = Arc::new(AgentRunRegistry::default());
+            let conversation_id = ConversationService::new(&db).create("conv").unwrap();
+            let calls: Vec<_> = [("a", "a.txt"), ("b", "b.txt")]
+                .into_iter()
+                .map(|(id, file)| ToolCall {
+                    id: id.to_string(),
+                    name: "execute_command".to_string(),
+                    arguments:
+                        serde_json::json!({"command": format!("echo {id}>>{file}"), "cwd": "."})
+                            .to_string(),
+                    thought_signature: None,
+                })
+                .collect();
+            let run_id = start_run(
+                &db,
+                Arc::clone(&registry),
+                host as Arc<dyn AgentRunHost>,
+                Arc::new(ScriptedExecutor::new(vec![
+                    Ok(AiResponse {
+                        tool_calls: calls.clone(),
+                        ..text_response("")
+                    }),
+                    Ok(text_response("done")),
+                ])),
+                workspace.clone(),
+                request(conversation_id, "two shell calls"),
+                AutonomyMode::FullAutonomous,
+                RunPreset::Coding,
+            )
+            .expect("start");
+            let mut groups = Vec::new();
+            for expected in ["a", "b"] {
+                let (call_id, group) = loop {
+                    let frame = rx
+                        .recv_timeout(Duration::from_secs(10))
+                        .expect("pending shell approval");
+                    match frame {
+                        RunFrame::Governance {
+                            event:
+                                AgentRunEvent::ApprovalRequested {
+                                    call_id, group_key, ..
+                                },
+                            ..
+                        } => break (call_id, group_key),
+                        RunFrame::Finished { .. } => {
+                            panic!("shell {expected} finished without its own approval")
+                        }
+                        _ => {}
+                    }
+                };
+                assert_eq!(call_id, expected);
+                groups.push(group);
+                assert!(
+                    !workspace.join("b.txt").exists(),
+                    "B must not dispatch before its own consent"
+                );
+                if expected == "a" {
+                    assert!(!workspace.join("a.txt").exists());
+                    resolve_approval(&registry, &db, run_id, "a", true, Some("group"))
+                        .expect("group approval A");
+                } else {
+                    assert_eq!(
+                        std::fs::read_to_string(workspace.join("a.txt"))
+                            .unwrap()
+                            .trim(),
+                        "a"
+                    );
+                    let steps = list_steps_for_run(&db, run_id).unwrap();
+                    let approvals: Vec<_> = steps.iter().filter(|s| s.kind == "approval").collect();
+                    assert_eq!(approvals.len(), 1, "no fabricated group approval for B");
+                    assert_eq!(
+                        approvals[0].arguments.as_deref(),
+                        Some(calls[0].arguments.as_str())
+                    );
+                    match resolution {
+                        "approve" => {
+                            resolve_approval(&registry, &db, run_id, "b", true, None).unwrap();
+                        }
+                        "deny" => {
+                            resolve_approval(&registry, &db, run_id, "b", false, None).unwrap();
+                        }
+                        "cancel" => assert!(registry.cancel(run_id)),
+                        _ => unreachable!(),
+                    }
+                }
+            }
+            assert!(groups[0].is_some());
+            assert_eq!(
+                groups[0], groups[1],
+                "same cwd must exercise the same group"
+            );
+            let frames = collect_frames(&rx);
+            let RunFrame::Finished { event, .. } = frames.last().expect("terminal frame") else {
+                panic!("terminal frame missing");
+            };
+            let cancelled = resolution == "cancel";
+            let approved = resolution == "approve";
+            assert_eq!(
+                event.status,
+                if cancelled { "cancelled" } else { "completed" }
+            );
+            assert!(!registry.is_active(run_id));
+            assert!(
+                !frames.iter().any(|frame| matches!(
+                    frame,
+                    RunFrame::Governance {
+                        event: AgentRunEvent::ApprovalRequested { .. },
+                        ..
+                    }
+                )),
+                "no duplicate prompt"
+            );
+            let steps = list_steps_for_run(&db, run_id).unwrap();
+            let approvals: Vec<_> = steps.iter().filter(|s| s.kind == "approval").collect();
+            assert_eq!(approvals.len(), 2);
+            assert_eq!(approvals[0].status.as_deref(), Some("succeeded"));
+            assert_eq!(
+                approvals[1].status.as_deref(),
+                Some(if cancelled {
+                    "cancelled"
+                } else if approved {
+                    "succeeded"
+                } else {
+                    "denied"
+                })
+            );
+            assert_eq!(
+                approvals[1].arguments.as_deref(),
+                Some(calls[1].arguments.as_str())
+            );
+            if !cancelled {
+                assert_eq!(approvals[1].decided_by.as_deref(), Some("user"));
+                assert_eq!(approvals[1].group_key, groups[1]);
+                assert!(
+                    approvals[1].rule_id.is_some(),
+                    "seeded shell Ask stays named"
+                );
+            }
+            let executions: Vec<_> = steps.iter().filter(|s| s.kind == "tool_call").collect();
+            assert_eq!(executions.len(), if approved { 2 } else { 1 });
+            assert!(executions
+                .iter()
+                .all(|s| s.status.as_deref() == Some("succeeded")));
+            if approved {
+                assert_eq!(
+                    std::fs::read_to_string(workspace.join("b.txt"))
+                        .unwrap()
+                        .lines()
+                        .collect::<Vec<_>>(),
+                    ["b"]
+                );
+                assert_eq!(executions[1].decided_by.as_deref(), Some("user"));
+            } else {
+                assert!(!workspace.join("b.txt").exists());
+            }
+        }
+    }
+
     /// Cancel from an approval park aborts the run (`cancelled` terminal) and
     /// releases the registry entry (DP-3: cancel works from every state).
     #[test]
