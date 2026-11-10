@@ -2,7 +2,7 @@
   "repeat_start_unchanged": true,
   "legacy_runs_unchanged": 7,
   "legacy_steps_unchanged": 14,
-  "events": [
+  "durable_events": [
     [
       1,
       92001,
@@ -10,7 +10,7 @@
       "run_started",
       null,
       1,
-      1794332213
+      1794332883
     ],
     [
       2,
@@ -19,7 +19,7 @@
       "step_recorded",
       15,
       1,
-      1794332213
+      1794332883
     ],
     [
       3,
@@ -28,7 +28,7 @@
       "run_interrupted",
       null,
       1,
-      1794332231
+      1794332910
     ]
   ],
   "running": 0,
