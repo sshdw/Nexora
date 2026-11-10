@@ -73,6 +73,7 @@ mod tests {
             "attachments",
             "conversations",
             "debt_items",
+            "durable_run_events",
             "messages",
             "permission_rules",
             "prompts",
@@ -102,6 +103,9 @@ mod tests {
             "idx_attachments_message",
             "idx_conversations_status_updated",
             "idx_debt_items_status_updated",
+            "idx_durable_run_events_run",
+            "idx_durable_run_start",
+            "idx_durable_run_terminal",
             "idx_messages_conversation_created",
             "idx_providers_name",
             "idx_task_locks_expires",
@@ -117,6 +121,13 @@ mod tests {
             "conversations_fts_insert",
             "conversations_fts_update",
             "conversations_touch_updated_at",
+            "durable_event_immutable",
+            "durable_event_ownership",
+            "journal_run_start",
+            "journal_step",
+            "journal_step_immutable",
+            "journal_terminal",
+            "journal_terminal_immutable",
             "messages_fts_delete",
             "messages_fts_insert",
             "messages_fts_update",
@@ -133,7 +144,7 @@ mod tests {
 
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         );
     }
 
@@ -143,7 +154,7 @@ mod tests {
 
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         );
 
         let applied_at: i64 = conn
@@ -158,7 +169,7 @@ mod tests {
         let version_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .expect("count schema_version rows");
-        assert_eq!(version_count, 15, "one row per applied migration");
+        assert_eq!(version_count, 16, "one row per applied migration");
     }
 
     #[test]
@@ -183,14 +194,14 @@ mod tests {
         let mut conn = in_memory_migrated();
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         );
 
         migrate(&mut conn).expect("a second migration run must succeed");
 
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         );
         // The no-op run created or dropped nothing.
         assert!(schema_object_exists(&conn, "conversations", "table"));
@@ -383,7 +394,7 @@ mod tests {
         );
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         );
     }
 
@@ -996,7 +1007,7 @@ mod tests {
         // Schema version covers every known migration (v5 plus later ones)
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         );
         // Row preserved, new columns NULL for pre-v5 rows
         let (status, spent, limit): (String, Option<i64>, Option<i64>) = conn
@@ -1089,7 +1100,7 @@ mod tests {
         migrate(&mut conn).expect("migrate to v6");
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         );
         // Seeded row survives with a NULL workspace root.
         let root: Option<String> = conn
@@ -1167,7 +1178,7 @@ mod tests {
         migrate(&mut conn).expect("migrate to v7");
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         );
         // Old rows intact with NULL provenance.
         let (kind, rule_id, group_key, decided_by): (
@@ -1356,8 +1367,19 @@ mod tests {
             )
             .expect("step");
         }
-        runs.finalize_run(run_ok, "completed", Some("done"), None, None, None)
-            .expect("finalize");
+        // Seed terminal fields with the historical v12 write shape. The
+        // current repository's retry guard requires the v16 journal table.
+        {
+            let conn = db.lock().expect("lock connection");
+            conn.execute(
+                "UPDATE agent_runs SET status = 'completed', final_content = 'done',
+                 finished_at = max(unixepoch(), started_at),
+                 total_steps = (SELECT COUNT(*) FROM agent_steps WHERE run_id = ?1)
+                 WHERE id = ?1",
+                [run_ok],
+            )
+            .expect("v12 finalize");
+        }
         let run_active = runs.create_run(None, "m", "supervised").expect("run");
         {
             let conn = db.lock().expect("lock connection");
@@ -1377,8 +1399,17 @@ mod tests {
             conn.last_insert_rowid()
         };
         let run_back = runs.create_run(None, "m", "supervised").expect("run");
-        runs.finalize_run(run_back, "cancelled", None, None, None, None)
-            .expect("finalize");
+        {
+            let conn = db.lock().expect("lock connection");
+            conn.execute(
+                "UPDATE agent_runs SET status = 'cancelled',
+                 finished_at = max(unixepoch(), started_at),
+                 total_steps = (SELECT COUNT(*) FROM agent_steps WHERE run_id = ?1)
+                 WHERE id = ?1",
+                [run_back],
+            )
+            .expect("v12 finalize");
+        }
         {
             let conn = db.lock().expect("lock connection");
             conn.execute(
@@ -1396,7 +1427,7 @@ mod tests {
         let conn = db.lock().expect("lock connection");
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         );
         let fk_on: i64 = conn
             .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
@@ -1581,8 +1612,8 @@ mod tests {
             "ALTER rolls back with version bookkeeping"
         );
         assert_eq!(rows(&conn, old_runs), runs_before);
-        migrate(&mut conn).expect("v15 production migration");
-        assert_eq!(schema_version_rows(&conn), (1..=15).collect::<Vec<_>>());
+        migrate(&mut conn).expect("v15 and later production migrations");
+        assert_eq!(schema_version_rows(&conn), (1..=16).collect::<Vec<_>>());
         assert_eq!(rows(&conn, old_runs), runs_before);
         assert_eq!(
             rows(&conn, "SELECT * FROM agent_steps ORDER BY id"),
@@ -1659,7 +1690,7 @@ mod tests {
         let conn = db.lock().expect("lock connection");
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         );
         // Pre-existing row survives with NULL usage (honest unknown).
         let (input, output): (Option<i64>, Option<i64>) = conn
