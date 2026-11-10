@@ -19,6 +19,8 @@ export function statusLabel(
       return tr(locale, "agent.statusCompleted");
     case "cancelled":
       return tr(locale, "agent.statusCancelled");
+    case "interrupted":
+      return tr(locale, "agent.statusInterrupted");
     case "budget_exhausted":
       return tr(locale, "agent.statusBudget");
     case "spend_limit_exceeded":
@@ -63,6 +65,7 @@ export function isTerminalStatus(status: string): boolean {
   return (
     status === "completed" ||
     status === "cancelled" ||
+    status === "interrupted" ||
     status === "budget_exhausted" ||
     status === "spend_limit_exceeded" ||
     status === "error"

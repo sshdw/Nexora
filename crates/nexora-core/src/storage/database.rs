@@ -24,7 +24,8 @@
 //! `agent_task_steps` (v8, task manager + autonomous mode), the monotonic
 //! `updated_at` touch triggers (v12, NEX-DB-001/003), the cross-column
 //! lifecycle invariants (v13, NEX-DB-002/004/006), and the per-turn
-//! `agent_steps` token-usage columns (v14, NEX-AGENT-005).
+//! `agent_steps` token-usage columns (v14, NEX-AGENT-005), and the explicit
+//! interrupted-history marker (v15, SRS §12.1).
 
 use std::fs::{File, OpenOptions};
 use std::io;
@@ -914,6 +915,14 @@ CREATE INDEX idx_agent_runs_started ON agent_runs (started_at);
     CHECK (input_tokens IS NULL OR input_tokens >= 0);
 ALTER TABLE agent_steps ADD COLUMN output_tokens INTEGER
     CHECK (output_tokens IS NULL OR output_tokens >= 0);
+",
+    ),
+    // v15 — explicit interruption provenance; retain every history row and
+    // the existing status CHECK. Legacy errors are deliberately not backfilled.
+    (
+        15,
+        r"ALTER TABLE agent_runs ADD COLUMN interrupted INTEGER NOT NULL DEFAULT 0
+    CHECK (interrupted IN (0, 1));
 ",
     ),
 ];

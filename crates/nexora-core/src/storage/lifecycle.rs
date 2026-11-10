@@ -211,6 +211,13 @@ mod tests {
         assert_eq!(sweep.runs, 1, "the only live instance may sweep");
         assert!(!sweep.skipped_live_instance);
         assert_eq!(run_status(&db, run_id), "error");
+        assert!(
+            AgentRunRepository::new(&db)
+                .read_run(run_id)
+                .expect("read")
+                .expect("run")
+                .interrupted
+        );
         lease.become_shared().expect("downgrade");
         assert!(!lease.is_first());
     }
@@ -230,6 +237,13 @@ mod tests {
         let sweep = sweep_orphans(&db_b, &second).expect("skip sweep");
         assert!(sweep.skipped_live_instance);
         assert_eq!(sweep.runs, 0);
+        assert!(
+            !AgentRunRepository::new(&db_b)
+                .read_run(run_id)
+                .expect("read")
+                .expect("run")
+                .interrupted
+        );
         assert_eq!(
             run_status(&db_b, run_id),
             "running",

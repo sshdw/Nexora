@@ -55,7 +55,7 @@ FTS5 virtual tables are used for full-text search.
 
 ## 4. Schema Versioning
 
-Schema changes are tracked in the `schema_version` table. Each migration inserts exactly one new row containing a monotonically increasing version number and an application timestamp. Version numbers are unique and strictly increasing. The current schema version is determined by the maximum version number present (`MAX(version)`), which therefore always represents the current schema version. The current schema version is **v14**.
+Schema changes are tracked in the `schema_version` table. Each migration inserts exactly one new row containing a monotonically increasing version number and an application timestamp. Version numbers are unique and strictly increasing. The current schema version is determined by the maximum version number present (`MAX(version)`), which therefore always represents the current schema version. The current implemented schema version is **v15**. The Nexora 2.0.0 release has not shipped.
 
 **Rationale:** This provides an unambiguous, ordered migration path and prevents the application from running against an unrecognized schema version.
 
@@ -65,7 +65,7 @@ Schema changes are tracked in the `schema_version` table. Each migration inserts
 
 Migrations follow a forward-only, incremental philosophy. Each migration is atomic and versioned. The application refuses to start if the database file's schema version is newer than the application's known migration set, preventing backward incompatibility. Migrations are executed within a transaction; if any step fails, the entire migration rolls back, preserving database integrity. No destructive data changes occur without explicit validation.
 
-v5 introduces a validated rebuild pattern for `agent_runs`: when a `CHECK` widening cannot be expressed with `ALTER TABLE ADD COLUMN`, the migration rebuilds the table (`CREATE TABLE agent_runs_new` -> copy -> `DROP TABLE agent_runs` -> `RENAME`) with `PRAGMA foreign_keys=OFF` applied before the transaction and restored to `ON` after (SQLite cannot toggle `foreign_keys` inside a transaction). This pattern is limited to v5; all other migrations remain byte-identical plain transactions.
+v5 introduces a validated rebuild pattern for `agent_runs`: when a `CHECK` widening cannot be expressed with `ALTER TABLE ADD COLUMN`, the migration rebuilds the table (`CREATE TABLE agent_runs_new` -> copy -> `DROP TABLE agent_runs` -> `RENAME`) with `PRAGMA foreign_keys=OFF` applied before the transaction and restored to `ON` after (SQLite cannot toggle `foreign_keys` inside a transaction). The validated rebuild pattern is also used by v7 and v13 as described below; other migrations remain plain transactions. Existing migration SQL is not changed by the Phase 1 v15 addition.
 
 v6 adds the `conversations.workspace_root` column as a plain additive `ALTER TABLE ADD COLUMN` transaction: forward-only, with no table rebuild, no foreign key, and no backfill, so pre-picker rows keep `NULL`.
 
@@ -84,6 +84,8 @@ v12 replaces the v3 `updated_at` touch triggers with monotonic bodies (`max(unix
 v13 adds cross-column invariants via four table rebuilds (the v5/v7 precedent): `messages` gains `UNIQUE (conversation_id, id)`; `attachments` gains a composite `FOREIGN KEY (conversation_id, message_id) REFERENCES messages (conversation_id, id) ON DELETE CASCADE` (pre-existing cross-conversation rows repaired to draft `message_id = NULL`); `agent_tasks` gains `CHECK (current_step <= total_steps)` (over-advanced rows clamped); `agent_runs` gains `CHECK (status = 'running' OR finished_at IS NOT NULL)` and `CHECK (finished_at IS NULL OR finished_at >= started_at)` (terminal rows without finish time stamped with `started_at`; `total_steps` normalized to the child-row count).
 
 v14 adds the nullable `agent_steps.input_tokens` / `output_tokens` columns as plain additive `ALTER TABLE ADD COLUMN` transactions (no rebuild, no FK toggle); `NULL` for pre-existing rows and usage-less turns.
+
+v15 (Nexora 2.0 Phase 1) adds `agent_runs.interrupted INTEGER NOT NULL DEFAULT 0 CHECK (interrupted IN (0, 1))` with `ALTER TABLE ADD COLUMN` in the existing migration transaction. It adds no status value, rebuild, foreign-key toggle, or historical-error backfill. Existing rows read `0`, and new ordinary runs default to `0`. The schema-version row and column addition commit together or roll back together; the newer-schema refusal remains in force. Run rows, linked steps, existing statuses, errors, timestamps, outputs, and spend data are preserved by migration.
 
 ---
 
@@ -294,7 +296,7 @@ v14 adds the nullable `agent_steps.input_tokens` / `output_tokens` columns as pl
 **CRUD:**
 - **Create:** `INSERT` at run start with `status = 'running'` (only when a run recorder is attached).
 - **Read:** `SELECT` by `id`; `SELECT` ordered by `started_at` for run history; `SELECT` by `conversation_id` for the runs of one conversation.
-- **Update:** Terminal fields only — `status`, `finished_at`, `total_steps`, `final_content`, `error` — at run termination.
+- **Update:** Terminal fields only — `status`, `interrupted` (v15), `finished_at`, `total_steps`, `final_content`, `error` — at run termination or the lease-protected startup orphan sweep described below.
 - **Delete:** `DELETE` by `id`. Cascades to agent_steps.
 
 **Deletion Behavior:** Hard delete. Application-managed (no user UI in Task 4.2). `ON DELETE CASCADE` to agent_steps; also cascade-deleted when its conversation is removed (optional link, D50 privacy doctrine).  
@@ -307,6 +309,7 @@ v14 adds the nullable `agent_steps.input_tokens` / `output_tokens` columns as pl
 | model | Provider model name for the run | TEXT | NO | None | `length(model) > 0` | None | No | Agent roadmap (Task 4.2). Never a credential. |
 | mode | Autonomy mode at run start | TEXT | NO | None | `mode IN ('supervised', 'semi_autonomous', 'full_autonomous')` | None | No | Agent roadmap (Task 4.2). |
 | status | Run state | TEXT | NO | `'running'` | `status IN ('running', 'completed', 'cancelled', 'budget_exhausted', 'spend_limit_exceeded', 'error')` | None | No | Agent roadmap (Task 4.2/4.3). |
+| interrupted | Explicit startup-interruption marker | INTEGER | NO | 0 | `interrupted IN (0, 1)` | None | No | Nexora 2.0 Phase 1 / SRS §12.1; introduced in v15. Exposed as a boolean in Rust/TypeScript AgentRun. |
 | started_at | Start timestamp | INTEGER | NO | Current Unix timestamp | `started_at > 0` | None | No | Implementation Decision. |
 | finished_at | Termination timestamp | INTEGER | YES | NULL | `finished_at > 0` | None | No | Agent roadmap (Task 4.2). |
 | total_steps | Number of recorded steps | INTEGER | NO | 0 | `total_steps >= 0` | None | No | D12. |
@@ -314,6 +317,10 @@ v14 adds the nullable `agent_steps.input_tokens` / `output_tokens` columns as pl
 | error | Classified error text (terminal `error` only) | TEXT | YES | NULL | None | None | No | Agent roadmap (Task 4.2). |
 | spent_micro_usd | Total spend at finalize in micro-USD | INTEGER | YES | NULL | `spent_micro_usd IS NULL OR spent_micro_usd >= 0` | None | No | Task 4.3. Policy default pricing; stored only when persisted. |
 | limit_micro_usd | Per-run spend limit in micro-USD | INTEGER | YES | NULL | `limit_micro_usd IS NULL OR limit_micro_usd >= 0` | None | No | Task 4.3. NULL = no limit (opt-in). |
+
+**Phase 1 interruption semantics (v15):** Only orphaned `running` runs selected under the existing startup live-instance lease gain `interrupted = 1`. The same atomic UPDATE retains SQL `status = 'error'` for compatibility with its existing CHECK, stores the existing fixed shutdown message, sets `finished_at = max(unixepoch(), started_at)`, and recomputes `total_steps` from linked step rows. It does not rewrite or delete steps, outputs, spend fields, or unrelated terminal runs; a repeated sweep changes no already-finalized run. Task recovery remains unchanged.
+
+All repository AgentRun reads/lists expose the marker as `interrupted: boolean`, retaining the raw SQL status. User-facing history and activity classification derive `interrupted` when true and otherwise retain the stored status. Actual-error counts and all existing error-filtered run queries/results use `status = 'error' AND interrupted = 0` (or the equivalent boolean predicate in memory); interrupted rows must not appear in error-filtered results. Interruption lists use the explicit marker rather than error-message matching. Regression coverage shall prove that flagged interruptions are excluded from existing error filters while unflagged actual and legacy errors remain included. Existing unflagged errors remain errors, including legacy rows whose message resembles a shutdown. All-run, step, and spend totals still include interrupted rows. No execution or continuation is implied by reading history.
 
 **v13 invariants:** `CHECK (status = 'running' OR finished_at IS NOT NULL)` (a terminal status requires a finish time) and `CHECK (finished_at IS NULL OR finished_at >= started_at)`. Pre-existing terminal rows with `finished_at IS NULL` are stamped with `started_at` during the rebuild, and `total_steps` is normalized to the child-row count.
 
@@ -609,7 +616,7 @@ UNIQUE/PK-backed implicit indexes (SQLite `sqlite_autoindex_*`, not created expl
 
 ## 13. DATA INTEGRITY
 
-**CHECK Constraints:** Enum-like columns use `CHECK` to prevent invalid values at the database level: `conversations.status`, `messages.role`, `agent_runs.status`/`mode`, `agent_steps.kind`/`status`/`decided_by`, `permission_rules.preset`/`effect`, `agent_tasks.status`, `agent_task_steps.status`, `usage_ledger.kind`, `debt_items.source`/`severity`/`status`, plus numeric bounds (length caps, non-negative counters, `max_steps` 1–25, `expires_at > acquired_at`, token counts ≥ 0) and the v13 cross-column invariants (`agent_tasks.current_step <= total_steps`; terminal `agent_runs` require `finished_at`; `finished_at >= started_at`).
+**CHECK Constraints:** Enum-like columns use `CHECK` to prevent invalid values at the database level: `conversations.status`, `messages.role`, `agent_runs.status`/`mode`/`interrupted` (v15), `agent_steps.kind`/`status`/`decided_by`, `permission_rules.preset`/`effect`, `agent_tasks.status`, `agent_task_steps.status`, `usage_ledger.kind`, `debt_items.source`/`severity`/`status`, plus numeric bounds (length caps, non-negative counters, `max_steps` 1–25, `expires_at > acquired_at`, token counts ≥ 0) and the v13 cross-column invariants (`agent_tasks.current_step <= total_steps`; terminal `agent_runs` require `finished_at`; `finished_at >= started_at`).
 
 **UNIQUE Constraints:** `providers.name` prevents duplicate provider configurations. `app_settings.key` is the primary key, preventing duplicate settings. `agent_steps(run_id, seq)` and `agent_task_steps(task_id, seq)` enforce step ordering integrity. `permission_rules(preset, tool_pattern, path_pattern)` prevents duplicate rules. `debt_items.audit_key` deduplicates audit imports. `task_locks.token` keeps mutation proofs unguessable-per-row. `messages(conversation_id, id)` (v13) anchors the attachment composite FK.
 

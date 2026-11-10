@@ -131,7 +131,7 @@ function AgentRunSteps({
   const isRunning = run.status === "running";
   const isPaused = run.status === "paused";
   const isActive = isRunning || isPaused;
-  const pending = run.pending_approval;
+  const pending = run.status === "interrupted" ? null : run.pending_approval;
   const pendingDeadline = pending && pending.timeout_secs > 0 ? pending : null;
   const pendingId = pending?.call_id ?? null;
 
@@ -459,6 +459,9 @@ function AgentRunSteps({
           that order, in words. Outside the timeline, so it is never
           collapsed by the run fold nor dimmed by the temporal fade
           (SYSTEM §8: errors persist, findable, never faded). */}
+      {run.status === "interrupted" && (
+        <p className="nex-agent-run-summary">{t("agent.interruptedHistory")}</p>
+      )}
       {isErrorRun && (
         <div className="nex-agent-failure" role="alert">
           <p className="nex-agent-failure-line">

@@ -399,6 +399,7 @@ describe("context popover — changed files", () => {
       conversation_id: 1,
       model: "gemini-3.6-flash",
       mode: "agent",
+      interrupted: false,
       status: "completed",
       started_at: 1_700_000_000,
       finished_at: 1_700_000_100,

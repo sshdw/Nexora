@@ -3,18 +3,15 @@
 //!
 //! What lives here (and what deliberately does not):
 //!
-//! - [`collect_bundle`] aggregates version, platform, storage, and crash
+//! - [`collect_bundle`] aggregates version, platform, storage, and interruption
 //!   facts the backend already records — no new collection, no writes. The
 //!   bundle is secret-free by construction: it carries counts, versions, and
 //!   fixed-vocabulary labels only — never message/prompt content,
 //!   credentials, SQL, or file paths (ARCHITECTURE.md §9, §11;
-//!   DATABASE.md §14). Crash evidence comes from the startup orphaned-run
-//!   sweep (`crate::run` sweeps `status = 'running'` rows to `'error'` with
-//!   the fixed [`SWEEP_MESSAGE`]): only rows carrying that exact fixed text
-//!   surface individually (id, model, timestamp — model names are never
-//!   credentials, DATABASE.md §7.8); every other error row contributes to the
-//!   `error_runs` counter only, so arbitrary error text (which may quote user
-//!   content) never crosses IPC.
+//!   DATABASE.md §14). Explicit startup interruption markers surface
+//!   individually (id, model, timestamp only). Unflagged errors contribute
+//!   only to `error_runs`; arbitrary error text never crosses IPC. An
+//!   interruption alone is not evidence of a crash.
 //! - [`snapshot_to`] writes a consistent pre-update copy of the database with
 //!   `SQLite`'s `VACUUM INTO` (atomic server-side copy — no file-locking
 //!   hazards, no partial reads). It creates files only under the caller-given
@@ -23,7 +20,7 @@
 //! - There is no in-memory "last errors ring": logging is a stderr-only sink
 //!   (`infrastructure::logging`) with no retained records, and adding a
 //!   global ring every error path must feed is out of scope. The swept-run
-//!   rows above are the retained crash record.
+//!   rows above retain interrupted history.
 //! - Self-heal beyond the snapshot is documented, not coded: the schema
 //!   downgrade guard refuses to start on a newer database
 //!   (`DatabaseError::SchemaTooNew`, `infrastructure/database.rs`), the FTS5
@@ -41,12 +38,7 @@ use serde::Serialize;
 
 use crate::infrastructure::database::{Database, DatabaseError, MIGRATIONS};
 
-/// Fixed sweep text the startup orphaned-run sweep writes
-/// (`crate::run`): only error rows carrying exactly this text surface
-/// individually in the bundle — everything else counts anonymously.
-pub(crate) const SWEEP_MESSAGE: &str = "run interrupted by application shutdown";
-
-/// How many swept crash rows the bundle carries (newest first).
+/// How many explicitly interrupted rows the bundle carries (newest first).
 const MAX_CRASHED_RUNS: i64 = 5;
 
 /// Classified, secret-free failures of the diagnostics/snapshot path.
@@ -101,8 +93,8 @@ pub(crate) struct BundleCounts {
     pub agent_tasks: i64,
 }
 
-/// One retained crash row: the startup sweep's fixed-vocabulary rows only
-/// (id, model, timestamp — no error text crosses IPC).
+/// One explicitly interrupted history row (legacy IPC type name retained):
+/// id, model, timestamp only; no error text crosses IPC.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct CrashedRun {
     pub run_id: i64,
@@ -111,7 +103,7 @@ pub(crate) struct CrashedRun {
 }
 
 /// Secret-free diagnostics bundle: versions, platform, storage facts, and
-/// crash evidence. No tokens, no keys, no content, no paths.
+/// interruption metadata. No tokens, no keys, no content, no paths.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct DiagnosticsBundle {
     pub app_version: String,
@@ -125,10 +117,10 @@ pub(crate) struct DiagnosticsBundle {
     pub counts: BundleCounts,
     /// Whether the FTS5 search index is present (`messages_fts`).
     pub fts_present: bool,
-    /// Newest swept crash rows (fixed sweep text only, at most
+    /// Newest explicitly interrupted rows (at most
     /// [`MAX_CRASHED_RUNS`]).
     pub crashed_runs: Vec<CrashedRun>,
-    /// Every `status = 'error'` run, including non-sweep failures whose
+    /// Every unflagged `status = 'error'` run, whose
     /// text never leaves the database.
     pub error_runs: i64,
 }
@@ -191,17 +183,17 @@ pub(crate) fn collect_bundle(
         )
         .map(|n| n > 0)?;
     let error_runs: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM agent_runs WHERE status = 'error'",
+        "SELECT COUNT(*) FROM agent_runs WHERE status = 'error' AND interrupted = 0",
         [],
         |row| row.get(0),
     )?;
     let mut stmt = conn.prepare(
         "SELECT id, model, started_at FROM agent_runs \
-         WHERE status = 'error' AND error = ?1 \
-         ORDER BY id DESC LIMIT ?2",
+         WHERE interrupted = 1 \
+         ORDER BY id DESC LIMIT ?1",
     )?;
     let crashed_runs = stmt
-        .query_map(rusqlite::params![SWEEP_MESSAGE, MAX_CRASHED_RUNS], |row| {
+        .query_map([MAX_CRASHED_RUNS], |row| {
             Ok(CrashedRun {
                 run_id: row.get(0)?,
                 model: row.get(1)?,
@@ -332,29 +324,38 @@ mod tests {
     }
 
     #[test]
-    fn bundle_surfaces_only_sweep_crash_rows() {
+    fn bundle_distinguishes_explicit_interruptions_from_same_text_legacy_errors() {
         let db = in_memory_database();
         {
             let conn = db.lock().expect("lock connection");
-            for (model, error) in [
-                ("m-swept", SWEEP_MESSAGE),
-                ("m-other", "boom sk-secret-PLANTED-999"),
+            for (model, error, interrupted) in [
+                ("m-swept", "different metadata-only text", true),
+                (
+                    "m-legacy",
+                    nexora_core::storage::lifecycle::ORPHAN_RUN_MESSAGE,
+                    false,
+                ),
+                ("m-other", "boom sk-secret-PLANTED-999", false),
             ] {
                 conn.execute(
-                    "INSERT INTO agent_runs (model, mode, status, error, finished_at) \
-                     VALUES (?1, 'supervised', 'error', ?2, (unixepoch()))",
-                    rusqlite::params![model, error],
+                    "INSERT INTO agent_runs (model, mode, status, error, finished_at, interrupted) \
+                     VALUES (?1, 'supervised', 'error', ?2, (unixepoch()), ?3)",
+                    rusqlite::params![model, error, interrupted],
                 )
                 .expect("insert error run");
             }
         }
         let bundle = collect_bundle(&db, None).expect("collect bundle");
 
-        assert_eq!(bundle.error_runs, 2, "every error run counts");
+        assert_eq!(bundle.error_runs, 2, "only unflagged errors count");
+        assert_eq!(
+            bundle.counts.agent_runs, 3,
+            "all-run totals retain interruptions"
+        );
         assert_eq!(
             bundle.crashed_runs.len(),
             1,
-            "only the fixed sweep text surfaces individually"
+            "only explicitly flagged interruptions surface individually"
         );
         assert_eq!(bundle.crashed_runs[0].model, "m-swept");
 

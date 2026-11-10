@@ -475,6 +475,16 @@ The application shall:
 - Report missing provider credentials.
 - Allow users to retry failed operations when appropriate.
 
+## 12.1 Nexora 2.0 Phase 1 — Interrupted Run History
+
+At startup, persisted agent runs left `running` without a live Nexora instance shall be recorded as interrupted history. The existing live-instance lease shall protect runs owned by another running instance. A startup sweep shall preserve run rows, linked steps, recorded outputs, and their order; it shall not resume execution.
+
+Interruption shall be distinct from an actual run error and from user cancellation. Existing errors shall not be reclassified by inspecting error text or inferred shutdown history. Completed, cancelled, budget-exhausted, spend-limited, and error runs shall retain their recorded outcomes.
+
+The existing AgentRunSteps surface shall show a localized interrupted status and explain that recorded history remains available. Interrupted runs shall use a quiet terminal presentation, retain access to their recorded steps, and offer no Continue, retry prompt, pending approval, or automatic execution. Existing activity labels, run classification/counts, and system diagnostics shall distinguish explicitly recorded interruptions from actual errors; interruption alone shall not be presented as proof of a crash. This phase adds no new screen or filter.
+
+This phase covers history only. Task recovery keeps its existing behavior. Tool policy, permissions, subagents, ordinary run execution, and all continuation/resumption capabilities are outside this phase.
+
 ---
 
 # 13. Acceptance Criteria

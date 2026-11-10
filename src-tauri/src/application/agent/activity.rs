@@ -82,7 +82,11 @@ impl From<&AgentRun> for ActivityRun {
             conversation_id: run.conversation_id,
             model: run.model.clone(),
             mode: run.mode.clone(),
-            status: run.status.clone(),
+            status: if run.interrupted {
+                "interrupted".to_string()
+            } else {
+                run.status.clone()
+            },
             started_at: run.started_at,
             finished_at: run.finished_at,
             total_steps: run.total_steps,
@@ -167,6 +171,40 @@ mod tests {
         repo.finalize_run(id, status, Some("done"), None, spent, spent_limit)
             .expect("finalize seed run");
         id
+    }
+
+    #[test]
+    fn feed_classifies_interruption_without_losing_spend_or_steps() {
+        let db = in_memory_database();
+        let interrupted = seed_run(&db, "interrupted", "error", 2, Some(100), None);
+        let legacy = seed_run(&db, "legacy", "error", 1, Some(200), None);
+        db.lock()
+            .expect("lock")
+            .execute(
+                "UPDATE agent_runs SET interrupted = 1 WHERE id = ?1",
+                [interrupted],
+            )
+            .expect("explicit marker");
+        let feed = activity_feed_for(&db, None).expect("feed");
+        assert_eq!(
+            feed.runs
+                .iter()
+                .find(|run| run.run_id == interrupted)
+                .expect("run")
+                .status,
+            "interrupted"
+        );
+        assert_eq!(
+            feed.runs
+                .iter()
+                .find(|run| run.run_id == legacy)
+                .expect("legacy")
+                .status,
+            "error"
+        );
+        assert_eq!(feed.totals.runs, 2);
+        assert_eq!(feed.totals.total_steps, 3);
+        assert_eq!(feed.totals.total_spent_micro_usd, 300);
     }
 
     #[test]

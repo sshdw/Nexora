@@ -137,8 +137,7 @@ pub(crate) struct SelfAuditView {
 pub(crate) struct RunInspection {
     /// `agent_runs.id`.
     pub run_id: i64,
-    /// Lifecycle state (`RunState::as_str` vocabulary, mapped from the
-    /// persisted `agent_runs.status` column).
+    /// Read-side state: explicit interruption or the persisted lifecycle state.
     pub state: &'static str,
     /// Current pipeline stage (`PipelineStage::as_str`), if a pipeline is
     /// attached.
@@ -191,8 +190,8 @@ pub(crate) struct RunInspection {
 pub(crate) struct LiveRunState {
     /// `agent_runs.id` of the reported run.
     pub run_id: i64,
-    /// Persisted `agent_runs.status`, verbatim (`"running"` while the run is
-    /// active, including while it is parked).
+    /// Read-side status (`"interrupted"` for flagged history, otherwise the
+    /// persisted status; `"running"` while active, including while parked).
     pub status: String,
     /// Why the live run is not progressing (`"none"` when it is not parked).
     pub parked_reason: &'static str,
@@ -345,7 +344,11 @@ pub(crate) fn inspect_run(
 
     RunInspection {
         run_id: run.id,
-        state: persisted_state(&run.status),
+        state: if run.interrupted {
+            "interrupted"
+        } else {
+            persisted_state(&run.status)
+        },
         stage,
         role,
         stages_entered,
@@ -444,7 +447,16 @@ pub(crate) fn live_run_state(
     // The active run's row may not be readable yet (registration precedes the
     // insert completing), in which case `running` is the only honest status.
     let row = persisted.iter().find(|run| run.id == run_id);
-    let status = row.map_or_else(|| "running".to_string(), |run| run.status.clone());
+    let status = row.map_or_else(
+        || "running".to_string(),
+        |run| {
+            if run.interrupted {
+                "interrupted".to_string()
+            } else {
+                run.status.clone()
+            }
+        },
+    );
 
     let (current_step_seq, current_step_tool) = if live.is_some() {
         let steps = AgentRunRepository::new(db).list_steps(run_id)?;
@@ -498,6 +510,7 @@ mod tests {
             model: "gpt-test".to_string(),
             mode: "supervised".to_string(),
             status: status.to_string(),
+            interrupted: false,
             started_at: 1_700_000_000,
             finished_at: None,
             total_steps: 4,
@@ -864,6 +877,29 @@ mod tests {
         assert!(view.snapshots.is_empty());
         assert_eq!(view.self_audit, None);
         assert!(view.finished_at.is_some());
+    }
+
+    #[test]
+    fn interrupted_history_is_distinct_in_inspection_and_live_read_fallback() {
+        let (db, conversation_id) = live_fixture();
+        let repo = AgentRunRepository::new(&db);
+        let run_id = repo
+            .create_run(Some(conversation_id), "m", "supervised")
+            .expect("run");
+        repo.fail_orphaned_running_runs(nexora_core::storage::lifecycle::ORPHAN_RUN_MESSAGE)
+            .expect("sweep");
+        let view = inspect_persisted_run(&db, run_id)
+            .expect("inspection")
+            .expect("run");
+        assert_eq!(view.state, "interrupted");
+        let registry = AgentRunRegistry::default();
+        let fallback = live_run_state(&db, &registry, conversation_id)
+            .expect("fallback")
+            .expect("history");
+        assert_eq!(fallback.status, "interrupted");
+        assert_eq!(fallback.parked_reason, "none");
+        assert!(fallback.pending_approval.is_none());
+        assert!(fallback.current_step_seq.is_none());
     }
 
     #[test]

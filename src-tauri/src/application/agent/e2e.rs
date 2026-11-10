@@ -1750,6 +1750,10 @@ fn e2e_restart_sweep_and_rehydration() {
         .expect("read after sweep")
         .expect("exists");
     assert_eq!(row.status, "error", "swept run must be error");
+    assert!(
+        row.interrupted,
+        "restart records explicit interruption provenance"
+    );
     assert_eq!(
         row.error.as_deref(),
         Some("run interrupted by application shutdown"),
@@ -1771,6 +1775,15 @@ fn e2e_restart_sweep_and_rehydration() {
     assert_eq!(runs.len(), 1, "rehydration must list one run");
     assert_eq!(runs[0].id, run_id);
     assert_eq!(runs[0].conversation_id, Some(conversation_id));
+    assert!(runs[0].interrupted, "rehydration exposes the marker");
+    let page = crate::application::agent::service::list_runs_for_conversation_paged(
+        &db2,
+        conversation_id,
+        Some(1),
+        None,
+    )
+    .expect("paged rehydration");
+    assert!(page[0].interrupted);
 
     let steps =
         crate::application::agent::service::list_steps_for_run(&db2, run_id).expect("list steps");
@@ -1779,6 +1792,7 @@ fn e2e_restart_sweep_and_rehydration() {
     assert_eq!(steps[1].seq, 2);
     assert_eq!(steps[0].kind, "model_turn");
     assert_eq!(steps[1].kind, "tool_call");
+    assert_eq!(steps[1].observation.as_deref(), Some("file body"));
     // seqs strictly ordered
     let seqs: Vec<i64> = steps.iter().map(|s| s.seq).collect();
     let expected: Vec<i64> = (1..=i64::try_from(seqs.len()).expect("len fits in i64")).collect();

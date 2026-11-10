@@ -24,6 +24,8 @@ export function runStatusLabel(
       return tr(locale, "activity.runCompleted");
     case "cancelled":
       return tr(locale, "activity.runCancelled");
+    case "interrupted":
+      return tr(locale, "agent.statusInterrupted");
     case "budget_exhausted":
       return tr(locale, "activity.runBudget");
     case "spend_limit_exceeded":

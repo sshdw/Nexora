@@ -50,6 +50,7 @@ function runRow(overrides: Partial<AgentRun> = {}): AgentRun {
     conversation_id: 1,
     model: "test-model",
     mode: "supervised",
+    interrupted: false,
     status: "running",
     started_at: 1000,
     finished_at: null,
@@ -140,6 +141,42 @@ beforeEach(() => {
 });
 
 describe("useAgentRun", () => {
+  it("rehydrates only explicitly flagged interruptions and reads retained steps without execution", async () => {
+    const message = "run interrupted by application shutdown";
+    routeInvoke(
+      {
+        1: [
+          runRow({
+            status: "error",
+            interrupted: true,
+            finished_at: 1001,
+            total_steps: 1,
+            error: message,
+          }),
+          runRow({ id: 8, status: "error", finished_at: 1001, error: message }),
+        ],
+      },
+      { 7: [stepRow({ observation: "retained output" })] }
+    );
+    const { result } = renderHook(() => useAgentRun(1));
+    await waitFor(() => expect(result.current.runs).toHaveLength(2));
+    expect(result.current.runs.map((run) => run.status)).toEqual([
+      "interrupted",
+      "error",
+    ]);
+    expect(result.current.runs[0].pending_approval).toBeNull();
+    await act(async () => result.current.loadRunSteps(7));
+    expect(result.current.runs[0].steps[0].observation).toBe("retained output");
+    await act(async () => result.current.reload());
+    expect(result.current.runs[0].status).toBe("interrupted");
+    expect(
+      mockInvoke.mock.calls.every(
+        ([command]) =>
+          command === "list_agent_runs" || command === "list_agent_steps"
+      )
+    ).toBe(true);
+  });
+
   it("rehydrates a bounded run page on mount and lazy-loads steps only when asked", async () => {
     routeInvoke({ 1: [runRow()] }, { 7: [stepRow()] });
 

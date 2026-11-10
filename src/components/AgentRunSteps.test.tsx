@@ -158,9 +158,60 @@ const rows = (c: HTMLElement): Element[] => [
 const seqOf = (row: Element): string | null | undefined =>
   row.querySelector(".nex-agent-step-seq")?.textContent;
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  localStorage.removeItem(LOCALE_KEY);
+});
 
 describe("Agent Activity Spine", () => {
+  it.each([
+    ["en", "Interrupted", "Recorded steps remain available."],
+    ["ru", "Прерван", "Записанные шаги сохранены и доступны."],
+  ])(
+    "keeps interrupted history quiet and expandable in %s without execution controls",
+    (locale, label, note) => {
+      localStorage.setItem(LOCALE_KEY, locale);
+      const callbacks = noopProps();
+      const { container } = renderRun(
+        runView({
+          status: "interrupted",
+          finished_at: 1001,
+          error: "run interrupted by application shutdown",
+          steps: mixedSteps(),
+          // A stale park must never revive approval controls on retained history.
+          pending_approval: {
+            call_id: "old",
+            name: "write_file",
+            arguments: "{}",
+            timeout_secs: 600,
+            requested_at: 1000,
+          },
+        }),
+        callbacks
+      );
+      expect(disclosure(container)?.textContent).toContain(label);
+      expect(container.textContent).toContain(note);
+      expect(
+        container.querySelector(".nex-agent-run-state-quiet")
+      ).not.toBeNull();
+      expect(container.querySelector(".nex-agent-failure")).toBeNull();
+      expect(container.querySelector(".nex-agent-approval")).toBeNull();
+      expect(pulse(container)).toBeNull();
+      expect(
+        screen.queryByRole("button", {
+          name: /continue|продолжить|retry|повторить|resume|возобновить/i,
+        })
+      ).toBeNull();
+      const line = disclosure(container);
+      expect(line).not.toBeNull();
+      fireEvent.click(line!);
+      fireEvent.click(line!);
+      expect(rows(container)).toHaveLength(5);
+      for (const callback of Object.values(callbacks))
+        expect(callback).not.toHaveBeenCalled();
+    }
+  );
+
   it("mounts one rail and one connector per row, with the pulse only while executing", () => {
     const run = runView({ steps: mixedSteps() });
     const { container, rerenderRun } = renderRun(run);

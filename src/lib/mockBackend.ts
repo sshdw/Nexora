@@ -324,6 +324,7 @@ const attachments: Array<{
 // ---- Agent run mock state (Task 5.1) ----
 let nextAgentRunId = 1;
 interface MockAgentRun {
+  interrupted: boolean;
   id: number;
   conversation_id: number | null;
   model: string;
@@ -891,6 +892,7 @@ async function invoke(
         return "semi_autonomous";
       })();
       const run: MockAgentRun = {
+        interrupted: false,
         id: runId,
         conversation_id: convId,
         model,
