@@ -11,6 +11,8 @@ use crate::application::execution::ExecutorError;
 /// the already-classified [`ExecutorError`].
 #[derive(Debug)]
 pub(crate) enum AgentError {
+    /// Required run history could not be committed; completed effects remain.
+    Persistence,
     /// The provider failed to fulfil one of the loop's requests. The
     /// classified [`ExecutorError`] passes through verbatim to the run
     /// error text (its Display is rendered unchanged).
@@ -41,6 +43,7 @@ pub(crate) enum AgentError {
 impl std::fmt::Display for AgentError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Persistence => write!(f, "agent stopped: run history could not be saved; already dispatched work may have completed"),
             Self::Provider(err) => write!(f, "{err}"),
             Self::BudgetExhausted(max) => write!(
                 f,
@@ -71,7 +74,8 @@ impl std::error::Error for AgentError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Provider(err) => Some(err),
-            Self::BudgetExhausted(_)
+            Self::Persistence
+            | Self::BudgetExhausted(_)
             | Self::SpendLimitExceeded { .. }
             | Self::EmptyResponse
             | Self::ContextExhausted

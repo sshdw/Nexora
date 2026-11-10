@@ -604,3 +604,7 @@ Local search functions correctly.
 
 No approved MVP functionality is missing.
 
+
+## M03.a transactional run-history journal
+
+Depends on merged M01 and approval of the exact M03.a SRS, ARCHITECTURE, DATABASE and ROADMAP additions. Deliver the additive shared-core journal for new conversation-linked run start, recorded step, terminal outcome and orphan interruption, atomic with existing rows; typed conversation-scoped forward-cursor history reads; commit-before-notify identity; unchanged existing history presentation. Preserve legacy rows/IDs and M01 classification without backfill or execution replay. Validate ordered round-trip, transaction rollback, duplicate append/notification reconciliation, restart recovery, conversation isolation, cascade privacy and bounded sanitized output through production-reachable application/IPC paths. Record real startup/history smoke on supported OSes and concrete outstanding gaps. This atomic phase does not close the full M03 milestone or implement future question/queue/plan/child event contracts.

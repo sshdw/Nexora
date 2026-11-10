@@ -112,6 +112,7 @@ pub fn run() {
             commands::agent::pause_agent_run,
             commands::agent::resume_agent_run,
             commands::agent::list_agent_runs,
+            commands::agent::list_conversation_run_events,
             commands::agent::list_agent_steps,
             commands::agent::get_agent_step_observation,
             commands::agent::inspect_run,

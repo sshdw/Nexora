@@ -144,6 +144,10 @@ no Continue, retry prompt, pending approval, or automatic work. Existing
 activity/system labels receive only the corrections needed for this
 classification. This phase adds no continuation endpoint or execution path.
 
+M03.a durable run history
+
+M03.a stores its journal in the shared nexora-core SQLite storage implementation; desktop infrastructure remains an adapter. Application services coordinate recording; commands are thin typed IPC translation. A committed journal record is the source of durable notification identity. Run creation, step append and terminal/orphan state transition each write their journal record in the same SQLite transaction. Event sequence is commit serialization order, not timestamp order. Notification delivery is best effort after commit; durable cursor reads reconcile missed and duplicate notifications. No transaction is held across a provider/tool call or event delivery. Existing live-only governance is explicitly outside this first durable subset. Rehydration is read-only and never reconstructs executable approval state.
+
 The backend is three layers. Dependency direction is strictly downward:
 commands → application → infrastructure, with AI providers external
 behind the executor boundary and the shared, shell-free core

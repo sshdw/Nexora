@@ -759,7 +759,7 @@ fn stress_parallel_runs_across_conversations() {
                             frames.push(frame);
                             break;
                         }
-                        RunFrame::Step { .. } => {}
+                        RunFrame::Step { .. } | RunFrame::Durable { .. } => {}
                     }
                     frames.push(frame);
                 }
@@ -939,7 +939,7 @@ fn stress_mode_switch_storm() {
                 frames.push(frame);
                 break;
             }
-            RunFrame::Step { .. } => {}
+            RunFrame::Step { .. } | RunFrame::Durable { .. } => {}
         }
         frames.push(frame);
     }

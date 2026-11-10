@@ -474,7 +474,7 @@ impl<'a> AgentRunner<'a> {
             &mut spent_micro_usd,
         );
         if let Some(rec) = record.as_ref() {
-            rec.finalize(&result, spent_micro_usd, self.spend_limit_micro_usd);
+            rec.finalize(&result, spent_micro_usd, self.spend_limit_micro_usd)?;
         }
         result
     }
@@ -652,6 +652,9 @@ impl<'a> AgentRunner<'a> {
             // Cancellation is the highest-priority gate: it is checked before
             // any LLM work, again after every provider call, and between tool
             // dispatches so a cancellation never waits for further work.
+            if let Some(rec) = record.as_ref() {
+                rec.checkpoint()?;
+            }
             dispatch::check_cancellation(control, self.event_sender.as_ref())?;
             dispatch::honor_pause(control, self.event_sender.as_ref())?;
             budget::honor_allowance(
@@ -846,6 +849,9 @@ impl<'a> AgentRunner<'a> {
                 rec.model_turn(&response.content, Some(duration_ms), response.usage);
             }
 
+            if let Some(rec) = record.as_ref() {
+                rec.checkpoint()?;
+            }
             dispatch::check_cancellation(control, self.event_sender.as_ref())?;
 
             // Task 4.3: every turn bills — reported usage, or the
@@ -1388,6 +1394,151 @@ mod tests {
             "no agent_runs rows without an attached recorder"
         );
         let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn journal_model_checkpoint_failure_prevents_tool_and_next_provider() {
+        let db = in_memory_database();
+        let ws = temp_workspace();
+        let conversation = {
+            let conn = db.lock().unwrap();
+            conn.execute(
+                "INSERT INTO conversations(title,status) VALUES('c','active')",
+                [],
+            )
+            .unwrap();
+            conn.last_insert_rowid()
+        };
+        db.lock().unwrap().execute_batch("CREATE TRIGGER inject_journal_failure BEFORE INSERT ON durable_run_events WHEN NEW.kind='step_recorded' BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
+        let fake = FakeExecutor::new(vec![
+            Ok(AiResponse {
+                content: "turn".into(),
+                model: "m".into(),
+                usage: None,
+                tool_calls: vec![call_tool(
+                    "one",
+                    "write_file",
+                    serde_json::json!({"path":"never.txt","content":"effect"}),
+                )],
+            }),
+            Ok(text_response("never requested")),
+        ]);
+        let result = AgentRunner::new(&fake, &ws)
+            .with_run_recorder(RunRecorder::new(&db).with_conversation(conversation))
+            .run("openai", "m", "cred", "q");
+        assert!(matches!(result, Err(AgentError::Persistence)));
+        assert_eq!(fake.requests.borrow().len(), 1);
+        assert!(!ws.join("never.txt").exists());
+        let run = AgentRunRepository::new(&db)
+            .list_runs_by_conversation(conversation)
+            .unwrap()
+            .remove(0);
+        assert_eq!(run.status, "error");
+        assert_eq!(run.total_steps, 0);
+        assert!(run
+            .error
+            .unwrap()
+            .contains("already dispatched work may have completed"));
+        let _ = fs::remove_dir_all(ws);
+    }
+
+    #[test]
+    fn journal_tool_checkpoint_failure_preserves_effect_and_stops_next_tool() {
+        let db = in_memory_database();
+        let ws = temp_workspace();
+        let conversation = {
+            let conn = db.lock().unwrap();
+            conn.execute(
+                "INSERT INTO conversations(title,status) VALUES('c','active')",
+                [],
+            )
+            .unwrap();
+            conn.last_insert_rowid()
+        };
+        db.lock().unwrap().execute_batch("CREATE TRIGGER inject_journal_failure BEFORE INSERT ON durable_run_events WHEN NEW.kind='step_recorded' AND EXISTS(SELECT 1 FROM agent_steps WHERE id=NEW.step_id AND kind='tool_call') BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
+        let fake = FakeExecutor::new(vec![
+            Ok(AiResponse {
+                content: "turn".into(),
+                model: "m".into(),
+                usage: None,
+                tool_calls: vec![
+                    call_tool(
+                        "one",
+                        "write_file",
+                        serde_json::json!({"path":"first.txt","content":"effect"}),
+                    ),
+                    call_tool(
+                        "two",
+                        "write_file",
+                        serde_json::json!({"path":"second.txt","content":"never"}),
+                    ),
+                ],
+            }),
+            Ok(text_response("never requested")),
+        ]);
+        let result = AgentRunner::new(&fake, &ws)
+            .with_approval_gate(ApprovalGate::new(AutonomyMode::FullAutonomous))
+            .with_run_recorder(RunRecorder::new(&db).with_conversation(conversation))
+            .run("openai", "m", "cred", "q");
+        assert!(matches!(result, Err(AgentError::Persistence)));
+        assert_eq!(fake.requests.borrow().len(), 1);
+        assert_eq!(fs::read_to_string(ws.join("first.txt")).unwrap(), "effect");
+        assert!(!ws.join("second.txt").exists());
+        let run = AgentRunRepository::new(&db)
+            .list_runs_by_conversation(conversation)
+            .unwrap()
+            .remove(0);
+        assert_eq!(run.total_steps, 1);
+        let _ = fs::remove_dir_all(ws);
+    }
+
+    #[test]
+    fn journal_approval_checkpoint_failure_stops_approved_tool_dispatch() {
+        let db = in_memory_database();
+        let ws = temp_workspace();
+        let conversation = {
+            let conn = db.lock().unwrap();
+            conn.execute(
+                "INSERT INTO conversations(title,status) VALUES('c','active')",
+                [],
+            )
+            .unwrap();
+            conn.last_insert_rowid()
+        };
+        db.lock().unwrap().execute_batch("CREATE TRIGGER inject_journal_failure BEFORE INSERT ON durable_run_events WHEN NEW.kind='step_recorded' AND EXISTS(SELECT 1 FROM agent_steps WHERE id=NEW.step_id AND kind='approval') BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
+        let fake = FakeExecutor::new(vec![
+            Ok(AiResponse {
+                content: "turn".into(),
+                model: "m".into(),
+                usage: None,
+                tool_calls: vec![call_tool(
+                    "one",
+                    "write_file",
+                    serde_json::json!({"path":"never.txt","content":"effect"}),
+                )],
+            }),
+            Ok(text_response("never requested")),
+        ]);
+        let gate = ApprovalGate::new(AutonomyMode::Supervised);
+        let driver_gate = gate.clone();
+        let (tx, rx) = channel();
+        let driver = thread::spawn(move || loop {
+            let event = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            if let AgentRunEvent::ApprovalRequested { call_id, .. } = event {
+                assert!(driver_gate.respond(&call_id, ApprovalDecision::Approved));
+                break;
+            }
+        });
+        let result = AgentRunner::new(&fake, &ws)
+            .with_approval_gate(gate)
+            .with_event_sender(tx)
+            .with_run_recorder(RunRecorder::new(&db).with_conversation(conversation))
+            .run("openai", "m", "cred", "q");
+        driver.join().unwrap();
+        assert!(matches!(result, Err(AgentError::Persistence)));
+        assert_eq!(fake.requests.borrow().len(), 1);
+        assert!(!ws.join("never.txt").exists());
+        let _ = fs::remove_dir_all(ws);
     }
 
     #[test]

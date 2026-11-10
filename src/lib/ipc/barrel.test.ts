@@ -19,6 +19,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 import * as barrel from "../tauri";
+import { invoke } from "@tauri-apps/api/core";
 
 /** Snapshot of the pre-split `tauri.ts` runtime exports (`grep -oP
  * "^export (async )?function \K\w+" src/lib/tauri.ts | sort`, 114 names). */
@@ -86,6 +87,7 @@ const SNAPSHOT: readonly string[] = [
   "listAgentSteps",
   "listAttachments",
   "listConversations",
+  "listConversationRunEvents",
   "listDebtItems",
   "listPermissionRules",
   "listPrompts",
@@ -146,6 +148,13 @@ describe("tauri barrel parity (AC-205)", () => {
   it("re-exports exactly the historical runtime surface", () => {
     const keys = Object.keys(barrel).sort();
     expect(keys).toEqual([...SNAPSHOT].sort());
+  });
+
+  it("routes durable history with camelCase cursor arguments", async () => {
+    await barrel.listConversationRunEvents(7, 23, 2);
+    expect(invoke).toHaveBeenLastCalledWith("list_conversation_run_events", {
+      conversationId: 7, afterEventId: 23, limit: 2,
+    });
   });
 
   it("re-exports nothing undefined (every entry is the wrapper function)", () => {

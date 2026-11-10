@@ -485,6 +485,16 @@ The existing AgentRunSteps surface shall show a localized interrupted status and
 
 This phase covers history only. Task recovery keeps its existing behavior. Tool policy, permissions, subagents, ordinary run execution, and all continuation/resumption capabilities are outside this phase.
 
+## 12.2 M03.a durable run history
+
+For newly created conversation-linked agent runs, Nexora shall persist an append-only ordered record of run start, each successfully recorded step, terminal outcome and any later startup-classified interruption. A record shall have a stable event identity and reference the original run and, where applicable, original step identity. The run or step state change and its corresponding record shall commit atomically before a durable notification is published. Re-reading history or receiving a notification more than once shall not duplicate a displayed step or execute work.
+
+History reads shall be scoped to the requested conversation and return records in committed event order with a forward cursor. Reading or reconnecting shall perform no provider request, tool execution, automatic continuation or pending-approval restoration. Existing pre-journal run and step history shall remain readable through the existing history APIs with its original identities and outcomes. No historical event chronology shall be fabricated or backfilled from timestamps.
+
+If a required history checkpoint fails, Nexora shall expose a secret-free persistence error and stop further provider or tool dispatch at the next controllable boundary. A failed checkpoint shall not be acknowledged as durable. Work already dispatched cannot be assumed undone; history reads and subsequent startup shall never replay it. If terminal persistence also fails, retain the last committed state for the existing lease-protected startup classification. This requirement applies only to the new journaled conversation-run path; unrelated legacy task behavior is unchanged.
+
+This increment covers run start, recorded steps and terminal/interruption history only. Other transient governance remains a live presentation until separately specified. Existing presentation and full sanitized step-output access are retained.
+
 ---
 
 # 13. Acceptance Criteria

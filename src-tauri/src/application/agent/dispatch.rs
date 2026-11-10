@@ -154,7 +154,13 @@ pub(crate) fn dispatch_tool_calls(
             thought_signature_trace(&call.id, call.thought_signature.as_ref())
         );
         check_cancellation(ctx.control, ctx.sender)?;
+        if let Some(rec) = record.as_ref() {
+            rec.checkpoint()?;
+        }
         dispatch_one(ctx, call, messages, record, &batch_groups)?;
+        if let Some(rec) = record.as_ref() {
+            rec.checkpoint()?;
+        }
     }
     for call in over_cap {
         // Over-cap calls never execute, park, or touch the store/ladder:
@@ -372,6 +378,9 @@ fn handle_sticky_group_decision(
             }
             if !approved {
                 messages.push(denied_tool_message(call));
+                return true;
+            }
+            if record.as_ref().is_some_and(|rec| rec.checkpoint().is_err()) {
                 return true;
             }
             let dispatch_started = Instant::now();
@@ -686,6 +695,9 @@ fn park_call(
                 approved,
                 StepProvenance::user_with_rule(Some(group_key), considered_rule),
             );
+        }
+        if let Some(rec) = record.as_ref() {
+            rec.checkpoint()?;
         }
         super::lifecycle::observe_transition(
             super::lifecycle::RunState::AwaitingApproval,
