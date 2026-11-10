@@ -103,9 +103,24 @@ export type GovernanceEventPayload =
 
 /** One `agent-run-event` frame (Task 5.1 design §2.4). */
 export type AgentRunEventPayload =
-  | { type: "durable"; run_id: number; conversation_id: number; event_id: number }
-  | { type: "step"; run_id: number; event: StepEventFrame }
-  | { type: "governance"; run_id: number; event: GovernanceEventPayload }
+  | {
+      type: "durable";
+      run_id: number;
+      conversation_id: number;
+      event_id: number;
+    }
+  | {
+      type: "step";
+      run_id: number;
+      conversation_id: number;
+      event: StepEventFrame;
+    }
+  | {
+      type: "governance";
+      run_id: number;
+      conversation_id: number;
+      event: GovernanceEventPayload;
+    }
   | { type: "finished"; run_id: number; event: RunFinishedPayload };
 
 // NOTE: command ARGS are camelCase (Tauri v2); payloads/events stay snake_case
@@ -463,6 +478,14 @@ export interface DurableRunEventPage {
 }
 /** Process every item before advancing to next_cursor. Repeated event/step
  * identities are deduplicated; high_water_event_id alone is not a page cursor. */
-export function listConversationRunEvents(conversationId: number, afterEventId = 0, limit = 100): Promise<DurableRunEventPage> {
-  return invoke("list_conversation_run_events", { conversationId, afterEventId, limit });
+export function listConversationRunEvents(
+  conversationId: number,
+  afterEventId = 0,
+  limit = 100
+): Promise<DurableRunEventPage> {
+  return invoke("list_conversation_run_events", {
+    conversationId,
+    afterEventId,
+    limit,
+  });
 }

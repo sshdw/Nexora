@@ -14,8 +14,9 @@ import type {
   AgentRunEventPayload,
   AgentStep,
   StepEventFrame,
+  GovernanceEventPayload,
 } from "./tauri";
-import { listAgentRuns, listAgentSteps } from "./tauri";
+import { listAgentRuns, listAgentSteps, startAgentRun } from "./tauri";
 import { useAgentRun } from "./useAgentRun";
 
 type TauriEvent = { payload: AgentRunEventPayload };
@@ -99,6 +100,18 @@ function stepFrame(overrides: Partial<StepEventFrame> = {}): StepEventFrame {
     status: "ok",
     duration_ms: 5,
     ...overrides,
+  };
+}
+
+function approvalRequest(): GovernanceEventPayload {
+  return {
+    type: "approval_requested",
+    call_id: "call",
+    name: "write_file",
+    arguments: "{}",
+    group_key: null,
+    group_size: 1,
+    timeout_secs: 30,
   };
 }
 
@@ -262,17 +275,32 @@ describe("useAgentRun", () => {
     await waitFor(() => expect(result.current.runs).toHaveLength(1));
 
     act(() => {
-      emitAgentEvent({ type: "step", run_id: 7, event: stepFrame({ seq: 2 }) });
+      emitAgentEvent({
+        type: "step",
+        conversation_id: 1,
+        run_id: 7,
+        event: stepFrame({ seq: 2 }),
+      });
     });
     expect(result.current.runs[0].steps.map((s) => s.seq)).toEqual([2]);
 
     act(() => {
-      emitAgentEvent({ type: "step", run_id: 7, event: stepFrame({ seq: 1 }) });
+      emitAgentEvent({
+        type: "step",
+        conversation_id: 1,
+        run_id: 7,
+        event: stepFrame({ seq: 1 }),
+      });
     });
     expect(result.current.runs[0].steps.map((s) => s.seq)).toEqual([1, 2]);
 
     act(() => {
-      emitAgentEvent({ type: "step", run_id: 7, event: stepFrame({ seq: 1 }) });
+      emitAgentEvent({
+        type: "step",
+        conversation_id: 1,
+        run_id: 7,
+        event: stepFrame({ seq: 1 }),
+      });
     });
     expect(result.current.runs[0].steps).toHaveLength(2);
   });
@@ -348,7 +376,12 @@ describe("useAgentRun", () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
 
     act(() => {
-      emitAgentEvent({ type: "step", run_id: 7, event: stepFrame({ seq: 1 }) });
+      emitAgentEvent({
+        type: "step",
+        conversation_id: 1,
+        run_id: 7,
+        event: stepFrame({ seq: 1 }),
+      });
     });
     expect(result.current.runs).toHaveLength(1);
     expect(result.current.runs[0].steps_loaded).toBe(true);
@@ -372,33 +405,169 @@ describe("useAgentRun", () => {
     ).toHaveLength(0);
   });
 
-  it("pins foreign step-frame behavior: unknown run_id opens a placeholder under the active conversation", async () => {
+  it("rejects foreign and unscoped live frames for known and unknown runs without fetching", async () => {
     routeInvoke({ 1: [runRow()] }, { 7: [] });
-
     const { result } = renderHook(() => useAgentRun(1));
-    await waitFor(() => expect(result.current.runs).toHaveLength(1));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    act(() =>
+      emitAgentEvent({
+        type: "governance",
+        conversation_id: 1,
+        run_id: 7,
+        event: approvalRequest(),
+      })
+    );
+    const before = result.current.runs;
+    const calls = mockInvoke.mock.calls.length;
 
-    // StepEventFrame carries no conversation_id (tauri.ts:581-592), so the
-    // hook cannot filter foreign step frames by conversation and admits them
-    // into a placeholder run under the active id (useAgentRun.ts:396-410).
-    // Admitted tradeoff with a small leak window: the next finished frame or
-    // reload reconciles with persisted truth. This test pins the current
-    // behavior — the real fix needs conversation_id in StepEventFrame
-    // (backend scope, out of scope here). See issue #189.
+    act(() => {
+      for (const run_id of [7, 999]) {
+        for (const conversation_id of [2, undefined]) {
+          // Exercise malformed transport data as well as valid foreign envelopes.
+          emitAgentEvent({
+            type: "step",
+            conversation_id,
+            run_id,
+            event: stepFrame(),
+          } as AgentRunEventPayload);
+          for (const event of [
+            approvalRequest(),
+            { type: "approval_resolved", call_id: "call", approved: true },
+            { type: "cancelled" },
+          ] as GovernanceEventPayload[]) {
+            emitAgentEvent({
+              type: "governance",
+              conversation_id,
+              run_id,
+              event,
+            } as AgentRunEventPayload);
+          }
+        }
+      }
+    });
+    expect(result.current.runs).toBe(before);
+    expect(result.current.runs[0].pending_approval?.call_id).toBe("call");
+    expect(mockInvoke).toHaveBeenCalledTimes(calls);
+  });
+
+  it.each(["step", "approval"])(
+    "accepts an unknown owned %s before the start response",
+    async (first) => {
+      routeInvoke({ 1: [] }, {});
+      const { result } = renderHook(() => useAgentRun(1));
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      let resolveStart!: (value: { run_id: number }) => void;
+      mockInvoke.mockImplementationOnce(
+        () =>
+          new Promise<{ run_id: number }>((resolve) => {
+            resolveStart = resolve;
+          })
+      );
+      const starting = startAgentRun(1, "do work", "openai", "test-model");
+      const frames: AgentRunEventPayload[] = [
+        { type: "step", conversation_id: 1, run_id: 8, event: stepFrame() },
+        {
+          type: "governance",
+          conversation_id: 1,
+          run_id: 8,
+          event: approvalRequest(),
+        },
+      ];
+      if (first === "approval") frames.reverse();
+      act(() => emitAgentEvent(frames[0]));
+      expect(result.current.runs).toHaveLength(1);
+      expect(result.current.runs[0]).toMatchObject({
+        run_id: 8,
+        conversation_id: 1,
+        status: "running",
+      });
+      if (first === "step")
+        expect(result.current.runs[0].steps).toHaveLength(1);
+      else
+        expect(result.current.runs[0].pending_approval?.call_id).toBe("call");
+      act(() => emitAgentEvent(frames[1]));
+      expect(result.current.runs[0].steps).toHaveLength(1);
+      expect(result.current.runs[0].pending_approval?.call_id).toBe("call");
+      await act(async () => {
+        resolveStart({ run_id: 8 });
+        await starting;
+      });
+      expect(mockInvoke.mock.calls.map(([command]) => command)).toEqual([
+        "list_agent_runs",
+        "start_agent_run",
+      ]);
+    }
+  );
+
+  it("rejects delayed frames after switching conversation and keeps owned governor events live", async () => {
+    routeInvoke(
+      { 1: [runRow()], 2: [runRow({ id: 8, conversation_id: 2 })] },
+      {}
+    );
+    const { result, rerender } = renderHook(({ id }) => useAgentRun(id), {
+      initialProps: { id: 1 },
+    });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const delayed = () => {
+      emitAgentEvent({
+        type: "step",
+        conversation_id: 1,
+        run_id: 8,
+        event: stepFrame(),
+      });
+      emitAgentEvent({
+        type: "governance",
+        conversation_id: 1,
+        run_id: 8,
+        event: approvalRequest(),
+      });
+    };
+    rerender({ id: 2 });
+    await waitFor(() =>
+      expect(result.current.runs[0]?.conversation_id).toBe(2)
+    );
+    const before = result.current.runs;
+    const calls = mockInvoke.mock.calls.length;
+    act(delayed);
+    expect(result.current.runs).toBe(before);
     act(() => {
       emitAgentEvent({
         type: "step",
-        run_id: 999,
-        event: stepFrame({ seq: 1 }),
+        conversation_id: 2,
+        run_id: 8,
+        event: stepFrame(),
+      });
+      emitAgentEvent({
+        type: "governance",
+        conversation_id: 2,
+        run_id: 8,
+        event: approvalRequest(),
       });
     });
-    expect(result.current.runs).toHaveLength(2);
-    const placeholder = result.current.runs.find((r) => r.run_id === 999);
-    expect(placeholder).toMatchObject({
-      conversation_id: 1,
-      status: "running",
-    });
-    expect(placeholder?.steps.map((s) => s.seq)).toEqual([1]);
+    expect(result.current.runs[0].steps).toHaveLength(1);
+    expect(result.current.runs[0].pending_approval?.call_id).toBe("call");
+    for (const [event, status] of [
+      [{ type: "paused" }, "paused"],
+      [{ type: "resumed" }, "running"],
+      [{ type: "budget_exhausted", max_steps: 5 }, "budget_exhausted"],
+      [
+        { type: "spend_limit_exceeded", spent_micro: 2, limit_micro: 1 },
+        "spend_limit_exceeded",
+      ],
+      [{ type: "cancelled" }, "cancelled"],
+    ] as [GovernanceEventPayload, string][]) {
+      act(() =>
+        emitAgentEvent({
+          type: "governance",
+          conversation_id: 2,
+          run_id: 8,
+          event,
+        })
+      );
+      expect(result.current.runs[0].status).toBe(status);
+    }
+    expect(result.current.runs[0].pending_approval).toBeNull();
+    expect(mockInvoke).toHaveBeenCalledTimes(calls);
   });
 
   it("drops a stale reload that resolves after a conversation switch", async () => {

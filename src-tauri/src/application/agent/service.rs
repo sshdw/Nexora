@@ -80,6 +80,8 @@ pub(crate) enum RunFrame {
     Step {
         /// The run this frame belongs to.
         run_id: i64,
+        /// The owning conversation, supplied by the service forwarder.
+        conversation_id: i64,
         /// The step payload.
         event: StepEventFrame,
     },
@@ -87,6 +89,8 @@ pub(crate) enum RunFrame {
     Governance {
         /// The run this frame belongs to.
         run_id: i64,
+        /// The owning conversation, supplied by the service forwarder.
+        conversation_id: i64,
         /// The governance payload.
         event: AgentRunEvent,
     },
@@ -225,7 +229,7 @@ impl RunFrame {
     /// step frames (their own `run_id` is authoritative); every other event
     /// becomes a governance frame tagged with the bridging `run_id`.
     #[must_use]
-    pub(crate) fn with_event(run_id: i64, event: AgentRunEvent) -> Self {
+    pub(crate) fn with_event(run_id: i64, conversation_id: i64, event: AgentRunEvent) -> Self {
         match event {
             AgentRunEvent::StepRecorded {
                 step_id,
@@ -241,6 +245,7 @@ impl RunFrame {
                 duration_ms,
             } => Self::Step {
                 run_id: event_run_id,
+                conversation_id,
                 event: StepEventFrame {
                     step_id,
                     seq,
@@ -256,6 +261,7 @@ impl RunFrame {
             },
             other => Self::Governance {
                 run_id,
+                conversation_id,
                 event: other,
             },
         }
@@ -837,7 +843,11 @@ fn spawn_run(
                         &format!("step:{seq}"),
                     );
                 }
-                forward_host.emit(&RunFrame::with_event(run_id, event));
+                forward_host.emit(&RunFrame::with_event(
+                    run_id,
+                    forward_conversation_id,
+                    event,
+                ));
             }
             // `rx` disconnected: every buffered run event has been emitted.
             // The run thread sent the terminal frame before dropping its
@@ -1433,6 +1443,21 @@ mod tests {
                 .collect::<Result<Vec<_>, _>>()
                 .expect("seq count fits in i64")
         );
+
+        // Assert the real service forwarder's serialized transport identity,
+        // for both persisted steps and transient governance (not durable hints).
+        for kind in ["step", "governance"] {
+            let live_frames: Vec<_> = frames
+                .iter()
+                .map(|frame| serde_json::to_value(frame).expect("serialize"))
+                .filter(|frame| frame["type"] == kind)
+                .collect();
+            assert!(!live_frames.is_empty(), "missing {kind} frames");
+            for frame in live_frames {
+                assert_eq!(frame["conversation_id"], conversation_id);
+                assert_eq!(frame["run_id"], run_id);
+            }
+        }
 
         // Assistant message persisted through the shared path (DP-7).
         assert_eq!(

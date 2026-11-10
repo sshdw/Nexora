@@ -306,6 +306,7 @@ mod tests {
                 Ok(RunFrame::Governance {
                     run_id: id,
                     event: AgentRunEvent::ApprovalRequested { .. },
+                    ..
                 }) if id == run_id => return,
                 Ok(_) => {}
                 Err(_) => break,
@@ -535,6 +536,7 @@ mod tests {
                 Ok(RunFrame::Governance {
                     run_id,
                     event: AgentRunEvent::ApprovalRequested { .. },
+                    ..
                 }) => {
                     unparked.retain(|id| *id != run_id);
                 }
