@@ -445,6 +445,23 @@ pub(crate) fn list_agent_runs(
         .map_err(Into::into)
 }
 
+/// Conversation-scoped durable history; this read never resumes execution.
+#[tauri::command]
+pub(crate) fn list_conversation_run_events(
+    conversation_id: i64,
+    after_event_id: Option<i64>,
+    limit: Option<i64>,
+    db: State<'_, Database>,
+) -> Result<service::DurableRunEventPage, CommandError> {
+    service::list_conversation_run_events(
+        db.inner(),
+        conversation_id,
+        after_event_id.unwrap_or(0),
+        limit.unwrap_or(100),
+    )
+    .map_err(Into::into)
+}
+
 /// Rehydration: the steps of one run, `seq` ASC.
 ///
 /// NEX-PERF-003: each item carries a *bounded preview* of its observation
@@ -1113,7 +1130,7 @@ mod tests {
     /// — no extra key, no missing key.
     #[test]
     fn agent_command_arg_keys_match_rust_params() {
-        const AGENT_COMMANDS: [(&str, &[&str]); 17] = [
+        const AGENT_COMMANDS: [(&str, &[&str]); 18] = [
             (
                 "start_agent_run",
                 &["conversationId", "content", "provider", "model"],
@@ -1127,6 +1144,10 @@ mod tests {
             (
                 "list_agent_runs",
                 &["conversationId", "limit", "beforeRunId"],
+            ),
+            (
+                "list_conversation_run_events",
+                &["conversationId", "afterEventId", "limit"],
             ),
             ("list_agent_steps", &["runId", "limit", "beforeSeq"]),
             ("get_agent_step_observation", &["stepId"]),

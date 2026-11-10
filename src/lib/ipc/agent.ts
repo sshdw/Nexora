@@ -103,6 +103,7 @@ export type GovernanceEventPayload =
 
 /** One `agent-run-event` frame (Task 5.1 design §2.4). */
 export type AgentRunEventPayload =
+  | { type: "durable"; run_id: number; conversation_id: number; event_id: number }
   | { type: "step"; run_id: number; event: StepEventFrame }
   | { type: "governance"; run_id: number; event: GovernanceEventPayload }
   | { type: "finished"; run_id: number; event: RunFinishedPayload };
@@ -440,4 +441,28 @@ export function pauseAgentRun(runId: number): Promise<void> {
 /** Resume a paused run (Task 5.2). */
 export function resumeAgentRun(runId: number): Promise<void> {
   return invoke<void>("resume_agent_run", { runId });
+}
+
+/** Committed identity notification; cursor reads reconcile delivery gaps. */
+export interface DurableRunEvent {
+  event_id: number;
+  conversation_id: number;
+  run_id: number;
+  kind: "run_started" | "step_recorded" | "run_finished" | "run_interrupted";
+  step_id: number | null;
+  schema_version: number;
+  created_at: number;
+  step: AgentStep | null;
+  terminal: RunFinishedPayload | null;
+}
+export interface DurableRunEventPage {
+  events: DurableRunEvent[];
+  next_cursor: number;
+  high_water_event_id: number;
+  has_more: boolean;
+}
+/** Process every item before advancing to next_cursor. Repeated event/step
+ * identities are deduplicated; high_water_event_id alone is not a page cursor. */
+export function listConversationRunEvents(conversationId: number, afterEventId = 0, limit = 100): Promise<DurableRunEventPage> {
+  return invoke("list_conversation_run_events", { conversationId, afterEventId, limit });
 }

@@ -69,6 +69,13 @@ pub(crate) use super::registry::{ActiveAgentRun, AgentRunRegistry, ResolveOutcom
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum RunFrame {
+    /// Best-effort notification of an already committed identity. Consumers
+    /// reconcile with the conversation cursor API; this never executes work.
+    Durable {
+        run_id: i64,
+        conversation_id: i64,
+        event_id: i64,
+    },
     /// One successfully persisted step (from `AgentRunEvent::StepRecorded`).
     Step {
         /// The run this frame belongs to.
@@ -659,6 +666,7 @@ fn start_run_claimed(
         },
     );
 
+    notify_durable(db, host.as_ref(), run_id, request.conversation_id, "start");
     spawn_run(
         Arc::clone(registry),
         host,
@@ -681,7 +689,13 @@ fn start_run_claimed(
 /// `request`/`host` are consumed by the thread closures; the owned handles are
 /// the bridge's contract, and the arity mirrors the thread boundaries each
 /// value is destined for.
-#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+// Keep the owned run/forwarder thread setup and commit-notification boundary
+// together; splitting these closures would obscure their channel lifetimes.
+#[allow(
+    clippy::too_many_arguments,
+    clippy::needless_pass_by_value,
+    clippy::too_many_lines
+)]
 fn spawn_run(
     registry: Arc<AgentRunRegistry>,
     host: Arc<dyn AgentRunHost>,
@@ -707,6 +721,8 @@ fn spawn_run(
     // success, forwards the terminal frame, and releases the registry entry on
     // every exit path (DP-9: a panic leaks the entry until app exit — the
     // runner is panic-free by design).
+    let forward_db = db.clone();
+    let forward_conversation_id = request.conversation_id;
     let run_registry = Arc::clone(&registry);
     let run_host = Arc::clone(&host);
     let run_request = request;
@@ -719,6 +735,7 @@ fn spawn_run(
                 let tx_for_recorder = tx.clone();
                 let recorder = RunRecorder::new(&db)
                     .with_run_id(run_id)
+                    .with_conversation(run_request.conversation_id)
                     .with_events(&tx_for_recorder);
                 let permission_store = super::permissions::PermissionStore::load(&db);
                 // 2.0 flags: resolve the workspace → global → default gates
@@ -811,6 +828,15 @@ fn spawn_run(
         .name(format!("agent-run-forwarder-{run_id}"))
         .spawn(move || {
             while let Ok(event) = rx.recv() {
+                if let AgentRunEvent::StepRecorded { seq, .. } = &event {
+                    notify_durable(
+                        &forward_db,
+                        forward_host.as_ref(),
+                        run_id,
+                        forward_conversation_id,
+                        &format!("step:{seq}"),
+                    );
+                }
                 forward_host.emit(&RunFrame::with_event(run_id, event));
             }
             // `rx` disconnected: every buffered run event has been emitted.
@@ -818,6 +844,13 @@ fn spawn_run(
             // senders (and before releasing the registry entry), so it is
             // either buffered or in flight here — never lost.
             while let Ok(event) = finish_rx.recv() {
+                notify_durable(
+                    &forward_db,
+                    forward_host.as_ref(),
+                    run_id,
+                    forward_conversation_id,
+                    "terminal",
+                );
                 forward_host.emit(&RunFrame::Finished { run_id, event });
             }
         });
@@ -877,6 +910,99 @@ pub(crate) fn list_runs_for_conversation_paged(
         limit,
         before_run_id,
     )
+}
+
+/// Bounded DTO for durable history. Original identities are retained, with
+/// exactly the same step previews as the existing history path.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct DurableRunEvent {
+    pub event_id: i64,
+    pub conversation_id: i64,
+    pub run_id: i64,
+    pub kind: String,
+    pub step_id: Option<i64>,
+    pub schema_version: i64,
+    pub created_at: i64,
+    pub step: Option<AgentStepListItem>,
+    pub terminal: Option<RunFinished>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct DurableRunEventPage {
+    pub events: Vec<DurableRunEvent>,
+    pub next_cursor: i64,
+    pub high_water_event_id: i64,
+    pub has_more: bool,
+}
+
+/// Read-only reconciliation. Does not resolve credentials or restore work.
+pub(crate) fn list_conversation_run_events(
+    db: &Database,
+    conversation_id: i64,
+    after_event_id: i64,
+    limit: i64,
+) -> Result<DurableRunEventPage, crate::infrastructure::database::DatabaseError> {
+    let page = AgentRunRepository::new(db).list_conversation_run_events(
+        conversation_id,
+        after_event_id,
+        limit,
+    )?;
+    Ok(DurableRunEventPage {
+        events: page
+            .events
+            .into_iter()
+            .map(|event| DurableRunEvent {
+                event_id: event.event_id,
+                conversation_id: event.conversation_id,
+                run_id: event.run_id,
+                kind: event.kind,
+                step_id: event.step_id,
+                schema_version: event.schema_version,
+                created_at: event.created_at,
+                step: event.step.as_ref().map(AgentStepListItem::from_row),
+                terminal: event.terminal.map(|run| {
+                    let final_content = run
+                        .final_content
+                        .as_deref()
+                        .map(super::persistence::history_preview);
+                    RunFinished {
+                        conversation_id,
+                        status: if run.interrupted {
+                            "interrupted".to_string()
+                        } else {
+                            run.status
+                        },
+                        final_content,
+                        error: run
+                            .error
+                            .as_deref()
+                            .map(super::persistence::history_preview),
+                    }
+                }),
+            })
+            .collect(),
+        next_cursor: page.next_cursor,
+        high_water_event_id: page.high_water_event_id,
+        has_more: page.has_more,
+    })
+}
+
+fn notify_durable(
+    db: &Database,
+    host: &dyn AgentRunHost,
+    run_id: i64,
+    conversation_id: i64,
+    suffix: &str,
+) {
+    if let Ok(Some(event_id)) =
+        AgentRunRepository::new(db).event_id_for_source(&format!("run:{run_id}:{suffix}"))
+    {
+        host.emit(&RunFrame::Durable {
+            run_id,
+            conversation_id,
+            event_id,
+        });
+    }
 }
 
 /// List the steps of one run, `seq` ascending (gap-free per CF-01).
@@ -984,6 +1110,20 @@ mod tests {
 
     impl AgentRunHost for FakeHost {
         fn emit(&self, frame: &RunFrame) {
+            if let RunFrame::Durable {
+                event_id,
+                conversation_id,
+                ..
+            } = frame
+            {
+                let page =
+                    list_conversation_run_events(&self.db, *conversation_id, event_id - 1, 1)
+                        .unwrap();
+                assert_eq!(
+                    page.events[0].event_id, *event_id,
+                    "notification follows commit"
+                );
+            }
             let _ = self.frames_tx.send(frame.clone());
         }
 
@@ -1076,6 +1216,161 @@ mod tests {
             max_iterations: None,
             spend_limit_micro_usd: None,
         }
+    }
+
+    #[test]
+    fn journal_production_start_cursor_roundtrip_and_duplicate_delivery() {
+        let (db, workspace, rx, host) = setup("journal-roundtrip");
+        let conversation_id = ConversationService::new(&db).create("conv").unwrap();
+        let run_id = start_run(
+            &db,
+            Arc::new(AgentRunRegistry::default()),
+            host as Arc<dyn AgentRunHost>,
+            Arc::new(ScriptedExecutor::new(vec![Ok(text_response(&format!(
+                "sk-abcdefghijklmnopqrstuv {}",
+                "x".repeat(4000)
+            )))])),
+            workspace,
+            request(conversation_id, "q"),
+            AutonomyMode::SemiAutonomous,
+            RunPreset::Coding,
+        )
+        .unwrap();
+        let frames = collect_frames(&rx);
+        let live_ids: Vec<_> = frames
+            .iter()
+            .filter_map(|f| {
+                if let RunFrame::Durable { event_id, .. } = f {
+                    Some(*event_id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(live_ids.len(), 3);
+        let mut cursor = 0;
+        let mut events = Vec::new();
+        loop {
+            let page = list_conversation_run_events(&db, conversation_id, cursor, 1).unwrap();
+            cursor = page.next_cursor;
+            events.extend(page.events);
+            if !page.has_more {
+                break;
+            }
+        }
+        assert_eq!(
+            events.iter().map(|e| e.event_id).collect::<Vec<_>>(),
+            live_ids
+        );
+        assert!(events.iter().all(|e| e.run_id == run_id));
+        let step = events[1].step.as_ref().unwrap();
+        assert!(step.observation_truncated);
+        assert!(!step
+            .observation
+            .as_ref()
+            .unwrap()
+            .contains("sk-abcdefghijklmnopqrstuv"));
+        assert_eq!(
+            get_step_observation_for(&db, step.id)
+                .unwrap()
+                .unwrap()
+                .len() as u64,
+            step.observation_len.unwrap()
+        );
+        assert_eq!(list_steps_for_run(&db, run_id).unwrap()[0].id, step.id);
+        let mut merged = std::collections::BTreeSet::new();
+        for id in live_ids
+            .iter()
+            .chain(live_ids.iter())
+            .chain(events.iter().map(|e| &e.event_id))
+        {
+            merged.insert(*id);
+        }
+        assert_eq!(merged.len(), 3);
+        assert!(
+            list_conversation_run_events(&db, conversation_id + 1, 0, 100)
+                .unwrap()
+                .events
+                .is_empty()
+        );
+        let encoded = serde_json::to_string(&events).unwrap();
+        assert!(!encoded.contains("sk-abcdefghijklmnopqrstuv"));
+        assert!(
+            encoded.len() < 8000,
+            "durable output uses bounded projections"
+        );
+    }
+
+    #[test]
+    fn journal_production_start_rejects_checkpoint_before_dispatch() {
+        let (db, workspace, _rx, host) = setup("journal-start-failure");
+        let conversation_id = ConversationService::new(&db).create("conv").unwrap();
+        db.lock().unwrap().execute_batch("CREATE TRIGGER inject_journal_failure BEFORE INSERT ON durable_run_events BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
+        let executor = Arc::new(ScriptedExecutor::new(vec![Ok(text_response(
+            "never requested",
+        ))]));
+        let result = start_run(
+            &db,
+            Arc::new(AgentRunRegistry::default()),
+            host as Arc<dyn AgentRunHost>,
+            executor.clone(),
+            workspace,
+            request(conversation_id, "q"),
+            AutonomyMode::SemiAutonomous,
+            RunPreset::Coding,
+        );
+        assert!(matches!(result, Err(AgentRunError::RunNotPersisted)));
+        assert_eq!(executor.steps.lock().unwrap().len(), 1);
+        assert!(list_runs_for_conversation(&db, conversation_id)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn journal_terminal_failure_has_no_durable_ack_or_assistant_success() {
+        let (db, workspace, rx, host) = setup("journal-terminal-failure");
+        let conversation_id = ConversationService::new(&db).create("conv").unwrap();
+        db.lock().unwrap().execute_batch("CREATE TRIGGER inject_journal_failure BEFORE INSERT ON durable_run_events WHEN NEW.kind='run_finished' BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
+        let run_id = start_run(
+            &db,
+            Arc::new(AgentRunRegistry::default()),
+            host.clone() as Arc<dyn AgentRunHost>,
+            Arc::new(ScriptedExecutor::new(vec![Ok(text_response("answer"))])),
+            workspace,
+            request(conversation_id, "q"),
+            AutonomyMode::SemiAutonomous,
+            RunPreset::Coding,
+        )
+        .unwrap();
+        let frames = collect_frames(&rx);
+        let RunFrame::Finished { event, .. } = frames.last().unwrap() else {
+            panic!("finished")
+        };
+        assert_eq!(event.status, "error");
+        assert!(event
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("history could not be saved"));
+        assert!(host.persisted.lock().unwrap().is_empty());
+        assert_eq!(
+            AgentRunRepository::new(&db)
+                .read_run(run_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            "running"
+        );
+        let page = list_conversation_run_events(&db, conversation_id, 0, 100).unwrap();
+        assert_eq!(page.events.len(), 2);
+        assert!(page.events.iter().all(|e| e.kind != "run_finished"));
+        assert_eq!(
+            frames
+                .iter()
+                .filter(|f| matches!(f, RunFrame::Durable { .. }))
+                .count(),
+            2
+        );
     }
 
     /// Happy path: steps stream in seq order, `Finished` is the last frame

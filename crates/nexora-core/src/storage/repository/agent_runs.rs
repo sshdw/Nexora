@@ -27,7 +27,7 @@
 
 use crate::storage::database::{Database, DatabaseError};
 use crate::storage::repository::{Repository, Result};
-use rusqlite::{params, Error as SqliteError};
+use rusqlite::{params, Error as SqliteError, OptionalExtension};
 use serde::Serialize;
 
 /// A single `agent_runs` row as persisted, mirroring the columns defined by
@@ -116,6 +116,43 @@ pub struct AgentStep {
     pub output_tokens: Option<u64>,
 }
 
+/// One committed lifecycle identity. Payloads reference original retained rows.
+#[derive(Debug, Clone, Serialize)]
+pub struct DurableRunEvent {
+    /// Global committed event identity.
+    pub event_id: i64,
+    /// Owning conversation, derived through the run.
+    pub conversation_id: i64,
+    /// Original run identity.
+    pub run_id: i64,
+    /// Initial lifecycle kind.
+    pub kind: String,
+    /// Original step identity, for step records only.
+    pub step_id: Option<i64>,
+    /// Payload schema version, currently one.
+    pub schema_version: i64,
+    /// Unix seconds assigned on insert.
+    pub created_at: i64,
+    /// Original immutable step, projected by application adapters.
+    pub step: Option<AgentStep>,
+    /// Only terminal records carry a terminal projection; starts never pretend
+    /// the run's current state was its initial state.
+    pub terminal: Option<AgentRun>,
+}
+
+/// A snapshot page. Advance only to `next_cursor` after processing every item.
+#[derive(Debug, Clone, Serialize)]
+pub struct DurableRunEventPage {
+    /// Ordered items in this snapshot page.
+    pub events: Vec<DurableRunEvent>,
+    /// Safe exclusive cursor after processing the whole page.
+    pub next_cursor: i64,
+    /// Global snapshot high-water mark, not a page cursor.
+    pub high_water_event_id: i64,
+    /// Whether more matching items remain beyond this page.
+    pub has_more: bool,
+}
+
 /// Repository for the `agent_runs` and `agent_steps` tables.
 ///
 /// Implements [`Repository`], supplying the shared [`Database`] handle, and
@@ -140,6 +177,98 @@ impl Repository for AgentRunRepository<'_> {
 }
 
 impl AgentRunRepository<'_> {
+    /// Read a bounded, conversation-filtered forward page from one `SQLite`
+    /// snapshot, including its high-water mark. No execution or restoration.
+    ///
+    /// # Errors
+    /// Returns a database error when the snapshot cannot be read.
+    pub fn list_conversation_run_events(
+        &self,
+        conversation_id: i64,
+        after_event_id: i64,
+        limit: i64,
+    ) -> Result<DurableRunEventPage> {
+        let mut conn = self.read_conn()?;
+        let tx = conn.transaction()?;
+        let after = after_event_id.max(0);
+        let limit = limit.clamp(1, 200);
+        let high_water: i64 = tx.query_row(
+            "SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name='durable_run_events'),0)",
+            [],
+            |row| row.get(0),
+        )?;
+        let mut events = {
+            let mut stmt = tx.prepare(
+                "SELECT e.event_id,r.conversation_id,e.run_id,e.kind,e.step_id,e.schema_version,e.created_at
+                 FROM durable_run_events e JOIN agent_runs r ON r.id=e.run_id
+                 WHERE r.conversation_id=?1 AND e.event_id>?2 AND e.event_id<=?3
+                 ORDER BY e.event_id LIMIT ?4")?;
+            let rows = stmt
+                .query_map(
+                    params![conversation_id, after, high_water, limit + 1],
+                    |row| {
+                        Ok(DurableRunEvent {
+                            event_id: row.get(0)?,
+                            conversation_id: row.get(1)?,
+                            run_id: row.get(2)?,
+                            kind: row.get(3)?,
+                            step_id: row.get(4)?,
+                            schema_version: row.get(5)?,
+                            created_at: row.get(6)?,
+                            step: None,
+                            terminal: None,
+                        })
+                    },
+                )?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            rows
+        };
+        let has_more = events.len() > usize::try_from(limit).unwrap_or(200);
+        if has_more {
+            events.pop();
+        }
+        for event in &mut events {
+            if let Some(id) = event.step_id {
+                event.step = Some(tx.query_row(
+                    "SELECT id,run_id,seq,kind,tool_name,arguments,observation,status,started_at,duration_ms,
+                     rule_id,group_key,decided_by,input_tokens,output_tokens FROM agent_steps WHERE id=?1",
+                    [id], row_to_agent_step)?);
+            } else if matches!(event.kind.as_str(), "run_finished" | "run_interrupted") {
+                event.terminal = Some(tx.query_row(
+                    "SELECT id,conversation_id,model,mode,status,started_at,finished_at,total_steps,
+                     final_content,error,spent_micro_usd,limit_micro_usd,interrupted FROM agent_runs WHERE id=?1",
+                    [event.run_id], row_to_agent_run)?);
+            }
+        }
+        let next_cursor = if has_more {
+            events.last().map_or(after, |e| e.event_id)
+        } else {
+            high_water.max(after)
+        };
+        tx.commit()?;
+        Ok(DurableRunEventPage {
+            events,
+            next_cursor,
+            high_water_event_id: high_water,
+            has_more,
+        })
+    }
+
+    /// Return the stable committed identity for a logical source key.
+    ///
+    /// # Errors
+    /// Returns a database error when the lookup fails.
+    pub fn event_id_for_source(&self, source_key: &str) -> Result<Option<i64>> {
+        self.read_conn()?
+            .query_row(
+                "SELECT event_id FROM durable_run_events WHERE source_key=?1",
+                [source_key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
     /// Insert a new run row at run start (DATABASE.md §7.8).
     ///
     /// Persists the caller-supplied `conversation_id` (`None` until the
@@ -200,6 +329,23 @@ impl AgentRunRepository<'_> {
         // compatibility while the domain uses u64.
         let spent_i64 = spent_micro_usd.map(|v| i64::try_from(v).unwrap_or(i64::MAX));
         let limit_i64 = limit_micro_usd.map(|v| i64::try_from(v).unwrap_or(i64::MAX));
+        let retry: Option<bool> = conn
+            .query_row(
+                "SELECT status IS ?2 AND final_content IS ?3 AND error IS ?4
+             AND spent_micro_usd IS ?5 AND limit_micro_usd IS ?6 AND interrupted=0
+             FROM agent_runs WHERE id=?1 AND status<>'running'
+             AND EXISTS(SELECT 1 FROM durable_run_events WHERE run_id=?1 AND kind='run_started')",
+                params![id, status, final_content, error, spent_i64, limit_i64],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(identical) = retry {
+            return if identical {
+                Ok(())
+            } else {
+                Err(DatabaseError::Sqlite(SqliteError::InvalidQuery))
+            };
+        }
         conn.execute(
             "UPDATE agent_runs SET status = ?2, finished_at = max((unixepoch()), started_at), \
              total_steps = (SELECT COUNT(*) FROM agent_steps WHERE run_id = ?1), \
@@ -368,6 +514,26 @@ impl AgentRunRepository<'_> {
         // i64 — saturate at `i64::MAX`, far above any real turn usage.
         let input_i64 = input_tokens.map(|v| i64::try_from(v).unwrap_or(i64::MAX));
         let output_i64 = output_tokens.map(|v| i64::try_from(v).unwrap_or(i64::MAX));
+        // The logical key is (run, seq). Only journaled runs gain retry
+        // semantics; legacy duplicate-step behavior remains unchanged.
+        let retry: Option<(i64, bool)> = conn.query_row(
+            "SELECT s.id, s.kind IS ?3 AND s.tool_name IS ?4 AND s.arguments IS ?5
+             AND s.observation IS ?6 AND s.status IS ?7 AND s.duration_ms IS ?8
+             AND s.rule_id IS ?9 AND s.group_key IS ?10 AND s.decided_by IS ?11
+             AND s.input_tokens IS ?12 AND s.output_tokens IS ?13
+             FROM agent_steps s WHERE s.run_id=?1 AND s.seq=?2
+             AND EXISTS(SELECT 1 FROM durable_run_events e WHERE e.run_id=s.run_id AND e.kind='run_started')",
+            params![run_id,seq,kind,tool_name,arguments,observation,status,duration_ms,
+                    rule_id,group_key,decided_by,input_i64,output_i64],
+            |row| Ok((row.get(0)?,row.get(1)?)),
+        ).optional()?;
+        if let Some((id, identical)) = retry {
+            return if identical {
+                Ok(id)
+            } else {
+                Err(DatabaseError::Sqlite(SqliteError::InvalidQuery))
+            };
+        }
         conn.execute(
             "INSERT INTO agent_steps \
                  (run_id, seq, kind, tool_name, arguments, observation, status, duration_ms, \
@@ -475,33 +641,35 @@ impl AgentRunRepository<'_> {
              started_at, duration_ms, rule_id, group_key, decided_by, input_tokens, output_tokens \
              FROM agent_steps WHERE run_id = ?1 AND seq < ?2 ORDER BY seq LIMIT ?3",
         )?;
-        let rows = stmt.query_map(params![run_id, cursor, limit], |row| {
-            let input_i64: Option<i64> = row.get(13)?;
-            let output_i64: Option<i64> = row.get(14)?;
-            Ok(AgentStep {
-                id: row.get(0)?,
-                run_id: row.get(1)?,
-                seq: row.get(2)?,
-                kind: row.get(3)?,
-                tool_name: row.get(4)?,
-                arguments: row.get(5)?,
-                observation: row.get(6)?,
-                status: row.get(7)?,
-                started_at: row.get(8)?,
-                duration_ms: row.get(9)?,
-                rule_id: row.get(10)?,
-                group_key: row.get(11)?,
-                decided_by: row.get(12)?,
-                input_tokens: input_i64.map(|v| u64::try_from(v).unwrap_or(0)),
-                output_tokens: output_i64.map(|v| u64::try_from(v).unwrap_or(0)),
-            })
-        })?;
+        let rows = stmt.query_map(params![run_id, cursor, limit], row_to_agent_step)?;
         let mut steps = Vec::new();
         for row in rows {
             steps.push(row?);
         }
         Ok(steps)
     }
+}
+
+fn row_to_agent_step(row: &rusqlite::Row<'_>) -> std::result::Result<AgentStep, SqliteError> {
+    let input_i64: Option<i64> = row.get(13)?;
+    let output_i64: Option<i64> = row.get(14)?;
+    Ok(AgentStep {
+        id: row.get(0)?,
+        run_id: row.get(1)?,
+        seq: row.get(2)?,
+        kind: row.get(3)?,
+        tool_name: row.get(4)?,
+        arguments: row.get(5)?,
+        observation: row.get(6)?,
+        status: row.get(7)?,
+        started_at: row.get(8)?,
+        duration_ms: row.get(9)?,
+        rule_id: row.get(10)?,
+        group_key: row.get(11)?,
+        decided_by: row.get(12)?,
+        input_tokens: input_i64.map(|v| u64::try_from(v).unwrap_or(0)),
+        output_tokens: output_i64.map(|v| u64::try_from(v).unwrap_or(0)),
+    })
 }
 
 /// Map one `agent_runs` row onto an [`AgentRun`] record.
@@ -1271,5 +1439,549 @@ mod tests {
             finished_at >= finalized.started_at,
             "finished_at must never precede started_at: {finalized:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod journal_tests {
+    use super::*;
+    use crate::storage::database::{configure, in_memory_database, migrate, MIGRATIONS};
+
+    fn conversation(db: &Database) -> i64 {
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO conversations(title,status) VALUES('journal test','active')",
+            [],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+    fn step(repo: &AgentRunRepository<'_>, run: i64, seq: i64, text: &str) -> Result<i64> {
+        repo.append_step(
+            run,
+            seq,
+            "model_turn",
+            None,
+            None,
+            Some(text),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(11),
+            Some(4),
+        )
+    }
+    fn count(db: &Database) -> i64 {
+        db.lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM durable_run_events", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn journal_order_retry_conflicts_and_cursor_isolation() {
+        let db = in_memory_database();
+        let c = conversation(&db);
+        let foreign = conversation(&db);
+        let repo = AgentRunRepository::new(&db);
+        let run = repo.create_run(Some(c), "m", "supervised").unwrap();
+        repo.create_run(Some(foreign), "m", "supervised").unwrap();
+        let id = step(&repo, run, 1, "recorded").unwrap();
+        assert_eq!(step(&repo, run, 1, "recorded").unwrap(), id);
+        assert!(step(&repo, run, 1, "conflict").is_err());
+        repo.finalize_run(run, "completed", Some("answer"), None, Some(2), None)
+            .unwrap();
+        let before = repo.read_run(run).unwrap();
+        repo.finalize_run(run, "completed", Some("answer"), None, Some(2), None)
+            .unwrap();
+        assert!(repo
+            .finalize_run(run, "error", None, Some("conflict"), None, None)
+            .is_err());
+        assert_eq!(before, repo.read_run(run).unwrap());
+        assert!(step(&repo, run, 2, "late").is_err());
+        let clamped = repo.list_conversation_run_events(c, -1, 0).unwrap();
+        assert_eq!(clamped.events.len(), 1);
+        assert!(clamped.has_more);
+        assert_eq!(
+            repo.list_conversation_run_events(c, 0, i64::MAX)
+                .unwrap()
+                .events
+                .len(),
+            3
+        );
+        let first = repo.list_conversation_run_events(c, 0, 1).unwrap();
+        assert!(first.has_more);
+        assert!(first.next_cursor < first.high_water_event_id);
+        let rest = repo
+            .list_conversation_run_events(c, first.next_cursor, 200)
+            .unwrap();
+        assert!(!rest.has_more);
+        assert_eq!(rest.events.len(), 2);
+        assert_eq!(rest.events[0].step_id, Some(id));
+        assert_eq!(rest.events[0].step.as_ref().unwrap().input_tokens, Some(11));
+        assert_eq!(rest.events[1].terminal, before);
+        assert!(first
+            .events
+            .iter()
+            .chain(&rest.events)
+            .all(|e| e.conversation_id == c));
+        assert_eq!(count(&db), 4);
+        assert!(repo
+            .list_conversation_run_events(c, rest.next_cursor, 1)
+            .unwrap()
+            .events
+            .is_empty());
+        let again = repo.list_conversation_run_events(c, 0, 200).unwrap();
+        assert_eq!(
+            again.events.iter().map(|e| e.event_id).collect::<Vec<_>>(),
+            vec![
+                first.events[0].event_id,
+                rest.events[0].event_id,
+                rest.events[1].event_id
+            ]
+        );
+    }
+
+    #[test]
+    fn journal_checkpoint_insert_failure_rolls_back_start_step_and_terminal() {
+        let db = in_memory_database();
+        let c = conversation(&db);
+        let repo = AgentRunRepository::new(&db);
+        db.lock().unwrap().execute_batch("CREATE TRIGGER inject_failure BEFORE INSERT ON durable_run_events BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
+        assert!(repo.create_run(Some(c), "m", "supervised").is_err());
+        assert!(repo.list_runs_by_conversation(c).unwrap().is_empty());
+        db.lock()
+            .unwrap()
+            .execute_batch("DROP TRIGGER inject_failure")
+            .unwrap();
+        let run = repo.create_run(Some(c), "m", "supervised").unwrap();
+        db.lock().unwrap().execute_batch("CREATE TRIGGER inject_failure BEFORE INSERT ON durable_run_events BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
+        assert!(step(&repo, run, 1, "not committed").is_err());
+        assert!(repo.list_steps(run).unwrap().is_empty());
+        assert!(repo
+            .finalize_run(run, "completed", Some("not committed"), None, None, None)
+            .is_err());
+        assert_eq!(repo.read_run(run).unwrap().unwrap().status, "running");
+        assert_eq!(count(&db), 1);
+        assert!(repo.fail_orphaned_running_runs("interrupted").is_err());
+        assert!(!repo.read_run(run).unwrap().unwrap().interrupted);
+        db.lock()
+            .unwrap()
+            .execute_batch("DROP TRIGGER inject_failure")
+            .unwrap();
+        assert_eq!(repo.fail_orphaned_running_runs("interrupted").unwrap(), 1);
+        assert_eq!(repo.fail_orphaned_running_runs("interrupted").unwrap(), 0);
+        assert_eq!(count(&db), 2);
+    }
+
+    #[test]
+    fn journal_upgrade_preserves_legacy_and_only_new_orphans_get_events() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        // Populate the real v15 schema, rather than approximating old rows.
+        conn.execute_batch(
+            "CREATE TABLE schema_version(version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL)",
+        )
+        .unwrap();
+        for &(version, sql) in MIGRATIONS.iter().filter(|(v, _)| *v <= 15) {
+            // Historical rebuild migrations require FK-off outside their tx.
+            conn.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+            let tx = conn.transaction().unwrap();
+            tx.execute_batch(sql).unwrap();
+            tx.execute("INSERT INTO schema_version VALUES(?1,1)", [version])
+                .unwrap();
+            tx.commit().unwrap();
+            conn.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+        }
+        let db = Database::new(conn);
+        let c = conversation(&db);
+        let repo = AgentRunRepository::new(&db);
+        let mut legacy = Vec::new();
+        for status in [
+            "running",
+            "completed",
+            "cancelled",
+            "budget_exhausted",
+            "spend_limit_exceeded",
+            "error",
+        ] {
+            // v15 repository inserts do not access journal unless appending/finalizing.
+            let conn = db.lock().unwrap();
+            conn.execute("INSERT INTO agent_runs(conversation_id,model,mode,status,finished_at,final_content,error,spent_micro_usd,limit_micro_usd,interrupted)
+                VALUES(?1,'m','supervised',?2,CASE WHEN ?2='running' THEN NULL ELSE unixepoch() END,'retained','legacy error',10,20,0)",params![c,status]).unwrap();
+            let id = conn.last_insert_rowid();
+            conn.execute("INSERT INTO agent_steps(run_id,seq,kind,observation,input_tokens,output_tokens) VALUES(?1,1,'model_turn','original',11,4)",[id]).unwrap();
+            drop(conn);
+            legacy.push((
+                repo.read_run(id).unwrap().unwrap(),
+                repo.list_steps(id).unwrap(),
+            ));
+        }
+        migrate(&mut db.lock().unwrap()).unwrap();
+        assert_eq!(count(&db), 0);
+        for (run, steps) in &legacy {
+            assert_eq!(&repo.read_run(run.id).unwrap().unwrap(), run);
+            assert_eq!(&repo.list_steps(run.id).unwrap(), steps);
+        }
+        let new = repo.create_run(Some(c), "m", "supervised").unwrap();
+        assert_eq!(repo.fail_orphaned_running_runs("interrupted").unwrap(), 2);
+        assert_eq!(repo.fail_orphaned_running_runs("interrupted").unwrap(), 0);
+        let events = repo.list_conversation_run_events(c, 0, 200).unwrap();
+        assert_eq!(events.events.len(), 2);
+        assert!(events.events.iter().all(|e| e.run_id == new));
+        assert_eq!(events.events[1].kind, "run_interrupted");
+        assert!(events.events[1].terminal.as_ref().unwrap().interrupted);
+        for (run, steps) in &legacy {
+            assert_eq!(&repo.list_steps(run.id).unwrap(), steps);
+            if run.status != "running" {
+                assert_eq!(&repo.read_run(run.id).unwrap().unwrap(), run);
+            }
+        }
+    }
+
+    #[test]
+    fn journal_v16_migration_rollback_and_newer_schema_refusal() {
+        use crate::storage::database::{apply_migration, DatabaseError};
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version(version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL)",
+        )
+        .unwrap();
+        for &(version, sql) in MIGRATIONS.iter().filter(|(v, _)| *v <= 15) {
+            apply_migration(&mut conn, version, sql).unwrap();
+        }
+        // Fail after CREATE TABLE but before the v16 indexes/triggers finish.
+        conn.execute_batch("CREATE INDEX idx_durable_run_events_run ON agent_runs(id)")
+            .unwrap();
+        assert!(migrate(&mut conn).is_err());
+        let version: i64 = conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 15);
+        let tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name='durable_run_events'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 0);
+        conn.execute_batch("DROP INDEX idx_durable_run_events_run")
+            .unwrap();
+        migrate(&mut conn).unwrap();
+        conn.execute("INSERT INTO schema_version VALUES(17,1)", [])
+            .unwrap();
+        assert!(matches!(
+            migrate(&mut conn),
+            Err(DatabaseError::SchemaTooNew { .. })
+        ));
+    }
+
+    #[test]
+    fn journal_reopen_reads_committed_checkpoints_and_lease_sweeps_once() {
+        use crate::storage::database::open;
+        use crate::storage::lifecycle::{sweep_orphans, InstanceLease};
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("nexora-journal-{}-{nonce}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("journal.db");
+        let (c, run, step_id, start_event) = {
+            let db = Database::new(open(&path).unwrap());
+            let c = conversation(&db);
+            let repo = AgentRunRepository::new(&db);
+            let run = repo.create_run(Some(c), "m", "supervised").unwrap();
+            let event = repo.list_conversation_run_events(c, 0, 100).unwrap().events[0].event_id;
+            let id = step(&repo, run, 1, "retained").unwrap();
+            (c, run, id, event)
+        };
+        {
+            let db = Database::new(open(&path).unwrap());
+            let repo = AgentRunRepository::new(&db);
+            let events = repo.list_conversation_run_events(c, 0, 100).unwrap();
+            assert_eq!(events.events[0].event_id, start_event);
+            assert_eq!(events.events[1].step_id, Some(step_id));
+            let mut lease = InstanceLease::acquire(&path).unwrap();
+            lease.become_shared().unwrap();
+            let peer = InstanceLease::acquire(&path).unwrap();
+            assert!(sweep_orphans(&db, &peer).unwrap().skipped_live_instance);
+            assert_eq!(repo.read_run(run).unwrap().unwrap().status, "running");
+        }
+        {
+            let db = Database::new(open(&path).unwrap());
+            let lease = InstanceLease::acquire(&path).unwrap();
+            assert_eq!(sweep_orphans(&db, &lease).unwrap().runs, 1);
+            assert_eq!(sweep_orphans(&db, &lease).unwrap().runs, 0);
+            let events = AgentRunRepository::new(&db)
+                .list_conversation_run_events(c, 0, 100)
+                .unwrap();
+            assert_eq!(events.events.len(), 3);
+            assert_eq!(events.events[2].kind, "run_interrupted");
+        }
+        {
+            let db = Database::new(open(&path).unwrap());
+            let events = AgentRunRepository::new(&db)
+                .list_conversation_run_events(c, 0, 100)
+                .unwrap();
+            assert_eq!(events.events.len(), 3);
+            assert_eq!(events.events[1].step_id, Some(step_id));
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn journal_rule(db: &Database, tool: &str) -> i64 {
+        db.lock().unwrap().query_row(
+            "INSERT INTO permission_rules(preset,tool_pattern,effect) VALUES('*',?1,'allow') RETURNING id",
+            [tool], |row| row.get(0),
+        ).unwrap()
+    }
+
+    #[test]
+    fn journal_rule_deletion_preserves_history_and_event_identity() {
+        let db = in_memory_database();
+        let c = conversation(&db);
+        let repo = AgentRunRepository::new(&db);
+        let run = repo.create_run(Some(c), "m", "supervised").unwrap();
+        let rule = journal_rule(&db, "journal");
+        let id = repo
+            .append_step(
+                run,
+                1,
+                "tool_call",
+                Some("journal"),
+                Some("{\"path\":\"test\"}"),
+                Some("retained output"),
+                Some("succeeded"),
+                Some(5),
+                Some(rule),
+                Some("group"),
+                Some("rule"),
+                Some(11),
+                Some(4),
+            )
+            .unwrap();
+        repo.finalize_run(run, "completed", Some("answer"), None, Some(2), None)
+            .unwrap();
+        let before_run = repo.read_run(run).unwrap();
+        let mut expected_steps = repo.list_steps(run).unwrap();
+        let mut expected_page =
+            serde_json::to_value(repo.list_conversation_run_events(c, 0, 200).unwrap()).unwrap();
+        assert_eq!(expected_steps[0].id, id);
+        assert_eq!(expected_steps[0].rule_id, Some(rule));
+        expected_steps[0].rule_id = None;
+        for event in expected_page["events"].as_array_mut().unwrap() {
+            if event["step_id"] == id {
+                event["step"]["rule_id"] = serde_json::Value::Null;
+            }
+        }
+        let source = format!("run:{run}:step:1");
+        let event_id = repo.event_id_for_source(&source).unwrap();
+        assert!(event_id.is_some());
+        assert_eq!(
+            db.lock()
+                .unwrap()
+                .execute("DELETE FROM permission_rules WHERE id=?1", [rule])
+                .unwrap(),
+            1
+        );
+        assert_eq!(repo.read_run(run).unwrap(), before_run);
+        assert_eq!(repo.list_steps(run).unwrap(), expected_steps);
+        assert_eq!(
+            serde_json::to_value(repo.list_conversation_run_events(c, 0, 200).unwrap()).unwrap(),
+            expected_page
+        );
+        assert_eq!(repo.event_id_for_source(&source).unwrap(), event_id);
+        let conn = db.lock().unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM permission_rules WHERE id=?1",
+                [rule],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            0
+        );
+        assert!(!conn
+            .prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .exists([])
+            .unwrap());
+    }
+
+    #[test]
+    fn journal_rule_clearing_cannot_hide_step_mutations() {
+        let db = in_memory_database();
+        let c = conversation(&db);
+        let repo = AgentRunRepository::new(&db);
+        let run = repo.create_run(Some(c), "m", "supervised").unwrap();
+        let other = repo.create_run(Some(c), "m", "supervised").unwrap();
+        let rule = journal_rule(&db, "journal");
+        // A second valid rule makes reassignment fail on immutability, not a missing FK.
+        let replacement = journal_rule(&db, "replacement");
+        repo.append_step(
+            run,
+            1,
+            "tool_call",
+            Some("journal"),
+            Some("{}"),
+            Some("output"),
+            Some("succeeded"),
+            Some(5),
+            Some(rule),
+            Some("group"),
+            Some("rule"),
+            Some(11),
+            Some(4),
+        )
+        .unwrap();
+        repo.append_step(
+            run,
+            2,
+            "model_turn",
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(rule),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let before = repo.list_steps(run).unwrap();
+        let mutations = [
+            "id=id+1000".to_owned(),
+            format!("run_id={other}"),
+            "seq=seq+10".to_owned(),
+            "kind=CASE WHEN kind='model_turn' THEN 'tool_call' ELSE 'model_turn' END".to_owned(),
+            "tool_name=CASE WHEN tool_name IS NULL THEN 'changed' ELSE NULL END".to_owned(),
+            "arguments=CASE WHEN arguments IS NULL THEN '{}' ELSE NULL END".to_owned(),
+            "observation=CASE WHEN observation IS NULL THEN 'changed' ELSE NULL END".to_owned(),
+            "status=CASE WHEN status IS NULL THEN 'denied' ELSE NULL END".to_owned(),
+            "started_at=started_at+1".to_owned(),
+            "duration_ms=CASE WHEN duration_ms IS NULL THEN 9 ELSE NULL END".to_owned(),
+            "group_key=CASE WHEN group_key IS NULL THEN 'changed' ELSE NULL END".to_owned(),
+            "decided_by=CASE WHEN decided_by IS NULL THEN 'system' ELSE NULL END".to_owned(),
+            "input_tokens=CASE WHEN input_tokens IS NULL THEN 9 ELSE NULL END".to_owned(),
+            "output_tokens=CASE WHEN output_tokens IS NULL THEN 9 ELSE NULL END".to_owned(),
+            format!("rule_id={replacement}"),
+        ];
+        for recorded in &before {
+            for mutation in &mutations {
+                // Exercise both ordinary edits and edits disguised as provenance clearing.
+                for clear in [false, true] {
+                    if clear && mutation.starts_with("rule_id=") {
+                        continue;
+                    }
+                    let prefix = if clear { "rule_id=NULL," } else { "" };
+                    let error = db
+                        .lock()
+                        .unwrap()
+                        .execute(
+                            &format!("UPDATE agent_steps SET {prefix}{mutation} WHERE id=?1"),
+                            [recorded.id],
+                        )
+                        .unwrap_err();
+                    assert!(
+                        error.to_string().contains("journal step immutable"),
+                        "{mutation}: {error}"
+                    );
+                }
+            }
+        }
+        assert_eq!(repo.list_steps(run).unwrap(), before);
+        db.lock()
+            .unwrap()
+            .execute("DELETE FROM permission_rules WHERE id=?1", [rule])
+            .unwrap();
+        for recorded in &before {
+            let error = db
+                .lock()
+                .unwrap()
+                .execute(
+                    "UPDATE agent_steps SET rule_id=?1 WHERE id=?2",
+                    params![replacement, recorded.id],
+                )
+                .unwrap_err();
+            assert!(error.to_string().contains("journal step immutable"));
+        }
+    }
+
+    #[test]
+    fn journal_ownership_cascade_and_nonreused_event_identity() {
+        let db = in_memory_database();
+        let c = conversation(&db);
+        let other = conversation(&db);
+        let repo = AgentRunRepository::new(&db);
+        let run = repo.create_run(Some(c), "m", "supervised").unwrap();
+        let foreign = repo.create_run(Some(other), "m", "supervised").unwrap();
+        let id = step(&repo, foreign, 1, "foreign").unwrap();
+        assert!(db.lock().unwrap().execute("INSERT INTO durable_run_events(run_id,source_key,kind,step_id,schema_version) VALUES(?1,'invalid','step_recorded',?2,1)",params![run,id]).is_err());
+        let high = repo
+            .list_conversation_run_events(c, 0, 200)
+            .unwrap()
+            .high_water_event_id;
+        db.lock()
+            .unwrap()
+            .execute("DELETE FROM conversations WHERE id=?1", [c])
+            .unwrap();
+        assert!(repo
+            .list_conversation_run_events(c, 0, 200)
+            .unwrap()
+            .events
+            .is_empty());
+        repo.delete_run(foreign).unwrap();
+        assert_eq!(count(&db), 0);
+        let new = repo.create_run(Some(other), "m", "supervised").unwrap();
+        assert!(
+            repo.event_id_for_source(&format!("run:{new}:start"))
+                .unwrap()
+                .unwrap()
+                > high
+        );
+    }
+
+    #[test]
+    fn journal_serializes_concurrent_runs_and_pages_without_loss() {
+        let db = in_memory_database();
+        let c = conversation(&db);
+        let mut threads = Vec::new();
+        for _ in 0..4 {
+            let db = db.clone();
+            threads.push(std::thread::spawn(move || {
+                let repo = AgentRunRepository::new(&db);
+                let id = repo.create_run(Some(c), "m", "supervised").unwrap();
+                for seq in 1..=4 {
+                    step(&repo, id, seq, "turn").unwrap();
+                }
+                repo.finalize_run(id, "completed", Some("done"), None, None, None)
+                    .unwrap();
+            }));
+        }
+        for t in threads {
+            t.join().unwrap();
+        }
+        let repo = AgentRunRepository::new(&db);
+        let mut cursor = 0;
+        let mut ids = Vec::new();
+        loop {
+            let page = repo.list_conversation_run_events(c, cursor, 3).unwrap();
+            assert!(page.events.iter().all(|e| e.event_id > cursor));
+            ids.extend(page.events.iter().map(|e| e.event_id));
+            cursor = page.next_cursor;
+            if !page.has_more {
+                break;
+            }
+        }
+        assert_eq!(ids.len(), 24);
+        assert!(ids.windows(2).all(|w| w[0] < w[1]));
     }
 }

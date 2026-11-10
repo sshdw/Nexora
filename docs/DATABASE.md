@@ -55,7 +55,7 @@ FTS5 virtual tables are used for full-text search.
 
 ## 4. Schema Versioning
 
-Schema changes are tracked in the `schema_version` table. Each migration inserts exactly one new row containing a monotonically increasing version number and an application timestamp. Version numbers are unique and strictly increasing. The current schema version is determined by the maximum version number present (`MAX(version)`), which therefore always represents the current schema version. The current implemented schema version is **v15**. The Nexora 2.0.0 release has not shipped.
+Schema changes are tracked in the `schema_version` table. Each migration inserts exactly one new row containing a monotonically increasing version number and an application timestamp. Version numbers are unique and strictly increasing. The current schema version is determined by the maximum version number present (`MAX(version)`), which therefore always represents the current schema version. The current implemented schema version is **v16**. The Nexora 2.0.0 release has not shipped.
 
 **Rationale:** This provides an unambiguous, ordered migration path and prevents the application from running against an unrecognized schema version.
 
@@ -86,6 +86,8 @@ v13 adds cross-column invariants via four table rebuilds (the v5/v7 precedent): 
 v14 adds the nullable `agent_steps.input_tokens` / `output_tokens` columns as plain additive `ALTER TABLE ADD COLUMN` transactions (no rebuild, no FK toggle); `NULL` for pre-existing rows and usage-less turns.
 
 v15 (Nexora 2.0 Phase 1) adds `agent_runs.interrupted INTEGER NOT NULL DEFAULT 0 CHECK (interrupted IN (0, 1))` with `ALTER TABLE ADD COLUMN` in the existing migration transaction. It adds no status value, rebuild, foreign-key toggle, or historical-error backfill. Existing rows read `0`, and new ordinary runs default to `0`. The schema-version row and column addition commit together or roll back together; the newer-schema refusal remains in force. Run rows, linked steps, existing statuses, errors, timestamps, outputs, and spend data are preserved by migration.
+
+v16 adds durable_run_events and its indexes in a forward-only atomic migration. No existing run/step rows or migration SQL are rewritten and no legacy events are backfilled.
 
 ---
 
@@ -522,6 +524,12 @@ All repository AgentRun reads/lists expose the marker as `interrupted: boolean`,
 | expires_at | Mandatory deadline | INTEGER | NO | None | `expires_at > acquired_at` | None | No | Kanban + locks. |
 
 ---
+
+### 7.16 durable_run_events
+
+v16 adds durable_run_events and its indexes in a forward-only atomic migration. No existing run/step rows or migration SQL are rewritten and no legacy events are backfilled. durable_run_events contains event_id INTEGER PRIMARY KEY AUTOINCREMENT; run_id INTEGER NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE; source_key TEXT NOT NULL UNIQUE; kind TEXT NOT NULL constrained to run_started, step_recorded, run_finished, run_interrupted; step_id INTEGER NULL REFERENCES agent_steps(id) ON DELETE CASCADE; schema_version INTEGER NOT NULL constrained to 1; created_at INTEGER NOT NULL in Unix seconds. A step_recorded record requires step_id; other initial kinds require NULL. Add indexes supporting (run_id,event_id) and source-key uniqueness. Payload is reconstructed from the referenced original run/immutable step rows using existing sanitized bounded DTO projections; no duplicate raw provider/tool text is stored.
+
+Conversation ownership is derived through the referenced run, not duplicated in the event row. Cursor reads join agent_runs and filter its conversation_id before returning any record. Event IDs define global committed order; conversation cursors may contain gaps. source_key identifies the logical start, step or single terminal transition; an identical retry returns the committed identity, while a conflicting retry fails without overwrite. Each corresponding state change and record append commits together. A newly journaled run receives at most one terminal record, including startup interruption; an already-terminal run and a repeated orphan sweep produce no additional terminal record. Orphaned legacy runs retain M01 behavior without a fabricated prior journal. Deleting a run or conversation cascades its journal; reading never restores deleted records. Existing secret-redaction and bounded-preview rules apply to every read/notification DTO.
 
 ## 8. INDEXES
 

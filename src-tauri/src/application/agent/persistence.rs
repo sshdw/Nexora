@@ -36,13 +36,12 @@
 //!   keeps the `error` status but carries a distinct Display text so the UI
 //!   can tell exhausted recovery apart from a retryable overflow.
 //!
-//! # Best-effort failure policy
+//! # Failure policy
 //!
-//! Persistence failures never panic the loop and never change the run's
-//! user-visible semantics: a failed start means the run continues without
-//! persistence, a failed step append is logged and skipped (the `seq`
-//! counter does not advance, keeping successful inserts gap-free), and a
-//! failed finalize is logged. Every failure is reported through `log`.
+//! New conversation-linked runs require committed checkpoints. Failure latches
+//! a secret-free error checked before later provider/tool dispatch. Already
+//! dispatched effects are never claimed undone. Legacy unlinked recording
+//! remains best effort. Notifications follow successful `SQLite` commits.
 
 use std::sync::mpsc::Sender;
 use std::time::Duration;
@@ -103,6 +102,11 @@ fn bound_persisted_text(text: &str) -> String {
 /// preview is always derived from the *sanitized* text (post
 /// [`sanitize_persisted_text`]), never pre-redaction.
 pub(crate) const MAX_STEP_PREVIEW_CHARS: usize = 2_000;
+
+/// Sanitize and bound terminal history text for the durable read projection.
+pub(crate) fn history_preview(text: &str) -> String {
+    step_preview(&sanitize_persisted_text(text)).0
+}
 
 /// Derive the live-streamed `(preview, total_bytes, truncated)` triple from
 /// one *sanitized* observation (NEX-PERF-003). `total_bytes` is the
@@ -203,7 +207,8 @@ pub(crate) fn terminal_outcome(
 ///
 /// A cheap copyable handle over the shared application [`Database`], mirroring
 /// the runner's other optional attachments (`RunControl`, `ApprovalGate`).
-/// All recording is best-effort; see the module docs for the failure policy.
+/// Conversation checkpoints are required; unlinked legacy recording remains
+/// best effort. See the module docs for the failure policy.
 ///
 /// Task 5.1 extends the recorder with two opt-in additions:
 ///
@@ -351,7 +356,7 @@ impl<'a> RunRecorder<'a> {
         match &result {
             Err(err) => log::warn!(
                 "agent run persistence: step append failed (run {run_id}, \
-                 seq {seq}), skipping step: {err}"
+                 seq {seq}): {err}"
             ),
             // Task 5.1: emit one step event per successfully persisted step,
             // with exactly the persisted `run_id`/`seq` (CF-01-aligned). The
@@ -398,21 +403,23 @@ impl<'a> RunRecorder<'a> {
         error: Option<&str>,
         spent_micro_usd: Option<u64>,
         limit_micro_usd: Option<u64>,
-    ) {
+    ) -> Result<(), DatabaseError> {
         let repo = AgentRunRepository::new(self.db);
-        if let Err(err) = repo.finalize_run(
+        let result = repo.finalize_run(
             run_id,
             status,
             final_content,
             error,
             spent_micro_usd,
             limit_micro_usd,
-        ) {
+        );
+        if result.is_err() {
             log::warn!(
                 "agent run persistence: finalize failed (run {run_id}), \
-                 continuing: {err}"
+                 history checkpoint unavailable"
             );
         }
+        result
     }
 }
 
@@ -508,6 +515,8 @@ pub(crate) struct ActiveRunRecord<'a> {
     next_seq: i64,
     /// Test-only accounting hook, never a persistence input.
     recorded_steps: i64,
+    required: bool,
+    checkpoint_failed: bool,
 }
 
 impl<'a> ActiveRunRecord<'a> {
@@ -526,6 +535,15 @@ impl<'a> ActiveRunRecord<'a> {
             run_id,
             next_seq: 1,
             recorded_steps: 0,
+            required: recorder.conversation_id.is_some()
+                || run_id.is_some_and(|id| {
+                    AgentRunRepository::new(recorder.db)
+                        .event_id_for_source(&format!("run:{id}:start"))
+                        .ok()
+                        .flatten()
+                        .is_some()
+                }),
+            checkpoint_failed: recorder.conversation_id.is_some() && run_id.is_none(),
         }
     }
 
@@ -713,12 +731,13 @@ impl<'a> ActiveRunRecord<'a> {
         });
     }
 
-    /// Append one step with the next `seq`. Best-effort: a failed insert is
-    /// logged and skipped without advancing the counters, so the next step
-    /// reuses the same `seq`, `total_steps` counts only successfully
-    /// persisted steps, and successful inserts stay gap-free and strictly
-    /// increasing (D12; CF-01).
+    /// Append with the next sequence. A failure never advances counters;
+    /// required conversation recording latches it to stop further dispatch.
+    /// Legacy unlinked recording retains best-effort behavior.
     fn append(&mut self, step: &PendingStep<'_>) {
+        if self.checkpoint_failed {
+            return;
+        }
         let Some(run_id) = self.run_id else {
             return;
         };
@@ -743,27 +762,39 @@ impl<'a> ActiveRunRecord<'a> {
         {
             self.next_seq += 1;
             self.recorded_steps += 1;
+        } else if self.required {
+            self.checkpoint_failed = true;
+        }
+    }
+
+    /// Required checkpoints fail closed before the next controllable dispatch.
+    pub(crate) fn checkpoint(&self) -> Result<(), AgentError> {
+        if self.checkpoint_failed {
+            Err(AgentError::Persistence)
+        } else {
+            Ok(())
         }
     }
 
     /// Finalize the run on every exit path (DATABASE.md §7.8): `completed`
     /// with final content, `cancelled`, `budget_exhausted`,
     /// `spend_limit_exceeded`, or `error` with the classified error text.
-    /// `total_steps` is the number of recorded steps (D12). Best-effort.
+    /// `total_steps` counts committed steps. Required terminal failures are
+    /// surfaced; the last committed row remains available to startup recovery.
     pub(crate) fn finalize(
         &self,
         result: &Result<String, AgentError>,
         spent_micro_usd: u64,
         limit_micro_usd: Option<u64>,
-    ) {
+    ) -> Result<(), AgentError> {
         let Some(run_id) = self.run_id else {
-            return;
+            return self.checkpoint();
         };
         let (status, final_content, error) = terminal_outcome(result);
         // Task 4.3: spent/limit are persisted when a recorder is attached,
         // even for non-spend runs (spent may be 0). Pre-v5 rows have NULL.
         let spent_opt = Some(spent_micro_usd);
-        self.recorder.finalize_run(
+        let persisted = self.recorder.finalize_run(
             run_id,
             status,
             final_content.as_deref(),
@@ -771,6 +802,10 @@ impl<'a> ActiveRunRecord<'a> {
             spent_opt,
             limit_micro_usd,
         );
+        if self.required && persisted.is_err() {
+            return Err(AgentError::Persistence);
+        }
+        Ok(())
     }
 }
 
@@ -842,7 +877,9 @@ mod tests {
             "successfully persisted steps stay gap-free"
         );
 
-        record.finalize(&Ok("done".to_string()), 0, None);
+        record
+            .finalize(&Ok("done".to_string()), 0, None)
+            .expect("finalize");
         let run = runs.read_run(run_id).expect("read run").expect("exists");
         assert_eq!(
             run.total_steps, 2,

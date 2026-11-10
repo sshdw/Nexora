@@ -1,0 +1,8 @@
+{
+  "rule_deleted": true,
+  "only_changed_step_column": "rule_id",
+  "step_event_ids_unchanged": true,
+  "legacy_rows_unchanged_after_native_upgrade": true,
+  "backfill": 0,
+  "fk": "clean"
+}

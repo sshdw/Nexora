@@ -925,6 +925,74 @@ ALTER TABLE agent_steps ADD COLUMN output_tokens INTEGER
     CHECK (interrupted IN (0, 1));
 ",
     ),
+    // M03.a: triggers share the initiating statement's atomic commit/rollback.
+    // Existing rows are never scanned/backfilled. Null-conversation runs stay legacy.
+    (
+        16,
+        r"
+CREATE TABLE durable_run_events (
+ event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+ run_id INTEGER NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+ source_key TEXT NOT NULL UNIQUE,
+ kind TEXT NOT NULL CHECK(kind IN ('run_started','step_recorded','run_finished','run_interrupted')),
+ step_id INTEGER REFERENCES agent_steps(id) ON DELETE CASCADE,
+ schema_version INTEGER NOT NULL CHECK(schema_version = 1),
+ created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+ CHECK((kind = 'step_recorded' AND step_id IS NOT NULL) OR (kind <> 'step_recorded' AND step_id IS NULL))
+);
+CREATE INDEX idx_durable_run_events_run ON durable_run_events(run_id,event_id);
+CREATE UNIQUE INDEX idx_durable_run_start ON durable_run_events(run_id) WHERE kind='run_started';
+CREATE UNIQUE INDEX idx_durable_run_terminal ON durable_run_events(run_id) WHERE kind IN ('run_finished','run_interrupted');
+CREATE TRIGGER durable_event_immutable BEFORE UPDATE ON durable_run_events BEGIN
+ SELECT RAISE(ABORT,'journal event immutable');
+END;
+-- Rule deletion clears only its optional provenance link; recorded data stays immutable.
+CREATE TRIGGER journal_step_immutable BEFORE UPDATE ON agent_steps
+ WHEN EXISTS(SELECT 1 FROM durable_run_events WHERE step_id=OLD.id)
+ AND NOT (OLD.rule_id IS NOT NULL AND NEW.rule_id IS NULL
+ AND NEW.id IS OLD.id AND NEW.run_id IS OLD.run_id AND NEW.seq IS OLD.seq
+ AND NEW.kind IS OLD.kind AND NEW.tool_name IS OLD.tool_name
+ AND NEW.arguments IS OLD.arguments AND NEW.observation IS OLD.observation
+ AND NEW.status IS OLD.status AND NEW.started_at IS OLD.started_at
+ AND NEW.duration_ms IS OLD.duration_ms AND NEW.group_key IS OLD.group_key
+ AND NEW.decided_by IS OLD.decided_by AND NEW.input_tokens IS OLD.input_tokens
+ AND NEW.output_tokens IS OLD.output_tokens) BEGIN
+ SELECT RAISE(ABORT,'journal step immutable');
+END;
+CREATE TRIGGER durable_event_ownership BEFORE INSERT ON durable_run_events BEGIN
+ SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM agent_runs WHERE id=NEW.run_id AND conversation_id IS NOT NULL)
+ OR (NEW.step_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM agent_steps WHERE id=NEW.step_id AND run_id=NEW.run_id))
+ THEN RAISE(ABORT,'invalid journal ownership') END;
+END;
+CREATE TRIGGER journal_run_start AFTER INSERT ON agent_runs WHEN NEW.conversation_id IS NOT NULL BEGIN
+ INSERT INTO durable_run_events(run_id,source_key,kind,schema_version)
+ VALUES(NEW.id,'run:'||NEW.id||':start','run_started',1);
+END;
+CREATE TRIGGER journal_step AFTER INSERT ON agent_steps
+ WHEN EXISTS(SELECT 1 FROM durable_run_events WHERE run_id=NEW.run_id AND kind='run_started') BEGIN
+ SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM agent_runs WHERE id=NEW.run_id AND status='running')
+ THEN RAISE(ABORT,'journal run already terminal') END;
+ INSERT INTO durable_run_events(run_id,source_key,kind,step_id,schema_version)
+ VALUES(NEW.run_id,'run:'||NEW.run_id||':step:'||NEW.seq,'step_recorded',NEW.id,1);
+END;
+CREATE TRIGGER journal_terminal AFTER UPDATE ON agent_runs
+ WHEN OLD.status='running' AND NEW.status<>'running'
+ AND EXISTS(SELECT 1 FROM durable_run_events WHERE run_id=NEW.id AND kind='run_started') BEGIN
+ INSERT INTO durable_run_events(run_id,source_key,kind,schema_version)
+ VALUES(NEW.id,'run:'||NEW.id||':terminal',CASE WHEN NEW.interrupted=1 THEN 'run_interrupted' ELSE 'run_finished' END,1);
+END;
+CREATE TRIGGER journal_terminal_immutable BEFORE UPDATE ON agent_runs
+ WHEN OLD.status<>'running' AND EXISTS(SELECT 1 FROM durable_run_events WHERE run_id=OLD.id AND kind='run_started')
+ AND (NEW.status IS NOT OLD.status OR NEW.finished_at IS NOT OLD.finished_at
+ OR NEW.total_steps IS NOT OLD.total_steps OR NEW.final_content IS NOT OLD.final_content
+ OR NEW.error IS NOT OLD.error OR NEW.spent_micro_usd IS NOT OLD.spent_micro_usd
+ OR NEW.limit_micro_usd IS NOT OLD.limit_micro_usd OR NEW.interrupted IS NOT OLD.interrupted
+ OR NEW.conversation_id IS NOT OLD.conversation_id OR NEW.model IS NOT OLD.model
+ OR NEW.mode IS NOT OLD.mode OR NEW.started_at IS NOT OLD.started_at) BEGIN
+ SELECT RAISE(ABORT,'journal terminal conflict');
+END;
+",
+    ),
 ];
 
 /// Open the `SQLite` database at `path`, apply connection pragmas, and run any
