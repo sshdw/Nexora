@@ -400,7 +400,7 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
     if (conversationId !== null) void reload();
   }, [conversationId, reload]);
 
-  // Single listen on the static event name; filter by run_id.
+  // Single listen on the static event name; admit live frames by conversation.
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     let cancelled = false;
@@ -413,8 +413,13 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
             const payload = event.payload;
             const activeId = activeConversationRef.current;
             if (activeId === null) return;
-            // Stale payload? Ignore if its run_id not known yet and not for active conv.
-            // For finished frames we can check conversation_id directly.
+            // Ownership must be proven before any live state or fetch changes.
+            // Unknown owned runs are valid: frames can precede the start response.
+            if (
+              (payload.type === "step" || payload.type === "governance") &&
+              payload.conversation_id !== activeId
+            )
+              return;
             if (payload.type === "finished") {
               if (payload.event.conversation_id !== activeId) return;
               // AC-102/ADD-08 patch-on-finish: the terminal frame carries the
@@ -464,18 +469,6 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
               return;
             }
 
-            // For step/governance, filter by known run_ids. If unknown run_id,
-            // it might be a new run started in this conversation that hasn't been
-            // rehydrated yet. Allow it if we have no known runs and the payload
-            // is for this conversation? We can't know conversation from step.
-            // Pragmatic: allow unknown run_ids to create a placeholder run; if it
-            // belonged to another conversation, its finished frame will have
-            // mismatched conversation_id and we will have filtered it above, but
-            // its steps would have been incorrectly added. To avoid that, only
-            // accept unknown run_ids if they were just started; we optimistically
-            // accept and let finished filter correct. The leak window is small.
-            // Better: ignore unknown until finished triggers reload, but then steps
-            // won't show live. So we create placeholder.
             const runId = payload.run_id;
 
             if (payload.type === "step") {
@@ -494,14 +487,7 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
                   updated[idx] = { ...run, steps: newSteps };
                   return updated;
                 }
-                // Unknown run: create placeholder running run so steps aren't lost.
-                // We don't know conversation_id here; assume activeId and correct
-                // later via finished. If it's actually for another conversation,
-                // the steps will be orphaned until reload replaces state; the
-                // finished filter will have already ensured we only keep runs
-                // for active conv, so orphan will be cleaned on next reload.
-                // To avoid cross-conv bleed, we could check knownRunIds size?
-                // For now, allow placeholder only if we consider it live.
+                // Owned unknown run: preserve steps arriving before start returns.
                 knownRunIdsRef.current.add(runId);
                 return [
                   ...prev,

@@ -954,6 +954,8 @@ async function invoke(
         run.total_steps = steps.length;
         emitAgentEvent({
           type: "step",
+          conversation_id: agentRuns.find((r) => r.id === runId)!
+            .conversation_id!,
           run_id: runId,
           event: {
             step_id: stepId,
@@ -1024,6 +1026,8 @@ async function invoke(
           );
           emitAgentEvent({
             type: "governance",
+            conversation_id: agentRuns.find((r) => r.id === runId)!
+              .conversation_id!,
             run_id: runId,
             event: { type: "completed", steps: 1 },
           });
@@ -1064,6 +1068,8 @@ async function invoke(
           };
           emitAgentEvent({
             type: "governance",
+            conversation_id: agentRuns.find((r) => r.id === runId)!
+              .conversation_id!,
             run_id: runId,
             event: {
               type: "approval_requested",
@@ -1079,6 +1085,8 @@ async function invoke(
             const approved = true;
             emitAgentEvent({
               type: "governance",
+              conversation_id: agentRuns.find((r) => r.id === runId)!
+                .conversation_id!,
               run_id: runId,
               event: { type: "approval_resolved", call_id: callId, approved },
             });
@@ -1164,6 +1172,8 @@ async function invoke(
         });
         emitAgentEvent({
           type: "step",
+          conversation_id: agentRuns.find((r) => r.id === runId)!
+            .conversation_id!,
           run_id: runId,
           event: {
             step_id: sid,
@@ -1181,12 +1191,16 @@ async function invoke(
         active.pendingApproval = null;
         emitAgentEvent({
           type: "governance",
+          conversation_id: agentRuns.find((r) => r.id === runId)!
+            .conversation_id!,
           run_id: runId,
           event: { type: "cancelled" },
         });
       } else {
         emitAgentEvent({
           type: "governance",
+          conversation_id: agentRuns.find((r) => r.id === runId)!
+            .conversation_id!,
           run_id: runId,
           event: { type: "cancelled" },
         });
@@ -1235,6 +1249,8 @@ async function invoke(
       active.pendingApproval = null;
       emitAgentEvent({
         type: "governance",
+        conversation_id: agentRuns.find((r) => r.id === runId)!
+          .conversation_id!,
         run_id: runId,
         event: { type: "approval_resolved", call_id: callId, approved },
       });
@@ -1258,6 +1274,8 @@ async function invoke(
       });
       emitAgentEvent({
         type: "step",
+        conversation_id: agentRuns.find((r) => r.id === runId)!
+          .conversation_id!,
         run_id: runId,
         event: {
           step_id: sid,
@@ -1301,6 +1319,8 @@ async function invoke(
             });
             emitAgentEvent({
               type: "step",
+              conversation_id: agentRuns.find((r) => r.id === runId)!
+                .conversation_id!,
               run_id: runId,
               event: {
                 step_id: sid2,
@@ -1339,6 +1359,8 @@ async function invoke(
             });
             emitAgentEvent({
               type: "step",
+              conversation_id: agentRuns.find((r) => r.id === runId)!
+                .conversation_id!,
               run_id: runId,
               event: {
                 step_id: sid3,
@@ -1403,6 +1425,8 @@ async function invoke(
             });
             emitAgentEvent({
               type: "step",
+              conversation_id: agentRuns.find((r) => r.id === runId)!
+                .conversation_id!,
               run_id: runId,
               event: {
                 step_id: sid2,
@@ -1480,6 +1504,8 @@ async function invoke(
             });
             emitAgentEvent({
               type: "step",
+              conversation_id: agentRuns.find((r) => r.id === runId)!
+                .conversation_id!,
               run_id: runId,
               event: {
                 step_id: sid,
@@ -1551,6 +1577,8 @@ async function invoke(
         active.paused = true;
         emitAgentEvent({
           type: "governance",
+          conversation_id: agentRuns.find((r) => r.id === runId)!
+            .conversation_id!,
           run_id: runId,
           event: { type: "paused" },
         });
@@ -1569,6 +1597,8 @@ async function invoke(
         active.paused = false;
         emitAgentEvent({
           type: "governance",
+          conversation_id: agentRuns.find((r) => r.id === runId)!
+            .conversation_id!,
           run_id: runId,
           event: { type: "resumed" },
         });

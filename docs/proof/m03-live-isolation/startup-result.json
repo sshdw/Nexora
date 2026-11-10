@@ -1,0 +1,12 @@
+{
+  "schema": 16,
+  "rows_unchanged": {
+    "agent_runs": 8,
+    "agent_steps": 15,
+    "durable_run_events": 3
+  },
+  "running": 0,
+  "fk": "clean",
+  "native_webview": "retained interrupted history and original steps present",
+  "provider_tool_requests": 0
+}
