@@ -1,0 +1,36 @@
+{
+  "repeat_start_unchanged": true,
+  "legacy_runs_unchanged": 7,
+  "legacy_steps_unchanged": 14,
+  "events": [
+    [
+      1,
+      92001,
+      "run:92001:start",
+      "run_started",
+      null,
+      1,
+      1794332213
+    ],
+    [
+      2,
+      92001,
+      "run:92001:step:1",
+      "step_recorded",
+      15,
+      1,
+      1794332213
+    ],
+    [
+      3,
+      92001,
+      "run:92001:terminal",
+      "run_interrupted",
+      null,
+      1,
+      1794332231
+    ]
+  ],
+  "running": 0,
+  "fk": "clean"
+}
