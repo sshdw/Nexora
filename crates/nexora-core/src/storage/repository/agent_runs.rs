@@ -1735,6 +1735,186 @@ mod journal_tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    fn journal_rule(db: &Database, tool: &str) -> i64 {
+        db.lock().unwrap().query_row(
+            "INSERT INTO permission_rules(preset,tool_pattern,effect) VALUES('*',?1,'allow') RETURNING id",
+            [tool], |row| row.get(0),
+        ).unwrap()
+    }
+
+    #[test]
+    fn journal_rule_deletion_preserves_history_and_event_identity() {
+        let db = in_memory_database();
+        let c = conversation(&db);
+        let repo = AgentRunRepository::new(&db);
+        let run = repo.create_run(Some(c), "m", "supervised").unwrap();
+        let rule = journal_rule(&db, "journal");
+        let id = repo
+            .append_step(
+                run,
+                1,
+                "tool_call",
+                Some("journal"),
+                Some("{\"path\":\"test\"}"),
+                Some("retained output"),
+                Some("succeeded"),
+                Some(5),
+                Some(rule),
+                Some("group"),
+                Some("rule"),
+                Some(11),
+                Some(4),
+            )
+            .unwrap();
+        repo.finalize_run(run, "completed", Some("answer"), None, Some(2), None)
+            .unwrap();
+        let before_run = repo.read_run(run).unwrap();
+        let mut expected_steps = repo.list_steps(run).unwrap();
+        let mut expected_page =
+            serde_json::to_value(repo.list_conversation_run_events(c, 0, 200).unwrap()).unwrap();
+        assert_eq!(expected_steps[0].id, id);
+        assert_eq!(expected_steps[0].rule_id, Some(rule));
+        expected_steps[0].rule_id = None;
+        for event in expected_page["events"].as_array_mut().unwrap() {
+            if event["step_id"] == id {
+                event["step"]["rule_id"] = serde_json::Value::Null;
+            }
+        }
+        let source = format!("run:{run}:step:1");
+        let event_id = repo.event_id_for_source(&source).unwrap();
+        assert!(event_id.is_some());
+        assert_eq!(
+            db.lock()
+                .unwrap()
+                .execute("DELETE FROM permission_rules WHERE id=?1", [rule])
+                .unwrap(),
+            1
+        );
+        assert_eq!(repo.read_run(run).unwrap(), before_run);
+        assert_eq!(repo.list_steps(run).unwrap(), expected_steps);
+        assert_eq!(
+            serde_json::to_value(repo.list_conversation_run_events(c, 0, 200).unwrap()).unwrap(),
+            expected_page
+        );
+        assert_eq!(repo.event_id_for_source(&source).unwrap(), event_id);
+        let conn = db.lock().unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM permission_rules WHERE id=?1",
+                [rule],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            0
+        );
+        assert!(!conn
+            .prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .exists([])
+            .unwrap());
+    }
+
+    #[test]
+    fn journal_rule_clearing_cannot_hide_step_mutations() {
+        let db = in_memory_database();
+        let c = conversation(&db);
+        let repo = AgentRunRepository::new(&db);
+        let run = repo.create_run(Some(c), "m", "supervised").unwrap();
+        let other = repo.create_run(Some(c), "m", "supervised").unwrap();
+        let rule = journal_rule(&db, "journal");
+        // A second valid rule makes reassignment fail on immutability, not a missing FK.
+        let replacement = journal_rule(&db, "replacement");
+        repo.append_step(
+            run,
+            1,
+            "tool_call",
+            Some("journal"),
+            Some("{}"),
+            Some("output"),
+            Some("succeeded"),
+            Some(5),
+            Some(rule),
+            Some("group"),
+            Some("rule"),
+            Some(11),
+            Some(4),
+        )
+        .unwrap();
+        repo.append_step(
+            run,
+            2,
+            "model_turn",
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(rule),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let before = repo.list_steps(run).unwrap();
+        let mutations = [
+            "id=id+1000".to_owned(),
+            format!("run_id={other}"),
+            "seq=seq+10".to_owned(),
+            "kind=CASE WHEN kind='model_turn' THEN 'tool_call' ELSE 'model_turn' END".to_owned(),
+            "tool_name=CASE WHEN tool_name IS NULL THEN 'changed' ELSE NULL END".to_owned(),
+            "arguments=CASE WHEN arguments IS NULL THEN '{}' ELSE NULL END".to_owned(),
+            "observation=CASE WHEN observation IS NULL THEN 'changed' ELSE NULL END".to_owned(),
+            "status=CASE WHEN status IS NULL THEN 'denied' ELSE NULL END".to_owned(),
+            "started_at=started_at+1".to_owned(),
+            "duration_ms=CASE WHEN duration_ms IS NULL THEN 9 ELSE NULL END".to_owned(),
+            "group_key=CASE WHEN group_key IS NULL THEN 'changed' ELSE NULL END".to_owned(),
+            "decided_by=CASE WHEN decided_by IS NULL THEN 'system' ELSE NULL END".to_owned(),
+            "input_tokens=CASE WHEN input_tokens IS NULL THEN 9 ELSE NULL END".to_owned(),
+            "output_tokens=CASE WHEN output_tokens IS NULL THEN 9 ELSE NULL END".to_owned(),
+            format!("rule_id={replacement}"),
+        ];
+        for recorded in &before {
+            for mutation in &mutations {
+                // Exercise both ordinary edits and edits disguised as provenance clearing.
+                for clear in [false, true] {
+                    if clear && mutation.starts_with("rule_id=") {
+                        continue;
+                    }
+                    let prefix = if clear { "rule_id=NULL," } else { "" };
+                    let error = db
+                        .lock()
+                        .unwrap()
+                        .execute(
+                            &format!("UPDATE agent_steps SET {prefix}{mutation} WHERE id=?1"),
+                            [recorded.id],
+                        )
+                        .unwrap_err();
+                    assert!(
+                        error.to_string().contains("journal step immutable"),
+                        "{mutation}: {error}"
+                    );
+                }
+            }
+        }
+        assert_eq!(repo.list_steps(run).unwrap(), before);
+        db.lock()
+            .unwrap()
+            .execute("DELETE FROM permission_rules WHERE id=?1", [rule])
+            .unwrap();
+        for recorded in &before {
+            let error = db
+                .lock()
+                .unwrap()
+                .execute(
+                    "UPDATE agent_steps SET rule_id=?1 WHERE id=?2",
+                    params![replacement, recorded.id],
+                )
+                .unwrap_err();
+            assert!(error.to_string().contains("journal step immutable"));
+        }
+    }
+
     #[test]
     fn journal_ownership_cascade_and_nonreused_event_identity() {
         let db = in_memory_database();

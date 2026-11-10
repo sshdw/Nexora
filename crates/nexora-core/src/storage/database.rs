@@ -946,8 +946,17 @@ CREATE UNIQUE INDEX idx_durable_run_terminal ON durable_run_events(run_id) WHERE
 CREATE TRIGGER durable_event_immutable BEFORE UPDATE ON durable_run_events BEGIN
  SELECT RAISE(ABORT,'journal event immutable');
 END;
+-- Rule deletion clears only its optional provenance link; recorded data stays immutable.
 CREATE TRIGGER journal_step_immutable BEFORE UPDATE ON agent_steps
- WHEN EXISTS(SELECT 1 FROM durable_run_events WHERE step_id=OLD.id) BEGIN
+ WHEN EXISTS(SELECT 1 FROM durable_run_events WHERE step_id=OLD.id)
+ AND NOT (OLD.rule_id IS NOT NULL AND NEW.rule_id IS NULL
+ AND NEW.id IS OLD.id AND NEW.run_id IS OLD.run_id AND NEW.seq IS OLD.seq
+ AND NEW.kind IS OLD.kind AND NEW.tool_name IS OLD.tool_name
+ AND NEW.arguments IS OLD.arguments AND NEW.observation IS OLD.observation
+ AND NEW.status IS OLD.status AND NEW.started_at IS OLD.started_at
+ AND NEW.duration_ms IS OLD.duration_ms AND NEW.group_key IS OLD.group_key
+ AND NEW.decided_by IS OLD.decided_by AND NEW.input_tokens IS OLD.input_tokens
+ AND NEW.output_tokens IS OLD.output_tokens) BEGIN
  SELECT RAISE(ABORT,'journal step immutable');
 END;
 CREATE TRIGGER durable_event_ownership BEFORE INSERT ON durable_run_events BEGIN
