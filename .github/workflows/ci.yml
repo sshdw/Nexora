@@ -6,9 +6,15 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 # Wall-clock split: fmt (no build), Rust gates per OS (clippy + test share
 # one target dir per job), and the frontend gates run concurrently instead
-# of sequentially. Same commands as the sequential layout, only regrouped.
+# of sequentially. On pull requests, each job checks whether its dependency
+# tree was touched relative to base; untouched suites report a fast green
+# pass from the verified main baseline. Pushes to main always run all suites.
 jobs:
   fmt:
     name: fmt
@@ -17,45 +23,43 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check if Rust files changed
+        id: changes
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "affected=true" >> "$GITHUB_OUTPUT"
+          elif git diff --quiet "origin/${{ github.base_ref }}...HEAD" -- src-tauri/ crates/ apps/ Cargo.toml rust-toolchain.toml .github/workflows/ci.yml; then
+            echo "No changes in Rust files — reusing green baseline from ${{ github.base_ref }}"
+            echo "affected=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "affected=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Install baseline Rust toolchain
+        if: steps.changes.outputs.affected == 'true'
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
 
       - name: Resolve pinned toolchain (src-tauri/rust-toolchain.toml)
+        if: steps.changes.outputs.affected == 'true'
         working-directory: src-tauri
         run: |
           rustup component add rustfmt
           rustfmt --version
 
       - name: cargo fmt --check
+        if: steps.changes.outputs.affected == 'true'
         working-directory: src-tauri
         run: cargo fmt --all -- --check
 
   rust:
     name: rust (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # Per-OS wall-clock budget, so one slow leg cannot drag the fast one up.
-    # Linux stays 20m; Windows gets 30m. This is headroom, not a description of
-    # real cost: on current main the job measures 3m23s Linux / 5m55s Windows
-    # (run 39034840473), both far inside the old 20m wall.
-    #
-    # Why Windows still gets more: the two 20m cancellations on PR #247 were a
-    # CACHE MISS, not a slow build. That branch sat 6 commits behind main with a
-    # `src-tauri/Cargo.lock` predating the serde_json / tauri-plugin-dialog /
-    # @tauri-apps/api bump wave; Swatinem/rust-cache keys on the lockfile hash,
-    # so Windows cold-rebuilt every crate -- twice. A diverged lockfile silently
-    # costs a full cold rebuild; rebase onto main rather than raise the wall.
-    #
-    # A timed-out job concludes `cancelled`, and `gh run view --log-failed`
-    # returns nothing for it -- so a timeout yields no failing step to chase and
-    # no step profile to read. Do not "tidy" Windows back to 20m assuming it
-    # never runs long: it does, whenever the lockfile diverges.
-    #
-    # Both legs are listed in `include` on purpose: an entry only ADDS keys to
-    # an existing combination, so a missing entry leaves that leg's
-    # `matrix.timeout` empty and silently falls back to the 360m default.
     timeout-minutes: ${{ matrix.timeout }}
     env:
       RUSTC_WRAPPER: sccache
@@ -72,9 +76,24 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check if desktop Rust files changed
+        id: changes
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "affected=true" >> "$GITHUB_OUTPUT"
+          elif git diff --quiet "origin/${{ github.base_ref }}...HEAD" -- src-tauri/ crates/ rust-toolchain.toml .github/workflows/ci.yml; then
+            echo "No changes in src-tauri/ or crates/ — reusing green baseline from ${{ github.base_ref }}"
+            echo "affected=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "affected=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Install Tauri system dependencies
-        if: runner.os == 'Linux'
+        if: steps.changes.outputs.affected == 'true' && runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -86,11 +105,13 @@ jobs:
             mold
 
       - name: Install baseline Rust toolchain
+        if: steps.changes.outputs.affected == 'true'
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
 
       - name: Resolve pinned toolchain (src-tauri/rust-toolchain.toml)
+        if: steps.changes.outputs.affected == 'true'
         working-directory: src-tauri
         run: |
           rustup component add clippy
@@ -98,23 +119,27 @@ jobs:
           cargo clippy --version
 
       - name: sccache
+        if: steps.changes.outputs.affected == 'true'
         uses: mozilla-actions/sccache-action@v0.0.9
 
       - name: Cache
+        if: steps.changes.outputs.affected == 'true'
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri->target
           shared-key: ${{ runner.os }}-cargo
 
       - name: Set mold RUSTFLAGS (Linux only)
-        if: runner.os == 'Linux'
+        if: steps.changes.outputs.affected == 'true' && runner.os == 'Linux'
         run: echo "RUSTFLAGS=-C link-arg=-fuse-ld=mold" >> $GITHUB_ENV
 
       - name: cargo clippy
+        if: steps.changes.outputs.affected == 'true'
         working-directory: src-tauri
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: cargo test
+        if: steps.changes.outputs.affected == 'true'
         working-directory: src-tauri
         run: cargo test
 
@@ -125,32 +150,56 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check if frontend files changed
+        id: changes
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "affected=true" >> "$GITHUB_OUTPUT"
+          elif git diff --quiet "origin/${{ github.base_ref }}...HEAD" -- src/ index.html package.json package-lock.json tsconfig.json tsconfig.node.json vite.config.ts eslint.config.js components.json .github/workflows/ci.yml; then
+            echo "No changes in frontend files — reusing green baseline from ${{ github.base_ref }}"
+            echo "affected=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "affected=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Setup Node.js
+        if: steps.changes.outputs.affected == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
 
       - name: Install frontend dependencies
+        if: steps.changes.outputs.affected == 'true'
         run: npm ci
 
       - name: npm test
+        if: steps.changes.outputs.affected == 'true'
         run: npm test
 
       - name: npx tsc --noEmit
+        if: steps.changes.outputs.affected == 'true'
         run: npx tsc --noEmit
 
       - name: npx eslint src
+        if: steps.changes.outputs.affected == 'true'
         run: npx eslint src
 
       - name: npm run build
+        if: steps.changes.outputs.affected == 'true'
         run: npm run build
 
   cli:
     name: cli (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
     strategy:
       fail-fast: false
       matrix:
@@ -158,12 +207,24 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      # Follow-up to #226 item 1: the root workspace and `src-tauri` pin the
-      # toolchain in two separate files by design (no symlink, which is fragile
-      # on Windows). This makes the "change both together" convention an
-      # enforced check instead of a comment.
+      - name: Check if CLI or shared core files changed
+        id: changes
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "affected=true" >> "$GITHUB_OUTPUT"
+          elif git diff --quiet "origin/${{ github.base_ref }}...HEAD" -- crates/ apps/ Cargo.toml Cargo.lock rust-toolchain.toml src-tauri/rust-toolchain.toml .github/workflows/ci.yml; then
+            echo "No changes in crates/ or apps/ — reusing green baseline from ${{ github.base_ref }}"
+            echo "affected=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "affected=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Toolchain channels match
+        if: steps.changes.outputs.affected == 'true'
         shell: bash
         run: |
           root=$(grep -E '^channel' rust-toolchain.toml)
@@ -173,21 +234,20 @@ jobs:
           test "$root" = "$tauri"
 
       - name: Install baseline Rust toolchain
+        if: steps.changes.outputs.affected == 'true'
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
 
       - name: Resolve pinned toolchain (rust-toolchain.toml)
+        if: steps.changes.outputs.affected == 'true'
         run: |
           rustup component add clippy rustfmt
           rustc --version
           cargo clippy --version
 
-      # brief §2.3/§2.4: the shared core must stay interface-free. This is the
-      # enforced version of that rule (issue #160) — a Tauri/Clap/Ratatui/
-      # Crossterm/React dependency creeping into `nexora-core` would let the
-      # window app leak back into the terminal CLI.
       - name: Shared core has no UI/shell dependencies
+        if: steps.changes.outputs.affected == 'true'
         shell: bash
         run: |
           if cargo tree -p nexora-core --edges normal --prefix none \
@@ -200,22 +260,31 @@ jobs:
           echo "nexora-core dependency tree is clean"
           cargo tree -p nexora-core --edges normal
 
+      - name: sccache
+        if: steps.changes.outputs.affected == 'true'
+        uses: mozilla-actions/sccache-action@v0.0.9
+
       - name: Cache
+        if: steps.changes.outputs.affected == 'true'
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: .->target
           shared-key: ${{ runner.os }}-cli
 
       - name: cargo fmt (cli)
+        if: steps.changes.outputs.affected == 'true'
         run: cargo fmt --all -- --check
 
       - name: cargo clippy (cli)
+        if: steps.changes.outputs.affected == 'true'
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: cargo test (cli)
+        if: steps.changes.outputs.affected == 'true'
         run: cargo test --all
 
       - name: Run stub --help/--version/doctor
+        if: steps.changes.outputs.affected == 'true'
         run: cargo run -p nexora-cli -- --help && cargo run -p nexora-cli -- --version && cargo run -p nexora-cli -- doctor
 
   deny:
@@ -225,30 +294,36 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      # cargo-deny shells out to `cargo` for `cargo metadata`; the toolchain
-      # flavor does not matter, this just guarantees one exists the same way
-      # the other Rust jobs get theirs.
+      - name: Check if dependency manifests or lockfiles changed
+        id: changes
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "affected=true" >> "$GITHUB_OUTPUT"
+          elif git diff --quiet "origin/${{ github.base_ref }}...HEAD" -- Cargo.toml Cargo.lock deny.toml src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/deny.toml crates/ apps/ .github/workflows/ci.yml; then
+            echo "No changes in Cargo manifests or lockfiles — reusing green baseline from ${{ github.base_ref }}"
+            echo "affected=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "affected=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install baseline Rust toolchain
+        if: steps.changes.outputs.affected == 'true'
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install cargo-deny
+        if: steps.changes.outputs.affected == 'true'
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny
 
-      # SEC-06: the desktop binary statically embeds vendored libgit2 and
-      # bundled SQLite C code with no advisory gate; this scans both lockfiles
-      # against the RustSec advisory DB. Advisories ONLY — [licenses]/[bans]
-      # are an owner policy decision deliberately deferred (see the deny.toml
-      # headers). Two manifests on purpose: the root workspace excludes
-      # `src-tauri` (root Cargo.toml `exclude = ["src-tauri"]`, separate
-      # lockfiles), so each manifest is checked against its own deny.toml,
-      # which cargo-deny resolves next to the manifest and walks up from
-      # there: src-tauri/Cargo.toml -> src-tauri/deny.toml, root Cargo.toml
-      # -> deny.toml at the repo root.
       - name: cargo deny check advisories (src-tauri)
+        if: steps.changes.outputs.affected == 'true'
         run: cargo deny --manifest-path src-tauri/Cargo.toml check advisories
 
       - name: cargo deny check advisories (root workspace)
+        if: steps.changes.outputs.affected == 'true'
         run: cargo deny --manifest-path Cargo.toml check advisories

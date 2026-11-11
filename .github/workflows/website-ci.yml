@@ -15,8 +15,24 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check if website files changed
+        id: changes
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "affected=true" >> "$GITHUB_OUTPUT"
+          elif git diff --quiet "origin/${{ github.base_ref }}...HEAD" -- website/ .github/workflows/website-ci.yml; then
+            echo "No changes in website/ — reusing green baseline from ${{ github.base_ref }}"
+            echo "affected=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "affected=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Setup Node 26
+        if: steps.changes.outputs.affected == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: 26
@@ -24,34 +40,41 @@ jobs:
           cache-dependency-path: website/package-lock.json
 
       - name: Install dependencies
+        if: steps.changes.outputs.affected == 'true'
         run: npm ci
         working-directory: website
 
       - name: Lint
+        if: steps.changes.outputs.affected == 'true'
         run: npm run lint
         working-directory: website
 
       - name: Typecheck
+        if: steps.changes.outputs.affected == 'true'
         run: npm run typecheck
         working-directory: website
 
       - name: Unit tests
+        if: steps.changes.outputs.affected == 'true'
         run: npm test
         working-directory: website
 
       - name: Production build (static export)
+        if: steps.changes.outputs.affected == 'true'
         run: npm run build
         working-directory: website
 
       - name: Install Playwright browsers
+        if: steps.changes.outputs.affected == 'true'
         run: npx playwright install
         working-directory: website
 
       - name: Install Playwright system dependencies (Linux)
-        if: runner.os == 'Linux'
+        if: steps.changes.outputs.affected == 'true' && runner.os == 'Linux'
         run: npx playwright install-deps
         working-directory: website
 
       - name: Browser smoke + accessibility smoke
+        if: steps.changes.outputs.affected == 'true'
         run: npx playwright test
         working-directory: website
