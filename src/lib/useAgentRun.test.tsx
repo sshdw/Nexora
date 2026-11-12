@@ -1279,6 +1279,90 @@ describe("useAgentRun", () => {
     expect(mockInvoke.mock.calls).toHaveLength(count);
   });
 
+  it("fills partial live steps when Finished precedes the initial durable page", async () => {
+    const initial = deferred<DurableRunEventPage>();
+    historyRouter((after) =>
+      after === 0
+        ? initial.promise
+        : Promise.resolve(eventPage([], { next_cursor: after }))
+    );
+    const { result } = renderHook(() => useAgentRun(1));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("list_conversation_run_events", {
+        conversationId: 1,
+        afterEventId: 0,
+        limit: 100,
+      })
+    );
+    expect(result.current.runs[0]).toMatchObject({
+      status: "running",
+      steps_loaded: false,
+    });
+    act(() => {
+      emitAgentEvent({
+        type: "step",
+        conversation_id: 1,
+        run_id: 7,
+        event: stepFrame({ step_id: 12, seq: 2 }),
+      });
+      emitAgentEvent({
+        type: "finished",
+        run_id: 7,
+        event: {
+          conversation_id: 1,
+          status: "completed",
+          error: null,
+          final_content: null,
+        },
+      });
+    });
+    expect(result.current.runs[0].steps.map((step) => step.seq)).toEqual([2]);
+    expect(result.current.runs[0]).toMatchObject({
+      status: "completed",
+      steps_loaded: false,
+    });
+    await act(async () =>
+      initial.resolve(
+        eventPage([
+          durable(1),
+          durable(2, { step_id: 12, step: stepRow({ id: 12, seq: 2 }) }),
+          durable(3, {
+            kind: "run_finished",
+            step_id: null,
+            step: null,
+            terminal: {
+              conversation_id: 1,
+              status: "completed",
+              error: null,
+              final_content: null,
+            },
+          }),
+        ])
+      )
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.runs[0].steps.map((step) => step.seq)).toEqual([
+      1, 2,
+    ]);
+    expect(result.current.runs[0].steps.map((step) => step.step_id)).toEqual([
+      11, 12,
+    ]);
+    expect(result.current.runs[0]).toMatchObject({
+      status: "completed",
+      pending_approval: null,
+    });
+    await act(async () => result.current.reload());
+    expect(mockInvoke).toHaveBeenCalledWith("list_conversation_run_events", {
+      conversationId: 1,
+      afterEventId: 3,
+      limit: 100,
+    });
+    expect(
+      mockInvoke.mock.calls.some(([command]) => command === "list_agent_steps")
+    ).toBe(false);
+    expect(result.current.error).toBeNull();
+  });
+
   it("an older cursor page cannot replace a newer terminal snapshot", async () => {
     const stale = deferred<DurableRunEventPage>();
     historyRouter(() => stale.promise);

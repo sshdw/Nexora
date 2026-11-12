@@ -319,10 +319,13 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
       ) => {
         patch(owner, event.run_id, (run) => {
           if (event.step) {
-            // Historical unloaded steps retain the existing lazy path. New
-            // committed steps reconcile even if their live frame was missed.
+            // Only wholly unloaded terminal history stays lazy. A partial
+            // live list must accept missing committed steps even when Finished
+            // arrives before this page; its nonempty list will not trigger the
+            // component's lazy history load.
             if (
               !run.steps_loaded &&
+              run.steps.length === 0 &&
               !isActive(run.status) &&
               event.event_id <= (owner.initialHighWater ?? 0)
             )
