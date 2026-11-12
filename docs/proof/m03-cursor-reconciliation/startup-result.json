@@ -1,0 +1,23 @@
+{
+  "source_sha": "ab92f9f8e9b7a31d8a6d05395b8ca1078f5dae5e",
+  "binary_sha256": "ca3afe9ee89d223bb43c452d0fc9c75aac9f660bcb21708a4aeda18eb0b1a58c",
+  "schema": 16,
+  "rows_unchanged": {
+    "agent_runs": 1,
+    "agent_steps": 1,
+    "durable_run_events": 3
+  },
+  "integrity": "ok",
+  "foreign_key_violations": 0,
+  "running": 0,
+  "native_history": "Completed run 92001 and retained read_file step visible after final-build restart",
+  "executable_approvals_restored": false,
+  "provider_tool_requests_submitted": 0,
+  "shutdown": "orderly; zero outstanding runs/tasks",
+  "startup_sample": {
+    "baseline_window_detected_ms": 181,
+    "final_window_detected_ms": 1764,
+    "interpretation": "Single window-detection samples only; not a controlled performance benchmark"
+  },
+  "scope_limit": "Native startup/history smoke only; concurrency, missed delivery and cursor behavior validated by deterministic hook tests"
+}
