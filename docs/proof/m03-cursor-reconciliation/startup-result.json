@@ -1,6 +1,6 @@
 {
-  "source_sha": "b6ec19ddf7e7e3789b008b7afb6bd0a6a2d8cf5a",
-  "binary_sha256": "a03a6a4cd617ff7bd086928845bd88dcb2b51649ab0aaee8a1830d7b25942e23",
+  "source_sha": "2445283a28a35fd785fe8d4157782c324e0751e1",
+  "binary_sha256": "da133eb3e714d82d7472b7ea48356f83a318a4653e6be3afe834237e124d9c7e",
   "schema": 16,
   "rows_unchanged": {
     "agent_runs": 1,
@@ -16,9 +16,9 @@
   "shutdown": "orderly; zero outstanding runs/tasks",
   "startup_sample": {
     "baseline_window_detected_ms": 181,
-    "final_window_detected_ms": 1286,
+    "final_window_detected_ms": 1315,
     "interpretation": "Single window-detection samples only; not a controlled performance benchmark"
   },
   "scope_limit": "Native startup/history smoke only; concurrency, missed delivery and cursor behavior validated by deterministic hook tests",
-  "review_round2": "Native startup/history and row parity repeated after concrete partial-step fix"
+  "validation_round": 3
 }
