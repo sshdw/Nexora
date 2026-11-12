@@ -1,30 +1,20 @@
-//! Agent run live stream + rehydration hook (Task 5.1).
-//!
-//! Mirrors `useConversation` structure: one `listen` on the static event name
-//! `"agent-run-event"`, `run_id` filter, stale-conversation guard,
-//! `unlisten` cleanup, and rehydration via `list_agent_runs` on conversation
-//! switch. Keeps rehydration as the source of truth.
-//!
-//! AC-102/ADD-08 (run-rehydration N+1): the initial load fetches a BOUNDED
-//! page of runs (`REHYDRATION_RUN_PAGE`) and NO per-run steps fan-out — steps
-//! lazy-load through `loadRunSteps` only for a run whose step list is
-//! actually shown (AgentRunSteps asks when a run renders expanded with no
-//! steps loaded). A terminal `finished` frame PATCHes the affected run from
-//! its payload instead of re-firing the full `reload()` fan-out; a run with
-//! no steps on screen fetches its now-final step list once.
+//! Conversation-owned live presentation and read-only durable reconciliation.
+//! Initial metadata stays bounded to 50 runs; old steps and full observations
+//! retain their lazy APIs. A serialized forward reader acknowledges only fully
+//! processed pages, while generation and request fences isolate async work.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 
 import {
-  type AgentRun,
   type AgentRunEventPayload,
   type AgentStep,
-  type GovernanceEventPayload,
+  type DurableRunEvent,
   type StepEventFrame,
   getAgentStepObservation,
   listAgentRuns,
   listAgentSteps,
+  listConversationRunEvents,
 } from "./tauri";
 
 /** Bounded rehydration page (AC-102/ADD-08): the newest 50 runs of a
@@ -146,503 +136,542 @@ export interface AgentRunStore {
   collapseStep: (runId: number, seq: number) => void;
 }
 
+/** Merge previews by durable identity first, with seq as the legacy fallback.
+ * Existing expanded text belongs to the displayed step, not a stale snapshot. */
+function mergeSteps(
+  current: AgentStepView[],
+  incoming: AgentStepView[]
+): AgentStepView[] {
+  const result = [...current];
+  for (const step of incoming) {
+    const index = result.findIndex(
+      (old) =>
+        (step.step_id > 0 && old.step_id === step.step_id) ||
+        old.seq === step.seq
+    );
+    if (index < 0) result.push(step);
+    else if (
+      (result[index].step_id === 0 && step.step_id > 0) ||
+      (result[index].id === 0 && step.id > 0)
+    ) {
+      result[index] = { ...result[index], id: step.id, step_id: step.step_id };
+    }
+  }
+  return result.sort((a, b) => a.seq - b.seq);
+}
+
+function isActive(status: string): boolean {
+  return [
+    "running",
+    "paused",
+    "budget_exhausted",
+    "spend_limit_exceeded",
+  ].includes(status);
+}
+
+function placeholder(runId: number, conversationId: number): AgentRunView {
+  return {
+    run_id: runId,
+    conversation_id: conversationId,
+    status: "running",
+    model: "",
+    started_at: Date.now() / 1000,
+    finished_at: null,
+    error: null,
+    steps: [],
+    steps_loaded: false,
+    total_steps: null,
+    pending_approval: null,
+  };
+}
+
+interface ConversationSession {
+  conversationId: number;
+  runs: AgentRunView[];
+  request: number;
+  revision: Map<number, number>;
+  stepsLoading: Set<number>;
+  observations: Map<string, symbol>;
+  cursor: number;
+  initialHighWater: number | null;
+  historyFloor: number;
+  ready: boolean;
+  dirty: boolean;
+  drain: Promise<void> | null;
+}
+
 export function useAgentRun(conversationId: number | null): AgentRunStore {
   const [runs, setRuns] = useState<AgentRunView[]>([]);
-  const [loading, setLoading] = useState<boolean>(false);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // A fresh object per effect lifetime fences A -> B -> A and unmount, not
+  // merely changes of numeric conversation id. All async writes use it.
+  const sessionRef = useRef<ConversationSession | null>(null);
+  const current = useCallback(
+    (session: ConversationSession) => sessionRef.current === session,
+    []
+  );
+  const publish = useCallback(
+    (session: ConversationSession, next: AgentRunView[]) => {
+      if (sessionRef.current !== session) return;
+      session.runs = next;
+      setRuns(next);
+    },
+    []
+  );
+  const patch = useCallback(
+    (
+      session: ConversationSession,
+      runId: number,
+      change: (run: AgentRunView) => AgentRunView
+    ) => {
+      if (sessionRef.current !== session) return;
+      const old = session.runs.find((run) => run.run_id === runId);
+      const next = change(old ?? placeholder(runId, session.conversationId));
+      if (next === old) return;
+      session.revision.set(runId, (session.revision.get(runId) ?? 0) + 1);
+      publish(
+        session,
+        old
+          ? session.runs.map((run) => (run.run_id === runId ? next : run))
+          : [...session.runs, next]
+      );
+    },
+    [publish]
+  );
 
-  const activeConversationRef = useRef<number | null>(null);
-  // Known run_ids for the active conversation, for live filtering.
-  const knownRunIdsRef = useRef<Set<number>>(new Set());
-  // Runs with a lazy step fetch in flight (AC-102/ADD-08): a sync set so a
-  // StrictMode double-effect or a fast expand/collapse cycle cannot double-
-  // fire the same listAgentSteps.
-  const stepsLoadingRef = useRef<Set<number>>(new Set());
-  // Latest rendered runs, for snapshot reads BEFORE state updaters (expand
-  // needs the step's fetch key without assigning inside an updater — the
-  // updater must stay pure so a StrictMode double-invoke is harmless).
-  const runsRef = useRef<AgentRunView[]>([]);
-  useEffect(() => {
-    runsRef.current = runs;
-  }, [runs]);
+  const catchUp = useCallback(
+    (session: ConversationSession): Promise<void> => {
+      if (!current(session)) return Promise.resolve();
+      session.dirty = true;
+      if (!session.ready) return Promise.resolve();
+      if (session.drain) return session.drain;
+      // One forward reader per generation. Hints arriving during a read request
+      // another pass; their event_id is never an acknowledged cursor.
+      const drain = async () => {
+        try {
+          while (current(session) && session.dirty) {
+            session.dirty = false;
+            let more = true;
+            while (current(session) && more) {
+              const after = session.cursor;
+              const revisions = new Map(session.revision);
+              const page = await listConversationRunEvents(
+                session.conversationId,
+                after,
+                100
+              );
+              if (!current(session)) return;
+              session.initialHighWater ??= page.high_water_event_id;
+              const protectedTerminals = new Set(
+                session.runs
+                  .filter(
+                    (run) =>
+                      !isActive(run.status) &&
+                      (session.revision.get(run.run_id) ?? 0) !==
+                        (revisions.get(run.run_id) ?? 0)
+                  )
+                  .map((run) => run.run_id)
+              );
+              const seen = new Set<number>();
+              for (const event of page.events) {
+                if (event.event_id <= after || seen.has(event.event_id))
+                  continue;
+                seen.add(event.event_id);
+                if (
+                  event.conversation_id !== session.conversationId ||
+                  (event.step &&
+                    (event.step.run_id !== event.run_id ||
+                      event.step.id !== event.step_id)) ||
+                  (event.terminal &&
+                    event.terminal.conversation_id !== session.conversationId)
+                ) {
+                  throw new Error("Run history identity mismatch");
+                }
+                // Old history remains bounded to the metadata page. Process its
+                // cursor identities without materializing off-screen old runs.
+                if (event.run_id < session.historyFloor) continue;
+                applyDurable(session, event, protectedTerminals);
+              }
+              if (
+                page.next_cursor < after ||
+                (page.has_more && page.next_cursor <= after)
+              ) {
+                throw new Error("Run history cursor did not advance");
+              }
+              // Only a fully processed page can advance the cursor. A page's
+              // high-water may include records still on later pages.
+              session.cursor = page.next_cursor;
+              more = page.has_more;
+            }
+          }
+        } catch (cause) {
+          if (current(session))
+            setError(cause instanceof Error ? cause.message : String(cause));
+        } finally {
+          session.drain = null;
+        }
+      };
+      const applyDurable = (
+        owner: ConversationSession,
+        event: DurableRunEvent,
+        protectedTerminals: Set<number>
+      ) => {
+        patch(owner, event.run_id, (run) => {
+          if (event.step) {
+            // Only wholly unloaded terminal history stays lazy. A partial
+            // live list must accept missing committed steps even when Finished
+            // arrives before this page; its nonempty list will not trigger the
+            // component's lazy history load.
+            if (
+              !run.steps_loaded &&
+              run.steps.length === 0 &&
+              !isActive(run.status) &&
+              event.event_id <= (owner.initialHighWater ?? 0)
+            )
+              return run;
+            return {
+              ...run,
+              steps: mergeSteps(run.steps, [toStepView(event.step)]),
+            };
+          }
+          // A read issued before a newer terminal live frame or metadata
+          // snapshot cannot replace that terminal presentation on completion.
+          if (event.terminal && protectedTerminals.has(event.run_id))
+            return run;
+          if (event.terminal)
+            return {
+              ...run,
+              status: event.terminal.status,
+              error: event.terminal.error,
+              finished_at: run.finished_at ?? event.created_at,
+              pending_approval: null,
+            };
+          return run;
+        });
+      };
+      session.drain = drain();
+      return session.drain;
+    },
+    [current, patch]
+  );
 
   const reload = useCallback(async (): Promise<void> => {
-    if (conversationId === null) {
-      setRuns([]);
-      knownRunIdsRef.current = new Set();
-      return;
-    }
-    const requestedId = conversationId;
+    const session = sessionRef.current;
+    if (!session || session.conversationId !== conversationId) return;
+    const request = ++session.request;
+    const revisions = new Map(session.revision);
     setLoading(true);
     setError(null);
     try {
-      // AC-102/ADD-08: one bounded page of runs — the newest
-      // REHYDRATION_RUN_PAGE — and NO per-run steps fan-out. Step lists
-      // lazy-load through `loadRunSteps` only for runs whose step list is
-      // actually shown (AgentRunSteps asks; the store dedupes).
-      const fetched: AgentRun[] = await listAgentRuns(requestedId, {
+      const fetched = await listAgentRuns(session.conversationId, {
         limit: REHYDRATION_RUN_PAGE,
       });
-      // Only the active conversation may update state.
-      if (activeConversationRef.current !== requestedId) return;
-      const views: AgentRunView[] = fetched.map((run) => ({
-        run_id: run.id,
-        conversation_id: run.conversation_id ?? requestedId,
-        status: run.interrupted ? "interrupted" : run.status,
-        model: run.model,
-        started_at: run.started_at,
-        finished_at: run.finished_at,
-        error: run.error,
-        steps: [],
-        steps_loaded: false,
-        total_steps: run.total_steps,
-        pending_approval: null,
-      }));
-      if (activeConversationRef.current !== requestedId) return;
-      // Preserve live pending_approvals across reloads? Reload is source of truth,
-      // so pending approvals come only from live stream, not persistence.
-      // Merge with previous pending state for still-running runs if possible.
-      setRuns((prev) => {
-        if (activeConversationRef.current !== requestedId) return prev;
-        // Keep pending_approval for running runs if we had it.
-        const prevById = new Map(
-          prev.map((p) => [p.run_id, p.pending_approval])
-        );
-        return views.map((v) => ({
-          ...v,
-          pending_approval:
-            v.status === "running" ? (prevById.get(v.run_id) ?? null) : null,
-        }));
-      });
-      knownRunIdsRef.current = new Set(views.map((v) => v.run_id));
-    } catch (e) {
-      if (activeConversationRef.current !== requestedId) return;
-      setRuns([]);
-      knownRunIdsRef.current = new Set();
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      if (activeConversationRef.current === requestedId) setLoading(false);
-    }
-  }, [conversationId]);
-
-  /** AC-102/ADD-08 lazy step load: one `list_agent_steps` for a run whose
-   *  persisted step list is (about to be) shown. A no-op for live runs —
-   *  their steps streamed in — and for runs already loaded or in flight.
-   *  Unknown run ids proceed (a just-finished placeholder is about to exist
-   *  by the time the fetch resolves) and patch in only if the run renders. */
-  const loadRunSteps = useCallback(async (runId: number): Promise<void> => {
-    const requestedConv = activeConversationRef.current;
-    if (requestedConv === null) return;
-    if (stepsLoadingRef.current.has(runId)) return;
-    const known = runsRef.current.find((r) => r.run_id === runId);
-    if (known !== undefined && known.steps_loaded) return;
-    stepsLoadingRef.current.add(runId);
-    try {
-      const raw = await listAgentSteps(runId);
-      if (activeConversationRef.current !== requestedConv) return;
-      // list_steps is ORDER BY seq ASC, gap-free per CF-01.
-      const steps = raw.map(toStepView);
-      setRuns((prev) =>
-        prev.map((run) =>
-          run.run_id !== runId || run.steps_loaded
-            ? run
-            : { ...run, steps, steps_loaded: true }
-        )
+      if (!current(session) || request !== session.request) return;
+      const owned = fetched.filter(
+        (run) => run.conversation_id === session.conversationId
       );
-    } catch {
-      // Best-effort: the run pill still renders; the next visibility change
-      // asks again.
+      if (!session.ready)
+        session.historyFloor = owned.length
+          ? Math.min(...owned.map((run) => run.id))
+          : 0;
+      const views = owned.map((row): AgentRunView => {
+        const old = session.runs.find((run) => run.run_id === row.id);
+        const status = row.interrupted ? "interrupted" : row.status;
+        const changed =
+          (session.revision.get(row.id) ?? 0) !== (revisions.get(row.id) ?? 0);
+        const preserve =
+          old && (changed || (!isActive(old.status) && isActive(status)));
+        const merged = {
+          ...placeholder(row.id, session.conversationId),
+          ...old,
+          steps_loaded:
+            old?.steps_loaded === true && row.total_steps <= old.steps.length,
+          model: row.model,
+          started_at: row.started_at,
+          status: preserve ? old.status : status,
+          finished_at: preserve ? old.finished_at : row.finished_at,
+          error: preserve ? old.error : row.error,
+          total_steps: Math.max(
+            row.total_steps,
+            old?.total_steps ?? 0,
+            old?.steps.length ?? 0
+          ),
+        };
+        merged.pending_approval = isActive(merged.status)
+          ? (old?.pending_approval ?? null)
+          : null;
+        if (
+          old &&
+          (merged.status !== old.status ||
+            merged.error !== old.error ||
+            merged.finished_at !== old.finished_at)
+        ) {
+          session.revision.set(row.id, (session.revision.get(row.id) ?? 0) + 1);
+        }
+        return merged;
+      });
+      const ids = new Set(views.map((run) => run.run_id));
+      publish(session, [
+        ...views,
+        ...session.runs.filter((run) => !ids.has(run.run_id)),
+      ]);
+      session.ready = true;
+      await catchUp(session);
+    } catch (cause) {
+      if (current(session) && request === session.request) {
+        setError(cause instanceof Error ? cause.message : String(cause));
+      }
     } finally {
-      stepsLoadingRef.current.delete(runId);
+      if (current(session) && request === session.request) setLoading(false);
     }
-  }, []);
+  }, [conversationId, current, publish, catchUp]);
 
-  const collapseStep = useCallback((runId: number, seq: number): void => {
-    setRuns((prev) =>
-      prev.map((run) =>
-        run.run_id !== runId
-          ? run
-          : {
-              ...run,
-              steps: run.steps.map((step) =>
-                step.seq !== seq
-                  ? step
-                  : // Also clear a stale in-flight flag: an expand resolve that
-                    // lands after this collapse must not resurrect the dropped
-                    // full text (its write is guarded on this flag).
-                    {
-                      ...step,
-                      observation_full: null,
-                      observation_error: null,
-                      observation_loading: false,
-                    }
-              ),
-            }
+  const loadRunSteps = useCallback(
+    async (runId: number): Promise<void> => {
+      const session = sessionRef.current;
+      if (
+        !session ||
+        session.stepsLoading.has(runId) ||
+        session.runs.find((run) => run.run_id === runId)?.steps_loaded
       )
-    );
-  }, []);
-
-  const expandStep = useCallback(
-    async (runId: number, seq: number): Promise<void> => {
-      const requestedConv = activeConversationRef.current;
-      // Fetch key resolved from the latest snapshot BEFORE any updater runs:
-      // no assignment inside the updater below, so it stays a pure function
-      // of `prev` and a StrictMode double-invoke returns the same state.
-      const snap = runsRef.current
-        .find((r) => r.run_id === runId)
-        ?.steps.find((s) => s.seq === seq);
-      const stepId = snap?.step_id ?? null;
-      if (stepId === null || stepId === 0) {
-        setRuns((prev) =>
-          prev.map((run) =>
+        return;
+      session.stepsLoading.add(runId);
+      try {
+        const raw = await listAgentSteps(runId);
+        if (!current(session)) return;
+        if (raw.some((step) => step.run_id !== runId)) return;
+        publish(
+          session,
+          session.runs.map((run) =>
             run.run_id !== runId
               ? run
               : {
                   ...run,
-                  steps: run.steps.map((step) =>
-                    step.seq !== seq
-                      ? step
-                      : { ...step, observation_loading: false }
-                  ),
+                  steps: mergeSteps(run.steps, raw.map(toStepView)),
+                  steps_loaded: true,
                 }
           )
         );
-        return;
+      } catch {
+        // Best effort; visibility or a user expand can retry.
+      } finally {
+        // This set belongs to the originating generation, including on failure.
+        session.stepsLoading.delete(runId);
       }
-      if (
-        snap === undefined ||
-        snap.observation_full !== null ||
-        snap.observation_loading
-      )
-        return;
-      // Optimistic loading flag, set after the key resolve. The per-item
-      // condition keeps the updater pure: steps that already hold the full
-      // text (or are already loading) pass through untouched.
-      setRuns((prev) =>
-        prev.map((r) =>
-          r.run_id !== runId
-            ? r
+    },
+    [current, publish]
+  );
+
+  useEffect(() => {
+    const session = sessionRef.current;
+    if (!session || session.runs !== runs) return;
+    // Late frames can partially materialize terminal history after its journal
+    // records were acknowledged while unloaded. A nonempty accordion does not
+    // request lazy history, so repair that incomplete list with the same fenced,
+    // deduplicated reader. Untouched terminal lists remain lazy; a later reload
+    // publishes a fresh snapshot and can retry a failed read.
+    for (const run of runs) {
+      if (!isActive(run.status) && !run.steps_loaded && run.steps.length > 0) {
+        void loadRunSteps(run.run_id);
+      }
+    }
+  }, [runs, loadRunSteps]);
+
+  const collapseStep = useCallback(
+    (runId: number, seq: number) => {
+      const session = sessionRef.current;
+      if (!session) return;
+      session.observations.delete(`${runId}:${seq}`);
+      publish(
+        session,
+        session.runs.map((run) =>
+          run.run_id !== runId
+            ? run
             : {
-                ...r,
-                steps: r.steps.map((s) =>
-                  s.seq !== seq ||
-                  s.observation_full !== null ||
-                  s.observation_loading
-                    ? s
+                ...run,
+                steps: run.steps.map((step) =>
+                  step.seq !== seq
+                    ? step
                     : {
-                        ...s,
-                        observation_loading: true,
+                        ...step,
+                        observation_full: null,
                         observation_error: null,
+                        observation_loading: false,
                       }
                 ),
               }
         )
       );
+    },
+    [publish]
+  );
+
+  const expandStep = useCallback(
+    async (runId: number, seq: number): Promise<void> => {
+      const session = sessionRef.current;
+      if (!session) return;
+      const step = session.runs
+        .find((run) => run.run_id === runId)
+        ?.steps.find((item) => item.seq === seq);
+      if (
+        !step ||
+        !step.step_id ||
+        step.observation_full !== null ||
+        step.observation_loading
+      )
+        return;
+      const key = `${runId}:${seq}`;
+      const token = Symbol();
+      session.observations.set(key, token);
+      const write = (fields: Partial<AgentStepView>) => {
+        if (!current(session) || session.observations.get(key) !== token)
+          return;
+        publish(
+          session,
+          session.runs.map((run) =>
+            run.run_id !== runId
+              ? run
+              : {
+                  ...run,
+                  steps: run.steps.map((item) =>
+                    item.step_id !== step.step_id
+                      ? item
+                      : { ...item, ...fields }
+                  ),
+                }
+          )
+        );
+      };
+      write({ observation_loading: true, observation_error: null });
       try {
-        const full = await getAgentStepObservation(stepId);
-        if (activeConversationRef.current !== requestedConv) return;
-        // Guarded write: only a step still showing loading takes the full
-        // text. A collapse in flight clears the flag (and drops the text), so
-        // a late resolve must not resurrect it. Overlapping expands cannot
-        // stack — a second expand returns early on the loading flag above —
-        // so no generation counter is needed.
-        setRuns((prev) =>
-          prev.map((run) =>
-            run.run_id !== runId
-              ? run
-              : {
-                  ...run,
-                  steps: run.steps.map((step) =>
-                    step.seq !== seq || !step.observation_loading
-                      ? step
-                      : {
-                          ...step,
-                          observation_full: full,
-                          observation_loading: false,
-                          observation_error: null,
-                        }
-                  ),
-                }
-          )
-        );
-      } catch (e) {
-        if (activeConversationRef.current !== requestedConv) return;
-        setRuns((prev) =>
-          prev.map((run) =>
-            run.run_id !== runId
-              ? run
-              : {
-                  ...run,
-                  steps: run.steps.map((step) =>
-                    step.seq !== seq
-                      ? step
-                      : {
-                          ...step,
-                          observation_loading: false,
-                          observation_error:
-                            e instanceof Error ? e.message : String(e),
-                        }
-                  ),
-                }
-          )
-        );
+        const full = await getAgentStepObservation(step.step_id);
+        write({
+          observation_full: full,
+          observation_loading: false,
+          observation_error: null,
+        });
+      } catch (cause) {
+        write({
+          observation_loading: false,
+          observation_error:
+            cause instanceof Error ? cause.message : String(cause),
+        });
+      } finally {
+        if (session.observations.get(key) === token)
+          session.observations.delete(key);
       }
     },
-    []
+    [current, publish]
   );
 
   useEffect(() => {
-    activeConversationRef.current = conversationId;
+    const session: ConversationSession | null =
+      conversationId === null
+        ? null
+        : {
+            conversationId,
+            runs: [],
+            request: 0,
+            revision: new Map(),
+            stepsLoading: new Set(),
+            observations: new Map(),
+            cursor: 0,
+            initialHighWater: null,
+            historyFloor: 0,
+            ready: false,
+            dirty: false,
+            drain: null,
+          };
+    sessionRef.current = session;
     setRuns([]);
-    knownRunIdsRef.current = new Set();
-    stepsLoadingRef.current = new Set();
     setError(null);
-    if (conversationId !== null) void reload();
-  }, [conversationId, reload]);
-
-  // Single listen on the static event name; admit live frames by conversation.
-  useEffect(() => {
-    let unlisten: (() => void) | null = null;
-    let cancelled = false;
-
-    const setup = async () => {
-      try {
-        unlisten = await listen<AgentRunEventPayload>(
-          "agent-run-event",
-          (event) => {
-            const payload = event.payload;
-            const activeId = activeConversationRef.current;
-            if (activeId === null) return;
-            // Ownership must be proven before any live state or fetch changes.
-            // Unknown owned runs are valid: frames can precede the start response.
-            if (
-              (payload.type === "step" || payload.type === "governance") &&
-              payload.conversation_id !== activeId
-            )
-              return;
-            if (payload.type === "finished") {
-              if (payload.event.conversation_id !== activeId) return;
-              // AC-102/ADD-08 patch-on-finish: the terminal frame carries the
-              // run's outcome, so PATCH the affected run instead of re-firing
-              // the full rehydration fan-out (which re-fetched every run's
-              // steps on every completion). A run with no steps on screen —
-              // rehydrated unloaded, or an unknown run — fetches its now-final
-              // step list once, via the same lazy path as expansion.
-              const finished = runsRef.current.find(
-                (r) => r.run_id === payload.run_id
-              );
-              setRuns((prev) => {
-                const idx = prev.findIndex((r) => r.run_id === payload.run_id);
-                if (idx >= 0) {
-                  const copy = [...prev];
-                  copy[idx] = {
-                    ...copy[idx],
-                    status: payload.event.status,
-                    finished_at: Date.now() / 1000,
-                    error: payload.event.error,
-                  };
-                  return copy;
-                }
-                // Unknown run that finished for this conversation: add a
-                // placeholder; the lazy fetch below fills its final steps.
-                return [
-                  ...prev,
-                  {
-                    run_id: payload.run_id,
-                    conversation_id: payload.event.conversation_id,
-                    status: payload.event.status,
-                    model: "",
-                    started_at: Date.now() / 1000,
-                    finished_at: Date.now() / 1000,
-                    error: payload.event.error,
-                    steps: [],
-                    steps_loaded: false,
-                    total_steps: null,
-                    pending_approval: null,
-                  },
-                ];
-              });
-              knownRunIdsRef.current.add(payload.run_id);
-              if (finished === undefined || finished.steps.length === 0) {
-                void loadRunSteps(payload.run_id);
-              }
-              return;
-            }
-
-            const runId = payload.run_id;
-
-            if (payload.type === "step") {
-              const frame = payload.event;
-              setRuns((prev) => {
-                const idx = prev.findIndex((r) => r.run_id === runId);
-                if (idx >= 0) {
-                  const run = prev[idx];
-                  // Duplicate seq is idempotent — ignore if already present.
-                  if (run.steps.some((s) => s.seq === frame.seq)) return prev;
-                  const newStep = toStepViewFromFrame(runId, frame);
-                  const updated = [...prev];
-                  const newSteps = [...run.steps, newStep].sort(
-                    (a, b) => a.seq - b.seq
-                  );
-                  updated[idx] = { ...run, steps: newSteps };
-                  return updated;
-                }
-                // Owned unknown run: preserve steps arriving before start returns.
-                knownRunIdsRef.current.add(runId);
-                return [
-                  ...prev,
-                  {
-                    run_id: runId,
-                    conversation_id: activeId,
-                    status: "running",
-                    model: "",
-                    started_at: Date.now() / 1000,
-                    finished_at: null,
-                    error: null,
-                    steps: [toStepViewFromFrame(runId, frame)],
-                    // Live run: its steps stream in, nothing to lazy-load.
-                    steps_loaded: true,
-                    total_steps: null,
-                    pending_approval: null,
-                  },
-                ];
-              });
-              // Ensure known set includes this run even if we didn't add (race)
-              knownRunIdsRef.current.add(runId);
-            } else if (payload.type === "governance") {
-              const gov: GovernanceEventPayload = payload.event;
-              if (gov.type === "approval_requested") {
-                setRuns((prev) => {
-                  const idx = prev.findIndex((r) => r.run_id === runId);
-                  if (idx >= 0) {
-                    const copy = [...prev];
-                    copy[idx] = {
-                      ...copy[idx],
-                      pending_approval: {
-                        call_id: gov.call_id,
-                        name: gov.name,
-                        arguments: gov.arguments,
-                        timeout_secs: gov.timeout_secs ?? 0,
-                        requested_at: Date.now() / 1000,
-                      },
-                    };
-                    return copy;
-                  }
-                  // Unknown run approval: create placeholder
-                  knownRunIdsRef.current.add(runId);
-                  return [
-                    ...prev,
-                    {
-                      run_id: runId,
-                      conversation_id: activeId,
-                      status: "running",
-                      model: "",
-                      started_at: Date.now() / 1000,
-                      finished_at: null,
-                      error: null,
-                      steps: [],
-                      // Live run: steps stream in, nothing to lazy-load.
-                      steps_loaded: true,
-                      total_steps: null,
-                      pending_approval: {
-                        call_id: gov.call_id,
-                        name: gov.name,
-                        arguments: gov.arguments,
-                        timeout_secs: gov.timeout_secs ?? 0,
-                        requested_at: Date.now() / 1000,
-                      },
-                    },
-                  ];
-                });
-              } else if (gov.type === "approval_resolved") {
-                setRuns((prev) => {
-                  const idx = prev.findIndex((r) => r.run_id === runId);
-                  if (idx < 0) return prev;
-                  const copy = [...prev];
-                  // Clear pending only if it matches the resolved call_id
-                  const cur = copy[idx].pending_approval;
-                  if (cur && cur.call_id === gov.call_id)
-                    copy[idx] = { ...copy[idx], pending_approval: null };
-                  return copy;
-                });
-              } else if (gov.type === "budget_exhausted") {
-                setRuns((prev) => {
-                  const idx = prev.findIndex((r) => r.run_id === runId);
-                  if (idx < 0) return prev;
-                  const copy = [...prev];
-                  copy[idx] = { ...copy[idx], status: "budget_exhausted" };
-                  return copy;
-                });
-              } else if (gov.type === "spend_limit_exceeded") {
-                setRuns((prev) => {
-                  const idx = prev.findIndex((r) => r.run_id === runId);
-                  if (idx < 0) return prev;
-                  const copy = [...prev];
-                  copy[idx] = { ...copy[idx], status: "spend_limit_exceeded" };
-                  return copy;
-                });
-              } else if (gov.type === "cancelled") {
-                // The server emits a plain `cancelled` with no reason (a user
-                // cancel and an expired approval park look identical here), so
-                // the pending approval must clear: its buttons must not stay
-                // live past the run's end. Any "expired" wording from here on
-                // is the server-confirmed state, never client math.
-                setRuns((prev) => {
-                  const idx = prev.findIndex((r) => r.run_id === runId);
-                  if (idx < 0) return prev;
-                  const copy = [...prev];
-                  copy[idx] = {
-                    ...copy[idx],
-                    status: "cancelled",
-                    pending_approval: null,
-                  };
-                  return copy;
-                });
-              } else if (gov.type === "paused") {
-                setRuns((prev) => {
-                  const idx = prev.findIndex((r) => r.run_id === runId);
-                  if (idx < 0) return prev;
-                  const copy = [...prev];
-                  copy[idx] = { ...copy[idx], status: "paused" };
-                  return copy;
-                });
-              } else if (gov.type === "resumed") {
-                setRuns((prev) => {
-                  const idx = prev.findIndex((r) => r.run_id === runId);
-                  if (idx < 0) return prev;
-                  const copy = [...prev];
-                  copy[idx] = { ...copy[idx], status: "running" };
-                  return copy;
-                });
-              } else if (gov.type === "completed") {
-                // Completed governance event is informational; final status comes from finished frame.
-                // Keep as running until finished reload.
-              }
-            }
-          }
-        );
-        if (cancelled && unlisten) {
-          unlisten();
-          unlisten = null;
-        }
-      } catch {
-        // Listen failed; hook remains in rehydration-only mode.
-      }
-      return () => {
-        if (unlisten) unlisten();
-      };
-    };
-
-    const cleanupPromise = setup();
-    return () => {
-      cancelled = true;
-      if (unlisten) unlisten();
-      else
-        void cleanupPromise.then((fn) => {
-          if (fn) fn();
+    setLoading(false);
+    if (!session) return;
+    let unlisten: (() => void) | undefined;
+    void reload();
+    void listen<AgentRunEventPayload>("agent-run-event", ({ payload }) => {
+      if (!current(session)) return;
+      const owner =
+        payload.type === "finished"
+          ? payload.event.conversation_id
+          : payload.conversation_id;
+      if (owner !== session.conversationId) return;
+      if (payload.type === "durable") {
+        void catchUp(session);
+      } else if (payload.type === "step") {
+        patch(session, payload.run_id, (run) => ({
+          ...run,
+          steps: mergeSteps(run.steps, [
+            toStepViewFromFrame(payload.run_id, payload.event),
+          ]),
+          steps_loaded:
+            run.steps_loaded ||
+            !session.runs.some((item) => item.run_id === payload.run_id),
+        }));
+      } else if (payload.type === "finished") {
+        const run = session.runs.find((item) => item.run_id === payload.run_id);
+        patch(session, payload.run_id, (old) => ({
+          ...old,
+          status: payload.event.status,
+          error: payload.event.error,
+          finished_at: old.finished_at ?? Date.now() / 1000,
+          pending_approval: null,
+        }));
+        if (!run || run.steps.length === 0) void loadRunSteps(payload.run_id);
+      } else {
+        const gov = payload.event;
+        patch(session, payload.run_id, (run) => {
+          if (!isActive(run.status)) return run;
+          if (gov.type === "approval_requested")
+            return {
+              ...run,
+              pending_approval: {
+                call_id: gov.call_id,
+                name: gov.name,
+                arguments: gov.arguments,
+                timeout_secs: gov.timeout_secs ?? 0,
+                requested_at: Date.now() / 1000,
+              },
+            };
+          if (gov.type === "approval_resolved")
+            return {
+              ...run,
+              pending_approval:
+                run.pending_approval?.call_id === gov.call_id
+                  ? null
+                  : run.pending_approval,
+            };
+          if (gov.type === "cancelled")
+            return { ...run, status: "cancelled", pending_approval: null };
+          if (
+            gov.type === "paused" ||
+            gov.type === "budget_exhausted" ||
+            gov.type === "spend_limit_exceeded"
+          )
+            return { ...run, status: gov.type };
+          if (gov.type === "resumed") return { ...run, status: "running" };
+          return run;
         });
+      }
+    })
+      .then((dispose) => {
+        if (!current(session)) {
+          dispose();
+          return;
+        }
+        unlisten = dispose;
+        // Reconcile the subscription setup gap even if no notification arrives.
+        void catchUp(session);
+      })
+      .catch(() => {
+        /* Manual reload still reconciles when listening fails. */
+      });
+    return () => {
+      if (sessionRef.current === session) sessionRef.current = null;
+      unlisten?.();
     };
-  }, [reload, loadRunSteps]);
+  }, [conversationId, reload, current, patch, catchUp, loadRunSteps]);
 
   return {
     runs,

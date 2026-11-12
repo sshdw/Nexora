@@ -1674,6 +1674,15 @@ async function invoke(
         .filter((r) => r.conversation_id === convId)
         .sort((a, b) => b.started_at - a.started_at);
     }
+    // The visual mock predates the journal; its existing run/step history
+    // stays readable through the legacy APIs without inventing chronology.
+    case "list_conversation_run_events":
+      return {
+        events: [],
+        next_cursor: Number(args.afterEventId ?? 0),
+        high_water_event_id: Number(args.afterEventId ?? 0),
+        has_more: false,
+      };
     case "list_agent_steps": {
       const runId = Number(requireArg(args, "list_agent_steps", "runId"));
       const steps = agentSteps.get(runId) ?? [];

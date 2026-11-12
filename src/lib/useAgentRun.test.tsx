@@ -15,6 +15,8 @@ import type {
   AgentStep,
   StepEventFrame,
   GovernanceEventPayload,
+  DurableRunEvent,
+  DurableRunEventPage,
 } from "./tauri";
 import { listAgentRuns, listAgentSteps, startAgentRun } from "./tauri";
 import { useAgentRun } from "./useAgentRun";
@@ -115,6 +117,45 @@ function approvalRequest(): GovernanceEventPayload {
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  return { promise, resolve, reject };
+}
+function eventPage(
+  events: DurableRunEvent[] = [],
+  overrides: Partial<DurableRunEventPage> = {}
+): DurableRunEventPage {
+  return {
+    events,
+    next_cursor: events[events.length - 1]?.event_id ?? 0,
+    high_water_event_id: events[events.length - 1]?.event_id ?? 0,
+    has_more: false,
+    ...overrides,
+  };
+}
+function durable(
+  event_id: number,
+  overrides: Partial<DurableRunEvent> = {}
+): DurableRunEvent {
+  return {
+    event_id,
+    conversation_id: 1,
+    run_id: 7,
+    kind: "step_recorded",
+    step_id: 11,
+    schema_version: 1,
+    created_at: 1001,
+    step: stepRow(),
+    terminal: null,
+    ...overrides,
+  };
+}
+
 /** Default invoke router mirroring the `tauri.ts` wrapper contract. */
 function routeInvoke(
   runsByConversation: Record<number, AgentRun[]>,
@@ -123,6 +164,10 @@ function routeInvoke(
 ): void {
   mockInvoke.mockImplementation(
     (cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === "list_conversation_run_events")
+        return Promise.resolve(
+          eventPage([], { next_cursor: Number(args?.afterEventId ?? 0) })
+        );
       if (cmd === "list_agent_runs") {
         const id = args?.["conversationId"];
         if (typeof id !== "number" || !(id in runsByConversation)) {
@@ -144,6 +189,23 @@ function routeInvoke(
       }
       return Promise.reject(new Error(`unexpected invoke: ${cmd}`));
     }
+  );
+}
+
+function historyRouter(
+  read: (after: number) => Promise<DurableRunEventPage>,
+  runs = [runRow()]
+) {
+  routeInvoke(
+    { 1: runs, 2: [runRow({ id: 8, conversation_id: 2 })] },
+    { 7: [stepRow()] }
+  );
+  const fallback = mockInvoke.getMockImplementation()!;
+  mockInvoke.mockImplementation(
+    (command: string, args?: Record<string, unknown>) =>
+      command === "list_conversation_run_events"
+        ? read(Number(args?.afterEventId ?? 0))
+        : fallback(command, args)
   );
 }
 
@@ -185,7 +247,9 @@ describe("useAgentRun", () => {
     expect(
       mockInvoke.mock.calls.every(
         ([command]) =>
-          command === "list_agent_runs" || command === "list_agent_steps"
+          command === "list_agent_runs" ||
+          command === "list_agent_steps" ||
+          command === "list_conversation_run_events"
       )
     ).toBe(true);
   });
@@ -237,7 +301,11 @@ describe("useAgentRun", () => {
       tool_name: "read_file",
     });
     expect(result.current.runs[0].steps_loaded).toBe(true);
-    expect(mockInvoke).toHaveBeenCalledTimes(2);
+    expect(
+      mockInvoke.mock.calls.filter(
+        ([cmd]) => cmd !== "list_conversation_run_events"
+      )
+    ).toHaveLength(2);
     expect(mockInvoke).toHaveBeenLastCalledWith("list_agent_steps", {
       runId: 7,
       limit: null,
@@ -246,7 +314,11 @@ describe("useAgentRun", () => {
     await act(async () => {
       await result.current.loadRunSteps(7);
     });
-    expect(mockInvoke).toHaveBeenCalledTimes(2);
+    expect(
+      mockInvoke.mock.calls.filter(
+        ([cmd]) => cmd !== "list_conversation_run_events"
+      )
+    ).toHaveLength(2);
   });
 
   it("wrapper forwards optional pagination args camelCase over the snake_case commands", async () => {
@@ -279,7 +351,7 @@ describe("useAgentRun", () => {
         type: "step",
         conversation_id: 1,
         run_id: 7,
-        event: stepFrame({ seq: 2 }),
+        event: stepFrame({ seq: 2, step_id: 12 }),
       });
     });
     expect(result.current.runs[0].steps.map((s) => s.seq)).toEqual([2]);
@@ -492,17 +564,18 @@ describe("useAgentRun", () => {
         resolveStart({ run_id: 8 });
         await starting;
       });
-      expect(mockInvoke.mock.calls.map(([command]) => command)).toEqual([
-        "list_agent_runs",
-        "start_agent_run",
-      ]);
+      expect(
+        mockInvoke.mock.calls
+          .map(([command]) => command)
+          .filter((command) => command !== "list_conversation_run_events")
+      ).toEqual(["list_agent_runs", "start_agent_run"]);
     }
   );
 
   it("rejects delayed frames after switching conversation and keeps owned governor events live", async () => {
     routeInvoke(
       { 1: [runRow()], 2: [runRow({ id: 8, conversation_id: 2 })] },
-      {}
+      { 8: [stepRow({ run_id: 8 })] }
     );
     const { result, rerender } = renderHook(({ id }) => useAgentRun(id), {
       initialProps: { id: 1 },
@@ -530,6 +603,7 @@ describe("useAgentRun", () => {
     const calls = mockInvoke.mock.calls.length;
     act(delayed);
     expect(result.current.runs).toBe(before);
+    expect(mockInvoke).toHaveBeenCalledTimes(calls);
     act(() => {
       emitAgentEvent({
         type: "step",
@@ -567,7 +641,12 @@ describe("useAgentRun", () => {
       expect(result.current.runs[0].status).toBe(status);
     }
     expect(result.current.runs[0].pending_approval).toBeNull();
-    expect(mockInvoke).toHaveBeenCalledTimes(calls);
+    expect(mockInvoke).toHaveBeenCalledTimes(calls + 1);
+    expect(mockInvoke).toHaveBeenLastCalledWith("list_agent_steps", {
+      runId: 8,
+      limit: null,
+      beforeSeq: null,
+    });
   });
 
   it("drops a stale reload that resolves after a conversation switch", async () => {
@@ -685,5 +764,1037 @@ describe("useAgentRun", () => {
     });
     expect(result.current.runs[0].steps[0].observation_full).toBeNull();
     expect(result.current.runs[0].steps[0].observation_loading).toBe(false);
+  });
+
+  it("drains multiple committed pages using next_cursor and deduplicates event, step identity and seq", async () => {
+    const reads: number[] = [];
+    historyRouter(async (after) => {
+      reads.push(after);
+      if (after === 0)
+        return eventPage([durable(1)], {
+          next_cursor: 1,
+          high_water_event_id: 20,
+          has_more: true,
+        });
+      if (after === 1)
+        return eventPage(
+          [
+            durable(2, { step: stepRow({ id: 11, seq: 9 }) }),
+            durable(2, { step: stepRow({ id: 12, seq: 3 }), step_id: 12 }),
+            durable(3, { step: stepRow({ id: 13, seq: 2 }), step_id: 13 }),
+          ],
+          { next_cursor: 3, high_water_event_id: 20, has_more: true }
+        );
+      if (after === 3)
+        return eventPage(
+          [
+            durable(4, {
+              kind: "run_finished",
+              step_id: null,
+              step: null,
+              terminal: {
+                conversation_id: 1,
+                status: "completed",
+                error: null,
+                final_content: null,
+              },
+            }),
+          ],
+          { next_cursor: 20 }
+        );
+      return eventPage([], { next_cursor: after });
+    });
+    const { result } = renderHook(() => useAgentRun(1));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(reads.slice(0, 3)).toEqual([0, 1, 3]);
+    expect(result.current.runs[0].steps.map((step) => step.seq)).toEqual([
+      1, 2,
+    ]);
+    expect(result.current.runs[0].status).toBe("completed");
+    act(() => {
+      emitAgentEvent({
+        type: "step",
+        conversation_id: 1,
+        run_id: 7,
+        event: stepFrame(),
+      });
+      for (const event_id of [4, 2, 4, 1])
+        emitAgentEvent({
+          type: "durable",
+          conversation_id: 1,
+          run_id: 7,
+          event_id,
+        });
+    });
+    await act(async () => {});
+    expect(reads.slice(3).every((cursor) => cursor === 20)).toBe(true);
+    expect(result.current.runs[0].steps).toHaveLength(2);
+    expect(
+      mockInvoke.mock.calls.every(([command]) =>
+        [
+          "list_agent_runs",
+          "list_conversation_run_events",
+          "list_agent_steps",
+        ].includes(command)
+      )
+    ).toBe(true);
+  });
+
+  it("manual reconnect catches missed steps and finish without any notification", async () => {
+    let journal: DurableRunEvent[] = [];
+    historyRouter(async (after) =>
+      eventPage(
+        journal.filter((event) => event.event_id > after),
+        { next_cursor: journal[journal.length - 1]?.event_id ?? after }
+      )
+    );
+    const { result } = renderHook(() => useAgentRun(1));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    journal = [
+      durable(1),
+      durable(2, {
+        kind: "run_interrupted",
+        step_id: null,
+        step: null,
+        terminal: {
+          conversation_id: 1,
+          status: "interrupted",
+          error: "shutdown",
+          final_content: null,
+        },
+      }),
+    ];
+    await act(async () => result.current.reload());
+    expect(result.current.runs[0]).toMatchObject({
+      status: "interrupted",
+      pending_approval: null,
+    });
+    expect(result.current.runs[0].steps.map((step) => step.step_id)).toEqual([
+      11,
+    ]);
+  });
+
+  it("reconciles the asynchronous subscription setup gap without a durable hint", async () => {
+    const subscribed = deferred<() => void>();
+    mockListen.mockImplementationOnce(() => subscribed.promise);
+    let journal: DurableRunEvent[] = [];
+    historyRouter(async (after) =>
+      eventPage(
+        journal.filter((event) => event.event_id > after),
+        { next_cursor: journal[journal.length - 1]?.event_id ?? after }
+      )
+    );
+    const { result } = renderHook(() => useAgentRun(1));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    journal = [durable(1)];
+    await act(async () => subscribed.resolve(vi.fn()));
+    await waitFor(() => expect(result.current.runs[0].steps).toHaveLength(1));
+  });
+
+  it("queues a second cursor pass for a hint arriving during an outstanding read", async () => {
+    const first = deferred<DurableRunEventPage>();
+    const reads: number[] = [];
+    historyRouter((after) => {
+      reads.push(after);
+      return reads.length === 1
+        ? first.promise
+        : Promise.resolve(eventPage([durable(2)], { next_cursor: 2 }));
+    });
+    const { result } = renderHook(() => useAgentRun(1));
+    await waitFor(() => expect(reads).toHaveLength(1));
+    act(() =>
+      emitAgentEvent({
+        type: "durable",
+        conversation_id: 1,
+        run_id: 7,
+        event_id: 999,
+      })
+    );
+    await act(async () =>
+      first.resolve(eventPage([], { next_cursor: 1, high_water_event_id: 1 }))
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(reads).toEqual([0, 1]);
+    expect(result.current.runs[0].steps).toHaveLength(1);
+  });
+
+  it.each(["resolve", "reject"] as const)(
+    "fences old A history %s across A -> B -> A",
+    async (outcome) => {
+      const old = deferred<AgentRun[]>();
+      routeInvoke(
+        {
+          1: [runRow({ model: "new A" })],
+          2: [runRow({ id: 8, conversation_id: 2 })],
+        },
+        {}
+      );
+      const fallback = mockInvoke.getMockImplementation()!;
+      let first = true;
+      mockInvoke.mockImplementation(
+        (command: string, args?: Record<string, unknown>) => {
+          if (
+            command === "list_agent_runs" &&
+            args?.conversationId === 1 &&
+            first
+          ) {
+            first = false;
+            return old.promise;
+          }
+          return fallback(command, args);
+        }
+      );
+      const { result, rerender } = renderHook(({ id }) => useAgentRun(id), {
+        initialProps: { id: 1 },
+      });
+      rerender({ id: 2 });
+      rerender({ id: 1 });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      await act(async () =>
+        outcome === "resolve"
+          ? old.resolve([runRow({ model: "stale A" })])
+          : old.reject(new Error("old error"))
+      );
+      expect(result.current.runs[0].model).toBe("new A");
+      expect(result.current.error).toBeNull();
+      expect(result.current.loading).toBe(false);
+    }
+  );
+
+  it("latest reload wins and stale errors/finally cannot end a newer request", async () => {
+    routeInvoke({ 1: [runRow()] }, {});
+    const { result } = renderHook(() => useAgentRun(1));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const first = deferred<AgentRun[]>(),
+      second = deferred<AgentRun[]>();
+    const fallback = mockInvoke.getMockImplementation()!;
+    let requests = 0;
+    mockInvoke.mockImplementation(
+      (command: string, args?: Record<string, unknown>) =>
+        command === "list_agent_runs"
+          ? ++requests === 1
+            ? first.promise
+            : second.promise
+          : fallback(command, args)
+    );
+    let a!: Promise<void>, b!: Promise<void>;
+    act(() => {
+      a = result.current.reload();
+      b = result.current.reload();
+    });
+    await act(async () => {
+      first.reject(new Error("stale"));
+      await a;
+    });
+    expect(result.current.loading).toBe(true);
+    expect(result.current.error).toBeNull();
+    await act(async () => {
+      second.resolve([runRow({ model: "latest" })]);
+      await b;
+    });
+    expect(result.current.runs[0].model).toBe("latest");
+    expect(result.current.loading).toBe(false);
+  });
+
+  it("stale reload metadata preserves live steps, live approval and terminal outcome", async () => {
+    routeInvoke({ 1: [runRow()] }, {});
+    const { result } = renderHook(() => useAgentRun(1));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const snapshot = deferred<AgentRun[]>();
+    mockInvoke.mockImplementationOnce(() => snapshot.promise);
+    let request!: Promise<void>;
+    act(() => {
+      request = result.current.reload();
+    });
+    act(() => {
+      emitAgentEvent({
+        type: "step",
+        conversation_id: 1,
+        run_id: 7,
+        event: stepFrame(),
+      });
+      emitAgentEvent({
+        type: "governance",
+        conversation_id: 1,
+        run_id: 7,
+        event: approvalRequest(),
+      });
+    });
+    await act(async () => {
+      snapshot.resolve([runRow({ status: "completed" })]);
+      await request;
+    });
+    expect(result.current.runs[0].status).toBe("running");
+    expect(result.current.runs[0].pending_approval?.call_id).toBe("call");
+    const next = deferred<AgentRun[]>();
+    mockInvoke.mockImplementationOnce(() => next.promise);
+    act(() => {
+      request = result.current.reload();
+    });
+    act(() =>
+      emitAgentEvent({
+        type: "finished",
+        run_id: 7,
+        event: {
+          conversation_id: 1,
+          status: "completed",
+          error: null,
+          final_content: null,
+        },
+      })
+    );
+    await act(async () => {
+      next.resolve([runRow()]);
+      await request;
+    });
+    expect(result.current.runs[0]).toMatchObject({
+      status: "completed",
+      pending_approval: null,
+    });
+    expect(result.current.runs[0].steps).toHaveLength(1);
+  });
+
+  it("merges a lazy snapshot with live steps and preserves loaded history on reload", async () => {
+    routeInvoke({ 1: [runRow()] }, { 7: [stepRow()] });
+    const { result } = renderHook(() => useAgentRun(1));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const lazy = deferred<AgentStep[]>();
+    mockInvoke.mockImplementationOnce(() => lazy.promise);
+    let request!: Promise<void>;
+    act(() => {
+      request = result.current.loadRunSteps(7);
+    });
+    act(() =>
+      emitAgentEvent({
+        type: "step",
+        conversation_id: 1,
+        run_id: 7,
+        event: stepFrame({ seq: 2, step_id: 12 }),
+      })
+    );
+    await act(async () => {
+      lazy.resolve([stepRow()]);
+      await request;
+    });
+    await act(async () => result.current.expandStep(7, 1));
+    await act(async () => result.current.reload());
+    expect(result.current.runs[0].steps.map((step) => step.step_id)).toEqual([
+      11, 12,
+    ]);
+    expect(result.current.runs[0].steps[0].observation_full).toBe(
+      "FULL OBSERVATION TEXT"
+    );
+    expect(result.current.runs[0].steps_loaded).toBe(true);
+  });
+
+  it("old lazy completion/finally cannot fill or unlock a new A generation", async () => {
+    routeInvoke({ 1: [runRow()], 2: [] }, { 7: [stepRow()] });
+    const { result, rerender } = renderHook(({ id }) => useAgentRun(id), {
+      initialProps: { id: 1 },
+    });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const old = deferred<AgentStep[]>(),
+      fresh = deferred<AgentStep[]>();
+    mockInvoke.mockImplementationOnce(() => old.promise);
+    let a!: Promise<void>, b!: Promise<void>;
+    act(() => {
+      a = result.current.loadRunSteps(7);
+    });
+    rerender({ id: 2 });
+    rerender({ id: 1 });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    mockInvoke.mockImplementationOnce(() => fresh.promise);
+    act(() => {
+      b = result.current.loadRunSteps(7);
+    });
+    await act(async () => {
+      old.resolve([stepRow({ observation: "old" })]);
+      await a;
+    });
+    expect(result.current.runs[0].steps).toHaveLength(0);
+    const count = mockInvoke.mock.calls.length;
+    await act(async () => result.current.loadRunSteps(7));
+    expect(mockInvoke.mock.calls).toHaveLength(count);
+    await act(async () => {
+      fresh.resolve([stepRow({ observation: "fresh" })]);
+      await b;
+    });
+    expect(result.current.runs[0].steps[0].observation).toBe("fresh");
+  });
+
+  it.each(["resolve", "reject"] as const)(
+    "fences an old observation %s after A -> B -> A",
+    async (outcome) => {
+      routeInvoke({ 1: [runRow()], 2: [] }, { 7: [stepRow()] });
+      const { result, rerender } = renderHook(({ id }) => useAgentRun(id), {
+        initialProps: { id: 1 },
+      });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      await act(async () => result.current.loadRunSteps(7));
+      const old = deferred<string>(),
+        fresh = deferred<string>();
+      mockInvoke.mockImplementationOnce(() => old.promise);
+      let a!: Promise<void>, b!: Promise<void>;
+      act(() => {
+        a = result.current.expandStep(7, 1);
+      });
+      rerender({ id: 2 });
+      rerender({ id: 1 });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      await act(async () => result.current.loadRunSteps(7));
+      mockInvoke.mockImplementationOnce(() => fresh.promise);
+      act(() => {
+        b = result.current.expandStep(7, 1);
+      });
+      await act(async () => {
+        if (outcome === "resolve") old.resolve("old");
+        else old.reject(new Error("old error"));
+        await a;
+      });
+      expect(result.current.runs[0].steps[0]).toMatchObject({
+        observation_full: null,
+        observation_loading: true,
+        observation_error: null,
+      });
+      await act(async () => {
+        fresh.resolve("fresh");
+        await b;
+      });
+      expect(result.current.runs[0].steps[0].observation_full).toBe("fresh");
+    }
+  );
+
+  it("collapse and re-expand fences stale observation errors within one generation", async () => {
+    routeInvoke({ 1: [runRow()] }, { 7: [stepRow()] });
+    const { result } = renderHook(() => useAgentRun(1));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await act(async () => result.current.loadRunSteps(7));
+    const old = deferred<string>(),
+      fresh = deferred<string>();
+    mockInvoke
+      .mockImplementationOnce(() => old.promise)
+      .mockImplementationOnce(() => fresh.promise);
+    let a!: Promise<void>, b!: Promise<void>;
+    act(() => {
+      a = result.current.expandStep(7, 1);
+    });
+    act(() => {
+      result.current.collapseStep(7, 1);
+      b = result.current.expandStep(7, 1);
+    });
+    await act(async () => {
+      old.reject(new Error("old"));
+      await a;
+    });
+    expect(result.current.runs[0].steps[0]).toMatchObject({
+      observation_loading: true,
+      observation_error: null,
+    });
+    await act(async () => {
+      fresh.resolve("new");
+      await b;
+    });
+    expect(result.current.runs[0].steps[0].observation_full).toBe("new");
+  });
+
+  it("keeps old terminal history bounded and lazy without restoring approvals", async () => {
+    historyRouter(
+      async () =>
+        eventPage([
+          durable(1, { run_id: 1, step: stepRow({ run_id: 1 }) }),
+          durable(2),
+        ]),
+      [runRow({ status: "completed", total_steps: 1 })]
+    );
+    const { result } = renderHook(() => useAgentRun(1));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.runs).toHaveLength(1);
+    expect(result.current.runs[0]).toMatchObject({
+      steps: [],
+      steps_loaded: false,
+      pending_approval: null,
+    });
+    expect(
+      mockInvoke.mock.calls.some(([command]) => command === "list_agent_steps")
+    ).toBe(false);
+    await act(async () => result.current.loadRunSteps(7));
+    expect(result.current.runs[0].steps[0].step_id).toBe(11);
+  });
+
+  it("rejects foreign durable identities before mutation and does not acknowledge their page", async () => {
+    let foreign = false;
+    const reads: number[] = [];
+    historyRouter(async (after) => {
+      reads.push(after);
+      return foreign
+        ? eventPage([durable(2, { conversation_id: 2 })], { next_cursor: 8 })
+        : eventPage([], { next_cursor: after });
+    });
+    const { result } = renderHook(() => useAgentRun(1));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    foreign = true;
+    const count = reads.length;
+    act(() =>
+      emitAgentEvent({
+        type: "durable",
+        conversation_id: 2,
+        run_id: 7,
+        event_id: 2,
+      })
+    );
+    expect(reads).toHaveLength(count);
+    await act(async () => result.current.reload());
+    expect(result.current.error).toBe("Run history identity mismatch");
+    expect(result.current.runs[0].steps).toHaveLength(0);
+    foreign = false;
+    await act(async () => result.current.reload());
+    expect(reads[reads.length - 1]).toBe(0);
+  });
+
+  it("cleans a delayed subscription once and fences callbacks and reads after unmount", async () => {
+    const subscribed = deferred<() => void>(),
+      page = deferred<DurableRunEventPage>();
+    const dispose = vi.fn();
+    let callback!: (event: TauriEvent) => void;
+    mockListen.mockImplementationOnce((_name, handler) => {
+      callback = handler;
+      return subscribed.promise;
+    });
+    historyRouter(() => page.promise);
+    const { unmount } = renderHook(() => useAgentRun(1));
+    await waitFor(() =>
+      expect(
+        mockInvoke.mock.calls.some(
+          ([command]) => command === "list_conversation_run_events"
+        )
+      ).toBe(true)
+    );
+    unmount();
+    await act(async () => {
+      subscribed.resolve(dispose);
+      page.resolve(eventPage([durable(1)]));
+    });
+    const count = mockInvoke.mock.calls.length;
+    act(() =>
+      callback({
+        payload: {
+          type: "durable",
+          conversation_id: 1,
+          run_id: 7,
+          event_id: 100,
+        },
+      })
+    );
+    expect(dispose).toHaveBeenCalledTimes(1);
+    expect(mockInvoke.mock.calls).toHaveLength(count);
+  });
+
+  it.each([false, true])(
+    "recovers acknowledged twelve-step history after a late Step (Finished=%s)",
+    async (finished) => {
+      const rows = Array.from({ length: 12 }, (_, index) =>
+        stepRow({
+          id: 101 + index,
+          seq: index + 1,
+          observation_truncated: true,
+        })
+      );
+      const terminal = durable(14, {
+        kind: "run_finished",
+        step_id: null,
+        step: null,
+        terminal: {
+          conversation_id: 1,
+          status: "completed",
+          error: null,
+          final_content: null,
+        },
+      });
+      const journal = [
+        durable(1, { kind: "run_started", step_id: null, step: null }),
+        ...rows.map((step, index) =>
+          durable(index + 2, { step_id: step.id, step })
+        ),
+        terminal,
+      ];
+      historyRouter(
+        async (after) =>
+          eventPage(
+            journal.filter((event) => event.event_id > after),
+            { next_cursor: 14 }
+          ),
+        [runRow({ status: "completed", total_steps: 12, finished_at: 1002 })]
+      );
+      const lazy = deferred<AgentStep[]>();
+      const fallback = mockInvoke.getMockImplementation()!;
+      mockInvoke.mockImplementation(
+        (command: string, args?: Record<string, unknown>) =>
+          command === "list_agent_steps"
+            ? lazy.promise
+            : fallback(command, args)
+      );
+      const { result } = renderHook(() => useAgentRun(1));
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      expect(result.current.runs[0]).toMatchObject({
+        steps: [],
+        steps_loaded: false,
+      });
+      expect(
+        mockInvoke.mock.calls.some(
+          ([command]) => command === "list_agent_steps"
+        )
+      ).toBe(false);
+      act(() => {
+        emitAgentEvent({
+          type: "step",
+          conversation_id: 1,
+          run_id: 7,
+          event: stepFrame({
+            step_id: 112,
+            seq: 12,
+            observation_truncated: true,
+          }),
+        });
+        if (finished)
+          emitAgentEvent({
+            type: "finished",
+            run_id: 7,
+            event: {
+              conversation_id: 1,
+              status: "completed",
+              error: null,
+              final_content: null,
+            },
+          });
+      });
+      await waitFor(() =>
+        expect(
+          mockInvoke.mock.calls.filter(
+            ([command]) => command === "list_agent_steps"
+          )
+        ).toHaveLength(1)
+      );
+      // A duplicate frame while the fallback is pending cannot issue another read.
+      act(() =>
+        emitAgentEvent({
+          type: "step",
+          conversation_id: 1,
+          run_id: 7,
+          event: stepFrame({ step_id: 112, seq: 12 }),
+        })
+      );
+      await act(async () => lazy.resolve(rows));
+      expect(result.current.runs[0].steps.map((step) => step.seq)).toEqual(
+        rows.map((step) => step.seq)
+      );
+      expect(result.current.runs[0]).toMatchObject({
+        status: "completed",
+        steps_loaded: true,
+        pending_approval: null,
+      });
+      await act(async () => result.current.expandStep(7, 1));
+      expect(mockInvoke).toHaveBeenCalledWith("get_agent_step_observation", {
+        stepId: 101,
+      });
+      await act(async () => result.current.reload());
+      expect(mockInvoke).toHaveBeenCalledWith("list_conversation_run_events", {
+        conversationId: 1,
+        afterEventId: 14,
+        limit: 100,
+      });
+      expect(result.current.runs[0].steps).toHaveLength(12);
+      expect(result.current.runs[0].steps[0].observation_full).toBe(
+        "FULL OBSERVATION TEXT"
+      );
+      expect(
+        mockInvoke.mock.calls.filter(
+          ([command]) => command === "list_agent_steps"
+        )
+      ).toHaveLength(1);
+      expect(
+        mockInvoke.mock.calls.every(([command]) =>
+          [
+            "list_agent_runs",
+            "list_conversation_run_events",
+            "list_agent_steps",
+            "get_agent_step_observation",
+          ].includes(command)
+        )
+      ).toBe(true);
+    }
+  );
+
+  it("recovers steps skipped on an earlier cursor page when a late Step interleaves with later pages", async () => {
+    const rows = Array.from({ length: 12 }, (_, index) =>
+      stepRow({ id: 101 + index, seq: index + 1, observation_truncated: true })
+    );
+    const later = deferred<DurableRunEventPage>(),
+      lazy = deferred<AgentStep[]>();
+    historyRouter(
+      (after) => {
+        if (after === 0)
+          return Promise.resolve(
+            eventPage(
+              rows
+                .slice(0, 6)
+                .map((step, index) =>
+                  durable(index + 1, { step_id: step.id, step })
+                ),
+              { next_cursor: 6, high_water_event_id: 13, has_more: true }
+            )
+          );
+        if (after === 6) return later.promise;
+        return Promise.resolve(eventPage([], { next_cursor: after }));
+      },
+      [runRow({ status: "completed", total_steps: 12, finished_at: 1002 })]
+    );
+    const fallback = mockInvoke.getMockImplementation()!;
+    mockInvoke.mockImplementation(
+      (command: string, args?: Record<string, unknown>) =>
+        command === "list_agent_steps" ? lazy.promise : fallback(command, args)
+    );
+    const { result } = renderHook(() => useAgentRun(1));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("list_conversation_run_events", {
+        conversationId: 1,
+        afterEventId: 6,
+        limit: 100,
+      })
+    );
+    expect(result.current.runs[0].steps).toHaveLength(0);
+    act(() =>
+      emitAgentEvent({
+        type: "step",
+        conversation_id: 1,
+        run_id: 7,
+        event: stepFrame({
+          step_id: 112,
+          seq: 12,
+          observation_truncated: true,
+        }),
+      })
+    );
+    await waitFor(() =>
+      expect(
+        mockInvoke.mock.calls.filter(
+          ([command]) => command === "list_agent_steps"
+        )
+      ).toHaveLength(1)
+    );
+    await act(async () =>
+      later.resolve(
+        eventPage([
+          ...rows
+            .slice(6)
+            .map((step, index) =>
+              durable(index + 7, { step_id: step.id, step })
+            ),
+          durable(13, {
+            kind: "run_finished",
+            step_id: null,
+            step: null,
+            terminal: {
+              conversation_id: 1,
+              status: "completed",
+              error: null,
+              final_content: null,
+            },
+          }),
+        ])
+      )
+    );
+    await act(async () => result.current.expandStep(7, 12));
+    // The lazy snapshot must merge with the live/durable previews and expanded text.
+    await act(async () => lazy.resolve(rows));
+    expect(result.current.runs[0].steps.map((step) => step.seq)).toEqual(
+      rows.map((step) => step.seq)
+    );
+    expect(result.current.runs[0].steps[11].observation_full).toBe(
+      "FULL OBSERVATION TEXT"
+    );
+    await act(async () => result.current.reload());
+    expect(result.current.runs[0]).toMatchObject({
+      status: "completed",
+      steps_loaded: true,
+      pending_approval: null,
+    });
+    expect(result.current.runs[0].steps).toHaveLength(12);
+    expect(
+      mockInvoke.mock.calls.filter(
+        ([command]) => command === "list_agent_steps"
+      )
+    ).toHaveLength(1);
+  });
+
+  it("manual reload retries a failed read of partially materialized terminal history", async () => {
+    const rows = Array.from({ length: 12 }, (_, index) =>
+      stepRow({ id: 101 + index, seq: index + 1 })
+    );
+    historyRouter(
+      async (after) => eventPage([], { next_cursor: after }),
+      [runRow({ status: "completed", total_steps: 12, finished_at: 1002 })]
+    );
+    const failed = deferred<AgentStep[]>();
+    const fallback = mockInvoke.getMockImplementation()!;
+    let reads = 0;
+    mockInvoke.mockImplementation(
+      (command: string, args?: Record<string, unknown>) => {
+        if (command === "list_agent_steps")
+          return ++reads === 1 ? failed.promise : Promise.resolve(rows);
+        return fallback(command, args);
+      }
+    );
+    const { result } = renderHook(() => useAgentRun(1));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    act(() =>
+      emitAgentEvent({
+        type: "step",
+        conversation_id: 1,
+        run_id: 7,
+        event: stepFrame({ step_id: 112, seq: 12 }),
+      })
+    );
+    await waitFor(() => expect(reads).toBe(1));
+    await act(async () => failed.reject(new Error("history unavailable")));
+    expect(result.current.runs[0].steps).toHaveLength(1);
+    expect(result.current.runs[0].steps_loaded).toBe(false);
+    await act(async () => result.current.reload());
+    expect(reads).toBe(2);
+    expect(result.current.runs[0].steps.map((step) => step.seq)).toEqual(
+      rows.map((step) => step.seq)
+    );
+    expect(result.current.runs[0]).toMatchObject({
+      status: "completed",
+      steps_loaded: true,
+      pending_approval: null,
+    });
+  });
+
+  it("fills partial live steps when Finished precedes the initial durable page", async () => {
+    const initial = deferred<DurableRunEventPage>();
+    historyRouter((after) =>
+      after === 0
+        ? initial.promise
+        : Promise.resolve(eventPage([], { next_cursor: after }))
+    );
+    const { result } = renderHook(() => useAgentRun(1));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("list_conversation_run_events", {
+        conversationId: 1,
+        afterEventId: 0,
+        limit: 100,
+      })
+    );
+    expect(result.current.runs[0]).toMatchObject({
+      status: "running",
+      steps_loaded: false,
+    });
+    act(() => {
+      emitAgentEvent({
+        type: "step",
+        conversation_id: 1,
+        run_id: 7,
+        event: stepFrame({ step_id: 12, seq: 2 }),
+      });
+      emitAgentEvent({
+        type: "finished",
+        run_id: 7,
+        event: {
+          conversation_id: 1,
+          status: "completed",
+          error: null,
+          final_content: null,
+        },
+      });
+    });
+    expect(result.current.runs[0].steps.map((step) => step.seq)).toEqual([2]);
+    expect(result.current.runs[0]).toMatchObject({
+      status: "completed",
+      steps_loaded: false,
+    });
+    await act(async () =>
+      initial.resolve(
+        eventPage([
+          durable(1),
+          durable(2, { step_id: 12, step: stepRow({ id: 12, seq: 2 }) }),
+          durable(3, {
+            kind: "run_finished",
+            step_id: null,
+            step: null,
+            terminal: {
+              conversation_id: 1,
+              status: "completed",
+              error: null,
+              final_content: null,
+            },
+          }),
+        ])
+      )
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.runs[0].steps.map((step) => step.seq)).toEqual([
+      1, 2,
+    ]);
+    expect(result.current.runs[0].steps.map((step) => step.step_id)).toEqual([
+      11, 12,
+    ]);
+    expect(result.current.runs[0]).toMatchObject({
+      status: "completed",
+      pending_approval: null,
+    });
+    await act(async () => result.current.reload());
+    expect(mockInvoke).toHaveBeenCalledWith("list_conversation_run_events", {
+      conversationId: 1,
+      afterEventId: 3,
+      limit: 100,
+    });
+    expect(
+      mockInvoke.mock.calls.filter(
+        ([command]) => command === "list_agent_steps"
+      )
+    ).toHaveLength(1);
+    expect(result.current.error).toBeNull();
+  });
+
+  it("an older cursor page cannot replace a newer terminal snapshot", async () => {
+    const stale = deferred<DurableRunEventPage>();
+    historyRouter(() => stale.promise);
+    const { result } = renderHook(() => useAgentRun(1));
+    await waitFor(() => expect(result.current.runs).toHaveLength(1));
+    const fallback = mockInvoke.getMockImplementation()!;
+    mockInvoke.mockImplementation(
+      (command: string, args?: Record<string, unknown>) =>
+        command === "list_agent_runs"
+          ? Promise.resolve([
+              runRow({
+                status: "error",
+                interrupted: true,
+                error: "shutdown",
+                finished_at: 1002,
+              }),
+            ])
+          : fallback(command, args)
+    );
+    let reload!: Promise<void>;
+    act(() => {
+      reload = result.current.reload();
+    });
+    await waitFor(() =>
+      expect(result.current.runs[0].status).toBe("interrupted")
+    );
+    await act(async () => {
+      stale.resolve(
+        eventPage([
+          durable(1, {
+            step_id: null,
+            step: null,
+            kind: "run_finished",
+            terminal: {
+              conversation_id: 1,
+              status: "completed",
+              error: null,
+              final_content: null,
+            },
+          }),
+        ])
+      );
+      await reload;
+    });
+    expect(result.current.runs[0]).toMatchObject({
+      status: "interrupted",
+      error: "shutdown",
+      finished_at: 1002,
+    });
+  });
+
+  it("drops an old cursor completion across A -> B -> A", async () => {
+    const stale = deferred<DurableRunEventPage>();
+    let first = true;
+    historyRouter(async (after) => {
+      if (first) {
+        first = false;
+        return stale.promise;
+      }
+      return eventPage([], { next_cursor: after });
+    });
+    const { result, rerender } = renderHook(({ id }) => useAgentRun(id), {
+      initialProps: { id: 1 },
+    });
+    await waitFor(() => expect(first).toBe(false));
+    rerender({ id: 2 });
+    rerender({ id: 1 });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await act(async () => stale.resolve(eventPage([durable(1)])));
+    expect(result.current.runs[0].steps).toHaveLength(0);
+    expect(result.current.error).toBeNull();
+  });
+  it("a newer legacy count reopens lazy loading for missed pre-journal steps", async () => {
+    historyRouter(async (after) => eventPage([], { next_cursor: after }), []);
+    const { result } = renderHook(() => useAgentRun(1));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    act(() =>
+      emitAgentEvent({
+        type: "step",
+        conversation_id: 1,
+        run_id: 7,
+        event: stepFrame(),
+      })
+    );
+    expect(result.current.runs[0].steps_loaded).toBe(true);
+    const lazy = deferred<AgentStep[]>();
+    const fallback = mockInvoke.getMockImplementation()!;
+    mockInvoke.mockImplementation(
+      (command: string, args?: Record<string, unknown>) => {
+        if (command === "list_agent_runs")
+          return Promise.resolve([
+            runRow({ status: "completed", total_steps: 2 }),
+          ]);
+        if (command === "list_agent_steps") return lazy.promise;
+        return fallback(command, args);
+      }
+    );
+    await act(async () => result.current.reload());
+    expect(result.current.runs[0].steps).toHaveLength(1);
+    expect(result.current.runs[0].steps_loaded).toBe(false);
+    await act(async () => result.current.loadRunSteps(7));
+    expect(
+      mockInvoke.mock.calls.filter(
+        ([command]) => command === "list_agent_steps"
+      )
+    ).toHaveLength(1);
+    await act(async () =>
+      lazy.resolve([stepRow(), stepRow({ id: 12, seq: 2 })])
+    );
+    expect(result.current.runs[0].steps.map((step) => step.step_id)).toEqual([
+      11, 12,
+    ]);
+    expect(result.current.runs[0].steps[0].id).toBe(11);
+  });
+
+  it("a newer successful reload remains visible when an older snapshot resolves last", async () => {
+    routeInvoke({ 1: [runRow()] }, {});
+    const { result } = renderHook(() => useAgentRun(1));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const old = deferred<AgentRun[]>(),
+      fresh = deferred<AgentRun[]>();
+    mockInvoke
+      .mockImplementationOnce(() => old.promise)
+      .mockImplementationOnce(() => fresh.promise);
+    let a!: Promise<void>, b!: Promise<void>;
+    act(() => {
+      a = result.current.reload();
+      b = result.current.reload();
+    });
+    await act(async () => {
+      fresh.resolve([runRow({ model: "fresh" })]);
+      await b;
+    });
+    await act(async () => {
+      old.resolve([runRow({ model: "old" })]);
+      await a;
+    });
+    expect(result.current.runs[0].model).toBe("fresh");
+    expect(result.current.error).toBeNull();
+    expect(result.current.loading).toBe(false);
   });
 });
