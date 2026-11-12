@@ -463,6 +463,21 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
     [current, publish]
   );
 
+  useEffect(() => {
+    const session = sessionRef.current;
+    if (!session || session.runs !== runs) return;
+    // Late frames can partially materialize terminal history after its journal
+    // records were acknowledged while unloaded. A nonempty accordion does not
+    // request lazy history, so repair that incomplete list with the same fenced,
+    // deduplicated reader. Untouched terminal lists remain lazy; a later reload
+    // publishes a fresh snapshot and can retry a failed read.
+    for (const run of runs) {
+      if (!isActive(run.status) && !run.steps_loaded && run.steps.length > 0) {
+        void loadRunSteps(run.run_id);
+      }
+    }
+  }, [runs, loadRunSteps]);
+
   const collapseStep = useCallback(
     (runId: number, seq: number) => {
       const session = sessionRef.current;

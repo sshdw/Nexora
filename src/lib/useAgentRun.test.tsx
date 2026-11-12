@@ -575,7 +575,7 @@ describe("useAgentRun", () => {
   it("rejects delayed frames after switching conversation and keeps owned governor events live", async () => {
     routeInvoke(
       { 1: [runRow()], 2: [runRow({ id: 8, conversation_id: 2 })] },
-      {}
+      { 8: [stepRow({ run_id: 8 })] }
     );
     const { result, rerender } = renderHook(({ id }) => useAgentRun(id), {
       initialProps: { id: 1 },
@@ -603,6 +603,7 @@ describe("useAgentRun", () => {
     const calls = mockInvoke.mock.calls.length;
     act(delayed);
     expect(result.current.runs).toBe(before);
+    expect(mockInvoke).toHaveBeenCalledTimes(calls);
     act(() => {
       emitAgentEvent({
         type: "step",
@@ -640,7 +641,12 @@ describe("useAgentRun", () => {
       expect(result.current.runs[0].status).toBe(status);
     }
     expect(result.current.runs[0].pending_approval).toBeNull();
-    expect(mockInvoke).toHaveBeenCalledTimes(calls);
+    expect(mockInvoke).toHaveBeenCalledTimes(calls + 1);
+    expect(mockInvoke).toHaveBeenLastCalledWith("list_agent_steps", {
+      runId: 8,
+      limit: null,
+      beforeSeq: null,
+    });
   });
 
   it("drops a stale reload that resolves after a conversation switch", async () => {
@@ -825,7 +831,11 @@ describe("useAgentRun", () => {
     expect(result.current.runs[0].steps).toHaveLength(2);
     expect(
       mockInvoke.mock.calls.every(([command]) =>
-        ["list_agent_runs", "list_conversation_run_events"].includes(command)
+        [
+          "list_agent_runs",
+          "list_conversation_run_events",
+          "list_agent_steps",
+        ].includes(command)
       )
     ).toBe(true);
   });
@@ -1279,6 +1289,287 @@ describe("useAgentRun", () => {
     expect(mockInvoke.mock.calls).toHaveLength(count);
   });
 
+  it.each([false, true])(
+    "recovers acknowledged twelve-step history after a late Step (Finished=%s)",
+    async (finished) => {
+      const rows = Array.from({ length: 12 }, (_, index) =>
+        stepRow({
+          id: 101 + index,
+          seq: index + 1,
+          observation_truncated: true,
+        })
+      );
+      const terminal = durable(14, {
+        kind: "run_finished",
+        step_id: null,
+        step: null,
+        terminal: {
+          conversation_id: 1,
+          status: "completed",
+          error: null,
+          final_content: null,
+        },
+      });
+      const journal = [
+        durable(1, { kind: "run_started", step_id: null, step: null }),
+        ...rows.map((step, index) =>
+          durable(index + 2, { step_id: step.id, step })
+        ),
+        terminal,
+      ];
+      historyRouter(
+        async (after) =>
+          eventPage(
+            journal.filter((event) => event.event_id > after),
+            { next_cursor: 14 }
+          ),
+        [runRow({ status: "completed", total_steps: 12, finished_at: 1002 })]
+      );
+      const lazy = deferred<AgentStep[]>();
+      const fallback = mockInvoke.getMockImplementation()!;
+      mockInvoke.mockImplementation(
+        (command: string, args?: Record<string, unknown>) =>
+          command === "list_agent_steps"
+            ? lazy.promise
+            : fallback(command, args)
+      );
+      const { result } = renderHook(() => useAgentRun(1));
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      expect(result.current.runs[0]).toMatchObject({
+        steps: [],
+        steps_loaded: false,
+      });
+      expect(
+        mockInvoke.mock.calls.some(
+          ([command]) => command === "list_agent_steps"
+        )
+      ).toBe(false);
+      act(() => {
+        emitAgentEvent({
+          type: "step",
+          conversation_id: 1,
+          run_id: 7,
+          event: stepFrame({
+            step_id: 112,
+            seq: 12,
+            observation_truncated: true,
+          }),
+        });
+        if (finished)
+          emitAgentEvent({
+            type: "finished",
+            run_id: 7,
+            event: {
+              conversation_id: 1,
+              status: "completed",
+              error: null,
+              final_content: null,
+            },
+          });
+      });
+      await waitFor(() =>
+        expect(
+          mockInvoke.mock.calls.filter(
+            ([command]) => command === "list_agent_steps"
+          )
+        ).toHaveLength(1)
+      );
+      // A duplicate frame while the fallback is pending cannot issue another read.
+      act(() =>
+        emitAgentEvent({
+          type: "step",
+          conversation_id: 1,
+          run_id: 7,
+          event: stepFrame({ step_id: 112, seq: 12 }),
+        })
+      );
+      await act(async () => lazy.resolve(rows));
+      expect(result.current.runs[0].steps.map((step) => step.seq)).toEqual(
+        rows.map((step) => step.seq)
+      );
+      expect(result.current.runs[0]).toMatchObject({
+        status: "completed",
+        steps_loaded: true,
+        pending_approval: null,
+      });
+      await act(async () => result.current.expandStep(7, 1));
+      expect(mockInvoke).toHaveBeenCalledWith("get_agent_step_observation", {
+        stepId: 101,
+      });
+      await act(async () => result.current.reload());
+      expect(mockInvoke).toHaveBeenCalledWith("list_conversation_run_events", {
+        conversationId: 1,
+        afterEventId: 14,
+        limit: 100,
+      });
+      expect(result.current.runs[0].steps).toHaveLength(12);
+      expect(result.current.runs[0].steps[0].observation_full).toBe(
+        "FULL OBSERVATION TEXT"
+      );
+      expect(
+        mockInvoke.mock.calls.filter(
+          ([command]) => command === "list_agent_steps"
+        )
+      ).toHaveLength(1);
+      expect(
+        mockInvoke.mock.calls.every(([command]) =>
+          [
+            "list_agent_runs",
+            "list_conversation_run_events",
+            "list_agent_steps",
+            "get_agent_step_observation",
+          ].includes(command)
+        )
+      ).toBe(true);
+    }
+  );
+
+  it("recovers steps skipped on an earlier cursor page when a late Step interleaves with later pages", async () => {
+    const rows = Array.from({ length: 12 }, (_, index) =>
+      stepRow({ id: 101 + index, seq: index + 1, observation_truncated: true })
+    );
+    const later = deferred<DurableRunEventPage>(),
+      lazy = deferred<AgentStep[]>();
+    historyRouter(
+      (after) => {
+        if (after === 0)
+          return Promise.resolve(
+            eventPage(
+              rows
+                .slice(0, 6)
+                .map((step, index) =>
+                  durable(index + 1, { step_id: step.id, step })
+                ),
+              { next_cursor: 6, high_water_event_id: 13, has_more: true }
+            )
+          );
+        if (after === 6) return later.promise;
+        return Promise.resolve(eventPage([], { next_cursor: after }));
+      },
+      [runRow({ status: "completed", total_steps: 12, finished_at: 1002 })]
+    );
+    const fallback = mockInvoke.getMockImplementation()!;
+    mockInvoke.mockImplementation(
+      (command: string, args?: Record<string, unknown>) =>
+        command === "list_agent_steps" ? lazy.promise : fallback(command, args)
+    );
+    const { result } = renderHook(() => useAgentRun(1));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("list_conversation_run_events", {
+        conversationId: 1,
+        afterEventId: 6,
+        limit: 100,
+      })
+    );
+    expect(result.current.runs[0].steps).toHaveLength(0);
+    act(() =>
+      emitAgentEvent({
+        type: "step",
+        conversation_id: 1,
+        run_id: 7,
+        event: stepFrame({
+          step_id: 112,
+          seq: 12,
+          observation_truncated: true,
+        }),
+      })
+    );
+    await waitFor(() =>
+      expect(
+        mockInvoke.mock.calls.filter(
+          ([command]) => command === "list_agent_steps"
+        )
+      ).toHaveLength(1)
+    );
+    await act(async () =>
+      later.resolve(
+        eventPage([
+          ...rows
+            .slice(6)
+            .map((step, index) =>
+              durable(index + 7, { step_id: step.id, step })
+            ),
+          durable(13, {
+            kind: "run_finished",
+            step_id: null,
+            step: null,
+            terminal: {
+              conversation_id: 1,
+              status: "completed",
+              error: null,
+              final_content: null,
+            },
+          }),
+        ])
+      )
+    );
+    await act(async () => result.current.expandStep(7, 12));
+    // The lazy snapshot must merge with the live/durable previews and expanded text.
+    await act(async () => lazy.resolve(rows));
+    expect(result.current.runs[0].steps.map((step) => step.seq)).toEqual(
+      rows.map((step) => step.seq)
+    );
+    expect(result.current.runs[0].steps[11].observation_full).toBe(
+      "FULL OBSERVATION TEXT"
+    );
+    await act(async () => result.current.reload());
+    expect(result.current.runs[0]).toMatchObject({
+      status: "completed",
+      steps_loaded: true,
+      pending_approval: null,
+    });
+    expect(result.current.runs[0].steps).toHaveLength(12);
+    expect(
+      mockInvoke.mock.calls.filter(
+        ([command]) => command === "list_agent_steps"
+      )
+    ).toHaveLength(1);
+  });
+
+  it("manual reload retries a failed read of partially materialized terminal history", async () => {
+    const rows = Array.from({ length: 12 }, (_, index) =>
+      stepRow({ id: 101 + index, seq: index + 1 })
+    );
+    historyRouter(
+      async (after) => eventPage([], { next_cursor: after }),
+      [runRow({ status: "completed", total_steps: 12, finished_at: 1002 })]
+    );
+    const failed = deferred<AgentStep[]>();
+    const fallback = mockInvoke.getMockImplementation()!;
+    let reads = 0;
+    mockInvoke.mockImplementation(
+      (command: string, args?: Record<string, unknown>) => {
+        if (command === "list_agent_steps")
+          return ++reads === 1 ? failed.promise : Promise.resolve(rows);
+        return fallback(command, args);
+      }
+    );
+    const { result } = renderHook(() => useAgentRun(1));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    act(() =>
+      emitAgentEvent({
+        type: "step",
+        conversation_id: 1,
+        run_id: 7,
+        event: stepFrame({ step_id: 112, seq: 12 }),
+      })
+    );
+    await waitFor(() => expect(reads).toBe(1));
+    await act(async () => failed.reject(new Error("history unavailable")));
+    expect(result.current.runs[0].steps).toHaveLength(1);
+    expect(result.current.runs[0].steps_loaded).toBe(false);
+    await act(async () => result.current.reload());
+    expect(reads).toBe(2);
+    expect(result.current.runs[0].steps.map((step) => step.seq)).toEqual(
+      rows.map((step) => step.seq)
+    );
+    expect(result.current.runs[0]).toMatchObject({
+      status: "completed",
+      steps_loaded: true,
+      pending_approval: null,
+    });
+  });
+
   it("fills partial live steps when Finished precedes the initial durable page", async () => {
     const initial = deferred<DurableRunEventPage>();
     historyRouter((after) =>
@@ -1358,8 +1649,10 @@ describe("useAgentRun", () => {
       limit: 100,
     });
     expect(
-      mockInvoke.mock.calls.some(([command]) => command === "list_agent_steps")
-    ).toBe(false);
+      mockInvoke.mock.calls.filter(
+        ([command]) => command === "list_agent_steps"
+      )
+    ).toHaveLength(1);
     expect(result.current.error).toBeNull();
   });
 
@@ -1448,6 +1741,7 @@ describe("useAgentRun", () => {
       })
     );
     expect(result.current.runs[0].steps_loaded).toBe(true);
+    const lazy = deferred<AgentStep[]>();
     const fallback = mockInvoke.getMockImplementation()!;
     mockInvoke.mockImplementation(
       (command: string, args?: Record<string, unknown>) => {
@@ -1455,8 +1749,7 @@ describe("useAgentRun", () => {
           return Promise.resolve([
             runRow({ status: "completed", total_steps: 2 }),
           ]);
-        if (command === "list_agent_steps")
-          return Promise.resolve([stepRow(), stepRow({ id: 12, seq: 2 })]);
+        if (command === "list_agent_steps") return lazy.promise;
         return fallback(command, args);
       }
     );
@@ -1464,6 +1757,14 @@ describe("useAgentRun", () => {
     expect(result.current.runs[0].steps).toHaveLength(1);
     expect(result.current.runs[0].steps_loaded).toBe(false);
     await act(async () => result.current.loadRunSteps(7));
+    expect(
+      mockInvoke.mock.calls.filter(
+        ([command]) => command === "list_agent_steps"
+      )
+    ).toHaveLength(1);
+    await act(async () =>
+      lazy.resolve([stepRow(), stepRow({ id: 12, seq: 2 })])
+    );
     expect(result.current.runs[0].steps.map((step) => step.step_id)).toEqual([
       11, 12,
     ]);
