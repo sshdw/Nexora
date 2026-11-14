@@ -55,6 +55,7 @@ const SNAPSHOT: readonly string[] = [
   "exportSetupToFile",
   "extendAgentRun",
   "flagsStatus",
+  "getAccessProfile",
   "getAgentStepObservation",
   "getCompatConfig",
   "getSetting",
@@ -125,6 +126,7 @@ const SNAPSHOT: readonly string[] = [
   "search",
   "sendMessage",
   "setCompatConfig",
+  "setAccessProfile",
   "setSetting",
   "setWorkspaceRoot",
   "snapshotDatabase",
@@ -153,7 +155,9 @@ describe("tauri barrel parity (AC-205)", () => {
   it("routes durable history with camelCase cursor arguments", async () => {
     await barrel.listConversationRunEvents(7, 23, 2);
     expect(invoke).toHaveBeenLastCalledWith("list_conversation_run_events", {
-      conversationId: 7, afterEventId: 23, limit: 2,
+      conversationId: 7,
+      afterEventId: 23,
+      limit: 2,
     });
   });
 

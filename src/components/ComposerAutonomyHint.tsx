@@ -18,19 +18,21 @@
    is still reachable on hover/focus when it overflows.
    ============================================================ */
 
-import type { AutonomyMode } from "../lib/tauri";
+import type { AccessProfile, AutonomyMode } from "../lib/tauri";
 
 /** The three modes, in the order the pills list them. Order here
  *  is irrelevant to the explainer (one mode is live at a time);
  *  it exists so the lookup cannot return undefined. */
-const EXPLAINED_MODES: readonly AutonomyMode[] = [
+const EXPLAINED_MODES: readonly (AutonomyMode | AccessProfile)[] = [
+  "read_only",
+  "standard",
   "supervised",
   "semi_autonomous",
   "full_autonomous",
 ];
 
 export interface ComposerAutonomyHintProps {
-  mode: AutonomyMode;
+  mode: AutonomyMode | AccessProfile;
   /** Finished sentence for `mode`, already localized. */
   text: string;
 }

@@ -322,6 +322,8 @@ pub(crate) struct AgentRunRequest {
 /// is spawned, outcomes flow through the event stream instead).
 #[derive(Debug)]
 pub(crate) enum AgentRunError {
+    /// A private store cannot be selected as an agent workspace.
+    WorkspaceProtected,
     /// The conversation does not exist.
     ConversationNotFound {
         /// The missing conversation id.
@@ -504,6 +506,59 @@ pub(crate) fn start_run(
     mode: AutonomyMode,
     preset: RunPreset,
 ) -> Result<i64, AgentRunError> {
+    start_run_scoped(
+        db,
+        registry,
+        host,
+        executor,
+        workspace_root,
+        request,
+        mode,
+        preset,
+        super::access::AccessContext::root(db),
+    )
+}
+
+#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+pub(crate) fn start_run_with_parent(
+    db: &Database,
+    registry: Arc<AgentRunRegistry>,
+    host: Arc<dyn AgentRunHost>,
+    executor: Arc<dyn ProviderExecutor + Send + Sync>,
+    workspace_root: PathBuf,
+    request: AgentRunRequest,
+    mode: AutonomyMode,
+    preset: RunPreset,
+    parent: &super::access::AccessContext,
+) -> Result<i64, AgentRunError> {
+    start_run_scoped(
+        db,
+        registry,
+        host,
+        executor,
+        workspace_root,
+        request,
+        mode,
+        preset,
+        parent.child(parent.profile()),
+    )
+}
+
+#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+fn start_run_scoped(
+    db: &Database,
+    registry: Arc<AgentRunRegistry>,
+    host: Arc<dyn AgentRunHost>,
+    executor: Arc<dyn ProviderExecutor + Send + Sync>,
+    workspace_root: PathBuf,
+    request: AgentRunRequest,
+    mode: AutonomyMode,
+    preset: RunPreset,
+    access: super::access::AccessContext,
+) -> Result<i64, AgentRunError> {
+    if super::tools::path_safety::check_private(&workspace_root).is_err() {
+        return Err(AgentRunError::WorkspaceProtected);
+    }
     // Executor availability is the caller's contract: every call site resolves
     // the executor through `execution::resolve_executor` first (agent command,
     // task loop bridge, e2e smoke) and fails with the same classified
@@ -530,6 +585,7 @@ pub(crate) fn start_run(
         &request,
         mode,
         preset,
+        access,
     );
     if started.is_err() {
         registry.unclaim_conversation(request.conversation_id);
@@ -597,6 +653,7 @@ fn start_run_claimed(
     request: &AgentRunRequest,
     mode: AutonomyMode,
     preset: RunPreset,
+    access: super::access::AccessContext,
 ) -> Result<i64, AgentRunError> {
     // Load the persisted history BEFORE persisting the current user
     // message (agent memory slice): after the persist the current turn is
@@ -648,7 +705,7 @@ fn start_run_claimed(
 
     // Create the linked run row (D50) through the recorder so the run id is
     // known synchronously; the spawned run adopts it (no second insert).
-    let gate = ApprovalGate::new(mode);
+    let gate = ApprovalGate::new(mode).with_access(access);
     // NEX-AGENT-004: every park on this run expires on the configured
     // deadline, so an unanswered approval can never hold the conversation
     // claim forever.
@@ -1629,7 +1686,16 @@ mod tests {
                         _ => {}
                     }
                 };
-                assert_eq!(call_id, expected);
+                let pending = registry
+                    .live_run_snapshot(conversation_id)
+                    .unwrap()
+                    .pending_approval
+                    .unwrap();
+                assert_eq!(pending.call_id, call_id);
+                assert_eq!(
+                    pending.arguments,
+                    calls[usize::from(expected == "b")].arguments
+                );
                 groups.push(group);
                 assert!(
                     !workspace.join("b.txt").exists(),
@@ -1637,8 +1703,13 @@ mod tests {
                 );
                 if expected == "a" {
                     assert!(!workspace.join("a.txt").exists());
-                    resolve_approval(&registry, &db, run_id, "a", true, Some("group"))
-                        .expect("group approval A");
+                    assert!(
+                        resolve_approval(&registry, &db, run_id, &call_id, true, Some("group"))
+                            .is_err(),
+                        "shell group scope is rejected"
+                    );
+                    resolve_approval(&registry, &db, run_id, &call_id, true, None)
+                        .expect("single approval A");
                 } else {
                     assert_eq!(
                         std::fs::read_to_string(workspace.join("a.txt"))
@@ -1655,10 +1726,11 @@ mod tests {
                     );
                     match resolution {
                         "approve" => {
-                            resolve_approval(&registry, &db, run_id, "b", true, None).unwrap();
+                            resolve_approval(&registry, &db, run_id, &call_id, true, None).unwrap();
                         }
                         "deny" => {
-                            resolve_approval(&registry, &db, run_id, "b", false, None).unwrap();
+                            resolve_approval(&registry, &db, run_id, &call_id, false, None)
+                                .unwrap();
                         }
                         "cancel" => assert!(registry.cancel(run_id)),
                         _ => unreachable!(),
@@ -1666,9 +1738,9 @@ mod tests {
                 }
             }
             assert!(groups[0].is_some());
-            assert_eq!(
+            assert_ne!(
                 groups[0], groups[1],
-                "same cwd must exercise the same group"
+                "distinct shell calls have distinct identities"
             );
             let frames = collect_frames(&rx);
             let RunFrame::Finished { event, .. } = frames.last().expect("terminal frame") else {
@@ -2534,7 +2606,7 @@ mod tests {
                         ToolCall {
                             id: "g2".to_string(),
                             name: "write_file".to_string(),
-                            arguments: serde_json::json!({"path": "grp/b.txt", "content": "2"})
+                            arguments: serde_json::json!({"path": "grp/a.txt", "content": "1"})
                                 .to_string(),
                             thought_signature: None,
                         },
@@ -2599,6 +2671,7 @@ mod tests {
     /// lands on disk, the spilled search observation lists as a bounded
     /// preview, and its full text is reachable via the on-demand fetch.
     #[test]
+    #[allow(clippy::too_many_lines)] // Keep consent, file mutation and spilled-observation assertions in one integration fixture.
     fn new_tools_run_end_to_end_with_spilled_observation() {
         use std::fmt::Write as _;
         let (db, workspace, rx, host) = setup("newtools");
@@ -2652,7 +2725,27 @@ mod tests {
             RunPreset::Coding,
         )
         .expect("start");
-        let frames = collect_frames(&rx);
+        let mut frames = Vec::new();
+        loop {
+            let frame = rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("bounded completion");
+            if let RunFrame::Governance {
+                event: AgentRunEvent::ApprovalRequested { ref call_id, .. },
+                ..
+            } = frame
+            {
+                assert_eq!(
+                    registry.resolve(run_id, call_id, true),
+                    ResolveOutcome::Resolved
+                );
+            }
+            let finished = matches!(frame, RunFrame::Finished { .. });
+            frames.push(frame);
+            if finished {
+                break;
+            }
+        }
         assert!(
             matches!(frames.last().unwrap(), RunFrame::Finished { .. }),
             "run must complete"
@@ -2966,5 +3059,159 @@ mod tests {
             None,
             "unknown step id must read as None, never an error or a guess"
         );
+    }
+    #[test]
+    fn access_profiles_production_start_enforces_ceilings_above_legacy_allow_rules() {
+        for profile in ["read_only", "standard", "supervised"] {
+            let (db, workspace, rx, host) = setup(&format!("access-profile-{profile}"));
+            SettingsService::new(&db)
+                .write(super::super::access::PROFILE_KEY, Some(profile))
+                .unwrap();
+            super::super::permissions::insert_rule(
+                &db,
+                "coding",
+                "*",
+                None,
+                super::super::permissions::RuleEffect::Allow,
+                0,
+            )
+            .unwrap();
+            let registry = Arc::new(AgentRunRegistry::default());
+            let conversation_id = ConversationService::new(&db)
+                .create("synthetic profile run")
+                .unwrap();
+            let mut response = tool_response("file", "write_file");
+            response.tool_calls[0].arguments =
+                r#"{"path":"approved.txt","content":"synthetic"}"#.into();
+            let mut shell = tool_response("shell", "execute_command");
+            shell.tool_calls[0].arguments =
+                r#"{"command":"echo synthetic>>shell-marker.txt","cwd":"."}"#.into();
+            let run_id = start_run(
+                &db,
+                registry.clone(),
+                host as Arc<dyn AgentRunHost>,
+                Arc::new(ScriptedExecutor::new(vec![
+                    Ok(response),
+                    Ok(shell),
+                    Ok(text_response("done")),
+                ])),
+                workspace.clone(),
+                request(conversation_id, "q"),
+                AutonomyMode::FullAutonomous,
+                RunPreset::Coding,
+            )
+            .unwrap();
+            let mut approvals = 0;
+            loop {
+                let frame = rx
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("bounded run completion");
+                match frame {
+                    RunFrame::Governance {
+                        event:
+                            AgentRunEvent::ApprovalRequested {
+                                call_id,
+                                name,
+                                metadata,
+                                ..
+                            },
+                        ..
+                    } => {
+                        approvals += 1;
+                        assert_ne!(profile, "read_only");
+                        assert!(!metadata.checkpoints_available);
+                        assert_eq!(metadata.sandbox_posture, "PerCommandConsent");
+                        if name == "execute_command" {
+                            assert!(!metadata.allow_for_run);
+                            assert_eq!(
+                                registry
+                                    .resolve_with_scope(run_id, &call_id, true, Some("group"))
+                                    .0,
+                                ResolveOutcome::NoPendingApproval
+                            );
+                        }
+                        assert_eq!(
+                            registry.resolve(run_id, &call_id, name != "execute_command"),
+                            ResolveOutcome::Resolved
+                        );
+                    }
+                    RunFrame::Finished { event, .. } => {
+                        assert_eq!(event.status, "completed");
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            assert_eq!(approvals, if profile == "read_only" { 0 } else { 2 });
+            assert_eq!(
+                workspace.join("approved.txt").exists(),
+                profile != "read_only"
+            );
+            assert!(!workspace.join("shell-marker.txt").exists());
+            std::fs::remove_dir_all(workspace).unwrap();
+        }
+    }
+    #[test]
+    fn server_parent_plan_ceiling_reaches_production_child_start() {
+        let (db, workspace, rx, host) = setup("access-parent-plan");
+        let parent = super::super::access::AccessContext::root(&db);
+        parent.set_plan(true);
+        let conversation_id = ConversationService::new(&db).create("child").unwrap();
+        let mut response = tool_response("file", "write_file");
+        response.tool_calls[0].arguments = r#"{"path":"blocked.txt","content":"x"}"#.into();
+        start_run_with_parent(
+            &db,
+            Arc::new(AgentRunRegistry::default()),
+            host as Arc<dyn AgentRunHost>,
+            Arc::new(ScriptedExecutor::new(vec![
+                Ok(response),
+                Ok(text_response("done")),
+            ])),
+            workspace.clone(),
+            request(conversation_id, "q"),
+            AutonomyMode::FullAutonomous,
+            RunPreset::Coding,
+            &parent,
+        )
+        .unwrap();
+        let frames = collect_frames(&rx);
+        assert!(matches!(frames.last(), Some(RunFrame::Finished { .. })));
+        assert!(!frames.iter().any(|frame| matches!(
+            frame,
+            RunFrame::Governance {
+                event: AgentRunEvent::ApprovalRequested { .. },
+                ..
+            }
+        )));
+        assert!(!workspace.join("blocked.txt").exists());
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+    #[test]
+    fn private_workspace_is_rejected_before_provider_or_context_work() {
+        let (db, workspace, _rx, host) = setup("protected-root");
+        let private = workspace.join(".ssh");
+        std::fs::create_dir(&private).unwrap();
+        let conversation_id = ConversationService::new(&db)
+            .create("private root")
+            .unwrap();
+        let executor = Arc::new(ScriptedExecutor::new(vec![Ok(text_response(
+            "must not execute",
+        ))]));
+        let result = start_run(
+            &db,
+            Arc::new(AgentRunRegistry::default()),
+            host as Arc<dyn AgentRunHost>,
+            executor.clone(),
+            private,
+            request(conversation_id, "q"),
+            AutonomyMode::FullAutonomous,
+            RunPreset::Coding,
+        );
+        assert!(matches!(result, Err(AgentRunError::WorkspaceProtected)));
+        assert_eq!(executor.steps.lock().unwrap().len(), 1);
+        assert!(list_runs_for_conversation(&db, conversation_id)
+            .unwrap()
+            .is_empty());
+        std::fs::remove_dir_all(workspace).unwrap();
     }
 }

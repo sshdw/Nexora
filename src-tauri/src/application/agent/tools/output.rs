@@ -550,7 +550,7 @@ mod tests {
         let spilled = fs::read(&spill_path).expect("spill file must exist");
         assert_eq!(spilled.len(), total);
         assert_eq!(spilled, content.as_bytes());
-        let _ = fs::remove_dir_all(bucket_root());
+        let _ = fs::remove_dir_all(&bucket);
     }
 
     #[test]
@@ -574,7 +574,7 @@ mod tests {
         assert!(!out.contains("spilled to "), "no spill path expected");
         // Head/tail content still present around the legacy marker.
         assert!(out.contains("output truncated"));
-        let _ = fs::remove_dir_all(bucket_root());
+        let _ = fs::remove_file(&blocker);
     }
 
     #[test]

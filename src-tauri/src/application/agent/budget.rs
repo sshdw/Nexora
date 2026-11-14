@@ -469,12 +469,29 @@ mod tests {
             ],
             1,
         );
+        let gate = crate::application::agent::approval::ApprovalGate::new(
+            crate::application::agent::approval::AutonomyMode::FullAutonomous,
+        );
+        let driver_gate = gate.clone();
         let runner = AgentRunner::new(&gated, &ws)
+            .with_approval_gate(gate)
             .with_max_iterations(3)
             .with_control(control.clone())
             .with_event_sender(tx);
 
         let driver = thread::spawn(move || {
+            let requested = rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("write consent");
+            assert!(matches!(requested, AgentRunEvent::ApprovalRequested { .. }));
+            assert!(driver_gate.respond_for_test(
+                "w1",
+                crate::application::agent::approval::ApprovalDecision::Approved
+            ));
+            assert!(matches!(
+                rx.recv_timeout(Duration::from_secs(5)).expect("resolved"),
+                AgentRunEvent::ApprovalResolved { approved: true, .. }
+            ));
             // Wait until the second provider call is actually mid-flight.
             wait_flag(&entered);
             control.cancel();

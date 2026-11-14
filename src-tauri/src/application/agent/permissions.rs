@@ -88,35 +88,103 @@ pub(crate) enum PermissionOutcome {
 }
 
 /// Snapshot of rules evaluated per tool call.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct PermissionStore {
     rules: Vec<PermissionRule>,
+    unavailable: bool,
 }
 
 impl PermissionStore {
     /// Empty store (no rules): every decision falls back to the ladder.
     #[must_use]
     pub(crate) fn empty() -> Self {
-        Self { rules: Vec::new() }
+        Self {
+            rules: Vec::new(),
+            unavailable: false,
+        }
     }
 
     /// Build from an explicit rule list (test seam).
     #[must_use]
     pub(crate) fn from_rules(rules: Vec<PermissionRule>) -> Self {
-        Self { rules }
+        Self {
+            rules,
+            unavailable: false,
+        }
     }
 
     /// Load all rules ordered `priority ASC, id ASC` (best-effort for the
-    /// runner: a load failure yields an empty store and the ladder governs).
+    /// runner: an unreadable policy denies dispatch until it can be loaded).
     #[must_use]
     pub(crate) fn load(db: &Database) -> Self {
-        match list_rules(db) {
-            Ok(rules) => Self { rules },
-            Err(err) => {
-                log::warn!("permission rules: load failed, continuing without rules: {err}");
-                Self { rules: Vec::new() }
+        if let Ok(rules) = list_rules(db) {
+            Self {
+                rules,
+                unavailable: false,
+            }
+        } else {
+            log::warn!("permission rules: unavailable; denying tool dispatch");
+            Self {
+                rules: Vec::new(),
+                unavailable: true,
             }
         }
+    }
+
+    pub(crate) fn is_unavailable(&self) -> bool {
+        self.unavailable
+    }
+
+    pub(crate) fn decide_call(
+        &self,
+        preset: &str,
+        call: &crate::application::execution::ToolCall,
+        workspace: &std::path::Path,
+    ) -> Option<PermissionOutcome> {
+        let lexical = extract_path(&call.name, &call.arguments);
+        let first = self.decide(
+            preset,
+            &call.name,
+            lexical.as_deref(),
+            RiskClass::classify(&call.name),
+        );
+        let canonical = (|| {
+            let mut args: serde_json::Value = serde_json::from_str(&call.arguments).ok()?;
+            let field = match call.name.as_str() {
+                "execute_command" => "cwd",
+                "search_files" if args.get("directory").is_some() => "directory",
+                _ => "path",
+            };
+            let requested = args
+                .get(field)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(".");
+            let target = super::tools::path_safety::resolve_path(workspace, requested).ok()?;
+            let root = super::tools::path_safety::canonical_root(workspace);
+            let relative: std::path::PathBuf = target
+                .components()
+                .skip(root.components().count())
+                .collect();
+            args.as_object_mut()?.insert(
+                field.into(),
+                serde_json::Value::String(relative.to_string_lossy().replace('\\', "/")),
+            );
+            extract_path(&call.name, &args.to_string())
+        })();
+        let second = self.decide(
+            preset,
+            &call.name,
+            canonical.as_deref(),
+            RiskClass::classify(&call.name),
+        );
+        [first, second]
+            .into_iter()
+            .flatten()
+            .max_by_key(|outcome| match outcome {
+                PermissionOutcome::Deny { .. } => 2,
+                PermissionOutcome::Ask { .. } => 1,
+                PermissionOutcome::Allow { .. } => 0,
+            })
     }
 
     /// Ordered evaluation. Returns `None` when no rule matches (the caller
@@ -129,6 +197,12 @@ impl PermissionStore {
         path: Option<&str>,
         _risk: RiskClass,
     ) -> Option<PermissionOutcome> {
+        if self.unavailable {
+            return Some(PermissionOutcome::Deny {
+                rule_id: None,
+                reason: "permission policy is unavailable".into(),
+            });
+        }
         let mut candidates: Vec<&PermissionRule> = self
             .rules
             .iter()
@@ -382,6 +456,11 @@ pub(crate) fn insert_rule(
     effect: RuleEffect,
     priority: i64,
 ) -> Result<i64, DatabaseError> {
+    let clock = super::access::policy_clock(db);
+    let mut epoch = clock
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *epoch = epoch.saturating_add(1);
     crate::infrastructure::repository::permission_rules::PermissionRulesRepository::new(db).insert(
         preset,
         tool_pattern,
@@ -393,6 +472,11 @@ pub(crate) fn insert_rule(
 
 /// Delete one rule row. Returns `true` when a row was removed.
 pub(crate) fn delete_rule(db: &Database, id: i64) -> Result<bool, DatabaseError> {
+    let clock = super::access::policy_clock(db);
+    let mut epoch = clock
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *epoch = epoch.saturating_add(1);
     crate::infrastructure::repository::permission_rules::PermissionRulesRepository::new(db)
         .delete(id)
 }
@@ -1208,6 +1292,7 @@ mod tests {
         use crate::application::agent::registry::ActiveAgentRun;
         let registry = AgentRunRegistry::default();
         let gate = ApprovalGate::new(crate::application::agent::approval::AutonomyMode::Supervised);
+        gate.bind_workspace(&crate::application::agent::tools::test_support::temp_workspace());
         registry.register(
             42,
             ActiveAgentRun {
@@ -1240,8 +1325,15 @@ mod tests {
 
         // Bare group scope: sticky verdict resolves the park, persists nothing.
         park_pending(&gate, "call-1");
-        resolve_approval(&registry, &db, 42, "call-1", true, Some("group"))
-            .expect("group scope resolves");
+        resolve_approval(
+            &registry,
+            &db,
+            42,
+            &gate.request_id_for_test("call-1").unwrap(),
+            true,
+            Some("group"),
+        )
+        .expect("group scope resolves");
         assert!(
             !list_rules(&db)
                 .expect("list rules")
@@ -1257,7 +1349,7 @@ mod tests {
                 &registry,
                 &db,
                 42,
-                "call-2",
+                &gate.request_id_for_test("call-2").unwrap(),
                 true,
                 Some("group:confirm:coding:write_file:other")
             ),
@@ -1281,7 +1373,7 @@ mod tests {
             &registry,
             &db,
             42,
-            "call-2",
+            &gate.request_id_for_test("call-2").unwrap(),
             true,
             Some("group:confirm:coding:write_file:docs"),
         )
@@ -1305,7 +1397,7 @@ mod tests {
             &registry,
             &db,
             42,
-            "call-1",
+            &gate.request_id_for_test("call-1").unwrap(),
             false,
             Some("group:confirm:coding:write_file:docs"),
         )
@@ -1324,7 +1416,14 @@ mod tests {
             Err(ApprovalResolveError::RunNotActive)
         );
         assert_eq!(
-            resolve_approval(&registry, &db, 42, "call-1", true, Some("approve-all")),
+            resolve_approval(
+                &registry,
+                &db,
+                42,
+                &gate.request_id_for_test("call-1").unwrap(),
+                true,
+                Some("approve-all")
+            ),
             Err(ApprovalResolveError::ScopeInvalid)
         );
     }

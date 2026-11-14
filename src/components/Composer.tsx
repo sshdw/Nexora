@@ -68,6 +68,7 @@ import type { Attachment, AutonomyMode } from "../lib/tauri";
 import type { AutonomyStore } from "../lib/useAutonomy";
 import type { WorkspaceStore } from "../lib/useWorkspace";
 import { useStrings } from "../lib/useLocale";
+import AccessProfileControl from "./AccessProfileControl";
 import ComposerAutonomyHint from "./ComposerAutonomyHint";
 import ContextRing from "./ContextRing";
 import M3Button from "./M3Button";
@@ -346,19 +347,15 @@ export default function Composer({
                       variant="ghost"
                       size="sm"
                       className="nex-composer-autonomy-trigger"
-                      aria-label={t("conv.autonomyAria")}
-                      title={t("conv.autonomyLabel")}
+                      aria-label={t("access.label")}
+                      title={t("access.label")}
                     >
                       <span
                         className="nex-composer-autonomy-dot"
                         aria-hidden="true"
                       />
                       <span className="nex-composer-autonomy-name">
-                        {autonomy.mode === "supervised"
-                          ? t("conv.autonomySupervised")
-                          : autonomy.mode === "semi_autonomous"
-                            ? t("conv.autonomySemi")
-                            : t("conv.autonomyFull")}
+                        {t(`access.${autonomy.access.profile}`)}
                       </span>
                       <ChevronDownIcon />
                     </Button>
@@ -370,8 +367,15 @@ export default function Composer({
                     className="nex-composer-autonomy-menu"
                   >
                     <PopoverHeader>
-                      <PopoverTitle>{t("conv.autonomyLabel")}</PopoverTitle>
+                      <PopoverTitle>{t("access.label")}</PopoverTitle>
                     </PopoverHeader>
+                    <AccessProfileControl
+                      store={autonomy.access}
+                      showLabel={false}
+                    />
+                    <p className="nex-settings-label">
+                      {t("access.legacyAutonomy")}
+                    </p>
                     <M3SegmentedGroup
                       className="nex-composer-autonomy"
                       label={t("conv.autonomyAria")}

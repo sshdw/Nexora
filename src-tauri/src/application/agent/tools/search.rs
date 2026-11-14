@@ -8,7 +8,7 @@
 use std::path::Path;
 
 use super::executor::ToolError;
-use super::path_safety::is_within_workspace;
+use super::path_safety::{check_private, is_within_workspace, secure_dir, secure_read_limited};
 
 // ---------------------------------------------------------------------------
 // Regex-lite search (`search_files`)
@@ -239,7 +239,8 @@ pub(super) fn walk_search(
     hits: &mut Vec<String>,
     capped: &mut bool,
 ) -> Result<(), ToolError> {
-    let entries = std::fs::read_dir(dir)
+    let entries = secure_dir(workspace_root, dir, false)?
+        .entries()
         .map_err(|e| ToolError::Io(format!("failed to read directory: {e}")))?;
     let mut paths: Vec<std::path::PathBuf> = Vec::new();
     for entry in entries {
@@ -252,7 +253,11 @@ pub(super) fn walk_search(
         {
             continue;
         }
-        paths.push(entry.path());
+        let path = dir.join(entry.file_name());
+        if check_private(&path).is_err() {
+            continue;
+        }
+        paths.push(path);
     }
     paths.sort();
     for path in paths {
@@ -289,7 +294,7 @@ pub(super) fn walk_search(
                 capped,
             )?;
         } else if path.is_file() {
-            search_one_file(&path, workspace_root, regex, max_matches, hits, capped)?;
+            search_one_file(&path, workspace_root, regex, max_matches, hits, capped);
         }
     }
     Ok(())
@@ -302,16 +307,13 @@ pub(super) fn search_one_file(
     max_matches: usize,
     hits: &mut Vec<String>,
     capped: &mut bool,
-) -> Result<(), ToolError> {
-    let metadata = std::fs::metadata(path)
-        .map_err(|e| ToolError::Io(format!("failed to read file metadata: {e}")))?;
-    if metadata.len() > MAX_SEARCH_FILE_BYTES {
-        return Ok(());
-    }
-    let bytes =
-        std::fs::read(path).map_err(|e| ToolError::Io(format!("failed to read file: {e}")))?;
+) {
+    let Ok(bytes) = secure_read_limited(workspace_root, path, MAX_SEARCH_FILE_BYTES) else {
+        // Unreadable, oversized or raced paths contribute no observations.
+        return;
+    };
     if bytes.iter().take(BINARY_SNIFF_BYTES).any(|byte| *byte == 0) {
-        return Ok(());
+        return;
     }
     let text = String::from_utf8_lossy(&bytes);
     let relative = path
@@ -323,7 +325,7 @@ pub(super) fn search_one_file(
         if regex.is_match(line) {
             if hits.len() >= max_matches {
                 *capped = true;
-                return Ok(());
+                return;
             }
             hits.push(format!(
                 "{}:{}:{}",
@@ -333,7 +335,6 @@ pub(super) fn search_one_file(
             ));
         }
     }
-    Ok(())
 }
 
 /// Middle-truncate one hit line, keeping both edges with a notice.

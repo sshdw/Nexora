@@ -9,7 +9,35 @@ use std::path::{Component, Path, PathBuf};
 
 use super::executor::ToolError;
 
-pub(super) fn resolve_path(workspace_root: &Path, requested: &str) -> Result<PathBuf, ToolError> {
+pub(crate) fn resolve_path(workspace_root: &Path, requested: &str) -> Result<PathBuf, ToolError> {
+    check_private(workspace_root)?;
+    let requested_path = Path::new(requested);
+    let lexical = if requested_path.is_absolute() {
+        requested_path.to_path_buf()
+    } else {
+        workspace_root.join(requested_path)
+    };
+    check_private(&lexical)?;
+    let resolved = resolve_confined_path(workspace_root, requested)?;
+    check_private(&resolved)?;
+    Ok(resolved)
+}
+/// Only the native-confirmed human terminal uses this cwd resolver. It retains
+/// workspace confinement but does not apply the agent's private-store policy.
+pub(super) fn resolve_terminal_cwd(
+    workspace_root: &Path,
+    requested: &str,
+) -> Result<PathBuf, ToolError> {
+    let resolved = resolve_confined_path(workspace_root, requested)?;
+    verify_prefix_within(
+        workspace_root,
+        &canonical_root(workspace_root),
+        &resolved,
+        requested,
+    )?;
+    Ok(resolved)
+}
+fn resolve_confined_path(workspace_root: &Path, requested: &str) -> Result<PathBuf, ToolError> {
     // Reject null bytes etc.
     if requested.contains('\0') {
         return Err(ToolError::InvalidArguments(
@@ -55,13 +83,34 @@ pub(super) fn resolve_path(workspace_root: &Path, requested: &str) -> Result<Pat
         verify_prefix_within(workspace_root, &canon_ws, &joined, requested)?;
     }
 
-    Ok(normalize_lexically(&joined))
+    // Canonicalize the nearest existing parent for a new target too. This
+    // preserves safe aliases while the later handle walk refuses raced links.
+    let normalized = normalize_lexically(&joined);
+    let mut suffix = Vec::new();
+    for ancestor in normalized.ancestors() {
+        if let Ok(canonical) = ancestor.canonicalize() {
+            let mut target = canonical;
+            for name in suffix.iter().rev() {
+                target.push(name);
+            }
+            if !is_within_workspace(&canon_ws, &target) {
+                return Err(ToolError::PathTraversal(requested.into()));
+            }
+            return Ok(target);
+        }
+        if let Some(name) = ancestor.file_name() {
+            suffix.push(name.to_os_string());
+        }
+    }
+    Err(ToolError::Io(
+        "workspace target could not be resolved".into(),
+    ))
 }
 
 /// Canonical form of the workspace root for escape comparisons. The root
 /// exists in every tool call, so `canonicalize` succeeds; the lexical
 /// fallback only covers exotic failure modes without changing behavior.
-pub(super) fn canonical_root(workspace_root: &Path) -> PathBuf {
+pub(crate) fn canonical_root(workspace_root: &Path) -> PathBuf {
     workspace_root
         .canonicalize()
         .unwrap_or_else(|_| normalize_lexically(&absolutize(workspace_root)))
@@ -168,120 +217,8 @@ pub(super) fn verify_existing_within(
     path: &Path,
     requested: &str,
 ) -> Result<(), ToolError> {
+    check_private(path)?;
     verify_prefix_within(workspace_root, canon_ws, path, requested)
-}
-
-/// Reject when the final write target is itself a link escaping the
-/// workspace. A write would follow the link, so this must run after the
-/// parents exist and immediately before `fs::write`.
-pub(super) fn reject_final_symlink_escape(
-    canon_ws: &Path,
-    resolved: &Path,
-    requested: &str,
-) -> Result<(), ToolError> {
-    let meta = match std::fs::symlink_metadata(resolved) {
-        Ok(meta) => meta,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => {
-            return Err(ToolError::Io(format!(
-                "failed to read path metadata for '{requested}': {e}"
-            )));
-        }
-    };
-    if meta.file_type().is_symlink() {
-        if let Ok(canon) = resolved.canonicalize() {
-            if !is_within_workspace(canon_ws, &canon) {
-                return Err(ToolError::PathTraversal(requested.to_string()));
-            }
-        } else {
-            let target = std::fs::read_link(resolved).map_err(|e| {
-                ToolError::Io(format!("failed to read link for '{requested}': {e}"))
-            })?;
-            let parent = resolved.parent().unwrap_or(canon_ws);
-            let parent_canon = parent
-                .canonicalize()
-                .unwrap_or_else(|_| parent.to_path_buf());
-            let target_path = PathBuf::from(&target);
-            let relocated = if target_path.is_absolute() {
-                target_path
-            } else {
-                parent_canon.join(target)
-            };
-            if !is_within_workspace(canon_ws, &normalize_lexically(&relocated)) {
-                return Err(ToolError::PathTraversal(requested.to_string()));
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Create a lexically-within-workspace parent chain one level at a time,
-/// refusing to pass through a link that points outside *before* creating
-/// anything beneath it. Every pre-existing level and every freshly created
-/// level is canonicalized and re-verified (canonicalize-after-create), so a
-/// `ws/link/newsub` write with `link -> outside` fails at `link` without
-/// creating `outside/newsub`.
-pub(super) fn ensure_parent_dirs(
-    workspace_root: &Path,
-    canon_ws: &Path,
-    parent: &Path,
-    requested: &str,
-) -> Result<(), ToolError> {
-    // `parent` derives from `resolve_path` output, which is already
-    // lexically normalized, so its components can be used directly.
-    let ws_norm = normalize_lexically(&absolutize(workspace_root));
-    let ws_count = ws_norm.components().count();
-    let comps: Vec<std::path::Component<'_>> = parent.components().collect();
-    if comps.len() < ws_count {
-        return Err(ToolError::PathTraversal(requested.to_string()));
-    }
-    let mut prefix = workspace_root.to_path_buf();
-    for comp in &comps[ws_count..] {
-        prefix.push(comp.as_os_str());
-        match std::fs::symlink_metadata(&prefix) {
-            Ok(_) => {
-                // Already there (dir, file, or link): must resolve inside.
-                verify_prefix_within(workspace_root, canon_ws, &prefix, requested)?;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                match std::fs::create_dir(&prefix) {
-                    Ok(()) => {}
-                    Err(create_err) => {
-                        // Lost a creation race: re-verify whatever is there
-                        // now; an escape still reports traversal, anything
-                        // else keeps the original I/O error.
-                        if std::fs::symlink_metadata(&prefix).is_ok() {
-                            verify_prefix_within(workspace_root, canon_ws, &prefix, requested)?;
-                        }
-                        return Err(ToolError::Io(format!(
-                            "failed to create parent directories: {create_err}"
-                        )));
-                    }
-                }
-                // Canonicalize-after-create: the new directory must land
-                // inside the workspace.
-                let canon = prefix.canonicalize().map_err(|e| {
-                    ToolError::Io(format!("failed to create parent directories: {e}"))
-                })?;
-                if !is_within_workspace(canon_ws, &canon) {
-                    return Err(ToolError::PathTraversal(requested.to_string()));
-                }
-            }
-            Err(e) => {
-                return Err(ToolError::Io(format!(
-                    "failed to read path metadata for '{requested}': {e}"
-                )));
-            }
-        }
-    }
-    // Final re-verification of the now-fully-existing parent.
-    let canon_parent = parent
-        .canonicalize()
-        .map_err(|e| ToolError::Io(format!("failed to create parent directories: {e}")))?;
-    if !is_within_workspace(canon_ws, &canon_parent) {
-        return Err(ToolError::PathTraversal(requested.to_string()));
-    }
-    Ok(())
 }
 
 pub(crate) fn is_within_workspace(workspace_root: &Path, target: &Path) -> bool {
@@ -310,10 +247,12 @@ pub(crate) fn is_within_workspace(workspace_root: &Path, target: &Path) -> bool 
     false
 }
 
-pub(super) fn path_to_comparable_string(p: &Path) -> String {
+pub(crate) fn path_to_comparable_string(p: &Path) -> String {
     let mut s = p.to_string_lossy().to_string();
     // Strip Windows verbatim prefix \\?\ if present
-    if s.starts_with(r"\\?\") {
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        s = format!(r"\\{rest}");
+    } else if s.starts_with(r"\\?\") {
         s = s[4..].to_string();
     }
     if cfg!(windows) {
@@ -389,4 +328,397 @@ pub(super) fn normalize_lexically(path: &Path) -> PathBuf {
         out.push(".");
     }
     out
+}
+
+/// Private stores remain denied even when the selected workspace is one of
+/// these directories or a canonical alias to one. No personal store is read
+/// to derive this policy; tests use synthetic component trees only.
+#[allow(clippy::case_sensitive_file_extension_comparisons)] // Entire path is already ASCII-lowercased.
+pub(crate) fn private_store(path: &Path) -> bool {
+    let value = path_to_comparable_string(path)
+        .replace('\\', "/")
+        .to_ascii_lowercase();
+    let parts: Vec<_> = value.split('/').filter(|part| !part.is_empty()).collect();
+    parts.iter().any(|part| {
+        matches!(
+            *part,
+            ".ssh"
+                | ".aws"
+                | ".gnupg"
+                | ".kube"
+                | ".azure"
+                | ".git-credentials"
+                | ".netrc"
+                | ".npmrc"
+                | ".pypirc"
+                | "keychains"
+                | "keychain"
+                | "credentials"
+                | "vault"
+        ) || part.ends_with(".keychain")
+            || part.ends_with(".keychain-db")
+    }) || parts.windows(2).any(|pair| {
+        matches!(
+            pair,
+            [
+                ".config",
+                "gh" | "gcloud" | "microsoft-edge" | "git" | "google-chrome" | "chromium"
+            ] | [".docker", "config.json"]
+                | ["share", "keyrings"]
+                | [
+                    "microsoft",
+                    "protect" | "crypto" | "tokenbroker" | "identitycache"
+                ]
+                | [".mozilla" | "application support", "firefox"]
+                | ["firefox", "profiles"]
+                | ["chrome" | "edge" | "chromium" | "vivaldi", "user data"]
+                | ["opera software", "opera stable" | "opera gx stable"]
+                | ["bravesoftware", "brave-browser"]
+                | ["application support", "google"]
+        )
+    }) || parts.contains(&"safari")
+}
+pub(crate) fn check_private(path: &Path) -> Result<(), ToolError> {
+    if private_store(path)
+        || path
+            .canonicalize()
+            .is_ok_and(|canonical| private_store(&canonical))
+    {
+        Err(ToolError::Io(
+            "private credential or browser store is protected".into(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+pub(super) fn policy_target(path: &Path) -> bool {
+    path.components()
+        .any(|part| part.as_os_str().eq_ignore_ascii_case(".nexora"))
+}
+#[allow(clippy::case_sensitive_file_extension_comparisons)] // Entire path is already ASCII-lowercased.
+pub(crate) fn sensitive_write(path: &Path) -> bool {
+    let value = path_to_comparable_string(path)
+        .replace('\\', "/")
+        .to_ascii_lowercase();
+    let parts: Vec<_> = value.split('/').collect();
+    parts.iter().any(|part| {
+        part.starts_with(".env")
+            || part.ends_with(".pem")
+            || part.ends_with(".key")
+            || part.starts_with("id_rsa")
+            || *part == ".nexora"
+    }) || parts
+        .windows(2)
+        .any(|pair| matches!(pair, [".git", "hooks" | "config"]))
+}
+
+/// Open a directory through no-follow handles from the volume root. Ambient
+/// authority is used only for that root, never for an untrusted target path.
+fn absolute_dir_nofollow(path: &Path) -> Result<cap_std::fs::Dir, ToolError> {
+    use cap_fs_ext::DirExt;
+    let mut root = PathBuf::new();
+    let mut names = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir => root.push(component.as_os_str()),
+            Component::Normal(name) => names.push(name),
+            _ => return Err(ToolError::Io("invalid capability root".into())),
+        }
+    }
+    let mut dir = cap_std::fs::Dir::open_ambient_dir(root, cap_std::ambient_authority())
+        .map_err(cap_error)?;
+    for name in names {
+        dir = dir.open_dir_nofollow(name).map_err(cap_error)?;
+    }
+    Ok(dir)
+}
+fn cap_error(_: std::io::Error) -> ToolError {
+    ToolError::Io("workspace capability I/O was refused".into())
+}
+/// Canonical aliases are resolved by `resolve_path` before this operation;
+/// every subsequently opened component refuses links, including raced swaps.
+pub(super) fn secure_dir(
+    workspace: &Path,
+    target: &Path,
+    create: bool,
+) -> Result<cap_std::fs::Dir, ToolError> {
+    use cap_fs_ext::DirExt;
+    check_private(workspace)?;
+    check_private(target)?;
+    let root = canonical_root(workspace);
+    let target = normalize_lexically(target);
+    if !is_within_workspace(&root, &target) {
+        return Err(ToolError::PathTraversal("protected target".into()));
+    }
+    let relative: PathBuf = target
+        .components()
+        .skip(root.components().count())
+        .collect();
+    let mut dir = absolute_dir_nofollow(&root)?;
+    for component in relative.components() {
+        let Component::Normal(name) = component else {
+            return Err(ToolError::Io("invalid relative capability path".into()));
+        };
+        if create {
+            match dir.create_dir(name) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(err) => return Err(cap_error(err)),
+            }
+        }
+        dir = dir.open_dir_nofollow(name).map_err(cap_error)?;
+    }
+    Ok(dir)
+}
+fn secure_open(
+    workspace: &Path,
+    target: &Path,
+    write: bool,
+) -> Result<cap_std::fs::File, ToolError> {
+    use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
+    check_private(target)?;
+    let parent = target
+        .parent()
+        .ok_or_else(|| ToolError::Io("invalid file target".into()))?;
+    let name = target
+        .file_name()
+        .ok_or_else(|| ToolError::Io("invalid file target".into()))?;
+    let dir = secure_dir(workspace, parent, write)?;
+    let mut options = cap_std::fs::OpenOptions::new();
+    options.follow(FollowSymlinks::No);
+    if write {
+        options.write(true).create(true).truncate(true);
+    } else {
+        options.read(true);
+    }
+    dir.open_with(name, &options).map_err(cap_error)
+}
+pub(super) fn secure_read(workspace: &Path, target: &Path) -> Result<Vec<u8>, ToolError> {
+    use std::io::Read;
+    let mut file = secure_open(workspace, target, false)?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).map_err(cap_error)?;
+    Ok(bytes)
+}
+pub(super) fn secure_read_limited(
+    workspace: &Path,
+    target: &Path,
+    max: u64,
+) -> Result<Vec<u8>, ToolError> {
+    use std::io::Read;
+    let file = secure_open(workspace, target, false)?;
+    if file.metadata().map_err(cap_error)?.len() > max {
+        return Err(ToolError::Io("file exceeds the read limit".into()));
+    }
+    let mut bytes = Vec::new();
+    file.take(max.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(cap_error)?;
+    if bytes.len() as u64 > max {
+        return Err(ToolError::Io("file exceeds the read limit".into()));
+    }
+    Ok(bytes)
+}
+pub(super) fn secure_write(
+    workspace: &Path,
+    target: &Path,
+    content: &[u8],
+) -> Result<(), ToolError> {
+    use std::io::Write;
+    let mut file = secure_open(workspace, target, true)?;
+    file.write_all(content).map_err(cap_error)
+}
+pub(super) fn safe_ignore(
+    workspace: &Path,
+) -> Result<crate::application::project_dir::IgnoreRules, ToolError> {
+    let candidate = workspace.join(".nexora/.nexoraignore");
+    match std::fs::symlink_metadata(&candidate) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(crate::application::project_dir::parse_ignore_rules(""))
+        }
+        Err(err) => return Err(cap_error(err)),
+        Ok(_) => {}
+    }
+    let path = resolve_path(workspace, ".nexora/.nexoraignore")?;
+    let text = String::from_utf8(secure_read_limited(workspace, &path, 256 * 1024)?)
+        .map_err(|_| ToolError::Io("workspace ignore file is not valid UTF-8".into()))?;
+    Ok(crate::application::project_dir::parse_ignore_rules(&text))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::application::agent::tools::{
+        test_support::{call, temp_workspace},
+        ToolRegistry,
+    };
+    use serde_json::json;
+    #[test]
+    fn all_read_surfaces_protect_synthetic_private_roots_and_children() {
+        let workspace = temp_workspace();
+        for relative in [
+            ".ssh",
+            ".aws",
+            ".gnupg",
+            ".kube",
+            ".config/gh",
+            "Chrome/User Data",
+            "Edge/User Data",
+            "Firefox/Profiles",
+            "Library/Keychains",
+        ] {
+            let private = workspace.join(relative);
+            std::fs::create_dir_all(&private).unwrap();
+            std::fs::write(private.join("secret"), "SYNTHETIC_PRIVATE_MARKER").unwrap();
+            for root in [&workspace, &private] {
+                let path = if root == &workspace {
+                    format!("{relative}/secret")
+                } else {
+                    "secret".into()
+                };
+                assert!(
+                    ToolRegistry::execute(&call("read_file", json!({"path":path})), root).is_err()
+                );
+                if root == &private {
+                    assert!(
+                        ToolRegistry::execute(&call("list_directory", json!({})), root).is_err()
+                    );
+                    assert!(ToolRegistry::execute(
+                        &call("search_files", json!({"pattern":"MARKER"})),
+                        root
+                    )
+                    .is_err());
+                }
+            }
+        }
+        for tool in [
+            call("list_directory", json!({"recursive":true})),
+            call("search_files", json!({"pattern":"MARKER"})),
+        ] {
+            let output = ToolRegistry::execute(&tool, &workspace).unwrap();
+            assert!(!output.contains("secret"));
+            assert!(!output.contains("MARKER"));
+        }
+        assert!(resolve_path(&workspace, "../outside").is_err());
+        assert!(resolve_path(&workspace, ".ssh/../public").is_err());
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+    fn link_dir(target: &Path, link: &Path) {
+        #[cfg(windows)]
+        {
+            let status = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .output()
+                .unwrap();
+            assert!(
+                status.status.success(),
+                "synthetic junction creation failed"
+            );
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
+    #[test]
+    fn canonical_aliases_and_swapped_parent_links_never_redirect_file_io() {
+        let workspace = temp_workspace();
+        let outside = temp_workspace();
+        let private = workspace.join(".ssh");
+        std::fs::create_dir(&private).unwrap();
+        std::fs::write(private.join("secret"), "synthetic private").unwrap();
+        std::fs::write(outside.join("file"), "outside sentinel").unwrap();
+        link_dir(&private, &workspace.join("alias"));
+        assert!(resolve_path(&workspace, "alias/secret").is_err());
+        let root_alias = workspace.join("root-alias");
+        link_dir(&private, &root_alias);
+        assert!(resolve_path(&root_alias, "secret").is_err());
+        let directory = workspace.join("normal");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::write(directory.join("file"), "inside").unwrap();
+        let resolved = resolve_path(&workspace, "normal/file").unwrap();
+        std::fs::rename(&directory, workspace.join("old")).unwrap();
+        link_dir(&outside, &directory);
+        assert!(secure_read(&workspace, &resolved).is_err());
+        assert!(secure_write(&workspace, &resolved, b"changed").is_err());
+        assert_eq!(
+            std::fs::read_to_string(outside.join("file")).unwrap(),
+            "outside sentinel"
+        );
+        std::fs::remove_dir(&directory).unwrap();
+        link_dir(&private, &directory);
+        assert!(secure_read(&workspace, &resolved).is_err());
+        assert!(secure_write(&workspace, &resolved, b"changed").is_err());
+        std::fs::remove_dir_all(workspace).unwrap();
+        std::fs::remove_dir_all(outside).unwrap();
+    }
+    #[test]
+    fn safe_in_workspace_alias_is_supported_and_unsafe_ignore_does_not_clear_rules() {
+        let workspace = temp_workspace();
+        let directory = workspace.join("normal");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::write(directory.join("file"), "inside").unwrap();
+        link_dir(&directory, &workspace.join("alias"));
+        let path = resolve_path(&workspace, "alias/file").unwrap();
+        assert_eq!(secure_read(&workspace, &path).unwrap(), b"inside");
+        assert!(safe_ignore(&workspace).is_ok());
+        std::fs::create_dir(workspace.join(".nexora")).unwrap();
+        std::fs::create_dir(workspace.join(".nexora/.nexoraignore")).unwrap();
+        assert!(safe_ignore(&workspace).is_err());
+        assert!(ToolRegistry::execute(
+            &call("search_files", json!({"pattern":"inside"})),
+            &workspace
+        )
+        .is_err());
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+    #[test]
+    fn missing_file_aliases_stay_supported_but_policy_and_sensitive_aliases_do_not_widen() {
+        use crate::application::agent::approval::{ApprovalGate, AutonomyMode};
+        let workspace = temp_workspace();
+        let normal = workspace.join("normal");
+        std::fs::create_dir(&normal).unwrap();
+        link_dir(&normal, &workspace.join("alias"));
+        ToolRegistry::execute(
+            &call(
+                "write_file",
+                json!({"path":"alias/new.txt","content":"safe"}),
+            ),
+            &workspace,
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(normal.join("new.txt")).unwrap(),
+            "safe"
+        );
+        link_dir(&normal, &workspace.join(".env-alias"));
+        let gate = ApprovalGate::new(AutonomyMode::FullAutonomous);
+        gate.bind_workspace(&workspace);
+        let request = call(
+            "write_file",
+            json!({"path":".env-alias/new.txt","content":"x"}),
+        );
+        assert!(gate.metadata(&request).sensitive_write);
+        assert!(!gate.metadata(&request).allow_for_run);
+        link_dir(&normal, &workspace.join(".nexora"));
+        for request in [
+            call(
+                "write_file",
+                json!({"path":".nexora/new.txt","content":"changed"}),
+            ),
+            call("read_file", json!({"path":".nexora/new.txt"})),
+            call("list_directory", json!({"path":".nexora"})),
+            call(
+                "search_files",
+                json!({"directory":".nexora","pattern":"safe"}),
+            ),
+        ] {
+            assert!(ToolRegistry::execute(&request, &workspace).is_err());
+        }
+        assert_eq!(
+            std::fs::read_to_string(normal.join("new.txt")).unwrap(),
+            "safe"
+        );
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
 }

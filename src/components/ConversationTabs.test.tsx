@@ -77,6 +77,14 @@ function conversation(overrides: Partial<Conversation> = {}): Conversation {
 }
 
 const autonomy = {
+  access: {
+    profile: "standard",
+    loading: false,
+    saving: false,
+    error: null,
+    reload: vi.fn(async () => {}),
+    setProfile: vi.fn(async () => null),
+  },
   mode: "suggest",
   setMode: vi.fn(),
   budgetUsd: 1,

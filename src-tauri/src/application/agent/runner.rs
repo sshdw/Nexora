@@ -264,6 +264,9 @@ impl<'a> AgentRunner<'a> {
     /// approval aborts with `AgentError::Cancelled` without deadlock.
     #[must_use]
     pub(crate) fn with_approval_gate(mut self, gate: ApprovalGate) -> Self {
+        if self.role == Some(AgentRole::Planner) {
+            gate.access().set_plan(true);
+        }
         if let Some(control) = &self.control {
             gate.set_token(control.token().clone());
         }
@@ -353,6 +356,11 @@ impl<'a> AgentRunner<'a> {
     /// pre-B.3 behaviour.
     #[must_use]
     pub(crate) fn with_role(mut self, role: AgentRole) -> Self {
+        if role == AgentRole::Planner {
+            if let Some(gate) = &self.approval_gate {
+                gate.access().set_plan(true);
+            }
+        }
         self.role = Some(role);
         self
     }
@@ -1476,8 +1484,7 @@ mod tests {
             }),
             Ok(text_response("never requested")),
         ]);
-        let result = AgentRunner::new(&fake, &ws)
-            .with_approval_gate(ApprovalGate::new(AutonomyMode::FullAutonomous))
+        let result = with_explicit_consent(AgentRunner::new(&fake, &ws))
             .with_run_recorder(RunRecorder::new(&db).with_conversation(conversation))
             .run("openai", "m", "cred", "q");
         assert!(matches!(result, Err(AgentError::Persistence)));
@@ -1488,7 +1495,7 @@ mod tests {
             .list_runs_by_conversation(conversation)
             .unwrap()
             .remove(0);
-        assert_eq!(run.total_steps, 1);
+        assert_eq!(run.total_steps, 2);
         let _ = fs::remove_dir_all(ws);
     }
 
@@ -1650,7 +1657,7 @@ mod tests {
         let driver = thread::spawn(move || {
             rx.recv_timeout(Duration::from_secs(5))
                 .expect("ApprovalRequested");
-            assert!(gate_for_driver.respond("w1", ApprovalDecision::Denied));
+            assert!(gate_for_driver.respond_for_test("w1", ApprovalDecision::Denied));
             rx.recv_timeout(Duration::from_secs(5))
                 .expect("ApprovalResolved");
             rx.recv_timeout(Duration::from_secs(5)).expect("Completed")
@@ -1910,7 +1917,7 @@ mod tests {
                 let second = &fake.requests.borrow()[2].messages;
                 let write_result = second[5].tool_result.as_ref().expect("write result");
                 assert_eq!(
-                    write_result.content, "Error: tool execution was denied by the user",
+                    write_result.content, "Error: tool is blocked by the effective access profile",
                     "the held call fail-closes with the frozen denial, got {}",
                     write_result.content
                 );
@@ -1977,10 +1984,10 @@ mod tests {
             // The read parks first on the ladder (supervised mode); approve it.
             let first = rx.recv_timeout(Duration::from_secs(5)).expect("read park");
             assert!(
-                matches!(first, AgentRunEvent::ApprovalRequested { ref call_id, .. } if call_id == "r1"),
+                matches!(first, AgentRunEvent::ApprovalRequested { ref call_id, .. } if driver_gate.request_matches_for_test(call_id.as_str(), "r1")),
                 "expected the read park, got {first:?}"
             );
-            assert!(driver_gate.respond("r1", ApprovalDecision::Approved));
+            assert!(driver_gate.respond_for_test("r1", ApprovalDecision::Approved));
             let resolved = rx
                 .recv_timeout(Duration::from_secs(5))
                 .expect("read resolved");
@@ -1995,10 +2002,10 @@ mod tests {
             // flag is off; approve it too.
             let second = rx.recv_timeout(Duration::from_secs(5)).expect("hold park");
             assert!(
-                matches!(second, AgentRunEvent::ApprovalRequested { ref call_id, .. } if call_id == "w1"),
+                matches!(second, AgentRunEvent::ApprovalRequested { ref call_id, .. } if driver_gate.request_matches_for_test(call_id.as_str(), "w1")),
                 "expected the injection-hold park, got {second:?}"
             );
-            assert!(driver_gate.respond("w1", ApprovalDecision::Approved));
+            assert!(driver_gate.respond_for_test("w1", ApprovalDecision::Approved));
             let resolved = rx
                 .recv_timeout(Duration::from_secs(5))
                 .expect("hold resolved");
@@ -2050,6 +2057,22 @@ pub(crate) mod test_support {
         AiMessage, AiRequest, AiResponse, AiRole, ExecutorError, ProviderExecutor, TokenUsage,
         ToolCall,
     };
+
+    pub(crate) fn with_explicit_consent(runner: AgentRunner<'_>) -> AgentRunner<'_> {
+        use crate::application::agent::approval::{ApprovalDecision, AutonomyMode};
+        let gate =
+            ApprovalGate::new(AutonomyMode::FullAutonomous).with_timeout(Duration::from_secs(5));
+        let responder = gate.clone();
+        let (tx, rx) = channel();
+        std::thread::spawn(move || {
+            while let Ok(event) = rx.recv() {
+                if let AgentRunEvent::ApprovalRequested { call_id, .. } = event {
+                    responder.respond(&call_id, ApprovalDecision::Approved);
+                }
+            }
+        });
+        runner.with_approval_gate(gate).with_event_sender(tx)
+    }
 
     pub(crate) static COUNTER: AtomicUsize = AtomicUsize::new(0);
 

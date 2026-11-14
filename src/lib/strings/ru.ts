@@ -6,6 +6,35 @@
 import type { StringKey } from "./en";
 
 export const ru: Record<StringKey, string> = {
+  "access.legacyAutonomy": "Прежняя настройка автономности",
+  "access.label": "Профиль доступа",
+  "access.read_only": "Только чтение",
+  "access.standard": "Стандартный",
+  "access.supervised": "Под контролем",
+  "access.hint.read_only":
+    "Только чтение и поиск в рабочей папке. Изменения и команды запрещены.",
+  "access.hint.standard":
+    "Изменения требуют разрешения, пока контрольные точки недоступны. Каждая команда требует согласия.",
+  "access.hint.supervised":
+    "Каждое изменение и команда требуют вашего разрешения.",
+  "access.saving": "Сохранение профиля доступа…",
+  "access.saveFailed":
+    "Не удалось сохранить профиль доступа. Восстановлен предыдущий профиль.",
+  "agent.allowOnce": "Разрешить один раз",
+  "agent.allowRun": "Разрешить на запуск",
+  "agent.shellFallback":
+    "Согласие на каждую команду · изоляция ОС не проверена",
+  "agent.shellUncertain":
+    "Часть синтаксиса команды не удалось классифицировать. Проверьте всю команду.",
+  "agent.packagesUnknown":
+    "Список пакетов неполон или определяется при выполнении.",
+  "agent.sensitiveWrite": "Защищённый файл · разрешение действует один раз",
+  "agent.category.GeneralShell": "Команда оболочки",
+  "agent.category.DependencyInstall": "Установка зависимостей",
+  "agent.category.PublishOrRemote": "Публикация или удалённые изменения",
+  "agent.category.DestructiveGit": "Разрушительная операция Git",
+  "agent.category.MassDelete": "Массовое удаление",
+
   "common.backToConversations": "К разговорам",
   "common.close": "Закрыть",
   "common.cancel": "Отмена",
@@ -203,7 +232,7 @@ export const ru: Record<StringKey, string> = {
   "conv.autonomyExplainSemi":
     "Полуавто: рутинные шаги идут сами, запись файлов всё равно спросит.",
   "conv.autonomyExplainFull":
-    "Полный авто: агент дорабатывает задачу без остановок.",
+    "Полный авто: ограничения доступа сохраняются; изменения и команды требуют разрешения.",
 
   "md.copyLink": "Скопировать ссылку",
   "md.linkCopied": "Скопировано",
@@ -392,7 +421,7 @@ export const ru: Record<StringKey, string> = {
     "Автономность по умолчанию для новых запусков агента и лимит трат на запуск. Шапка разговора всё равно может переключать автономность для текущего запуска.",
   "settings.autonomyLabel": "Режим автономности",
   "settings.autonomyHint":
-    "Под присмотром — пауза для подтверждения; Полуавто — спрашивает на рискованных шагах; Полный авто — работает до конца.",
+    "Прежняя настройка автономности. Профиль доступа и разрешения на изменения и команды остаются обязательными.",
   "settings.autonomySupervised": "Под присмотром",
   "settings.autonomySemi": "Полуавто",
   "settings.autonomyFull": "Полный авто",

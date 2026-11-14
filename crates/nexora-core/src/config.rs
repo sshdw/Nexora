@@ -47,6 +47,8 @@ pub const APPEARANCE_THEME_KEY: &str = "appearance.theme";
 pub const SELECTED_PROVIDER_KEY: &str = "provider.selected";
 /// Settings key holding the selected model identifier.
 pub const SELECTED_MODEL_KEY: &str = "provider.model";
+/// Settings key holding the validated agent access profile.
+pub const ACCESS_PROFILE_KEY: &str = "agent.access_profile";
 /// Settings key holding the agent autonomy mode.
 pub const AUTONOMY_KEY: &str = "agent.autonomy";
 /// Settings key holding the per-run spend guard, in micro-USD.
@@ -94,11 +96,12 @@ pub const MAX_APPROVAL_TIMEOUT_SECS: u64 = 24 * 60 * 60;
 pub const MAX_MODEL_LEN: usize = 200;
 
 /// Every writable setting key that is not a `flags.*` flag.
-pub const BASE_KEYS: [&str; 12] = [
+pub const BASE_KEYS: [&str; 13] = [
     APPEARANCE_THEME_KEY,
     SELECTED_PROVIDER_KEY,
     SELECTED_MODEL_KEY,
     AUTONOMY_KEY,
+    ACCESS_PROFILE_KEY,
     SPEND_LIMIT_KEY,
     APPROVAL_TIMEOUT_KEY,
     WORKSPACE_ROOT_KEY,
@@ -135,6 +138,8 @@ pub enum ConfigKey {
     SelectedModel,
     /// [`AUTONOMY_KEY`]
     Autonomy,
+    /// Persisted security ceiling.
+    AccessProfile,
     /// [`SPEND_LIMIT_KEY`]
     SpendLimit,
     /// [`APPROVAL_TIMEOUT_KEY`]
@@ -171,6 +176,7 @@ impl ConfigKey {
             Self::Theme => Some(APPEARANCE_THEME_KEY),
             Self::SelectedProvider => Some(SELECTED_PROVIDER_KEY),
             Self::SelectedModel => Some(SELECTED_MODEL_KEY),
+            Self::AccessProfile => Some(ACCESS_PROFILE_KEY),
             Self::Autonomy => Some(AUTONOMY_KEY),
             Self::SpendLimit => Some(SPEND_LIMIT_KEY),
             Self::ApprovalTimeout => Some(APPROVAL_TIMEOUT_KEY),
@@ -221,6 +227,7 @@ pub fn classify_key(key: &str) -> Option<ConfigKey> {
         APPEARANCE_THEME_KEY => Some(ConfigKey::Theme),
         SELECTED_PROVIDER_KEY => Some(ConfigKey::SelectedProvider),
         SELECTED_MODEL_KEY => Some(ConfigKey::SelectedModel),
+        ACCESS_PROFILE_KEY => Some(ConfigKey::AccessProfile),
         AUTONOMY_KEY => Some(ConfigKey::Autonomy),
         SPEND_LIMIT_KEY => Some(ConfigKey::SpendLimit),
         APPROVAL_TIMEOUT_KEY => Some(ConfigKey::ApprovalTimeout),
@@ -469,6 +476,10 @@ pub fn validate_setting(
                 Err(invalid_value(key, value))
             }
         }
+        Some(ConfigKey::AccessProfile) => ["read_only", "standard", "supervised"]
+            .contains(&value)
+            .then_some(())
+            .ok_or_else(|| invalid_value(key, value)),
         Some(ConfigKey::Autonomy) => VALID_AUTONOMY
             .contains(&value)
             .then_some(())
@@ -581,7 +592,7 @@ mod tests {
         }
         assert_eq!(
             BASE_KEYS.len(),
-            12,
+            13,
             "the allowlist is closed; keep it in sync"
         );
     }
@@ -661,6 +672,16 @@ mod tests {
         }
         for theme in ["system", "", "DARK", "Light", "high-contrast"] {
             assert_rejected(APPEARANCE_THEME_KEY, theme);
+        }
+    }
+
+    #[test]
+    fn access_profile_domain_is_closed() {
+        for value in ["read_only", "standard", "supervised"] {
+            assert!(validate(ACCESS_PROFILE_KEY, Some(value)).is_ok());
+        }
+        for value in ["ReadOnly", "auto", "", "unknown"] {
+            assert!(validate(ACCESS_PROFILE_KEY, Some(value)).is_err());
         }
     }
 

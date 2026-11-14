@@ -20,7 +20,7 @@ use crate::application::agent::control::CancellationToken;
 
 use super::executor::ToolError;
 use super::output::truncate_output;
-use super::path_safety::{canonical_root, resolve_path, verify_existing_within};
+use super::path_safety::{resolve_path, resolve_terminal_cwd};
 use super::ToolRegistry;
 
 // ---------------------------------------------------------------------------
@@ -62,17 +62,36 @@ impl ToolRegistry {
     ) -> Result<String, ToolError> {
         let (command, resolved_cwd) = validated_command_args(args, workspace_root)?;
 
-        // Build platform-appropriate shell invocation
-        let mut cmd = if cfg!(windows) {
-            let mut c = Command::new("cmd");
-            c.arg("/C").arg(command);
-            c
-        } else {
-            let mut c = Command::new("sh");
-            c.arg("-c").arg(command);
-            c
-        };
-        cmd.current_dir(&resolved_cwd)
+        Self::run_command_with_limits(
+            platform_shell(&command, &["/D", "/C"]),
+            &resolved_cwd,
+            limits,
+            token,
+        )
+    }
+    pub(super) fn execute_terminal_command(
+        args: &Value,
+        workspace_root: &Path,
+        token: &CancellationToken,
+    ) -> Result<String, ToolError> {
+        let (command, cwd) = command_args(args, workspace_root, resolve_terminal_cwd)?;
+        Self::run_command_with_limits(
+            platform_shell(&command, &["/C"]),
+            &cwd,
+            &CommandLimits::default(),
+            token,
+        )
+    }
+    fn run_command_with_limits(
+        mut cmd: Command,
+        resolved_cwd: &Path,
+        limits: &CommandLimits,
+        token: &CancellationToken,
+    ) -> Result<String, ToolError> {
+        if token.is_cancelled() {
+            return Err(ToolError::Cancelled);
+        }
+        cmd.current_dir(resolved_cwd)
             .stdin(Stdio::null()) // a command must never read host stdin
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -196,9 +215,10 @@ impl ToolRegistry {
 ///
 /// Returns the command string and its workspace-confined absolute directory.
 ///
-/// NOTE (NEX-SEC-001 defence-in-depth, deliberately deferred): no static
+/// Analysis lives in `shell_policy`; it never establishes native isolation.
+/// NOTE (NEX-SEC-001 defence-in-depth): no static
 /// command allowlist/profile is enforced here. A `sh -c` / `cmd /C` string
-/// cannot be statically classified — quoting, `&&` chains, environment
+/// cannot be authorized by a prefix — quoting, `&&` chains, environment
 /// indirection, and `powershell -EncodedCommand` all defeat prefix matching
 /// — so an allowlist would either break legitimate coding runs or create
 /// false confidence while adding a second policy surface to keep in sync
@@ -210,44 +230,51 @@ pub(super) fn validated_command_args(
     args: &Value,
     workspace_root: &Path,
 ) -> Result<(String, PathBuf), ToolError> {
-    let command = args.get("command").and_then(Value::as_str).ok_or_else(|| {
-        ToolError::InvalidArguments("missing required field 'command'".to_string())
-    })?;
+    command_args(args, workspace_root, resolve_path)
+}
+fn command_args(
+    args: &Value,
+    workspace_root: &Path,
+    resolve_cwd: fn(&Path, &str) -> Result<PathBuf, ToolError>,
+) -> Result<(String, PathBuf), ToolError> {
+    let command = args
+        .get("command")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ToolError::InvalidArguments("missing required field 'command'".into()))?;
     if command.trim().is_empty() {
         return Err(ToolError::InvalidArguments(
-            "field 'command' must not be empty".to_string(),
+            "field 'command' must not be empty".into(),
         ));
     }
-    let cwd_opt = args.get("cwd").and_then(Value::as_str);
-
-    // Resolve cwd inside workspace
-    let resolved_cwd = if let Some(cwd) = cwd_opt {
-        if cwd.trim().is_empty() {
-            workspace_root.to_path_buf()
-        } else {
-            let p = resolve_path(workspace_root, cwd)?;
-            // TOCTOU guard: the directory may have been swapped for a link
-            // between `resolve_path` and the spawn below; re-verify the
-            // canonical target before it becomes a child process cwd.
-            verify_existing_within(workspace_root, &canonical_root(workspace_root), &p, cwd)?;
-            if p.is_file() {
-                return Err(ToolError::InvalidArguments(format!(
-                    "cwd '{cwd}' is a file, not a directory"
-                )));
-            }
-            // If the directory does not exist, treat as error
-            if !p.exists() {
-                return Err(ToolError::Io(format!("cwd does not exist: '{cwd}'")));
-            }
-            if !p.is_dir() {
-                return Err(ToolError::Io(format!("cwd is not a directory: '{cwd}'")));
-            }
-            p
-        }
+    let cwd = args
+        .get("cwd")
+        .and_then(Value::as_str)
+        .filter(|cwd| !cwd.trim().is_empty())
+        .unwrap_or(".");
+    let resolved = resolve_cwd(workspace_root, cwd)?;
+    if resolved.is_file() {
+        return Err(ToolError::InvalidArguments(format!(
+            "cwd '{cwd}' is a file, not a directory"
+        )));
+    }
+    if !resolved.exists() {
+        return Err(ToolError::Io(format!("cwd does not exist: '{cwd}'")));
+    }
+    if !resolved.is_dir() {
+        return Err(ToolError::Io(format!("cwd is not a directory: '{cwd}'")));
+    }
+    Ok((command.to_owned(), resolved))
+}
+fn platform_shell(command: &str, windows_flags: &[&str]) -> Command {
+    if cfg!(windows) {
+        let mut shell = Command::new("cmd");
+        shell.args(windows_flags).arg(command);
+        shell
     } else {
-        workspace_root.to_path_buf()
-    };
-    Ok((command.to_string(), resolved_cwd))
+        let mut shell = Command::new("sh");
+        shell.arg("-c").arg(command);
+        shell
+    }
 }
 
 /// Execution limits injected into

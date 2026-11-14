@@ -12,8 +12,8 @@ use serde_json::Value;
 use super::command::CommandLimits;
 use super::output::{truncate_output, unified_diff};
 use super::path_safety::{
-    canonical_root, ensure_parent_dirs, is_within_workspace, reject_final_symlink_escape,
-    resolve_path, verify_existing_within,
+    canonical_root, check_private, is_within_workspace, resolve_path, safe_ignore, secure_dir,
+    secure_read, secure_write, verify_existing_within,
 };
 use super::search::{
     walk_search, LiteRegex, MAX_SEARCH_PATTERN_BYTES, SEARCH_DEFAULT_MAX_MATCHES,
@@ -37,6 +37,7 @@ pub(crate) enum ToolError {
     PathTraversal(String),
     Timeout(String),
     Cancelled,
+    ConsentInvalidated,
 }
 
 impl std::fmt::Display for ToolError {
@@ -52,6 +53,10 @@ impl std::fmt::Display for ToolError {
             }
             Self::Io(msg) | Self::Timeout(msg) => write!(f, "Error: {msg}"),
             Self::Cancelled => write!(f, "Error: tool execution was cancelled"),
+            Self::ConsentInvalidated => write!(
+                f,
+                "Error: execution consent or access context is no longer valid"
+            ),
         }
     }
 }
@@ -64,6 +69,7 @@ impl ToolRegistry {
     /// `workspace_root` is the absolute path that bounds all filesystem
     /// access. Tool failures are returned as `Err(ToolError)` with an
     /// `Error:` prefix; they never panic.
+    #[cfg(test)]
     pub(crate) fn execute(call: &ToolCall, workspace_root: &Path) -> Result<String, ToolError> {
         // No control attached: never cancelled (Task 3.1 semantics exactly).
         let token = CancellationToken::new();
@@ -74,7 +80,53 @@ impl ToolRegistry {
     /// (Task 3.2): returns `Err(ToolError::Cancelled)` immediately when the
     /// token has fired, and polls `token` inside long-running command
     /// execution so the child process is killed promptly.
+    #[cfg(test)]
     pub(crate) fn execute_with_cancellation(
+        call: &ToolCall,
+        workspace_root: &Path,
+        token: &CancellationToken,
+    ) -> Result<String, ToolError> {
+        Self::execute_raw(call, workspace_root, token)
+    }
+    pub(crate) fn execute_agent(
+        call: &ToolCall,
+        workspace_root: &Path,
+        token: &CancellationToken,
+        gate: Option<&crate::application::agent::approval::ApprovalGate>,
+    ) -> Result<String, ToolError> {
+        if let Some(gate) = gate {
+            return gate.execute_authorized(call, workspace_root, || {
+                Self::execute_raw(call, workspace_root, token)
+            });
+        }
+        if !matches!(
+            call.name.as_str(),
+            "read_file" | "list_directory" | "search_files"
+        ) {
+            return Err(ToolError::Io(
+                "an agent execution context is required".into(),
+            ));
+        }
+        Self::execute_raw(call, workspace_root, token)
+    }
+    /// Separate human terminal entry: never accepts file/agent tool calls.
+    pub(crate) fn execute_terminal(
+        call: &ToolCall,
+        workspace_root: &Path,
+        token: &CancellationToken,
+    ) -> Result<String, ToolError> {
+        if call.name != "execute_command" {
+            return Err(ToolError::UnknownTool(call.name.clone()));
+        }
+        if token.is_cancelled() {
+            return Err(ToolError::Cancelled);
+        }
+        let args: Value = serde_json::from_str(&call.arguments).map_err(|_| {
+            ToolError::InvalidArguments("invalid terminal command arguments".into())
+        })?;
+        Self::execute_terminal_command(&args, workspace_root, token)
+    }
+    fn execute_raw(
         call: &ToolCall,
         workspace_root: &Path,
         token: &CancellationToken,
@@ -127,14 +179,28 @@ impl ToolRegistry {
             }
         }
 
+        if super::path_safety::policy_target(Path::new(path)) {
+            return Err(ToolError::Io(
+                "path is excluded by workspace ignore rules".into(),
+            ));
+        }
         let resolved = resolve_path(workspace_root, path)?;
+        if super::path_safety::policy_target(&resolved) {
+            return Err(ToolError::Io(
+                "path is excluded by workspace ignore rules".into(),
+            ));
+        }
         if !resolved.exists() {
             return Err(ToolError::Io(format!("file not found: '{path}'")));
         }
         // Workspace ignore contract (`application/project_dir`): `.nexora/`
         // itself and every `.nexoraignore` match stay unreadable through the
         // agent tools. The error is a fixed category with no content echo.
-        if crate::application::project_dir::path_is_ignored(workspace_root, &resolved) {
+        if crate::application::project_dir::is_excluded(
+            workspace_root,
+            &resolved,
+            &safe_ignore(workspace_root)?,
+        ) {
             return Err(ToolError::Io(
                 "path is excluded by workspace ignore rules".to_string(),
             ));
@@ -155,8 +221,8 @@ impl ToolRegistry {
             path,
         )?;
 
-        let content = std::fs::read_to_string(&resolved)
-            .map_err(|e| ToolError::Io(format!("failed to read file '{path}': {e}")))?;
+        let content = String::from_utf8(secure_read(workspace_root, &resolved)?)
+            .map_err(|_| ToolError::Io("file is not valid UTF-8".into()))?;
 
         // Chunk by lines
         let lines: Vec<&str> = content.lines().collect();
@@ -188,14 +254,24 @@ impl ToolRegistry {
             ToolError::InvalidArguments("missing required field 'content'".to_string())
         })?;
 
+        if super::path_safety::policy_target(Path::new(path)) {
+            return Err(ToolError::Io(
+                "path is excluded by workspace ignore rules".into(),
+            ));
+        }
         let resolved = resolve_path(workspace_root, path)?;
+        if super::path_safety::policy_target(&resolved) {
+            return Err(ToolError::Io(
+                "path is excluded by workspace ignore rules".into(),
+            ));
+        }
         // Workspace ignore contract (same fixed error as reads): mutating
         // tools must not create or modify excluded paths. The for-write
         // verdict handles not-yet-existing targets lexically, so creates
         // under `.nexora/` or matching `.nexoraignore` deny before any read
         // or write happens. No `profiles/` allowlist: every write under
         // `.nexora/` denies, without exception.
-        let ignore = crate::application::project_dir::load_ignore_rules(workspace_root);
+        let ignore = safe_ignore(workspace_root)?;
         if crate::application::project_dir::is_excluded_for_write(
             workspace_root,
             &resolved,
@@ -212,10 +288,9 @@ impl ToolRegistry {
         // read lossily so binary files still produce a diff without panicking.
         // A pre-existing symlink escaping the workspace is rejected first so the
         // read itself never follows an outside link.
-        reject_final_symlink_escape(&canon_ws, &resolved, path)?;
         let old_content = if resolved.exists() {
             verify_existing_within(workspace_root, &canon_ws, &resolved, path)?;
-            match std::fs::read(&resolved) {
+            match secure_read(workspace_root, &resolved) {
                 Ok(bytes) => String::from_utf8_lossy(&bytes).to_string(),
                 Err(_) => String::new(),
             }
@@ -223,41 +298,7 @@ impl ToolRegistry {
             String::new()
         };
 
-        if let Some(parent) = resolved.parent() {
-            if !parent.as_os_str().is_empty() {
-                // Lexical guard (unchanged behavior for in-workspace paths).
-                if !is_within_workspace(workspace_root, parent) {
-                    return Err(ToolError::PathTraversal(path.to_string()));
-                }
-                // Create parents one level at a time so a symlink component
-                // pointing outside is rejected *before* anything is created
-                // through it; each created level is canonicalized and
-                // re-verified (canonicalize-after-create).
-                ensure_parent_dirs(workspace_root, &canon_ws, parent, path)?;
-            }
-        }
-
-        // The final component itself may be a symlink pointing outside
-        // (single-level escape): re-check after the parents exist, just before
-        // the write that would follow the link.
-        reject_final_symlink_escape(&canon_ws, &resolved, path)?;
-        std::fs::write(&resolved, content)
-            .map_err(|e| ToolError::Io(format!("failed to write file '{path}': {e}")))?;
-
-        // Backstop for a link swapped in between the pre-write check and the
-        // write (TOCTOU): the written file must canonicalize inside the
-        // workspace, otherwise report traversal instead of success.
-        if let Ok(canon_file) = resolved.canonicalize() {
-            if !is_within_workspace(&canon_ws, &canon_file) {
-                return Err(ToolError::PathTraversal(path.to_string()));
-            }
-        } else if let Some(parent) = resolved.parent() {
-            if let Ok(canon_parent) = parent.canonicalize() {
-                if !is_within_workspace(&canon_ws, &canon_parent) {
-                    return Err(ToolError::PathTraversal(path.to_string()));
-                }
-            }
-        }
+        secure_write(workspace_root, &resolved, content.as_bytes())?;
 
         let diff = unified_diff(path, &old_content, content);
         Ok(truncate_output(diff))
@@ -309,13 +350,23 @@ impl ToolRegistry {
             ));
         }
 
+        if super::path_safety::policy_target(Path::new(path)) {
+            return Err(ToolError::Io(
+                "path is excluded by workspace ignore rules".into(),
+            ));
+        }
         let resolved = resolve_path(workspace_root, path)?;
+        if super::path_safety::policy_target(&resolved) {
+            return Err(ToolError::Io(
+                "path is excluded by workspace ignore rules".into(),
+            ));
+        }
         if !resolved.exists() {
             return Err(ToolError::Io(format!("file not found: '{path}'")));
         }
         // Workspace ignore contract (same fixed error as reads): excluded
         // paths deny before any content is touched.
-        let ignore = crate::application::project_dir::load_ignore_rules(workspace_root);
+        let ignore = safe_ignore(workspace_root)?;
         if crate::application::project_dir::is_excluded_for_write(
             workspace_root,
             &resolved,
@@ -334,8 +385,7 @@ impl ToolRegistry {
                 "path is a directory, not a file: '{path}'"
             )));
         }
-        let bytes = std::fs::read(&resolved)
-            .map_err(|e| ToolError::Io(format!("failed to read file '{path}': {e}")))?;
+        let bytes = secure_read(workspace_root, &resolved)?;
         let content = String::from_utf8(bytes).map_err(|_| {
             ToolError::Io(format!("file is not valid UTF-8, cannot edit: '{path}'"))
         })?;
@@ -359,23 +409,7 @@ impl ToolRegistry {
         // Re-verify just before the write that follows the (possibly linked)
         // path, so a swap between read and write cannot redirect the edit.
         verify_existing_within(workspace_root, &canon_ws, &resolved, path)?;
-        std::fs::write(&resolved, &updated)
-            .map_err(|e| ToolError::Io(format!("failed to write file '{path}': {e}")))?;
-
-        // Backstop for a link swapped in between the pre-write check and the
-        // write (TOCTOU): the edited file must canonicalize inside the
-        // workspace, otherwise report traversal instead of success.
-        if let Ok(canon_file) = resolved.canonicalize() {
-            if !is_within_workspace(&canon_ws, &canon_file) {
-                return Err(ToolError::PathTraversal(path.to_string()));
-            }
-        } else if let Some(parent) = resolved.parent() {
-            if let Ok(canon_parent) = parent.canonicalize() {
-                if !is_within_workspace(&canon_ws, &canon_parent) {
-                    return Err(ToolError::PathTraversal(path.to_string()));
-                }
-            }
-        }
+        secure_write(workspace_root, &resolved, updated.as_bytes())?;
 
         Ok(truncate_output(unified_diff(path, &content, &updated)))
     }
@@ -409,6 +443,13 @@ impl ToolRegistry {
             Some(dir) if !dir.trim().is_empty() => resolve_path(workspace_root, dir)?,
             _ => workspace_root.to_path_buf(),
         };
+        if super::path_safety::policy_target(&scope)
+            || scope_arg.is_some_and(|path| super::path_safety::policy_target(Path::new(path)))
+        {
+            return Err(ToolError::Io(
+                "path is excluded by workspace ignore rules".into(),
+            ));
+        }
         if !scope.exists() {
             return Err(ToolError::Io(format!(
                 "directory not found: '{}'",
@@ -435,7 +476,7 @@ impl ToolRegistry {
         )?;
         // Workspace ignore contract: an ignored scope is denied, and ignored
         // paths are skipped during the walk so matches never leak.
-        let ignore = crate::application::project_dir::load_ignore_rules(workspace_root);
+        let ignore = safe_ignore(workspace_root)?;
         if crate::application::project_dir::is_excluded(workspace_root, &scope, &ignore) {
             return Err(ToolError::Io(
                 "path is excluded by workspace ignore rules".to_string(),
@@ -496,6 +537,13 @@ impl ToolRegistry {
             workspace_root.to_path_buf()
         };
 
+        if super::path_safety::policy_target(&target)
+            || path_opt.is_some_and(|path| super::path_safety::policy_target(Path::new(path)))
+        {
+            return Err(ToolError::Io(
+                "path is excluded by workspace ignore rules".into(),
+            ));
+        }
         if !target.exists() {
             return Err(ToolError::Io(format!(
                 "directory not found: '{}'",
@@ -522,7 +570,7 @@ impl ToolRegistry {
         // Workspace ignore contract: an ignored scope is denied with the
         // same fixed, content-free error as `read_file`; ignored entries are
         // filtered silently below so listings never leak their names.
-        let ignore = crate::application::project_dir::load_ignore_rules(workspace_root);
+        let ignore = safe_ignore(workspace_root)?;
         if crate::application::project_dir::is_excluded(workspace_root, &target, &ignore) {
             return Err(ToolError::Io(
                 "path is excluded by workspace ignore rules".to_string(),
@@ -533,14 +581,21 @@ impl ToolRegistry {
         if recursive {
             walk_recursive(&target, workspace_root, &ignore, &mut entries)?;
         } else {
-            let read = std::fs::read_dir(&target)
+            let read = secure_dir(workspace_root, &target, false)?
+                .entries()
                 .map_err(|e| ToolError::Io(format!("failed to read directory: {e}")))?;
             for entry in read {
                 let entry =
                     entry.map_err(|e| ToolError::Io(format!("failed to read entry: {e}")))?;
+                let entry_path = target.join(entry.file_name());
+                if check_private(&entry_path).is_err()
+                    || super::path_safety::policy_target(&entry_path)
+                {
+                    continue;
+                }
                 if crate::application::project_dir::is_excluded(
                     workspace_root,
-                    &entry.path(),
+                    &entry_path,
                     &ignore,
                 ) {
                     continue;
@@ -551,10 +606,9 @@ impl ToolRegistry {
                 let name = entry.file_name().to_string_lossy().to_string();
                 let kind = if ft.is_dir() { "dir" } else { "file" };
                 // Show relative to workspace for LLM clarity
-                let rel = entry
-                    .path()
+                let rel = entry_path
                     .strip_prefix(workspace_root)
-                    .unwrap_or(entry.path().as_path())
+                    .unwrap_or(entry_path.as_path())
                     .to_string_lossy()
                     .to_string();
                 entries.push(format!("{kind}: {rel} (name: {name})"));
@@ -588,11 +642,15 @@ fn walk_recursive(
     ignore: &crate::application::project_dir::IgnoreRules,
     out: &mut Vec<String>,
 ) -> Result<(), ToolError> {
-    let entries = std::fs::read_dir(dir)
+    let entries = secure_dir(workspace_root, dir, false)?
+        .entries()
         .map_err(|e| ToolError::Io(format!("failed to read directory: {e}")))?;
     for entry in entries {
         let entry = entry.map_err(|e| ToolError::Io(format!("failed to read entry: {e}")))?;
-        let path = entry.path();
+        let path = dir.join(entry.file_name());
+        if check_private(&path).is_err() || super::path_safety::policy_target(&path) {
+            continue;
+        }
         // Ensure each visited path stays within workspace (defense against symlink escapes)
         if !is_within_workspace(workspace_root, &path) {
             continue;

@@ -267,7 +267,11 @@ describe("SettingsView — agent defaults", () => {
     const semi = screen.getByRole("radio", { name: "Semi-autonomous" });
     expect(semi).toHaveAttribute("aria-checked", "true");
 
-    fireEvent.click(screen.getByRole("radio", { name: "Supervised" }));
+    fireEvent.click(
+      within(
+        screen.getByRole("radiogroup", { name: "Autonomy mode" })
+      ).getByRole("radio", { name: "Supervised" })
+    );
     await waitFor(() =>
       expect(mockInvoke).toHaveBeenCalledWith("set_setting", {
         key: AUTONOMY_KEY,

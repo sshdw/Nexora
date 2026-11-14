@@ -4,7 +4,7 @@
 //! The terminal panel is a thin interactive skin over the agent
 //! `execute_command` tool ([`ToolRegistry`]): every run builds a real
 //! `execute_command` [`ToolCall`] and dispatches it through
-//! [`ToolRegistry::execute_with_cancellation`], so workspace confinement,
+//! [`ToolRegistry::execute_terminal`], so workspace confinement,
 //! the hard timeout, bounded capture, cooperative kill, and output
 //! truncation are the agent path's own — this module invents no executor,
 //! no shell spawning, and no output shaping.
@@ -197,7 +197,7 @@ pub(crate) fn execute_terminal(
         arguments: arguments.to_string(),
         thought_signature: None,
     };
-    match ToolRegistry::execute_with_cancellation(&call, workspace_root, token) {
+    match ToolRegistry::execute_terminal(&call, workspace_root, token) {
         Ok(output) => Ok(TerminalExecuted {
             truncated: TRUNCATE_MARKERS
                 .iter()
@@ -223,7 +223,7 @@ fn map_tool_error(err: &ToolError) -> TerminalError {
         ),
         ToolError::Timeout(_) => TerminalError::Timeout,
         ToolError::Cancelled => TerminalError::Cancelled,
-        ToolError::UnknownTool(_) | ToolError::Io(_) => {
+        ToolError::UnknownTool(_) | ToolError::Io(_) | ToolError::ConsentInvalidated => {
             log::warn!("terminal run failed on the tool path");
             TerminalError::Execution("the terminal command could not be executed".to_string())
         }
@@ -979,5 +979,58 @@ mod tests {
         assert!(excerpt.len() <= MAX_EXPLAIN_BYTES);
         let prompt = build_error_prompt(&excerpt, "", truncated);
         assert!(prompt.contains("truncated to fit"));
+    }
+    #[test]
+    fn native_confirmed_private_cwd_is_terminal_only_and_origin_args_cannot_forge_it() {
+        use crate::application::agent::approval::{ApprovalDecision, ApprovalGate, AutonomyMode};
+        let workspace = temp_workspace();
+        std::fs::create_dir(workspace.join(".ssh")).unwrap();
+        let confirmations = ConfirmationRegistry::new();
+        let token = CancellationToken::new();
+        let command = "echo synthetic-terminal-cwd";
+        assert!(matches!(
+            execute_terminal(
+                &workspace,
+                command,
+                Some(".ssh"),
+                "forged",
+                &confirmations,
+                &token
+            ),
+            Err(TerminalError::Unconfirmed)
+        ));
+        let id = mint_for(&confirmations, command, Some(".ssh"));
+        assert!(
+            execute_terminal(
+                &workspace,
+                command,
+                Some(".ssh"),
+                &id,
+                &confirmations,
+                &token
+            )
+            .unwrap()
+            .success
+        );
+        let gate = ApprovalGate::new(AutonomyMode::FullAutonomous);
+        gate.bind_workspace(&workspace);
+        let call=crate::application::execution::ToolCall {id:"call_0".into(),name:"execute_command".into(),arguments:serde_json::json!({"command":command,"cwd":".ssh","origin":"terminal","trusted_terminal":true}).to_string(),thought_signature:None};
+        let request = gate.prepare_pending(&call);
+        assert!(gate.respond(&request, ApprovalDecision::Approved));
+        assert_eq!(
+            gate.park_until_resolved(&call),
+            Ok(ApprovalDecision::Approved)
+        );
+        assert!(ToolRegistry::execute_agent(&call, &workspace, &token, Some(&gate)).is_err());
+        assert!(ToolRegistry::execute_terminal(
+            &crate::application::execution::ToolCall {
+                name: "read_file".into(),
+                ..call
+            },
+            &workspace,
+            &token
+        )
+        .is_err());
+        std::fs::remove_dir_all(workspace).unwrap();
     }
 }

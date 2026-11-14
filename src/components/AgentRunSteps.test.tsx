@@ -302,7 +302,9 @@ describe("Agent Activity Spine", () => {
     expect(
       screen.getByRole("region", { name: "Approval required" })
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Approve" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Allow once" })
+    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Deny" })).toBeInTheDocument();
   });
 
@@ -1258,5 +1260,70 @@ describe("unloaded rehydrated runs (AC-102/ADD-08 lazy steps)", () => {
     const line = screen.getByRole("status");
     expect(line).toHaveTextContent("Cancelled · 5 steps");
     expect(line.textContent).not.toContain("nothing");
+  });
+});
+
+describe("M04 approval scope and shell posture", () => {
+  const metadata = {
+    access_profile: "standard" as const,
+    sandbox_posture: "PerCommandConsent" as const,
+    checkpoints_available: false,
+    allow_for_run: true,
+    sensitive_write: false,
+    shell: null,
+  };
+  it("offers exact file reuse and passes the group scope", () => {
+    const onResolveApproval = vi.fn();
+    renderRun(
+      runView({
+        pending_approval: {
+          call_id: "file",
+          name: "write_file",
+          arguments: '{"path":"one.txt"}',
+          timeout_secs: 0,
+          requested_at: 0,
+          metadata,
+        },
+      }),
+      { onResolveApproval }
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Allow for run" }));
+    expect(onResolveApproval).toHaveBeenCalledWith(7, "file", true, "group");
+    expect(
+      screen.getByRole("button", { name: "Allow once" })
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Deny" })).toBeInTheDocument();
+  });
+  it("never offers shell reuse and shows category, packages, uncertainty and real fallback", () => {
+    const shell = {
+      category: "DependencyInstall" as const,
+      packages: ["exact-package@1"],
+      packages_exact: true,
+      uncertain: true,
+      sandbox_posture: "PerCommandConsent" as const,
+    };
+    renderRun(
+      runView({
+        pending_approval: {
+          call_id: "shell",
+          name: "execute_command",
+          arguments: '{"command":"npm install exact-package@1"}',
+          timeout_secs: 0,
+          requested_at: 0,
+          metadata: { ...metadata, shell },
+        },
+      })
+    );
+    expect(
+      screen.queryByRole("button", { name: "Allow for run" })
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("Dependency installation")).toBeInTheDocument();
+    expect(screen.getByText("exact-package@1")).toBeInTheDocument();
+    expect(
+      screen.getByText(/native isolation is unverified/)
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Some shell syntax could not be classified/)
+    ).toBeInTheDocument();
   });
 });

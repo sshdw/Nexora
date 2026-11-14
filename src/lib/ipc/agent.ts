@@ -4,6 +4,39 @@
 //! (Task 5.2).
 
 import { invoke } from "./core";
+import { getSetting, setSetting } from "./settings";
+
+export type AccessProfile = "read_only" | "standard" | "supervised";
+export interface ApprovalMetadata {
+  access_profile: AccessProfile;
+  sandbox_posture: "PerCommandConsent";
+  checkpoints_available: boolean;
+  allow_for_run: boolean;
+  sensitive_write: boolean;
+  shell: {
+    category:
+      | "GeneralShell"
+      | "DependencyInstall"
+      | "PublishOrRemote"
+      | "DestructiveGit"
+      | "MassDelete";
+    packages: string[];
+    packages_exact: boolean;
+    uncertain: boolean;
+    sandbox_posture: "PerCommandConsent";
+  } | null;
+}
+export async function getAccessProfile(): Promise<AccessProfile> {
+  const raw = await getSetting("agent.access_profile");
+  return raw === null || raw === "standard"
+    ? "standard"
+    : raw === "supervised"
+      ? "supervised"
+      : "read_only";
+}
+export function setAccessProfile(profile: AccessProfile): Promise<void> {
+  return setSetting("agent.access_profile", profile);
+}
 
 // ---- Agent runs (Task 5.1) ------------------------------------------
 
@@ -82,6 +115,7 @@ export type GovernanceEventPayload =
   | { type: "spend_limit_exceeded"; spent_micro: number; limit_micro: number }
   | {
       type: "approval_requested";
+      metadata?: ApprovalMetadata;
       call_id: string;
       name: string;
       arguments: string;
@@ -147,7 +181,8 @@ export function cancelAgentRun(runId: number): Promise<void> {
   return invoke<void>("cancel_agent_run", { runId });
 }
 
-/** Resolve a parked approval (Task 5.1; M1-core adds optional group scope). */
+/** Echo the opaque call_id from the current approval event/live snapshot.
+ * Provider tool IDs are not approval response handles. */
 export function resolveAgentApproval(
   runId: number,
   callId: string,
@@ -285,6 +320,7 @@ export function inspectRun(runId: number): Promise<RunInspection> {
  * after a tab switch or WebView reload discloses nothing new.
  */
 export interface PendingApprovalView {
+  metadata?: ApprovalMetadata;
   call_id: string;
   name: string;
   arguments: string;

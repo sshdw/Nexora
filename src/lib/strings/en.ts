@@ -3,6 +3,34 @@
 //! `StringKey`. Pure data - no logic lives here.
 
 export const en = {
+  "access.legacyAutonomy": "Legacy autonomy",
+  "access.label": "Access profile",
+  "access.read_only": "Read only",
+  "access.standard": "Standard",
+  "access.supervised": "Supervised",
+  "access.hint.read_only":
+    "Workspace reads and search only. Edits and shell are blocked.",
+  "access.hint.standard":
+    "Edits ask for approval until checkpoints are available. Every shell command asks for consent.",
+  "access.hint.supervised":
+    "Every edit and shell command requires your approval.",
+  "access.saving": "Saving access profile…",
+  "access.saveFailed":
+    "Could not save the access profile. The previous profile was restored.",
+  "agent.allowOnce": "Allow once",
+  "agent.allowRun": "Allow for run",
+  "agent.shellFallback": "Per-command consent · native isolation is unverified",
+  "agent.shellUncertain":
+    "Some shell syntax could not be classified. Review the entire command.",
+  "agent.packagesUnknown":
+    "Package list is incomplete or determined at runtime.",
+  "agent.sensitiveWrite": "Sensitive file · this approval applies once",
+  "agent.category.GeneralShell": "Shell command",
+  "agent.category.DependencyInstall": "Dependency installation",
+  "agent.category.PublishOrRemote": "Publishing or remote changes",
+  "agent.category.DestructiveGit": "Destructive Git operation",
+  "agent.category.MassDelete": "Mass deletion",
+
   // ---- common -----------------------------------------------------------
   "common.backToConversations": "Back to conversations",
   "common.close": "Close",
@@ -226,7 +254,7 @@ export const en = {
   "conv.autonomyExplainSemi":
     "Semi-auto: routine steps run alone, writes still ask first.",
   "conv.autonomyExplainFull":
-    "Full-auto: the agent runs to the end without stopping.",
+    "Full-auto preference: access limits still apply; edits and shell commands ask for approval.",
 
   // ---- message markdown (MessageMarkdown.tsx, ADD-01) -------------------------
   // Link affordances (copy + explicit open, 02-SECURITY §4.2 req 3 as
@@ -445,7 +473,7 @@ export const en = {
     "The default autonomy for new agent runs, and the per-run spend guard. The conversation header can still switch autonomy per run.",
   "settings.autonomyLabel": "Autonomy mode",
   "settings.autonomyHint":
-    "Supervised pauses for approval; semi-autonomous asks on risky steps; fully autonomous runs to completion.",
+    "Legacy autonomy preference. The access profile, edit approval and per-command shell consent remain enforced.",
   "settings.autonomySupervised": "Supervised",
   "settings.autonomySemi": "Semi-autonomous",
   "settings.autonomyFull": "Fully autonomous",

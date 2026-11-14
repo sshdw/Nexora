@@ -14,7 +14,10 @@
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use super::access::{AccessContext, AccessProfile};
+use super::permissions::{PermissionOutcome, PermissionStore, RunPreset};
 use serde::Serialize;
+use std::path::{Path, PathBuf};
 
 use crate::application::agent::control::CancellationToken;
 use crate::application::execution::ToolCall;
@@ -75,6 +78,8 @@ pub(crate) enum AutonomyMode {
 pub(crate) enum ApprovalDecision {
     Approved,
     Denied,
+    /// The server invalidated a pending request; this is never a user denial.
+    Invalidated,
 }
 
 /// How a [`ApprovalGate::park_until_resolved`] wait ended without a user
@@ -118,6 +123,7 @@ pub(crate) fn format_timeout(timeout: Duration) -> String {
 #[derive(Debug)]
 struct PendingApproval {
     id: String,
+    request_id: String,
     decision: Option<ApprovalDecision>,
     /// Tool name for the pending call (M1-core grouping).
     tool_name: String,
@@ -130,6 +136,7 @@ struct PendingApproval {
     /// Unix seconds at which the pending entry was created: the anchor the
     /// live snapshot derives its `expires_at` window from.
     requested_at: i64,
+    identity: Option<String>,
 }
 
 /// Read-only snapshot of a parked approval (G-15): the live-run inspector's
@@ -142,7 +149,7 @@ struct PendingApproval {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) struct PendingApprovalSnapshot {
-    /// `ToolCall.id` of the parked call (the key `respond` resolves).
+    /// Server-owned request identity (the key `respond` resolves), independent of `ToolCall.id`.
     pub call_id: String,
     /// Tool name of the parked call.
     pub name: String,
@@ -154,6 +161,29 @@ pub(crate) struct PendingApprovalSnapshot {
     pub requested_at: i64,
     /// Unix seconds when the park deadline elapses (`requested_at` + timeout).
     pub expires_at: i64,
+    pub metadata: ApprovalMetadata,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct ApprovalMetadata {
+    pub access_profile: AccessProfile,
+    pub sandbox_posture: &'static str,
+    pub checkpoints_available: bool,
+    pub allow_for_run: bool,
+    pub sensitive_write: bool,
+    pub shell: Option<super::shell_policy::ShellAnalysis>,
+}
+
+/// Response correlation is server-owned. Provider IDs remain only in tool
+/// history/results and may legitimately repeat (for example Gemini `call_0`).
+fn next_request_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    let sequence = NEXT.fetch_add(1, Ordering::Relaxed);
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |time| time.as_nanos());
+    format!("approval-{}-{stamp:x}-{sequence:x}", std::process::id())
 }
 
 /// Current Unix time in whole seconds; `0` if the clock is before the epoch
@@ -177,6 +207,10 @@ struct GateState {
     /// (NEX-AGENT-004). Shared by all clones; set once per run from the
     /// `agent.approval_timeout_secs` setting.
     timeout: Duration,
+    workspace: Option<PathBuf>,
+    once: std::collections::HashMap<String, String>,
+    preset: RunPreset,
+    dispatch_store: Option<PermissionStore>,
 }
 
 // ---------------------------------------------------------------------------
@@ -192,6 +226,7 @@ pub(crate) struct ApprovalGate {
     token: Arc<Mutex<CancellationToken>>,
     state: Arc<Mutex<GateState>>,
     signal: Arc<Condvar>,
+    access: AccessContext,
 }
 
 impl ApprovalGate {
@@ -204,8 +239,13 @@ impl ApprovalGate {
                 pending: None,
                 group_decisions: std::collections::HashMap::new(),
                 timeout: DEFAULT_APPROVAL_TIMEOUT,
+                workspace: None,
+                once: std::collections::HashMap::new(),
+                preset: RunPreset::Coding,
+                dispatch_store: None,
             })),
             signal: Arc::new(Condvar::new()),
+            access: AccessContext::fixed(AccessProfile::Standard),
         }
     }
 
@@ -220,11 +260,201 @@ impl ApprovalGate {
                 pending: None,
                 group_decisions: std::collections::HashMap::new(),
                 timeout: DEFAULT_APPROVAL_TIMEOUT,
+                workspace: None,
+                once: std::collections::HashMap::new(),
+                preset: RunPreset::Coding,
+                dispatch_store: None,
             })),
             signal: Arc::new(Condvar::new()),
+            access: AccessContext::fixed(AccessProfile::Standard),
         }
     }
 
+    pub(crate) fn with_access(mut self, access: AccessContext) -> Self {
+        self.access = access;
+        self
+    }
+    pub(crate) fn access(&self) -> &AccessContext {
+        &self.access
+    }
+    pub(crate) fn bind_workspace(&self, workspace: &Path) {
+        let changed = self.lock_state().workspace.as_deref() != Some(workspace);
+        if changed {
+            self.access.change_policy(|| {
+                let mut state = self.lock_state();
+                state.group_decisions.clear();
+                state.once.clear();
+                state.dispatch_store = None;
+                state.workspace = Some(workspace.to_path_buf());
+            });
+        }
+    }
+    pub(crate) fn bind_policy(&self, preset: RunPreset, store: Option<&PermissionStore>) {
+        let changed = self.lock_state().preset != preset;
+        if changed {
+            self.access.change_policy(|| {
+                let mut state = self.lock_state();
+                state.preset = preset;
+                state.group_decisions.clear();
+                state.once.clear();
+            });
+        }
+        self.lock_state().dispatch_store = store.cloned();
+    }
+    fn current_store(&self) -> Option<PermissionStore> {
+        self.access
+            .execution_store()
+            .or_else(|| self.lock_state().dispatch_store.clone())
+    }
+    pub(crate) fn identity(&self, call: &ToolCall) -> Option<String> {
+        let workspace = self.lock_state().workspace.clone()?;
+        self.access.identity(&workspace, call).ok()
+    }
+    pub(crate) fn group_key(&self, call: &ToolCall, fallback: &str) -> String {
+        self.identity(call).map_or_else(
+            || fallback.to_owned(),
+            |id| format!("exact:{}:{id}", call.name),
+        )
+    }
+    pub(crate) fn reusable(&self, call: &ToolCall) -> bool {
+        if !matches!(
+            call.name.as_str(),
+            "read_file" | "list_directory" | "search_files" | "write_file" | "edit_file"
+        ) || self.access.profile() != AccessProfile::Standard
+        {
+            return false;
+        }
+        let Some(workspace) = self.lock_state().workspace.clone() else {
+            return false;
+        };
+        let Ok(args) = serde_json::from_str::<serde_json::Value>(&call.arguments) else {
+            return false;
+        };
+        let path = args
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(".");
+        let preset = self.lock_state().preset;
+        if self.current_store().is_some_and(|store| {
+            matches!(
+                store.decide_call(preset.as_str(), call, &workspace),
+                Some(PermissionOutcome::Ask { .. } | PermissionOutcome::Deny { .. })
+            )
+        }) {
+            return false;
+        }
+        super::tools::path_safety::resolve_path(&workspace, path).is_ok_and(|target| {
+            !super::tools::path_safety::sensitive_write(&target)
+                && !super::tools::path_safety::sensitive_write(&workspace.join(path))
+        })
+    }
+    pub(crate) fn metadata(&self, call: &ToolCall) -> ApprovalMetadata {
+        let args = serde_json::from_str::<serde_json::Value>(&call.arguments).unwrap_or_default();
+        let shell = (call.name == "execute_command").then(|| {
+            super::shell_policy::analyze(
+                args.get("command")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(""),
+                super::shell_policy::Shell::platform(),
+            )
+        });
+        let sensitive_write = matches!(call.name.as_str(), "write_file" | "edit_file")
+            && self
+                .lock_state()
+                .workspace
+                .as_ref()
+                .is_some_and(|workspace| {
+                    let path = args
+                        .get("path")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or(".");
+                    super::tools::path_safety::resolve_path(workspace, path).is_ok_and(|target| {
+                        super::tools::path_safety::sensitive_write(&target)
+                            || super::tools::path_safety::sensitive_write(&workspace.join(path))
+                    })
+                });
+        ApprovalMetadata {
+            access_profile: self.access.profile(),
+            sandbox_posture: "PerCommandConsent",
+            checkpoints_available: false,
+            allow_for_run: self.reusable(call),
+            sensitive_write,
+            shell,
+        }
+    }
+    pub(crate) fn has_current_consent(&self, call: &ToolCall) -> bool {
+        let Some(identity) = self.identity(call) else {
+            return false;
+        };
+        let reusable = self.reusable(call);
+        let key = format!("exact:{}:{identity}", call.name);
+        let state = self.lock_state();
+        state.once.get(&call.id) == Some(&identity)
+            || (reusable && state.group_decisions.get(&key) == Some(&ApprovalDecision::Approved))
+    }
+    /// Final execution boundary: exact parked consent or exact reusable file
+    /// consent, recomputed against live server policy and canonical paths.
+    pub(crate) fn execute_authorized(
+        &self,
+        call: &ToolCall,
+        workspace: &Path,
+        execute: impl FnOnce() -> Result<String, super::tools::ToolError>,
+    ) -> Result<String, super::tools::ToolError> {
+        let mut unavailable = false;
+        let result = self.access.with_identity(workspace, call, |identity| {
+            let denied = || super::tools::ToolError::ConsentInvalidated;
+            let (preset, snapshot, bound_workspace) = {
+                let state = self.lock_state();
+                (
+                    state.preset,
+                    state.dispatch_store.clone(),
+                    state.workspace.clone(),
+                )
+            };
+            if !self.access.allows(call)
+                || bound_workspace.as_deref() != Some(workspace)
+                || (preset == RunPreset::Document && call.name == "execute_command")
+            {
+                return Err(denied());
+            }
+            // Compare the complete loaded rules, including rule identity and
+            // specificity. A fresh generation cannot legitimize a stale
+            // dispatch snapshot or attribute execution to an obsolete Allow.
+            let current = self.access.execution_store();
+            unavailable = current
+                .as_ref()
+                .is_some_and(PermissionStore::is_unavailable);
+            if current.is_some() && snapshot.is_some() && current != snapshot {
+                return Err(denied());
+            }
+            let policy = current
+                .or(snapshot)
+                .and_then(|store| store.decide_call(preset.as_str(), call, workspace));
+            if matches!(policy, Some(PermissionOutcome::Deny { .. })) {
+                return Err(denied());
+            }
+            let needs_consent =
+                self.needs_approval(call) || matches!(policy, Some(PermissionOutcome::Ask { .. }));
+            let reusable = self.reusable(call);
+            let key = format!("exact:{}:{identity}", call.name);
+            let mut state = self.lock_state();
+            let once = state
+                .once
+                .remove(&call.id)
+                .is_some_and(|grant| grant == identity);
+            let group =
+                reusable && state.group_decisions.get(&key) == Some(&ApprovalDecision::Approved);
+            if needs_consent && !once && !group {
+                return Err(denied());
+            }
+            drop(state);
+            execute()
+        });
+        if unavailable {
+            self.access.invalidate();
+        }
+        result
+    }
     /// Override the park deadline (NEX-AGENT-004). Prefer this in tests for
     /// a short deadline; production uses
     /// [`super::service::resolve_approval_timeout`] plus [`Self::set_timeout`].
@@ -264,7 +494,7 @@ impl ApprovalGate {
     /// Change the autonomy mode at runtime. Affects the next tool-call
     /// decision; a request already parked is not auto-resolved.
     pub(crate) fn set_mode(&self, mode: AutonomyMode) {
-        self.lock_state().mode = mode;
+        self.access.change_policy(|| self.lock_state().mode = mode);
         // No need to wake a parked approval: the pending decision is still
         // required and mode only affects the *next* call. Notifying is
         // harmless, so we avoid it to keep semantics explicit.
@@ -323,6 +553,10 @@ impl ApprovalGate {
     #[must_use]
     pub(crate) fn needs_approval(&self, call: &ToolCall) -> bool {
         let risk = RiskClass::classify(&call.name);
+        // PR2B durable checkpoints and Stage7 isolation are unavailable.
+        if !matches!(risk, RiskClass::ReadOnly) {
+            return true;
+        }
         let mode = self.mode();
         match mode {
             AutonomyMode::Supervised => true,
@@ -338,28 +572,38 @@ impl ApprovalGate {
     /// Pre-register a pending entry for `call` so that an `ApprovalRequested`
     /// emission that follows can be resolved immediately without a race.
     /// Called by the runner before emitting the event; does not notify.
-    pub(crate) fn prepare_pending(&self, call: &ToolCall) {
-        self.prepare_pending_with_group(call, None);
+    pub(crate) fn prepare_pending(&self, call: &ToolCall) -> String {
+        self.prepare_pending_with_group(call, None)
     }
 
     /// Pre-register a pending entry with M1-core grouping metadata.
-    pub(crate) fn prepare_pending_with_group(&self, call: &ToolCall, group_key: Option<String>) {
+    pub(crate) fn prepare_pending_with_group(
+        &self,
+        call: &ToolCall,
+        group_key: Option<String>,
+    ) -> String {
+        let identity = self.identity(call);
         let mut state = self.lock_state();
-        match state.pending.as_ref() {
-            Some(existing) if existing.id == call.id => {
-                // Already prepared for this call — preserve any early decision.
-            }
-            _ => {
-                state.pending = Some(PendingApproval {
-                    id: call.id.clone(),
-                    decision: None,
-                    tool_name: call.name.clone(),
-                    group_key,
-                    arguments: call.arguments.clone(),
-                    requested_at: now_unix_secs(),
-                });
-            }
+        if let Some(existing) = state.pending.as_ref().filter(|pending| {
+            pending.id == call.id
+                && pending.tool_name == call.name
+                && pending.arguments == call.arguments
+                && pending.identity == identity
+        }) {
+            return existing.request_id.clone();
         }
+        let request_id = next_request_id();
+        state.pending = Some(PendingApproval {
+            id: call.id.clone(),
+            request_id: request_id.clone(),
+            decision: None,
+            tool_name: call.name.clone(),
+            group_key,
+            arguments: call.arguments.clone(),
+            requested_at: now_unix_secs(),
+            identity,
+        });
+        request_id
     }
 
     /// Decide for `call` per the autonomy ladder, or park until
@@ -402,29 +646,38 @@ impl ApprovalGate {
     /// group-sticky parks, injection holds) funnels through this one wait,
     /// so the deadline covers them all.
     pub(crate) fn park_until_resolved(&self, call: &ToolCall) -> Result<ApprovalDecision, ParkEnd> {
-        // Create pending entry, reusing an early-prepared one for the same
-        // call id so an early decision (respond before park) is not clobbered.
-        {
+        let identity = self.identity(call);
+        let request_id = {
             let mut state = self.lock_state();
             match state.pending.as_ref() {
+                Some(existing)
+                    if existing.id == call.id
+                        && existing.tool_name == call.name
+                        && existing.arguments == call.arguments
+                        && existing.identity == identity =>
+                {
+                    existing.request_id.clone()
+                }
                 Some(existing) if existing.id == call.id => {
-                    // Reuse the pending prepared by `prepare_pending`; keep decision if already set.
+                    state.pending = None;
+                    return Ok(ApprovalDecision::Invalidated);
                 }
                 _ => {
-                    // If a previous pending somehow remains for a different id
-                    // (should not happen in the sequential per-tool-call runner loop),
-                    // replace it conservatively.
+                    let request_id = next_request_id();
                     state.pending = Some(PendingApproval {
                         id: call.id.clone(),
+                        request_id: request_id.clone(),
                         decision: None,
                         tool_name: call.name.clone(),
                         group_key: None,
                         arguments: call.arguments.clone(),
                         requested_at: now_unix_secs(),
+                        identity: identity.clone(),
                     });
+                    request_id
                 }
             }
-        }
+        };
 
         // Park until a decision arrives, cancellation fires, or the deadline
         // elapses. Use a short timeout so a cancellation that only sets the
@@ -438,26 +691,38 @@ impl ApprovalGate {
         let deadline = Instant::now() + self.timeout();
         let mut state = self.lock_state();
         loop {
+            drop(state);
+            let valid = self.identity(call) == identity && self.access.allows(call);
+            state = self.lock_state();
+            if !valid {
+                state.pending = None;
+                return Ok(ApprovalDecision::Invalidated);
+            }
             if self.is_cancelled() {
                 state.pending = None;
                 return Err(self.cancel_end());
             }
             if let Some(pending) = state.pending.as_ref() {
-                if pending.id == call.id {
+                if pending.request_id == request_id {
                     if let Some(decision) = pending.decision {
                         let result = decision;
+                        if decision == ApprovalDecision::Approved {
+                            if let Some(identity) = identity.clone() {
+                                state.once.insert(call.id.clone(), identity);
+                            }
+                        }
                         state.pending = None;
                         return Ok(result);
                     }
                 } else {
-                    // Pending id mismatch: treat as cancelled/overwritten.
-                    // Should not happen in sequential dispatch.
+                    return Ok(ApprovalDecision::Invalidated);
                 }
             } else {
                 // Pending cleared externally (e.g. cancellation).
                 if self.is_cancelled() {
                     return Err(self.cancel_end());
                 }
+                return Ok(ApprovalDecision::Invalidated);
             }
             // Deadline check before sleeping: expiry clears the pending entry
             // (a late `respond` for this id then resolves nothing) and ends
@@ -504,9 +769,39 @@ impl ApprovalGate {
         decision: ApprovalDecision,
         scope: Option<&str>,
     ) -> bool {
+        let candidate = {
+            let state = self.lock_state();
+            state
+                .pending
+                .as_ref()
+                .filter(|pending| pending.request_id == request_id)
+                .map(|pending| {
+                    (
+                        ToolCall {
+                            id: pending.id.clone(),
+                            name: pending.tool_name.clone(),
+                            arguments: pending.arguments.clone(),
+                            thought_signature: None,
+                        },
+                        pending.identity.clone(),
+                    )
+                })
+        };
+        let Some((call, identity)) = candidate else {
+            return false;
+        };
+        if scope == Some("group") && !self.reusable(&call) {
+            return false;
+        }
+        if self.identity(&call) != identity || !self.access.allows(&call) {
+            return false;
+        }
         let mut state = self.lock_state();
         if let Some(pending) = state.pending.as_mut() {
-            if pending.id == request_id && pending.decision.is_none() {
+            if pending.request_id == request_id
+                && pending.identity == identity
+                && pending.decision.is_none()
+            {
                 pending.decision = Some(decision);
                 if scope == Some("group") {
                     if let Some(group_key) = pending.group_key.clone() {
@@ -530,7 +825,7 @@ impl ApprovalGate {
     pub(crate) fn pending_info(&self, request_id: &str) -> Option<(String, Option<String>)> {
         let state = self.lock_state();
         state.pending.as_ref().and_then(|pending| {
-            if pending.id == request_id {
+            if pending.request_id == request_id {
                 Some((pending.tool_name.clone(), pending.group_key.clone()))
             } else {
                 None
@@ -550,8 +845,14 @@ impl ApprovalGate {
             return None;
         }
         let timeout_secs = state.timeout.as_secs();
-        Some(PendingApprovalSnapshot {
-            call_id: pending.id.clone(),
+        let call = ToolCall {
+            id: pending.id.clone(),
+            name: pending.tool_name.clone(),
+            arguments: pending.arguments.clone(),
+            thought_signature: None,
+        };
+        let snapshot = PendingApprovalSnapshot {
+            call_id: pending.request_id.clone(),
             name: pending.tool_name.clone(),
             arguments: pending.arguments.clone(),
             timeout_secs,
@@ -559,9 +860,49 @@ impl ApprovalGate {
             expires_at: pending
                 .requested_at
                 .saturating_add(i64::try_from(timeout_secs).unwrap_or(i64::MAX)),
+            metadata: ApprovalMetadata {
+                access_profile: AccessProfile::ReadOnly,
+                sandbox_posture: "PerCommandConsent",
+                checkpoints_available: false,
+                allow_for_run: false,
+                sensitive_write: false,
+                shell: None,
+            },
+        };
+        drop(state);
+        Some(PendingApprovalSnapshot {
+            metadata: self.metadata(&call),
+            ..snapshot
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn request_id_for_test(&self, provider_id: &str) -> Option<String> {
+        self.lock_state()
+            .pending
+            .as_ref()
+            .filter(|pending| pending.id == provider_id || pending.request_id == provider_id)
+            .map(|pending| pending.request_id.clone())
+    }
+    #[cfg(test)]
+    pub(crate) fn request_matches_for_test(&self, request: &str, provider: &str) -> bool {
+        self.request_id_for_test(provider).as_deref() == Some(request)
+    }
+    #[cfg(test)]
+    pub(crate) fn respond_for_test(&self, provider_id: &str, decision: ApprovalDecision) -> bool {
+        self.request_id_for_test(provider_id)
+            .is_some_and(|request| self.respond(&request, decision))
+    }
+    #[cfg(test)]
+    pub(crate) fn respond_with_scope_for_test(
+        &self,
+        provider_id: &str,
+        decision: ApprovalDecision,
+        scope: Option<&str>,
+    ) -> bool {
+        self.request_id_for_test(provider_id)
+            .is_some_and(|request| self.respond_with_scope(&request, decision, scope))
+    }
     #[cfg(test)]
     pub(crate) fn has_pending_for(&self, id: &str) -> bool {
         let state = self.lock_state();
@@ -656,7 +997,7 @@ mod tests {
         let full = ApprovalGate::new(AutonomyMode::FullAutonomous);
         assert!(!full.needs_approval(&tool_call("1", "read_file")));
         assert!(!full.needs_approval(&tool_call("2", "list_directory")));
-        assert!(!full.needs_approval(&tool_call("3", "write_file")));
+        assert!(full.needs_approval(&tool_call("3", "write_file")));
         assert!(full.needs_approval(&tool_call("4", "execute_command")));
     }
 
@@ -685,10 +1026,9 @@ mod tests {
                 let needs = gate.needs_approval(&tool_call("t", tool));
                 let expected = match mode {
                     AutonomyMode::Supervised => true,
-                    AutonomyMode::SemiAutonomous => {
+                    AutonomyMode::SemiAutonomous | AutonomyMode::FullAutonomous => {
                         !matches!(RiskClass::classify(tool), RiskClass::ReadOnly)
                     }
-                    AutonomyMode::FullAutonomous => tool == "execute_command",
                 };
                 assert_eq!(needs, expected, "mode={mode:?} tool={tool}");
             }
@@ -719,7 +1059,7 @@ mod tests {
         let gate2 = gate.clone();
         let handle = thread::spawn(move || gate2.request_approval(&call).expect("approved"));
         wait_until_parked(&gate, "c1");
-        assert!(gate.respond("c1", ApprovalDecision::Approved));
+        assert!(gate.respond_for_test("c1", ApprovalDecision::Approved));
         let decision = handle.join().expect("thread joins");
         assert_eq!(decision, ApprovalDecision::Approved);
         assert!(!gate.has_any_pending());
@@ -732,7 +1072,7 @@ mod tests {
         let gate2 = gate.clone();
         let handle = thread::spawn(move || gate2.request_approval(&call).expect("denied"));
         wait_until_parked(&gate, "c2");
-        assert!(gate.respond("c2", ApprovalDecision::Denied));
+        assert!(gate.respond_for_test("c2", ApprovalDecision::Denied));
         let decision = handle.join().expect("join");
         assert_eq!(decision, ApprovalDecision::Denied);
     }
@@ -744,10 +1084,10 @@ mod tests {
         let gate2 = gate.clone();
         let handle = thread::spawn(move || gate2.request_approval(&call).expect("approved"));
         wait_until_parked(&gate, "real");
-        assert!(!gate.respond("wrong_id", ApprovalDecision::Approved));
+        assert!(!gate.respond_for_test("wrong_id", ApprovalDecision::Approved));
         assert!(gate.has_pending_for("real"));
         // Still parked, now respond correctly.
-        assert!(gate.respond("real", ApprovalDecision::Approved));
+        assert!(gate.respond_for_test("real", ApprovalDecision::Approved));
         let decision = handle.join().expect("join");
         assert_eq!(decision, ApprovalDecision::Approved);
     }
@@ -764,7 +1104,7 @@ mod tests {
         assert!(res.is_err(), "cancellation must abort with Err");
         // Gate is reusable after cancellation: next auto call still works if mode allows.
         gate.set_mode(AutonomyMode::FullAutonomous);
-        let auto_call = tool_call("next", "write_file");
+        let auto_call = tool_call("next", "read_file");
         assert_eq!(
             gate.request_approval(&auto_call)
                 .expect("auto after cancel"),
@@ -791,7 +1131,7 @@ mod tests {
             "expired park clears pending so a late respond resolves nothing"
         );
         assert!(
-            !gate.respond("expire", ApprovalDecision::Approved),
+            !gate.respond_for_test("expire", ApprovalDecision::Approved),
             "late respond after expiry must not resolve"
         );
         // A decision that arrives before the deadline still wins.
@@ -800,7 +1140,7 @@ mod tests {
         let gate2 = gate.clone();
         let handle = thread::spawn(move || gate2.park_until_resolved(&call));
         wait_until_parked(&gate, "early");
-        assert!(gate.respond("early", ApprovalDecision::Denied));
+        assert!(gate.respond_for_test("early", ApprovalDecision::Denied));
         assert_eq!(handle.join().expect("join"), Ok(ApprovalDecision::Denied));
     }
 
@@ -871,7 +1211,7 @@ mod tests {
         gate.set_mode(AutonomyMode::FullAutonomous);
         assert!(!handle.is_finished(), "mode switch must not auto-resolve");
         assert!(gate.has_pending_for("park"));
-        assert!(gate.respond("park", ApprovalDecision::Approved));
+        assert!(gate.respond_for_test("park", ApprovalDecision::Approved));
         let decision = handle.join().expect("join");
         assert_eq!(decision, ApprovalDecision::Approved);
     }
@@ -888,7 +1228,7 @@ mod tests {
         let g2 = gate.clone();
         let h = thread::spawn(move || g2.request_approval(&call).expect("ok"));
         wait_until_parked(&gate, "c");
-        assert!(other.respond("c", ApprovalDecision::Denied));
+        assert!(other.respond_for_test("c", ApprovalDecision::Denied));
         assert_eq!(h.join().unwrap(), ApprovalDecision::Denied);
     }
 
@@ -921,7 +1261,7 @@ mod tests {
         let call = tool_call("early-1", "write_file");
         gate.prepare_pending(&call);
         assert!(gate.has_pending_for("early-1"));
-        assert!(gate.respond("early-1", ApprovalDecision::Approved));
+        assert!(gate.respond_for_test("early-1", ApprovalDecision::Approved));
         // Decision is now set; has_pending_for is false but has_any_pending true (decision Some).
         assert!(!gate.has_pending_for("early-1"));
         assert!(gate.has_any_pending());
@@ -952,7 +1292,7 @@ mod tests {
         let handle = thread::spawn(move || gate2.request_approval(&call).expect("approved"));
         wait_until_parked(&gate, "normal-1");
         assert!(!handle.is_finished(), "should be parked");
-        assert!(gate.respond("normal-1", ApprovalDecision::Approved));
+        assert!(gate.respond_for_test("normal-1", ApprovalDecision::Approved));
         let decision = handle.join().expect("join");
         assert_eq!(decision, ApprovalDecision::Approved);
         assert!(!gate.has_any_pending());
@@ -965,7 +1305,7 @@ mod tests {
         // pre-registered pending must be gone afterwards. Observable via a
         // subsequent respond(same_id) returning false.
         let gate = ApprovalGate::new(AutonomyMode::Supervised);
-        let call = tool_call("stale-1", "write_file");
+        let call = tool_call("stale-1", "read_file");
         gate.prepare_pending(&call);
         assert!(gate.has_pending_for("stale-1"));
         gate.set_mode(AutonomyMode::FullAutonomous);
@@ -976,7 +1316,7 @@ mod tests {
             "stale prepared pending must be cleared by the fast-path"
         );
         assert!(
-            !gate.respond("stale-1", ApprovalDecision::Denied),
+            !gate.respond_for_test("stale-1", ApprovalDecision::Denied),
             "a late respond for the stale id must not resolve anything"
         );
     }
@@ -999,7 +1339,7 @@ mod tests {
         let handle = thread::spawn(move || gate2.park_until_resolved(&call).expect("resolved"));
         wait_until_parked(&gate, "forced-1");
         assert!(!handle.is_finished(), "forced park must not auto-resolve");
-        assert!(gate.respond("forced-1", ApprovalDecision::Denied));
+        assert!(gate.respond_for_test("forced-1", ApprovalDecision::Denied));
         let decision = handle.join().expect("join");
         assert_eq!(decision, ApprovalDecision::Denied);
         assert!(!gate.has_any_pending());
@@ -1067,7 +1407,7 @@ mod tests {
         gate.prepare_pending_with_group(&call, Some("coding:write_file:docs".to_string()));
 
         let snapshot = gate.pending_snapshot().expect("parked call is visible");
-        assert_eq!(snapshot.call_id, "snap-1");
+        assert!(gate.request_matches_for_test(&snapshot.call_id, "snap-1"));
         assert_eq!(snapshot.name, "write_file");
         assert_eq!(snapshot.arguments, r#"{"path":"notes.md"}"#);
         assert_eq!(snapshot.timeout_secs, gate.timeout().as_secs());
@@ -1093,7 +1433,7 @@ mod tests {
             gate.pending_snapshot().is_some(),
             "prepared park is visible"
         );
-        assert!(gate.respond("resolved-1", ApprovalDecision::Approved));
+        assert!(gate.respond_for_test("resolved-1", ApprovalDecision::Approved));
         assert_eq!(
             gate.pending_snapshot(),
             None,
@@ -1123,7 +1463,7 @@ mod tests {
         assert_eq!(reused.arguments, prepared.arguments);
         assert_eq!(reused.requested_at, prepared.requested_at);
 
-        assert!(gate.respond("reuse-1", ApprovalDecision::Approved));
+        assert!(gate.respond_for_test("reuse-1", ApprovalDecision::Approved));
         assert_eq!(handle.join().expect("join"), ApprovalDecision::Approved);
         assert_eq!(gate.pending_snapshot(), None);
     }

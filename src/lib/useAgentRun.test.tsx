@@ -11,6 +11,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
   AgentRun,
+  LiveRunState,
   AgentRunEventPayload,
   AgentStep,
   StepEventFrame,
@@ -164,6 +165,7 @@ function routeInvoke(
 ): void {
   mockInvoke.mockImplementation(
     (cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === "inspect_run_live") return Promise.resolve(null);
       if (cmd === "list_conversation_run_events")
         return Promise.resolve(
           eventPage([], { next_cursor: Number(args?.afterEventId ?? 0) })
@@ -216,6 +218,120 @@ beforeEach(() => {
 });
 
 describe("useAgentRun", () => {
+  it("restores only server-owned pending metadata after reload without executing history", async () => {
+    routeInvoke({ 1: [runRow()] }, {});
+    const pending = {
+      call_id: "current",
+      name: "execute_command",
+      arguments: '{"command":"npm install exact-package"}',
+      timeout_secs: 600,
+      requested_at: 1000,
+      expires_at: 1600,
+      metadata: {
+        access_profile: "standard" as const,
+        sandbox_posture: "PerCommandConsent" as const,
+        checkpoints_available: false,
+        allow_for_run: false,
+        sensitive_write: false,
+        shell: {
+          category: "DependencyInstall" as const,
+          packages: ["exact-package"],
+          packages_exact: true,
+          uncertain: false,
+          sandbox_posture: "PerCommandConsent" as const,
+        },
+      },
+    };
+    const fallback = mockInvoke.getMockImplementation()!;
+    mockInvoke.mockImplementation(
+      (command: string, args?: Record<string, unknown>) =>
+        command === "inspect_run_live"
+          ? Promise.resolve({ run_id: 7, pending_approval: pending })
+          : fallback(command, args)
+    );
+    const { result } = renderHook(() => useAgentRun(1));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.runs[0].pending_approval).toEqual(pending);
+    expect(mockInvoke.mock.calls.map(([command]) => command).sort()).toEqual(
+      [
+        "inspect_run_live",
+        "list_agent_runs",
+        "list_conversation_run_events",
+      ].sort()
+    );
+  });
+  it("a delayed live snapshot cannot replace newer approval or terminal state", async () => {
+    routeInvoke({ 1: [runRow()] }, { 7: [] });
+    const snapshot = deferred<LiveRunState | null>();
+    const fallback = mockInvoke.getMockImplementation()!;
+    mockInvoke.mockImplementation(
+      (command: string, args?: Record<string, unknown>) =>
+        command === "inspect_run_live"
+          ? snapshot.promise
+          : fallback(command, args)
+    );
+    const { result } = renderHook(() => useAgentRun(1));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("inspect_run_live", {
+        conversationId: 1,
+      })
+    );
+    act(() =>
+      emitAgentEvent({
+        type: "governance",
+        run_id: 7,
+        conversation_id: 1,
+        event: approvalRequest(),
+      })
+    );
+    await act(async () => {
+      snapshot.resolve(null);
+    });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.runs[0].pending_approval?.call_id).toBe("call");
+    const terminalSnapshot = deferred<LiveRunState | null>();
+    mockInvoke.mockImplementation(
+      (command: string, args?: Record<string, unknown>) =>
+        command === "inspect_run_live"
+          ? terminalSnapshot.promise
+          : fallback(command, args)
+    );
+    let reload!: Promise<void>;
+    act(() => {
+      reload = result.current.reload();
+    });
+    await waitFor(() =>
+      expect(
+        mockInvoke.mock.calls.filter(
+          ([command]) => command === "inspect_run_live"
+        )
+      ).toHaveLength(2)
+    );
+    act(() =>
+      emitAgentEvent({
+        type: "finished",
+        run_id: 7,
+        event: {
+          conversation_id: 1,
+          status: "completed",
+          error: null,
+          final_content: "done",
+        },
+      })
+    );
+    await act(async () => {
+      terminalSnapshot.resolve({
+        run_id: 7,
+        pending_approval: { call_id: "stale" },
+      } as LiveRunState);
+      await reload;
+    });
+    expect(result.current.runs[0]).toMatchObject({
+      status: "completed",
+      pending_approval: null,
+    });
+  });
+
   it("rehydrates only explicitly flagged interruptions and reads retained steps without execution", async () => {
     const message = "run interrupted by application shutdown";
     routeInvoke(
@@ -303,7 +419,8 @@ describe("useAgentRun", () => {
     expect(result.current.runs[0].steps_loaded).toBe(true);
     expect(
       mockInvoke.mock.calls.filter(
-        ([cmd]) => cmd !== "list_conversation_run_events"
+        ([cmd]) =>
+          cmd !== "list_conversation_run_events" && cmd !== "inspect_run_live"
       )
     ).toHaveLength(2);
     expect(mockInvoke).toHaveBeenLastCalledWith("list_agent_steps", {
@@ -316,7 +433,8 @@ describe("useAgentRun", () => {
     });
     expect(
       mockInvoke.mock.calls.filter(
-        ([cmd]) => cmd !== "list_conversation_run_events"
+        ([cmd]) =>
+          cmd !== "list_conversation_run_events" && cmd !== "inspect_run_live"
       )
     ).toHaveLength(2);
   });
@@ -835,6 +953,7 @@ describe("useAgentRun", () => {
           "list_agent_runs",
           "list_conversation_run_events",
           "list_agent_steps",
+          "inspect_run_live",
         ].includes(command)
       )
     ).toBe(true);

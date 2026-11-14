@@ -99,7 +99,8 @@ pub(crate) enum AgentRunEvent {
     },
     /// A tool call is awaiting user approval (Task 4.1).
     ApprovalRequested {
-        /// Provider-assigned identifier for the pending tool call.
+        metadata: super::approval::ApprovalMetadata,
+        /// Server-owned opaque approval request identity; provider tool IDs stay in tool history.
         call_id: String,
         /// Tool name.
         name: String,
@@ -122,7 +123,7 @@ pub(crate) enum AgentRunEvent {
     },
     /// A parked approval was resolved (Task 4.1).
     ApprovalResolved {
-        /// Provider-assigned identifier for the resolved call.
+        /// The same opaque approval request identity emitted when the call parked.
         call_id: String,
         /// Whether the user approved the call.
         approved: bool,

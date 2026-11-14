@@ -87,6 +87,14 @@ afterEach(() => {
 
 function autonomyStub(overrides: Partial<AutonomyStore> = {}): AutonomyStore {
   return {
+    access: {
+      profile: "standard",
+      loading: false,
+      saving: false,
+      error: null,
+      reload: vi.fn(async () => {}),
+      setProfile: vi.fn(async () => null),
+    },
     mode: "semi_autonomous",
     loading: false,
     error: null,
@@ -472,7 +480,7 @@ describe("composer — context ring placement (D4)", () => {
     const trailing = container.querySelector(".nex-composer-bar-trailing");
     expect(trailing).not.toBeNull();
 
-    const autonomy = screen.getByRole("button", { name: "Autonomy mode" });
+    const autonomy = screen.getByRole("button", { name: "Access profile" });
     const ring = screen.getByRole("button", { name: "Context window: n/a" });
     const model = screen.getByRole("button", { name: "Agent mode and model" });
     const send = screen.getByRole("button", { name: "Send message" });
@@ -523,10 +531,10 @@ describe("composer — modes", () => {
     // (D-03): the control row carries one trigger naming the live mode, and
     // the three choices exist only while it is open.
     expect(
-      screen.getByRole("button", { name: "Autonomy mode" })
-    ).toHaveTextContent("Semi-auto");
+      screen.getByRole("button", { name: "Access profile" })
+    ).toHaveTextContent("Standard");
     expect(
-      screen.queryByRole("radiogroup", { name: "Autonomy mode" })
+      screen.queryByRole("radiogroup", { name: "Access profile" })
     ).not.toBeInTheDocument();
   });
 
@@ -605,7 +613,7 @@ describe("composer — modes", () => {
   it("shows the autonomy trigger in agent mode only, and opens the choices", () => {
     const { rerender, props } = renderComposer({ agentMode: false });
     expect(
-      screen.queryByRole("button", { name: "Autonomy mode" })
+      screen.queryByRole("button", { name: "Access profile" })
     ).not.toBeInTheDocument();
 
     rerender(
@@ -613,7 +621,7 @@ describe("composer — modes", () => {
         <Composer {...props} agentMode />
       </LocaleProvider>
     );
-    fireEvent.click(screen.getByRole("button", { name: "Autonomy mode" }));
+    fireEvent.click(screen.getByRole("button", { name: "Access profile" }));
     const autonomy = screen.getByRole("radiogroup", { name: "Autonomy mode" });
     expect(
       within(autonomy).getByRole("radio", { name: "Semi-autonomous" })
@@ -623,7 +631,7 @@ describe("composer — modes", () => {
   it("dispatches autonomy changes from the store's own value", () => {
     const onAutonomyChange = vi.fn();
     renderComposer({ agentMode: true, onAutonomyChange });
-    fireEvent.click(screen.getByRole("button", { name: "Autonomy mode" }));
+    fireEvent.click(screen.getByRole("button", { name: "Access profile" }));
     fireEvent.click(screen.getByRole("radio", { name: "Full-auto" }));
     expect(onAutonomyChange).toHaveBeenCalledWith("full_autonomous");
   });
@@ -636,9 +644,11 @@ describe("composer — modes", () => {
       agentMode: true,
       autonomy: autonomyStub({ mode: "full_autonomous" }),
     });
-    fireEvent.click(screen.getByRole("button", { name: "Autonomy mode" }));
+    fireEvent.click(screen.getByRole("button", { name: "Access profile" }));
     expect(
-      screen.getByText("Full-auto: the agent runs to the end without stopping.")
+      screen.getByText(
+        "Full-auto preference: access limits still apply; edits and shell commands ask for approval."
+      )
     ).toBeInTheDocument();
   });
 
@@ -646,7 +656,7 @@ describe("composer — modes", () => {
     mockReducedMotion(true);
     const autonomy = autonomyStub({ mode: "supervised" });
     const { rerender, props } = renderComposer({ agentMode: true, autonomy });
-    fireEvent.click(screen.getByRole("button", { name: "Autonomy mode" }));
+    fireEvent.click(screen.getByRole("button", { name: "Access profile" }));
     expect(
       screen.getByText("Supervised: every tool call waits for your approval.")
     ).toBeInTheDocument();

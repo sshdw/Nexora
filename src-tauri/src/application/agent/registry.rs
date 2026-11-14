@@ -558,7 +558,10 @@ mod tests {
         assert!(!handle.is_finished(), "mode switch must not auto-resolve");
         assert!(gate.has_pending_for("parked-1"));
         // Now resolve normally
-        assert_eq!(reg.resolve(101, "parked-1", true), ResolveOutcome::Resolved);
+        assert_eq!(
+            reg.resolve(101, &gate.request_id_for_test("parked-1").unwrap(), true),
+            ResolveOutcome::Resolved
+        );
         let decision = handle.join().expect("join").expect("approved");
         assert_eq!(
             decision,
@@ -596,9 +599,10 @@ mod tests {
             arguments: "{}".to_string(),
             thought_signature: None,
         };
-        gate.prepare_pending_with_group(&call, Some("coding:write_file:docs".to_string()));
+        let request_id =
+            gate.prepare_pending_with_group(&call, Some("coding:write_file:docs".to_string()));
         assert_eq!(
-            reg.pending_scope_info(77, "scoped-1"),
+            reg.pending_scope_info(77, &request_id),
             Some((
                 "write_file".to_string(),
                 Some("coding:write_file:docs".to_string())
@@ -729,7 +733,7 @@ mod tests {
         let snapshot = reg.live_run_snapshot(4).expect("run is active");
         assert_eq!(snapshot.parked_reason, "awaiting_approval");
         let pending = snapshot.pending_approval.expect("approval is reported");
-        assert_eq!(pending.call_id, "live-approval");
+        assert!(gate.request_matches_for_test(&pending.call_id, "live-approval"));
         assert_eq!(pending.name, "write_file");
         assert_eq!(pending.arguments, r#"{"path":"a.md"}"#);
         assert_eq!(

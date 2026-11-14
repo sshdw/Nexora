@@ -67,6 +67,7 @@
 //!   agent-executable steps, and the bounded plan → act → verify → report
 //!   loop driving the existing run path with budgets/approval intact.
 
+pub mod access;
 pub mod action_memory;
 pub mod activity;
 pub mod approval;
@@ -93,6 +94,7 @@ pub mod roles;
 pub mod runner;
 pub mod self_audit;
 pub mod service;
+pub mod shell_policy;
 pub mod shutdown;
 pub mod snapshots;
 pub mod spend;

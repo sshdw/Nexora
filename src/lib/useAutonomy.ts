@@ -17,6 +17,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { getSetting, setSetting, type AutonomyMode } from "./tauri";
 import { getLocale, tr } from "./strings";
+import { useAccessProfile, type AccessProfileStore } from "./useAccessProfile";
 
 /** Setting key backing the agent-autonomy default for new runs. */
 export const AUTONOMY_KEY = "agent.autonomy";
@@ -33,6 +34,7 @@ export function isAutonomyMode(value: string | null): value is AutonomyMode {
 }
 
 export interface AutonomyStore {
+  access: AccessProfileStore;
   /** Persisted autonomy default for new runs (optimistic during writes). */
   mode: AutonomyMode;
   loading: boolean;
@@ -47,6 +49,7 @@ export interface AutonomyStore {
 }
 
 export function useAutonomy(): AutonomyStore {
+  const access = useAccessProfile();
   const [mode, setModeState] = useState<AutonomyMode>(AUTONOMY_DEFAULT);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -103,7 +106,7 @@ export function useAutonomy(): AutonomyStore {
   // Memoized store identity (NEX-FE-002 audit): App passes the store object
   // as props to Settings and both conversation panes.
   return useMemo(
-    () => ({ mode, loading, error, reload, setMode }),
-    [mode, loading, error, reload, setMode]
+    () => ({ access, mode, loading, error, reload, setMode }),
+    [access, mode, loading, error, reload, setMode]
   );
 }

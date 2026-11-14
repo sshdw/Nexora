@@ -30,6 +30,7 @@ use crate::infrastructure::repository::Result;
 /// default-value resolution and result mapping only, with no business logic.
 pub(crate) struct SettingsService<'a> {
     repo: SettingsRepository<'a>,
+    db: &'a Database,
 }
 
 impl<'a> SettingsService<'a> {
@@ -37,6 +38,7 @@ impl<'a> SettingsService<'a> {
     pub(crate) fn new(db: &'a Database) -> Self {
         Self {
             repo: SettingsRepository::new(db),
+            db,
         }
     }
 
@@ -67,6 +69,11 @@ impl<'a> SettingsService<'a> {
     ///
     /// Returns a [`DatabaseError`] if the existence check or the write fails.
     pub(crate) fn write(&self, key: &str, value: Option<&str>) -> Result<()> {
+        let clock = crate::application::agent::access::policy_clock(self.db);
+        let mut epoch = clock
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *epoch = epoch.saturating_add(1);
         if self.repo.exists(key)? {
             self.repo.update(key, value)
         } else {
@@ -82,6 +89,11 @@ impl<'a> SettingsService<'a> {
     ///
     /// Returns a [`DatabaseError`] if the delete fails.
     pub(crate) fn delete(&self, key: &str) -> Result<()> {
+        let clock = crate::application::agent::access::policy_clock(self.db);
+        let mut epoch = clock
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *epoch = epoch.saturating_add(1);
         self.repo.delete(key)
     }
 
