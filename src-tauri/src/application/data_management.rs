@@ -57,12 +57,14 @@
 //! value, so formatting a [`DataManagementError`] never logs a credential
 //! (ARCHITECTURE.md §9, §11).
 
+use crate::application::agent::checkpoints::CheckpointStore;
 use crate::application::confirmations::{
     ConfirmationRegistry, ConfirmationTarget, OP_CLEAR_ALL_DATA, OP_DELETE_CONVERSATION,
     OP_DELETE_PROMPT, SCOPE_DATA_MANAGEMENT,
 };
 use crate::infrastructure::database::{Database, DatabaseError};
 use crate::infrastructure::repository::conversations::ConversationRepository;
+use crate::infrastructure::repository::file_checkpoints::FileCheckpointRepository;
 use crate::infrastructure::repository::prompts::PromptRepository;
 use crate::infrastructure::repository::providers::ProviderRepository;
 use crate::infrastructure::repository::settings::SettingsRepository;
@@ -86,6 +88,7 @@ pub(crate) struct DataManagementService<'a> {
     prompts: PromptRepository<'a>,
     providers: ProviderRepository<'a>,
     settings: SettingsRepository<'a>,
+    checkpoints: Option<CheckpointStore>,
 }
 
 impl<'a> DataManagementService<'a> {
@@ -97,6 +100,17 @@ impl<'a> DataManagementService<'a> {
             prompts: PromptRepository::new(db),
             providers: ProviderRepository::new(db),
             settings: SettingsRepository::new(db),
+            checkpoints: None,
+        }
+    }
+
+    /// Create a service bound to a verified disk checkpoint store so
+    /// conversation deletion and full clear also garbage-collect unreferenced
+    /// backup blobs.
+    pub(crate) fn with_checkpoints(db: &'a Database, store: CheckpointStore) -> Self {
+        Self {
+            checkpoints: Some(store),
+            ..Self::new(db)
         }
     }
 
@@ -145,7 +159,17 @@ impl<'a> DataManagementService<'a> {
             confirmation_id,
             &ConfirmationTarget::for_target(OP_DELETE_CONVERSATION, id),
         )?;
+        let candidate_blobs = if self.checkpoints.is_some() {
+            FileCheckpointRepository::new(self.db).collect_pre_blobs_for_conversation(id)?
+        } else {
+            Vec::new()
+        };
         self.conversations.delete(id)?;
+        if let Some(store) = &self.checkpoints {
+            if let Err(err) = store.gc_unreferenced_blobs(self.db, Some(&candidate_blobs)) {
+                log::warn!("checkpoint blob GC failed: {}", err.summary());
+            }
+        }
         Ok(())
     }
 
@@ -219,6 +243,11 @@ impl<'a> DataManagementService<'a> {
             SettingsRepository::clear_in_transaction(tx)?;
             Ok(())
         })?;
+        if let Some(store) = &self.checkpoints {
+            if let Err(err) = store.gc_unreferenced_blobs(self.db, None) {
+                log::warn!("checkpoint clear GC failed: {}", err.summary());
+            }
+        }
         Ok(())
     }
 }
@@ -762,5 +791,99 @@ mod tests {
         assert!(results.message_matches.is_empty());
         assert!(results.prompts.is_empty());
         assert_eq!(count(&db, "conversations"), 0);
+    }
+
+    #[test]
+    fn delete_conversation_and_clear_garbage_collect_checkpoint_blobs() {
+        use crate::application::agent::checkpoints::{CheckpointRunContext, CheckpointStore};
+        use crate::application::conversations::ConversationService;
+        use crate::infrastructure::database::open;
+        use crate::infrastructure::repository::agent_runs::AgentRunRepository;
+        use std::sync::Arc;
+
+        let dir = std::env::temp_dir().join(format!(
+            "nexora-dm-ckpt-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let db_path = dir.join("dm.db");
+        let conn = open(&db_path).expect("open migrated db");
+        let db = Arc::new(Database::new(conn));
+
+        let ws = dir.join("ws");
+        std::fs::create_dir_all(&ws).expect("ws dir");
+        let ws = std::fs::canonicalize(&ws).expect("canon ws");
+        let ws_file = ws.join("keep.txt");
+        std::fs::write(&ws_file, b"workspace file stays").expect("seed workspace");
+
+        let store = CheckpointStore::open(dir.join("checkpoints")).expect("open store");
+        let conv_svc = ConversationService::new(&db);
+        let conv1 = conv_svc.create("Chat 1").expect("conv1");
+        let conv2 = conv_svc.create("Chat 2").expect("conv2");
+        let run_repo = AgentRunRepository::new(&db);
+        let run1 = run_repo
+            .create_run(Some(conv1), "m", "full_autonomous")
+            .expect("run1");
+        let run2 = run_repo
+            .create_run(Some(conv2), "m", "full_autonomous")
+            .expect("run2");
+
+        let ctx1 = CheckpointRunContext::new(Arc::clone(&db), store.clone(), conv1, run1);
+        let ctx2 = CheckpointRunContext::new(Arc::clone(&db), store.clone(), conv2, run2);
+
+        let shared_bytes = b"shared-blob-bytes";
+        let unique1_bytes = b"unique-conv1-bytes";
+        let unique2_bytes = b"unique-conv2-bytes";
+        let (shared_sha, _) = store.write_blob(shared_bytes).expect("shared");
+        let (unique1_sha, _) = store.write_blob(unique1_bytes).expect("unique1");
+        let (unique2_sha, _) = store.write_blob(unique2_bytes).expect("unique2");
+
+        ctx1.capture_pre(0, &ws, "keep.txt", "write_file", true, shared_bytes)
+            .expect("cp1 shared");
+        ctx1.capture_pre(0, &ws, "keep.txt", "write_file", true, unique1_bytes)
+            .expect("cp1 unique");
+        ctx2.capture_pre(0, &ws, "keep.txt", "write_file", true, shared_bytes)
+            .expect("cp2 shared");
+        ctx2.capture_pre(0, &ws, "keep.txt", "write_file", true, unique2_bytes)
+            .expect("cp2 unique");
+
+        let confirmations = ConfirmationRegistry::new();
+        let dm = DataManagementService::with_checkpoints(&db, store.clone());
+        dm.delete_conversation(
+            conv1,
+            &mint_delete_conversation(&confirmations, conv1),
+            &confirmations,
+        )
+        .expect("delete conv1");
+
+        assert!(!store.root().join(&unique1_sha).exists());
+        assert!(store.root().join(&shared_sha).exists());
+        assert!(store.root().join(&unique2_sha).exists());
+        assert_eq!(count(&db, "file_checkpoints"), 2);
+        assert_eq!(
+            std::fs::read(&ws_file).expect("workspace file"),
+            b"workspace file stays"
+        );
+
+        dm.clear(&mint_clear(&confirmations), &confirmations)
+            .expect("clear all");
+        assert_eq!(count(&db, "file_checkpoints"), 0);
+        assert!(!store.root().join(&shared_sha).exists());
+        assert!(!store.root().join(&unique2_sha).exists());
+        assert_eq!(
+            std::fs::read(&ws_file).expect("workspace file still untouched"),
+            b"workspace file stays"
+        );
+
+        drop(conv_svc);
+        drop(dm);
+        drop(ctx1);
+        drop(ctx2);
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

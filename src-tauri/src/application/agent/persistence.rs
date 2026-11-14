@@ -600,7 +600,7 @@ impl<'a> ActiveRunRecord<'a> {
         status: &str,
         duration_ms: Option<i64>,
         provenance: StepProvenance<'_>,
-    ) {
+    ) -> Option<i64> {
         self.append(&PendingStep {
             kind: "tool_call",
             tool_name: Some(&call.name),
@@ -610,7 +610,7 @@ impl<'a> ActiveRunRecord<'a> {
             duration_ms,
             provenance,
             usage: None,
-        });
+        })
     }
 
     /// Record one `approval` step for a parked approval decision resolved by
@@ -734,36 +734,34 @@ impl<'a> ActiveRunRecord<'a> {
     /// Append with the next sequence. A failure never advances counters;
     /// required conversation recording latches it to stop further dispatch.
     /// Legacy unlinked recording retains best-effort behavior.
-    fn append(&mut self, step: &PendingStep<'_>) {
+    fn append(&mut self, step: &PendingStep<'_>) -> Option<i64> {
         if self.checkpoint_failed {
-            return;
+            return None;
         }
-        let Some(run_id) = self.run_id else {
-            return;
-        };
+        let run_id = self.run_id?;
         let seq = self.next_seq;
-        if self
-            .recorder
-            .insert_step(
-                run_id,
-                seq,
-                step.kind,
-                step.tool_name,
-                step.arguments,
-                step.observation,
-                step.status,
-                step.duration_ms,
-                step.provenance.rule_id,
-                step.provenance.group_key,
-                step.provenance.decided_by,
-                step.usage,
-            )
-            .is_ok()
-        {
+        if let Ok(step_id) = self.recorder.insert_step(
+            run_id,
+            seq,
+            step.kind,
+            step.tool_name,
+            step.arguments,
+            step.observation,
+            step.status,
+            step.duration_ms,
+            step.provenance.rule_id,
+            step.provenance.group_key,
+            step.provenance.decided_by,
+            step.usage,
+        ) {
             self.next_seq += 1;
             self.recorded_steps += 1;
-        } else if self.required {
-            self.checkpoint_failed = true;
+            Some(step_id)
+        } else {
+            if self.required {
+                self.checkpoint_failed = true;
+            }
+            None
         }
     }
 

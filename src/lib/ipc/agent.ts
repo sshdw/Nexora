@@ -471,6 +471,64 @@ export function listPermissionRules(): Promise<PermissionRule[]> {
   return invoke<PermissionRule[]>("list_permission_rules");
 }
 
+// ---- File checkpoints & turn revert (Stage 2 PR 2B) --------------------
+
+/** Disk-backed pre/post-mutation file checkpoint metadata (v17, PR 2B). */
+export interface FileCheckpoint {
+  id: number;
+  conversation_id: number;
+  run_id: number;
+  step_id: number | null;
+  turn_index: number;
+  workspace_root: string;
+  relative_path: string;
+  tool_name: "write_file" | "edit_file" | string;
+  pre_existed: boolean;
+  pre_blob_sha256: string | null;
+  pre_size_bytes: number | null;
+  post_blob_sha256: string | null;
+  post_size_bytes: number | null;
+  reverted_at: number | null;
+  created_at: number;
+}
+
+/** List recorded pre/post-mutation file checkpoints for `runId`. */
+export function listRunCheckpoints(runId: number): Promise<FileCheckpoint[]> {
+  return invoke<FileCheckpoint[]>("list_run_checkpoints", { runId });
+}
+
+/**
+ * Revert one file checkpoint back to its pre-mutation bytes (or delete newly
+ * created files). Pass `force = true` only after user confirmation when the
+ * target file was modified externally (`kind === "conflict"`).
+ */
+export function revertFileCheckpoint(
+  checkpointId: number,
+  force = false,
+): Promise<FileCheckpoint> {
+  return invoke<FileCheckpoint>("revert_file_checkpoint", {
+    checkpointId,
+    force,
+  });
+}
+
+/**
+ * Revert all un-reverted checkpoints recorded during `(runId, turnIndex)`.
+ * Fails atomically with `"conflict"` before modifying disk if any target file
+ * changed externally unless `force` is explicitly true.
+ */
+export function revertTurnCheckpoints(
+  runId: number,
+  turnIndex: number,
+  force = false,
+): Promise<FileCheckpoint[]> {
+  return invoke<FileCheckpoint[]>("revert_turn_checkpoints", {
+    runId,
+    turnIndex,
+    force,
+  });
+}
+
 // ---- Agent mode & pause (Task 5.2) ------------------------------------
 
 /** Autonomy modes for the agent (Task 5.2). */

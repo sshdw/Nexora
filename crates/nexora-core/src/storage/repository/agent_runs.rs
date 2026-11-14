@@ -1672,7 +1672,8 @@ mod journal_tests {
         conn.execute_batch("DROP INDEX idx_durable_run_events_run")
             .unwrap();
         migrate(&mut conn).unwrap();
-        conn.execute("INSERT INTO schema_version VALUES(17,1)", [])
+        let future_version = crate::storage::database::target_version() + 1;
+        conn.execute("INSERT INTO schema_version VALUES(?1, 1)", [future_version])
             .unwrap();
         assert!(matches!(
             migrate(&mut conn),

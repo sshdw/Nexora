@@ -1636,3 +1636,131 @@
   border-top-color: transparent;
   padding-bottom: var(--space-2xl);
 }
+
+/* ---- Disk-backed file checkpoints & 1-click undo ---- */
+.nex-agent-checkpoints {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  margin-top: var(--space-sm);
+  padding-top: var(--space-xs);
+  border-top: 1px solid var(--color-outline-variant);
+}
+
+.nex-agent-checkpoints-head {
+  font-size: var(--type-size-label-small);
+  font-weight: var(--type-weight-medium);
+  color: var(--color-on-surface-tertiary);
+}
+
+.nex-agent-checkpoint-turns {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.nex-agent-checkpoint-turn {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xxs);
+  padding: var(--space-xs);
+  border-radius: var(--shape-medium);
+  background: var(--color-surface-container-low);
+  border: 1px solid var(--color-outline-variant);
+}
+
+.nex-agent-checkpoint-turn-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-xs);
+}
+
+.nex-agent-checkpoint-turn-label {
+  font-size: var(--type-size-label-small);
+  font-weight: var(--type-weight-medium);
+  color: var(--color-on-surface-variant);
+}
+
+.nex-agent-checkpoint-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xxs);
+}
+
+.nex-agent-checkpoint-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-xs);
+  padding: var(--space-xxs) 0;
+}
+
+.nex-agent-checkpoint-info {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  min-width: 0;
+}
+
+.nex-agent-checkpoint-kind {
+  flex-shrink: 0;
+}
+
+.nex-agent-checkpoint-path {
+  font-size: var(--type-size-body-small);
+  color: var(--color-on-surface);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nex-agent-checkpoint-reverted {
+  color: var(--color-on-surface-tertiary);
+}
+
+.nex-agent-checkpoint-conflict {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xxs);
+  padding: var(--space-xs);
+  border-radius: var(--shape-medium);
+  background: var(--color-error-container);
+  border: 1px solid var(--color-error-outline);
+}
+
+.nex-agent-checkpoint-conflict-title {
+  font-size: var(--type-size-body-small);
+  font-weight: var(--type-weight-medium);
+  color: var(--color-on-surface);
+}
+
+.nex-agent-checkpoint-conflict-body {
+  margin: 0;
+  font-size: var(--type-size-body-small);
+  color: var(--color-on-surface-variant);
+}
+
+.nex-agent-checkpoint-conflict-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.nex-agent-checkpoint-error {
+  padding: var(--space-xs);
+  border-radius: var(--shape-medium);
+  background: var(--color-error-container);
+  border: 1px solid var(--color-error-outline);
+  font-size: var(--type-size-body-small);
+  color: var(--color-on-surface);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nex-agent-checkpoints,
+  .nex-agent-checkpoint-turn,
+  .nex-agent-checkpoint-conflict {
+    transition: none;
+    animation: none;
+  }
+}
