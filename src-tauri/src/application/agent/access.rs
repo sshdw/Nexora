@@ -2,7 +2,7 @@
 use super::permissions::PermissionStore;
 use super::tools::path_safety::{canonical_root, path_to_comparable_string, tool_scope};
 use crate::application::execution::ToolCall;
-use crate::application::settings::resolve_effective_setting;
+use crate::application::settings::resolve_settings;
 use crate::infrastructure::database::Database;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -184,9 +184,15 @@ impl AccessContext {
                     Ok(raw) => AccessProfile::resolve(raw.as_deref()),
                     Err(_) => return AccessProfile::ReadOnly,
                 };
-            let resolved =
-                resolve_effective_setting(db, self.0.workspace_root.as_deref(), PROFILE_KEY, None);
-            personal.max(AccessProfile::resolve(resolved.as_deref()))
+            let snap = resolve_settings(db, self.0.workspace_root.as_deref(), None);
+            if snap.config_notice.is_some() {
+                return AccessProfile::ReadOnly;
+            }
+            let resolved = snap
+                .entries
+                .get(PROFILE_KEY)
+                .and_then(|entry| entry.value.as_deref());
+            personal.max(AccessProfile::resolve(resolved))
         });
         selected.max(self.0.child_ceiling).max(
             self.0

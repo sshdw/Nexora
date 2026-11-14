@@ -391,13 +391,15 @@ pub(crate) fn resolve_autonomy_mode_for_workspace(
     db: &Database,
     workspace_root: Option<&Path>,
 ) -> AutonomyMode {
-    let raw = crate::application::settings::resolve_effective_setting(
-        db,
-        workspace_root,
-        nexora_core::config::AUTONOMY_KEY,
-        None,
-    );
-    parse_autonomy_mode(raw.as_deref())
+    let snap = crate::application::settings::resolve_settings(db, workspace_root, None);
+    if snap.config_notice.is_some() {
+        return AutonomyMode::Supervised;
+    }
+    let raw = snap
+        .entries
+        .get(nexora_core::config::AUTONOMY_KEY)
+        .and_then(|entry| entry.value.as_deref());
+    parse_autonomy_mode(raw)
 }
 
 /// Resolve the persisted autonomy mode from `app_settings` (`agent.autonomy`)

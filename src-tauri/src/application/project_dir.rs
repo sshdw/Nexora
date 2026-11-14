@@ -1237,6 +1237,12 @@ fn is_structured_leaf_key(full_key: &str) -> bool {
             | "permissions"
             | "auto_approve"
             | "deny_read"
+            | "hooks"
+            | "agent.hooks"
+            | "env"
+            | "agent.env"
+            | "allowlist"
+            | "agent.allowlist"
     )
 }
 
@@ -1556,11 +1562,13 @@ fn instruction_directory_chain(
     let canon_target = candidate
         .canonicalize()
         .map_err(|_| ProjectDirError::OutsideWorkspace)?;
-    if !canonical_inside(canon_ws, &canon_target) {
+    if !canon_target.is_dir() || !canonical_inside(canon_ws, &canon_target) {
         return Err(ProjectDirError::OutsideWorkspace);
     }
 
-    let rel_str = workspace_rel_posix(canon_ws, &canon_target);
+    let ws_clean = strip_verbatim(canon_ws.to_path_buf());
+    let target_clean = strip_verbatim(canon_target);
+    let rel_str = workspace_rel_posix(&ws_clean, &target_clean);
     let mut chain = vec![canon_ws.to_path_buf()];
     if rel_str.is_empty() {
         return Ok(chain);
@@ -1582,7 +1590,9 @@ fn instruction_directory_chain(
 /// Compute a POSIX relative path under `canon_ws`, falling back to normalized
 /// verbatim-stripped comparison when Windows path casing differs.
 fn workspace_rel_posix(canon_ws: &Path, target: &Path) -> String {
-    if let Ok(rel) = target.strip_prefix(canon_ws) {
+    let ws_stripped = strip_verbatim(canon_ws.to_path_buf());
+    let target_stripped = strip_verbatim(target.to_path_buf());
+    if let Ok(rel) = target_stripped.strip_prefix(&ws_stripped) {
         return rel
             .components()
             .filter_map(|c| match c {
@@ -1592,12 +1602,8 @@ fn workspace_rel_posix(canon_ws: &Path, target: &Path) -> String {
             .collect::<Vec<_>>()
             .join("/");
     }
-    let ws_norm = strip_verbatim(canon_ws.to_path_buf())
-        .to_string_lossy()
-        .replace('\\', "/");
-    let tgt_norm = strip_verbatim(target.to_path_buf())
-        .to_string_lossy()
-        .replace('\\', "/");
+    let ws_norm = ws_stripped.to_string_lossy().replace('\\', "/");
+    let tgt_norm = target_stripped.to_string_lossy().replace('\\', "/");
     let ws_trim = ws_norm.trim_end_matches('/');
     if cfg!(windows) {
         let ws_low = ws_trim.to_ascii_lowercase();
@@ -1674,8 +1680,20 @@ fn collect_instruction_candidate(
     let mut file_truncated = buf.len() > read_cap;
     if file_truncated {
         buf.truncate(read_cap);
-        while !buf.is_empty() && std::str::from_utf8(&buf).is_err() {
-            buf.pop();
+        if let Err(e) = std::str::from_utf8(&buf) {
+            if e.error_len().is_none() {
+                buf.truncate(e.valid_up_to());
+            } else {
+                for _ in 0..3 {
+                    let tail = buf.len().saturating_sub(4);
+                    if matches!(std::str::from_utf8(&buf[tail..]), Err(te) if te.error_len().is_none())
+                    {
+                        buf.pop();
+                    } else {
+                        break;
+                    }
+                }
+            }
         }
     }
     let raw = String::from_utf8_lossy(&buf);
@@ -2377,6 +2395,11 @@ mod tests {
             .expect_err("traversal outside workspace must refuse");
         assert_eq!(escape_err, ProjectDirError::OutsideWorkspace);
 
+        // Passing a regular file as target_dir fails closed as OutsideWorkspace.
+        let file_err = discover_instructions(&ws, Some(Path::new("AGENTS.md")))
+            .expect_err("file path as target_dir must refuse");
+        assert_eq!(file_err, ProjectDirError::OutsideWorkspace);
+
         let _ = std::fs::remove_dir_all(&ws);
     }
 
@@ -2385,7 +2408,7 @@ mod tests {
         let ws = temp_root();
         let huge = format!(
             "Header rule\n{}\n",
-            "a".repeat(MAX_INSTRUCTION_FILE_BYTES + 2048)
+            "é".repeat(MAX_INSTRUCTION_FILE_BYTES + 1024)
         );
         std::fs::write(ws.join("AGENTS.md"), huge).expect("write oversized AGENTS.md");
 
