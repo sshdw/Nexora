@@ -2009,3 +2009,59 @@ describe("useAgentRun", () => {
     expect(result.current.runs[0].checkpoints?.[1]?.reverted_at).toBe(333);
   });
 });
+
+describe("useAgentRun — Stage 5 PR 5B: retained thinking and final_content", () => {
+  it("retains emitted provider-native thinking and final_content after step and finished events", async () => {
+    mockInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "list_agent_runs") return [];
+      if (cmd === "list_conversation_run_events") {
+        return {
+          events: [],
+          next_cursor: 0,
+          high_water_event_id: 0,
+          has_more: false,
+        };
+      }
+      if (cmd === "list_agent_steps") return [];
+      return null;
+    });
+
+    const { result } = renderHook(() => useAgentRun(1));
+    await waitFor(() => expect(mockListen).toHaveBeenCalled());
+
+    act(() => {
+      emitAgentEvent({
+        type: "governance",
+        conversation_id: 1,
+        run_id: 42,
+        event: {
+          type: "stream_delta",
+          kind: "thinking",
+          delta: "Reasoning step 1",
+        },
+      });
+    });
+
+    expect(result.current.runs[0]?.streaming_thinking).toBe(
+      "Reasoning step 1"
+    );
+    expect(result.current.runs[0]?.thinking).toBe("Reasoning step 1");
+
+    act(() => {
+      emitAgentEvent({
+        type: "finished",
+        run_id: 42,
+        event: {
+          conversation_id: 1,
+          status: "completed",
+          final_content: "All done.",
+          error: null,
+        },
+      });
+    });
+
+    expect(result.current.runs[0]?.streaming_thinking).toBeUndefined();
+    expect(result.current.runs[0]?.thinking).toBe("Reasoning step 1");
+    expect(result.current.runs[0]?.final_content).toBe("All done.");
+  });
+});

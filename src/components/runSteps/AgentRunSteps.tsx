@@ -6,14 +6,22 @@
 
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 
-import type { AgentRunView, RevertOutcome } from "../../lib/useAgentRun";
+import type {
+  AgentRunView,
+  AgentStepView,
+  RevertOutcome,
+} from "../../lib/useAgentRun";
 import type { FileCheckpoint } from "../../lib/tauri";
 import { tp, tr } from "../../lib/strings";
 import { useStrings } from "../../lib/useLocale";
 import M3Button from "../M3Button";
 import M3Toolbar from "../M3Toolbar";
+import MessageMarkdown from "../MessageMarkdown";
+import ThinkingBlock from "../ThinkingBlock";
+import { CheckIcon, TaskIcon } from "../icons";
 import {
   countedPhrase,
+  diffCounts,
   fadeClass,
   formatCountdown,
   formatRunDuration,
@@ -26,7 +34,7 @@ import {
   stepTarget,
 } from "./labels";
 import { foldCounts, foldableRun, groupSteps, isGroup } from "./grouping";
-import { StepSection } from "./StepSection";
+import { DiffView, StepSection } from "./StepSection";
 import { StepGroupSection } from "./StepGroupSection";
 
 export interface AgentRunStepsProps {
@@ -66,6 +74,10 @@ export interface AgentRunStepsProps {
     turnIndex: number,
     force?: boolean
   ) => Promise<RevertOutcome>;
+  /** Provider capability flag (`false` -> honest unsupported note on Thinking). */
+  supportsThinking?: boolean | null;
+  /** Render the Final Result card inside the run block (default true). */
+  showFinalResult?: boolean;
 }
 
 type RevertTarget =
@@ -149,6 +161,8 @@ function AgentRunSteps({
   onLoadCheckpoints,
   onRevertCheckpoint,
   onRevertTurn,
+  supportsThinking = null,
+  showFinalResult = true,
 }: AgentRunStepsProps) {
   const { locale, t } = useStrings();
   const sorted = useMemo(
@@ -292,6 +306,78 @@ function AgentRunSteps({
     message: string;
   } | null>(null);
   const [revertError, setRevertError] = useState<string | null>(null);
+  const [expandedDiffIds, setExpandedDiffIds] = useState<Set<number>>(
+    () => new Set()
+  );
+
+  const toggleCheckpointDiff = useCallback((checkpointId: number) => {
+    setExpandedDiffIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(checkpointId)) next.delete(checkpointId);
+      else next.add(checkpointId);
+      return next;
+    });
+  }, []);
+
+  const checkpointForStep = useCallback(
+    (step: AgentStepView): FileCheckpoint | null => {
+      const list = run.checkpoints ?? [];
+      if (
+        list.length === 0 ||
+        (step.tool_name !== "write_file" && step.tool_name !== "edit_file")
+      ) {
+        return null;
+      }
+      const byStepId = list.find(
+        (cp) =>
+          cp.step_id !== null &&
+          (cp.step_id === step.step_id || cp.step_id === step.id)
+      );
+      if (byStepId) return byStepId;
+      const targetPath = stepTarget(step)?.text;
+      if (!targetPath) return null;
+      return (
+        list.find(
+          (cp) =>
+            cp.tool_name === step.tool_name && cp.relative_path === targetPath
+        ) ?? null
+      );
+    },
+    [run.checkpoints]
+  );
+
+  const stepForCheckpoint = useCallback(
+    (cp: FileCheckpoint): AgentStepView | null => {
+      if (cp.step_id !== null) {
+        const direct = sorted.find(
+          (step) => step.step_id === cp.step_id || step.id === cp.step_id
+        );
+        if (direct) return direct;
+      }
+      return (
+        [...sorted]
+          .reverse()
+          .find(
+            (step) =>
+              step.tool_name === cp.tool_name &&
+              stepTarget(step)?.text === cp.relative_path
+          ) ?? null
+      );
+    },
+    [sorted]
+  );
+
+  const thinkingText = run.streaming_thinking || run.thinking || null;
+  const planText =
+    run.plan_content && run.plan_content.trim().length > 0
+      ? run.plan_content
+      : run.is_plan && run.final_content && run.final_content.trim().length > 0
+        ? run.final_content
+        : null;
+  const finalResultText =
+    !run.is_plan && run.final_content && run.final_content.trim().length > 0
+      ? run.final_content
+      : null;
 
   const executeRevert = useCallback(
     async (target: RevertTarget, force = false) => {
@@ -321,6 +407,13 @@ function AgentRunSteps({
       }
     },
     [onRevertCheckpoint, onRevertTurn, run.run_id]
+  );
+
+  const handleStepRevert = useCallback(
+    (checkpointId: number) => {
+      void executeRevert({ kind: "file", checkpointId });
+    },
+    [executeRevert]
   );
   // Stable per group: the identity is the head step's seq — unique within the
   // run (only one group starts at a given seq) and invariant across the
@@ -674,6 +767,14 @@ function AgentRunSteps({
         </p>
       )}
 
+      {thinkingText && (
+        <ThinkingBlock
+          thinking={thinkingText}
+          streaming={Boolean(run.streaming_thinking)}
+          supportsThinking={supportsThinking}
+        />
+      )}
+
       {!collapsed && sorted.length > 0 && (
         <div className="nex-agent-run-detail">
           <span className="nex-agent-run-summary">{summaryText}</span>
@@ -688,6 +789,16 @@ function AgentRunSteps({
           </span>
         </div>
       )}
+
+      {sorted.length === 0 &&
+        !isActive &&
+        run.steps_loaded &&
+        !run.error &&
+        !planText &&
+        !finalResultText &&
+        !thinkingText && (
+          <p className="nex-agent-empty-state">{t("agent.emptyRunState")}</p>
+        )}
 
       {sorted.length > 0 && (
         <>
@@ -704,6 +815,13 @@ function AgentRunSteps({
           >
             <AgentSpine live={spineLive} />
             <div className="nex-agent-steps">
+              {!collapsed && !thinkingText && (
+                <ThinkingBlock
+                  thinking={null}
+                  supportsThinking={supportsThinking}
+                  showEmpty
+                />
+              )}
               {groupSteps(sorted).map((item, idx, all) => {
                 const isLast = idx === all.length - 1;
                 const protectedRow = isGroup(item)
@@ -735,6 +853,7 @@ function AgentRunSteps({
                   isActive &&
                   (isGroup(item) ? true : item.kind !== "model_turn");
                 if (!isGroup(item)) {
+                  const cp = checkpointForStep(item);
                   return (
                     <div
                       key={`${run.run_id}-${item.seq}`}
@@ -748,6 +867,13 @@ function AgentRunSteps({
                         runId={run.run_id}
                         onExpandStep={onExpandStep}
                         onCollapseStep={onCollapseStep}
+                        checkpoint={cp}
+                        onRevertCheckpoint={
+                          onRevertCheckpoint ? handleStepRevert : undefined
+                        }
+                        reverting={
+                          cp !== null && revertingKey === `file:${cp.id}`
+                        }
                       />
                     </div>
                   );
@@ -755,19 +881,28 @@ function AgentRunSteps({
                 // A group of one is not a group — it renders as the plain
                 // row, so the extra disclosure never wraps a single item.
                 if (item.steps.length === 1) {
+                  const singleStep = item.steps[0];
+                  const cp = checkpointForStep(singleStep);
                   return (
                     <div
-                      key={`${run.run_id}-${item.steps[0].seq}`}
+                      key={`${run.run_id}-${singleStep.seq}`}
                       className={slotClass}
                     >
                       <StepSection
-                        step={item.steps[0]}
+                        step={singleStep}
                         defaultOpen={autoOpen}
                         fade={fade}
                         live={spineLive}
                         runId={run.run_id}
                         onExpandStep={onExpandStep}
                         onCollapseStep={onCollapseStep}
+                        checkpoint={cp}
+                        onRevertCheckpoint={
+                          onRevertCheckpoint ? handleStepRevert : undefined
+                        }
+                        reverting={
+                          cp !== null && revertingKey === `file:${cp.id}`
+                        }
                       />
                     </div>
                   );
@@ -783,11 +918,24 @@ function AgentRunSteps({
                       timelineId={groupId(item.id)}
                       onExpandStep={onExpandStep}
                       onCollapseStep={onCollapseStep}
+                      checkpointForStep={checkpointForStep}
+                      onRevertCheckpoint={
+                        onRevertCheckpoint ? handleStepRevert : undefined
+                      }
+                      revertingKey={revertingKey}
                     />
                   </div>
                 );
               })}
             </div>
+            {!collapsed &&
+              hasMutatingSteps &&
+              run.checkpoints_loaded === true &&
+              checkpointTurns.length === 0 && (
+                <p className="nex-agent-checkpoints-empty">
+                  {t("agent.noFileChanges")}
+                </p>
+              )}
             {checkpointTurns.length > 0 && (
               <div className="nex-agent-checkpoints">
                 <div className="nex-agent-checkpoints-head">
@@ -871,43 +1019,93 @@ function AgentRunSteps({
                           {items.map((cp) => {
                             const fileKey = `file:${cp.id}`;
                             const reverted = cp.reverted_at !== null;
+                            const linkedStep = stepForCheckpoint(cp);
+                            const diffObservation = linkedStep
+                              ? (linkedStep.observation_full ??
+                                linkedStep.observation)
+                              : null;
+                            const counts = diffCounts(diffObservation);
+                            const diffOpen = expandedDiffIds.has(cp.id);
+                            const diffRegionId = `${timelineId}-cp-diff-${cp.id}`;
                             return (
                               <div
                                 key={cp.id}
-                                className="nex-agent-checkpoint-row"
+                                className="nex-agent-checkpoint-item"
                               >
-                                <div className="nex-agent-checkpoint-info">
-                                  <span className="nex-tag nex-agent-checkpoint-kind">
-                                    {cp.pre_existed
-                                      ? t("agent.checkpointModified")
-                                      : t("agent.checkpointCreated")}
-                                  </span>
-                                  <code className="nex-agent-checkpoint-path">
-                                    {cp.relative_path}
-                                  </code>
-                                </div>
-                                {reverted ? (
-                                  <span className="nex-tag nex-agent-checkpoint-reverted">
-                                    {t("agent.checkpointReverted")}
-                                  </span>
-                                ) : (
-                                  onRevertCheckpoint && (
+                                <div className="nex-agent-checkpoint-row">
+                                  <div className="nex-agent-checkpoint-info">
+                                    <span className="nex-tag nex-agent-checkpoint-kind">
+                                      {cp.pre_existed
+                                        ? t("agent.checkpointModified")
+                                        : t("agent.checkpointCreated")}
+                                    </span>
+                                    <code className="nex-agent-checkpoint-path">
+                                      {cp.relative_path}
+                                    </code>
+                                    {counts !== null && (
+                                      <span
+                                        className="nex-agent-step-change nex-tag-mono"
+                                        title={tr(
+                                          locale,
+                                          "agent.diffCountsTitle",
+                                          counts
+                                        )}
+                                      >
+                                        {tr(locale, "agent.diffCounts", counts)}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="nex-agent-checkpoint-actions">
                                     <M3Button
                                       variant="quiet"
                                       size="sm"
-                                      disabled={revertingKey !== null}
-                                      onClick={() =>
-                                        void executeRevert({
-                                          kind: "file",
-                                          checkpointId: cp.id,
-                                        })
-                                      }
+                                      aria-expanded={diffOpen}
+                                      aria-controls={diffRegionId}
+                                      onClick={() => toggleCheckpointDiff(cp.id)}
                                     >
-                                      {revertingKey === fileKey
-                                        ? t("agent.checkpointReverting")
-                                        : t("agent.checkpointRevertFile")}
+                                      {diffOpen
+                                        ? t("agent.checkpointHideDiff")
+                                        : t("agent.checkpointShowDiff")}
                                     </M3Button>
-                                  )
+                                    {reverted ? (
+                                      <span className="nex-tag nex-agent-checkpoint-reverted">
+                                        {t("agent.checkpointReverted")}
+                                      </span>
+                                    ) : (
+                                      onRevertCheckpoint && (
+                                        <M3Button
+                                          variant="quiet"
+                                          size="sm"
+                                          disabled={revertingKey !== null}
+                                          onClick={() =>
+                                            void executeRevert({
+                                              kind: "file",
+                                              checkpointId: cp.id,
+                                            })
+                                          }
+                                        >
+                                          {revertingKey === fileKey
+                                            ? t("agent.checkpointReverting")
+                                            : t("agent.checkpointRevertFile")}
+                                        </M3Button>
+                                      )
+                                    )}
+                                  </div>
+                                </div>
+                                {diffOpen && (
+                                  <div
+                                    id={diffRegionId}
+                                    className="nex-agent-checkpoint-diff"
+                                  >
+                                    {diffObservation &&
+                                    diffObservation.trim().length > 0 ? (
+                                      <DiffView observation={diffObservation} />
+                                    ) : (
+                                      <p className="nex-agent-checkpoint-nodiff">
+                                        {t("agent.checkpointNoDiff")}
+                                      </p>
+                                    )}
+                                  </div>
                                 )}
                               </div>
                             );
@@ -921,6 +1119,48 @@ function AgentRunSteps({
             )}
           </div>
         </>
+      )}
+
+      {planText && (
+        <section
+          className="nex-agent-card nex-agent-card-plan"
+          data-card-kind="plan"
+          aria-label={t("agent.planCardTitle")}
+        >
+          <header className="nex-agent-card-head">
+            <TaskIcon />
+            <span className="nex-agent-card-title">
+              {t("agent.planCardTitle")}
+            </span>
+          </header>
+          <div className="nex-agent-card-body">
+            <MessageMarkdown
+              messageId={run.run_id * 10000 + 1}
+              content={planText}
+            />
+          </div>
+        </section>
+      )}
+
+      {showFinalResult && finalResultText && (
+        <section
+          className="nex-agent-card nex-agent-card-result"
+          data-card-kind="result"
+          aria-label={t("agent.finalResultTitle")}
+        >
+          <header className="nex-agent-card-head">
+            <CheckIcon />
+            <span className="nex-agent-card-title">
+              {t("agent.finalResultTitle")}
+            </span>
+          </header>
+          <div className="nex-agent-card-body">
+            <MessageMarkdown
+              messageId={run.run_id * 10000 + 2}
+              content={finalResultText}
+            />
+          </div>
+        </section>
       )}
     </section>
   );

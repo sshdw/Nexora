@@ -1467,3 +1467,163 @@ describe("AgentRunSteps checkpoints & 1-click revert", () => {
     );
   });
 });
+
+describe("AgentRunSteps — Stage 5 PR 5B: Thinking, Plan/Result cards, Diffs & Empty states", () => {
+  it("renders real provider-native Thinking collapsible and honest absence when unavailable", () => {
+    const { rerenderRun } = renderRun(
+      runView({
+        status: "running",
+        streaming_thinking: "Checking repository layout",
+        thinking: "Checking repository layout",
+      })
+    );
+
+    const streamingToggle = screen.getByRole("button", { name: "Thinking…" });
+    expect(streamingToggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("Checking repository layout")).toBeVisible();
+
+    // Once completed with retained thinking, folds by default and stays expandable.
+    rerenderRun(
+      runView({
+        status: "completed",
+        finished_at: 1005,
+        streaming_thinking: undefined,
+        thinking: "Checking repository layout",
+      })
+    );
+    const doneToggle = screen.getByRole("button", { name: "Thinking" });
+    expect(doneToggle).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(doneToggle);
+    expect(doneToggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("Checking repository layout")).toBeVisible();
+
+    // When unavailable and model doesn't support thinking, shows honest absence (never fabricated).
+    rerenderRun(
+      runView({
+        status: "completed",
+        finished_at: 1005,
+        steps: [stepView({ id: 90, seq: 1, tool_name: "read_file" })],
+        thinking: null,
+        streaming_thinking: undefined,
+      }),
+      { supportsThinking: false }
+    );
+    expect(
+      screen.getByRole("button", { name: /Done in 1 step/ })
+    ).toHaveAttribute("aria-expanded", "true");
+    expect(
+      screen.getByText("Selected model does not report provider-native thinking.")
+    ).toBeInTheDocument();
+  });
+
+  it("renders visually distinct Plan and Final Result cards", () => {
+    const { container } = renderRun(
+      runView({
+        status: "completed",
+        finished_at: 1005,
+        plan_content: "1. Inspect `Composer.tsx`\n2. Add Plan toggle",
+        final_content: "Added the **Plan** toggle.",
+      })
+    );
+
+    const planCard = container.querySelector('[data-card-kind="plan"]');
+    const resultCard = container.querySelector('[data-card-kind="result"]');
+    expect(planCard).not.toBeNull();
+    expect(resultCard).not.toBeNull();
+    expect(planCard).toHaveClass("nex-agent-card-plan");
+    expect(resultCard).toHaveClass("nex-agent-card-result");
+    expect(within(planCard as HTMLElement).getByText("Plan")).toBeInTheDocument();
+    expect(
+      within(resultCard as HTMLElement).getByText("Final result")
+    ).toBeInTheDocument();
+  });
+
+  it("expands per-file checkpoint diffs and supports 1-click Revert inside both step diff and checkpoints", async () => {
+    const onRevertCheckpoint = vi
+      .fn<
+        (runId: number, checkpointId: number, force?: boolean) => Promise<RevertOutcome>
+      >()
+      .mockResolvedValue({ status: "reverted" });
+
+    const unifiedDiff = [
+      "--- a/src/app.ts",
+      "+++ b/src/app.ts",
+      "@@ -1,2 +1,2 @@",
+      "-const old = 1;",
+      "+const next = 2;",
+    ].join("\n");
+
+    renderRun(
+      runView({
+        status: "completed",
+        finished_at: 1005,
+        steps: [
+          stepView({
+            id: 501,
+            step_id: 501,
+            seq: 1,
+            tool_name: "edit_file",
+            arguments: '{"path":"src/app.ts"}',
+            observation: unifiedDiff,
+          }),
+        ],
+        checkpoints: [
+          checkpointRow({
+            id: 77,
+            step_id: 501,
+            turn_index: 0,
+            relative_path: "src/app.ts",
+            tool_name: "edit_file",
+            pre_existed: true,
+          }),
+        ],
+        checkpoints_loaded: true,
+      }),
+      { onRevertCheckpoint }
+    );
+
+    // Expand checkpoint diff directly from the checkpoints list.
+    const showDiffBtn = screen.getByRole("button", { name: "Show diff" });
+    expect(showDiffBtn).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(showDiffBtn);
+    expect(showDiffBtn).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("const next = 2;")).toBeInTheDocument();
+
+    // Expand the edit_file step and verify 1-click Revert is available right beside its diff too.
+    fireEvent.click(screen.getByRole("button", { name: /#1/ }));
+    const revertButtons = screen.getAllByRole("button", { name: "Revert" });
+    expect(revertButtons.length).toBeGreaterThanOrEqual(2);
+    fireEvent.click(revertButtons[0]!);
+    await waitFor(() =>
+      expect(onRevertCheckpoint).toHaveBeenCalledWith(7, 77, false)
+    );
+  });
+
+  it("renders honest empty and no-change states when a run or checkpoints recorded no changes", () => {
+    const { rerenderRun } = renderRun(
+      runView({
+        status: "completed",
+        finished_at: 1002,
+        steps: [],
+        steps_loaded: true,
+      })
+    );
+    expect(
+      screen.getByText("No steps or file changes were recorded for this run.")
+    ).toBeInTheDocument();
+
+    rerenderRun(
+      runView({
+        status: "completed",
+        finished_at: 1004,
+        steps: [stepView({ id: 601, seq: 1, tool_name: "write_file" })],
+        checkpoints: [],
+        checkpoints_loaded: true,
+      })
+    );
+    expect(
+      screen.getByRole("button", { name: /Done in 1 step/ })
+    ).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("No file changes recorded.")).toBeInTheDocument();
+  });
+});

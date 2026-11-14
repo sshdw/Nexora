@@ -50,6 +50,9 @@ export interface ConversationStore {
   streamingText: string;
   /** Ephemeral provider-native thinking streamed while `send` is in flight. */
   streamingThinking: string;
+  /** Provider-native thinking retained per assistant message id for the active
+   *  session (keyed only when real `thinking_delta` chunks were emitted). */
+  thinkingByMessageId?: Record<number, string>;
   /** Refresh the message list from the backend. `silent` refreshes in place:
    * no loading flip and the rendered messages stay while the fetch is in
    * flight — used when a finished agent run persists its final message. */
@@ -75,19 +78,25 @@ export function useConversation(
   const [sending, setSending] = useState<boolean>(false);
   const [streamingText, setStreamingText] = useState<string>("");
   const [streamingThinking, setStreamingThinking] = useState<string>("");
+  const [thinkingByMessageId, setThinkingByMessageId] = useState<
+    Record<number, string>
+  >({});
 
   // The conversation this hook instance currently represents. Responses that
   // arrive after the selection has moved to another conversation are stale and
   // must never be applied: a slow history fetch for A cannot overwrite B's
   // messages when B is selected (rapid conversation switching).
   const activeConversationRef = useRef<number | null>(null);
+  const messagesRef = useRef<Message[]>([]);
+  const turnThinkingRef = useRef<string>("");
+  messagesRef.current = messages;
 
   const reload = useCallback(
-    async (options?: { silent?: boolean }): Promise<void> => {
+    async (options?: { silent?: boolean }): Promise<Message[] | undefined> => {
       const silent = options?.silent === true;
       if (conversationId === null) {
         setMessages([]);
-        return;
+        return undefined;
       }
       const requestedId = conversationId;
       // A background refresh must not blank a populated thread: keep the
@@ -98,15 +107,17 @@ export function useConversation(
         const data = await conversationHistory(requestedId);
         // Only the history belonging to the currently selected conversation may
         // update visible state.
-        if (activeConversationRef.current !== requestedId) return;
+        if (activeConversationRef.current !== requestedId) return undefined;
         // Replace, never append: reopening/refreshing cannot duplicate messages.
         setMessages(data);
+        return data;
       } catch (e) {
-        if (activeConversationRef.current !== requestedId) return;
+        if (activeConversationRef.current !== requestedId) return undefined;
         // A failed background refresh keeps the rendered thread; the error is
         // still surfaced. A full reload keeps its existing blank-and-error.
         if (!silent) setMessages([]);
         setError(toCommandError(e));
+        return undefined;
       } finally {
         if (!silent && activeConversationRef.current === requestedId) {
           setLoading(false);
@@ -114,6 +125,13 @@ export function useConversation(
       }
     },
     [conversationId]
+  );
+
+  const reloadVoid = useCallback(
+    async (options?: { silent?: boolean }): Promise<void> => {
+      await reload(options);
+    },
+    [reload]
   );
 
   // Load history whenever the conversation is (re)selected. The ref is updated
@@ -167,6 +185,8 @@ export function useConversation(
   useEffect(() => {
     setStreamingText("");
     setStreamingThinking("");
+    setThinkingByMessageId({});
+    turnThinkingRef.current = "";
     let unlisten: (() => void) | null = null;
     let cancelled = false;
 
@@ -180,6 +200,7 @@ export function useConversation(
             if (frame.kind === "text_delta" && frame.delta) {
               setStreamingText((prev) => prev + frame.delta);
             } else if (frame.kind === "thinking_delta" && frame.delta) {
+              turnThinkingRef.current += frame.delta;
               setStreamingThinking((prev) => prev + frame.delta);
             } else if (frame.kind === "finished") {
               setStreamingText("");
@@ -210,6 +231,8 @@ export function useConversation(
       effort?: string | null
     ): Promise<CommandError | null> => {
       if (conversationId === null) return null;
+      const beforeIds = new Set(messagesRef.current.map((m) => m.id));
+      turnThinkingRef.current = "";
       setSending(true);
       setError(null);
       setStreamingText("");
@@ -224,7 +247,19 @@ export function useConversation(
           effort
         );
         // Success: reflect the persisted user + assistant messages.
-        await reload();
+        const latest = await reload();
+        const capturedThinking = turnThinkingRef.current;
+        if (latest && capturedThinking.trim().length > 0) {
+          const addedAssistant = [...latest]
+            .reverse()
+            .find((m) => m.role === "assistant" && !beforeIds.has(m.id));
+          if (addedAssistant) {
+            setThinkingByMessageId((prev) => ({
+              ...prev,
+              [addedAssistant.id]: capturedThinking,
+            }));
+          }
+        }
         return null;
       } catch (e) {
         // The backend persisted the user message but produced no assistant
@@ -240,6 +275,7 @@ export function useConversation(
         setSending(false);
         setStreamingText("");
         setStreamingThinking("");
+        turnThinkingRef.current = "";
       }
     },
     [conversationId, reload]
@@ -252,7 +288,8 @@ export function useConversation(
     sending,
     streamingText,
     streamingThinking,
-    reload,
+    thinkingByMessageId,
+    reload: reloadVoid,
     send,
   };
 }

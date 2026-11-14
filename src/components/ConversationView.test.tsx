@@ -179,8 +179,9 @@ describe("pane default mode (R4-02)", () => {
         name: "Chat mode — one answer per message",
       })
     ).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
     expect(
-      screen.getByRole("button", { name: "Add file" })
+      screen.getByRole("menuitem", { name: "Attach files" })
     ).toBeInTheDocument();
 
     // The mode is pane state, not a per-render constant: a re-render of the
@@ -188,7 +189,7 @@ describe("pane default mode (R4-02)", () => {
     // Agent, and nothing is persisted to the database.
     rerender(pane("half-typed"));
     expect(
-      screen.getByRole("button", { name: "Add file" })
+      screen.getByRole("menuitem", { name: "Attach files" })
     ).toBeInTheDocument();
   });
 
@@ -287,5 +288,23 @@ describe("message bodies (ADD-01)", () => {
     expect(
       within(userBody!).queryByRole("button", { name: "Copy link" })
     ).toBeNull();
+  });
+});
+
+describe("Stage 5 PR 5B: ConversationView Plan toggle & Thinking integration", () => {
+  it("shows Agent-only Plan toggle and toggles cleanly between Agent and Chat", () => {
+    render(pane());
+
+    const planBtn = screen.getByRole("button", { name: "Plan mode" });
+    expect(planBtn).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(planBtn);
+    expect(planBtn).toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.click(
+      within(modeGroup()).getByRole("radio", {
+        name: "Chat mode — one answer per message",
+      })
+    );
+    expect(screen.queryByRole("button", { name: "Plan mode" })).toBeNull();
   });
 });

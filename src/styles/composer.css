@@ -1384,3 +1384,170 @@
   outline: 2px solid var(--ring);
   outline-offset: 1px;
 }
+
+/* ---- Stage 5 PR 5B: Plan toggle + / and @ triggers (shadcn tokens only) ---- */
+
+.nex-composer-plan-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding-block: var(--space-xxs);
+  padding-inline: 0;
+  color: var(--muted-foreground);
+  font-size: var(--type-size-label-small);
+  line-height: var(--type-line-height-normal);
+}
+
+.nex-composer-plan-banner svg {
+  flex: none;
+  color: var(--foreground);
+}
+
+.nex-composer-plan-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xxs);
+  height: 28px;
+  padding: 0 var(--space-sm);
+  border-radius: var(--radius-4xl);
+  border: 1px solid transparent;
+  color: var(--muted-foreground);
+  font-size: var(--type-size-body-small);
+  font-weight: var(--type-weight-medium);
+  transition:
+    background-color var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard),
+    color var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard),
+    border-color var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard);
+}
+
+.nex-composer-plan-toggle:hover:not(:disabled) {
+  background: var(--secondary);
+  color: var(--foreground);
+}
+
+.nex-composer-plan-toggle.is-active {
+  background: var(--secondary);
+  border-color: var(--border);
+  color: var(--foreground);
+}
+
+.nex-composer-plus-anchor {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.nex-composer-popover-anchor {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.nex-composer-plus-menu {
+  width: 210px;
+  max-width: calc(100vw - var(--space-lg));
+  padding: var(--space-xs);
+  background: var(--popover);
+  color: var(--popover-foreground);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+.nex-composer-plus-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xxs);
+}
+
+.nex-composer-plus-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--foreground);
+  font-size: var(--type-size-body-small);
+}
+
+.nex-composer-trigger-menu {
+  width: 300px;
+  max-width: calc(100vw - var(--space-lg));
+  padding: var(--space-xs);
+  background: var(--popover);
+  color: var(--popover-foreground);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+.nex-composer-trigger-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xxs);
+  margin: var(--space-xs) 0 0;
+  padding: 0;
+  list-style: none;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.nex-composer-trigger-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  width: 100%;
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--popover-foreground);
+  text-align: left;
+  font-size: var(--type-size-body-small);
+  cursor: pointer;
+  transition: background-color var(--nex-sys-motion-duration-fast)
+    var(--nex-sys-motion-easing-standard);
+}
+
+.nex-composer-trigger-option:hover:not(:disabled),
+.nex-composer-trigger-option.is-highlighted:not(:disabled) {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.nex-composer-trigger-option:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.nex-composer-trigger-icon {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  color: var(--muted-foreground);
+}
+
+.nex-composer-trigger-cmd {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--type-size-body-small);
+  font-weight: var(--type-weight-medium);
+  color: var(--foreground);
+}
+
+.nex-composer-trigger-desc {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted-foreground);
+  font-size: var(--type-size-label-small);
+}
+
+.nex-composer-trigger-empty {
+  margin: var(--space-xs) 0 0;
+  padding: var(--space-xs) var(--space-sm);
+  color: var(--muted-foreground);
+  font-size: var(--type-size-body-small);
+}
