@@ -190,6 +190,26 @@ pub(crate) fn save_workspace_profile(
         .to_string())
 }
 
+/// Discover hierarchical project instructions (`AGENTS.md` and
+/// `.nexora/instructions.md`) bounded strictly inside the configured active
+/// workspace root. Returns an empty summary when no explicit project
+/// workspace root is set.
+#[tauri::command]
+pub(crate) fn discover_project_instructions(
+    target_dir: Option<String>,
+    db: State<'_, Database>,
+) -> Result<crate::application::project_dir::DiscoveredInstructions, CommandError> {
+    let Some(root) = crate::application::settings::configured_workspace_root(db.inner()) else {
+        return Ok(crate::application::project_dir::DiscoveredInstructions::default());
+    };
+    let target_path = target_dir
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(std::path::Path::new);
+    crate::application::project_dir::discover_instructions(&root, target_path).map_err(Into::into)
+}
+
 #[cfg(test)]
 mod tests {
     /// Static wiring check (Fix 2 regression): the legacy `set_workspace_root`

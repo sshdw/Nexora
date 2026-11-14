@@ -19,7 +19,11 @@ use crate::infrastructure::providers::supported_providers;
 use super::compat::CompatEndpointService;
 use super::context_stats::context_limit_for;
 use super::execution::RequestExecutionService;
-use super::settings::SettingsService;
+use super::project_dir;
+use super::settings::{
+    configured_workspace_root, resolve_effective_setting, save_scoped_setting, ScopedSaveError,
+    SettingScope, SettingsService,
+};
 
 /// Origin of the highest-precedence capability layer applied for `(connection_id, model_id)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -125,6 +129,15 @@ pub(crate) fn read_manual_overrides(
     Ok(serde_json::from_str::<BTreeMap<String, ModelCapabilityOverride>>(&raw).unwrap_or_default())
 }
 
+/// Read effective manual overrides (`Project > Personal`), ignoring corrupt JSON.
+pub(crate) fn read_effective_overrides(db: &Database) -> BTreeMap<String, ModelCapabilityOverride> {
+    resolve_effective_setting(db, None, MODEL_CAPABILITY_OVERRIDES_KEY, None)
+        .and_then(|raw| {
+            serde_json::from_str::<BTreeMap<String, ModelCapabilityOverride>>(&raw).ok()
+        })
+        .unwrap_or_default()
+}
+
 /// Persist or clear a manual capability override for `(connection_id, model_id)` in `app_settings`.
 pub(crate) fn set_manual_override(
     db: &Database,
@@ -151,11 +164,65 @@ pub(crate) fn set_manual_override(
         let json = serde_json::to_string(&map).unwrap_or_else(|_| "{}".to_string());
         SettingsService::new(db).write(MODEL_CAPABILITY_OVERRIDES_KEY, Some(&json))?;
     }
-    Ok(resolve_capabilities_with_overrides(
-        connection_id,
-        model_id,
-        &map,
-    ))
+    Ok(resolve_model_capabilities(db, connection_id, model_id))
+}
+
+/// Persist or clear a manual capability override for `(connection_id, model_id)` in either
+/// `SettingScope::Personal` (`SQLite`) or `SettingScope::Project` (`.nexora/config.json`).
+///
+/// # Errors
+///
+/// Returns [`ScopedSaveError`] when `Project` scope lacks an active workspace
+/// or writing `.nexora/config.json` fails validation or security checks.
+pub(crate) fn set_scoped_manual_override(
+    db: &Database,
+    scope: SettingScope,
+    connection_id: &str,
+    model_id: &str,
+    override_value: Option<ModelCapabilityOverride>,
+) -> std::result::Result<ConnectionModelCapabilities, ScopedSaveError> {
+    let mut map = match scope {
+        SettingScope::Personal => read_manual_overrides(db)?,
+        SettingScope::Project => {
+            let ws = configured_workspace_root(db).ok_or(ScopedSaveError::WorkspaceRequired)?;
+            let raw = project_dir::load_project_config_raw(&ws)?;
+            raw.entries
+                .into_iter()
+                .rev()
+                .find(|e| e.key == MODEL_CAPABILITY_OVERRIDES_KEY)
+                .and_then(|e| {
+                    serde_json::from_value::<BTreeMap<String, ModelCapabilityOverride>>(e.value)
+                        .ok()
+                })
+                .unwrap_or_default()
+        }
+    };
+    let key = override_map_key(connection_id, model_id);
+    match override_value {
+        Some(mut ov) if !ov.is_empty() => {
+            if let Some(efforts) = ov.supported_efforts.take() {
+                ov.supported_efforts = Some(normalize_efforts(&efforts));
+            }
+            map.insert(key, ov);
+        }
+        _ => {
+            map.remove(&key);
+        }
+    }
+    let val_opt = if map.is_empty() {
+        None
+    } else {
+        Some(serde_json::to_string(&map).unwrap_or_else(|_| "{}".to_string()))
+    };
+    let _ = save_scoped_setting(
+        db,
+        None,
+        scope,
+        MODEL_CAPABILITY_OVERRIDES_KEY,
+        val_opt.as_deref(),
+        None,
+    )?;
+    Ok(resolve_model_capabilities(db, connection_id, model_id))
 }
 
 fn built_in_catalog_entry(
@@ -346,13 +413,13 @@ pub(crate) fn resolve_model_capabilities(
     connection_id: &str,
     model_id: &str,
 ) -> ConnectionModelCapabilities {
-    let overrides = read_manual_overrides(db).unwrap_or_default();
+    let overrides = read_effective_overrides(db);
     resolve_capabilities_with_overrides(connection_id, model_id, &overrides)
 }
 
 /// List effective capabilities across all supported connections & known/discovered models.
 pub(crate) fn list_all_model_capabilities(db: &Database) -> Vec<ConnectionModelCapabilities> {
-    let overrides = read_manual_overrides(db).unwrap_or_default();
+    let overrides = read_effective_overrides(db);
     let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
 
     for provider in supported_providers() {
@@ -444,7 +511,7 @@ fn refresh_connection_metadata_with_execution(
         &target.compat_headers,
     )?;
     cache_api_metadata(connection_id, &discovered);
-    let overrides = read_manual_overrides(db).unwrap_or_default();
+    let overrides = read_effective_overrides(db);
     Ok(discovered
         .into_iter()
         .map(|item| resolve_capabilities_with_overrides(connection_id, &item.model_id, &overrides))
@@ -878,6 +945,77 @@ mod tests {
         );
         assert_eq!(from_override.context_window, Some(64_000));
         assert_eq!(from_override.supported_efforts, vec!["medium".to_string()]);
+        clear_api_metadata_cache();
+    }
+
+    #[test]
+    fn project_capability_override_precedes_personal_and_scoped_clear_falls_back() {
+        clear_api_metadata_cache();
+        let db = in_memory_db();
+        let scratch_base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("nexora-test-tmp");
+        std::fs::create_dir_all(&scratch_base).expect("mkdir scratch");
+        let ws = scratch_base.join(format!("stage4-caps-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&ws);
+        std::fs::create_dir_all(&ws).expect("create temp ws");
+        let canon_ws =
+            crate::application::workspace::validate_workspace_root(&ws.to_string_lossy())
+                .expect("valid workspace root");
+        crate::application::settings::SettingsService::new(&db)
+            .write(
+                nexora_core::config::WORKSPACE_ROOT_KEY,
+                Some(&canon_ws.to_string_lossy()),
+            )
+            .expect("persist workspace root");
+
+        // Personal override = 32_000 context window.
+        set_scoped_manual_override(
+            &db,
+            crate::application::settings::SettingScope::Personal,
+            "openai",
+            "gpt-5.2",
+            Some(ModelCapabilityOverride {
+                context_window: Some(32_000),
+                supported_efforts: Some(vec!["low".to_string()]),
+                supports_thinking: Some(false),
+                supports_attachments: Some(true),
+                supports_tools: Some(true),
+            }),
+        )
+        .expect("set personal override");
+
+        // Project override = 64_000 context window takes precedence over Personal.
+        let proj = set_scoped_manual_override(
+            &db,
+            crate::application::settings::SettingScope::Project,
+            "openai",
+            "gpt-5.2",
+            Some(ModelCapabilityOverride {
+                context_window: Some(64_000),
+                supported_efforts: Some(vec!["low".to_string(), "high".to_string()]),
+                supports_thinking: Some(true),
+                supports_attachments: Some(true),
+                supports_tools: Some(true),
+            }),
+        )
+        .expect("set project override");
+        assert_eq!(proj.context_window, Some(64_000));
+        assert_eq!(proj.provenance, CapabilityProvenance::ManualOverride);
+
+        // Clearing the Project override falls back cleanly to Personal 32_000.
+        let cleared = set_scoped_manual_override(
+            &db,
+            crate::application::settings::SettingScope::Project,
+            "openai",
+            "gpt-5.2",
+            None,
+        )
+        .expect("clear project override");
+        assert_eq!(cleared.context_window, Some(32_000));
+        assert_eq!(cleared.provenance, CapabilityProvenance::ManualOverride);
+
+        let _ = std::fs::remove_dir_all(&ws);
         clear_api_metadata_cache();
     }
 }

@@ -5,6 +5,7 @@
 //! power-key values stay in the parent (once-per-mount fetch).
 
 import type { Locale } from "../../lib/strings";
+import type { ResolvedSettingEntry } from "../../lib/tauri";
 import { useStrings } from "../../lib/useLocale";
 import {
   FLAG_DEFS,
@@ -15,6 +16,7 @@ import {
   summarizeMcpServers,
   summarizeRoutingProfile,
 } from "./model";
+import SettingSourceBadge from "./SettingSourceBadge";
 
 export interface AdvancedSectionProps {
   locale: Locale;
@@ -26,6 +28,7 @@ export interface AdvancedSectionProps {
   flagsSaving: string | null;
   flagsError: string | null;
   onFlagToggle: (name: string, next: boolean) => void;
+  resolvedEntries?: Record<string, ResolvedSettingEntry> | null;
 }
 
 export default function AdvancedSection({
@@ -36,8 +39,21 @@ export default function AdvancedSection({
   flagsSaving,
   flagsError,
   onFlagToggle,
+  resolvedEntries,
 }: AdvancedSectionProps) {
   const { t } = useStrings();
+  const resolvePowerVal = (key: string): string | null => {
+    const layered = resolvedEntries?.[key];
+    if (
+      layered &&
+      (layered.source === "project" ||
+        layered.source === "session" ||
+        layered.source === "personal")
+    ) {
+      return layered.value;
+    }
+    return advancedValues?.[key] ?? layered?.value ?? null;
+  };
   // Advanced: power keys, demarked and collapsed. Flags are simple booleans
   // (same true/false domain the backend gate accepts) so they get toggles;
   // routing profiles, MCP servers, and the agent preset are complex JSON
@@ -84,7 +100,10 @@ export default function AdvancedSection({
                 {flag.enforced
                   ? t("settings.enforced")
                   : t("settings.resolvedOnly")}
-              </span>
+              </span>{" "}
+              <SettingSourceBadge
+                entry={resolvedEntries?.[`flags.${flag.name}`]}
+              />
               <span id={`flag-${flag.name}-hint`} className="nex-settings-hint">
                 {" "}
                 {t(flag.descriptionKey)}
@@ -103,27 +122,33 @@ export default function AdvancedSection({
         <summary>{t("settings.routingTitle")}</summary>
         <p className="nex-settings-hint">{t("settings.routingHint")}</p>
         <div className="nex-settings-field">
-          <span className="nex-settings-label">
-            {t("settings.chatProfile")}
-          </span>
+          <div className="nex-settings-label-row">
+            <span className="nex-settings-label">
+              {t("settings.chatProfile")}
+            </span>
+            <SettingSourceBadge entry={resolvedEntries?.[ROUTING_CHAT_KEY]} />
+          </div>
           <p className="nex-settings-value">
             {advancedValues === null
               ? t("common.loading")
               : summarizeRoutingProfile(
-                  advancedValues[ROUTING_CHAT_KEY] ?? null,
+                  resolvePowerVal(ROUTING_CHAT_KEY),
                   locale
                 )}
           </p>
         </div>
         <div className="nex-settings-field">
-          <span className="nex-settings-label">
-            {t("settings.agentProfile")}
-          </span>
+          <div className="nex-settings-label-row">
+            <span className="nex-settings-label">
+              {t("settings.agentProfile")}
+            </span>
+            <SettingSourceBadge entry={resolvedEntries?.[ROUTING_AGENT_KEY]} />
+          </div>
           <p className="nex-settings-value">
             {advancedValues === null
               ? t("common.loading")
               : summarizeRoutingProfile(
-                  advancedValues[ROUTING_AGENT_KEY] ?? null,
+                  resolvePowerVal(ROUTING_AGENT_KEY),
                   locale
                 )}
           </p>
@@ -134,12 +159,17 @@ export default function AdvancedSection({
         <summary>{t("settings.mcpTitle")}</summary>
         <p className="nex-settings-hint">{t("settings.mcpHint")}</p>
         <div className="nex-settings-field">
-          <span className="nex-settings-label">{t("settings.mcpServers")}</span>
+          <div className="nex-settings-label-row">
+            <span className="nex-settings-label">
+              {t("settings.mcpServers")}
+            </span>
+            <SettingSourceBadge entry={resolvedEntries?.[MCP_SERVERS_KEY]} />
+          </div>
           <p className="nex-settings-value">
             {advancedValues === null
               ? t("common.loading")
               : summarizeMcpServers(
-                  advancedValues[MCP_SERVERS_KEY] ?? null,
+                  resolvePowerVal(MCP_SERVERS_KEY),
                   locale
                 )}
           </p>
@@ -150,13 +180,16 @@ export default function AdvancedSection({
         <summary>{t("settings.presetTitle")}</summary>
         <p className="nex-settings-hint">{t("settings.presetHint")}</p>
         <div className="nex-settings-field">
-          <span className="nex-settings-label">
-            {t("settings.presetLabel")}
-          </span>
+          <div className="nex-settings-label-row">
+            <span className="nex-settings-label">
+              {t("settings.presetLabel")}
+            </span>
+            <SettingSourceBadge entry={resolvedEntries?.[PRESET_KEY]} />
+          </div>
           <p className="nex-settings-value">
             {advancedValues === null
               ? t("common.loading")
-              : (advancedValues[PRESET_KEY] ?? t("settings.presetUnset"))}
+              : (resolvePowerVal(PRESET_KEY) ?? t("settings.presetUnset"))}
           </p>
         </div>
       </details>

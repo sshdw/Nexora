@@ -209,13 +209,11 @@ pub(crate) async fn start_agent_run(
 
         let root = workspace_root(&handle, db_ref)?;
         let host: Arc<dyn AgentRunHost> = Arc::new(TauriAgentHost::new(handle, db_client.clone()));
-        // Resolve autonomy mode from settings (DP-AUTONOMY): default
-        // semi_autonomous when unset/invalid.
-        let mode = service::resolve_autonomy_mode(db_ref);
-        // Resolve run preset from settings (T5): default coding when
-        // unset/invalid. Document runs hide the shell from the schema and
-        // deny it structurally on dispatch.
-        let preset = service::resolve_preset(db_ref);
+        // Resolve autonomy mode from Project (.nexora/) > Personal (SQLite) > Default.
+        let mode = service::resolve_autonomy_mode_for_workspace(db_ref, Some(&root));
+        // Resolve run preset from Project (.nexora/) > Personal (SQLite) > Default.
+        let preset = service::resolve_preset_for_workspace(db_ref, Some(&root));
+        let spend_limit_micro_usd = service::resolve_spend_limit_for_workspace(db_ref, Some(&root));
 
         let run_id = service::start_run(
             db_ref,
@@ -230,7 +228,7 @@ pub(crate) async fn start_agent_run(
                 model,
                 credential,
                 max_iterations: None,
-                spend_limit_micro_usd: service::resolve_spend_limit(db_ref),
+                spend_limit_micro_usd,
             },
             mode,
             preset,

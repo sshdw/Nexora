@@ -4,6 +4,7 @@
 //! (commands/credentials.rs).
 
 import { invoke } from "./core";
+import type { SettingScope } from "./settings";
 
 // ---- Providers -------------------------------------------------------
 // Provider metadata (non-sensitive) and supported-provider/model definitions.
@@ -201,7 +202,8 @@ export function listModelCapabilities(): Promise<
 export function setModelCapabilityOverride(
   connectionId: string,
   modelId: string,
-  overrideSpec: ModelCapabilityOverride | null
+  overrideSpec: ModelCapabilityOverride | null,
+  scope?: SettingScope
 ): Promise<ConnectionModelCapabilities> {
   return invoke<ConnectionModelCapabilities>(
     "set_model_capability_override",
@@ -209,6 +211,23 @@ export function setModelCapabilityOverride(
       connectionId,
       modelId,
       overrideSpec,
+      scope: scope ?? null,
+    }
+  );
+}
+
+/** Clear a manual capability override for `(connectionId, modelId)` in `scope`. */
+export function clearModelCapabilityOverride(
+  connectionId: string,
+  modelId: string,
+  scope?: SettingScope
+): Promise<ConnectionModelCapabilities> {
+  return invoke<ConnectionModelCapabilities>(
+    "clear_model_capability_override",
+    {
+      connectionId,
+      modelId,
+      scope: scope ?? null,
     }
   );
 }

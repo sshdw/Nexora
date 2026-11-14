@@ -489,7 +489,8 @@ fn run_task_loop_with_deadline(
     emit(TaskEvent::Started { task_id });
 
     let ctx = LoopCtx {
-        access: crate::application::agent::access::AccessContext::root(db),
+        access: crate::application::agent::access::AccessContext::root(db)
+            .with_workspace(&config.workspace_root),
         db,
         agent_registry,
         task_registry,

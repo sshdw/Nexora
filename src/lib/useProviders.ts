@@ -17,8 +17,10 @@ import {
   type ConnectionModelCapabilities,
   type ModelCapabilityOverride,
   type ProviderDef,
+  type SettingScope,
   type SupportedProvider,
   addProviderCredential,
+  clearModelCapabilityOverride,
   compatStatus as fetchCompatStatus,
   createProvider,
   getCompatConfig,
@@ -193,7 +195,14 @@ export interface ProvidersStore {
   setCapabilityOverride: (
     connectionId: string,
     modelId: string,
-    overrideSpec: ModelCapabilityOverride | null
+    overrideSpec: ModelCapabilityOverride | null,
+    scope?: SettingScope
+  ) => Promise<ConnectionModelCapabilities | null>;
+  /** Clear a manual capability override for `(connectionId, modelId)` in `scope`. */
+  clearCapabilityOverride?: (
+    connectionId: string,
+    modelId: string,
+    scope?: SettingScope
   ) => Promise<ConnectionModelCapabilities | null>;
   /** Refresh zero-token `/models` metadata from the provider API. */
   refreshModelMetadata: (connectionId: string) => Promise<void>;
@@ -446,15 +455,20 @@ export function useProviders(): ProvidersStore {
     async (
       connectionId: string,
       modelId: string,
-      overrideSpec: ModelCapabilityOverride | null
+      overrideSpec: ModelCapabilityOverride | null,
+      scope?: SettingScope
     ): Promise<ConnectionModelCapabilities | null> => {
       setError(null);
       try {
-        const updated = await setModelCapabilityOverride(
-          connectionId,
-          modelId,
-          overrideSpec
-        );
+        const updated =
+          overrideSpec === null
+            ? await clearModelCapabilityOverride(connectionId, modelId, scope)
+            : await setModelCapabilityOverride(
+                connectionId,
+                modelId,
+                overrideSpec,
+                scope
+              );
         setCapabilities((prev) => {
           const key = capabilityKey(updated.connection_id, updated.model_id);
           const filtered = prev.filter(
@@ -469,6 +483,16 @@ export function useProviders(): ProvidersStore {
       }
     },
     []
+  );
+
+  const clearCapabilityOverride = useCallback(
+    async (
+      connectionId: string,
+      modelId: string,
+      scope?: SettingScope
+    ): Promise<ConnectionModelCapabilities | null> =>
+      setCapabilityOverride(connectionId, modelId, null, scope),
+    [setCapabilityOverride]
   );
 
   const refreshModelMetadata = useCallback(
@@ -646,6 +670,7 @@ export function useProviders(): ProvidersStore {
       selectProviderAndModel,
       selectEffort,
       setCapabilityOverride,
+      clearCapabilityOverride,
       refreshModelMetadata,
       saveCompatConfig,
       connect,
@@ -670,6 +695,7 @@ export function useProviders(): ProvidersStore {
       selectProviderAndModel,
       selectEffort,
       setCapabilityOverride,
+      clearCapabilityOverride,
       refreshModelMetadata,
       saveCompatConfig,
       connect,

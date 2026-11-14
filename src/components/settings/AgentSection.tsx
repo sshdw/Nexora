@@ -3,12 +3,14 @@
 //! spend draft state stays in the parent so a section round trip preserves
 //! it exactly as before the split.
 
+import type { AccessProfile, ResolvedSettingEntry } from "../../lib/tauri";
 import type { AutonomyStore } from "../../lib/useAutonomy";
 import type { SpendLimitStore } from "../../lib/useSpendLimit";
 import { useStrings } from "../../lib/useLocale";
 import AccessProfileControl from "../AccessProfileControl";
 import M3SegmentedGroup from "../M3SegmentedGroup";
 import { AUTONOMY_LABELS, AUTONOMY_MODES } from "./model";
+import SettingSourceBadge from "./SettingSourceBadge";
 
 export interface AgentSectionProps {
   autonomy: AutonomyStore;
@@ -19,6 +21,10 @@ export interface AgentSectionProps {
   onSpendDraftChange: (value: string) => void;
   onSpendCommit: () => void;
   onAutonomyChange: (mode: AutonomyStore["mode"]) => void;
+  effectiveAccessProfile?: AccessProfile;
+  onAccessProfileChange?: (profile: AccessProfile) => void;
+  effectiveAutonomy?: AutonomyStore["mode"];
+  resolvedEntries?: Record<string, ResolvedSettingEntry> | null;
 }
 
 export default function AgentSection({
@@ -28,22 +34,50 @@ export default function AgentSection({
   onSpendDraftChange,
   onSpendCommit,
   onAutonomyChange,
+  effectiveAccessProfile,
+  onAccessProfileChange,
+  effectiveAutonomy,
+  resolvedEntries,
 }: AgentSectionProps) {
   const { t } = useStrings();
+  const accessStore =
+    effectiveAccessProfile !== undefined || onAccessProfileChange !== undefined
+      ? {
+          ...autonomy.access,
+          profile: effectiveAccessProfile ?? autonomy.access.profile,
+          setProfile: async (profile: AccessProfile) => {
+            if (onAccessProfileChange) {
+              onAccessProfileChange(profile);
+              return null;
+            }
+            return autonomy.access.setProfile(profile);
+          },
+        }
+      : autonomy.access;
+
   return (
     <section className="nex-settings-section" aria-labelledby="agent-heading">
       <h3 id="agent-heading" className="nex-settings-heading">
         {t("settings.sectionAgent")}
       </h3>
       <p className="nex-settings-hint">{t("settings.agentHint")}</p>
-      <AccessProfileControl store={autonomy.access} />
+      <div className="nex-settings-label-row">
+        <span className="nex-settings-label">{t("access.label")}</span>
+        <SettingSourceBadge
+          entry={resolvedEntries?.["agent.access_profile"]}
+        />
+      </div>
+      <AccessProfileControl store={accessStore} showLabel={false} />
       <div className="nex-settings-field">
-        <span className="nex-settings-label" id="autonomy-label">
-          {t("settings.autonomyLabel")}
-        </span>
+        <div className="nex-settings-label-row">
+          <span className="nex-settings-label" id="autonomy-label">
+            {t("settings.autonomyLabel")}
+          </span>
+          <SettingSourceBadge entry={resolvedEntries?.["agent.autonomy"]} />
+        </div>
         <M3SegmentedGroup
           labelledBy="autonomy-label"
-          value={autonomy.mode}
+          value={effectiveAutonomy ?? autonomy.mode}
           onChange={(mode) => void onAutonomyChange(mode)}
           options={AUTONOMY_MODES.map((mode) => ({
             value: mode,
@@ -59,9 +93,14 @@ export default function AgentSection({
       </div>
 
       <div className="nex-settings-field">
-        <label className="nex-settings-label" htmlFor="spend-limit">
-          {t("settings.spendLabel")}
-        </label>
+        <div className="nex-settings-label-row">
+          <label className="nex-settings-label" htmlFor="spend-limit">
+            {t("settings.spendLabel")}
+          </label>
+          <SettingSourceBadge
+            entry={resolvedEntries?.["agent.spend_limit_micro_usd"]}
+          />
+        </div>
         <input
           id="spend-limit"
           className="nex-input"

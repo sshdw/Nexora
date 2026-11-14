@@ -53,7 +53,6 @@ use crate::application::execution::{
     AiMessage, ModelConfig, ProviderExecutor, ReasoningEffort, RequestError,
 };
 use crate::application::routing::{RoutingService, TaskKind};
-use crate::application::settings::SettingsService;
 use crate::infrastructure::database::Database;
 use crate::infrastructure::repository::agent_runs::{AgentRun, AgentRunRepository, AgentStep};
 
@@ -385,15 +384,29 @@ pub(crate) fn parse_autonomy_mode(value: Option<&str>) -> AutonomyMode {
     }
 }
 
-/// Resolve the persisted autonomy mode from `app_settings` (`agent.autonomy`),
-/// defaulting to `SemiAutonomous` when unset or invalid.
+/// Resolve the autonomy mode through `Project (.nexora/) > Personal (SQLite) > Default`,
+/// enforcing the untrusted-repo ceiling so `.nexora/` can restrict but never widen autonomy.
+#[must_use]
+pub(crate) fn resolve_autonomy_mode_for_workspace(
+    db: &Database,
+    workspace_root: Option<&Path>,
+) -> AutonomyMode {
+    let snap = crate::application::settings::resolve_settings(db, workspace_root, None);
+    if snap.config_notice.is_some() {
+        return AutonomyMode::Supervised;
+    }
+    let raw = snap
+        .entries
+        .get(nexora_core::config::AUTONOMY_KEY)
+        .and_then(|entry| entry.value.as_deref());
+    parse_autonomy_mode(raw)
+}
+
+/// Resolve the persisted autonomy mode from `app_settings` (`agent.autonomy`)
+/// plus any active project `.nexora/` restriction, defaulting to `SemiAutonomous`.
 #[must_use]
 pub(crate) fn resolve_autonomy_mode(db: &Database) -> AutonomyMode {
-    let svc = SettingsService::new(db);
-    match svc.read("agent.autonomy") {
-        Ok(Some(value)) => parse_autonomy_mode(Some(value.as_str())),
-        _ => AutonomyMode::SemiAutonomous,
-    }
+    resolve_autonomy_mode_for_workspace(db, None)
 }
 
 /// Setting key backing the run preset (`agent.preset`).
@@ -410,15 +423,26 @@ pub(crate) fn parse_preset(value: Option<&str>) -> RunPreset {
     }
 }
 
-/// Resolve the persisted run preset from `app_settings` (`agent.preset`),
-/// defaulting to `Coding` when unset or invalid.
+/// Resolve the run preset through `Project (.nexora/) > Personal (SQLite) > Default`.
+#[must_use]
+pub(crate) fn resolve_preset_for_workspace(
+    db: &Database,
+    workspace_root: Option<&Path>,
+) -> RunPreset {
+    let raw = crate::application::settings::resolve_effective_setting(
+        db,
+        workspace_root,
+        PRESET_KEY,
+        None,
+    );
+    parse_preset(raw.as_deref())
+}
+
+/// Resolve the persisted run preset from `app_settings` (`agent.preset`) plus
+/// any active project `.nexora/` override, defaulting to `Coding`.
 #[must_use]
 pub(crate) fn resolve_preset(db: &Database) -> RunPreset {
-    let svc = SettingsService::new(db);
-    match svc.read(PRESET_KEY) {
-        Ok(Some(value)) => parse_preset(Some(value.as_str())),
-        _ => RunPreset::Coding,
-    }
+    resolve_preset_for_workspace(db, None)
 }
 
 /// Setting key backing the approval-park deadline
@@ -444,31 +468,47 @@ pub(crate) use nexora_core::config::{MAX_APPROVAL_TIMEOUT_SECS, MIN_APPROVAL_TIM
 /// [`resolve_spend_limit`]: an unreadable setting degrades to the default
 /// and never fails the run.
 #[must_use]
-pub(crate) fn resolve_approval_timeout(db: &Database) -> std::time::Duration {
-    let svc = SettingsService::new(db);
-    match svc.read(APPROVAL_TIMEOUT_KEY) {
-        Ok(Some(value)) => match value.as_str().trim().parse::<u64>() {
+pub(crate) fn resolve_approval_timeout_for_workspace(
+    db: &Database,
+    workspace_root: Option<&Path>,
+) -> std::time::Duration {
+    let raw = crate::application::settings::resolve_effective_setting(
+        db,
+        workspace_root,
+        APPROVAL_TIMEOUT_KEY,
+        None,
+    );
+    match raw {
+        Some(value) => match value.as_str().trim().parse::<u64>() {
             Ok(secs) if (MIN_APPROVAL_TIMEOUT_SECS..=MAX_APPROVAL_TIMEOUT_SECS).contains(&secs) => {
                 std::time::Duration::from_secs(secs)
             }
             _ => std::time::Duration::from_secs(DEFAULT_APPROVAL_TIMEOUT_SECS),
         },
-        _ => std::time::Duration::from_secs(DEFAULT_APPROVAL_TIMEOUT_SECS),
+        None => std::time::Duration::from_secs(DEFAULT_APPROVAL_TIMEOUT_SECS),
     }
+}
+
+#[must_use]
+pub(crate) fn resolve_approval_timeout(db: &Database) -> std::time::Duration {
+    resolve_approval_timeout_for_workspace(db, None)
 }
 /// Setting key backing the per-run spend guard (`agent.spend_limit_micro_usd`).
 pub(crate) use nexora_core::config::SPEND_LIMIT_KEY;
 
 #[must_use]
-pub(crate) fn resolve_effective_effort(
+pub(crate) fn resolve_effective_effort_for_workspace(
     db: &Database,
+    workspace_root: Option<&Path>,
     provider: &str,
     model: &str,
 ) -> Option<String> {
-    let raw = SettingsService::new(db)
-        .read(nexora_core::config::SELECTED_EFFORT_KEY)
-        .ok()
-        .flatten()?;
+    let raw = crate::application::settings::resolve_effective_setting(
+        db,
+        workspace_root,
+        nexora_core::config::SELECTED_EFFORT_KEY,
+        None,
+    )?;
     let parsed = ReasoningEffort::parse(&raw)?;
     let caps = crate::application::capabilities::resolve_model_capabilities(db, provider, model);
     let candidate = parsed.as_str();
@@ -478,21 +518,40 @@ pub(crate) fn resolve_effective_effort(
         .then(|| candidate.to_string())
 }
 
-/// Resolve the persisted per-run spend limit in micro-USD, mirroring
-/// [`resolve_autonomy_mode`]: `None` means "no limit" and preserves today's
-/// behaviour. A stored value yields `Some` only when it parses as `u64` and
-/// is greater than zero; absent, unparseable, zero, or unreadable values
-/// all resolve to `None`.
 #[must_use]
-pub(crate) fn resolve_spend_limit(db: &Database) -> Option<u64> {
-    let svc = SettingsService::new(db);
-    match svc.read(SPEND_LIMIT_KEY) {
-        Ok(Some(value)) => match value.as_str().trim().parse::<u64>() {
-            Ok(limit) if limit > 0 => Some(limit),
-            _ => None,
-        },
+pub(crate) fn resolve_effective_effort(
+    db: &Database,
+    provider: &str,
+    model: &str,
+) -> Option<String> {
+    resolve_effective_effort_for_workspace(db, None, provider, model)
+}
+
+/// Resolve the persisted per-run spend limit in micro-USD through
+/// `Project (.nexora/) > Personal > Default`, mirroring [`resolve_autonomy_mode`].
+#[must_use]
+pub(crate) fn resolve_spend_limit_for_workspace(
+    db: &Database,
+    workspace_root: Option<&Path>,
+) -> Option<u64> {
+    let raw = crate::application::settings::resolve_effective_setting(
+        db,
+        workspace_root,
+        SPEND_LIMIT_KEY,
+        None,
+    )?;
+    match raw.as_str().trim().parse::<u64>() {
+        Ok(limit) if limit > 0 => Some(limit),
         _ => None,
     }
+}
+
+/// Resolve the persisted per-run spend limit in micro-USD, mirroring
+/// [`resolve_autonomy_mode`]: `None` means "no limit" and preserves today's
+/// behaviour.
+#[must_use]
+pub(crate) fn resolve_spend_limit(db: &Database) -> Option<u64> {
+    resolve_spend_limit_for_workspace(db, None)
 }
 
 /// Canonical routing-profile load for the run path (closes #81).
@@ -534,6 +593,7 @@ pub(crate) fn start_run(
     mode: AutonomyMode,
     preset: RunPreset,
 ) -> Result<i64, AgentRunError> {
+    let access = super::access::AccessContext::root(db).with_workspace(&workspace_root);
     start_run_scoped(
         db,
         registry,
@@ -543,7 +603,7 @@ pub(crate) fn start_run(
         request,
         mode,
         preset,
-        super::access::AccessContext::root(db),
+        access,
     )
 }
 
@@ -741,7 +801,10 @@ fn start_run_claimed(
     // NEX-AGENT-004: every park on this run expires on the configured
     // deadline, so an unanswered approval can never hold the conversation
     // claim forever.
-    gate.set_timeout(resolve_approval_timeout(db));
+    gate.set_timeout(resolve_approval_timeout_for_workspace(
+        db,
+        Some(&workspace_root),
+    ));
     let control = RunControl::new();
     let mode_column = mode_to_column(mode);
     let Some(run_id) = RunRecorder::new(db)
@@ -873,9 +936,28 @@ fn spawn_run(
                     .with_audit_log(Arc::clone(&audit_log))
                     .with_event_sender(tx_for_recorder.clone())
                     .with_stream_deltas(true);
-                if let Some(effort) =
-                    resolve_effective_effort(&db, &run_request.provider, &run_request.model)
+                match crate::application::project_dir::discover_instructions(&workspace_root, None)
                 {
+                    Ok(instructions) => {
+                        if !instructions.skipped_escapes.is_empty() {
+                            log::warn!(
+                                "agent run setup: skipped symlink-escaping instruction file(s)"
+                            );
+                        }
+                        if !instructions.combined.is_empty() {
+                            runner = runner.with_project_instructions(instructions.combined);
+                        }
+                    }
+                    Err(err) => {
+                        log::warn!("agent run setup: instruction discovery skipped: {err}");
+                    }
+                }
+                if let Some(effort) = resolve_effective_effort_for_workspace(
+                    &db,
+                    Some(&workspace_root),
+                    &run_request.provider,
+                    &run_request.model,
+                ) {
                     runner = runner.with_model_config(
                         ModelConfig::new(&run_request.model).with_effort(Some(effort)),
                     );
@@ -1190,6 +1272,7 @@ mod tests {
     use std::time::Duration;
 
     use crate::application::execution::{AiResponse, ExecutorError, ToolCall};
+    use crate::application::settings::SettingsService;
 
     /// Scripted executor: pops one response per provider call.
     struct ScriptedExecutor {

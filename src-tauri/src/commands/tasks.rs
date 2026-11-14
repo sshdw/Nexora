@@ -192,13 +192,16 @@ pub(crate) async fn start_task_run(app: AppHandle, task_id: i64) -> Result<(), C
         let emitter = handle_state_emitter(&handle);
         let host: Arc<dyn AgentRunHost> =
             Arc::new(super::agent::TauriAgentHost::new(handle, db_client.clone()));
+        let mode = service::resolve_autonomy_mode_for_workspace(db_ref, Some(&root));
+        let preset = service::resolve_preset_for_workspace(db_ref, Some(&root));
+        let spend_limit_micro_usd = service::resolve_spend_limit_for_workspace(db_ref, Some(&root));
         let config = TaskRunConfig {
             executor,
             workspace_root: root,
             credential,
-            mode: service::resolve_autonomy_mode(db_ref),
-            preset: service::resolve_preset(db_ref),
-            spend_limit_micro_usd: service::resolve_spend_limit(db_ref),
+            mode,
+            preset,
+            spend_limit_micro_usd,
         };
         tasks::spawn_task_run(
             db_ref,

@@ -616,6 +616,25 @@ export const en = {
   "settings.searchRouting": "Routing profiles",
   "settings.searchMcp": "MCP servers",
   "settings.searchPreset": "Agent preset",
+  "settings.sourceSession": "Session",
+  "settings.sourceProject": "Project",
+  "settings.sourcePersonal": "Personal",
+  "settings.sourceDefault": "Default",
+  "settings.sourceBlocked": "Blocked",
+  "settings.saveScopeLabel": "Save to",
+  "settings.scopePersonal": "Personal",
+  "settings.scopeProject": "Project (.nexora)",
+  "settings.scopeHintPersonal":
+    "Saves to your Personal SQLite profile (applies across workspaces unless overridden).",
+  "settings.scopeHintProject":
+    "Saves to this workspace's .nexora/config.json (security-filtered; never stores secrets).",
+  "settings.scopeWorkspaceRequired":
+    "Open a project workspace folder to save Project (.nexora) overrides.",
+  "settings.blockedBannerTitle": "Blocked untrusted project overrides",
+  "settings.blockedBannerHint":
+    "Security policy blocked {n} project override(s) in .nexora/:",
+  "settings.capabilitiesScopeMissingWorkspace":
+    "Open a project workspace folder to save model capability overrides to Project (.nexora).",
 
   // ---- onboarding -----------------------------------------------------------------------
   "onboarding.title": "Welcome to Nexora",

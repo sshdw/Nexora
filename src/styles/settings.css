@@ -386,3 +386,82 @@
   color: var(--color-on-surface);
   cursor: pointer;
 }
+
+/* ---- Stage 4: Scope selector & source provenance badges ---- */
+.nex-settings-scope-bar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--color-outline-variant);
+  border-radius: var(--shape-small);
+  background: var(--color-surface-container-low);
+}
+
+.nex-settings-scope-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.nex-settings-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-xs);
+  flex-wrap: wrap;
+}
+
+.nex-setting-provenance {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xxs);
+}
+
+.nex-setting-source-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px var(--space-xs);
+  border: 1px solid var(--color-outline-variant);
+  border-radius: var(--shape-full);
+  background: var(--color-surface-container);
+  font-size: var(--type-size-label-small);
+  font-weight: var(--type-weight-medium);
+  color: var(--color-on-surface-variant);
+  line-height: var(--type-line-height-tight);
+}
+
+.nex-setting-source-badge[data-source="project"] {
+  color: var(--color-on-surface);
+  border-color: var(--color-outline);
+}
+
+.nex-setting-source-badge[data-source="session"] {
+  color: var(--color-on-surface);
+  background: var(--color-surface-container-high);
+}
+
+.nex-setting-source-blocked {
+  color: var(--color-error);
+  border-color: var(--color-error-outline);
+  background: var(--color-error-container);
+}
+
+.nex-settings-blocked-banner {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--color-error-outline);
+  border-radius: var(--shape-small);
+  background: var(--color-error-container);
+}
+
+.nex-settings-blocked-list {
+  margin: 0;
+  padding-left: var(--space-md);
+  font-size: var(--type-size-body-small);
+  color: var(--color-on-surface);
+}
