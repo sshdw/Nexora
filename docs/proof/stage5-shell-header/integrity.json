@@ -1,0 +1,222 @@
+[
+  {
+    "file": "00-before-empty.png",
+    "phase": "baseline",
+    "md5": "d87794bcfb627a8608442b232ec59a33",
+    "colors": 5602,
+    "dimensions": [
+      1536,
+      816
+    ],
+    "shown": "Baseline empty shell; top strip is absent."
+  },
+  {
+    "file": "01-before-sessions-actions.png",
+    "phase": "baseline",
+    "md5": "5a20c4da6adf9f11cd7e15ced3d73700",
+    "colors": 6765,
+    "dimensions": [
+      1536,
+      816
+    ],
+    "shown": "Baseline Sessions row action placement."
+  },
+  {
+    "file": "02-before-single-header.png",
+    "phase": "baseline",
+    "md5": "b97d8f2b7c23b3512e1e3bf012f1efc4",
+    "colors": 13989,
+    "dimensions": [
+      1536,
+      816
+    ],
+    "shown": "Baseline standalone conversation header and duplicated workspace."
+  },
+  {
+    "file": "03-before-multiple-tabs.png",
+    "phase": "baseline",
+    "md5": "91ba48ce17afd4c7af24b79d54f6cdc9",
+    "colors": 10830,
+    "dimensions": [
+      1536,
+      816
+    ],
+    "shown": "Baseline multiple tabs and workspace chip in the tab strip."
+  },
+  {
+    "file": "04-before-split-headers.png",
+    "phase": "baseline",
+    "md5": "2ab5b774a05c8b8e65d433369e0aef03",
+    "colors": 24921,
+    "dimensions": [
+      1536,
+      816
+    ],
+    "shown": "Baseline split panes with standalone headers."
+  },
+  {
+    "file": "10-after-single-session.png",
+    "phase": "final-round2",
+    "md5": "456cff4df0e0ce7aa3785b5edfc9b973",
+    "colors": 8779,
+    "dimensions": [
+      1536,
+      816
+    ],
+    "shown": "One long-title session; trailing Split remains visible and disabled."
+  },
+  {
+    "file": "11-after-empty-stable-split.png",
+    "phase": "final-round2",
+    "md5": "65fc130ae8c0711dfcbcc9b5a77dff22",
+    "colors": 1668,
+    "dimensions": [
+      1536,
+      816
+    ],
+    "shown": "Zero open sessions; Split retains its trailing strip position."
+  },
+  {
+    "file": "12-after-loaded-primary.png",
+    "phase": "final-round2",
+    "md5": "4f912411cc954a7245ac0198f7504cdb",
+    "colors": 13238,
+    "dimensions": [
+      1536,
+      816
+    ],
+    "shown": "Loaded synthetic retained run; standalone pane header is removed."
+  },
+  {
+    "file": "13-after-sessions-export-actions.png",
+    "phase": "final-round2",
+    "md5": "c6c9ab8e27bcdb3a77c3789d028b6b0e",
+    "colors": 15679,
+    "dimensions": [
+      1536,
+      816
+    ],
+    "shown": "Focused Sessions row exposes Rename, Archive, Export and Delete actions."
+  },
+  {
+    "file": "14-after-inactive-export-target.png",
+    "phase": "final-round2",
+    "md5": "ff0d65b800e051070bf0949485e996fa",
+    "colors": 14730,
+    "dimensions": [
+      1536,
+      816
+    ],
+    "shown": "Export names the inactive secondary session while primary stays selected."
+  },
+  {
+    "file": "15-after-archived-export-target.png",
+    "phase": "final-round2",
+    "md5": "27b9e509ae2898d5f8c8ec864cb59a0b",
+    "colors": 14872,
+    "dimensions": [
+      1536,
+      816
+    ],
+    "shown": "Archived row Export names the archived session while primary stays selected."
+  },
+  {
+    "file": "16-after-palette-export.png",
+    "phase": "final-round2",
+    "md5": "3b3fef33cb8749372e8d2f0d490b5dca",
+    "colors": 14683,
+    "dimensions": [
+      1536,
+      816
+    ],
+    "shown": "Existing command palette Export opens the current primary session target."
+  },
+  {
+    "file": "17-after-multiple-tabs.png",
+    "phase": "final-round2",
+    "md5": "5b7707f8b6ef33ebeed6b5b3b563c719",
+    "colors": 14493,
+    "dimensions": [
+      1536,
+      816
+    ],
+    "shown": "Two open sessions share one stable trailing Split control without a workspace chip."
+  },
+  {
+    "file": "18-after-split-identities.png",
+    "phase": "final-round2",
+    "md5": "0f2ce89ed61adb219426dfd26a7552d5",
+    "colors": 17704,
+    "dimensions": [
+      1536,
+      816
+    ],
+    "shown": "Split panes show compact individual title badges and independent content."
+  },
+  {
+    "file": "19-after-narrow-split.png",
+    "phase": "final-round2",
+    "md5": "51bc435c3191edf7a3a4d418a18c3236",
+    "colors": 17981,
+    "dimensions": [
+      1026,
+      751
+    ],
+    "shown": "Narrow restored window retains compact split identities and a trailing Close split control."
+  },
+  {
+    "file": "20-after-ru-single.png",
+    "phase": "final-round2",
+    "md5": "73adcae9e4cb5623e142845e991832f2",
+    "colors": 14517,
+    "dimensions": [
+      1026,
+      751
+    ],
+    "shown": "Russian shell labels at narrow width retain the permanent split control."
+  },
+  {
+    "file": "21-after-export-focus-return.png",
+    "phase": "final-round2",
+    "md5": "c3ff9ccfa10be0be52883573e7faf03f",
+    "colors": 14559,
+    "dimensions": [
+      1536,
+      816
+    ],
+    "shown": "After pointer cancellation, Sessions and its exact secondary-row Export invoker remain mounted; focus restoration is covered by integration tests."
+  },
+  {
+    "file": "22-after-palette-command.png",
+    "phase": "final-round2",
+    "md5": "3b8b9f7bf4b641daf76930621a3f2e2d",
+    "colors": 3282,
+    "dimensions": [
+      1536,
+      816
+    ],
+    "shown": "Keyboard-filtered palette exposes the existing Export active conversation command."
+  },
+  {
+    "file": "23-after-independent-drafts.png",
+    "phase": "final-round2",
+    "md5": "e08c898922a3b5d55182e691be6c8e14",
+    "colors": 20029,
+    "dimensions": [
+      1536,
+      816
+    ],
+    "shown": "Two distinct unsent synthetic drafts remain visible in their respective split panes."
+  },
+  {
+    "file": "24-after-ru-archived-split.png",
+    "phase": "final-round2",
+    "md5": "2082bd157640de462b5d88f10d52e31d",
+    "colors": 20441,
+    "dimensions": [
+      1026,
+      751
+    ],
+    "shown": "Narrow Russian Split identifies the archived pane with \u0412 \u0430\u0440\u0445\u0438\u0432\u0435 and retains primary content/draft."
+  }
+]

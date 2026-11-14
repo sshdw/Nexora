@@ -1,0 +1,58 @@
+{
+  "baseline_build": {
+    "binary_sha": "99295C470BCBF141CFC77126258172A2839011C4C7ECC9323F43A5B1F1164F55",
+    "tracked_clean": true,
+    "identifier": "com.nexora.qa.stage5a.r20261114",
+    "config": ".ai/validation/stage5-pr5a/qa-build-config.json",
+    "source": "164049070d193aebe14d802e435043c3ed11957f"
+  },
+  "final_build": {
+    "source": "757467534516297efaa563a8696cab8f8db1d445",
+    "binary_sha": "3A43351FFE29472AB32FDD2FA194F2C3B173D305769503C2A6237317ABCB38C2",
+    "identifier": "com.nexora.qa.stage5a.r20261114round2",
+    "geometry": "maximized; restored1025x720"
+  },
+  "database": {
+    "schema": 17,
+    "integrity": [
+      [
+        "ok"
+      ]
+    ],
+    "foreign_keys": [],
+    "providers": 0,
+    "running": 0,
+    "row_counts": {
+      "conversations": 3,
+      "messages": 0,
+      "agent_runs": 1,
+      "agent_steps": 1,
+      "durable_run_events": 3,
+      "file_checkpoints": 0
+    },
+    "business_rows_unchanged": true
+  },
+  "production_artifact_restore": {
+    "restored_at": "2026-11-14T22:48:28.9705458+05:00",
+    "files": 5,
+    "hashes_match": true
+  },
+  "native_export": {
+    "source": "e6eacc61abcdc92e7d5cf8d46f7e3e963316d818",
+    "file_sha256": "b5f9b6a135401c1097bf13c4de92a268cc22e1c1d6ea545aa495085fe7e330d3",
+    "format": "nexora-conversation",
+    "version": 1,
+    "conversation": {
+      "id": 92002,
+      "title": "Second session with a deliberately long title for compact split identity and truncation QA",
+      "status": "active",
+      "created_at": 1794675703,
+      "updated_at": 1794675703
+    },
+    "messages_count": 0,
+    "permission": "Owner manually approved native Allow; payload read and verified afterward"
+  },
+  "shutdown": "Final QA force-stopped intentionally; no orderly-exit assertion",
+  "provider_requests": 0,
+  "messages_sent": 0
+}
