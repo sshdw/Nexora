@@ -352,6 +352,14 @@ describe("App — ModelPicker connectionGroups & selectConnectionModel integrati
   });
 });
 
+// Include the pointerdown observed by DockPanel before the subsequent click.
+function clickWithPointer(target: HTMLElement) {
+  fireEvent.pointerDown(target);
+  target.focus();
+  fireEvent.pointerUp(target);
+  fireEvent.click(target);
+}
+
 describe("App — Stage5 PR5A shell integration", () => {
   beforeAll(() => {
     vi.stubGlobal(
@@ -382,7 +390,7 @@ describe("App — Stage5 PR5A shell integration", () => {
       });
       exportButton.focus();
       mockInvoke.mockClear();
-      fireEvent.click(exportButton);
+      clickWithPointer(exportButton);
       const dialog = await screen.findByRole("dialog", {
         name: "Export conversation",
       });
@@ -392,9 +400,10 @@ describe("App — Stage5 PR5A shell integration", () => {
       ).toHaveAttribute("aria-selected", "true");
       expect(screen.getAllByRole("tab")).toHaveLength(1);
       vi.mocked(save).mockResolvedValueOnce("D:\\exports\\session.json");
-      fireEvent.click(
+      clickWithPointer(
         within(dialog).getByRole("button", { name: "Choose location" })
       );
+      expect(exportButton.isConnected).toBe(true);
       await waitFor(() =>
         expect(mockInvoke).toHaveBeenCalledWith("export_conversation_to_file", {
           conversationId: id,
@@ -416,8 +425,53 @@ describe("App — Stage5 PR5A shell integration", () => {
       expect(
         mockInvoke.mock.calls.some(([cmd]) => cmd === "conversation_history")
       ).toBe(false);
-      fireEvent.click(within(dialog).getByRole("button", { name: "Done" }));
+      clickWithPointer(within(dialog).getByRole("button", { name: "Done" }));
       await waitFor(() => expect(exportButton).toHaveFocus());
+      expect(
+        within(actions).getByRole("button", { name: "Export conversation" })
+      ).toBe(exportButton);
+    }
+  );
+
+  it.each([
+    [2, "Inactive session"],
+    [3, "Archived session"],
+  ] as const)(
+    "restores the exact row %i export invoker after pointer cancellation",
+    async (_id, title) => {
+      render(<App />);
+      await screen.findByRole("textbox", { name: "Message" });
+      clickWithPointer(screen.getByRole("button", { name: "Sessions" }));
+      const actions = await screen.findByRole("toolbar", {
+        name: `Actions for ${title}`,
+      });
+      const exportButton = within(actions).getByRole("button", {
+        name: "Export conversation",
+      });
+      clickWithPointer(exportButton);
+      const dialog = await screen.findByRole("dialog", {
+        name: "Export conversation",
+      });
+      mockInvoke.mockClear();
+      clickWithPointer(within(dialog).getByRole("button", { name: "Cancel" }));
+      expect(exportButton.isConnected).toBe(true);
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("dialog", { name: "Export conversation" })
+        ).toBeNull()
+      );
+      expect(exportButton).toHaveFocus();
+      expect(
+        within(actions).getByRole("button", { name: "Export conversation" })
+      ).toBe(exportButton);
+      expect(mockInvoke).not.toHaveBeenCalledWith(
+        "export_conversation_to_file",
+        expect.anything()
+      );
+      // Modal ownership is temporary: normal outside pointer dismissal resumes.
+      const sessions = screen.getByRole("dialog", { name: "Sessions" });
+      clickWithPointer(screen.getByRole("textbox", { name: "Message" }));
+      expect(sessions.isConnected).toBe(false);
     }
   );
 

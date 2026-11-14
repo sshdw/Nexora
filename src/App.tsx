@@ -841,7 +841,11 @@ function AppShell() {
           <DockPanel
             id="sessions"
             title={t("dock.sessions")}
-            onClose={closeDockPanel}
+            onClose={() => {
+              // Export owns interaction until its modal closes. Keep the row
+              // mounted so Modal can restore focus to the exact invoker.
+              if (exportTargetId === null) closeDockPanel();
+            }}
           >
             <SessionsPanel
               conversations={conversations}
