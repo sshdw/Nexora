@@ -711,6 +711,13 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(target, alias).unwrap();
     }
+    // Remove only the synthetic alias, never recurse into its target.
+    fn unlink_directory(alias: &Path) {
+        #[cfg(windows)]
+        std::fs::remove_dir(alias).unwrap();
+        #[cfg(unix)]
+        std::fs::remove_file(alias).unwrap();
+    }
     #[test]
     fn search_directory_alias_retarget_invalidates_pending_and_reusable_consent() {
         let workspace = temp_workspace();
@@ -729,14 +736,14 @@ mod tests {
             json!({"pattern":"needle","path":".","directory":"alias"}),
         );
         let handle = gate.prepare_pending(&request);
-        std::fs::remove_dir(&alias).unwrap();
+        unlink_directory(&alias);
         link_directory(&b, &alias);
         assert!(!gate.respond(&handle, ApprovalDecision::Approved));
         assert_eq!(
             gate.park_until_resolved(&request),
             Ok(ApprovalDecision::Invalidated)
         );
-        std::fs::remove_dir(&alias).unwrap();
+        unlink_directory(&alias);
         link_directory(&a, &alias);
         approve(&gate, &request, true);
         let execute = || {
@@ -752,7 +759,7 @@ mod tests {
             execute().unwrap().contains("needle A"),
             "same canonical scope reuses exact consent"
         );
-        std::fs::remove_dir(&alias).unwrap();
+        unlink_directory(&alias);
         link_directory(&b, &alias);
         assert!(!gate.has_current_consent(&request));
         assert_eq!(
@@ -763,7 +770,7 @@ mod tests {
         let result = execute().unwrap();
         assert!(result.contains("needle B"));
         assert!(!result.contains("needle A"));
-        std::fs::remove_dir(&alias).unwrap();
+        unlink_directory(&alias);
         std::fs::remove_dir_all(&workspace).unwrap();
     }
     #[test]
@@ -782,7 +789,7 @@ mod tests {
         let access = AccessContext::fixed(AccessProfile::Standard);
         access
             .with_identity(&workspace, &request, |_, bound, _| {
-                std::fs::remove_dir(&alias).unwrap();
+                unlink_directory(&alias);
                 link_directory(&b, &alias);
                 assert_eq!(
                     super::super::tools::path_safety::execution_target(
@@ -795,7 +802,7 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        std::fs::remove_dir(&alias).unwrap();
+        unlink_directory(&alias);
         std::fs::remove_dir_all(&workspace).unwrap();
     }
 }

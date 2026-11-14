@@ -684,6 +684,13 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(target, link).unwrap();
     }
+    // Remove only the synthetic alias, never recurse into its target.
+    fn unlink_directory(alias: &Path) {
+        #[cfg(windows)]
+        std::fs::remove_dir(alias).unwrap();
+        #[cfg(unix)]
+        std::fs::remove_file(alias).unwrap();
+    }
     #[test]
     fn canonical_aliases_and_swapped_parent_links_never_redirect_file_io() {
         let workspace = temp_workspace();
@@ -709,7 +716,7 @@ mod tests {
             std::fs::read_to_string(outside.join("file")).unwrap(),
             "outside sentinel"
         );
-        std::fs::remove_dir(&directory).unwrap();
+        unlink_directory(&directory);
         link_dir(&private, &directory);
         assert!(secure_read(&workspace, &resolved).is_err());
         assert!(secure_write(&workspace, &resolved, b"changed").is_err());
