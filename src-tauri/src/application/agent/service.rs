@@ -40,6 +40,7 @@ use serde::Serialize;
 
 use super::action_memory::{self, ActionSummary, AgentStepView};
 use super::approval::{ApprovalGate, AutonomyMode};
+use super::checkpoints::{CheckpointRunContext, CheckpointStore};
 use super::control::{AgentRunEvent, RunControl};
 use super::governance::{audit, AuditEvent, AuditLog};
 use super::lifecycle::{observe_transition, RunState};
@@ -290,6 +291,12 @@ pub(crate) trait AgentRunHost: Send + Sync + 'static {
         provider: &str,
         model: &str,
     );
+
+    /// Optional verified content-addressed checkpoint store (`<app_data>/checkpoints`).
+    /// Returning `None` keeps fail-closed `PerCommandConsent` gating.
+    fn checkpoint_store(&self) -> Option<CheckpointStore> {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -705,7 +712,11 @@ fn start_run_claimed(
 
     // Create the linked run row (D50) through the recorder so the run id is
     // known synchronously; the spawned run adopts it (no second insert).
-    let gate = ApprovalGate::new(mode).with_access(access);
+    let checkpoint_store = host.checkpoint_store();
+    let gate = ApprovalGate::new(mode)
+        .with_access(access)
+        .with_checkpoints(checkpoint_store.clone());
+    gate.bind_workspace(&workspace_root);
     // NEX-AGENT-004: every park on this run expires on the configured
     // deadline, so an unanswered approval can never hold the conversation
     // claim forever.
@@ -743,6 +754,7 @@ fn start_run_claimed(
         request.clone(),
         history,
         action_summary,
+        checkpoint_store,
     )?;
     Ok(run_id)
 }
@@ -772,6 +784,7 @@ fn spawn_run(
     request: AgentRunRequest,
     history: Vec<AiMessage>,
     action_summary: ActionSummary,
+    checkpoint_store: Option<CheckpointStore>,
 ) -> Result<(), AgentRunError> {
     let (tx, rx): (Sender<AgentRunEvent>, Receiver<AgentRunEvent>) = mpsc::channel();
     // Terminal-frame channel: the run thread sends the `RunFinished` payload
@@ -843,6 +856,16 @@ fn spawn_run(
                 }
                 if let Some(limit) = run_request.spend_limit_micro_usd {
                     runner = runner.with_spend_limit(limit);
+                }
+                if let Some(store) = checkpoint_store.as_ref() {
+                    if store.verify_for_workspace(&workspace_root).is_ok() {
+                        runner = runner.with_checkpoints(CheckpointRunContext::new(
+                            Arc::new(db.clone()),
+                            store.clone(),
+                            run_request.conversation_id,
+                            run_id,
+                        ));
+                    }
                 }
                 runner.with_run_recorder(recorder).run(
                     &run_request.provider,

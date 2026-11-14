@@ -6,7 +6,8 @@
 
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 
-import type { AgentRunView } from "../../lib/useAgentRun";
+import type { AgentRunView, RevertOutcome } from "../../lib/useAgentRun";
+import type { FileCheckpoint } from "../../lib/tauri";
 import { tp, tr } from "../../lib/strings";
 import { useStrings } from "../../lib/useLocale";
 import M3Button from "../M3Button";
@@ -51,7 +52,25 @@ export interface AgentRunStepsProps {
    *  the persisted list once. The parent owns the binding so the prop stays
    *  referentially stable across frames, like every callback above. */
   onLoadRunSteps?: (runId: number) => void;
+  /** Lazy-load pre/post-mutation checkpoints when a run with file edits expands. */
+  onLoadCheckpoints?: (runId: number) => void;
+  /** Revert a single checkpoint (`force=true` overwrites external changes). */
+  onRevertCheckpoint?: (
+    runId: number,
+    checkpointId: number,
+    force?: boolean
+  ) => Promise<RevertOutcome>;
+  /** Revert every un-reverted checkpoint recorded in `turnIndex`. */
+  onRevertTurn?: (
+    runId: number,
+    turnIndex: number,
+    force?: boolean
+  ) => Promise<RevertOutcome>;
 }
+
+type RevertTarget =
+  | { kind: "file"; checkpointId: number }
+  | { kind: "turn"; turnIndex: number };
 
 /** The Activity Spine (brief §7). Mounted once per run and never
  * conditionally on data: the rail itself is the run's timeline frame and
@@ -127,6 +146,9 @@ function AgentRunSteps({
   onExpandStep,
   onCollapseStep,
   onLoadRunSteps,
+  onLoadCheckpoints,
+  onRevertCheckpoint,
+  onRevertTurn,
 }: AgentRunStepsProps) {
   const { locale, t } = useStrings();
   const sorted = useMemo(
@@ -232,6 +254,74 @@ function AgentRunSteps({
   useEffect(() => {
     if (!collapsed && sortedCount === 0) onLoadRunSteps?.(run.run_id);
   }, [collapsed, sortedCount, onLoadRunSteps, run.run_id]);
+  const hasMutatingSteps = useMemo(
+    () =>
+      sorted.some(
+        (step) =>
+          step.tool_name === "write_file" || step.tool_name === "edit_file"
+      ),
+    [sorted]
+  );
+  useEffect(() => {
+    if (!collapsed && hasMutatingSteps && run.checkpoints_loaded !== true) {
+      onLoadCheckpoints?.(run.run_id);
+    }
+  }, [
+    collapsed,
+    hasMutatingSteps,
+    run.checkpoints_loaded,
+    onLoadCheckpoints,
+    run.run_id,
+  ]);
+  const checkpointTurns = useMemo(() => {
+    const list = run.checkpoints ?? [];
+    if (list.length === 0) return [];
+    const byTurn = new Map<number, FileCheckpoint[]>();
+    for (const cp of list) {
+      const bucket = byTurn.get(cp.turn_index);
+      if (bucket) bucket.push(cp);
+      else byTurn.set(cp.turn_index, [cp]);
+    }
+    return [...byTurn.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([turnIndex, items]) => ({ turnIndex, items }));
+  }, [run.checkpoints]);
+  const [revertingKey, setRevertingKey] = useState<string | null>(null);
+  const [conflict, setConflict] = useState<{
+    target: RevertTarget;
+    message: string;
+  } | null>(null);
+  const [revertError, setRevertError] = useState<string | null>(null);
+
+  const executeRevert = useCallback(
+    async (target: RevertTarget, force = false) => {
+      if (target.kind === "file" && !onRevertCheckpoint) return;
+      if (target.kind === "turn" && !onRevertTurn) return;
+      const key =
+        target.kind === "file"
+          ? `file:${target.checkpointId}`
+          : `turn:${target.turnIndex}`;
+      setRevertingKey(key);
+      setRevertError(null);
+      try {
+        const outcome =
+          target.kind === "file"
+            ? await onRevertCheckpoint!(run.run_id, target.checkpointId, force)
+            : await onRevertTurn!(run.run_id, target.turnIndex, force);
+        if (outcome.status === "reverted") {
+          setConflict(null);
+        } else if (outcome.status === "conflict") {
+          setConflict({ target, message: outcome.message });
+        } else {
+          setConflict(null);
+          setRevertError(outcome.message);
+        }
+      } finally {
+        setRevertingKey((prev) => (prev === key ? null : prev));
+      }
+    },
+    [onRevertCheckpoint, onRevertTurn, run.run_id]
+  );
   // Stable per group: the identity is the head step's seq — unique within the
   // run (only one group starts at a given seq) and invariant across the
   // per-frame re-sort/re-group. Derived from seq, not from a sanitised text
@@ -698,6 +788,137 @@ function AgentRunSteps({
                 );
               })}
             </div>
+            {checkpointTurns.length > 0 && (
+              <div className="nex-agent-checkpoints">
+                <div className="nex-agent-checkpoints-head">
+                  {tr(locale, "agent.checkpointsTitle", {
+                    n: (run.checkpoints ?? []).length,
+                  })}
+                </div>
+                {revertError && (
+                  <div
+                    className="nex-agent-checkpoint-error"
+                    role="alert"
+                  >
+                    {revertError}
+                  </div>
+                )}
+                {conflict && (
+                  <div
+                    className="nex-agent-checkpoint-conflict"
+                    role="alertdialog"
+                    aria-label={t("agent.checkpointConflictTitle")}
+                  >
+                    <div className="nex-agent-checkpoint-conflict-title">
+                      {t("agent.checkpointConflictTitle")}
+                    </div>
+                    <p className="nex-agent-checkpoint-conflict-body">
+                      {t("agent.checkpointConflictBody")}
+                    </p>
+                    <div className="nex-agent-checkpoint-conflict-actions">
+                      <M3Button
+                        variant="primary"
+                        size="sm"
+                        disabled={revertingKey !== null}
+                        onClick={() => void executeRevert(conflict.target, true)}
+                      >
+                        {t("agent.checkpointForceRevert")}
+                      </M3Button>
+                      <M3Button
+                        variant="quiet"
+                        size="sm"
+                        disabled={revertingKey !== null}
+                        onClick={() => setConflict(null)}
+                      >
+                        {t("agent.checkpointCancelRevert")}
+                      </M3Button>
+                    </div>
+                  </div>
+                )}
+                <div className="nex-agent-checkpoint-turns">
+                  {checkpointTurns.map(({ turnIndex, items }) => {
+                    const hasUnreverted = items.some(
+                      (cp) => cp.reverted_at === null
+                    );
+                    const turnKey = `turn:${turnIndex}`;
+                    return (
+                      <div
+                        key={turnIndex}
+                        className="nex-agent-checkpoint-turn"
+                      >
+                        <div className="nex-agent-checkpoint-turn-head">
+                          <span className="nex-agent-checkpoint-turn-label">
+                            {tr(locale, "agent.checkpointTurnLabel", {
+                              turn: turnIndex + 1,
+                            })}
+                          </span>
+                          {hasUnreverted && onRevertTurn && (
+                            <M3Button
+                              variant="secondary"
+                              size="sm"
+                              disabled={revertingKey !== null}
+                              onClick={() =>
+                                void executeRevert({ kind: "turn", turnIndex })
+                              }
+                            >
+                              {revertingKey === turnKey
+                                ? t("agent.checkpointReverting")
+                                : t("agent.checkpointRevertTurn")}
+                            </M3Button>
+                          )}
+                        </div>
+                        <div className="nex-agent-checkpoint-list">
+                          {items.map((cp) => {
+                            const fileKey = `file:${cp.id}`;
+                            const reverted = cp.reverted_at !== null;
+                            return (
+                              <div
+                                key={cp.id}
+                                className="nex-agent-checkpoint-row"
+                              >
+                                <div className="nex-agent-checkpoint-info">
+                                  <span className="nex-tag nex-agent-checkpoint-kind">
+                                    {cp.pre_existed
+                                      ? t("agent.checkpointModified")
+                                      : t("agent.checkpointCreated")}
+                                  </span>
+                                  <code className="nex-agent-checkpoint-path">
+                                    {cp.relative_path}
+                                  </code>
+                                </div>
+                                {reverted ? (
+                                  <span className="nex-tag nex-agent-checkpoint-reverted">
+                                    {t("agent.checkpointReverted")}
+                                  </span>
+                                ) : (
+                                  onRevertCheckpoint && (
+                                    <M3Button
+                                      variant="quiet"
+                                      size="sm"
+                                      disabled={revertingKey !== null}
+                                      onClick={() =>
+                                        void executeRevert({
+                                          kind: "file",
+                                          checkpointId: cp.id,
+                                        })
+                                      }
+                                    >
+                                      {revertingKey === fileKey
+                                        ? t("agent.checkpointReverting")
+                                        : t("agent.checkpointRevertFile")}
+                                    </M3Button>
+                                  )
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
         </>
       )}

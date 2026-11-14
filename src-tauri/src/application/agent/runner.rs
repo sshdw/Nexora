@@ -89,6 +89,7 @@ use crate::application::execution::{
 
 use super::budget;
 pub(crate) use super::budget::{DEFAULT_MAX_ITERATIONS, DEFAULT_REQUEST_TIMEOUT};
+use super::checkpoints::CheckpointRunContext;
 use super::compaction::{self, CompactionReason, ContextAction, ContextGovernor};
 use super::dispatch;
 pub(crate) use super::errors::AgentError;
@@ -178,6 +179,8 @@ pub(crate) struct AgentRunner<'a> {
     /// smart-assembly opening (plus its proactive seed) back to the legacy
     /// unbounded build. Applied via [`Self::with_run_flags`].
     run_flags: RunFlags,
+    /// Optional disk-backed pre/post file checkpoint context (Stage 2 PR 2B).
+    checkpoint_ctx: Option<CheckpointRunContext>,
 }
 
 /// Outcome of one in-place compaction attempt (Task T4).
@@ -233,6 +236,7 @@ impl<'a> AgentRunner<'a> {
             context_limit_tokens: None,
             model_config: None,
             run_flags: RunFlags::default(),
+            checkpoint_ctx: None,
         }
     }
 
@@ -420,6 +424,12 @@ impl<'a> AgentRunner<'a> {
     #[must_use]
     pub(crate) fn with_run_flags(mut self, flags: RunFlags) -> Self {
         self.run_flags = flags;
+        self
+    }
+
+    /// Attach a disk-backed file checkpoint context for mutating file tools.
+    pub(crate) fn with_checkpoints(mut self, checkpoints: CheckpointRunContext) -> Self {
+        self.checkpoint_ctx = Some(checkpoints);
         self
     }
 
@@ -931,6 +941,8 @@ impl<'a> AgentRunner<'a> {
                 audit,
                 role: self.role,
                 injection_enabled: self.run_flags.injection,
+                checkpoints: self.checkpoint_ctx.as_ref(),
+                turn_index: steps_taken.saturating_sub(1),
             };
             let dispatch_outcome =
                 dispatch::dispatch_tool_calls(&ctx, &tool_calls, &mut messages, &mut record);

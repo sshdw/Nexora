@@ -26,11 +26,13 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
   within,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { AgentRunView, AgentStepView } from "../lib/useAgentRun";
+import type { AgentRunView, AgentStepView, RevertOutcome } from "../lib/useAgentRun";
+import type { FileCheckpoint } from "../lib/tauri";
 import { LOCALE_KEY, LocaleProvider } from "../lib/useLocale";
 import AgentRunSteps, { type AgentRunStepsProps } from "./AgentRunSteps";
 
@@ -1325,5 +1327,143 @@ describe("M04 approval scope and shell posture", () => {
     expect(
       screen.getByText(/Some shell syntax could not be classified/)
     ).toBeInTheDocument();
+  });
+});
+
+function checkpointRow(
+  overrides: Partial<FileCheckpoint> = {}
+): FileCheckpoint {
+  return {
+    id: 101,
+    conversation_id: 1,
+    run_id: 7,
+    step_id: 12,
+    turn_index: 0,
+    workspace_root: "/ws",
+    relative_path: "src/app.ts",
+    tool_name: "write_file",
+    pre_existed: true,
+    pre_blob_sha256: "a".repeat(64),
+    pre_size_bytes: 10,
+    post_blob_sha256: "b".repeat(64),
+    post_size_bytes: 18,
+    reverted_at: null,
+    created_at: 1005,
+    ...overrides,
+  };
+}
+
+describe("AgentRunSteps checkpoints & 1-click revert", () => {
+  it("lazy-loads checkpoints only when expanded with mutating steps and renders per-turn undo controls", () => {
+    const onLoadCheckpoints = vi.fn();
+    // A folded completed run with mutating steps does NOT fetch checkpoints until expanded.
+    const foldedWriteRun = runView({
+      status: "completed",
+      steps: [
+        stepView({ id: 1, seq: 1, tool_name: "write_file" }),
+        stepView({ id: 2, seq: 2, tool_name: "edit_file" }),
+        stepView({ id: 3, seq: 3, tool_name: "read_file" }),
+        stepView({ id: 4, seq: 4, tool_name: "search_files" }),
+        stepView({ id: 5, seq: 5, tool_name: "list_directory" }),
+        stepView({ id: 6, seq: 6, tool_name: "read_file" }),
+      ],
+      checkpoints_loaded: false,
+    });
+    const { container, rerenderRun } = renderRun(foldedWriteRun, {
+      onLoadCheckpoints,
+    });
+    expect(onLoadCheckpoints).not.toHaveBeenCalled();
+
+    // Expanding triggers lazy checkpoint fetch.
+    fireEvent.click(disclosure(container)!);
+    expect(onLoadCheckpoints).toHaveBeenCalledWith(7);
+
+    // Non-mutating expanded run never triggers checkpoint fetch.
+    onLoadCheckpoints.mockClear();
+    const readOnlyRun = runView({
+      run_id: 8,
+      status: "completed",
+      steps: [stepView({ id: 9, seq: 1, tool_name: "read_file" })],
+      checkpoints_loaded: false,
+    });
+    rerenderRun(readOnlyRun, { onLoadCheckpoints });
+    expect(onLoadCheckpoints).not.toHaveBeenCalled();
+
+    const writeRun = runView({
+      status: "completed",
+      steps: [stepView({ id: 2, seq: 1, tool_name: "write_file" })],
+      checkpoints: [
+        checkpointRow({ id: 10, turn_index: 0, relative_path: "src/app.ts", pre_existed: true }),
+        checkpointRow({ id: 11, turn_index: 1, relative_path: "src/new.ts", pre_existed: false }),
+        checkpointRow({
+          id: 12,
+          turn_index: 1,
+          relative_path: "src/done.ts",
+          pre_existed: true,
+          reverted_at: 1234,
+        }),
+      ],
+      checkpoints_loaded: true,
+    });
+    rerenderRun(writeRun, { onLoadCheckpoints });
+    expect(screen.getByText("Checkpoints (3)")).toBeInTheDocument();
+    expect(screen.getByText("Turn 1")).toBeInTheDocument();
+    expect(screen.getByText("Turn 2")).toBeInTheDocument();
+    expect(screen.getByText("src/app.ts")).toBeInTheDocument();
+    expect(screen.getByText("src/new.ts")).toBeInTheDocument();
+    expect(screen.getAllByText("Modified")).toHaveLength(2);
+    expect(screen.getByText("Created")).toBeInTheDocument();
+    expect(screen.getByText("Reverted")).toBeInTheDocument();
+  });
+
+  it("invokes file revert and turn revert, and handles conflict -> force revert flow", async () => {
+    const onRevertCheckpoint = vi
+      .fn<(runId: number, checkpointId: number, force?: boolean) => Promise<RevertOutcome>>()
+      .mockResolvedValueOnce({
+        status: "conflict",
+        message: "Target file was modified externally",
+      })
+      .mockResolvedValueOnce({ status: "reverted" });
+    const onRevertTurn = vi
+      .fn<(runId: number, turnIndex: number, force?: boolean) => Promise<RevertOutcome>>()
+      .mockResolvedValue({ status: "reverted" });
+
+    renderRun(
+      runView({
+        status: "completed",
+        steps: [stepView({ id: 2, seq: 1, tool_name: "edit_file" })],
+        checkpoints: [
+          checkpointRow({ id: 21, turn_index: 0, relative_path: "src/main.ts" }),
+          checkpointRow({ id: 22, turn_index: 1, relative_path: "src/util.ts" }),
+        ],
+        checkpoints_loaded: true,
+      }),
+      { onRevertCheckpoint, onRevertTurn }
+    );
+
+    const fileRevertButtons = screen.getAllByRole("button", { name: "Revert" });
+    fireEvent.click(fileRevertButtons[0]!);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("alertdialog", { name: "Target modified outside this run" })
+      ).toBeInTheDocument()
+    );
+    expect(onRevertCheckpoint).toHaveBeenCalledWith(7, 21, false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Force revert" }));
+    await waitFor(() =>
+      expect(onRevertCheckpoint).toHaveBeenCalledWith(7, 21, true)
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("alertdialog", { name: "Target modified outside this run" })
+      ).not.toBeInTheDocument()
+    );
+
+    const turnButtons = screen.getAllByRole("button", { name: "Revert turn" });
+    fireEvent.click(turnButtons[1]!);
+    await waitFor(() =>
+      expect(onRevertTurn).toHaveBeenCalledWith(7, 1, false)
+    );
   });
 });

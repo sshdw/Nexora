@@ -1958,6 +1958,8 @@ fn shell_group_injection_hold_approval_is_current_call_consent() {
         audit: None,
         role: None,
         injection_enabled: true,
+        checkpoints: None,
+        turn_index: 0,
     };
     dispatch_tool_calls(&ctx, &[call], &mut messages, &mut None).expect("held shell dispatches");
     drop(tx);
@@ -2864,6 +2866,8 @@ fn final_rule_refresh_rejects_stale_allow_snapshot_without_obsolete_provenance()
         audit: None,
         role: None,
         injection_enabled: true,
+        checkpoints: None,
+        turn_index: 0,
     };
     let mut active = ActiveRunRecord::start(RunRecorder::new(&db), "m", "full_autonomous");
     let mut messages = Vec::new();

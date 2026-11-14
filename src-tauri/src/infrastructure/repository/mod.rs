@@ -27,6 +27,7 @@ pub mod agent_tasks;
 pub mod attachments;
 pub mod conversations;
 pub mod debt_items;
+pub mod file_checkpoints;
 pub mod messages;
 pub mod permission_rules;
 pub mod prompts;

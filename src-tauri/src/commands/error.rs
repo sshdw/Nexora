@@ -25,6 +25,7 @@
 //! into `nexora-core` too (an orphan-rules `From` impl for two core types
 //! cannot live here) — the curated, secret-free messages are unchanged.
 
+use crate::application::agent::checkpoints::CheckpointError;
 use crate::application::attachments::AttachmentError;
 use crate::application::compat::CompatError;
 use crate::application::confirmations::ConfirmationError;
@@ -498,6 +499,45 @@ impl From<ProjectDirError> for CommandError {
                 ErrorKind::Io,
                 "a workspace project directory operation failed",
             ),
+        }
+    }
+}
+
+impl From<CheckpointError> for CommandError {
+    fn from(err: CheckpointError) -> Self {
+        match err {
+            CheckpointError::NotFound => Self::new(
+                ErrorKind::NotFound,
+                "the requested file checkpoint was not found",
+            ),
+            CheckpointError::ExternalConflict => Self::new(
+                ErrorKind::Conflict,
+                "the target file was modified externally since this checkpoint was created",
+            ),
+            CheckpointError::BlobCorrupt => Self::new(
+                ErrorKind::InvalidData,
+                "the stored checkpoint backup failed integrity verification",
+            ),
+            CheckpointError::BlobMissing => Self::new(
+                ErrorKind::NotFound,
+                "the stored checkpoint backup is missing from disk",
+            ),
+            CheckpointError::InvalidPath | CheckpointError::PathEscape => Self::new(
+                ErrorKind::InvalidInput,
+                "the checkpoint target path is invalid or outside the workspace",
+            ),
+            CheckpointError::WorkspaceUnavailable => Self::new(
+                ErrorKind::InvalidInput,
+                "the checkpoint workspace directory is unavailable",
+            ),
+            CheckpointError::StoreInsideWorkspace => Self::new(
+                ErrorKind::InvalidInput,
+                "the checkpoint store must be located outside the workspace",
+            ),
+            CheckpointError::Database(inner) => Self::from(inner),
+            CheckpointError::Io(_) => {
+                Self::new(ErrorKind::Io, "the checkpoint file operation failed")
+            }
         }
     }
 }

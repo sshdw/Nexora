@@ -2154,3 +2154,269 @@ fn e2e_cancel_during_provider_request_aborts_promptly() {
     cleanup_db(&db_path);
     let _ = std::fs::remove_dir_all(ws);
 }
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn e2e_standard_checkpoints_auto_execute_gate_sensitive_persist_and_revert() {
+    use crate::application::agent::checkpoints::{
+        revert_turn_checkpoints, CheckpointError, CheckpointStore,
+    };
+    use crate::infrastructure::repository::file_checkpoints::FileCheckpointRepository;
+
+    struct E2eCheckpointHost {
+        frames_tx: Sender<RunFrame>,
+        db: Database,
+        checkpoints: CheckpointStore,
+    }
+
+    impl AgentRunHost for E2eCheckpointHost {
+        fn emit(&self, frame: &RunFrame) {
+            let _ = self.frames_tx.send(frame.clone());
+        }
+
+        fn persist_assistant_message(
+            &self,
+            conversation_id: i64,
+            content: &str,
+            provider: &str,
+            model: &str,
+        ) {
+            let _ = ConversationService::new(&self.db).persist_assistant_message(
+                conversation_id,
+                content,
+                provider,
+                model,
+            );
+        }
+
+        fn checkpoint_store(&self) -> Option<CheckpointStore> {
+            Some(self.checkpoints.clone())
+        }
+    }
+
+    let (db, db_path) = e2e_db("checkpoints");
+    let ws = e2e_workspace("checkpoints-ws");
+    let store_dir = e2e_workspace("checkpoints-store");
+    let store = CheckpointStore::open(store_dir.join("checkpoints")).expect("open store");
+    let conversation_id = create_conversation(&db, "checkpoints");
+
+    std::fs::write(ws.join("app.txt"), "v1\n").expect("seed app");
+    std::fs::write(ws.join(".env"), "SECRET=1\n").expect("seed env");
+
+    SettingsService::new(&db)
+        .write(
+            crate::application::agent::access::PROFILE_KEY,
+            Some("standard"),
+        )
+        .expect("set standard profile");
+    SettingsService::new(&db)
+        .write("agent.autonomy", Some("full_autonomous"))
+        .expect("set full autonomous");
+
+    let executor: Arc<dyn ProviderExecutor + Send + Sync> = Arc::new(ScriptedExecutor::new(vec![
+        // Turn 0: ordinary workspace overwrite -> auto-runs with pre-mutation checkpoint
+        Ok(tool_response(
+            "t0",
+            "write_file",
+            serde_json::json!({"path": "app.txt", "content": "v2\n"}),
+            None,
+        )),
+        // Turn 1: ordinary workspace edit + create -> auto-run with checkpoints
+        Ok(AiResponse {
+            content: String::new(),
+            model: "test-model".to_string(),
+            tool_calls: vec![
+                ToolCall {
+                    id: "t1a".to_string(),
+                    name: "edit_file".to_string(),
+                    arguments: serde_json::json!({
+                        "path": "app.txt",
+                        "old_text": "v2",
+                        "new_text": "v3"
+                    })
+                    .to_string(),
+                    thought_signature: None,
+                },
+                ToolCall {
+                    id: "t1b".to_string(),
+                    name: "write_file".to_string(),
+                    arguments: serde_json::json!({
+                        "path": "created.txt",
+                        "content": "brand new"
+                    })
+                    .to_string(),
+                    thought_signature: None,
+                },
+            ],
+            usage: None,
+        }),
+        // Turn 2: sensitive .env write -> MUST require explicit approval even with checkpoints
+        Ok(tool_response(
+            "t2",
+            "write_file",
+            serde_json::json!({"path": ".env", "content": "SECRET=2\n"}),
+            None,
+        )),
+        Ok(text_response("completed safely")),
+    ]));
+
+    let registry = Arc::new(AgentRunRegistry::default());
+    let (tx, rx) = channel();
+    let host: Arc<dyn AgentRunHost> = Arc::new(E2eCheckpointHost {
+        frames_tx: tx,
+        db: db.clone(),
+        checkpoints: store,
+    });
+
+    let run_id = start_run(
+        &db,
+        Arc::clone(&registry),
+        host,
+        executor,
+        ws.clone(),
+        AgentRunRequest {
+            conversation_id,
+            user_request: "update app and try env".to_string(),
+            provider: "openai".to_string(),
+            model: "test-model".to_string(),
+            credential: "sk-test".to_string(),
+            max_iterations: None,
+            spend_limit_micro_usd: None,
+        },
+        AutonomyMode::FullAutonomous,
+        RunPreset::Coding,
+    )
+    .expect("start run");
+
+    let mut frames = Vec::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let env_call_id = loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        assert!(!remaining.is_zero(), "timed out waiting for .env approval");
+        let frame = rx.recv_timeout(remaining).expect("recv frame");
+        let found = if let RunFrame::Governance {
+            event:
+                AgentRunEvent::ApprovalRequested {
+                    ref call_id,
+                    ref name,
+                    ref metadata,
+                    ..
+                },
+            ..
+        } = frame
+        {
+            assert_eq!(name, "write_file");
+            assert!(
+                metadata.checkpoints_available,
+                "verified checkpoint store must surface checkpoints_available=true"
+            );
+            Some(call_id.clone())
+        } else {
+            None
+        };
+        frames.push(frame);
+        if let Some(id) = found {
+            break id;
+        }
+    };
+
+    // Deny sensitive .env write; ordinary writes already ran without prompts.
+    assert_eq!(
+        std::fs::read_to_string(ws.join(".env")).expect("env kept"),
+        "SECRET=1\n"
+    );
+    assert_eq!(
+        registry.resolve(run_id, &env_call_id, false),
+        crate::application::agent::registry::ResolveOutcome::Resolved
+    );
+    collect_until_finished_into(&rx, &mut frames);
+
+    let last = frames.last().expect("finished frame");
+    assert!(matches!(
+        last,
+        RunFrame::Finished { event, .. } if event.status == "completed"
+    ));
+    assert_eq!(
+        std::fs::read_to_string(ws.join("app.txt")).expect("app edited"),
+        "v3\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(ws.join("created.txt")).expect("created"),
+        "brand new"
+    );
+    assert_eq!(
+        std::fs::read_to_string(ws.join(".env")).expect("env unchanged"),
+        "SECRET=1\n"
+    );
+
+    // Only one approval step existed (.env), proving ordinary writes did not ask.
+    let steps = AgentRunRepository::new(&db)
+        .list_steps(run_id)
+        .expect("steps");
+    let approval_steps: Vec<_> = steps.iter().filter(|s| s.kind == "approval").collect();
+    assert_eq!(approval_steps.len(), 1, "only .env should request approval");
+
+    // Simulate app restart by reopening DB & CheckpointStore.
+    drop(db);
+    std::thread::sleep(Duration::from_millis(50));
+    let db2 = Database::new(open(&db_path).expect("reopen db"));
+    let store2 = CheckpointStore::open(store_dir.join("checkpoints")).expect("reopen store");
+
+    let cps = FileCheckpointRepository::new(&db2)
+        .list_by_run(run_id)
+        .expect("list persisted checkpoints");
+    assert_eq!(cps.len(), 3, "expected 3 ordinary mutations checkpointed");
+    assert!(cps.iter().all(|cp| cp.step_id.is_some()));
+
+    // External modification triggers fail-closed conflict; force=true completes turn 1 undo.
+    std::fs::write(ws.join("app.txt"), "v3-external\n").expect("external modify");
+    assert!(matches!(
+        revert_turn_checkpoints(&db2, &store2, run_id, 1, false),
+        Err(CheckpointError::ExternalConflict)
+    ));
+    assert!(
+        ws.join("created.txt").exists(),
+        "conflict aborts entire turn"
+    );
+
+    let reverted_t1 =
+        revert_turn_checkpoints(&db2, &store2, run_id, 1, true).expect("force turn 1");
+    assert_eq!(reverted_t1.len(), 3);
+    assert_eq!(
+        reverted_t1
+            .iter()
+            .filter(|cp| cp.turn_index == 1 && cp.reverted_at.is_some())
+            .count(),
+        2
+    );
+    assert_eq!(
+        reverted_t1
+            .iter()
+            .filter(|cp| cp.turn_index == 0 && cp.reverted_at.is_none())
+            .count(),
+        1
+    );
+    assert!(!ws.join("created.txt").exists(), "created file removed");
+    assert_eq!(
+        std::fs::read_to_string(ws.join("app.txt")).expect("back to v2"),
+        "v2\n"
+    );
+
+    let reverted_t0 = revert_turn_checkpoints(&db2, &store2, run_id, 0, false).expect("turn 0");
+    assert_eq!(reverted_t0.len(), 3);
+    assert!(reverted_t0.iter().all(|cp| cp.reverted_at.is_some()));
+    assert_eq!(
+        std::fs::read_to_string(ws.join("app.txt")).expect("back to v1"),
+        "v1\n"
+    );
+
+    let after = FileCheckpointRepository::new(&db2)
+        .list_by_run(run_id)
+        .expect("after revert");
+    assert!(after.iter().all(|cp| cp.reverted_at.is_some()));
+
+    drop(db2);
+    cleanup_db(&db_path);
+    let _ = std::fs::remove_dir_all(ws);
+    let _ = std::fs::remove_dir_all(store_dir);
+}

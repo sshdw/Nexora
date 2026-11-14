@@ -114,6 +114,9 @@ export default function ConversationView({
     loadRunSteps,
     expandStep,
     collapseStep,
+    loadRunCheckpoints,
+    revertCheckpoint,
+    revertTurn,
   } = useAgentRun(conversationId);
   // R4-02: the pane opens in Agent mode. Chat is still one click away on
   // the composer's pills, and the choice is pane state for the session.
@@ -315,6 +318,12 @@ export default function ConversationView({
     },
     [collapseStep]
   );
+  const dispatchLoadCheckpoints = useCallback(
+    (runId: number) => {
+      void loadRunCheckpoints(runId);
+    },
+    [loadRunCheckpoints]
+  );
 
   const handleAutonomyChange = useCallback(
     async (mode: AutonomyMode) => {
@@ -479,6 +488,9 @@ export default function ConversationView({
                   onExpandStep={dispatchExpandStep}
                   onCollapseStep={dispatchCollapseStep}
                   onLoadRunSteps={dispatchLoadRunSteps}
+                  onLoadCheckpoints={dispatchLoadCheckpoints}
+                  onRevertCheckpoint={revertCheckpoint}
+                  onRevertTurn={revertTurn}
                 />
               );
             }

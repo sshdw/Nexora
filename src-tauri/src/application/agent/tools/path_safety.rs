@@ -120,7 +120,7 @@ pub(crate) fn canonical_root(workspace_root: &Path) -> PathBuf {
 /// directory, final file, or dangling link) resolves outside the workspace.
 /// Non-existent prefixes are skipped: they will be created through
 /// [`ensure_parent_dirs`], which re-verifies after each level.
-pub(super) fn check_prefixes_for_escape(
+pub(in crate::application::agent) fn check_prefixes_for_escape(
     workspace_root: &Path,
     canon_ws: &Path,
     joined: &Path,
@@ -211,7 +211,7 @@ pub(super) fn verify_prefix_within(
 
 /// Re-verify an existing file/directory just before use (TOCTOU guard for
 /// read/edit/command-cwd/list/search-scope after `resolve_path`).
-pub(super) fn verify_existing_within(
+pub(in crate::application::agent) fn verify_existing_within(
     workspace_root: &Path,
     canon_ws: &Path,
     path: &Path,
@@ -437,7 +437,7 @@ fn cap_error(_: std::io::Error) -> ToolError {
 }
 /// Canonical aliases are resolved by `resolve_path` before this operation;
 /// every subsequently opened component refuses links, including raced swaps.
-pub(super) fn secure_dir(
+pub(in crate::application::agent) fn secure_dir(
     workspace: &Path,
     target: &Path,
     create: bool,
@@ -505,7 +505,7 @@ pub(in crate::application::agent) fn execution_target(
     }
     Ok(target)
 }
-pub(super) fn secure_open(
+pub(in crate::application::agent) fn secure_open(
     workspace: &Path,
     target: &Path,
     write: bool,

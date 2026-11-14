@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 #[cfg(test)]
 use crate::application::agent::approval::AutonomyMode;
 use crate::application::agent::approval::{ApprovalDecision, ApprovalGate, ParkEnd, RiskClass};
+use crate::application::agent::checkpoints::{CheckpointHook, CheckpointRunContext};
 use crate::application::agent::control::{AgentRunEvent, CancellationToken, RunControl};
 use crate::application::agent::governance::{audit, AuditEvent, AuditLog, GateOutcome};
 use crate::application::agent::injection;
@@ -65,6 +66,12 @@ pub(crate) struct DispatchCtx<'a> {
     /// `true` by default, so runs constructed without flags behave exactly
     /// as before.
     pub injection_enabled: bool,
+    /// Optional PR 2B pre/post mutation checkpoint context. When `Some`,
+    /// `write_file` and `edit_file` persist fail-closed pre-mutation blobs
+    /// tagged with `turn_index` and link `step_id` when recorded.
+    pub checkpoints: Option<&'a CheckpointRunContext>,
+    /// Zero-based turn index within the current run (`0, 1, ...`).
+    pub turn_index: usize,
 }
 
 /// Emit a governance event on the optional channel, best-effort.
@@ -468,26 +475,13 @@ fn handle_sticky_group_decision(
             if record.as_ref().is_some_and(|rec| rec.checkpoint().is_err()) {
                 return true;
             }
-            let dispatch_started = Instant::now();
-            let outcome = execute_bound(ctx, call);
-            let dispatch_ms =
-                i64::try_from(dispatch_started.elapsed().as_millis()).unwrap_or(i64::MAX);
-            let invalidated = matches!(outcome, Err(super::tools::ToolError::ConsentInvalidated));
-            let (observation, tool_status) = classify_outcome(outcome, ctx.token);
-            messages.push(observation_message(ctx, call, &observation));
-            if let Some(rec) = record.as_mut() {
-                rec.tool_call_with_provenance(
-                    call,
-                    &observation,
-                    tool_status,
-                    Some(dispatch_ms),
-                    if invalidated {
-                        StepProvenance::system()
-                    } else {
-                        StepProvenance::user(Some(group_key))
-                    },
-                );
-            }
+            execute_and_record_bound(
+                ctx,
+                call,
+                messages,
+                record,
+                StepProvenance::user(Some(group_key)),
+            );
             return true;
         }
     }
@@ -555,27 +549,13 @@ fn handle_permission_store_decision(
                                 .approval_gate
                                 .is_some_and(|gate| gate.has_current_consent(call))
                         {
-                            let dispatch_started = Instant::now();
-                            let outcome = execute_bound(ctx, call);
-                            let dispatch_ms = i64::try_from(dispatch_started.elapsed().as_millis())
-                                .unwrap_or(i64::MAX);
-                            let invalidated =
-                                matches!(outcome, Err(super::tools::ToolError::ConsentInvalidated));
-                            let (observation, tool_status) = classify_outcome(outcome, ctx.token);
-                            messages.push(observation_message(ctx, call, &observation));
-                            if let Some(rec) = record.as_mut() {
-                                rec.tool_call_with_provenance(
-                                    call,
-                                    &observation,
-                                    tool_status,
-                                    Some(dispatch_ms),
-                                    if invalidated {
-                                        StepProvenance::system()
-                                    } else {
-                                        StepProvenance::rule(rule_id)
-                                    },
-                                );
-                            }
+                            execute_and_record_bound(
+                                ctx,
+                                call,
+                                messages,
+                                record,
+                                StepProvenance::rule(rule_id),
+                            );
                             return StoreAction::Done;
                         }
                         log::debug!(
@@ -873,8 +853,55 @@ fn latest_tool_observation(messages: &[AiMessage]) -> Option<&str> {
 fn execute_bound(
     ctx: &DispatchCtx<'_>,
     call: &ToolCall,
+    hook: Option<&mut CheckpointHook<'_>>,
 ) -> Result<String, super::tools::ToolError> {
-    ToolRegistry::execute_agent(call, ctx.workspace_root, ctx.token, ctx.approval_gate)
+    ToolRegistry::execute_agent_with_checkpoints(
+        call,
+        ctx.workspace_root,
+        ctx.token,
+        ctx.approval_gate,
+        hook,
+    )
+}
+
+fn execute_and_record_bound(
+    ctx: &DispatchCtx<'_>,
+    call: &ToolCall,
+    messages: &mut Vec<AiMessage>,
+    record: &mut Option<&mut ActiveRunRecord<'_>>,
+    valid_provenance: StepProvenance<'_>,
+) {
+    let mut hook = ctx
+        .checkpoints
+        .map(|cp_ctx| CheckpointHook::new(cp_ctx, ctx.turn_index));
+    let dispatch_started = Instant::now();
+    let outcome = execute_bound(ctx, call, hook.as_mut());
+    let captured_checkpoint_id = hook.as_ref().and_then(CheckpointHook::captured_id);
+    let invalidated = matches!(outcome, Err(super::tools::ToolError::ConsentInvalidated));
+    let dispatch_ms = i64::try_from(dispatch_started.elapsed().as_millis()).unwrap_or(i64::MAX);
+    let (observation, tool_status) = classify_outcome(outcome, ctx.token);
+    messages.push(observation_message(ctx, call, &observation));
+    if let Some(rec) = record.as_mut() {
+        let provenance = if invalidated {
+            StepProvenance::system()
+        } else {
+            valid_provenance
+        };
+        let step_id = rec.tool_call_with_provenance(
+            call,
+            &observation,
+            tool_status,
+            Some(dispatch_ms),
+            provenance,
+        );
+        if let (Some(cp_ctx), Some(cp_id), Some(sid)) =
+            (ctx.checkpoints, captured_checkpoint_id, step_id)
+        {
+            if let Err(err) = cp_ctx.link_step(cp_id, sid) {
+                log::warn!("file checkpoint step linkage failed: {}", err.summary());
+            }
+        }
+    }
 }
 
 fn execute_tool_call(
@@ -884,42 +911,15 @@ fn execute_tool_call(
     record: &mut Option<&mut ActiveRunRecord<'_>>,
     group_key: &str,
 ) {
-    // Task 4.2: the dispatched call (approved or ungated) is
-    // recorded with its raw arguments, observation, and outcome
-    // (D12). A cancellation observed by the tool records as
-    // `cancelled`; everything else is `succeeded` or `failed`.
     let user_approved = ctx
         .approval_gate
         .is_some_and(|gate| gate.has_current_consent(call));
-    let dispatch_started = Instant::now();
-    let outcome = execute_bound(ctx, call);
-    let invalidated = matches!(outcome, Err(super::tools::ToolError::ConsentInvalidated));
-    let dispatch_ms = i64::try_from(dispatch_started.elapsed().as_millis()).unwrap_or(i64::MAX);
-    let (observation, tool_status) = match outcome {
-        Ok(output) if ctx.token.is_cancelled() => (output, "cancelled"),
-        Ok(output) => (output, "succeeded"),
-        Err(tool_error) if ctx.token.is_cancelled() => (tool_error.to_string(), "cancelled"),
-        Err(tool_error) => (tool_error.to_string(), "failed"),
+    let valid_provenance = if user_approved {
+        StepProvenance::user(Some(group_key))
+    } else {
+        StepProvenance::system()
     };
-    messages.push(observation_message(ctx, call, &observation));
-    if let Some(rec) = record.as_mut() {
-        // M1-core provenance: parked-then-approved tool calls inherit
-        // `user`; ladder-auto executions are `system`.
-        let provenance = if invalidated {
-            StepProvenance::system()
-        } else if user_approved {
-            StepProvenance::user(Some(group_key))
-        } else {
-            StepProvenance::system()
-        };
-        rec.tool_call_with_provenance(
-            call,
-            &observation,
-            tool_status,
-            Some(dispatch_ms),
-            provenance,
-        );
-    }
+    execute_and_record_bound(ctx, call, messages, record, valid_provenance);
 }
 
 // AC-302: the inline test mass (2,596 lines) moved verbatim to

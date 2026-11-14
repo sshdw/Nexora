@@ -36,6 +36,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::application::agent::activity::ActivityFeed;
 use crate::application::agent::approval::AutonomyMode;
+use crate::application::agent::checkpoints::{self, CheckpointStore};
 use crate::application::agent::inspect::RunInspection;
 use crate::application::agent::permissions::{self, PermissionRule, RuleEffect};
 use crate::application::agent::service::{
@@ -46,6 +47,7 @@ use crate::application::conversations::ConversationService;
 use crate::application::execution::{resolve_executor, RequestError, RequestExecutionService};
 use crate::infrastructure::database::Database;
 use crate::infrastructure::repository::agent_runs::AgentRun;
+use crate::infrastructure::repository::file_checkpoints::FileCheckpoint;
 
 use super::error::{CommandError, ErrorKind};
 
@@ -90,6 +92,12 @@ impl AgentRunHost for TauriAgentHost {
             // `agent_runs` row and in the stream.
             log::warn!("agent run bridge: assistant persistence failed: {err}");
         }
+    }
+
+    fn checkpoint_store(&self) -> Option<CheckpointStore> {
+        self.app
+            .try_state::<CheckpointStore>()
+            .map(|state| state.inner().clone())
     }
 }
 
@@ -743,6 +751,54 @@ pub(crate) fn list_permission_rules(
     permissions::list_rules(db.inner()).map_err(CommandError::from)
 }
 
+/// List recorded pre/post-mutation file checkpoints for `run_id`.
+#[tauri::command]
+pub(crate) fn list_run_checkpoints(
+    run_id: i64,
+    db: State<'_, Database>,
+) -> Result<Vec<FileCheckpoint>, CommandError> {
+    checkpoints::list_run_checkpoints(db.inner(), run_id).map_err(CommandError::from)
+}
+
+/// Revert one pre-mutation file checkpoint, failing closed with `Conflict`
+/// if modified externally since completion unless `force` is true.
+#[tauri::command]
+pub(crate) fn revert_file_checkpoint(
+    checkpoint_id: i64,
+    force: Option<bool>,
+    db: State<'_, Database>,
+    store: State<'_, CheckpointStore>,
+) -> Result<FileCheckpoint, CommandError> {
+    checkpoints::revert_file_checkpoint(
+        db.inner(),
+        store.inner(),
+        checkpoint_id,
+        force.unwrap_or(false),
+    )
+    .map_err(CommandError::from)
+}
+
+/// Revert all un-reverted checkpoints in `(run_id, turn_index)` in reverse
+/// execution order, failing closed before modifying any file if any target was
+/// modified externally unless `force` is true.
+#[tauri::command]
+pub(crate) fn revert_turn_checkpoints(
+    run_id: i64,
+    turn_index: i64,
+    force: Option<bool>,
+    db: State<'_, Database>,
+    store: State<'_, CheckpointStore>,
+) -> Result<Vec<FileCheckpoint>, CommandError> {
+    checkpoints::revert_turn_checkpoints(
+        db.inner(),
+        store.inner(),
+        run_id,
+        turn_index,
+        force.unwrap_or(false),
+    )
+    .map_err(CommandError::from)
+}
+
 impl From<AgentRunError> for CommandError {
     fn from(err: AgentRunError) -> Self {
         match err {
@@ -1134,7 +1190,7 @@ mod tests {
     /// — no extra key, no missing key.
     #[test]
     fn agent_command_arg_keys_match_rust_params() {
-        const AGENT_COMMANDS: [(&str, &[&str]); 18] = [
+        const AGENT_COMMANDS: [(&str, &[&str]); 21] = [
             (
                 "start_agent_run",
                 &["conversationId", "content", "provider", "model"],
@@ -1168,6 +1224,9 @@ mod tests {
             ),
             ("remove_permission_rule", &["id"]),
             ("list_permission_rules", &[]),
+            ("list_run_checkpoints", &["runId"]),
+            ("revert_file_checkpoint", &["checkpointId", "force"]),
+            ("revert_turn_checkpoints", &["runId", "turnIndex", "force"]),
         ];
         let calls: Vec<(String, Vec<String>)> = frontend_ipc_sources()
             .iter()
@@ -1392,5 +1451,37 @@ mod tests {
             err.message
         );
         assert!(safe_message(&err));
+    }
+
+    #[test]
+    fn checkpoint_errors_map_cleanly_without_path_or_secret_leaks() {
+        use crate::application::agent::checkpoints::CheckpointError;
+
+        let conflict = CommandError::from(CheckpointError::ExternalConflict);
+        assert_eq!(conflict.kind, ErrorKind::Conflict);
+        assert!(safe_message(&conflict));
+
+        for err in [
+            CheckpointError::NotFound,
+            CheckpointError::BlobCorrupt,
+            CheckpointError::BlobMissing,
+            CheckpointError::InvalidPath,
+            CheckpointError::PathEscape,
+            CheckpointError::WorkspaceUnavailable,
+            CheckpointError::StoreInsideWorkspace,
+            CheckpointError::Io(std::io::ErrorKind::PermissionDenied),
+        ] {
+            let cmd_err = CommandError::from(err);
+            assert!(
+                !cmd_err.message.is_empty(),
+                "checkpoint command error must be non-empty"
+            );
+            assert!(
+                !cmd_err.message.contains('/') && !cmd_err.message.contains('\\'),
+                "checkpoint command error must not leak paths: {}",
+                cmd_err.message
+            );
+            assert!(safe_message(&cmd_err));
+        }
     }
 }

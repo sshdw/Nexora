@@ -558,4 +558,12 @@ Canonical workspace/path validation must account for symbolic links and platform
 
 Persist the selected profile through the existing app_settings repository; expose typed profile/classification/approval data through thin commands and IPC wrappers. Composer and Settings reflect the same profile. Existing autonomy/preset APIs remain compatibility controls subject to the effective access ceiling. Historical event reconstruction is presentation-only and cannot restore executable grants.
 
-Standard automatic writes depend on the Stage 2 PR 2B disk-backed pre-write checkpoint service; absent that capability, fail closed to explicit approval instead of silently writing automatically. Native verified GeneralShell isolation is a separate Stage 7 dependency; until then the execution posture is PerCommandConsent. Do not imply either dependency is satisfied from a path/cwd check or an in-memory snapshot.
+Native verified GeneralShell isolation is a separate Stage 7 dependency; until then the execution posture is PerCommandConsent. Do not imply either dependency is satisfied from a path/cwd check or an in-memory snapshot.
+
+## M04 disk-backed pre-mutation checkpoints & turn revert (Stage 2 PR 2B)
+
+Separate from the in-memory pipeline `RunSnapshot` (`snapshots.rs`), the workspace checkpoint service (`file_checkpoints` SQLite metadata + `<app_data>/checkpoints/` content-addressed SHA-256 blob store) hooks into `executor.rs` / `dispatch.rs` before any `write_file` or `edit_file` mutation. Pre-mutation capture writes the prior file bytes (if `pre_existed`) to `<app_data>/checkpoints/<sha256>` and records the `file_checkpoints` row atomically before the workspace write proceeds; post-mutation SHA-256 and byte size are recorded immediately after the write completes. Any pre-mutation capture failure aborts the mutation fail-closed.
+
+With the verified disk-backed checkpoint service active, `Standard` mode permits ordinary workspace `write_file`/`edit_file` mutations automatically, while sensitive paths (`.env*`, keys, `.git/hooks/**`, `.git/config`, `.nexora/**`) and outside-workspace targets continue to require explicit approval.
+
+Expose thin IPC commands (`list_run_checkpoints`, `revert_file_checkpoint`, `revert_turn_checkpoints` in `commands/agent.rs` and `src/lib/ipc/agent.ts`) and 1-click file/turn Revert controls in `AgentRunSteps.tsx`. Every revert operation re-validates canonical workspace and symlink boundaries, verifies the current workspace file hash against `post_blob_sha256` (rejecting silent overwrite on external modification unless explicitly forced), restores or removes the target, and records `reverted_at`.

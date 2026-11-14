@@ -11,7 +11,7 @@ export const en = {
   "access.hint.read_only":
     "Workspace reads and search only. Edits and shell are blocked.",
   "access.hint.standard":
-    "Edits ask for approval until checkpoints are available. Every shell command asks for consent.",
+    "Workspace writes are checkpointed for 1-click undo. Sensitive paths and shell commands always ask for consent.",
   "access.hint.supervised":
     "Every edit and shell command requires your approval.",
   "access.saving": "Saving access profile…",
@@ -254,7 +254,7 @@ export const en = {
   "conv.autonomyExplainSemi":
     "Semi-auto: routine steps run alone, writes still ask first.",
   "conv.autonomyExplainFull":
-    "Full-auto preference: access limits still apply; edits and shell commands ask for approval.",
+    "Full-auto: ordinary workspace writes auto-run with checkpoints; sensitive paths and shell commands ask for approval.",
 
   // ---- message markdown (MessageMarkdown.tsx, ADD-01) -------------------------
   // Link affordances (copy + explicit open, 02-SECURITY §4.2 req 3 as
@@ -1466,6 +1466,20 @@ export const en = {
     "Debt backlog — the tracked-debt table behind manual entries and audit imports.",
   "docs.mig11":
     "Edit locks — the task_locks table: at most one expiring lock row per task, so concurrent edits never collide.",
+  "agent.checkpointsTitle": "Checkpoints ({n})",
+  "agent.checkpointTurnLabel": "Turn {turn}",
+  "agent.checkpointCreated": "Created",
+  "agent.checkpointModified": "Modified",
+  "agent.checkpointRevertFile": "Revert",
+  "agent.checkpointRevertTurn": "Revert turn",
+  "agent.checkpointReverting": "Reverting…",
+  "agent.checkpointReverted": "Reverted",
+  "agent.checkpointConflictTitle": "Target modified outside this run",
+  "agent.checkpointConflictBody":
+    "The file on disk no longer matches this checkpoint. Force reverting will overwrite your later edits.",
+  "agent.checkpointForceRevert": "Force revert",
+  "agent.checkpointCancelRevert": "Cancel",
+
   "docs.newTitle": "What changed in 2.0",
   "docs.newProfilesT": ".nexora/ project folders",
   "docs.newProfilesB":

@@ -55,7 +55,7 @@ FTS5 virtual tables are used for full-text search.
 
 ## 4. Schema Versioning
 
-Schema changes are tracked in the `schema_version` table. Each migration inserts exactly one new row containing a monotonically increasing version number and an application timestamp. Version numbers are unique and strictly increasing. The current schema version is determined by the maximum version number present (`MAX(version)`), which therefore always represents the current schema version. The current implemented schema version is **v16**. The Nexora 2.0.0 release has not shipped.
+Schema changes are tracked in the `schema_version` table. Each migration inserts exactly one new row containing a monotonically increasing version number and an application timestamp. Version numbers are unique and strictly increasing. The current schema version is determined by the maximum version number present (`MAX(version)`), which therefore always represents the current schema version. The current implemented schema version is **v17**. The Nexora 2.0.0 release has not shipped.
 
 **Rationale:** This provides an unambiguous, ordered migration path and prevents the application from running against an unrecognized schema version.
 
@@ -88,6 +88,8 @@ v14 adds the nullable `agent_steps.input_tokens` / `output_tokens` columns as pl
 v15 (Nexora 2.0 Phase 1) adds `agent_runs.interrupted INTEGER NOT NULL DEFAULT 0 CHECK (interrupted IN (0, 1))` with `ALTER TABLE ADD COLUMN` in the existing migration transaction. It adds no status value, rebuild, foreign-key toggle, or historical-error backfill. Existing rows read `0`, and new ordinary runs default to `0`. The schema-version row and column addition commit together or roll back together; the newer-schema refusal remains in force. Run rows, linked steps, existing statuses, errors, timestamps, outputs, and spend data are preserved by migration.
 
 v16 adds durable_run_events and its indexes in a forward-only atomic migration. No existing run/step rows or migration SQL are rewritten and no legacy events are backfilled.
+
+v17 (Stage 2 PR 2B) adds `file_checkpoints` and its indexes in a forward-only atomic migration for disk-backed pre-mutation file snapshots and 1-click file/turn revert. No existing run/step rows or migration SQL are rewritten.
 
 ---
 
@@ -695,4 +697,29 @@ Use the existing app_settings key-value repository for the selected agent access
 
 Approval identity includes workspace, tool, canonical command/path, environment fingerprint, sandbox posture, access profile and policy fingerprint. Existing persisted permission rules do not replace effective-ceiling evaluation; old or incompletely identified approvals cannot be reused as if they had the stronger identity contract. No raw environment secrets, credential material or keyring payloads may be persisted as fingerprints, approval metadata or diagnostics. History remains read-only and cannot restore executable approvals.
 
-Disk-backed checkpoint/blob persistence and retention contracts for Stage 2 PR 2B require their own exact reviewed database amendment before any schema/storage change; this PR 2A amendment does not introduce or approve a speculative checkpoint schema.
+## M04 disk-backed checkpoint persistence (Stage 2 PR 2B)
+
+v17 adds `file_checkpoints` in a forward-only atomic migration (`crates/nexora-core/src/storage/database.rs`, mirrored through `src-tauri/src/infrastructure/database.rs`):
+
+- `id INTEGER PRIMARY KEY AUTOINCREMENT`
+- `conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE`
+- `run_id INTEGER NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE`
+- `step_id INTEGER NULL REFERENCES agent_steps(id) ON DELETE SET NULL`
+- `turn_index INTEGER NOT NULL CHECK (turn_index >= 0)`
+- `workspace_root TEXT NOT NULL`
+- `relative_path TEXT NOT NULL`
+- `tool_name TEXT NOT NULL CHECK (tool_name IN ('write_file', 'edit_file'))`
+- `pre_existed INTEGER NOT NULL CHECK (pre_existed IN (0, 1))`
+- `pre_blob_sha256 TEXT NULL` (64-char lowercase hex when `pre_existed = 1`, `NULL` when `pre_existed = 0`)
+- `pre_size_bytes INTEGER NULL CHECK (pre_size_bytes IS NULL OR pre_size_bytes >= 0)`
+- `post_blob_sha256 TEXT NULL`
+- `post_size_bytes INTEGER NULL CHECK (post_size_bytes IS NULL OR post_size_bytes >= 0)`
+- `reverted_at INTEGER NULL` (Unix seconds; `NULL` until reverted)
+- `created_at INTEGER NOT NULL` (Unix seconds)
+
+Indexes:
+- `idx_file_checkpoints_run_turn ON file_checkpoints(run_id, turn_index, id)`
+- `idx_file_checkpoints_conv ON file_checkpoints(conversation_id, created_at)`
+- `idx_file_checkpoints_blob ON file_checkpoints(pre_blob_sha256)`
+
+Blob payloads live on disk under `<app_data>/checkpoints/<sha256>` (never inside SQLite and never inside the workspace). Deleting a conversation/run cascades `file_checkpoints` rows and garbage-collects unreferenced blob files from `<app_data>/checkpoints/`.

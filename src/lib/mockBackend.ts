@@ -1736,6 +1736,24 @@ async function invoke(
         .filter((r) => r.conversation_id === convId)
         .sort((a, b) => b.started_at - a.started_at);
     }
+    case "list_run_checkpoints": {
+      void Number(requireArg(args, "list_run_checkpoints", "runId"));
+      return [];
+    }
+    case "revert_file_checkpoint": {
+      const checkpointId = Number(
+        requireArg(args, "revert_file_checkpoint", "checkpointId")
+      );
+      throw {
+        kind: "notFound",
+        message: `Checkpoint ${checkpointId} not found in mock session`,
+      };
+    }
+    case "revert_turn_checkpoints": {
+      void Number(requireArg(args, "revert_turn_checkpoints", "runId"));
+      void Number(requireArg(args, "revert_turn_checkpoints", "turnIndex"));
+      return [];
+    }
     // The visual mock predates the journal; its existing run/step history
     // stays readable through the legacy APIs without inventing chronology.
     case "list_conversation_run_events":

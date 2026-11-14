@@ -122,6 +122,9 @@ pub fn run() {
             commands::agent::add_permission_rule,
             commands::agent::remove_permission_rule,
             commands::agent::list_permission_rules,
+            commands::agent::list_run_checkpoints,
+            commands::agent::revert_file_checkpoint,
+            commands::agent::revert_turn_checkpoints,
             commands::tasks::create_task,
             commands::tasks::list_tasks,
             commands::tasks::list_task_steps,
@@ -208,6 +211,12 @@ pub fn run() {
             app.manage(db);
             // Keep the shared lease alive for the whole process lifetime.
             app.manage(lease);
+            // Disk-backed pre-mutation file checkpoint blob store under `<app_data>/checkpoints`.
+            let checkpoint_store = application::agent::checkpoints::CheckpointStore::open(
+                db_dir.join("checkpoints"),
+            )
+            .map_err(|err| std::io::Error::other(err.summary()))?;
+            app.manage(checkpoint_store);
             // Hold the active-run registry as managed state (Task 5.1): an
             // `Arc` so the agent IPC commands can clone an owned handle into
             // `spawn_blocking` and the spawned run threads.
