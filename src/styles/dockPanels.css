@@ -302,7 +302,7 @@
    apart means the row's press target is never confused with
    archive/delete. The group OVERLAYS the row (absolute, so the title
    never reflows while the pointer moves down the list) and paints the
-   row's own tone as a plate, because the three glyph buttons are ghost
+   row's own tone as a plate, because the four glyph buttons are ghost
    at rest — without it the title would run under them.
 
    Reveal is `opacity` + `pointer-events`, never `display` or
@@ -332,8 +332,7 @@
       var(--nex-sys-motion-easing-standard);
 }
 
-/* Three 28px buttons at zero gap: the plate claims ~88px of a 260px
-   row, so every pixel of separation counts. The glyphs themselves are
+/* Four compact buttons at zero gap overlay the trailing row edge. The glyphs themselves are
    the separation — M3IconButton's hit area is already padded. */
 .nex-sessions-actions {
   gap: 0;

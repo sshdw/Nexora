@@ -119,7 +119,7 @@ describe("P2 chrome — no unstyled className", () => {
       "nex-workspace-chip-text",
     ]);
     expect(emittedClasses(SOURCES.ConversationPane)).toContain(
-      "nex-pane-header-separator"
+      "nex-pane-title-badge"
     );
   });
 
@@ -226,24 +226,18 @@ describe("P2 chrome — token discipline in the tabs + pane-header sheet", () =>
     );
   });
 
-  it("holds the header's trailing group at its intrinsic width", () => {
-    // `.nex-main-header-actions` sits on the M3Toolbar in the pane
-    // header. It must live in THIS sheet, next to the header rules
-    // it belongs to: it is what stops a long workspace name from
-    // flexing the trailing group and squeezing the export control
-    // off the row, and the title beside it is the part allowed to
-    // truncate.
-    const rule =
-      /\.nex-main-header-actions \{([\s\S]*?)\}/.exec(css)?.[1] ?? "";
-    expect(rule).toMatch(/flex-shrink:\s*0/);
-    // …and nothing else: display/alignment/gap belong to
-    // `.nex-m3-toolbar-docked`, which this sheet out-ranks, so a
-    // duplicate would silently re-space the row.
-    expect(rule.split(";").filter((line) => line.trim() !== "")).toHaveLength(
-      1
+  it("replaces header furniture with truncating compact split identities", () => {
+    expect(css).not.toMatch(/\.nex-pane-header(?:[\s{-]|$)/);
+    expect(css).not.toMatch(/\.nex-main-header-actions\s*\{/);
+    const identity = /\.nex-pane-identity \{([\s\S]*?)\}/.exec(css)?.[1] ?? "";
+    expect(identity).not.toMatch(/(?:min-)?height:/);
+    expect(identity).not.toMatch(/border-bottom:/);
+    const title = /\.nex-pane-title-text \{([\s\S]*?)\}/.exec(css)?.[1] ?? "";
+    expect(declaration(title, "min-width")).toBe("0");
+    expect(declaration(title, "text-overflow")).toBe("ellipsis");
+    expect(declaration(title, "white-space")).toBe("nowrap");
+    expect(readRepoFile("src/styles.css")).not.toMatch(
+      /\.nex-main-header-actions\s*\{/
     );
-    // The legacy sheet is not the second home for it.
-    const legacy = readRepoFile("src/styles.css");
-    expect(legacy).not.toMatch(/\.nex-main-header-actions\s*\{/);
   });
 });

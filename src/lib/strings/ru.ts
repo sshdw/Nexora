@@ -66,7 +66,6 @@ export const ru: Record<StringKey, string> = {
     "Выберите её в «Сессиях» на доке или начните новую сессию.",
   "app.archivedBadge": "В архиве",
   "app.splitPaneAria": "Сплит: {title}",
-  "app.paneActions": "Действия для «{title}»",
   "app.splitCloseTitle": "Закрыть сплит-панель (Alt+S)",
   "app.splitOpenTitle": "Показать второй разговор рядом (Alt+S)",
   "app.splitClose": "Закрыть сплит",
@@ -537,18 +536,22 @@ export const ru: Record<StringKey, string> = {
   "settings.compatModelPh": "например, llama-3.3-70b-instruct",
   "settings.compatOrganization": "ID организации (необязательно)",
   "settings.compatOrganizationPh": "Необязательный заголовок org",
-  "settings.compatSupportsTools": "Конечная точка поддерживает вызовы инструментов",
+  "settings.compatSupportsTools":
+    "Конечная точка поддерживает вызовы инструментов",
   "settings.compatSave": "Сохранить конечную точку",
   "settings.compatSaving": "Сохранение…",
   "settings.compatReady": "Конечная точка настроена, ключ в хранилище найден.",
   "settings.compatNotReady": "Укажите корректный URL, ID модели и API-ключ.",
-  "settings.compatErrMissingUrl": "Укажите HTTPS URL конечной точки (или http://localhost).",
+  "settings.compatErrMissingUrl":
+    "Укажите HTTPS URL конечной точки (или http://localhost).",
   "settings.compatErrInsecureHttp":
     "Удалённые конечные точки должны использовать https:// (http:// разрешён только для localhost).",
   "settings.compatErrCredentials":
     "Не встраивайте учётные данные в URL; храните API-ключ в разделе учётных данных.",
-  "settings.compatErrInvalidUrl": "Укажите корректный URL конечной точки с хостом.",
-  "settings.compatErrMissingModel": "Укажите ID модели для этой конечной точки.",
+  "settings.compatErrInvalidUrl":
+    "Укажите корректный URL конечной точки с хостом.",
+  "settings.compatErrMissingModel":
+    "Укажите ID модели для этой конечной точки.",
   "settings.compatNoModelsYet": "Укажите модель выше или обновите метаданные",
   "settings.searchTheme": "Тема",
   "settings.searchProvider": "Провайдер",

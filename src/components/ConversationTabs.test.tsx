@@ -1,22 +1,4 @@
-//! Tab strip + pane header contract tests (#230 Phase 2, MAP rows 4-6).
-//!
-//! These are BEHAVIOUR pins, not snapshots of class names. What they
-//! hold down:
-//!
-//!   1. ONE Split control (SYSTEM §4). It lived in the tab strip AND
-//!      in every pane header, so a split offered four identical
-//!      buttons for one action. The strip owns it; the pane header
-//!      renders none.
-//!   2. The `+` new-tab button sits at the END of the row (MAP row 4).
-//!   3. The active tab scrolls itself into view when the strip
-//!      overflows — jsdom has no layout, so `scrollIntoView` is
-//!      stubbed and the CALL is the assertion.
-//!   4. Arrow/Home/End move and activate (the tablist contract), and
-//!      each tab keeps its own close control.
-//!   5. The workspace chip shows the folder NAME and keeps the full
-//!      path in `title=` only, and carries no glyph of its own: the
-//!      emoji it used to hold was not an icon from `icons.tsx`, the
-//!      sole icon source (SYSTEM §1).
+//! Permanent strip, compact split identities, keyboard activation and overflow.
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -51,9 +33,6 @@ function tabStrip(
     onClose: vi.fn(),
     splitOpen: false,
     onToggleSplit: vi.fn(),
-    workspaceRoot: null,
-    workspaceLoading: false,
-    onExport: vi.fn(),
     ...overrides,
   };
   const view = render(
@@ -125,7 +104,6 @@ function pane(overrides: Partial<Parameters<typeof ConversationPane>[0]> = {}) {
     setDraft: vi.fn(),
     onOpenSettings: vi.fn(),
     onMessageSent: vi.fn(),
-    onExport: vi.fn(),
     workspace: workspaceStub(),
     secondary: false,
     ...overrides,
@@ -177,8 +155,67 @@ describe("exactly one Split control (SYSTEM §4, MAP row 5)", () => {
     // the default pane is the whole surface under test.
     pane();
     expect(screen.queryAllByRole("button", { name: /split/i })).toHaveLength(0);
-    // The header keeps what MAP row 5 gives it: the export action.
-    expect(screen.getByRole("button", { name: /export/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /export/i })).toBeNull();
+    expect(document.querySelector(".nex-pane-header")).toBeNull();
+  });
+});
+
+describe("permanent strip and compact pane identities (Stage5 PR5A)", () => {
+  it.each([0, 1, 2])("keeps one trailing Split control at %i tabs", (count) => {
+    const { props } = tabStrip({
+      tabs: TABS.slice(0, count),
+      activeId: count ? 1 : null,
+    });
+    const split = screen.getByRole("button", { name: "Split" });
+    expect(split).toHaveAttribute("aria-pressed", "false");
+    expect(split.closest(".nex-tabstrip-actions")).toBe(
+      document.querySelector(".nex-tabstrip")?.lastElementChild
+    );
+    expect(screen.queryAllByRole("tab")).toHaveLength(count);
+    if (count < 2) {
+      expect(split).toBeDisabled();
+      fireEvent.click(split);
+      expect(props.onToggleSplit).not.toHaveBeenCalled();
+    } else expect(split).toBeEnabled();
+  });
+
+  it("keeps split close enabled and pressed", () => {
+    tabStrip({ splitOpen: true, splitId: 2 });
+    expect(screen.getByRole("button", { name: "Close split" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
+    expect(screen.getByRole("button", { name: "Close split" })).toBeEnabled();
+  });
+
+  it("names archived single panes without adding a header or badge", () => {
+    pane({ conversation: conversation({ status: "archived" }) });
+    expect(
+      screen.getByRole("region", { name: "Refactor the parser (archived)" })
+    ).toBeInTheDocument();
+    expect(document.querySelector(".nex-pane-identity")).toBeNull();
+  });
+
+  it("shows compact split titles with full titles and archived identity", () => {
+    const title = "An extremely long conversation title ".repeat(8);
+    pane({ split: true, conversation: conversation({ title }) });
+    pane({
+      split: true,
+      secondary: true,
+      conversation: conversation({
+        id: 2,
+        title: "History",
+        status: "archived",
+      }),
+    });
+    expect(document.querySelectorAll(".nex-pane-title-badge")).toHaveLength(2);
+    expect(document.querySelector(".nex-pane-title-badge")).toHaveAttribute(
+      "title",
+      title
+    );
+    expect(screen.getByText("Archived")).toBeInTheDocument();
+    expect(screen.getAllByTestId("conversation-view")).toHaveLength(2);
+    expect(screen.queryByRole("toolbar")).toBeNull();
   });
 });
 
@@ -187,7 +224,7 @@ describe("tab strip grammar (MAP row 4)", () => {
     tabStrip();
     // The strip used to end in a `+`. The register moved creation to the
     // Dock's first destination and forbids the duplicate entry point, so
-    // the strip's trailing group is Export + Split and nothing else.
+    // the strip's trailing group is Split alone.
     expect(
       screen.queryByRole("button", { name: "New conversation" })
     ).not.toBeInTheDocument();
@@ -225,9 +262,6 @@ describe("tab strip grammar (MAP row 4)", () => {
           onClose={vi.fn()}
           splitOpen={false}
           onToggleSplit={vi.fn()}
-          workspaceRoot={null}
-          workspaceLoading={false}
-          onExport={vi.fn()}
         />
       </LocaleProvider>
     );
@@ -310,9 +344,10 @@ describe("quiet control tone — no control takes the UA's `buttontext` (Defect 
     expectQuietControl(screen.getByRole("button", { name: "Split" }));
   });
 
-  it("covers the pane header's export control", () => {
-    pane();
-    expectQuietControl(screen.getByRole("button", { name: /export/i }));
+  it("keeps workspace and export furniture out of the strip", () => {
+    tabStrip();
+    expect(document.querySelector(".nex-workspace-chip")).toBeNull();
+    expect(screen.queryByRole("button", { name: /export/i })).toBeNull();
   });
 
   it("leaves the tab label a plain button on its own token, not a ghost", () => {

@@ -45,6 +45,7 @@ function renderPanel(overrides: Partial<SessionsPanelProps> = {}) {
     loading: false,
     activeId: null,
     onOpen: vi.fn(),
+    onExport: vi.fn(),
     onRename: vi.fn(async () => true),
     onArchive: vi.fn(async () => true),
     onRestore: vi.fn(async () => true),
@@ -508,5 +509,70 @@ describe("sessions panel — action reveal", () => {
     expect(start).toBeGreaterThan(-1);
     const body = sheet.slice(start, sheet.indexOf("}", start));
     expect(body).toMatch(/overflow-x:\s*hidden/);
+  });
+});
+
+describe("sessions panel — export", () => {
+  it.each([
+    [2, "Beta thread"],
+    [3, "Old alpha notes"],
+  ] as const)(
+    "exports exact inactive row %i without navigation or mutation",
+    (id, title) => {
+      const props = renderPanel({ activeId: 1 });
+      const button = action(title, "Export conversation");
+      button.focus();
+      fireEvent.click(button);
+      expect(props.onExport).toHaveBeenCalledExactlyOnceWith(id);
+      expect(button).toHaveFocus();
+      for (const callback of [
+        props.onOpen,
+        props.onRename,
+        props.onArchive,
+        props.onRestore,
+        props.onDelete,
+      ])
+        expect(callback).not.toHaveBeenCalled();
+      expect(
+        screen.getByRole("button", { name: /Alpha thread/ })
+      ).toHaveAttribute("aria-current", "true");
+      expect(
+        [...props.container.querySelectorAll(".nex-sessions-row-title")].map(
+          (row) => row.textContent
+        )
+      ).toEqual(["Alpha thread", "Beta thread", "Old alpha notes"]);
+    }
+  );
+
+  it("disables row export while a mutation is in flight", () => {
+    const { onExport } = renderPanel({ busy: true });
+    const button = action("Beta thread", "Export conversation");
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(onExport).not.toHaveBeenCalled();
+  });
+
+  it("reaches Export by the existing toolbar arrow navigation", () => {
+    const { onExport } = renderPanel();
+    action("Beta thread", "Rename conversation").focus();
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowRight" });
+    expect(action("Beta thread", "Archive conversation")).toHaveFocus();
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowRight" });
+    expect(action("Beta thread", "Export conversation")).toHaveFocus();
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowRight" });
+    expect(action("Beta thread", "Delete conversation")).toHaveFocus();
+    expect(onExport).not.toHaveBeenCalled();
+  });
+
+  it("localizes export in Russian", () => {
+    window.localStorage.setItem("nexora.locale", "ru");
+    try {
+      renderPanel();
+      expect(
+        screen.getAllByRole("button", { name: "Экспортировать разговор" })
+      ).toHaveLength(3);
+    } finally {
+      window.localStorage.removeItem("nexora.locale");
+    }
   });
 });

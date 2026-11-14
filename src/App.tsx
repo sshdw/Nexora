@@ -130,7 +130,7 @@ function AppShell() {
   const io = useImportExport();
   const [exportTargetId, setExportTargetId] = useState<number | null>(null);
   const [importOpen, setImportOpen] = useState(false);
-  // Agent workspace folder (1.3.0): the header indicator, Settings and the
+  // Agent workspace folder (1.3.0): Composer, Settings and the
   // onboarding flow share this store. Since #219 it has no sidebar picker —
   // the folder + roots controls left the rail; the palette's "Workspace: Add
   // Folder…" and onboarding's step 2 still register a root.
@@ -139,7 +139,7 @@ function AppShell() {
   // read it backend-side.
   const spendLimit = useSpendLimit();
   // Agent-autonomy default (NEX-FE-003): single source shared by Settings
-  // and the conversation header, so either surface's change reflects in the
+  // and Composer, so either surface's change reflects in the
   // other immediately (no mirrors, no focus-resync).
   // The lifted store also owns the live persisted access profile shared by both panes and Settings.
   const autonomy = useAutonomy();
@@ -363,7 +363,7 @@ function AppShell() {
     }
     router.closeLibrary();
   };
-  // Split toggle (Alt+S, tab strip + pane headers): close the secondary pane
+  // Split toggle (Alt+S and the permanent strip): close the secondary pane
   // when open; otherwise split the most-recently opened other tab beside the
   // active one. Single-tab state cannot split (button disables).
   const handleToggleSplit = useCallback(() => {
@@ -681,13 +681,6 @@ function AppShell() {
   const splitVisible =
     !showOverlays && tabs.splitId !== null && splitConversation !== undefined;
 
-  // D-04 / C-02: at two or more open sessions the strip owns identity AND the
-  // session actions (workspace chip, export), so the pane header is not
-  // rendered at all — one row instead of two rows saying the same thing. In
-  // split view both panes keep their headers: two panes have to be told apart,
-  // and each needs its own export.
-  const paneHeaderHidden = tabs.openIds.length > 1 && tabs.splitId === null;
-
   // AC-305 (review 03 §2): the ten props every ConversationPane call site
   // passes identically, built once and spread at each of the three call
   // sites below — a pane contributes only its conversation, draft pair, and
@@ -707,7 +700,6 @@ function AppShell() {
     autonomy,
     onOpenSettings: openDefaultSettings,
     onMessageSent: () => void reload(),
-    onExport: setExportTargetId,
     workspace,
   };
 
@@ -755,7 +747,7 @@ function AppShell() {
           draft={draftFor(activeConversation.id)}
           setDraft={setDraftFor(activeConversation.id)}
           secondary={false}
-          hideHeader={paneHeaderHidden}
+          split
         />
         <ConversationPane
           {...paneSlot}
@@ -763,6 +755,7 @@ function AppShell() {
           draft={draftFor(splitConversation.id)}
           setDraft={setDraftFor(splitConversation.id)}
           secondary
+          split
         />
       </div>
     ) : (
@@ -772,7 +765,6 @@ function AppShell() {
         draft={draftFor(activeConversation.id)}
         setDraft={setDraftFor(activeConversation.id)}
         secondary={false}
-        hideHeader={paneHeaderHidden}
       />
     );
 
@@ -849,7 +841,11 @@ function AppShell() {
           <DockPanel
             id="sessions"
             title={t("dock.sessions")}
-            onClose={closeDockPanel}
+            onClose={() => {
+              // Export owns interaction until its modal closes. Keep the row
+              // mounted so Modal can restore focus to the exact invoker.
+              if (exportTargetId === null) closeDockPanel();
+            }}
           >
             <SessionsPanel
               conversations={conversations}
@@ -857,6 +853,7 @@ function AppShell() {
               activeId={tabs.activeId}
               busy={working}
               onOpen={handleSelect}
+              onExport={setExportTargetId}
               onRename={rename}
               onArchive={archive}
               onRestore={restore}
@@ -892,9 +889,6 @@ function AppShell() {
               onClose={tabs.close}
               splitOpen={tabs.splitId !== null}
               onToggleSplit={handleToggleSplit}
-              workspaceRoot={workspace.root}
-              workspaceLoading={workspace.loading}
-              onExport={setExportTargetId}
             />
           )}
           {showOverlays ? (
