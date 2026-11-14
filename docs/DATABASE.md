@@ -702,7 +702,7 @@ Approval identity includes workspace, tool, canonical command/path, environment 
 v17 adds `file_checkpoints` in a forward-only atomic migration (`crates/nexora-core/src/storage/database.rs`, mirrored through `src-tauri/src/infrastructure/database.rs`):
 
 - `id INTEGER PRIMARY KEY AUTOINCREMENT`
-- `conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE`
+- `conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE`
 - `run_id INTEGER NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE`
 - `step_id INTEGER NULL REFERENCES agent_steps(id) ON DELETE SET NULL`
 - `turn_index INTEGER NOT NULL CHECK (turn_index >= 0)`
