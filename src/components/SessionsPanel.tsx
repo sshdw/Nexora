@@ -32,6 +32,7 @@ import M3IconButton from "./M3IconButton";
 import M3Toolbar from "./M3Toolbar";
 import {
   ArchiveIcon,
+  ExportIcon,
   PencilIcon,
   SearchIcon,
   TrashIcon,
@@ -45,6 +46,7 @@ export interface SessionsPanelProps {
   /** A rename/archive/restore/delete is in flight. */
   busy?: boolean;
   onOpen: (id: number) => void;
+  onExport: (id: number) => void;
   onRename: (id: number, title: string) => Promise<boolean>;
   onArchive: (id: number) => Promise<boolean>;
   onRestore: (id: number) => Promise<boolean>;
@@ -57,6 +59,7 @@ export default function SessionsPanel({
   activeId,
   busy = false,
   onOpen,
+  onExport,
   onRename,
   onArchive,
   onRestore,
@@ -216,6 +219,15 @@ export default function SessionsPanel({
                     <ArchiveIcon />
                   </M3IconButton>
                 )}
+                <M3IconButton
+                  size="sm"
+                  tooltipPortal
+                  label={t("list.actionExport")}
+                  disabled={busy}
+                  onClick={() => onExport(conversation.id)}
+                >
+                  <ExportIcon />
+                </M3IconButton>
                 <M3IconButton
                   size="sm"
                   tooltipPortal

@@ -99,45 +99,6 @@
   border-bottom: 1px solid var(--color-shell-seam);
 }
 
-.nex-main-title {
-  display: flex;
-  align-items: center;
-  gap: var(--space-xs);
-  min-width: 0;
-  flex: 1 1 auto;
-  font-size: var(--type-size-title-large);
-  font-weight: var(--type-weight-semibold);
-  letter-spacing: -0.01em;
-  color: var(--color-on-surface);
-}
-
-.nex-main-title-text {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* Archived badge on the pane title: a compact status pill, which is
-   exactly where the full radius is still earned (brief §18). The
-   nested fill stays, but so does the hairline: on the elevated pane
-   header the elevated→nested tone step measures 1.045:1 in dark
-   (1.136:1 light, 1.106:1 high-contrast) — the fill alone does NOT
-   separate the badge, contrary to the earlier note on this rule. The
-   outline-variant hairline restores the edge at 1.178:1 dark /
-   1.189:1 light / 2.413:1 high-contrast (brief §19: a component
-   boundary a tone step under-specifies, not a shell seam). */
-.nex-main-title-badge {
-  flex-shrink: 0;
-  font-size: var(--type-size-label-medium);
-  font-weight: var(--type-weight-medium);
-  color: var(--color-on-surface-variant);
-  background: var(--color-surface-nested);
-  border: 1px solid var(--color-outline-variant);
-  padding: var(--space-xxxs) 10px;
-  border-radius: var(--shape-full);
-}
-
 .nex-main-body {
   flex: 1 1 auto;
   overflow-y: auto;

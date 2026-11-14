@@ -4,6 +4,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import {
   afterAll,
@@ -15,6 +16,8 @@ import {
   it,
   vi,
 } from "vitest";
+
+import { save } from "@tauri-apps/plugin-dialog";
 
 import App, { buildConnectionGroups, mergeConnectionModels } from "./App";
 import { rememberSession } from "./lib/lastSession";
@@ -58,6 +61,14 @@ const { mockInvoke, mockListen, state } = vi.hoisted(() => {
       switch (command) {
         case "list_conversations":
           return [
+            ...[2, 3].map((id) => ({
+              id,
+              title: id === 2 ? "Inactive session" : "Archived session",
+              status: id === 3 ? "archived" : "active",
+              created_at: 1_700_000_000,
+              updated_at: 1_700_000_050,
+              workspace_root: null,
+            })),
             {
               id: 1,
               title: "Test conversation",
@@ -89,8 +100,7 @@ const { mockInvoke, mockListen, state } = vi.hoisted(() => {
           const modelId = String(args?.modelId ?? "");
           return (
             state.capabilities.find(
-              (c) =>
-                c.connection_id === connectionId && c.model_id === modelId
+              (c) => c.connection_id === connectionId && c.model_id === modelId
             ) ?? {
               connection_id: connectionId,
               model_id: modelId,
@@ -104,6 +114,8 @@ const { mockInvoke, mockListen, state } = vi.hoisted(() => {
             }
           );
         }
+        case "request_confirmation":
+          return "export-confirmation";
         case "conversation_history":
           return [];
         case "list_conversation_runs":
@@ -151,7 +163,10 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
   save: vi.fn(async () => null),
 }));
 
+const realScrollIntoView = Element.prototype.scrollIntoView;
 beforeEach(() => {
+  Element.prototype.scrollIntoView = vi.fn();
+  window.localStorage.removeItem("nexora.locale");
   mockInvoke.mockClear();
   mockListen.mockClear();
   window.localStorage.setItem("nexora.onboarding.completed", "1");
@@ -199,6 +214,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  Element.prototype.scrollIntoView = realScrollIntoView;
 });
 
 function makeCap(
@@ -333,5 +349,153 @@ describe("App — ModelPicker connectionGroups & selectConnectionModel integrati
       connectionId: "openai",
       modelId: "claude-sonnet-4",
     });
+  });
+});
+
+describe("App — Stage5 PR5A shell integration", () => {
+  beforeAll(() => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      }
+    );
+  });
+  afterAll(() => vi.unstubAllGlobals());
+
+  it.each([
+    [2, "Inactive session"],
+    [3, "Archived session"],
+  ] as const)(
+    "exports exact Sessions row %i through the existing dialog and IPC route",
+    async (id, title) => {
+      render(<App />);
+      await screen.findByRole("textbox", { name: "Message" });
+      fireEvent.click(screen.getByRole("button", { name: "Sessions" }));
+      const actions = await screen.findByRole("toolbar", {
+        name: `Actions for ${title}`,
+      });
+      const exportButton = within(actions).getByRole("button", {
+        name: "Export conversation",
+      });
+      exportButton.focus();
+      mockInvoke.mockClear();
+      fireEvent.click(exportButton);
+      const dialog = await screen.findByRole("dialog", {
+        name: "Export conversation",
+      });
+      expect(dialog).toHaveTextContent(`Saves “${title}”`);
+      expect(
+        screen.getByRole("tab", { name: "Test conversation" })
+      ).toHaveAttribute("aria-selected", "true");
+      expect(screen.getAllByRole("tab")).toHaveLength(1);
+      vi.mocked(save).mockResolvedValueOnce("D:\\exports\\session.json");
+      fireEvent.click(
+        within(dialog).getByRole("button", { name: "Choose location" })
+      );
+      await waitFor(() =>
+        expect(mockInvoke).toHaveBeenCalledWith("export_conversation_to_file", {
+          conversationId: id,
+          path: "D:\\exports\\session.json",
+          confirmationId: "export-confirmation",
+        })
+      );
+      expect(mockInvoke).toHaveBeenCalledWith("request_confirmation", {
+        scope: "export",
+        operation: "export_conversation_to_file",
+        cwd: null,
+        targetId: id,
+      });
+      expect(
+        mockInvoke.mock.calls.some(([cmd]) =>
+          /^(create|rename|archive|restore|delete)_conversation$/.test(cmd)
+        )
+      ).toBe(false);
+      expect(
+        mockInvoke.mock.calls.some(([cmd]) => cmd === "conversation_history")
+      ).toBe(false);
+      fireEvent.click(within(dialog).getByRole("button", { name: "Done" }));
+      await waitFor(() => expect(exportButton).toHaveFocus());
+    }
+  );
+
+  it("keeps the same Split control after closing the last open session", async () => {
+    render(<App />);
+    await screen.findByRole("textbox", { name: "Message" });
+    const split = screen.getByRole("button", { name: "Split" });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Close Test conversation" })
+    );
+    expect(screen.getByRole("button", { name: "Split" })).toBe(split);
+    expect(split).toBeDisabled();
+    expect(screen.queryAllByRole("tab")).toHaveLength(0);
+    expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull();
+  });
+
+  it("reaches the existing active export command after the palette closes", async () => {
+    render(<App />);
+    await screen.findByRole("textbox", { name: "Message" });
+    fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+    const input = await screen.findByRole("combobox", {
+      name: "Type a command",
+    });
+    fireEvent.change(input, {
+      target: { value: "Export active conversation" },
+    });
+    expect(
+      screen.getAllByRole("option", { name: "Export active conversation" })
+    ).toHaveLength(1);
+    fireEvent.click(
+      screen.getByRole("option", { name: "Export active conversation" })
+    );
+    const dialog = await screen.findByRole("dialog", {
+      name: "Export conversation",
+    });
+    expect(dialog).toHaveTextContent("Test conversation");
+    expect(
+      screen.queryByRole("combobox", { name: "Type a command" })
+    ).toBeNull();
+  });
+
+  it("keeps separate drafts and archived pane identity through Alt+S and split close", async () => {
+    render(<App />);
+    const primary = await screen.findByRole("textbox", { name: "Message" });
+    expect(screen.getByRole("button", { name: "Split" })).toBeDisabled();
+    fireEvent.keyDown(window, { key: "s", altKey: true });
+    expect(document.querySelector(".nex-split")).toBeNull();
+    fireEvent.change(primary, { target: { value: "Primary draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Sessions" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: /Archived session/ })
+    );
+    const archived = await screen.findByRole("textbox", { name: "Message" });
+    expect(archived).toHaveValue("");
+    fireEvent.change(archived, { target: { value: "Archived draft" } });
+    const split = screen.getByRole("button", { name: "Split" });
+    expect(split).toBeEnabled();
+    fireEvent.keyDown(window, { key: "s", altKey: true });
+    const messages = screen.getAllByRole("textbox", { name: "Message" });
+    expect(
+      messages.map((field) => (field as HTMLTextAreaElement).value)
+    ).toEqual(["Archived draft", "Primary draft"]);
+    expect(document.querySelectorAll(".nex-pane-title-badge")).toHaveLength(2);
+    expect(
+      screen.getByRole("region", { name: "Archived session (archived)" })
+    ).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Close split" })).toHaveLength(
+      1
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Close split" }));
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue(
+      "Archived draft"
+    );
+    expect(document.querySelectorAll(".nex-pane-title-badge")).toHaveLength(0);
+    expect(screen.getAllByRole("tab")).toHaveLength(2);
+    fireEvent.click(screen.getByRole("tab", { name: "Test conversation" }));
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue(
+      "Primary draft"
+    );
   });
 });

@@ -1,12 +1,11 @@
 /* ============================================================
-   Nexora Conversation Tabs + Pane header + Split
+   Nexora Conversation Tabs + Split identity
    #230 Phase 2 — MAP rows 4-6, NEXORA-COMPONENT-MAP.md is the
    approval, NEXORA-DESIGN-SYSTEM.md §4 the shell contract.
 
-   Migrated into this one sheet (the old per-panel rules are
-   gone): the docked tab strip (first row of .nex-main), the
-   per-pane header (title, workspace chip, export) and the split
-   grid. Zen's rules were deleted with the mode (R6-04).
+   Stage5 PR5A: the permanent strip (first row of .nex-main),
+   compact split identity badges and the split grid. The standalone
+   pane header and its action furniture are removed.
 
    Tab grammar (MAP row 4, tabs.md `variant="line"`): quiet
    TEXT rows — no pill, no wash, no accent-coloured label. The
@@ -35,6 +34,7 @@
   display: flex;
   align-items: center;
   gap: var(--space-xs);
+  height: var(--chrome-height);
   min-height: var(--chrome-height);
   padding: var(--space-xxs) var(--space-sm);
   background: var(--color-surface-elevated);
@@ -53,7 +53,7 @@
   scrollbar-width: thin;
 }
 
-/* ---- Action group: Export · Split, one quiet tier.
+/* ---- Action group: permanent Split, one quiet tier.
 
    Their colour is NOT declared here. Both are the `quiet`
    variant (M3Button → ghost, M3IconButton → ghost), so their rest
@@ -77,6 +77,7 @@
   align-items: center;
   gap: var(--space-xxs);
   flex-shrink: 0;
+  margin-inline-start: auto;
 }
 
 /* ---- Tab: a quiet TEXT row, not a container. No radius and no
@@ -208,11 +209,11 @@
 /* ---- Split: two live panes side by side on the layout seam.
    The divider is a single hairline on outline-variant (layout
    tokens carry the structure; tone steps carry the separation).
-   Each pane is an independent column: header + conversation.
+   Each pane is an independent column: compact identity + conversation.
    minmax(0, 1fr) and not 1fr: a grid track sized with `1fr` has
    an automatic minimum, so one long unbroken string in a thread
    or a wide diff widens its track past the 50% it is owed and
-   squeezes the other pane (and its header) to nothing. The
+   squeezes the other pane to nothing. The
    `min-width: 0` below can only help once the track itself is
    allowed to shrink. ---- */
 .nex-split {
@@ -242,38 +243,37 @@
   border-left: 1px solid var(--color-shell-seam);
 }
 
-/* ---- Pane header (MAP row 5, breadcrumb.md + separator.md):
-   title + workspace NAME chip + export. The title flexes and
-   truncates; the trailing group keeps its intrinsic size.
-
-   HEIGHT, not min-height: a min-height cannot shrink content, and
-   the header's own row (32px icon control + 8px block padding +
-   the bottom hairline) rendered 48px under THEME §6's 40px freeze
-   (issue #262 round 2). 40px is the contract for this row, so it
-   is a definite height with 2px block padding — the 32px control
-   then fits the 35px content box and the row cannot grow with it
-   or with a long title (which truncates). ---- */
-.nex-pane-header {
+/* Split identity is a compact text badge, without toolbar or header row. */
+.nex-pane-identity {
   display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-  height: var(--chrome-height);
-  min-height: var(--chrome-height);
-  padding: var(--space-xxxs) var(--space-md);
-  background: var(--color-surface-elevated);
-  border-bottom: 1px solid var(--color-shell-seam);
+  min-width: 0;
+  padding: var(--space-xs) var(--space-md) 0;
   flex-shrink: 0;
 }
 
-/* separator.md, vertical: one hairline between the title and the
-   trailing controls. Centre-aligned and token-tall rather than
-   stretched — a full-height divider in a 40px header reads as
-   a second seam, not as a separator between two groups. Hairline
-   on the shell seam token, same as the pane divider above. */
-.nex-pane-header-separator {
-  align-self: center;
-  height: var(--space-xl);
-  border-left: 1px solid var(--color-shell-seam);
+.nex-pane-title-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  min-width: 0;
+  max-width: 100%;
+  padding: var(--space-xxxs) var(--space-xxs);
+  color: var(--color-on-surface-variant);
+  background: var(--color-surface-nested);
+  border: 1px solid var(--color-outline-variant);
+  border-radius: var(--shape-extra-small);
+  font-size: var(--type-size-label-small);
+  line-height: var(--type-line-height-tight);
+}
+
+.nex-pane-title-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nex-pane-title-badge > span:not(.nex-pane-title-text) {
   flex-shrink: 0;
 }
 
@@ -287,7 +287,7 @@
    classNames in WorkspaceChip.tsx had no style anywhere in the
    tree, so the chip rendered as bare inline text. The text child
    takes the ellipsis so a long name degrades inside the chip
-   instead of pushing the export control off the header. */
+   instead of widening its host. */
 .nex-workspace-chip {
   display: inline-flex;
   align-items: center;
@@ -309,25 +309,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* Trailing group of the pane header: the workspace NAME chip and
-   the export control (MAP row 5). One declaration, and it is
-   flex-shrink: 0 — the title beside it may flex and truncate
-   while this group keeps its intrinsic width, so a long workspace
-   name can never squeeze the export control off the row.
-
-   The rest is deliberately NOT repeated here. `.nex-m3-toolbar-
-   docked` (components.css) already declares display, alignment
-   and the group's internal gap, and this sheet is imported after
-   it (index.css) — a duplicate here would not be harmless
-   restatement, it would silently out-rank the toolbar's own row
-   spacing. The rule lived in src/styles.css until #230 Phase 2,
-   next to `.nex-main-header` and `.nex-main-body`, which nothing
-   references; the title group's own rules (.nex-main-title*) are
-   still there too and are out of this phase's scope. */
-.nex-main-header-actions {
-  flex-shrink: 0;
 }
 
 .nex-pane-body {

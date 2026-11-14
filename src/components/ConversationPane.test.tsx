@@ -1,7 +1,7 @@
 //! Thread boundary (ADD-05) — the conversation subtree is the shell's most
 //! dynamic surface (per-frame agent-run renders, markdown bodies), so a
 //! frame-shaped runtime error must degrade to the boundary strip INSIDE the
-//! pane; the pane header and the shell around it stay up. The crashing child
+//! pane; the compact pane identity and shell stay up. The crashing child
 //! is the real seam (ConversationView) mocked at module level to throw on
 //! render — jsdom proves the boundary wiring, not the pane's internals.
 
@@ -79,9 +79,9 @@ function pane() {
         setDraft={() => {}}
         onOpenSettings={() => {}}
         onMessageSent={() => {}}
-        onExport={() => {}}
         workspace={workspaceStub()}
         secondary={false}
+        split
       />
     </LocaleProvider>
   );
@@ -90,7 +90,7 @@ function pane() {
 afterEach(cleanup);
 
 describe("thread boundary (ADD-05)", () => {
-  it("degrades a crashing conversation subtree to the strip inside the pane, header intact", () => {
+  it("degrades a crashing conversation subtree to the strip inside the pane, split identity intact", () => {
     // The boundary and React report the crash on console.error; the spy
     // keeps the output clean and pins that the crash is logged.
     const consoleError = vi
@@ -107,12 +107,12 @@ describe("thread boundary (ADD-05)", () => {
       screen.getByRole("button", { name: tr("en", "common.retry") })
     ).toBeInTheDocument();
 
-    // The pane shell survived: title header and the export action are still
-    // mounted — a thread crash is contained to the pane body.
-    expect(screen.getByRole("heading", { name: "Ops" })).toBeInTheDocument();
+    // Split identity survives a thread failure without restoring a toolbar.
+    expect(screen.getByRole("region", { name: "Ops" })).toBeInTheDocument();
+    expect(screen.getByTitle("Ops")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: tr("en", "app.exportConversation") })
-    ).toBeInTheDocument();
+      screen.queryByRole("button", { name: tr("en", "app.exportConversation") })
+    ).toBeNull();
     expect(consoleError).toHaveBeenCalled();
   });
 });

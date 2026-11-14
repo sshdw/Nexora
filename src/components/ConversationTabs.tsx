@@ -1,48 +1,15 @@
-//! Conversation tab strip: docked M3E tab row for the main column.
-//!
-//! Placement (shell-density decision): the strip docks as the first row of
-//! `.nex-main`, directly above the per-pane conversation header — persistent
-//! calm chrome like the slim header below it (SYSTEM §4: docked rows for
-//! persistent actions). It never overlaps the sidebar (which keeps its
-//! own conversation list as the opener) or the composer.
-//!
-//! Grammar (MAP row 4, `tabs.md` `variant="line"`): quiet TEXT tabs —
-//! `tablist`/`tab` roles, automatic activation on Left/Right/Home/End,
-//! `aria-selected` for selection, a 2px tick under the active row plus a
-//! weight/lightness step and nothing else. Each tab carries its own close
-//! button (Alt+W closes the active tab — see `useConversationTabs.ts`
-//! for the full shortcut map). Overflow scrolls horizontally inside
-//! the strip; the active tab scrolls into view on selection. New tabs
-//! enter with the expressive fast-spatial spring (create moment);
-//! switching swaps content instantly with a tone-step selection change
-//! — calm persistent chrome, no choreography on select. Reduced motion
-//! collapses the enter animation via the motion.css gate.
-//!
-//! ONE Split entry point (SYSTEM §4, MAP row 5): it lives HERE and only
-//! here. The pane header used to render a second one — a duplicate
-//! control for one action, reachable from two places per pane, so a
-//! split of two panes offered four identical buttons.
-//!
-//! TWO OR MORE SESSIONS ONLY (D-04 / C-02). The register settles the
-//! duplication this row used to carry: at one open session the strip is
-//! not rendered at all and the pane header owns the title; at two or more
-//! the strip owns switching and the pane header drops its title (it keeps
-//! the workspace chip and export). Rendering a single "tab" with its own
-//! close × above an identical title was the same fact stated twice, 40 px
-//! apart.
-//!
-//! The `+` is gone (D-04: "no `+` (New in Dock)"): creation is the Dock's
-//! first destination and is reachable from every screen, so a second
-//! create control inside the strip was a duplicate entry point for the one
-//! action that already has the most prominent home.
+//! Permanent compact session strip. Stage5 PR5A supersedes D-04's
+//! two-tabs-only strip: identity, switching and close stay here at every
+//! session count, with exactly one trailing Split control. Overflow and
+//! automatic keyboard activation stay scoped to the tablist. Workspace
+//! selection belongs to Composer; export belongs to Sessions and palette.
 
 import { useEffect, useRef } from "react";
 
 import M3Button from "./M3Button";
 import M3IconButton from "./M3IconButton";
-import WorkspaceChip from "./WorkspaceChip";
 import { useStrings } from "../lib/useLocale";
-import { CloseIcon, ExportIcon } from "./icons";
+import { CloseIcon } from "./icons";
 
 export interface TabEntry {
   id: number;
@@ -58,12 +25,6 @@ export interface ConversationTabsProps {
   onClose: (id: number) => void;
   splitOpen: boolean;
   onToggleSplit: () => void;
-  /** Session-scoped actions that live here while the pane header is hidden
-   *  (two or more sessions, no split): the workspace chip and export act on
-   *  the ACTIVE session, which is the one this row names. */
-  workspaceRoot: string | null;
-  workspaceLoading: boolean;
-  onExport: (id: number) => void;
 }
 
 export default function ConversationTabs({
@@ -74,9 +35,6 @@ export default function ConversationTabs({
   onClose,
   splitOpen,
   onToggleSplit,
-  workspaceRoot,
-  workspaceLoading,
-  onExport,
 }: ConversationTabsProps) {
   const { t } = useStrings();
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -96,9 +54,6 @@ export default function ConversationTabs({
       });
     }
   }, [tabIdentity, activeId]);
-
-  // One session is not a tab set (D-04): the pane header already names it.
-  if (tabs.length < 2) return null;
 
   const focusTab = (index: number) => {
     const count = tabs.length;
@@ -140,8 +95,8 @@ export default function ConversationTabs({
     <div className="nex-tabstrip" role="region" aria-label={t("tabs.region")}>
       <div
         className="nex-tabstrip-list"
-        role="tablist"
-        aria-label={t("tabs.list")}
+        role={tabs.length > 0 ? "tablist" : undefined}
+        aria-label={tabs.length > 0 ? t("tabs.list") : undefined}
       >
         {tabs.map((tab, index) => {
           const selected = tab.id === activeId;
@@ -201,21 +156,15 @@ export default function ConversationTabs({
         })}
       </div>
       <div className="nex-tabstrip-actions">
-        <WorkspaceChip root={workspaceRoot} loading={workspaceLoading} />
-        {activeId !== null && (
-          <M3IconButton
-            label={t("app.exportConversation")}
-            onClick={() => onExport(activeId)}
-          >
-            <ExportIcon />
-          </M3IconButton>
-        )}
         <M3Button
           variant="quiet"
           size="sm"
           onClick={onToggleSplit}
           aria-pressed={splitOpen}
-          disabled={!splitOpen && tabs.length < 2}
+          disabled={
+            !splitOpen &&
+            (activeId === null || !tabs.some((tab) => tab.id !== activeId))
+          }
           title={t("tabs.splitTitle")}
         >
           {splitOpen ? t("app.splitClose") : t("app.split")}

@@ -64,7 +64,6 @@ export const en = {
     "Pick one from Sessions in the Dock, or start a new session.",
   "app.archivedBadge": "Archived",
   "app.splitPaneAria": "Split: {title}",
-  "app.paneActions": "Actions for {title}",
   "app.splitCloseTitle": "Close the split pane (Alt+S)",
   "app.splitOpenTitle": "Show a second conversation beside this one (Alt+S)",
   "app.splitClose": "Close split",
@@ -591,7 +590,8 @@ export const en = {
   "settings.compatSaving": "Saving…",
   "settings.compatReady": "Endpoint configured and API key present.",
   "settings.compatNotReady": "Configure a valid URL, model ID, and API key.",
-  "settings.compatErrMissingUrl": "Enter an HTTPS endpoint URL (or http://localhost).",
+  "settings.compatErrMissingUrl":
+    "Enter an HTTPS endpoint URL (or http://localhost).",
   "settings.compatErrInsecureHttp":
     "Remote endpoints must use https:// (plain http:// is allowed only for localhost).",
   "settings.compatErrCredentials":
