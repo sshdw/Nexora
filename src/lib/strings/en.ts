@@ -577,6 +577,28 @@ export const en = {
   "settings.presetUnset": "Not set — the built-in default applies.",
   "settings.replayLabel": "Replay onboarding walkthrough",
   "settings.replayText": "Replay onboarding",
+  "settings.compatHeading": "OpenAI-compatible endpoint",
+  "settings.compatBaseUrl": "Endpoint URL",
+  "settings.compatBaseUrlPh": "https://api.example.com/v1/chat/completions",
+  "settings.compatBaseUrlHint":
+    "HTTPS required (http:// is allowed only for localhost / 127.0.0.1 / [::1]). Never put API keys in the URL.",
+  "settings.compatModel": "Default model ID",
+  "settings.compatModelPh": "e.g. llama-3.3-70b-instruct",
+  "settings.compatOrganization": "Organization ID (optional)",
+  "settings.compatOrganizationPh": "Optional org header",
+  "settings.compatSupportsTools": "Endpoint supports tool / function calls",
+  "settings.compatSave": "Save endpoint",
+  "settings.compatSaving": "Saving…",
+  "settings.compatReady": "Endpoint configured and API key present.",
+  "settings.compatNotReady": "Configure a valid URL, model ID, and API key.",
+  "settings.compatErrMissingUrl": "Enter an HTTPS endpoint URL (or http://localhost).",
+  "settings.compatErrInsecureHttp":
+    "Remote endpoints must use https:// (plain http:// is allowed only for localhost).",
+  "settings.compatErrCredentials":
+    "Do not embed credentials in the URL; store your API key in Credentials.",
+  "settings.compatErrInvalidUrl": "Enter a valid endpoint URL with a host.",
+  "settings.compatErrMissingModel": "Enter a model ID for this endpoint.",
+  "settings.compatNoModelsYet": "Save endpoint model or refresh metadata",
   // settings search-entry titles (STATIC_SEARCH_ENTRIES + dynamic provider rows)
   "settings.searchTheme": "Theme",
   "settings.searchProvider": "Provider",

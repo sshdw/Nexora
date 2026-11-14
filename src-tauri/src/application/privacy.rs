@@ -207,14 +207,10 @@ fn endpoint_destination(name: &str) -> &'static str {
         "api.anthropic.com"
     } else if name == gemini::PROVIDER_NAME {
         "generativelanguage.googleapis.com"
-    } else if name == openai::XKIRO_NAME {
-        "api.xkiro.com"
-    } else if name == openai::OPENROUTER_NAME {
-        "openrouter.ai"
-    } else if name == openai::NVIDIA_NAME {
-        "integrate.api.nvidia.com"
-    } else if name == openai::OPENCODE_ZEN_NAME {
-        "opencode.ai"
+    } else if let Some(preset) =
+        crate::infrastructure::providers::catalog::openai::find_preset(name)
+    {
+        preset.host
     } else {
         "user-configured base URL"
     }

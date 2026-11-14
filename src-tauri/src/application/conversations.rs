@@ -697,10 +697,15 @@ fn attachment_family(mime: Option<&str>) -> Option<AttachmentFamily> {
 
 /// Whether `provider`'s existing HTTP contract can carry `family` inline.
 fn provider_supports(provider: &str, family: AttachmentFamily) -> bool {
-    match provider {
+    if provider == crate::infrastructure::providers::catalog::openai::PROVIDER_NAME
+        || provider == crate::infrastructure::providers::catalog::openai::COMPAT_NAME
+        || crate::infrastructure::providers::catalog::openai::find_preset(provider).is_some()
+    {
         // Chat Completions carries text parts and base64 `image_url` data
         // URIs; it defines no inline PDF/document input.
-        "openai" => !matches!(family, AttachmentFamily::Pdf),
+        return !matches!(family, AttachmentFamily::Pdf);
+    }
+    match provider {
         // Messages API carries base64 `image` and PDF `document` blocks.
         // generateContent carries `inlineData` images and PDFs.
         "anthropic" | "gemini" => true,

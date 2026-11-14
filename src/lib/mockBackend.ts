@@ -100,6 +100,66 @@ const supported = [
       "mimo-v2.5-free",
     ],
   },
+  {
+    name: "deepseek",
+    display_name: "DeepSeek",
+    models: ["deepseek-chat", "deepseek-reasoner"],
+  },
+  {
+    name: "qwen",
+    display_name: "Alibaba / Qwen",
+    models: ["qwen-max", "qwen-plus", "qwq-plus", "qwen-vl-max"],
+  },
+  {
+    name: "zai",
+    display_name: "ZAI",
+    models: ["glm-4.5", "glm-4.5-air", "glm-4-plus"],
+  },
+  {
+    name: "minimax",
+    display_name: "MiniMax",
+    models: ["MiniMax-M1", "MiniMax-Text-01"],
+  },
+  {
+    name: "moonshot",
+    display_name: "Moonshot / Kimi",
+    models: [
+      "kimi-k2-0711-preview",
+      "kimi-thinking-preview",
+      "moonshot-v1-128k",
+      "moonshot-v1-128k-vision-preview",
+    ],
+  },
+  {
+    name: "groq",
+    display_name: "Groq",
+    models: [
+      "llama-3.3-70b-versatile",
+      "deepseek-r1-distill-llama-70b",
+      "meta-llama/llama-4-scout-17b-16e-instruct",
+      "qwen-qwq-32b",
+    ],
+  },
+  {
+    name: "xai",
+    display_name: "xAI",
+    models: ["grok-3", "grok-3-mini", "grok-2-vision-1212"],
+  },
+  {
+    name: "mistral",
+    display_name: "Mistral",
+    models: [
+      "mistral-large-latest",
+      "magistral-medium-latest",
+      "codestral-latest",
+      "pixtral-large-latest",
+    ],
+  },
+  {
+    name: "openai_compat",
+    display_name: "OpenAI Compatible",
+    models: [],
+  },
 ];
 const MOCK_DEFAULT_PROVIDER = supported[2].name;
 const MOCK_DEFAULT_MODEL = supported[2].models[0];
@@ -521,6 +581,74 @@ async function invoke(
     case "remove_provider_credential":
       credentialed.delete(String(args.provider));
       return null;
+    case "get_compat_config":
+      return {
+        base_url: settings.get("openai_compat.base_url") ?? "",
+        model: settings.get("openai_compat.model") ?? "",
+        organization: settings.get("openai_compat.organization") ?? null,
+        headers: JSON.parse(settings.get("openai_compat.headers_json") ?? "[]"),
+        supports_tools:
+          (settings.get("openai_compat.supports_tools") ?? "true") !== "false",
+      };
+    case "set_compat_config": {
+      const cfg = (args.config ?? {}) as {
+        base_url?: string;
+        model?: string;
+        organization?: string | null;
+        headers?: [string, string][];
+        supports_tools?: boolean;
+      };
+      const rawUrl = (cfg.base_url ?? "").trim();
+      const rawModel = (cfg.model ?? "").trim();
+      if (!rawUrl) throw { kind: "invalidInput", message: "no base URL is configured" };
+      let parsed: URL;
+      try {
+        parsed = new URL(rawUrl);
+      } catch {
+        throw { kind: "invalidInput", message: "the base URL must use https (http is allowed only for localhost)" };
+      }
+      if (parsed.username || parsed.password) {
+        throw { kind: "invalidInput", message: "the base URL must not embed credentials; the API key belongs in the OS keyring" };
+      }
+      const isLocal = ["localhost", "127.0.0.1", "[::1]", "::1"].includes(parsed.hostname.toLowerCase());
+      if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && isLocal)) {
+        throw { kind: "invalidInput", message: "the base URL must use https (http is allowed only for localhost)" };
+      }
+      if (!rawModel) throw { kind: "invalidInput", message: "no model is configured" };
+      settings.set("openai_compat.base_url", rawUrl);
+      settings.set("openai_compat.model", rawModel);
+      if (cfg.organization?.trim()) settings.set("openai_compat.organization", cfg.organization.trim());
+      else settings.delete("openai_compat.organization");
+      settings.set("openai_compat.headers_json", JSON.stringify(cfg.headers ?? []));
+      settings.set("openai_compat.supports_tools", cfg.supports_tools === false ? "false" : "true");
+      return null;
+    }
+    case "compat_status": {
+      const baseUrl = (settings.get("openai_compat.base_url") ?? "").trim();
+      const model = (settings.get("openai_compat.model") ?? "").trim();
+      let baseUrlValid = false;
+      try {
+        const parsed = new URL(baseUrl);
+        const isLocal = ["localhost", "127.0.0.1", "[::1]", "::1"].includes(parsed.hostname.toLowerCase());
+        baseUrlValid =
+          !parsed.username &&
+          !parsed.password &&
+          (parsed.protocol === "https:" || (parsed.protocol === "http:" && isLocal));
+      } catch {
+        baseUrlValid = false;
+      }
+      const hasCredential = credentialed.has("openai_compat");
+      return {
+        has_base_url: baseUrl.length > 0,
+        base_url_valid: baseUrlValid,
+        has_model: model.length > 0,
+        has_organization: Boolean((settings.get("openai_compat.organization") ?? "").trim()),
+        header_count: JSON.parse(settings.get("openai_compat.headers_json") ?? "[]").length,
+        supports_tools: (settings.get("openai_compat.supports_tools") ?? "true") !== "false",
+        has_credential: hasCredential,
+        ready: baseUrlValid && model.length > 0 && hasCredential,
+      };
+    }
     case "get_model_capabilities":
     case "list_model_capabilities":
     case "set_model_capability_override":
@@ -620,6 +748,10 @@ async function invoke(
       if (command === "refresh_provider_model_metadata") {
         const connId = String(args.connectionId ?? args.connection_id ?? "");
         const def = supported.find((p) => p.name === connId);
+        if (connId === "openai_compat") {
+          const model = (settings.get("openai_compat.model") ?? "").trim();
+          return model ? [resolveMockCaps(connId, model)] : [];
+        }
         return (def?.models ?? []).map((m) => resolveMockCaps(connId, m));
       }
       return supported.flatMap((p) =>

@@ -302,6 +302,34 @@ impl<'a> RequestExecutionService<'a> {
         })
     }
 
+    /// Resolve the concrete executor for `provider` from the active sources,
+    /// validating and building the dynamic OpenAI-compatible executor when
+    /// `provider == "openai_compat"`.
+    pub(crate) fn resolve_executor_for(&self, provider: &str) -> Result<SharedExecutor> {
+        if provider == OPENAI_COMPAT_NAME {
+            let config = crate::application::compat::CompatEndpointService::new(self.db)
+                .read_config()
+                .map_err(RequestError::from)?;
+            config
+                .validate()
+                .map_err(|err| RequestError::InvalidCompatEndpoint {
+                    reason: err.to_string(),
+                })?;
+            return Ok(self.sources.executors.compat_executor(&CompatEndpoint {
+                endpoint: config.normalized_endpoint(),
+                organization: config.organization.clone(),
+                headers: config.headers.clone(),
+                supports_tools: config.supports_tools,
+            }));
+        }
+        self.sources
+            .executors
+            .resolve(provider)
+            .ok_or_else(|| RequestError::ExecutorUnavailable {
+                name: provider.to_string(),
+            })
+    }
+
     fn run_with_executor<F>(&self, request: &AiRequest, run: F) -> Result<AiResponse>
     where
         F: FnOnce(
@@ -315,42 +343,8 @@ impl<'a> RequestExecutionService<'a> {
         let credential = self.resolve_credential(&request.provider)?;
 
         // 4. Resolve the concrete executor for this provider through the
-        //    injected registry — except for the user-configured
-        //    OpenAI-compatible endpoint, whose base URL, organization,
-        //    headers, and tool support live in settings rather than in a
-        //    static entry. The config is validated before any request is
-        //    built; the credential resolved above still comes only from the
-        //    keyring-backed source.
-        if request.provider == OPENAI_COMPAT_NAME {
-            let config = crate::application::compat::CompatEndpointService::new(self.db)
-                .read_config()
-                .map_err(RequestError::from)?;
-            config
-                .validate()
-                .map_err(|err| RequestError::InvalidCompatEndpoint {
-                    reason: err.to_string(),
-                })?;
-            let executor = self.sources.executors.compat_executor(&CompatEndpoint {
-                endpoint: config.normalized_endpoint(),
-                organization: config.organization.clone(),
-                headers: config.headers.clone(),
-                supports_tools: config.supports_tools,
-            });
-            let idle_token = CancellationToken::new();
-            return run(executor.as_ref(), &credential, &idle_token).map_err(|err| {
-                RequestError::Execution {
-                    name: request.provider.clone(),
-                    message: err.to_string(),
-                }
-            });
-        }
-        let executor = self
-            .sources
-            .executors
-            .resolve(&request.provider)
-            .ok_or_else(|| RequestError::ExecutorUnavailable {
-                name: request.provider.clone(),
-            })?;
+        //    injected registry (or validated `openai_compat` endpoint config).
+        let executor = self.resolve_executor_for(&request.provider)?;
 
         // 5. Delegate to the provider-independent boundary. The credential is
         //    moved only into this call and dropped when it returns. Plain
@@ -771,5 +765,52 @@ mod tests {
                 "compat error must stay secret-free, found {sentinel:?}"
             );
         }
+    }
+
+    #[test]
+    fn resolve_executor_for_handles_openai_compat_and_rejects_remote_http() {
+        let db = crate::infrastructure::database::in_memory_database();
+        let sources = sources_for(ExecutorRegistry::new(), StubCredentials::without_secret());
+        let service = RequestExecutionService::with_sources(&db, sources);
+
+        let compat = crate::application::compat::CompatEndpointService::new(&db);
+        // Writing remote plain http:// via CompatEndpointService is blocked upfront.
+        assert!(compat
+            .write_config(&crate::infrastructure::providers::openai::CompatConfig {
+                base_url: "http://remote.example.com/v1/chat/completions".to_string(),
+                model: "custom-model".to_string(),
+                organization: None,
+                headers: Vec::new(),
+                supports_tools: true,
+            })
+            .is_err());
+
+        // Even if an invalid remote http:// row exists directly in settings,
+        // `resolve_executor_for` refuses it before building an executor.
+        crate::application::settings::SettingsService::new(&db)
+            .write(
+                "openai_compat.base_url",
+                Some("http://remote.example.com/v1/chat/completions"),
+            )
+            .expect("seed base url");
+        crate::application::settings::SettingsService::new(&db)
+            .write("openai_compat.model", Some("custom-model"))
+            .expect("seed model");
+        let err = service
+            .resolve_executor_for(OPENAI_COMPAT_NAME)
+            .err()
+            .expect("remote http must fail");
+        assert!(matches!(err, RequestError::InvalidCompatEndpoint { .. }));
+
+        compat
+            .write_config(&crate::infrastructure::providers::openai::CompatConfig {
+                base_url: "https://api.example.com/v1/chat/completions".to_string(),
+                model: "custom-model".to_string(),
+                organization: None,
+                headers: Vec::new(),
+                supports_tools: true,
+            })
+            .expect("write valid compat config");
+        assert!(service.resolve_executor_for(OPENAI_COMPAT_NAME).is_ok());
     }
 }

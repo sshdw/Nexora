@@ -162,6 +162,28 @@ fn built_in_catalog_entry(
     connection_id: &str,
     model_id: &str,
 ) -> Option<ConnectionModelCapabilities> {
+    if let Some(spec) = crate::infrastructure::providers::catalog::openai::find_preset_model_spec(
+        connection_id,
+        model_id,
+    ) {
+        return Some(ConnectionModelCapabilities {
+            connection_id: connection_id.to_string(),
+            model_id: model_id.to_string(),
+            context_window: Some(spec.context_window),
+            supported_efforts: spec
+                .supported_efforts
+                .iter()
+                .copied()
+                .map(ToString::to_string)
+                .collect(),
+            supports_thinking: spec.supports_thinking,
+            supports_attachments: spec.supports_attachments,
+            supports_tools: spec.supports_tools,
+            provenance: CapabilityProvenance::BuiltInCatalog,
+            has_manual_override: false,
+        });
+    }
+
     let is_listed = supported_providers()
         .iter()
         .any(|p| p.name == connection_id && p.models.iter().any(|m| m == model_id));
@@ -211,12 +233,13 @@ fn built_in_catalog_entry(
                     )
                 }
             }
-            "xkiro" | "openrouter" | "nvidia" | "opencode_zen" => {
+            _ => {
                 let thinking_capable = model_id.contains("r1")
                     || model_id.contains("claude")
                     || model_id.contains("gpt-5")
                     || model_id.contains("qwen3")
-                    || model_id.contains("gemini");
+                    || model_id.contains("gemini")
+                    || model_id.contains("reasoning");
                 let efforts = if thinking_capable {
                     vec!["low".to_string(), "medium".to_string(), "high".to_string()]
                 } else {
@@ -224,7 +247,6 @@ fn built_in_catalog_entry(
                 };
                 (efforts, thinking_capable, true, true)
             }
-            _ => (Vec::new(), false, false, true),
         };
 
     Some(ConnectionModelCapabilities {
@@ -731,6 +753,131 @@ mod tests {
         assert_eq!(caps[0].model_id, "discovered-llama");
         assert_eq!(caps[0].context_window, Some(65_536));
         assert_eq!(caps[0].provenance, CapabilityProvenance::ApiMetadata);
+        clear_api_metadata_cache();
+    }
+
+    #[test]
+    fn all_eight_new_presets_have_verified_baseline_capabilities() {
+        clear_api_metadata_cache();
+        let db = in_memory_db();
+
+        let expected: &[(&str, &str, u32, bool, bool, bool)] = &[
+            ("deepseek", "deepseek-chat", 128_000, false, false, true),
+            ("deepseek", "deepseek-reasoner", 128_000, true, false, true),
+            ("qwen", "qwen-max", 128_000, false, false, true),
+            ("qwen", "qwq-plus", 131_072, true, false, true),
+            ("qwen", "qwen-vl-max", 128_000, false, true, true),
+            ("zai", "glm-4.5", 128_000, true, false, true),
+            ("minimax", "MiniMax-M1", 1_000_000, true, false, true),
+            (
+                "moonshot",
+                "kimi-thinking-preview",
+                128_000,
+                true,
+                false,
+                true,
+            ),
+            (
+                "moonshot",
+                "moonshot-v1-128k-vision-preview",
+                128_000,
+                false,
+                true,
+                true,
+            ),
+            (
+                "groq",
+                "llama-3.3-70b-versatile",
+                131_072,
+                false,
+                false,
+                true,
+            ),
+            (
+                "groq",
+                "deepseek-r1-distill-llama-70b",
+                131_072,
+                true,
+                false,
+                true,
+            ),
+            ("xai", "grok-3-mini", 131_072, true, false, true),
+            ("xai", "grok-2-vision-1212", 32_768, false, true, true),
+            ("mistral", "codestral-latest", 256_000, false, false, true),
+            (
+                "mistral",
+                "magistral-medium-latest",
+                128_000,
+                true,
+                false,
+                true,
+            ),
+            (
+                "mistral",
+                "pixtral-large-latest",
+                131_072,
+                false,
+                true,
+                true,
+            ),
+        ];
+
+        for &(conn, model, window, thinking, attachments, tools) in expected {
+            let resolved = resolve_model_capabilities(&db, conn, model);
+            assert_eq!(resolved.provenance, CapabilityProvenance::BuiltInCatalog);
+            assert_eq!(resolved.context_window, Some(window), "{conn}/{model}");
+            assert_eq!(resolved.supports_thinking, thinking, "{conn}/{model}");
+            assert_eq!(resolved.supports_attachments, attachments, "{conn}/{model}");
+            assert_eq!(resolved.supports_tools, tools, "{conn}/{model}");
+            assert_eq!(
+                resolved.supported_efforts.is_empty(),
+                !thinking,
+                "{conn}/{model} efforts"
+            );
+        }
+    }
+
+    #[test]
+    fn new_preset_respects_manual_override_gt_api_metadata_gt_builtin() {
+        clear_api_metadata_cache();
+        let db = in_memory_db();
+
+        // Verify ManualOverride > ApiMetadata > BuiltInCatalog precedence on a new preset.
+        cache_api_metadata(
+            "deepseek",
+            &[ApiModelMetadata {
+                model_id: "deepseek-reasoner".to_string(),
+                context_window: Some(256_000),
+                supported_efforts: Some(vec!["low".to_string(), "high".to_string()]),
+                supports_thinking: Some(true),
+                supports_attachments: Some(false),
+                supports_tools: Some(true),
+            }],
+        );
+        let from_api = resolve_model_capabilities(&db, "deepseek", "deepseek-reasoner");
+        assert_eq!(from_api.provenance, CapabilityProvenance::ApiMetadata);
+        assert_eq!(from_api.context_window, Some(256_000));
+
+        set_manual_override(
+            &db,
+            "deepseek",
+            "deepseek-reasoner",
+            Some(ModelCapabilityOverride {
+                context_window: Some(64_000),
+                supported_efforts: Some(vec!["medium".to_string()]),
+                supports_thinking: Some(true),
+                supports_attachments: Some(false),
+                supports_tools: Some(true),
+            }),
+        )
+        .expect("set manual override");
+        let from_override = resolve_model_capabilities(&db, "deepseek", "deepseek-reasoner");
+        assert_eq!(
+            from_override.provenance,
+            CapabilityProvenance::ManualOverride
+        );
+        assert_eq!(from_override.context_window, Some(64_000));
+        assert_eq!(from_override.supported_efforts, vec!["medium".to_string()]);
         clear_api_metadata_cache();
     }
 }

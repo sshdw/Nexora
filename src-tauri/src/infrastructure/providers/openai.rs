@@ -58,11 +58,13 @@ const ENDPOINT: &str = "https://api.openai.com/v1/chat/completions";
 // (`mod.rs` aggregation, `registry`, `context_stats`, `privacy`, `compat`,
 // commands) keeps compiling unchanged.
 pub(crate) use super::catalog::openai::{
-    COMPAT_DISPLAY_NAME, COMPAT_NAME, MODEL_RATES, NVIDIA_DISPLAY_NAME, NVIDIA_ENDPOINT,
-    NVIDIA_MODELS, NVIDIA_NAME, OPENCODE_ZEN_DISPLAY_NAME, OPENCODE_ZEN_ENDPOINT,
-    OPENCODE_ZEN_MODELS, OPENCODE_ZEN_NAME, OPENROUTER_DISPLAY_NAME, OPENROUTER_ENDPOINT,
-    OPENROUTER_MODELS, OPENROUTER_NAME, PROVIDER_DISPLAY_NAME, PROVIDER_NAME, SUPPORTED_MODELS,
-    XKIRO_DISPLAY_NAME, XKIRO_ENDPOINT, XKIRO_MODELS, XKIRO_NAME,
+    COMPAT_DISPLAY_NAME, COMPAT_NAME, MODEL_RATES, PROVIDER_DISPLAY_NAME, PROVIDER_NAME,
+    SUPPORTED_MODELS,
+};
+#[cfg(test)]
+pub(crate) use super::catalog::openai::{
+    NVIDIA_MODELS, OPENCODE_ZEN_MODELS, OPENROUTER_MODELS, OPENROUTER_NAME, XKIRO_MODELS,
+    XKIRO_NAME,
 };
 
 /// Look up the estimated rate for a native OpenAI model ID.
@@ -89,15 +91,10 @@ fn is_listed_model(name: &str, model: &str) -> bool {
     // The user-configured endpoint (like any unknown name) has no hardcoded
     // shortlist: its tool support comes from the endpoint toggle, never from
     // a list.
-    let listed: &[&str] = match name {
-        PROVIDER_NAME => SUPPORTED_MODELS,
-        XKIRO_NAME => XKIRO_MODELS,
-        OPENROUTER_NAME => OPENROUTER_MODELS,
-        NVIDIA_NAME => NVIDIA_MODELS,
-        OPENCODE_ZEN_NAME => OPENCODE_ZEN_MODELS,
-        _ => &[],
-    };
-    listed.contains(&model)
+    if name == PROVIDER_NAME {
+        return SUPPORTED_MODELS.contains(&model);
+    }
+    super::catalog::openai::find_preset(name).is_some_and(|preset| preset.models.contains(&model))
 }
 
 ///
@@ -190,6 +187,8 @@ pub(crate) enum CompatConfigError {
     MissingBaseUrl,
     /// The base URL does not use the `http` or `https` scheme.
     UnsupportedScheme,
+    /// Plain `http://` is permitted only for explicit localhost loopback hosts.
+    InsecureRemoteHttp,
     /// The base URL has no host to connect to.
     MissingHost,
     /// The base URL embeds `user:password@` credentials.
@@ -222,6 +221,12 @@ impl std::fmt::Display for CompatConfigError {
             Self::MissingBaseUrl => write!(f, "no base URL is configured"),
             Self::UnsupportedScheme => {
                 write!(f, "the base URL must use the http or https scheme")
+            }
+            Self::InsecureRemoteHttp => {
+                write!(
+                    f,
+                    "the base URL must use https (http is allowed only for localhost)"
+                )
             }
             Self::MissingHost => write!(f, "the base URL has no host"),
             Self::CredentialsInUrl => write!(
@@ -325,9 +330,10 @@ fn validate_base_url(url: &str) -> Result<(), CompatConfigError> {
         return Err(CompatConfigError::UnsupportedScheme);
     };
     let scheme_len = trimmed.len() - after_scheme.len() - "://".len();
-    if !trimmed[..scheme_len].eq_ignore_ascii_case("http")
-        && !trimmed[..scheme_len].eq_ignore_ascii_case("https")
-    {
+    let scheme = &trimmed[..scheme_len];
+    let is_https = scheme.eq_ignore_ascii_case("https");
+    let is_http = scheme.eq_ignore_ascii_case("http");
+    if !is_https && !is_http {
         return Err(CompatConfigError::UnsupportedScheme);
     }
     // Authority runs to the first path/query/fragment separator.
@@ -376,7 +382,15 @@ fn validate_base_url(url: &str) -> Result<(), CompatConfigError> {
     if host.is_empty() {
         return Err(CompatConfigError::MissingHost);
     }
+    if is_http && !is_explicit_localhost(host) {
+        return Err(CompatConfigError::InsecureRemoteHttp);
+    }
     Ok(())
+}
+
+/// Only explicit loopback hosts may use plain `http://`.
+fn is_explicit_localhost(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1"
 }
 
 /// Validate a numeric port: 1–65535 with no leading-zero or empty games.
@@ -3316,5 +3330,117 @@ mod tests {
         assert!(evs
             .iter()
             .any(|e| matches!(e, StreamEvent::ToolCallDelta { index: 0, .. })));
+    }
+
+    #[test]
+    fn compat_config_rejects_remote_http_and_allows_localhost_or_https() {
+        for remote_http in [
+            "http://proxy.example.com/v1/chat/completions",
+            "http://api.deepseek.com/v1/chat/completions",
+            "http://10.0.0.1:8080/v1/chat/completions",
+        ] {
+            let mut config = valid_compat_config();
+            config.base_url = remote_http.to_string();
+            let err = config.validate().expect_err("remote http must fail");
+            assert_eq!(
+                err,
+                CompatConfigError::InsecureRemoteHttp,
+                "remote URL {remote_http:?} must be rejected"
+            );
+            assert!(err.to_string().contains("https"));
+        }
+
+        for local in [
+            "http://localhost:11434/v1/chat/completions",
+            "http://127.0.0.1:8080/v1/chat/completions",
+            "http://[::1]:8080/v1/chat/completions",
+            "https://api.deepseek.com/v1/chat/completions",
+        ] {
+            let mut config = valid_compat_config();
+            config.base_url = local.to_string();
+            assert!(config.validate().is_ok(), "URL {local:?} must validate");
+        }
+    }
+
+    #[test]
+    fn compatible_preset_and_compat_executor_stream_sse_events() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        for is_custom_compat in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+            let addr = listener.local_addr().expect("addr");
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().expect("accept");
+                let mut req_buf = Vec::new();
+                let mut tmp = [0u8; 4096];
+                while let Ok(n) = stream.read(&mut tmp) {
+                    if n == 0 {
+                        break;
+                    }
+                    req_buf.extend_from_slice(&tmp[..n]);
+                    if let Some(hdr_end) = req_buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let headers_str = String::from_utf8_lossy(&req_buf[..hdr_end]);
+                        let content_len = headers_str
+                            .lines()
+                            .find_map(|l| {
+                                let (k, v) = l.split_once(':')?;
+                                k.eq_ignore_ascii_case("content-length")
+                                    .then(|| v.trim().parse::<usize>().ok())
+                                    .flatten()
+                            })
+                            .unwrap_or(0);
+                        if req_buf.len() >= hdr_end + 4 + content_len {
+                            break;
+                        }
+                    }
+                }
+                let sse = concat!(
+                    "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"think\"}}]}\n\n",
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n",
+                    "data: [DONE]\n\n"
+                );
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    sse.len(),
+                    sse
+                );
+                stream.write_all(resp.as_bytes()).expect("write");
+            });
+
+            let endpoint = format!("http://{addr}/v1/chat/completions");
+            let executor = if is_custom_compat {
+                OpenAiExecutor::compatible_with_config(
+                    COMPAT_NAME,
+                    &CompatConfig {
+                        base_url: endpoint,
+                        model: "deepseek-reasoner".to_string(),
+                        organization: None,
+                        headers: Vec::new(),
+                        supports_tools: true,
+                    },
+                )
+            } else {
+                OpenAiExecutor::compatible("deepseek", endpoint)
+            };
+            let mut req = sample_request();
+            req.provider = if is_custom_compat {
+                "openai_compat".to_string()
+            } else {
+                "deepseek".to_string()
+            };
+            req.model = "deepseek-reasoner".to_string();
+            let events = std::sync::Mutex::new(Vec::new());
+            let response = executor
+                .execute_stream_events(&req, "sk-test", &CancellationToken::new(), &|ev| {
+                    events.lock().expect("lock").push(ev);
+                })
+                .expect("stream succeeds");
+            server.join().expect("join");
+            assert_eq!(response.content, "ok");
+            let evs = events.into_inner().expect("lock");
+            assert!(evs.contains(&StreamEvent::ThinkingDelta("think".to_string())));
+            assert!(evs.contains(&StreamEvent::TextDelta("ok".to_string())));
+        }
     }
 }

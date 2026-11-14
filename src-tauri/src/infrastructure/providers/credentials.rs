@@ -647,4 +647,30 @@ mod tests {
             ));
         }
     }
+
+    #[test]
+    fn keyring_namespaces_isolate_all_sixteen_providers() {
+        let backend = InMemoryBackend::new();
+        let providers = crate::infrastructure::providers::supported_providers();
+        assert_eq!(providers.len(), 16);
+
+        for (idx, provider) in providers.iter().enumerate() {
+            let secret = format!("sk-isolated-{idx}-{}", provider.name);
+            add_with(&backend, &provider.name, &secret).expect("store isolated secret");
+        }
+        for (idx, provider) in providers.iter().enumerate() {
+            let expected = format!("sk-isolated-{idx}-{}", provider.name);
+            assert!(exists_with(&backend, &provider.name).expect("exists"));
+            assert_eq!(
+                read_with(&backend, &provider.name).expect("read"),
+                Some(expected)
+            );
+        }
+
+        // Removing one provider's credential must leave the other 15 intact.
+        remove_with(&backend, "deepseek").expect("remove deepseek");
+        assert!(!exists_with(&backend, "deepseek").expect("exists false"));
+        assert!(exists_with(&backend, "openai").expect("openai preserved"));
+        assert!(exists_with(&backend, "mistral").expect("mistral preserved"));
+    }
 }
