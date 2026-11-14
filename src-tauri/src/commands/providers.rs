@@ -12,15 +12,19 @@
 // value here is a framework requirement, not a review defect.
 #![allow(clippy::needless_pass_by_value)]
 
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 
+use crate::application::capabilities::{
+    list_all_model_capabilities, refresh_connection_metadata, resolve_model_capabilities,
+    set_manual_override, ConnectionModelCapabilities, ModelCapabilityOverride,
+};
 use crate::application::providers::ProviderHealth;
 use crate::application::providers::ProviderService;
 use crate::infrastructure::database::Database;
 use crate::infrastructure::providers::SupportedProvider;
 use crate::infrastructure::repository::providers::Provider;
 
-use super::error::CommandError;
+use super::error::{CommandError, ErrorKind};
 
 /// Return every provider supported by this build, with its supported models
 /// (DATABASE.md В§7.5: model lists are hardcoded in the MVP). This is the
@@ -92,4 +96,82 @@ pub(crate) fn remove_provider(id: i64, db: State<'_, Database>) -> Result<(), Co
     ProviderService::new(db.inner())
         .remove(id)
         .map_err(Into::into)
+}
+
+/// Resolve capabilities for `(connection_id, model_id)` using strict precedence:
+/// `ManualOverride > ApiMetadata > BuiltInCatalog > Unknown`.
+#[tauri::command]
+pub(crate) fn get_model_capabilities(
+    connection_id: String,
+    model_id: String,
+    db: State<'_, Database>,
+) -> Result<ConnectionModelCapabilities, CommandError> {
+    if connection_id.trim().is_empty() || model_id.trim().is_empty() {
+        return Err(CommandError::new(
+            ErrorKind::InvalidInput,
+            "connection_id and model_id are required",
+        ));
+    }
+    Ok(resolve_model_capabilities(
+        db.inner(),
+        connection_id.trim(),
+        model_id.trim(),
+    ))
+}
+
+/// List resolved capabilities across all supported connections & models.
+#[tauri::command]
+pub(crate) fn list_model_capabilities(db: State<'_, Database>) -> Vec<ConnectionModelCapabilities> {
+    list_all_model_capabilities(db.inner())
+}
+
+/// Persist or clear a user manual capability override for `(connection_id, model_id)`.
+#[tauri::command]
+pub(crate) fn set_model_capability_override(
+    connection_id: String,
+    model_id: String,
+    override_spec: Option<ModelCapabilityOverride>,
+    db: State<'_, Database>,
+) -> Result<ConnectionModelCapabilities, CommandError> {
+    if connection_id.trim().is_empty() || model_id.trim().is_empty() {
+        return Err(CommandError::new(
+            ErrorKind::InvalidInput,
+            "connection_id and model_id are required",
+        ));
+    }
+    set_manual_override(
+        db.inner(),
+        connection_id.trim(),
+        model_id.trim(),
+        override_spec,
+    )
+    .map_err(Into::into)
+}
+
+/// Refresh zero-token `/models` metadata from the provider API for `connection_id`.
+#[tauri::command]
+pub(crate) async fn refresh_provider_model_metadata(
+    app: AppHandle,
+    connection_id: String,
+) -> Result<Vec<ConnectionModelCapabilities>, CommandError> {
+    if connection_id.trim().is_empty() {
+        return Err(CommandError::new(
+            ErrorKind::InvalidInput,
+            "connection_id is required",
+        ));
+    }
+    let handle = app.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let db = handle.state::<Database>();
+        refresh_connection_metadata(db.inner(), connection_id.trim())
+            .map_err(|err| CommandError::new(ErrorKind::Request, err.to_string()))
+    })
+    .await;
+    match outcome {
+        Ok(res) => res,
+        Err(_) => Err(CommandError::new(
+            ErrorKind::Request,
+            "provider metadata refresh failed",
+        )),
+    }
 }

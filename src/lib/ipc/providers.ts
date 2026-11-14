@@ -147,3 +147,78 @@ export function updateProviderCredential(
 export function removeProviderCredential(provider: string): Promise<void> {
   return invoke<void>("remove_provider_credential", { provider });
 }
+
+// ---- (connection_id, model_id) Capability Catalog & Provenance --------
+
+export type CapabilityProvenance =
+  | "manual_override"
+  | "api_metadata"
+  | "built_in_catalog"
+  | "unknown";
+
+export type EffortLevel = "low" | "medium" | "high" | "xhigh";
+
+export interface ConnectionModelCapabilities {
+  connection_id: string;
+  model_id: string;
+  context_window: number | null;
+  supported_efforts: string[];
+  supports_thinking: boolean;
+  supports_attachments: boolean;
+  supports_tools: boolean;
+  provenance: CapabilityProvenance;
+  has_manual_override: boolean;
+}
+
+export interface ModelCapabilityOverride {
+  context_window?: number | null;
+  supported_efforts?: string[] | null;
+  supports_thinking?: boolean | null;
+  supports_attachments?: boolean | null;
+  supports_tools?: boolean | null;
+}
+
+/** Resolve capabilities for `(connectionId, modelId)` using strict precedence:
+ * `ManualOverride > ApiMetadata > BuiltInCatalog > Unknown`. */
+export function getModelCapabilities(
+  connectionId: string,
+  modelId: string
+): Promise<ConnectionModelCapabilities> {
+  return invoke<ConnectionModelCapabilities>("get_model_capabilities", {
+    connectionId,
+    modelId,
+  });
+}
+
+/** List resolved capabilities across all supported connections and models. */
+export function listModelCapabilities(): Promise<
+  ConnectionModelCapabilities[]
+> {
+  return invoke<ConnectionModelCapabilities[]>("list_model_capabilities");
+}
+
+/** Persist or clear a user manual capability override for `(connectionId, modelId)`. */
+export function setModelCapabilityOverride(
+  connectionId: string,
+  modelId: string,
+  overrideSpec: ModelCapabilityOverride | null
+): Promise<ConnectionModelCapabilities> {
+  return invoke<ConnectionModelCapabilities>(
+    "set_model_capability_override",
+    {
+      connectionId,
+      modelId,
+      overrideSpec,
+    }
+  );
+}
+
+/** Refresh zero-token `/models` metadata from the provider API for `connectionId`. */
+export function refreshProviderModelMetadata(
+  connectionId: string
+): Promise<ConnectionModelCapabilities[]> {
+  return invoke<ConnectionModelCapabilities[]>(
+    "refresh_provider_model_metadata",
+    { connectionId }
+  );
+}

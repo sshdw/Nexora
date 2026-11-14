@@ -521,6 +521,111 @@ async function invoke(
     case "remove_provider_credential":
       credentialed.delete(String(args.provider));
       return null;
+    case "get_model_capabilities":
+    case "list_model_capabilities":
+    case "set_model_capability_override":
+    case "refresh_provider_model_metadata": {
+      const rawOverrides = settings.get("provider.capability_overrides");
+      const overrideMap: Record<
+        string,
+        {
+          context_window?: number | null;
+          supported_efforts?: string[] | null;
+          supports_thinking?: boolean | null;
+          supports_attachments?: boolean | null;
+          supports_tools?: boolean | null;
+        }
+      > = rawOverrides ? JSON.parse(rawOverrides) : {};
+      const resolveMockCaps = (connId: string, modelId: string) => {
+        const listed = supported.some(
+          (p) => p.name === connId && p.models.includes(modelId)
+        );
+        const base = !listed
+          ? {
+              connection_id: connId,
+              model_id: modelId,
+              context_window: null,
+              supported_efforts: [] as string[],
+              supports_thinking: false,
+              supports_attachments: false,
+              supports_tools: false,
+              provenance: "unknown" as const,
+              has_manual_override: false,
+            }
+          : modelId.includes("flash-lite")
+            ? {
+                connection_id: connId,
+                model_id: modelId,
+                context_window: 1000000,
+                supported_efforts: [] as string[],
+                supports_thinking: false,
+                supports_attachments: true,
+                supports_tools: true,
+                provenance: "built_in_catalog" as const,
+                has_manual_override: false,
+              }
+            : {
+                connection_id: connId,
+                model_id: modelId,
+                context_window: connId === "gemini" ? 1000000 : 200000,
+                supported_efforts:
+                  connId === "gemini" || modelId.includes("haiku")
+                    ? ["low", "medium", "high"]
+                    : ["low", "medium", "high", "xhigh"],
+                supports_thinking: true,
+                supports_attachments: true,
+                supports_tools: true,
+                provenance: "built_in_catalog" as const,
+                has_manual_override: false,
+              };
+        const ov = overrideMap[`${connId}::${modelId}`];
+        if (!ov) return base;
+        return {
+          ...base,
+          context_window:
+            ov.context_window !== undefined
+              ? ov.context_window
+              : base.context_window,
+          supported_efforts:
+            ov.supported_efforts !== undefined && ov.supported_efforts !== null
+              ? ov.supported_efforts
+              : base.supported_efforts,
+          supports_thinking:
+            ov.supports_thinking ?? base.supports_thinking,
+          supports_attachments:
+            ov.supports_attachments ?? base.supports_attachments,
+          supports_tools: ov.supports_tools ?? base.supports_tools,
+          provenance: "manual_override" as const,
+          has_manual_override: true,
+        };
+      };
+      if (command === "get_model_capabilities") {
+        return resolveMockCaps(
+          String(args.connectionId ?? args.connection_id ?? ""),
+          String(args.modelId ?? args.model_id ?? "")
+        );
+      }
+      if (command === "set_model_capability_override") {
+        const connId = String(args.connectionId ?? args.connection_id ?? "");
+        const modelId = String(args.modelId ?? args.model_id ?? "");
+        const spec = args.overrideSpec ?? args.override_spec ?? null;
+        if (spec) overrideMap[`${connId}::${modelId}`] = spec as never;
+        else delete overrideMap[`${connId}::${modelId}`];
+        settings.set(
+          "provider.capability_overrides",
+          JSON.stringify(overrideMap)
+        );
+        return resolveMockCaps(connId, modelId);
+      }
+      if (command === "refresh_provider_model_metadata") {
+        const connId = String(args.connectionId ?? args.connection_id ?? "");
+        const def = supported.find((p) => p.name === connId);
+        return (def?.models ?? []).map((m) => resolveMockCaps(connId, m));
+      }
+      return supported.flatMap((p) =>
+        p.models.map((m) => resolveMockCaps(p.name, m))
+      );
+    }
     case "get_setting":
       return settings.get(String(args.key)) ?? null;
     case "set_setting": {

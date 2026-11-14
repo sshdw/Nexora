@@ -12,15 +12,21 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
   type CommandError,
+  type ConnectionModelCapabilities,
+  type ModelCapabilityOverride,
   type ProviderDef,
   type SupportedProvider,
   addProviderCredential,
   createProvider,
+  getModelCapabilities,
   getSetting,
   hasProviderCredential,
+  listModelCapabilities,
   listProviders,
+  refreshProviderModelMetadata,
   removeProvider,
   removeProviderCredential,
+  setModelCapabilityOverride,
   setSetting,
   supportedProviders,
   updateProviderCredential,
@@ -30,6 +36,12 @@ import { getLocale, tr } from "./strings";
 /** Setting keys backing the persisted selection (FR-012). */
 const SELECTED_PROVIDER_KEY = "provider.selected";
 const SELECTED_MODEL_KEY = "provider.model";
+const SELECTED_EFFORT_KEY = "provider.effort";
+const VALID_EFFORTS = ["low", "medium", "high", "xhigh"] as const;
+
+function capabilityKey(connectionId: string, modelId: string): string {
+  return `${connectionId}::${modelId}`;
+}
 
 /** Mirror of the backend custom model ID rule (commands/settings.rs):
  * listed shortlist ID or 1..=200 chars of A-Za-z0-9._/:-+ without `..`. */
@@ -58,14 +70,32 @@ export interface ProvidersStore {
   selectedProvider: string | null;
   /** Selected model for the selected provider, if any. */
   selectedModel: string | null;
+  /** Selected reasoning effort for the active model, if any. */
+  selectedEffort: string | null;
+  /** Resolved capabilities across `(connection_id, model_id)` pairs. */
+  capabilities: ConnectionModelCapabilities[];
+  /** Resolved capability record for `(selectedProvider, selectedModel)`, if known. */
+  selectedCapabilities: ConnectionModelCapabilities | null;
   loading: boolean;
   error: CommandError | null;
   working: boolean;
   reload: () => Promise<void>;
   /** Persist the selected provider (FR-004). */
   selectProvider: (name: string) => Promise<void>;
-  /** Persist the selected model for the current provider (FR-004). */
-  selectModel: (model: string) => Promise<void>;
+  /** Persist the selected model for the current (or explicit) provider (FR-004). */
+  selectModel: (model: string, providerId?: string) => Promise<void>;
+  /** Persist both provider and model selection without stale closure reads. */
+  selectProviderAndModel: (providerId: string, model: string) => Promise<void>;
+  /** Persist or clear the selected reasoning effort. */
+  selectEffort: (effort: string | null) => Promise<void>;
+  /** Save or clear a manual capability override for `(connectionId, modelId)`. */
+  setCapabilityOverride: (
+    connectionId: string,
+    modelId: string,
+    overrideSpec: ModelCapabilityOverride | null
+  ) => Promise<ConnectionModelCapabilities | null>;
+  /** Refresh zero-token `/models` metadata from the provider API. */
+  refreshModelMetadata: (connectionId: string) => Promise<void>;
   /** Register the provider definition (if needed) and store its credential.
    * Resolves `true` only when the operation succeeded, so the caller can
    * safely discard transient input; failures surface through `error`. */
@@ -88,6 +118,10 @@ export function useProviders(): ProvidersStore {
   );
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
+  const [selectedEffort, setSelectedEffort] = useState<string | null>(null);
+  const [capabilities, setCapabilities] = useState<
+    ConnectionModelCapabilities[]
+  >([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<CommandError | null>(null);
   const [working, setWorking] = useState<boolean>(false);
@@ -96,13 +130,21 @@ export function useProviders(): ProvidersStore {
     setLoading(true);
     setError(null);
     try {
-      const [defs, configured, providerSetting, modelSetting] =
-        await Promise.all([
-          supportedProviders(),
-          listProviders(),
-          getSetting(SELECTED_PROVIDER_KEY),
-          getSetting(SELECTED_MODEL_KEY),
-        ]);
+      const [
+        defs,
+        configured,
+        providerSetting,
+        modelSetting,
+        effortSetting,
+        capList,
+      ] = await Promise.all([
+        supportedProviders(),
+        listProviders(),
+        getSetting(SELECTED_PROVIDER_KEY),
+        getSetting(SELECTED_MODEL_KEY),
+        getSetting(SELECTED_EFFORT_KEY).catch(() => null),
+        listModelCapabilities().catch(() => [] as ConnectionModelCapabilities[]),
+      ]);
       setSupported(defs);
       setConfiguredProviders(configured);
 
@@ -133,8 +175,33 @@ export function useProviders(): ProvidersStore {
               isCustomModelId(modelSetting)
             ? modelSetting
             : null;
+      const validEffort =
+        effortSetting !== null &&
+        VALID_EFFORTS.includes(
+          effortSetting as (typeof VALID_EFFORTS)[number]
+        )
+          ? effortSetting
+          : null;
       setSelectedProvider(validProvider);
       setSelectedModel(validModel);
+      setSelectedEffort(validEffort);
+
+      let nextCaps = capList;
+      if (
+        validProvider &&
+        validModel &&
+        !capList.some(
+          (c) =>
+            c.connection_id === validProvider && c.model_id === validModel
+        )
+      ) {
+        const single = await getModelCapabilities(
+          validProvider,
+          validModel
+        ).catch(() => null);
+        if (single) nextCaps = [...capList, single];
+      }
+      setCapabilities(nextCaps);
     } catch (e) {
       setError(toCommandError(e));
     } finally {
@@ -173,15 +240,130 @@ export function useProviders(): ProvidersStore {
     [supported, selectedModel]
   );
 
-  const selectModel = useCallback(async (model: string): Promise<void> => {
-    setError(null);
-    try {
-      await setSetting(SELECTED_MODEL_KEY, model);
-      setSelectedModel(model);
-    } catch (e) {
-      setError(toCommandError(e));
-    }
-  }, []);
+  const loadModelCapabilitiesIfMissing = useCallback(
+    async (connectionId: string, model: string): Promise<void> => {
+      if (
+        !connectionId ||
+        capabilities.some(
+          (c) => c.connection_id === connectionId && c.model_id === model
+        )
+      ) {
+        return;
+      }
+      const single = await getModelCapabilities(connectionId, model).catch(
+        () => null
+      );
+      if (single) {
+        setCapabilities((prev) => {
+          const filtered = prev.filter(
+            (c) =>
+              capabilityKey(c.connection_id, c.model_id) !==
+              capabilityKey(single.connection_id, single.model_id)
+          );
+          return [...filtered, single];
+        });
+      }
+    },
+    [capabilities]
+  );
+
+  const selectModel = useCallback(
+    async (model: string, providerId?: string): Promise<void> => {
+      setError(null);
+      try {
+        await setSetting(SELECTED_MODEL_KEY, model);
+        setSelectedModel(model);
+        const targetProvider = providerId ?? selectedProvider;
+        if (targetProvider) {
+          await loadModelCapabilitiesIfMissing(targetProvider, model);
+        }
+      } catch (e) {
+        setError(toCommandError(e));
+      }
+    },
+    [selectedProvider, loadModelCapabilitiesIfMissing]
+  );
+
+  const selectProviderAndModel = useCallback(
+    async (providerId: string, model: string): Promise<void> => {
+      setError(null);
+      try {
+        if (providerId !== selectedProvider) {
+          await setSetting(SELECTED_PROVIDER_KEY, providerId);
+          setSelectedProvider(providerId);
+        }
+        await setSetting(SELECTED_MODEL_KEY, model);
+        setSelectedModel(model);
+        await loadModelCapabilitiesIfMissing(providerId, model);
+      } catch (e) {
+        setError(toCommandError(e));
+      }
+    },
+    [selectedProvider, loadModelCapabilitiesIfMissing]
+  );
+
+  const selectEffort = useCallback(
+    async (effort: string | null): Promise<void> => {
+      setError(null);
+      try {
+        await setSetting(SELECTED_EFFORT_KEY, effort);
+        setSelectedEffort(effort);
+      } catch (e) {
+        setError(toCommandError(e));
+      }
+    },
+    []
+  );
+
+  const setCapabilityOverride = useCallback(
+    async (
+      connectionId: string,
+      modelId: string,
+      overrideSpec: ModelCapabilityOverride | null
+    ): Promise<ConnectionModelCapabilities | null> => {
+      setError(null);
+      try {
+        const updated = await setModelCapabilityOverride(
+          connectionId,
+          modelId,
+          overrideSpec
+        );
+        setCapabilities((prev) => {
+          const key = capabilityKey(updated.connection_id, updated.model_id);
+          const filtered = prev.filter(
+            (c) => capabilityKey(c.connection_id, c.model_id) !== key
+          );
+          return [...filtered, updated];
+        });
+        return updated;
+      } catch (e) {
+        setError(toCommandError(e));
+        return null;
+      }
+    },
+    []
+  );
+
+  const refreshModelMetadata = useCallback(
+    async (connectionId: string): Promise<void> => {
+      setError(null);
+      try {
+        const updated = await refreshProviderModelMetadata(connectionId);
+        setCapabilities((prev) => {
+          const byKey = new Map(
+            prev.map((c) => [capabilityKey(c.connection_id, c.model_id), c])
+          );
+          for (const item of updated) {
+            byKey.set(capabilityKey(item.connection_id, item.model_id), item);
+          }
+          return Array.from(byKey.values());
+        });
+      } catch (e) {
+        setError(toCommandError(e));
+      }
+    },
+    []
+  );
   const connect = useCallback(
     async (
       name: string,
@@ -262,18 +444,35 @@ export function useProviders(): ProvidersStore {
     [supported, configuredProviders, credentialedNames]
   );
 
+  const selectedCapabilities = useMemo(() => {
+    if (!selectedProvider || !selectedModel) return null;
+    return (
+      capabilities.find(
+        (c) =>
+          c.connection_id === selectedProvider && c.model_id === selectedModel
+      ) ?? null
+    );
+  }, [capabilities, selectedProvider, selectedModel]);
+
   // Memoized store identity (NEX-FE-002 audit).
   return useMemo(
     () => ({
       providers,
       selectedProvider,
       selectedModel,
+      selectedEffort,
+      capabilities,
+      selectedCapabilities,
       loading,
       error,
       working,
       reload,
       selectProvider,
       selectModel,
+      selectProviderAndModel,
+      selectEffort,
+      setCapabilityOverride,
+      refreshModelMetadata,
       connect,
       disconnect,
     }),
@@ -281,12 +480,19 @@ export function useProviders(): ProvidersStore {
       providers,
       selectedProvider,
       selectedModel,
+      selectedEffort,
+      capabilities,
+      selectedCapabilities,
       loading,
       error,
       working,
       reload,
       selectProvider,
       selectModel,
+      selectProviderAndModel,
+      selectEffort,
+      setCapabilityOverride,
+      refreshModelMetadata,
       connect,
       disconnect,
     ]

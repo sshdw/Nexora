@@ -49,7 +49,9 @@ use super::persistence::{mode_to_column, terminal_outcome, RunRecorder};
 use super::runner::AgentRunner;
 use crate::application::context_stats::context_limit_for;
 use crate::application::conversations::ConversationService;
-use crate::application::execution::{AiMessage, ProviderExecutor, RequestError};
+use crate::application::execution::{
+    AiMessage, ModelConfig, ProviderExecutor, ReasoningEffort, RequestError,
+};
 use crate::application::routing::{RoutingService, TaskKind};
 use crate::application::settings::SettingsService;
 use crate::infrastructure::database::Database;
@@ -457,6 +459,25 @@ pub(crate) fn resolve_approval_timeout(db: &Database) -> std::time::Duration {
 /// Setting key backing the per-run spend guard (`agent.spend_limit_micro_usd`).
 pub(crate) use nexora_core::config::SPEND_LIMIT_KEY;
 
+#[must_use]
+pub(crate) fn resolve_effective_effort(
+    db: &Database,
+    provider: &str,
+    model: &str,
+) -> Option<String> {
+    let raw = SettingsService::new(db)
+        .read(nexora_core::config::SELECTED_EFFORT_KEY)
+        .ok()
+        .flatten()?;
+    let parsed = ReasoningEffort::parse(&raw)?;
+    let caps = crate::application::capabilities::resolve_model_capabilities(db, provider, model);
+    let candidate = parsed.as_str();
+    caps.supported_efforts
+        .iter()
+        .any(|e| e == candidate)
+        .then(|| candidate.to_string())
+}
+
 /// Resolve the persisted per-run spend limit in micro-USD, mirroring
 /// [`resolve_autonomy_mode`]: `None` means "no limit" and preserves today's
 /// behaviour. A stored value yields `Some` only when it parses as `u64` and
@@ -850,7 +871,15 @@ fn spawn_run(
                     .with_context_limit(context_limit)
                     .with_run_flags(resolved_flags.run_flags())
                     .with_audit_log(Arc::clone(&audit_log))
-                    .with_event_sender(tx_for_recorder.clone());
+                    .with_event_sender(tx_for_recorder.clone())
+                    .with_stream_deltas(true);
+                if let Some(effort) =
+                    resolve_effective_effort(&db, &run_request.provider, &run_request.model)
+                {
+                    runner = runner.with_model_config(
+                        ModelConfig::new(&run_request.model).with_effort(Some(effort)),
+                    );
+                }
                 if let Some(max_iterations) = run_request.max_iterations {
                     runner = runner.with_max_iterations(max_iterations);
                 }

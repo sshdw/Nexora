@@ -16,10 +16,25 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { LocaleProvider } from "../lib/useLocale";
 import ModelPicker from "./ModelPicker";
+
+beforeAll(() => {
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    }
+  );
+});
+
+afterAll(() => {
+  vi.unstubAllGlobals();
+});
 
 afterEach(() => {
   cleanup();
@@ -127,5 +142,144 @@ describe("ModelPicker — active row and query lifecycle", () => {
     fireEvent.keyDown(search(), { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("searchbox")).toBeNull());
     expect(onSelectModel).not.toHaveBeenCalled();
+  });
+});
+
+describe("ModelPicker — connection grouping and effort capabilities", () => {
+  it("groups models by connection_id and dispatches connection-aware selection", async () => {
+    const onSelectConnectionModel = vi.fn();
+    renderPicker({
+      selectedConnectionId: "openai",
+      selectedModel: "gpt-5.6-terra",
+      models: ["gpt-5.6-terra", "claude-sonnet-5"],
+      connectionGroups: [
+        {
+          connectionId: "openai",
+          connectionName: "OpenAI",
+          models: ["gpt-5.6-terra"],
+        },
+        {
+          connectionId: "anthropic",
+          connectionName: "Anthropic",
+          models: ["claude-sonnet-5"],
+        },
+      ],
+      onSelectConnectionModel,
+    });
+    openPicker();
+    expect(screen.getByText("OpenAI")).toBeInTheDocument();
+    expect(screen.getByText("Anthropic")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("option", { name: "claude-sonnet-5" }));
+    expect(onSelectConnectionModel).toHaveBeenCalledWith(
+      "anthropic",
+      "claude-sonnet-5"
+    );
+    await waitFor(() => expect(screen.queryByRole("listbox")).toBeNull());
+  });
+
+  it("renders only the supported effort levels for the active model", () => {
+    const onSelectEffort = vi.fn();
+    renderPicker({
+      selectedConnectionId: "gemini",
+      selectedModel: "gemini-3.6-flash",
+      capabilities: {
+        connection_id: "gemini",
+        model_id: "gemini-3.6-flash",
+        context_window: 1000000,
+        supported_efforts: ["low", "high"],
+        supports_thinking: true,
+        supports_attachments: true,
+        supports_tools: true,
+        provenance: "built_in_catalog",
+        has_manual_override: false,
+      },
+      selectedEffort: "low",
+      onSelectEffort,
+    });
+    openPicker();
+
+    const effortGroup = screen.getByRole("group", { name: "Effort" });
+    expect(
+      within(effortGroup).getByRole("button", { name: "Low" })
+    ).toBeInTheDocument();
+    expect(
+      within(effortGroup).getByRole("button", { name: "High" })
+    ).toBeInTheDocument();
+    expect(
+      within(effortGroup).queryByRole("button", { name: "Medium" })
+    ).toBeNull();
+    expect(
+      within(effortGroup).queryByRole("button", { name: "Max" })
+    ).toBeNull();
+
+    expect(screen.getByRole("slider", { name: "Effort" })).toHaveAttribute(
+      "aria-valuemax",
+      "1"
+    );
+
+    fireEvent.click(within(effortGroup).getByRole("button", { name: "High" }));
+    expect(onSelectEffort).toHaveBeenCalledWith("high");
+  });
+
+  it("hides effort controls with an honest unsupported notice when empty", () => {
+    renderPicker({
+      selectedConnectionId: "gemini",
+      selectedModel: "gemini-3.1-flash-lite",
+      capabilities: {
+        connection_id: "gemini",
+        model_id: "gemini-3.1-flash-lite",
+        context_window: 1000000,
+        supported_efforts: [],
+        supports_thinking: false,
+        supports_attachments: true,
+        supports_tools: true,
+        provenance: "built_in_catalog",
+        has_manual_override: false,
+      },
+      onSelectEffort: vi.fn(),
+    });
+    openPicker();
+
+    expect(screen.getByTestId("effort-unsupported")).toHaveTextContent(
+      "Effort levels not supported for this model"
+    );
+    expect(screen.queryByRole("slider", { name: "Effort" })).toBeNull();
+    expect(screen.queryByRole("group", { name: "Effort" })).toBeNull();
+  });
+
+  it("reflects manual capability overrides over unknown or unsupported defaults", () => {
+    const onSelectEffort = vi.fn();
+    renderPicker({
+      selectedConnectionId: "openai_compat",
+      selectedModel: "local-reasoner",
+      capabilities: {
+        connection_id: "openai_compat",
+        model_id: "local-reasoner",
+        context_window: 128000,
+        supported_efforts: ["medium", "xhigh"],
+        supports_thinking: true,
+        supports_attachments: false,
+        supports_tools: true,
+        provenance: "manual_override",
+        has_manual_override: true,
+      },
+      selectedEffort: "xhigh",
+      onSelectEffort,
+    });
+    openPicker();
+
+    expect(screen.getByText("Manual")).toBeInTheDocument();
+    expect(screen.getByText("Manual override")).toBeInTheDocument();
+    const effortGroup = screen.getByRole("group", { name: "Effort" });
+    expect(
+      within(effortGroup).getByRole("button", { name: "Medium" })
+    ).toBeInTheDocument();
+    expect(
+      within(effortGroup).getByRole("button", { name: "Max" })
+    ).toBeInTheDocument();
+    expect(
+      within(effortGroup).queryByRole("button", { name: "Low" })
+    ).toBeNull();
   });
 });

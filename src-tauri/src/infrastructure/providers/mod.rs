@@ -15,6 +15,7 @@ pub mod anthropic;
 pub mod catalog;
 pub mod credentials;
 pub mod gemini;
+pub mod metadata;
 pub mod openai;
 pub mod registry;
 pub mod transport;

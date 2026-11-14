@@ -317,6 +317,73 @@ pub struct TokenUsage {
     pub output_tokens: u64,
 }
 
+/// Normalized reasoning/thinking effort levels supported across providers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningEffort {
+    /// Minimal reasoning effort (`low`).
+    Low,
+    /// Balanced reasoning effort (`medium`).
+    Medium,
+    /// Thorough reasoning effort (`high`).
+    High,
+    /// Maximum reasoning effort (`xhigh`).
+    #[serde(rename = "xhigh")]
+    XHigh,
+}
+
+impl ReasoningEffort {
+    /// Wire / persistence representation.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::XHigh => "xhigh",
+        }
+    }
+
+    /// Parse a case-insensitive trimmed effort string.
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "low" => Some(Self::Low),
+            "medium" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            "xhigh" => Some(Self::XHigh),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for ReasoningEffort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Incremental streaming delta emitted by [`ProviderExecutor::execute_stream_events`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum StreamEvent {
+    /// Incremental assistant text chunk.
+    TextDelta(String),
+    /// Incremental provider-native thinking/reasoning chunk (never fabricated).
+    ThinkingDelta(String),
+    /// Incremental structured tool-call chunk keyed by `index`.
+    ToolCallDelta {
+        /// Zero-based tool-call slot index within the turn.
+        index: usize,
+        /// Provider-supplied call id, when first announced.
+        id: Option<String>,
+        /// Function/tool name chunk or full name.
+        name: Option<String>,
+        /// Partial JSON arguments fragment.
+        arguments_delta: Option<String>,
+    },
+}
+
 /// Per-request model selection (provider-runtime core).
 ///
 /// Carries the requested model plus optional overrides. Filling a missing
@@ -333,6 +400,9 @@ pub struct ModelConfig {
     pub temperature: Option<f32>,
     /// Explicit output-token cap override, if any.
     pub max_tokens: Option<u32>,
+    /// Explicit reasoning/thinking effort override (`low` | `medium` | `high` | `xhigh`), if any.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub effort: Option<String>,
 }
 
 impl ModelConfig {
@@ -344,6 +414,7 @@ impl ModelConfig {
             context_limit: None,
             temperature: None,
             max_tokens: None,
+            effort: None,
         }
     }
 
@@ -365,6 +436,13 @@ impl ModelConfig {
     #[must_use]
     pub fn with_max_tokens(mut self, max_tokens: Option<u32>) -> Self {
         self.max_tokens = max_tokens;
+        self
+    }
+
+    /// Set an explicit reasoning/thinking effort override.
+    #[must_use]
+    pub fn with_effort(mut self, effort: Option<String>) -> Self {
+        self.effort = effort;
         self
     }
 }
@@ -692,15 +770,29 @@ pub trait ProviderExecutor {
         token: &CancellationToken,
     ) -> std::result::Result<AiResponse, ExecutorError>;
 
-    /// Forward-compatible streaming shape: run the current sync [`Self::execute`]
-    /// path, then deliver the full text once through `on_text`.
+    /// Execute `request` with incremental streaming events (`TextDelta`,
+    /// `ThinkingDelta`, `ToolCallDelta`).
     ///
-    /// This default keeps every existing caller and the current event channel
-    /// untouched while giving a future streaming task a stable override point:
-    /// per-provider executors will override this with real chunk delivery
-    /// without changing the sync path. It performs no network itself beyond
-    /// what [`Self::execute`] does, and `on_text` runs synchronously on the
-    /// caller's thread.
+    /// Providers with real SSE/streaming implementations override this method
+    /// to emit incremental deltas as frames arrive. The default delegates to
+    /// [`Self::execute`] and delivers the full text once when non-empty.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::execute`].
+    fn execute_stream_events(
+        &self,
+        request: &AiRequest,
+        credential: &str,
+        token: &CancellationToken,
+        on_event: &dyn Fn(StreamEvent),
+    ) -> std::result::Result<AiResponse, ExecutorError> {
+        let response = self.execute(request, credential, token)?;
+        on_event(StreamEvent::TextDelta(response.content.clone()));
+        Ok(response)
+    }
+
+    /// Text-only streaming adapter backed by [`Self::execute_stream_events`].
     ///
     /// # Errors
     ///
@@ -712,9 +804,11 @@ pub trait ProviderExecutor {
         token: &CancellationToken,
         on_text: &dyn Fn(&str),
     ) -> std::result::Result<AiResponse, ExecutorError> {
-        let response = self.execute(request, credential, token)?;
-        on_text(response.content.as_str());
-        Ok(response)
+        self.execute_stream_events(request, credential, token, &|event| {
+            if let StreamEvent::TextDelta(chunk) = event {
+                on_text(chunk.as_str());
+            }
+        })
     }
 }
 
@@ -1347,5 +1441,15 @@ mod tests {
         };
         let outcome = executor.execute(&request, "cred", &CancellationToken::new());
         assert!(matches!(outcome, Err(ExecutorError::InvalidRequest)));
+    }
+
+    #[test]
+    fn reasoning_effort_round_trips_and_model_config_carries_effort() {
+        for raw in ["low", "medium", "high", "xhigh", " HIGH "] {
+            assert!(ReasoningEffort::parse(raw).is_some());
+        }
+        assert_eq!(ReasoningEffort::parse("invalid"), None);
+        let cfg = ModelConfig::new("gpt-5.6-terra").with_effort(Some("high".to_string()));
+        assert_eq!(cfg.effort.as_deref(), Some("high"));
     }
 }

@@ -721,4 +721,25 @@ mod tests {
             assert_rejected(APPROVAL_TIMEOUT_KEY, value);
         }
     }
+
+    #[test]
+    fn effort_and_capability_override_settings_validate_cleanly() {
+        use nexora_core::config::{MODEL_CAPABILITY_OVERRIDES_KEY, SELECTED_EFFORT_KEY};
+
+        for value in ["low", "medium", "high", "xhigh"] {
+            assert_accepted(SELECTED_EFFORT_KEY, value);
+        }
+        assert!(validate_setting(SELECTED_EFFORT_KEY, None).is_ok());
+        for value in ["", "ultra", "HIGH", "0"] {
+            assert_rejected(SELECTED_EFFORT_KEY, value);
+        }
+
+        assert_accepted(
+            MODEL_CAPABILITY_OVERRIDES_KEY,
+            r#"{"openai::gpt-5.6-terra":{"context_window":256000,"supported_efforts":["low","high"]}}"#,
+        );
+        assert!(validate_setting(MODEL_CAPABILITY_OVERRIDES_KEY, None).is_ok());
+        assert_rejected(MODEL_CAPABILITY_OVERRIDES_KEY, "not-json");
+        assert_rejected(MODEL_CAPABILITY_OVERRIDES_KEY, "[]");
+    }
 }

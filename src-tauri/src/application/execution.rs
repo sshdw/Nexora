@@ -53,7 +53,8 @@ use crate::application::compat::CompatError;
 // only — this module names no concrete provider.
 pub(crate) use nexora_core::provider::{
     AiAttachment, AiAttachmentPayload, AiMessage, AiRequest, AiResponse, AiRole, AiToolResult,
-    ExecutorError, ModelConfig, ProviderExecutor, TokenUsage, ToolCall, ToolDefinition,
+    ExecutorError, ModelConfig, ProviderExecutor, ReasoningEffort, StreamEvent, TokenUsage,
+    ToolCall, ToolDefinition,
 };
 use nexora_core::provider::{
     CompatEndpoint, CredentialError, CredentialSource, ProviderExecutorResolver, SharedExecutor,
@@ -81,6 +82,20 @@ pub(crate) type Result<T> = std::result::Result<T, RequestError>;
 pub(crate) struct ExecutionSources {
     executors: Arc<dyn ProviderExecutorResolver>,
     credentials: Arc<dyn CredentialSource>,
+}
+
+#[cfg(test)]
+impl ExecutionSources {
+    /// Construct execution sources from explicit test stubs.
+    pub(crate) fn with_test_sources(
+        executors: Arc<dyn ProviderExecutorResolver>,
+        credentials: Arc<dyn CredentialSource>,
+    ) -> Self {
+        Self {
+            executors,
+            credentials,
+        }
+    }
 }
 
 static INSTALLED_SOURCES: OnceLock<ExecutionSources> = OnceLock::new();
@@ -268,6 +283,33 @@ impl<'a> RequestExecutionService<'a> {
     /// when the provider fails to fulfil the request; or
     /// [`RequestError::Database`] when the provider lookup fails.
     pub(crate) fn execute(&self, request: &AiRequest) -> Result<AiResponse> {
+        self.run_with_executor(request, |executor, credential, token| {
+            executor.execute(request, credential, token)
+        })
+    }
+
+    /// Execute `request` with incremental streaming deltas delivered to `on_event`.
+    ///
+    /// Shares provider resolution, compatibility validation, and credential
+    /// handling with [`Self::execute`].
+    pub(crate) fn execute_stream(
+        &self,
+        request: &AiRequest,
+        on_event: &dyn Fn(StreamEvent),
+    ) -> Result<AiResponse> {
+        self.run_with_executor(request, |executor, credential, token| {
+            executor.execute_stream_events(request, credential, token, on_event)
+        })
+    }
+
+    fn run_with_executor<F>(&self, request: &AiRequest, run: F) -> Result<AiResponse>
+    where
+        F: FnOnce(
+            &dyn ProviderExecutor,
+            &str,
+            &CancellationToken,
+        ) -> std::result::Result<AiResponse, ExecutorError>,
+    {
         // 1–3. Provider row, availability, and credential (shared with the
         //     Task 5.1 agent-run bridge through `resolve_credential`).
         let credential = self.resolve_credential(&request.provider)?;
@@ -295,12 +337,12 @@ impl<'a> RequestExecutionService<'a> {
                 supports_tools: config.supports_tools,
             });
             let idle_token = CancellationToken::new();
-            return executor
-                .execute(request, &credential, &idle_token)
-                .map_err(|err| RequestError::Execution {
+            return run(executor.as_ref(), &credential, &idle_token).map_err(|err| {
+                RequestError::Execution {
                     name: request.provider.clone(),
                     message: err.to_string(),
-                });
+                }
+            });
         }
         let executor = self
             .sources
@@ -315,12 +357,10 @@ impl<'a> RequestExecutionService<'a> {
         //    chat has no run to cancel, so it executes under a fresh token
         //    that never fires; cancellation is an agent-run concern.
         let idle_token = CancellationToken::new();
-        executor
-            .execute(request, &credential, &idle_token)
-            .map_err(|err| RequestError::Execution {
-                name: request.provider.clone(),
-                message: err.to_string(),
-            })
+        run(executor.as_ref(), &credential, &idle_token).map_err(|err| RequestError::Execution {
+            name: request.provider.clone(),
+            message: err.to_string(),
+        })
     }
 }
 

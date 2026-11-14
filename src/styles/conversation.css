@@ -1764,3 +1764,31 @@
     animation: none;
   }
 }
+
+.nex-message-streaming {
+  opacity: 0.96;
+}
+
+.nex-streaming-thinking {
+  margin-bottom: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--color-outline-variant);
+  border-radius: var(--shape-small);
+  background: var(--color-surface-container-low);
+  font-size: var(--type-size-body-small);
+  color: var(--color-on-surface-variant);
+}
+
+.nex-streaming-thinking summary {
+  cursor: pointer;
+  font-weight: var(--type-weight-medium);
+  color: var(--color-on-surface-variant);
+}
+
+.nex-streaming-thinking-body {
+  margin: var(--space-xs) 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--type-family-mono);
+  font-size: var(--type-size-body-small);
+}

@@ -29,6 +29,7 @@ import { listen } from "@tauri-apps/api/event";
 
 import {
   type AgentRunEventPayload,
+  type ChatStreamEventFrame,
   type CommandError,
   type Message,
   conversationHistory,
@@ -45,6 +46,10 @@ export interface ConversationStore {
   error: CommandError | null;
   /** Whether a send request is in flight. */
   sending: boolean;
+  /** Ephemeral assistant text streamed in real time while `send` is in flight. */
+  streamingText: string;
+  /** Ephemeral provider-native thinking streamed while `send` is in flight. */
+  streamingThinking: string;
   /** Refresh the message list from the backend. `silent` refreshes in place:
    * no loading flip and the rendered messages stay while the fetch is in
    * flight — used when a finished agent run persists its final message. */
@@ -56,7 +61,8 @@ export interface ConversationStore {
     content: string,
     provider: string,
     model: string,
-    attachmentIds: number[]
+    attachmentIds: number[],
+    effort?: string | null
   ) => Promise<CommandError | null>;
 }
 
@@ -67,6 +73,8 @@ export function useConversation(
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<CommandError | null>(null);
   const [sending, setSending] = useState<boolean>(false);
+  const [streamingText, setStreamingText] = useState<string>("");
+  const [streamingThinking, setStreamingThinking] = useState<string>("");
 
   // The conversation this hook instance currently represents. Responses that
   // arrive after the selection has moved to another conversation are stale and
@@ -155,23 +163,65 @@ export function useConversation(
     };
   }, [reload]);
 
+  // Listen to live chat SSE deltas during plain chat `send_message`.
+  useEffect(() => {
+    setStreamingText("");
+    setStreamingThinking("");
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+
+    const setup = async (): Promise<void> => {
+      try {
+        const stop = await listen<ChatStreamEventFrame>(
+          "chat-stream-event",
+          (event) => {
+            const frame = event.payload;
+            if (frame.conversation_id !== activeConversationRef.current) return;
+            if (frame.kind === "text_delta" && frame.delta) {
+              setStreamingText((prev) => prev + frame.delta);
+            } else if (frame.kind === "thinking_delta" && frame.delta) {
+              setStreamingThinking((prev) => prev + frame.delta);
+            } else if (frame.kind === "finished") {
+              setStreamingText("");
+              setStreamingThinking("");
+            }
+          }
+        );
+        if (cancelled) stop();
+        else unlisten = stop;
+      } catch {
+        // Streaming preview unavailable; persisted final message still loads.
+      }
+    };
+
+    void setup();
+    return () => {
+      cancelled = true;
+      if (unlisten) unlisten();
+    };
+  }, [conversationId]);
+
   const send = useCallback(
     async (
       content: string,
       provider: string,
       model: string,
-      attachmentIds: number[]
+      attachmentIds: number[],
+      effort?: string | null
     ): Promise<CommandError | null> => {
       if (conversationId === null) return null;
       setSending(true);
       setError(null);
+      setStreamingText("");
+      setStreamingThinking("");
       try {
         await sendMessage(
           conversationId,
           content,
           provider,
           model,
-          attachmentIds
+          attachmentIds,
+          effort
         );
         // Success: reflect the persisted user + assistant messages.
         await reload();
@@ -188,12 +238,23 @@ export function useConversation(
         return failure;
       } finally {
         setSending(false);
+        setStreamingText("");
+        setStreamingThinking("");
       }
     },
     [conversationId, reload]
   );
 
-  return { messages, loading, error, sending, reload, send };
+  return {
+    messages,
+    loading,
+    error,
+    sending,
+    streamingText,
+    streamingThinking,
+    reload,
+    send,
+  };
 }
 
 function toCommandError(error: unknown): CommandError {
