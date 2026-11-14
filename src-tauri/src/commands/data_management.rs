@@ -21,6 +21,7 @@
 
 use tauri::State;
 
+use crate::application::agent::checkpoints::CheckpointStore;
 use crate::application::confirmations::ManagedConfirmations;
 use crate::application::data_management::DataManagementService;
 use crate::infrastructure::database::Database;
@@ -36,8 +37,9 @@ pub(crate) fn delete_conversation_permanently(
     confirmation_id: String,
     db: State<'_, Database>,
     confirmations: State<'_, ManagedConfirmations>,
+    checkpoints: State<'_, CheckpointStore>,
 ) -> Result<(), CommandError> {
-    DataManagementService::new(db.inner())
+    DataManagementService::with_checkpoints(db.inner(), checkpoints.inner().clone())
         .delete_conversation(id, &confirmation_id, &confirmations)
         .map_err(Into::into)
 }
@@ -64,8 +66,9 @@ pub(crate) fn clear_application_data(
     confirmation_id: String,
     db: State<'_, Database>,
     confirmations: State<'_, ManagedConfirmations>,
+    checkpoints: State<'_, CheckpointStore>,
 ) -> Result<(), CommandError> {
-    DataManagementService::new(db.inner())
+    DataManagementService::with_checkpoints(db.inner(), checkpoints.inner().clone())
         .clear(&confirmation_id, &confirmations)
         .map_err(Into::into)
 }

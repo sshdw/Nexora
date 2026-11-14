@@ -993,6 +993,43 @@ CREATE TRIGGER journal_terminal_immutable BEFORE UPDATE ON agent_runs
 END;
 ",
     ),
+    (
+        17,
+        "CREATE TABLE file_checkpoints (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    run_id INTEGER NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+    step_id INTEGER NULL REFERENCES agent_steps(id) ON DELETE SET NULL,
+    turn_index INTEGER NOT NULL CHECK (turn_index >= 0),
+    workspace_root TEXT NOT NULL CHECK (length(workspace_root) > 0),
+    relative_path TEXT NOT NULL CHECK (length(relative_path) > 0),
+    tool_name TEXT NOT NULL CHECK (tool_name IN ('write_file', 'edit_file')),
+    pre_existed INTEGER NOT NULL CHECK (pre_existed IN (0, 1)),
+    pre_blob_sha256 TEXT NULL CHECK (
+        (pre_existed = 0 AND pre_blob_sha256 IS NULL)
+        OR (
+            pre_existed = 1
+            AND pre_blob_sha256 IS NOT NULL
+            AND length(pre_blob_sha256) = 64
+            AND pre_blob_sha256 NOT GLOB '*[^0-9a-f]*'
+        )
+    ),
+    pre_size_bytes INTEGER NULL CHECK (pre_size_bytes IS NULL OR pre_size_bytes >= 0),
+    post_blob_sha256 TEXT NULL CHECK (
+        post_blob_sha256 IS NULL
+        OR (
+            length(post_blob_sha256) = 64
+            AND post_blob_sha256 NOT GLOB '*[^0-9a-f]*'
+        )
+    ),
+    post_size_bytes INTEGER NULL CHECK (post_size_bytes IS NULL OR post_size_bytes >= 0),
+    reverted_at INTEGER NULL,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX idx_file_checkpoints_run_turn ON file_checkpoints(run_id, turn_index, id);
+CREATE INDEX idx_file_checkpoints_conv ON file_checkpoints(conversation_id, created_at);
+CREATE INDEX idx_file_checkpoints_blob ON file_checkpoints(pre_blob_sha256);",
+    ),
 ];
 
 /// Open the `SQLite` database at `path`, apply connection pragmas, and run any

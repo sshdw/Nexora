@@ -14,7 +14,7 @@ export const ru: Record<StringKey, string> = {
   "access.hint.read_only":
     "Только чтение и поиск в рабочей папке. Изменения и команды запрещены.",
   "access.hint.standard":
-    "Изменения требуют разрешения, пока контрольные точки недоступны. Каждая команда требует согласия.",
+    "Запись файлов в рабочей папке сохраняется с чекпоинтами для отката в один клик. Защищённые пути и команды всегда требуют согласия.",
   "access.hint.supervised":
     "Каждое изменение и команда требуют вашего разрешения.",
   "access.saving": "Сохранение профиля доступа…",
@@ -232,7 +232,7 @@ export const ru: Record<StringKey, string> = {
   "conv.autonomyExplainSemi":
     "Полуавто: рутинные шаги идут сами, запись файлов всё равно спросит.",
   "conv.autonomyExplainFull":
-    "Полный авто: ограничения доступа сохраняются; изменения и команды требуют разрешения.",
+    "Полный авто: обычная запись файлов идёт с чекпоинтами; защищённые пути и команды требуют разрешения.",
 
   "md.copyLink": "Скопировать ссылку",
   "md.linkCopied": "Скопировано",
@@ -1394,6 +1394,20 @@ export const ru: Record<StringKey, string> = {
     "Журнал долга — таблица учтённого долга за ручными записями и импортом аудита.",
   "docs.mig11":
     "Блокировки правок — таблица task_locks: не более одной истекающей блокировки на задачу, параллельные правки не конфликтуют.",
+  "agent.checkpointsTitle": "Контрольные точки ({n})",
+  "agent.checkpointTurnLabel": "Ход {turn}",
+  "agent.checkpointCreated": "Создан",
+  "agent.checkpointModified": "Изменён",
+  "agent.checkpointRevertFile": "Откатить",
+  "agent.checkpointRevertTurn": "Откатить ход",
+  "agent.checkpointReverting": "Откат…",
+  "agent.checkpointReverted": "Откачено",
+  "agent.checkpointConflictTitle": "Файл изменён вне этого запуска",
+  "agent.checkpointConflictBody":
+    "Файл на диске отличается от сохранённого чекпоинта. Принудительный откат перезапишет более поздние правки.",
+  "agent.checkpointForceRevert": "Откатить принудительно",
+  "agent.checkpointCancelRevert": "Отмена",
+
   "docs.newTitle": "Что изменилось в 2.0",
   "docs.newProfilesT": "Папки проекта .nexora/",
   "docs.newProfilesB":

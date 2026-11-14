@@ -56,6 +56,7 @@ struct ContextState {
     parent: Option<AccessContext>,
     child_ceiling: AccessProfile,
     plan: AtomicBool,
+    checkpoints_enabled: AtomicBool,
     revision: AtomicU64,
     environment: Arc<Mutex<(String, u64)>>,
     #[cfg(test)]
@@ -77,6 +78,7 @@ impl AccessContext {
             parent: None,
             child_ceiling: AccessProfile::Standard,
             plan: AtomicBool::new(false),
+            checkpoints_enabled: AtomicBool::new(false),
             revision: AtomicU64::new(0),
             environment: Arc::new(Mutex::new((String::new(), 0))),
             #[cfg(test)]
@@ -91,6 +93,7 @@ impl AccessContext {
             parent: None,
             child_ceiling: AccessProfile::Standard,
             plan: AtomicBool::new(false),
+            checkpoints_enabled: AtomicBool::new(false),
             revision: AtomicU64::new(0),
             environment: Arc::new(Mutex::new((String::new(), 0))),
             #[cfg(test)]
@@ -106,6 +109,7 @@ impl AccessContext {
             parent: Some(self.clone()),
             child_ceiling: selected.max(self.profile()),
             plan: AtomicBool::new(false),
+            checkpoints_enabled: AtomicBool::new(self.checkpoints_enabled()),
             revision: AtomicU64::new(0),
             environment: self.0.environment.clone(),
             #[cfg(test)]
@@ -119,6 +123,24 @@ impl AccessContext {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if self.0.plan.swap(plan, Ordering::SeqCst) != plan {
+            self.0.revision.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    pub(crate) fn checkpoints_enabled(&self) -> bool {
+        self.0.checkpoints_enabled.load(Ordering::SeqCst)
+            && self
+                .0
+                .parent
+                .as_ref()
+                .is_none_or(AccessContext::checkpoints_enabled)
+    }
+    pub(crate) fn set_checkpoints(&self, enabled: bool) {
+        let _guard = self
+            .0
+            .clock
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.0.checkpoints_enabled.swap(enabled, Ordering::SeqCst) != enabled {
             self.0.revision.fetch_add(1, Ordering::SeqCst);
         }
     }
@@ -245,13 +267,18 @@ impl AccessContext {
             .map_err(|_| super::tools::ToolError::InvalidArguments("invalid JSON".into()))?;
         let target = tool_scope(workspace, &call.name, &args)?;
         let mut hash = Sha256::new();
+        let posture = if self.checkpoints_enabled() {
+            "PerCommandConsent:checkpoints"
+        } else {
+            "PerCommandConsent:no-checkpoints"
+        };
         for value in [
             &path_to_comparable_string(&canonical_root(workspace)),
             &call.name,
             &path_to_comparable_string(&target),
             &call.arguments,
             &self.environment_identity(),
-            "PerCommandConsent:no-checkpoints",
+            posture,
             &format!("{:?}", self.profile()),
             &self.revision(*epoch),
         ] {

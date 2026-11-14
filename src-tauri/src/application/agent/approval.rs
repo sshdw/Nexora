@@ -15,6 +15,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::access::{AccessContext, AccessProfile};
+use super::checkpoints::CheckpointStore;
 use super::permissions::{PermissionOutcome, PermissionStore, RunPreset};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -211,6 +212,7 @@ struct GateState {
     once: std::collections::HashMap<String, String>,
     preset: RunPreset,
     dispatch_store: Option<PermissionStore>,
+    checkpoint_store: Option<CheckpointStore>,
 }
 
 // ---------------------------------------------------------------------------
@@ -243,6 +245,7 @@ impl ApprovalGate {
                 once: std::collections::HashMap::new(),
                 preset: RunPreset::Coding,
                 dispatch_store: None,
+                checkpoint_store: None,
             })),
             signal: Arc::new(Condvar::new()),
             access: AccessContext::fixed(AccessProfile::Standard),
@@ -264,6 +267,7 @@ impl ApprovalGate {
                 once: std::collections::HashMap::new(),
                 preset: RunPreset::Coding,
                 dispatch_store: None,
+                checkpoint_store: None,
             })),
             signal: Arc::new(Condvar::new()),
             access: AccessContext::fixed(AccessProfile::Standard),
@@ -272,7 +276,69 @@ impl ApprovalGate {
 
     pub(crate) fn with_access(mut self, access: AccessContext) -> Self {
         self.access = access;
+        let verified = self.has_verified_checkpoints();
+        self.access.set_checkpoints(verified);
         self
+    }
+    pub(crate) fn with_checkpoints(self, store: Option<CheckpointStore>) -> Self {
+        self.bind_checkpoints(store);
+        self
+    }
+    pub(crate) fn bind_checkpoints(&self, store: Option<CheckpointStore>) {
+        self.lock_state().checkpoint_store = store;
+        let verified = self.has_verified_checkpoints();
+        self.access.set_checkpoints(verified);
+    }
+    pub(crate) fn has_verified_checkpoints(&self) -> bool {
+        let (workspace, store) = {
+            let state = self.lock_state();
+            (state.workspace.clone(), state.checkpoint_store.clone())
+        };
+        let (Some(workspace), Some(store)) = (workspace, store) else {
+            return false;
+        };
+        store.verify_for_workspace(&workspace).is_ok()
+    }
+    fn is_ordinary_workspace_write(&self, call: &ToolCall) -> bool {
+        if !matches!(call.name.as_str(), "write_file" | "edit_file") {
+            return false;
+        }
+        let Some(workspace) = self.lock_state().workspace.clone() else {
+            return false;
+        };
+        let Ok(args) = serde_json::from_str::<serde_json::Value>(&call.arguments) else {
+            return false;
+        };
+        let Some(raw_path) = args
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .filter(|p| !p.trim().is_empty())
+        else {
+            return false;
+        };
+        if super::tools::path_safety::sensitive_write(Path::new(raw_path)) {
+            return false;
+        }
+        let Ok(resolved) = super::tools::path_safety::resolve_path(&workspace, raw_path) else {
+            return false;
+        };
+        if super::tools::path_safety::sensitive_write(&resolved) {
+            return false;
+        }
+        let canon_ws = super::tools::path_safety::canonical_root(&workspace);
+        if super::tools::path_safety::check_prefixes_for_escape(
+            &workspace, &canon_ws, &resolved, raw_path,
+        )
+        .is_err()
+        {
+            return false;
+        }
+        if let Ok(meta) = std::fs::symlink_metadata(&resolved) {
+            if meta.file_type().is_symlink() {
+                return false;
+            }
+        }
+        true
     }
     pub(crate) fn access(&self) -> &AccessContext {
         &self.access
@@ -287,6 +353,8 @@ impl ApprovalGate {
                 state.dispatch_store = None;
                 state.workspace = Some(workspace.to_path_buf());
             });
+            let verified = self.has_verified_checkpoints();
+            self.access.set_checkpoints(verified);
         }
     }
     pub(crate) fn bind_policy(&self, preset: RunPreset, store: Option<&PermissionStore>) {
@@ -379,7 +447,7 @@ impl ApprovalGate {
         ApprovalMetadata {
             access_profile: self.access.profile(),
             sandbox_posture: "PerCommandConsent",
-            checkpoints_available: false,
+            checkpoints_available: self.has_verified_checkpoints(),
             allow_for_run: self.reusable(call),
             sensitive_write,
             shell,
@@ -558,19 +626,22 @@ impl ApprovalGate {
     #[must_use]
     pub(crate) fn needs_approval(&self, call: &ToolCall) -> bool {
         let risk = RiskClass::classify(&call.name);
-        // PR2B durable checkpoints and Stage7 isolation are unavailable.
-        if !matches!(risk, RiskClass::ReadOnly) {
-            return true;
-        }
         let mode = self.mode();
         match mode {
             AutonomyMode::Supervised => true,
             AutonomyMode::SemiAutonomous => {
                 matches!(risk, RiskClass::Mutating | RiskClass::DangerousShell)
             }
-            AutonomyMode::FullAutonomous => {
-                matches!(risk, RiskClass::DangerousShell)
-            }
+            AutonomyMode::FullAutonomous => match risk {
+                RiskClass::ReadOnly => false,
+                RiskClass::DangerousShell => true,
+                RiskClass::Mutating => {
+                    !(self.access.allows(call)
+                        && self.access.profile() == AccessProfile::Standard
+                        && self.has_verified_checkpoints()
+                        && self.is_ordinary_workspace_write(call))
+                }
+            },
         }
     }
 

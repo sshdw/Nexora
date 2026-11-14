@@ -11,12 +11,16 @@ import {
   type ApprovalMetadata,
   type AgentStep,
   type DurableRunEvent,
+  type FileCheckpoint,
   type StepEventFrame,
   getAgentStepObservation,
   inspectRunLive,
   listAgentRuns,
   listAgentSteps,
   listConversationRunEvents,
+  listRunCheckpoints,
+  revertFileCheckpoint,
+  revertTurnCheckpoints,
 } from "./tauri";
 
 /** Bounded rehydration page (AC-102/ADD-08): the newest 50 runs of a
@@ -75,6 +79,35 @@ export interface AgentRunView {
     timeout_secs: number;
     requested_at: number;
   } | null;
+  /** Disk-backed pre-mutation file checkpoints for this run, lazy-loaded. */
+  checkpoints?: FileCheckpoint[];
+  /** True after `listRunCheckpoints` has completed for the current run view. */
+  checkpoints_loaded?: boolean;
+}
+
+export type RevertOutcome =
+  | { status: "reverted" }
+  | { status: "conflict"; message: string }
+  | { status: "error"; message: string };
+
+function parseRevertError(cause: unknown): RevertOutcome {
+  if (typeof cause === "object" && cause !== null) {
+    const record = cause as { kind?: unknown; message?: unknown };
+    const message =
+      typeof record.message === "string"
+        ? record.message
+        : cause instanceof Error
+          ? cause.message
+          : String(cause);
+    if (record.kind === "conflict") {
+      return { status: "conflict", message };
+    }
+    return { status: "error", message };
+  }
+  return {
+    status: "error",
+    message: cause instanceof Error ? cause.message : String(cause),
+  };
 }
 
 function toStepView(step: AgentStep): AgentStepView {
@@ -137,6 +170,20 @@ export interface AgentRunStore {
   expandStep: (runId: number, seq: number) => Promise<void>;
   /** Drop a step's fetched full text, back to the bounded preview. */
   collapseStep: (runId: number, seq: number) => void;
+  /** Lazy-load pre/post-mutation file checkpoints recorded for one run. */
+  loadRunCheckpoints: (runId: number) => Promise<void>;
+  /** Revert one file checkpoint (`force=true` overrides external conflict). */
+  revertCheckpoint: (
+    runId: number,
+    checkpointId: number,
+    force?: boolean
+  ) => Promise<RevertOutcome>;
+  /** Revert all un-reverted checkpoints recorded during a single turn. */
+  revertTurn: (
+    runId: number,
+    turnIndex: number,
+    force?: boolean
+  ) => Promise<RevertOutcome>;
 }
 
 /** Merge previews by durable identity first, with seq as the legacy fallback.
@@ -194,6 +241,7 @@ interface ConversationSession {
   request: number;
   revision: Map<number, number>;
   stepsLoading: Set<number>;
+  checkpointsLoading: Set<number>;
   observations: Map<string, symbol>;
   cursor: number;
   initialHighWater: number | null;
@@ -520,6 +568,83 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
     [publish]
   );
 
+  const loadRunCheckpoints = useCallback(
+    async (runId: number): Promise<void> => {
+      const session = sessionRef.current;
+      if (
+        !session ||
+        session.checkpointsLoading.has(runId) ||
+        !session.runs.some((run) => run.run_id === runId)
+      )
+        return;
+      session.checkpointsLoading.add(runId);
+      try {
+        const list = await listRunCheckpoints(runId);
+        if (!current(session)) return;
+        patch(session, runId, (run) => ({
+          ...run,
+          checkpoints: list,
+          checkpoints_loaded: true,
+        }));
+      } catch {
+        // Best effort; expanding again or a manual action can retry.
+      } finally {
+        session.checkpointsLoading.delete(runId);
+      }
+    },
+    [current, patch]
+  );
+
+  const revertCheckpoint = useCallback(
+    async (
+      runId: number,
+      checkpointId: number,
+      force = false
+    ): Promise<RevertOutcome> => {
+      const session = sessionRef.current;
+      try {
+        const updated = await revertFileCheckpoint(checkpointId, force);
+        if (session && current(session)) {
+          patch(session, runId, (run) => {
+            const existing = run.checkpoints ?? [];
+            const next = existing.some((cp) => cp.id === updated.id)
+              ? existing.map((cp) => (cp.id === updated.id ? updated : cp))
+              : [...existing, updated];
+            return { ...run, checkpoints: next };
+          });
+        }
+        return { status: "reverted" };
+      } catch (cause) {
+        return parseRevertError(cause);
+      }
+    },
+    [current, patch]
+  );
+
+  const revertTurn = useCallback(
+    async (
+      runId: number,
+      turnIndex: number,
+      force = false
+    ): Promise<RevertOutcome> => {
+      const session = sessionRef.current;
+      try {
+        const updatedList = await revertTurnCheckpoints(runId, turnIndex, force);
+        if (session && current(session)) {
+          patch(session, runId, (run) => ({
+            ...run,
+            checkpoints: updatedList,
+            checkpoints_loaded: true,
+          }));
+        }
+        return { status: "reverted" };
+      } catch (cause) {
+        return parseRevertError(cause);
+      }
+    },
+    [current, patch]
+  );
+
   const expandStep = useCallback(
     async (runId: number, seq: number): Promise<void> => {
       const session = sessionRef.current;
@@ -588,6 +713,7 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
             request: 0,
             revision: new Map(),
             stepsLoading: new Set(),
+            checkpointsLoading: new Set(),
             observations: new Map(),
             cursor: 0,
             initialHighWater: null,
@@ -613,6 +739,10 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
       if (payload.type === "durable") {
         void catchUp(session);
       } else if (payload.type === "step") {
+        const mutatingDone =
+          payload.event.status === "succeeded" &&
+          (payload.event.tool_name === "write_file" ||
+            payload.event.tool_name === "edit_file");
         patch(session, payload.run_id, (run) => ({
           ...run,
           steps: mergeSteps(run.steps, [
@@ -621,6 +751,7 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
           steps_loaded:
             run.steps_loaded ||
             !session.runs.some((item) => item.run_id === payload.run_id),
+          checkpoints_loaded: mutatingDone ? false : run.checkpoints_loaded,
         }));
       } else if (payload.type === "finished") {
         const run = session.runs.find((item) => item.run_id === payload.run_id);
@@ -630,6 +761,7 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
           error: payload.event.error,
           finished_at: old.finished_at ?? Date.now() / 1000,
           pending_approval: null,
+          checkpoints_loaded: false,
         }));
         if (!run || run.steps.length === 0) void loadRunSteps(payload.run_id);
       } else {
@@ -695,5 +827,8 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
     loadRunSteps,
     expandStep,
     collapseStep,
+    loadRunCheckpoints,
+    revertCheckpoint,
+    revertTurn,
   };
 }

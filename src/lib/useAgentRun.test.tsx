@@ -18,6 +18,7 @@ import type {
   GovernanceEventPayload,
   DurableRunEvent,
   DurableRunEventPage,
+  FileCheckpoint,
 } from "./tauri";
 import { listAgentRuns, listAgentSteps, startAgentRun } from "./tauri";
 import { useAgentRun } from "./useAgentRun";
@@ -1915,5 +1916,96 @@ describe("useAgentRun", () => {
     expect(result.current.runs[0].model).toBe("fresh");
     expect(result.current.error).toBeNull();
     expect(result.current.loading).toBe(false);
+  });
+
+  it("lazy-loads checkpoints without touching initial mount and updates state on file/turn revert and conflicts", async () => {
+    const cp1: FileCheckpoint = {
+      id: 41,
+      conversation_id: 1,
+      run_id: 7,
+      step_id: 11,
+      turn_index: 0,
+      workspace_root: "/ws",
+      relative_path: "a.ts",
+      tool_name: "write_file",
+      pre_existed: true,
+      pre_blob_sha256: "a".repeat(64),
+      pre_size_bytes: 5,
+      post_blob_sha256: "b".repeat(64),
+      post_size_bytes: 9,
+      reverted_at: null,
+      created_at: 100,
+    };
+    const cp2: FileCheckpoint = {
+      ...cp1,
+      id: 42,
+      turn_index: 1,
+      relative_path: "b.ts",
+      pre_existed: false,
+      pre_blob_sha256: null,
+      pre_size_bytes: null,
+    };
+    const lazyCps = deferred<FileCheckpoint[]>();
+    routeInvoke({ 1: [runRow({ status: "completed" })] }, {});
+    const fallback = mockInvoke.getMockImplementation()!;
+    mockInvoke.mockImplementation(
+      (cmd: string, args?: Record<string, unknown>) => {
+        if (cmd === "list_run_checkpoints") return lazyCps.promise;
+        if (cmd === "revert_file_checkpoint") {
+          if (args?.["force"] === false) {
+            return Promise.reject({
+              kind: "conflict",
+              message: "target file modified externally since checkpoint",
+            });
+          }
+          return Promise.resolve({ ...cp1, reverted_at: 222 });
+        }
+        if (cmd === "revert_turn_checkpoints") {
+          return Promise.resolve([
+            { ...cp1, reverted_at: 222 },
+            { ...cp2, reverted_at: 333 },
+          ]);
+        }
+        return fallback(cmd, args);
+      }
+    );
+
+    const { result } = renderHook(() => useAgentRun(1));
+    await waitFor(() => expect(result.current.runs).toHaveLength(1));
+    expect(mockInvoke).not.toHaveBeenCalledWith(
+      "list_run_checkpoints",
+      expect.anything()
+    );
+
+    let p1!: Promise<void>, p2!: Promise<void>;
+    act(() => {
+      p1 = result.current.loadRunCheckpoints(7);
+      p2 = result.current.loadRunCheckpoints(7);
+    });
+    expect(
+      mockInvoke.mock.calls.filter(([cmd]) => cmd === "list_run_checkpoints")
+    ).toHaveLength(1);
+    await act(async () => {
+      lazyCps.resolve([cp1, cp2]);
+      await Promise.all([p1, p2]);
+    });
+    expect(result.current.runs[0].checkpoints_loaded).toBe(true);
+    expect(result.current.runs[0].checkpoints).toHaveLength(2);
+
+    const conflict = await result.current.revertCheckpoint(7, 41, false);
+    expect(conflict).toEqual({
+      status: "conflict",
+      message: "target file modified externally since checkpoint",
+    });
+
+    const forced = await act(async () =>
+      result.current.revertCheckpoint(7, 41, true)
+    );
+    expect(forced).toEqual({ status: "reverted" });
+    expect(result.current.runs[0].checkpoints?.[0]?.reverted_at).toBe(222);
+
+    const turnRes = await act(async () => result.current.revertTurn(7, 1, false));
+    expect(turnRes).toEqual({ status: "reverted" });
+    expect(result.current.runs[0].checkpoints?.[1]?.reverted_at).toBe(333);
   });
 });

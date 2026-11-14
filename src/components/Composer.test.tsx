@@ -647,7 +647,7 @@ describe("composer — modes", () => {
     fireEvent.click(screen.getByRole("button", { name: "Access profile" }));
     expect(
       screen.getByText(
-        "Full-auto preference: access limits still apply; edits and shell commands ask for approval."
+        "Full-auto: ordinary workspace writes auto-run with checkpoints; sensitive paths and shell commands ask for approval."
       )
     ).toBeInTheDocument();
   });

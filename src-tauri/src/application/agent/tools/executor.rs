@@ -21,6 +21,7 @@ use super::search::{
     SEARCH_HARD_CAP_MATCHES,
 };
 use super::ToolRegistry;
+use crate::application::agent::checkpoints::CheckpointHook;
 use crate::application::agent::control::CancellationToken;
 use crate::application::execution::ToolCall;
 
@@ -87,7 +88,7 @@ impl ToolRegistry {
         workspace_root: &Path,
         token: &CancellationToken,
     ) -> Result<String, ToolError> {
-        Self::execute_raw(call, workspace_root, token, None, &mut || {})
+        Self::execute_raw(call, workspace_root, token, None, None, &mut || {})
     }
     pub(crate) fn execute_agent(
         call: &ToolCall,
@@ -95,9 +96,27 @@ impl ToolRegistry {
         token: &CancellationToken,
         gate: Option<&crate::application::agent::approval::ApprovalGate>,
     ) -> Result<String, ToolError> {
+        Self::execute_agent_with_checkpoints(call, workspace_root, token, gate, None)
+    }
+    /// Dispatches `call` under `gate`, capturing fail-closed pre/post
+    /// mutation checkpoints into `checkpoints` when provided.
+    pub(crate) fn execute_agent_with_checkpoints(
+        call: &ToolCall,
+        workspace_root: &Path,
+        token: &CancellationToken,
+        gate: Option<&crate::application::agent::approval::ApprovalGate>,
+        checkpoints: Option<&mut CheckpointHook<'_>>,
+    ) -> Result<String, ToolError> {
         if let Some(gate) = gate {
             return gate.execute_authorized(call, workspace_root, |target, started| {
-                Self::execute_raw(call, workspace_root, token, Some(target), started)
+                Self::execute_raw(
+                    call,
+                    workspace_root,
+                    token,
+                    Some(target),
+                    checkpoints,
+                    started,
+                )
             });
         }
         if !matches!(
@@ -108,7 +127,7 @@ impl ToolRegistry {
                 "an agent execution context is required".into(),
             ));
         }
-        Self::execute_raw(call, workspace_root, token, None, &mut || {})
+        Self::execute_raw(call, workspace_root, token, None, checkpoints, &mut || {})
     }
     /// Separate human terminal entry: never accepts file/agent tool calls.
     pub(crate) fn execute_terminal(
@@ -132,6 +151,7 @@ impl ToolRegistry {
         workspace_root: &Path,
         token: &CancellationToken,
         bound: Option<&Path>,
+        checkpoints: Option<&mut CheckpointHook<'_>>,
         started: &mut dyn FnMut(),
     ) -> Result<String, ToolError> {
         if token.is_cancelled() {
@@ -150,8 +170,8 @@ impl ToolRegistry {
                 started,
             ),
             "read_file" => Self::read_file(&args, workspace_root, bound, started),
-            "write_file" => Self::write_file(&args, workspace_root, bound, started),
-            "edit_file" => Self::edit_file(&args, workspace_root, bound, started),
+            "write_file" => Self::write_file(&args, workspace_root, bound, checkpoints, started),
+            "edit_file" => Self::edit_file(&args, workspace_root, bound, checkpoints, started),
             "search_files" => Self::search_files(&args, workspace_root, bound, started),
             "list_directory" => Self::list_directory(&args, workspace_root, bound, started),
             other => Err(ToolError::UnknownTool(other.to_string())),
@@ -259,6 +279,7 @@ impl ToolRegistry {
         args: &Value,
         workspace_root: &Path,
         bound: Option<&Path>,
+        mut checkpoints: Option<&mut CheckpointHook<'_>>,
         started: &mut dyn FnMut(),
     ) -> Result<String, ToolError> {
         let path = args.get("path").and_then(Value::as_str).ok_or_else(|| {
@@ -302,28 +323,69 @@ impl ToolRegistry {
         }
         let canon_ws = canonical_root(workspace_root);
 
-        // Read old content before writing (same path validation as read_file). For
-        // new files the diff is against empty; for existing files the bytes are
-        // read lossily so binary files still produce a diff without panicking.
-        // A pre-existing symlink escaping the workspace is rejected first so the
-        // read itself never follows an outside link.
-        let mut old_file = if resolved.exists() {
-            verify_existing_within(workspace_root, &canon_ws, &resolved, path)?;
-            secure_open(workspace_root, &resolved, false).ok()
-        } else {
-            None
+        // Read old content before writing. When checkpoint capture is attached,
+        // existing targets fail closed if unreadable or symlinked and pre-mutation
+        // snapshots persist strictly before any truncation or directory creation.
+        let meta = match std::fs::symlink_metadata(&resolved) {
+            Ok(meta) => Some(meta),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+            Err(err) => return Err(file_io(err)),
         };
-        let mut file = secure_open(workspace_root, &resolved, true)?;
-        started();
-        let mut bytes = Vec::new();
-        let old_content = old_file
-            .as_mut()
-            .and_then(|old| old.read_to_end(&mut bytes).ok())
-            .map_or_else(String::new, |_| {
-                String::from_utf8_lossy(&bytes).into_owned()
-            });
+
+        let (old_content, cp_id, mut file) = if let Some(meta) = meta {
+            if meta.file_type().is_symlink() {
+                verify_existing_within(workspace_root, &canon_ws, &resolved, path)?;
+                return Err(ToolError::PathTraversal("symlink target rejected".into()));
+            }
+            verify_existing_within(workspace_root, &canon_ws, &resolved, path)?;
+            if let Some(hook) = checkpoints.as_deref_mut() {
+                let mut existing = secure_open_edit(workspace_root, &resolved)?;
+                let mut bytes = Vec::new();
+                existing.read_to_end(&mut bytes).map_err(file_io)?;
+                let id = hook
+                    .capture_pre(workspace_root, path, "write_file", true, &bytes)
+                    .map_err(|e| ToolError::Io(e.summary().into()))?;
+                started();
+                existing.seek(SeekFrom::Start(0)).map_err(file_io)?;
+                (
+                    String::from_utf8_lossy(&bytes).into_owned(),
+                    Some(id),
+                    existing,
+                )
+            } else {
+                let mut old_file = secure_open(workspace_root, &resolved, false).ok();
+                let opened = secure_open(workspace_root, &resolved, true)?;
+                started();
+                let mut bytes = Vec::new();
+                let old = old_file
+                    .as_mut()
+                    .and_then(|old| old.read_to_end(&mut bytes).ok())
+                    .map_or_else(String::new, |_| {
+                        String::from_utf8_lossy(&bytes).into_owned()
+                    });
+                (old, None, opened)
+            }
+        } else {
+            let cp_id = if let Some(hook) = checkpoints.as_deref_mut() {
+                let id = hook
+                    .capture_pre(workspace_root, path, "write_file", false, &[])
+                    .map_err(|e| ToolError::Io(e.summary().into()))?;
+                Some(id)
+            } else {
+                None
+            };
+            let opened = secure_open(workspace_root, &resolved, true)?;
+            started();
+            (String::new(), cp_id, opened)
+        };
+
         file.set_len(0).map_err(file_io)?;
         file.write_all(content.as_bytes()).map_err(file_io)?;
+        file.flush().map_err(file_io)?;
+        if let (Some(hook), Some(id)) = (checkpoints, cp_id) {
+            hook.complete_post(id, content.as_bytes())
+                .map_err(|e| ToolError::Io(e.summary().into()))?;
+        }
 
         let diff = unified_diff(path, &old_content, content);
         Ok(truncate_output(diff))
@@ -338,12 +400,7 @@ impl ToolRegistry {
     /// guesses. New text is spliced verbatim (callers include newlines).
     /// Files must be valid UTF-8; the workspace guard is shared with
     /// `read_file`/`write_file`.
-    fn edit_file(
-        args: &Value,
-        workspace_root: &Path,
-        bound: Option<&Path>,
-        started: &mut dyn FnMut(),
-    ) -> Result<String, ToolError> {
+    fn parse_edit_args(args: &Value) -> Result<(&str, &str, EditAnchor<'_>), ToolError> {
         let path = args.get("path").and_then(Value::as_str).ok_or_else(|| {
             ToolError::InvalidArguments("missing required field 'path'".to_string())
         })?;
@@ -379,6 +436,17 @@ impl ToolRegistry {
                 "anchor text must not be empty".to_string(),
             ));
         }
+        Ok((path, new_text, anchor))
+    }
+
+    fn edit_file(
+        args: &Value,
+        workspace_root: &Path,
+        bound: Option<&Path>,
+        checkpoints: Option<&mut CheckpointHook<'_>>,
+        started: &mut dyn FnMut(),
+    ) -> Result<String, ToolError> {
+        let (path, new_text, anchor) = Self::parse_edit_args(args)?;
 
         if super::path_safety::policy_target(Path::new(path)) {
             return Err(ToolError::Io(
@@ -416,10 +484,9 @@ impl ToolRegistry {
             )));
         }
         let mut file = secure_open_edit(workspace_root, &resolved)?;
-        started();
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes).map_err(file_io)?;
-        let content = String::from_utf8(bytes).map_err(|_| {
+        let content = std::str::from_utf8(&bytes).map_err(|_| {
             ToolError::Io(format!("file is not valid UTF-8, cannot edit: '{path}'"))
         })?;
 
@@ -439,13 +506,28 @@ impl ToolRegistry {
             }
         };
 
+        let (cp_id, checkpoints) = if let Some(hook) = checkpoints {
+            let id = hook
+                .capture_pre(workspace_root, path, "edit_file", true, &bytes)
+                .map_err(|e| ToolError::Io(e.summary().into()))?;
+            (Some(id), Some(hook))
+        } else {
+            (None, None)
+        };
+        started();
+
         // Read and write use the same no-follow handle acquired while the
         // consent/policy reader was held. Later alias swaps cannot redirect it.
         file.seek(SeekFrom::Start(0)).map_err(file_io)?;
         file.set_len(0).map_err(file_io)?;
         file.write_all(updated.as_bytes()).map_err(file_io)?;
+        file.flush().map_err(file_io)?;
+        if let (Some(hook), Some(id)) = (checkpoints, cp_id) {
+            hook.complete_post(id, updated.as_bytes())
+                .map_err(|e| ToolError::Io(e.summary().into()))?;
+        }
 
-        Ok(truncate_output(unified_diff(path, &content, &updated)))
+        Ok(truncate_output(unified_diff(path, content, &updated)))
     }
 
     /// Regex-lite grep over the workspace: one `path:line:text` hit per
@@ -788,6 +870,7 @@ mod tests {
                         &worker_ws,
                         &CancellationToken::new(),
                         Some(target),
+                        None,
                         &mut || {
                             release();
                             open_tx.send(()).unwrap();
@@ -1671,5 +1754,114 @@ mod tests {
         );
         let _ = fs::remove_dir_all(&ws);
         let _ = fs::remove_dir_all(&outside_dir);
+    }
+
+    #[test]
+    fn write_and_edit_abort_fail_closed_when_pre_mutation_checkpoint_fails() {
+        let dir = temp_workspace();
+        let ws_raw = dir.join("ws");
+        fs::create_dir_all(&ws_raw).expect("ws dir");
+        let ws = canonical_root(&ws_raw);
+        fs::write(ws.join("keep.txt"), "original-content").expect("seed keep");
+        fs::write(ws.join("edit.txt"), "hello world").expect("seed edit");
+
+        let db_path = dir.join("test.db");
+        let conn = crate::infrastructure::database::open(&db_path).expect("open migrated db");
+        let db = std::sync::Arc::new(crate::infrastructure::database::Database::new(conn));
+        let conv_id = crate::application::conversations::ConversationService::new(&db)
+            .create("fail-closed")
+            .expect("conv");
+        let run_id = crate::infrastructure::repository::agent_runs::AgentRunRepository::new(&db)
+            .create_run(Some(conv_id), "m", "full_autonomous")
+            .expect("run");
+
+        // Case 1: un-writable / broken outside blob store fails pre-capture for existing write & edit.
+        let broken_store_path = dir.join("checkpoints");
+        let store =
+            crate::application::agent::checkpoints::CheckpointStore::open(&broken_store_path)
+                .expect("open store");
+        fs::remove_dir_all(&broken_store_path).expect("remove dir");
+        fs::write(&broken_store_path, b"blocker-file").expect("replace dir with file");
+
+        let ctx = crate::application::agent::checkpoints::CheckpointRunContext::new(
+            std::sync::Arc::clone(&db),
+            store,
+            conv_id,
+            run_id,
+        );
+        let token = CancellationToken::new();
+
+        let overwrite = call(
+            "write_file",
+            serde_json::json!({"path": "keep.txt", "content": "corrupted-new"}),
+        );
+        let mut hook_write = crate::application::agent::checkpoints::CheckpointHook::new(&ctx, 0);
+        let err = ToolRegistry::execute_agent_with_checkpoints(
+            &overwrite,
+            &ws,
+            &token,
+            None,
+            Some(&mut hook_write),
+        )
+        .expect_err("overwrite must abort when pre-mutation capture fails");
+        assert!(matches!(err, ToolError::Io(_)), "got {err:?}");
+        assert_eq!(
+            fs::read_to_string(ws.join("keep.txt")).expect("keep unchanged"),
+            "original-content"
+        );
+
+        let edit = call(
+            "edit_file",
+            serde_json::json!({"path": "edit.txt", "old_text": "hello", "new_text": "bye"}),
+        );
+        let mut hook_edit = crate::application::agent::checkpoints::CheckpointHook::new(&ctx, 0);
+        let err = ToolRegistry::execute_agent_with_checkpoints(
+            &edit,
+            &ws,
+            &token,
+            None,
+            Some(&mut hook_edit),
+        )
+        .expect_err("edit must abort when pre-mutation capture fails");
+        assert!(matches!(err, ToolError::Io(_)), "got {err:?}");
+        assert_eq!(
+            fs::read_to_string(ws.join("edit.txt")).expect("edit unchanged"),
+            "hello world"
+        );
+
+        // Case 2: store inside workspace fails verify_for_workspace BEFORE nested create_dir_all runs.
+        let inside_store =
+            crate::application::agent::checkpoints::CheckpointStore::open(ws.join(".ckpt-inside"))
+                .expect("open inside store");
+        let inside_ctx = crate::application::agent::checkpoints::CheckpointRunContext::new(
+            std::sync::Arc::clone(&db),
+            inside_store,
+            conv_id,
+            run_id,
+        );
+        let nested_create = call(
+            "write_file",
+            serde_json::json!({"path": "nested/dir/new.txt", "content": "should not exist"}),
+        );
+        let mut hook_create =
+            crate::application::agent::checkpoints::CheckpointHook::new(&inside_ctx, 0);
+        let err = ToolRegistry::execute_agent_with_checkpoints(
+            &nested_create,
+            &ws,
+            &token,
+            None,
+            Some(&mut hook_create),
+        )
+        .expect_err("new nested file write must abort before creating parent dirs");
+        assert!(matches!(err, ToolError::Io(_)), "got {err:?}");
+        assert!(
+            !ws.join("nested").exists(),
+            "parent directories must not be created when pre-mutation capture fails"
+        );
+
+        drop(ctx);
+        drop(inside_ctx);
+        drop(db);
+        let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -73,6 +73,7 @@ pub mod activity;
 pub mod approval;
 pub mod assembly;
 pub mod budget;
+pub mod checkpoints;
 pub mod compaction;
 pub mod control;
 pub mod dispatch;
