@@ -1800,6 +1800,12 @@
   border: 1px solid var(--color-outline-variant);
   border-radius: var(--shape-small);
   background: var(--color-surface-container-low);
+  transition: border-color var(--nex-sys-motion-duration-fast)
+    var(--nex-sys-motion-easing-standard);
+}
+
+.nex-thinking-block.is-streaming {
+  border-color: var(--color-outline);
 }
 
 .nex-thinking-toggle {
@@ -1817,6 +1823,33 @@
 
 .nex-thinking-toggle:hover {
   color: var(--color-on-surface);
+}
+
+.nex-thinking-label {
+  min-width: 0;
+  font-size: var(--type-size-body-small);
+  font-weight: var(--type-weight-medium);
+  line-height: var(--type-line-height-tight);
+  color: inherit;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nex-thinking-block.is-streaming .nex-thinking-label {
+  color: var(--color-on-surface);
+  animation: nex-thinking-pulse var(--nex-sys-motion-loop-skeleton)
+    var(--nex-sys-motion-easing-standard) infinite;
+}
+
+@keyframes nex-thinking-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.65;
+  }
 }
 
 .nex-thinking-chevron {
@@ -1911,13 +1944,30 @@
   color: var(--color-on-surface);
 }
 
+.nex-agent-card-title {
+  min-width: 0;
+  font-size: var(--type-size-body-small);
+  font-weight: var(--type-weight-medium);
+  line-height: var(--type-line-height-tight);
+  color: var(--color-on-surface);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .nex-agent-card-body {
   font-size: var(--type-size-body-medium);
   color: var(--color-on-surface);
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .nex-thinking-block,
   .nex-thinking-chevron {
     transition: none;
+  }
+
+  .nex-thinking-block.is-streaming .nex-thinking-label {
+    animation: none;
+    opacity: 1;
   }
 }
