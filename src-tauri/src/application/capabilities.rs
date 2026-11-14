@@ -364,28 +364,62 @@ pub(crate) fn list_all_model_capabilities(db: &Database) -> Vec<ConnectionModelC
         .collect()
 }
 
+#[derive(Default)]
+struct MetadataTarget {
+    compat_url: Option<String>,
+    compat_headers: Vec<(String, String)>,
+}
+
+fn compat_metadata_target(
+    db: &Database,
+    connection_id: &str,
+) -> Result<MetadataTarget, ExecutorError> {
+    if connection_id != "openai_compat" {
+        return Ok(MetadataTarget::default());
+    }
+    let cfg = CompatEndpointService::new(db)
+        .read_config()
+        .map_err(|_| ExecutorError::InvalidRequest)?;
+    cfg.validate().map_err(|_| ExecutorError::InvalidRequest)?;
+    let mut headers = cfg.headers.clone();
+    if let Some(organization) = cfg
+        .organization
+        .as_deref()
+        .map(str::trim)
+        .filter(|org| !org.is_empty())
+    {
+        headers.push(("OpenAI-Organization".to_string(), organization.to_string()));
+    }
+    Ok(MetadataTarget {
+        compat_url: Some(cfg.normalized_endpoint()),
+        compat_headers: headers,
+    })
+}
+
 /// Fetch zero-token `/models` metadata for `connection_id`, update the process cache,
 /// and return the resolved capabilities for discovered models.
 pub(crate) fn refresh_connection_metadata(
     db: &Database,
     connection_id: &str,
 ) -> Result<Vec<ConnectionModelCapabilities>, ExecutorError> {
-    let credential = RequestExecutionService::new(db)
+    refresh_connection_metadata_with_execution(db, &RequestExecutionService::new(db), connection_id)
+}
+
+fn refresh_connection_metadata_with_execution(
+    db: &Database,
+    execution: &RequestExecutionService<'_>,
+    connection_id: &str,
+) -> Result<Vec<ConnectionModelCapabilities>, ExecutorError> {
+    // Validate compat configuration before any credential lookup or HTTP call.
+    let target = compat_metadata_target(db, connection_id)?;
+    let credential = execution
         .resolve_credential(connection_id)
         .map_err(|_| ExecutorError::Authentication)?;
-    let (compat_url, compat_headers) = if connection_id == "openai_compat" {
-        let cfg = CompatEndpointService::new(db)
-            .read_config()
-            .map_err(|_| ExecutorError::InvalidRequest)?;
-        (Some(cfg.base_url), cfg.headers)
-    } else {
-        (None, Vec::new())
-    };
     let discovered = fetch_connection_metadata(
         connection_id,
         &credential,
-        compat_url.as_deref(),
-        &compat_headers,
+        target.compat_url.as_deref(),
+        &target.compat_headers,
     )?;
     cache_api_metadata(connection_id, &discovered);
     let overrides = read_manual_overrides(db).unwrap_or_default();
@@ -398,7 +432,14 @@ pub(crate) fn refresh_connection_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::execution::ExecutionSources;
     use crate::infrastructure::database;
+    use crate::infrastructure::providers::openai::CompatConfig;
+    use nexora_core::provider::{CredentialError, CredentialSource, ExecutorRegistry};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    static TEST_CACHE_MUTEX: Mutex<()> = Mutex::new(());
 
     fn in_memory_db() -> Database {
         let mut conn = rusqlite::Connection::open_in_memory().expect("open memory db");
@@ -407,8 +448,41 @@ mod tests {
         Database::new(conn)
     }
 
+    struct StubCredentialSource {
+        secret: Option<String>,
+        lookups: AtomicUsize,
+    }
+
+    impl StubCredentialSource {
+        fn new(secret: Option<&str>) -> Self {
+            Self {
+                secret: secret.map(ToString::to_string),
+                lookups: AtomicUsize::new(0),
+            }
+        }
+
+        fn lookup_count(&self) -> usize {
+            self.lookups.load(Ordering::SeqCst)
+        }
+    }
+
+    impl CredentialSource for StubCredentialSource {
+        fn exists(&self, _provider: &str) -> std::result::Result<bool, CredentialError> {
+            self.lookups.fetch_add(1, Ordering::SeqCst);
+            Ok(self.secret.is_some())
+        }
+
+        fn read(&self, _provider: &str) -> std::result::Result<Option<String>, CredentialError> {
+            self.lookups.fetch_add(1, Ordering::SeqCst);
+            Ok(self.secret.clone())
+        }
+    }
+
     #[test]
     fn capability_precedence_is_manual_override_gt_api_metadata_gt_builtin_gt_unknown() {
+        let _guard = TEST_CACHE_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         clear_api_metadata_cache();
         let db = in_memory_db();
 
@@ -479,6 +553,184 @@ mod tests {
         assert_eq!(cleared.provenance, CapabilityProvenance::ApiMetadata);
         assert!(!cleared.has_manual_override);
         assert_eq!(cleared.context_window, Some(512_000));
+        clear_api_metadata_cache();
+    }
+
+    #[test]
+    fn refresh_connection_metadata_rejects_invalid_openai_compat_before_credential_or_http() {
+        use std::io::ErrorKind;
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
+        listener.set_nonblocking(true).expect("set nonblocking");
+        let addr = listener.local_addr().expect("local addr");
+
+        // Case 1: unconfigured / missing URL fails validation without credential lookup.
+        let empty_db = in_memory_db();
+        assert!(matches!(
+            refresh_connection_metadata(&empty_db, "openai_compat"),
+            Err(ExecutorError::InvalidRequest)
+        ));
+
+        // Case 2: invalid URL scheme or embedded credentials fail before credential lookup or HTTP.
+        for bad_url in [
+            format!("ftp://{addr}/v1/chat/completions"),
+            format!("https://user:secret@{addr}/v1/chat/completions"),
+        ] {
+            let db = in_memory_db();
+            db.lock()
+                .expect("db lock")
+                .execute(
+                    "INSERT INTO providers (name, display_name) VALUES ('openai_compat', 'OpenAI-Compatible')",
+                    [],
+                )
+                .expect("seed provider");
+            let settings = SettingsService::new(&db);
+            settings
+                .write("openai_compat.base_url", Some(&bad_url))
+                .expect("write bad url");
+            settings
+                .write("openai_compat.model", Some("custom-model"))
+                .expect("write model");
+
+            assert!(matches!(
+                refresh_connection_metadata(&db, "openai_compat"),
+                Err(ExecutorError::InvalidRequest)
+            ));
+
+            let creds = Arc::new(StubCredentialSource::new(Some("sk-compat-secret")));
+            let sources = ExecutionSources::with_test_sources(
+                Arc::new(ExecutorRegistry::new()),
+                Arc::clone(&creds) as Arc<dyn CredentialSource>,
+            );
+            let execution = RequestExecutionService::with_sources(&db, sources);
+            let res = refresh_connection_metadata_with_execution(&db, &execution, "openai_compat");
+            assert!(matches!(res, Err(ExecutorError::InvalidRequest)));
+            assert_eq!(creds.lookup_count(), 0);
+            assert!(matches!(listener.accept(), Err(ref e) if e.kind() == ErrorKind::WouldBlock));
+        }
+
+        // Case 3: reserved header fails validation before credential lookup or HTTP.
+        let db = in_memory_db();
+        db.lock()
+            .expect("db lock")
+            .execute(
+                "INSERT INTO providers (name, display_name) VALUES ('openai_compat', 'OpenAI-Compatible')",
+                [],
+            )
+            .expect("seed provider");
+        let settings = SettingsService::new(&db);
+        settings
+            .write(
+                "openai_compat.base_url",
+                Some(&format!("http://{addr}/v1/chat/completions")),
+            )
+            .expect("write valid url");
+        settings
+            .write("openai_compat.model", Some("custom-model"))
+            .expect("write model");
+        settings
+            .write(
+                "openai_compat.headers_json",
+                Some(r#"[["Authorization","Bearer overridden"]]"#),
+            )
+            .expect("write reserved header");
+
+        let creds = Arc::new(StubCredentialSource::new(Some("sk-compat-secret")));
+        let sources = ExecutionSources::with_test_sources(
+            Arc::new(ExecutorRegistry::new()),
+            Arc::clone(&creds) as Arc<dyn CredentialSource>,
+        );
+        let execution = RequestExecutionService::with_sources(&db, sources);
+        let res = refresh_connection_metadata_with_execution(&db, &execution, "openai_compat");
+        assert!(matches!(res, Err(ExecutorError::InvalidRequest)));
+        assert_eq!(creds.lookup_count(), 0);
+        assert!(matches!(listener.accept(), Err(ref e) if e.kind() == ErrorKind::WouldBlock));
+    }
+
+    #[test]
+    fn refresh_connection_metadata_forwards_openai_compat_organization_header() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let _guard = TEST_CACHE_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        clear_api_metadata_cache();
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
+        let addr = listener.local_addr().expect("local addr");
+        let server = std::thread::spawn(move || -> String {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 1024];
+            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+            while let Ok(n) = stream.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                raw.extend_from_slice(&buf[..n]);
+                if raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let body = r#"{"data":[{"id":"discovered-llama","context_length":65536}]}"#;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(resp.as_bytes()).expect("write response");
+            stream.flush().expect("flush response");
+            String::from_utf8_lossy(&raw).into_owned()
+        });
+
+        let db = in_memory_db();
+        db.lock()
+            .expect("db lock")
+            .execute(
+                "INSERT INTO providers (name, display_name) VALUES ('openai_compat', 'OpenAI-Compatible')",
+                [],
+            )
+            .expect("seed provider");
+        CompatEndpointService::new(&db)
+            .write_config(&CompatConfig {
+                base_url: format!("http://{addr}/v1/chat/completions"),
+                model: "compat-default".to_string(),
+                organization: Some("org-compat-42".to_string()),
+                headers: vec![("X-Custom".to_string(), "hdr-val".to_string())],
+                supports_tools: true,
+            })
+            .expect("write compat config");
+
+        let creds = Arc::new(StubCredentialSource::new(Some("sk-compat-secret")));
+        let sources = ExecutionSources::with_test_sources(
+            Arc::new(ExecutorRegistry::new()),
+            Arc::clone(&creds) as Arc<dyn CredentialSource>,
+        );
+        let execution = RequestExecutionService::with_sources(&db, sources);
+        let caps = refresh_connection_metadata_with_execution(&db, &execution, "openai_compat")
+            .expect("refresh compat metadata succeeds");
+        let head = server.join().expect("server thread joins");
+
+        assert!(
+            head.starts_with("GET /v1/models "),
+            "unexpected req: {head}"
+        );
+        let has_header = |name: &str, value: &str| {
+            head.lines().any(|line| {
+                line.split_once(':')
+                    .is_some_and(|(k, v)| k.eq_ignore_ascii_case(name) && v.trim() == value)
+            })
+        };
+        assert!(has_header("Authorization", "Bearer sk-compat-secret"));
+        assert!(has_header("OpenAI-Organization", "org-compat-42"));
+        assert!(has_header("X-Custom", "hdr-val"));
+        assert_eq!(caps.len(), 1);
+        assert_eq!(caps[0].connection_id, "openai_compat");
+        assert_eq!(caps[0].model_id, "discovered-llama");
+        assert_eq!(caps[0].context_window, Some(65_536));
+        assert_eq!(caps[0].provenance, CapabilityProvenance::ApiMetadata);
         clear_api_metadata_cache();
     }
 }

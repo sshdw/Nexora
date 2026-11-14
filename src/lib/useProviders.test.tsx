@@ -38,6 +38,31 @@ const { mockInvoke, failNext, state } = vi.hoisted(() => {
       ["provider.selected", "openai"],
       ["provider.model", "gpt-5.2"],
     ]),
+    capabilities: [] as {
+      connection_id: string;
+      model_id: string;
+      context_window: number | null;
+      supported_efforts: string[];
+      supports_thinking: boolean;
+      supports_attachments: boolean;
+      supports_tools: boolean;
+      provenance: string;
+      has_manual_override: boolean;
+    }[],
+    refreshedByConnection: new Map<
+      string,
+      {
+        connection_id: string;
+        model_id: string;
+        context_window: number | null;
+        supported_efforts: string[];
+        supports_thinking: boolean;
+        supports_attachments: boolean;
+        supports_tools: boolean;
+        provenance: string;
+        has_manual_override: boolean;
+      }[]
+    >(),
   };
   const mockInvoke = vi.fn(
     async (command: string, args?: Record<string, unknown>) => {
@@ -81,6 +106,36 @@ const { mockInvoke, failNext, state } = vi.hoisted(() => {
             (provider) => provider.id !== (args as { id: number }).id
           );
           return null;
+        case "list_model_capabilities":
+          return JSON.parse(JSON.stringify(state.capabilities));
+        case "get_model_capabilities": {
+          const { connectionId, modelId } = args as {
+            connectionId: string;
+            modelId: string;
+          };
+          return (
+            state.capabilities.find(
+              (c) =>
+                c.connection_id === connectionId && c.model_id === modelId
+            ) ?? {
+              connection_id: connectionId,
+              model_id: modelId,
+              context_window: 200_000,
+              supported_efforts: ["low", "medium", "high"],
+              supports_thinking: true,
+              supports_attachments: true,
+              supports_tools: true,
+              provenance: "built_in_catalog",
+              has_manual_override: false,
+            }
+          );
+        }
+        case "refresh_provider_model_metadata": {
+          const { connectionId } = args as { connectionId: string };
+          return JSON.parse(
+            JSON.stringify(state.refreshedByConnection.get(connectionId) ?? [])
+          );
+        }
         default:
           throw new Error(`unexpected command ${command}`);
       }
@@ -112,6 +167,8 @@ beforeEach(() => {
     ["provider.selected", "openai"],
     ["provider.model", "gpt-5.2"],
   ]);
+  state.capabilities = [];
+  state.refreshedByConnection = new Map();
 });
 
 describe("useProviders — isCustomModelId (backend rule mirror)", () => {
@@ -259,6 +316,98 @@ describe("useProviders — select", () => {
       value: "gpt-5.2-mini",
     });
     expect(result.current.selectedModel).toBe("gpt-5.2-mini");
+  });
+
+  it("queries getModelCapabilities with the new connectionId in selectProviderAndModel", async () => {
+    const { result } = renderHook(() => useProviders());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    mockInvoke.mockClear();
+
+    await act(async () => {
+      await result.current.selectProviderAndModel(
+        "anthropic",
+        "claude-sonnet-4"
+      );
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith("set_setting", {
+      key: "provider.selected",
+      value: "anthropic",
+    });
+    expect(mockInvoke).toHaveBeenCalledWith("set_setting", {
+      key: "provider.model",
+      value: "claude-sonnet-4",
+    });
+    expect(mockInvoke).toHaveBeenCalledWith("get_model_capabilities", {
+      connectionId: "anthropic",
+      modelId: "claude-sonnet-4",
+    });
+    expect(mockInvoke).not.toHaveBeenCalledWith("get_model_capabilities", {
+      connectionId: "openai",
+      modelId: "claude-sonnet-4",
+    });
+    expect(result.current.selectedProvider).toBe("anthropic");
+    expect(result.current.selectedModel).toBe("claude-sonnet-4");
+    expect(result.current.selectedCapabilities).toMatchObject({
+      connection_id: "anthropic",
+      model_id: "claude-sonnet-4",
+    });
+  });
+
+  it("uses explicit providerId on selectModel even when called right after selectProvider in the same closure", async () => {
+    const { result } = renderHook(() => useProviders());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    mockInvoke.mockClear();
+
+    const preRenderStore = result.current;
+    await act(async () => {
+      await preRenderStore.selectProvider("anthropic");
+      await preRenderStore.selectModel("claude-sonnet-4", "anthropic");
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith("get_model_capabilities", {
+      connectionId: "anthropic",
+      modelId: "claude-sonnet-4",
+    });
+    expect(mockInvoke).not.toHaveBeenCalledWith("get_model_capabilities", {
+      connectionId: "openai",
+      modelId: "claude-sonnet-4",
+    });
+    expect(result.current.selectedProvider).toBe("anthropic");
+    expect(result.current.selectedModel).toBe("claude-sonnet-4");
+  });
+
+  it("merges discovered models into capabilities on refreshModelMetadata", async () => {
+    state.refreshedByConnection.set("openai_compat", [
+      {
+        connection_id: "openai_compat",
+        model_id: "discovered-llama-3.3",
+        context_window: 131_072,
+        supported_efforts: ["low", "high"],
+        supports_thinking: true,
+        supports_attachments: false,
+        supports_tools: true,
+        provenance: "api_metadata",
+        has_manual_override: false,
+      },
+    ]);
+    const { result } = renderHook(() => useProviders());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      await result.current.refreshModelMetadata("openai_compat");
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith("refresh_provider_model_metadata", {
+      connectionId: "openai_compat",
+    });
+    expect(
+      result.current.capabilities.some(
+        (c) =>
+          c.connection_id === "openai_compat" &&
+          c.model_id === "discovered-llama-3.3"
+      )
+    ).toBe(true);
   });
 });
 

@@ -84,6 +84,20 @@ pub(crate) struct ExecutionSources {
     credentials: Arc<dyn CredentialSource>,
 }
 
+#[cfg(test)]
+impl ExecutionSources {
+    /// Construct execution sources from explicit test stubs.
+    pub(crate) fn with_test_sources(
+        executors: Arc<dyn ProviderExecutorResolver>,
+        credentials: Arc<dyn CredentialSource>,
+    ) -> Self {
+        Self {
+            executors,
+            credentials,
+        }
+    }
+}
+
 static INSTALLED_SOURCES: OnceLock<ExecutionSources> = OnceLock::new();
 
 /// The empty sources assumed before [`install_execution_sources`] runs.

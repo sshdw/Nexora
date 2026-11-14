@@ -53,9 +53,53 @@ import { useImportExport } from "./lib/useImportExport";
 import { useOnboarding } from "./lib/useOnboarding";
 import { readLastSession, rememberSession } from "./lib/lastSession";
 import { useOverlayRouter } from "./lib/useOverlayRouter";
-import { useProviders } from "./lib/useProviders";
+import type { ConnectionModelCapabilities } from "./lib/tauri";
+import { useProviders, type ProviderStatus } from "./lib/useProviders";
 import { useSpendLimit } from "./lib/useSpendLimit";
 import { useWorkspace } from "./lib/useWorkspace";
+
+export function mergeConnectionModels(
+  staticModels: readonly string[],
+  connectionId: string,
+  capabilities: readonly ConnectionModelCapabilities[]
+): string[] {
+  const merged: string[] = [];
+  const seen = new Set<string>();
+  for (const model of staticModels) {
+    if (model.trim() !== "" && !seen.has(model)) {
+      seen.add(model);
+      merged.push(model);
+    }
+  }
+  for (const cap of capabilities) {
+    if (cap.connection_id !== connectionId) continue;
+    if (cap.model_id.trim() !== "" && !seen.has(cap.model_id)) {
+      seen.add(cap.model_id);
+      merged.push(cap.model_id);
+    }
+  }
+  return merged;
+}
+
+export function buildConnectionGroups(
+  providers: readonly ProviderStatus[],
+  capabilities: readonly ConnectionModelCapabilities[],
+  selectedProvider: string | null
+): ModelConnectionGroup[] {
+  return providers
+    .filter(
+      (entry) => entry.available || entry.supported.name === selectedProvider
+    )
+    .map((entry) => ({
+      connectionId: entry.supported.name,
+      connectionName: entry.supported.display_name,
+      models: mergeConnectionModels(
+        entry.supported.models,
+        entry.supported.name,
+        capabilities
+      ),
+    }));
+}
 
 function AppShell() {
   const {
@@ -151,21 +195,22 @@ function AppShell() {
     const match = providers.providers.find(
       (entry) => entry.supported.name === providers.selectedProvider
     );
-    return match ? match.supported.models : [];
-  }, [providers.providers, providers.selectedProvider]);
+    return match
+      ? mergeConnectionModels(
+          match.supported.models,
+          match.supported.name,
+          providers.capabilities
+        )
+      : [];
+  }, [providers.providers, providers.capabilities, providers.selectedProvider]);
   const connectionGroups = useMemo<ModelConnectionGroup[]>(
     () =>
-      providers.providers
-        .filter(
-          (entry) =>
-            entry.available || entry.supported.name === providers.selectedProvider
-        )
-        .map((entry) => ({
-          connectionId: entry.supported.name,
-          connectionName: entry.supported.display_name,
-          models: entry.supported.models,
-        })),
-    [providers.providers, providers.selectedProvider]
+      buildConnectionGroups(
+        providers.providers,
+        providers.capabilities,
+        providers.selectedProvider
+      ),
+    [providers.providers, providers.capabilities, providers.selectedProvider]
   );
   const capabilitiesByKey = useMemo(
     () =>
@@ -185,12 +230,7 @@ function AppShell() {
   );
   const selectConnectionModel = useCallback(
     (connectionId: string, model: string) => {
-      void (async () => {
-        if (connectionId !== providers.selectedProvider) {
-          await providers.selectProvider(connectionId);
-        }
-        await providers.selectModel(model);
-      })();
+      void providers.selectProviderAndModel(connectionId, model);
     },
     [providers]
   );

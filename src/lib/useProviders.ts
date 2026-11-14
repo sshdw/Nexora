@@ -82,8 +82,10 @@ export interface ProvidersStore {
   reload: () => Promise<void>;
   /** Persist the selected provider (FR-004). */
   selectProvider: (name: string) => Promise<void>;
-  /** Persist the selected model for the current provider (FR-004). */
-  selectModel: (model: string) => Promise<void>;
+  /** Persist the selected model for the current (or explicit) provider (FR-004). */
+  selectModel: (model: string, providerId?: string) => Promise<void>;
+  /** Persist both provider and model selection without stale closure reads. */
+  selectProviderAndModel: (providerId: string, model: string) => Promise<void>;
   /** Persist or clear the selected reasoning effort. */
   selectEffort: (effort: string | null) => Promise<void>;
   /** Save or clear a manual capability override for `(connectionId, modelId)`. */
@@ -238,38 +240,66 @@ export function useProviders(): ProvidersStore {
     [supported, selectedModel]
   );
 
+  const loadModelCapabilitiesIfMissing = useCallback(
+    async (connectionId: string, model: string): Promise<void> => {
+      if (
+        !connectionId ||
+        capabilities.some(
+          (c) => c.connection_id === connectionId && c.model_id === model
+        )
+      ) {
+        return;
+      }
+      const single = await getModelCapabilities(connectionId, model).catch(
+        () => null
+      );
+      if (single) {
+        setCapabilities((prev) => {
+          const filtered = prev.filter(
+            (c) =>
+              capabilityKey(c.connection_id, c.model_id) !==
+              capabilityKey(single.connection_id, single.model_id)
+          );
+          return [...filtered, single];
+        });
+      }
+    },
+    [capabilities]
+  );
+
   const selectModel = useCallback(
-    async (model: string): Promise<void> => {
+    async (model: string, providerId?: string): Promise<void> => {
       setError(null);
       try {
         await setSetting(SELECTED_MODEL_KEY, model);
         setSelectedModel(model);
-        if (
-          selectedProvider &&
-          !capabilities.some(
-            (c) => c.connection_id === selectedProvider && c.model_id === model
-          )
-        ) {
-          const single = await getModelCapabilities(
-            selectedProvider,
-            model
-          ).catch(() => null);
-          if (single) {
-            setCapabilities((prev) => {
-              const filtered = prev.filter(
-                (c) =>
-                  capabilityKey(c.connection_id, c.model_id) !==
-                  capabilityKey(single.connection_id, single.model_id)
-              );
-              return [...filtered, single];
-            });
-          }
+        const targetProvider = providerId ?? selectedProvider;
+        if (targetProvider) {
+          await loadModelCapabilitiesIfMissing(targetProvider, model);
         }
       } catch (e) {
         setError(toCommandError(e));
       }
     },
-    [selectedProvider, capabilities]
+    [selectedProvider, loadModelCapabilitiesIfMissing]
+  );
+
+  const selectProviderAndModel = useCallback(
+    async (providerId: string, model: string): Promise<void> => {
+      setError(null);
+      try {
+        if (providerId !== selectedProvider) {
+          await setSetting(SELECTED_PROVIDER_KEY, providerId);
+          setSelectedProvider(providerId);
+        }
+        await setSetting(SELECTED_MODEL_KEY, model);
+        setSelectedModel(model);
+        await loadModelCapabilitiesIfMissing(providerId, model);
+      } catch (e) {
+        setError(toCommandError(e));
+      }
+    },
+    [selectedProvider, loadModelCapabilitiesIfMissing]
   );
 
   const selectEffort = useCallback(
@@ -439,6 +469,7 @@ export function useProviders(): ProvidersStore {
       reload,
       selectProvider,
       selectModel,
+      selectProviderAndModel,
       selectEffort,
       setCapabilityOverride,
       refreshModelMetadata,
@@ -458,6 +489,7 @@ export function useProviders(): ProvidersStore {
       reload,
       selectProvider,
       selectModel,
+      selectProviderAndModel,
       selectEffort,
       setCapabilityOverride,
       refreshModelMetadata,

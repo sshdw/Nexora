@@ -691,6 +691,7 @@ fn collect_system(messages: &[AiMessage]) -> Option<String> {
 struct GenerateContentResponse {
     #[serde(rename = "modelVersion")]
     model_version: Option<String>,
+    #[serde(default)]
     candidates: Vec<Candidate>,
     #[serde(rename = "usageMetadata", default)]
     usage_metadata: Option<GeminiUsage>,
@@ -707,12 +708,14 @@ struct GeminiUsage {
 /// One generation candidate from a Gemini response.
 #[derive(Debug, Deserialize)]
 struct Candidate {
+    #[serde(default)]
     content: CandidateContent,
 }
 
 /// The `content` of a Gemini response candidate.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct CandidateContent {
+    #[serde(default)]
     parts: Vec<ResponsePart>,
 }
 
@@ -2544,5 +2547,90 @@ mod tests {
         assert!(evs.contains(&StreamEvent::ThinkingDelta("thinking...".to_string())));
         assert!(evs.contains(&StreamEvent::TextDelta("Hi ".to_string())));
         assert!(evs.contains(&StreamEvent::TextDelta("there".to_string())));
+    }
+
+    #[test]
+    fn execute_stream_events_handles_trailing_usage_only_and_finish_reason_only_frames() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 1024];
+            let mut header_end = None;
+            while let Ok(n) = stream.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                raw.extend_from_slice(&buf[..n]);
+                if header_end.is_none() {
+                    if let Some(pos) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+                        header_end = Some(pos + 4);
+                    }
+                }
+                if let Some(end) = header_end {
+                    let hdrs = String::from_utf8_lossy(&raw[..end]);
+                    let len = hdrs
+                        .lines()
+                        .find_map(|l| {
+                            let (k, v) = l.split_once(':')?;
+                            k.eq_ignore_ascii_case("content-length")
+                                .then(|| v.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    if raw.len() >= end + len {
+                        break;
+                    }
+                }
+            }
+            let sse = concat!(
+                "data: {\"modelVersion\":\"gemini-3.1-pro-preview\",\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hello \"}]}}]}\n\n",
+                "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"world\"}]}}]}\n\n",
+                "data: {\"candidates\":[{\"finishReason\":\"STOP\",\"index\":0}]}\n\n",
+                "data: {\"candidates\":[{\"content\":{\"role\":\"model\"},\"finishReason\":\"STOP\"}]}\n\n",
+                "data: {\"usageMetadata\":{\"promptTokenCount\":21,\"candidatesTokenCount\":8},\"modelVersion\":\"gemini-3.1-pro-preview\"}\n\n"
+            );
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                sse.len(),
+                sse
+            );
+            stream.write_all(resp.as_bytes()).expect("write");
+            stream.flush().expect("flush");
+        });
+
+        let executor = GeminiExecutor::with_endpoint(format!("http://{addr}/v1beta"));
+        let mut req = sample_request();
+        req.model = "gemini-3.1-pro-preview".to_string();
+        let events = std::sync::Mutex::new(Vec::new());
+        let resp = executor
+            .execute_stream_events(&req, "sk-secret", &CancellationToken::new(), &|ev| {
+                events.lock().expect("lock").push(ev);
+            })
+            .expect("trailing usage-only and finishReason-only frames must deserialize cleanly");
+        server.join().expect("join");
+
+        assert_eq!(resp.content, "Hello world");
+        assert_eq!(resp.model, "gemini-3.1-pro-preview");
+        assert_eq!(
+            resp.usage,
+            Some(TokenUsage {
+                input_tokens: 21,
+                output_tokens: 8
+            })
+        );
+        let evs = events.into_inner().expect("lock");
+        assert_eq!(
+            evs,
+            vec![
+                StreamEvent::TextDelta("Hello ".to_string()),
+                StreamEvent::TextDelta("world".to_string()),
+            ]
+        );
     }
 }
