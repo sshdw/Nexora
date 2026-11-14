@@ -1,17 +1,18 @@
 {
-  "source_sha": "f4001d725ee66e60d57b66ca83d36ad11e05c412",
-  "production_binary_sha256": "6D859D2C820437C65DEBF8FC33872EF281A358D6CE119CB1603904871E1FCF12",
-  "qa_binary_sha256": "7553BA776224C2C21F9A3CFCFAB117EFDBB9621665CEE82C836DED6217287F8E",
+  "source_sha": "b240896a5d45c5bcaafcd1ff07e3a6df6f478169",
+  "production_binary_sha256": "44EE28B3781C0EE5452386A51A4387E4E5B1CFC4A0907340D5E06428A8D96906",
+  "qa_binary_sha256": "2B749719102858CADD62CF75B75865721B498575B225274C5E716D6129DB4A4F",
   "qa_identifier": "com.nexora.qa.m04.rf6c9037f3c",
   "qa_title": "Nexora M04 QA",
   "production_artifacts_restored": {
-    "restored_at": "2026-11-14T16:38:52.5071477+05:00",
-    "files": 5,
-    "hashes_match": true
+    "hashes_match": true,
+    "restored_at": "2026-11-14T17:19:17.7039531+05:00",
+    "files": 5
   },
   "profiles": [
     {
       "profile": "standard",
+      "stored_profile": "standard",
       "schema": 16,
       "integrity": [
         [
@@ -29,10 +30,11 @@
       },
       "exit_code": 0,
       "orderly_shutdown": true,
-      "binary_sha": "7553BA776224C2C21F9A3CFCFAB117EFDBB9621665CEE82C836DED6217287F8E"
+      "binary_sha": "2B749719102858CADD62CF75B75865721B498575B225274C5E716D6129DB4A4F"
     },
     {
       "profile": "read-only",
+      "stored_profile": "read_only",
       "schema": 16,
       "integrity": [
         [
@@ -50,10 +52,11 @@
       },
       "exit_code": 0,
       "orderly_shutdown": true,
-      "binary_sha": "7553BA776224C2C21F9A3CFCFAB117EFDBB9621665CEE82C836DED6217287F8E"
+      "binary_sha": "2B749719102858CADD62CF75B75865721B498575B225274C5E716D6129DB4A4F"
     },
     {
       "profile": "supervised",
+      "stored_profile": "supervised",
       "schema": 16,
       "integrity": [
         [
@@ -71,10 +74,11 @@
       },
       "exit_code": 0,
       "orderly_shutdown": true,
-      "binary_sha": "7553BA776224C2C21F9A3CFCFAB117EFDBB9621665CEE82C836DED6217287F8E"
+      "binary_sha": "2B749719102858CADD62CF75B75865721B498575B225274C5E716D6129DB4A4F"
     },
     {
       "profile": "invalid-read-only",
+      "stored_profile": "invalid-profile",
       "schema": 16,
       "integrity": [
         [
@@ -92,22 +96,22 @@
       },
       "exit_code": 0,
       "orderly_shutdown": true,
-      "binary_sha": "7553BA776224C2C21F9A3CFCFAB117EFDBB9621665CEE82C836DED6217287F8E"
+      "binary_sha": "2B749719102858CADD62CF75B75865721B498575B225274C5E716D6129DB4A4F"
     }
   ],
   "frames": [
     {
       "file": "01-standard-composer-en.png",
-      "md5": "fc2966991d1875aa5e766d9c7952f966",
-      "colors": 13854,
+      "md5": "fb91e89f517a021187817395bc8070d0",
+      "colors": 13908,
       "width": 1536,
       "height": 816,
       "shows": "Standard Composer, EN, retained run92001"
     },
     {
       "file": "02-standard-settings-en.png",
-      "md5": "f9b5cff671bccd580ae7f515c1ef0788",
-      "colors": 22993,
+      "md5": "52125c5edffa756a509202036e52e26b",
+      "colors": 22962,
       "width": 1536,
       "height": 816,
       "shows": "Standard Settings, EN, checkpoint and shell consent fallback"
@@ -122,40 +126,40 @@
     },
     {
       "file": "04-read-only-composer-ru.png",
-      "md5": "22c7ee5c8e94fe32911ad2de1245385e",
-      "colors": 15706,
+      "md5": "1d260a6eda519ce0368d2bd702b48add",
+      "colors": 14868,
       "width": 1536,
       "height": 816,
       "shows": "ReadOnly Composer, RU, after restart"
     },
     {
       "file": "05-read-only-settings-ru.png",
-      "md5": "6837f5d07da5f361b1af935fa97315a8",
-      "colors": 24015,
+      "md5": "e52cf21c75bb660bf6b23159dc9d5274",
+      "colors": 24057,
       "width": 1536,
       "height": 816,
       "shows": "ReadOnly Settings, RU, edits and commands prohibited"
     },
     {
       "file": "06-supervised-composer-ru.png",
-      "md5": "0716474989080fd40d554ce103762420",
-      "colors": 14912,
+      "md5": "76ee33a892a46c9136b587668f96db93",
+      "colors": 14935,
       "width": 1536,
       "height": 816,
       "shows": "Supervised Composer, RU, after restart"
     },
     {
       "file": "07-supervised-settings-ru.png",
-      "md5": "260ae177f3a6161eb083844902fd1cff",
-      "colors": 24046,
+      "md5": "cc78e0bda3dd07ac460bb7e3abbbe143",
+      "colors": 24091,
       "width": 1536,
       "height": 816,
       "shows": "Supervised Settings, RU, per-edit/command consent"
     },
     {
       "file": "08-invalid-fallback-composer-ru.png",
-      "md5": "dc50637a91ae5dbcd64483845bf26dfd",
-      "colors": 14848,
+      "md5": "f146615a6fe5aba40c55cb048cafbe4a",
+      "colors": 15089,
       "width": 1536,
       "height": 816,
       "shows": "Invalid stored value: ReadOnly fallback in Composer, RU"
