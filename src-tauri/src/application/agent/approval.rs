@@ -330,10 +330,13 @@ impl ApprovalGate {
         let Ok(args) = serde_json::from_str::<serde_json::Value>(&call.arguments) else {
             return false;
         };
-        let path = args
-            .get("path")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or(".");
+        let path = if call.name == "search_files" {
+            super::tools::path_safety::search_scope_arg(&args)
+        } else {
+            args.get("path").and_then(serde_json::Value::as_str)
+        }
+        .filter(|path| !path.trim().is_empty())
+        .unwrap_or(".");
         let preset = self.lock_state().preset;
         if self.current_store().is_some_and(|store| {
             matches!(
@@ -343,7 +346,7 @@ impl ApprovalGate {
         }) {
             return false;
         }
-        super::tools::path_safety::resolve_path(&workspace, path).is_ok_and(|target| {
+        super::tools::path_safety::tool_scope(&workspace, &call.name, &args).is_ok_and(|target| {
             !super::tools::path_safety::sensitive_write(&target)
                 && !super::tools::path_safety::sensitive_write(&workspace.join(path))
         })
@@ -398,58 +401,60 @@ impl ApprovalGate {
         &self,
         call: &ToolCall,
         workspace: &Path,
-        execute: impl FnOnce() -> Result<String, super::tools::ToolError>,
+        execute: impl FnOnce(&Path, &mut dyn FnMut()) -> Result<String, super::tools::ToolError>,
     ) -> Result<String, super::tools::ToolError> {
         let mut unavailable = false;
-        let result = self.access.with_identity(workspace, call, |identity| {
-            let denied = || super::tools::ToolError::ConsentInvalidated;
-            let (preset, snapshot, bound_workspace) = {
-                let state = self.lock_state();
-                (
-                    state.preset,
-                    state.dispatch_store.clone(),
-                    state.workspace.clone(),
-                )
-            };
-            if !self.access.allows(call)
-                || bound_workspace.as_deref() != Some(workspace)
-                || (preset == RunPreset::Document && call.name == "execute_command")
-            {
-                return Err(denied());
-            }
-            // Compare the complete loaded rules, including rule identity and
-            // specificity. A fresh generation cannot legitimize a stale
-            // dispatch snapshot or attribute execution to an obsolete Allow.
-            let current = self.access.execution_store();
-            unavailable = current
-                .as_ref()
-                .is_some_and(PermissionStore::is_unavailable);
-            if current.is_some() && snapshot.is_some() && current != snapshot {
-                return Err(denied());
-            }
-            let policy = current
-                .or(snapshot)
-                .and_then(|store| store.decide_call(preset.as_str(), call, workspace));
-            if matches!(policy, Some(PermissionOutcome::Deny { .. })) {
-                return Err(denied());
-            }
-            let needs_consent =
-                self.needs_approval(call) || matches!(policy, Some(PermissionOutcome::Ask { .. }));
-            let reusable = self.reusable(call);
-            let key = format!("exact:{}:{identity}", call.name);
-            let mut state = self.lock_state();
-            let once = state
-                .once
-                .remove(&call.id)
-                .is_some_and(|grant| grant == identity);
-            let group =
-                reusable && state.group_decisions.get(&key) == Some(&ApprovalDecision::Approved);
-            if needs_consent && !once && !group {
-                return Err(denied());
-            }
-            drop(state);
-            execute()
-        });
+        let result = self
+            .access
+            .with_identity(workspace, call, |identity, target, started| {
+                let denied = || super::tools::ToolError::ConsentInvalidated;
+                let (preset, snapshot, bound_workspace) = {
+                    let state = self.lock_state();
+                    (
+                        state.preset,
+                        state.dispatch_store.clone(),
+                        state.workspace.clone(),
+                    )
+                };
+                if !self.access.allows(call)
+                    || bound_workspace.as_deref() != Some(workspace)
+                    || (preset == RunPreset::Document && call.name == "execute_command")
+                {
+                    return Err(denied());
+                }
+                // Compare the complete loaded rules, including rule identity and
+                // specificity. A fresh generation cannot legitimize a stale
+                // dispatch snapshot or attribute execution to an obsolete Allow.
+                let current = self.access.execution_store();
+                unavailable = current
+                    .as_ref()
+                    .is_some_and(PermissionStore::is_unavailable);
+                if current.is_some() && snapshot.is_some() && current != snapshot {
+                    return Err(denied());
+                }
+                let policy = current
+                    .or(snapshot)
+                    .and_then(|store| store.decide_call(preset.as_str(), call, workspace));
+                if matches!(policy, Some(PermissionOutcome::Deny { .. })) {
+                    return Err(denied());
+                }
+                let needs_consent = self.needs_approval(call)
+                    || matches!(policy, Some(PermissionOutcome::Ask { .. }));
+                let reusable = self.reusable(call);
+                let key = format!("exact:{}:{identity}", call.name);
+                let mut state = self.lock_state();
+                let once = state
+                    .once
+                    .remove(&call.id)
+                    .is_some_and(|grant| grant == identity);
+                let group = reusable
+                    && state.group_decisions.get(&key) == Some(&ApprovalDecision::Approved);
+                if needs_consent && !once && !group {
+                    return Err(denied());
+                }
+                drop(state);
+                execute(target, started)
+            });
         if unavailable {
             self.access.invalidate();
         }

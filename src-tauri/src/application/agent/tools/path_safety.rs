@@ -470,10 +470,60 @@ pub(super) fn secure_dir(
     }
     Ok(dir)
 }
-fn secure_open(
+/// One tool-specific scope contract shared by consent identity and execution.
+pub(crate) fn tool_scope(
+    workspace: &Path,
+    tool: &str,
+    args: &serde_json::Value,
+) -> Result<PathBuf, ToolError> {
+    let raw = match tool {
+        "execute_command" => args.get("cwd").and_then(serde_json::Value::as_str),
+        "search_files" => search_scope_arg(args),
+        _ => args.get("path").and_then(serde_json::Value::as_str),
+    };
+    resolve_path(
+        workspace,
+        raw.filter(|s| !s.trim().is_empty()).unwrap_or("."),
+    )
+}
+pub(in crate::application::agent) fn search_scope_arg(args: &serde_json::Value) -> Option<&str> {
+    args.get("directory")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| args.get("path").and_then(serde_json::Value::as_str))
+}
+/// Compare the scope actually selected by the executor with the canonical
+/// scope whose consent was checked. Opening uses this resolved path, so a
+/// subsequently retargeted lexical alias cannot redirect the operation.
+pub(in crate::application::agent) fn execution_target(
+    workspace: &Path,
+    raw: &str,
+    bound: Option<&Path>,
+) -> Result<PathBuf, ToolError> {
+    let target = resolve_path(workspace, raw)?;
+    if bound.is_some_and(|bound| bound != target) {
+        return Err(ToolError::ConsentInvalidated);
+    }
+    Ok(target)
+}
+pub(super) fn secure_open(
     workspace: &Path,
     target: &Path,
     write: bool,
+) -> Result<cap_std::fs::File, ToolError> {
+    secure_open_file(workspace, target, !write, write, write)
+}
+pub(super) fn secure_open_edit(
+    workspace: &Path,
+    target: &Path,
+) -> Result<cap_std::fs::File, ToolError> {
+    secure_open_file(workspace, target, true, true, false)
+}
+fn secure_open_file(
+    workspace: &Path,
+    target: &Path,
+    read: bool,
+    write: bool,
+    create: bool,
 ) -> Result<cap_std::fs::File, ToolError> {
     use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
     check_private(target)?;
@@ -483,16 +533,16 @@ fn secure_open(
     let name = target
         .file_name()
         .ok_or_else(|| ToolError::Io("invalid file target".into()))?;
-    let dir = secure_dir(workspace, parent, write)?;
+    let dir = secure_dir(workspace, parent, create)?;
     let mut options = cap_std::fs::OpenOptions::new();
     options.follow(FollowSymlinks::No);
     if write {
-        options.write(true).create(true).truncate(true);
-    } else {
-        options.read(true);
+        options.write(true).create(create);
     }
+    options.read(read);
     dir.open_with(name, &options).map_err(cap_error)
 }
+#[cfg(test)]
 pub(super) fn secure_read(workspace: &Path, target: &Path) -> Result<Vec<u8>, ToolError> {
     use std::io::Read;
     let mut file = secure_open(workspace, target, false)?;
@@ -505,8 +555,20 @@ pub(super) fn secure_read_limited(
     target: &Path,
     max: u64,
 ) -> Result<Vec<u8>, ToolError> {
+    read_limited(secure_open(workspace, target, false)?, max)
+}
+pub(super) fn secure_read_limited_at(
+    directory: &cap_std::fs::Dir,
+    name: &std::ffi::OsStr,
+    max: u64,
+) -> Result<Vec<u8>, ToolError> {
+    use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
+    let mut options = cap_std::fs::OpenOptions::new();
+    options.read(true).follow(FollowSymlinks::No);
+    read_limited(directory.open_with(name, &options).map_err(cap_error)?, max)
+}
+fn read_limited(file: cap_std::fs::File, max: u64) -> Result<Vec<u8>, ToolError> {
     use std::io::Read;
-    let file = secure_open(workspace, target, false)?;
     if file.metadata().map_err(cap_error)?.len() > max {
         return Err(ToolError::Io("file exceeds the read limit".into()));
     }
@@ -519,6 +581,7 @@ pub(super) fn secure_read_limited(
     }
     Ok(bytes)
 }
+#[cfg(test)]
 pub(super) fn secure_write(
     workspace: &Path,
     target: &Path,
@@ -526,6 +589,7 @@ pub(super) fn secure_write(
 ) -> Result<(), ToolError> {
     use std::io::Write;
     let mut file = secure_open(workspace, target, true)?;
+    file.set_len(0).map_err(cap_error)?;
     file.write_all(content).map_err(cap_error)
 }
 pub(super) fn safe_ignore(

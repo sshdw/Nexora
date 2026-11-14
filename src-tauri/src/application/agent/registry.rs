@@ -287,11 +287,13 @@ impl AgentRunRegistry {
         approved: bool,
         scope: Option<&str>,
     ) -> (ResolveOutcome, Option<(String, Option<String>)>) {
-        let runs = self
+        let entry = self
             .runs
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(entry) = runs.get(&run_id) else {
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&run_id)
+            .cloned();
+        let Some(entry) = entry else {
             return (ResolveOutcome::RunNotActive, None);
         };
         let decision = if approved {
@@ -408,12 +410,15 @@ impl AgentRunRegistry {
     /// Returns `false` when the run is not active.
     #[must_use]
     pub(crate) fn set_mode(&self, run_id: i64, mode: AutonomyMode) -> bool {
-        match self
+        // Policy writers may wait for an open/spawn boundary. Never retain the
+        // run map while waiting: cancel/shutdown must always reach the token.
+        let entry = self
             .runs
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&run_id)
-        {
+            .cloned();
+        match entry {
             Some(entry) => {
                 entry.gate.set_mode(mode);
                 true
@@ -472,6 +477,127 @@ impl AgentRunRegistry {
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // One synchronized lifecycle, including cleanup before assertions.
+    fn in_flight_shell_allows_profile_mode_changes_and_prompt_stop_or_shutdown() {
+        use crate::application::agent::access::{AccessContext, PROFILE_KEY};
+        use crate::application::agent::tools::{
+            test_support::{call, temp_workspace},
+            ToolError, ToolRegistry,
+        };
+        use crate::application::settings::SettingsService;
+        use crate::infrastructure::database::in_memory_database;
+        use std::sync::{mpsc, Arc, Barrier};
+        for shutdown in [false, true] {
+            let db = in_memory_database();
+            let workspace = temp_workspace();
+            let registry = Arc::new(AgentRunRegistry::default());
+            let control = RunControl::new();
+            let gate = ApprovalGate::new(AutonomyMode::FullAutonomous)
+                .with_access(AccessContext::root(&db));
+            gate.bind_workspace(&workspace);
+            gate.set_token(control.token().clone());
+            registry.register(
+                7,
+                ActiveAgentRun {
+                    conversation_id: 1,
+                    control: control.clone(),
+                    gate: gate.clone(),
+                },
+            );
+            // Shell builtins keep this fixture in the spawned shell process,
+            // so cancellation needs no descendant-process/sandbox facility.
+            let command = if cfg!(windows) {
+                "echo ready>started.txt & for /L %i in (1,1,2147483647) do @rem waiting"
+            } else {
+                "echo ready > started.txt; while :; do :; done"
+            };
+            let request = call("execute_command", serde_json::json!({"command":command}));
+            let approval = gate.prepare_pending(&request);
+            assert!(gate.respond(&approval, ApprovalDecision::Approved));
+            assert_eq!(
+                gate.park_until_resolved(&request),
+                Ok(ApprovalDecision::Approved)
+            );
+            let worker_gate = gate.clone();
+            let worker_ws = workspace.clone();
+            let (finished_tx, finished_rx) = mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                finished_tx
+                    .send(ToolRegistry::execute_agent(
+                        &request,
+                        &worker_ws,
+                        &worker_gate.token_cloned(),
+                        Some(&worker_gate),
+                    ))
+                    .unwrap();
+            });
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !workspace.join("started.txt").exists() && Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+            let started = workspace.join("started.txt").exists();
+            let barrier = Arc::new(Barrier::new(3));
+            let (changed_tx, changed_rx) = mpsc::channel();
+            let mode_registry = registry.clone();
+            let mode_barrier = barrier.clone();
+            let mode_tx = changed_tx.clone();
+            let mode = std::thread::spawn(move || {
+                mode_barrier.wait();
+                mode_tx
+                    .send(mode_registry.set_mode(7, AutonomyMode::Supervised))
+                    .unwrap();
+            });
+            let profile_barrier = barrier.clone();
+            let profile_db = db.clone();
+            let profile = std::thread::spawn(move || {
+                profile_barrier.wait();
+                changed_tx
+                    .send(
+                        SettingsService::new(&profile_db)
+                            .write(PROFILE_KEY, Some("read_only"))
+                            .is_ok(),
+                    )
+                    .unwrap();
+            });
+            barrier.wait();
+            // Both controls must finish while the actual process is still live.
+            let first_change = changed_rx.recv_timeout(Duration::from_secs(1));
+            let second_change = changed_rx.recv_timeout(Duration::from_secs(1));
+            let still_running = finished_rx.try_recv().is_err();
+            let cancel_registry = registry.clone();
+            let (cancel_tx, cancel_rx) = mpsc::channel();
+            let cancel = std::thread::spawn(move || {
+                cancel_tx
+                    .send(if shutdown {
+                        cancel_registry.shutdown_cancel_all() == 1
+                    } else {
+                        cancel_registry.cancel(7)
+                    })
+                    .unwrap();
+            });
+            let prompt_cancel = cancel_rx.recv_timeout(Duration::from_secs(1));
+            // Always release the real child before assertions, even if an old
+            // implementation deadlocks its run map behind a policy writer.
+            control.cancel();
+            let result = finished_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+            worker.join().unwrap();
+            mode.join().unwrap();
+            profile.join().unwrap();
+            cancel.join().unwrap();
+            assert!(started, "fixture reached actual shell execution");
+            assert!(first_change.unwrap());
+            assert!(second_change.unwrap());
+            assert!(
+                still_running,
+                "policy changes did not wait for process exit"
+            );
+            assert!(prompt_cancel.unwrap());
+            assert_eq!(result, Err(ToolError::Cancelled));
+            std::fs::remove_dir_all(workspace).unwrap();
+        }
+    }
 
     #[test]
     fn registry_set_mode_pause_resume_happy_and_unknown() {

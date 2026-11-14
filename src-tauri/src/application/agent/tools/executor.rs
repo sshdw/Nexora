@@ -5,6 +5,7 @@
 //! bounded by timeout, capture, and drain limits.
 
 use std::fmt::Write as _;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use serde_json::Value;
@@ -12,8 +13,8 @@ use serde_json::Value;
 use super::command::CommandLimits;
 use super::output::{truncate_output, unified_diff};
 use super::path_safety::{
-    canonical_root, check_private, is_within_workspace, resolve_path, safe_ignore, secure_dir,
-    secure_read, secure_write, verify_existing_within,
+    canonical_root, check_private, execution_target, is_within_workspace, safe_ignore,
+    search_scope_arg, secure_dir, secure_open, secure_open_edit, verify_existing_within,
 };
 use super::search::{
     walk_search, LiteRegex, MAX_SEARCH_PATTERN_BYTES, SEARCH_DEFAULT_MAX_MATCHES,
@@ -86,7 +87,7 @@ impl ToolRegistry {
         workspace_root: &Path,
         token: &CancellationToken,
     ) -> Result<String, ToolError> {
-        Self::execute_raw(call, workspace_root, token)
+        Self::execute_raw(call, workspace_root, token, None, &mut || {})
     }
     pub(crate) fn execute_agent(
         call: &ToolCall,
@@ -95,8 +96,8 @@ impl ToolRegistry {
         gate: Option<&crate::application::agent::approval::ApprovalGate>,
     ) -> Result<String, ToolError> {
         if let Some(gate) = gate {
-            return gate.execute_authorized(call, workspace_root, || {
-                Self::execute_raw(call, workspace_root, token)
+            return gate.execute_authorized(call, workspace_root, |target, started| {
+                Self::execute_raw(call, workspace_root, token, Some(target), started)
             });
         }
         if !matches!(
@@ -107,7 +108,7 @@ impl ToolRegistry {
                 "an agent execution context is required".into(),
             ));
         }
-        Self::execute_raw(call, workspace_root, token)
+        Self::execute_raw(call, workspace_root, token, None, &mut || {})
     }
     /// Separate human terminal entry: never accepts file/agent tool calls.
     pub(crate) fn execute_terminal(
@@ -130,6 +131,8 @@ impl ToolRegistry {
         call: &ToolCall,
         workspace_root: &Path,
         token: &CancellationToken,
+        bound: Option<&Path>,
+        started: &mut dyn FnMut(),
     ) -> Result<String, ToolError> {
         if token.is_cancelled() {
             return Err(ToolError::Cancelled);
@@ -138,23 +141,30 @@ impl ToolRegistry {
             ToolError::InvalidArguments(format!("arguments are not valid JSON: {e}"))
         })?;
         match call.name.as_str() {
-            "execute_command" => Self::execute_command_with_limits(
+            "execute_command" => Self::execute_command_at_boundary(
                 &args,
                 workspace_root,
                 &CommandLimits::default(),
                 token,
+                bound,
+                started,
             ),
-            "read_file" => Self::read_file(&args, workspace_root),
-            "write_file" => Self::write_file(&args, workspace_root),
-            "edit_file" => Self::edit_file(&args, workspace_root),
-            "search_files" => Self::search_files(&args, workspace_root),
-            "list_directory" => Self::list_directory(&args, workspace_root),
+            "read_file" => Self::read_file(&args, workspace_root, bound, started),
+            "write_file" => Self::write_file(&args, workspace_root, bound, started),
+            "edit_file" => Self::edit_file(&args, workspace_root, bound, started),
+            "search_files" => Self::search_files(&args, workspace_root, bound, started),
+            "list_directory" => Self::list_directory(&args, workspace_root, bound, started),
             other => Err(ToolError::UnknownTool(other.to_string())),
         }
     }
 
     // -----------------------------------------------------------------------
-    fn read_file(args: &Value, workspace_root: &Path) -> Result<String, ToolError> {
+    fn read_file(
+        args: &Value,
+        workspace_root: &Path,
+        bound: Option<&Path>,
+        started: &mut dyn FnMut(),
+    ) -> Result<String, ToolError> {
         let path = args.get("path").and_then(Value::as_str).ok_or_else(|| {
             ToolError::InvalidArguments("missing required field 'path'".to_string())
         })?;
@@ -184,7 +194,7 @@ impl ToolRegistry {
                 "path is excluded by workspace ignore rules".into(),
             ));
         }
-        let resolved = resolve_path(workspace_root, path)?;
+        let resolved = execution_target(workspace_root, path, bound)?;
         if super::path_safety::policy_target(&resolved) {
             return Err(ToolError::Io(
                 "path is excluded by workspace ignore rules".into(),
@@ -221,7 +231,11 @@ impl ToolRegistry {
             path,
         )?;
 
-        let content = String::from_utf8(secure_read(workspace_root, &resolved)?)
+        let mut file = secure_open(workspace_root, &resolved, false)?;
+        started();
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).map_err(file_io)?;
+        let content = String::from_utf8(bytes)
             .map_err(|_| ToolError::Io("file is not valid UTF-8".into()))?;
 
         // Chunk by lines
@@ -241,7 +255,12 @@ impl ToolRegistry {
         Ok(truncate_output(slice.join("\n")))
     }
 
-    fn write_file(args: &Value, workspace_root: &Path) -> Result<String, ToolError> {
+    fn write_file(
+        args: &Value,
+        workspace_root: &Path,
+        bound: Option<&Path>,
+        started: &mut dyn FnMut(),
+    ) -> Result<String, ToolError> {
         let path = args.get("path").and_then(Value::as_str).ok_or_else(|| {
             ToolError::InvalidArguments("missing required field 'path'".to_string())
         })?;
@@ -259,7 +278,7 @@ impl ToolRegistry {
                 "path is excluded by workspace ignore rules".into(),
             ));
         }
-        let resolved = resolve_path(workspace_root, path)?;
+        let resolved = execution_target(workspace_root, path, bound)?;
         if super::path_safety::policy_target(&resolved) {
             return Err(ToolError::Io(
                 "path is excluded by workspace ignore rules".into(),
@@ -288,17 +307,23 @@ impl ToolRegistry {
         // read lossily so binary files still produce a diff without panicking.
         // A pre-existing symlink escaping the workspace is rejected first so the
         // read itself never follows an outside link.
-        let old_content = if resolved.exists() {
+        let mut old_file = if resolved.exists() {
             verify_existing_within(workspace_root, &canon_ws, &resolved, path)?;
-            match secure_read(workspace_root, &resolved) {
-                Ok(bytes) => String::from_utf8_lossy(&bytes).to_string(),
-                Err(_) => String::new(),
-            }
+            secure_open(workspace_root, &resolved, false).ok()
         } else {
-            String::new()
+            None
         };
-
-        secure_write(workspace_root, &resolved, content.as_bytes())?;
+        let mut file = secure_open(workspace_root, &resolved, true)?;
+        started();
+        let mut bytes = Vec::new();
+        let old_content = old_file
+            .as_mut()
+            .and_then(|old| old.read_to_end(&mut bytes).ok())
+            .map_or_else(String::new, |_| {
+                String::from_utf8_lossy(&bytes).into_owned()
+            });
+        file.set_len(0).map_err(file_io)?;
+        file.write_all(content.as_bytes()).map_err(file_io)?;
 
         let diff = unified_diff(path, &old_content, content);
         Ok(truncate_output(diff))
@@ -313,7 +338,12 @@ impl ToolRegistry {
     /// guesses. New text is spliced verbatim (callers include newlines).
     /// Files must be valid UTF-8; the workspace guard is shared with
     /// `read_file`/`write_file`.
-    fn edit_file(args: &Value, workspace_root: &Path) -> Result<String, ToolError> {
+    fn edit_file(
+        args: &Value,
+        workspace_root: &Path,
+        bound: Option<&Path>,
+        started: &mut dyn FnMut(),
+    ) -> Result<String, ToolError> {
         let path = args.get("path").and_then(Value::as_str).ok_or_else(|| {
             ToolError::InvalidArguments("missing required field 'path'".to_string())
         })?;
@@ -355,7 +385,7 @@ impl ToolRegistry {
                 "path is excluded by workspace ignore rules".into(),
             ));
         }
-        let resolved = resolve_path(workspace_root, path)?;
+        let resolved = execution_target(workspace_root, path, bound)?;
         if super::path_safety::policy_target(&resolved) {
             return Err(ToolError::Io(
                 "path is excluded by workspace ignore rules".into(),
@@ -385,7 +415,10 @@ impl ToolRegistry {
                 "path is a directory, not a file: '{path}'"
             )));
         }
-        let bytes = secure_read(workspace_root, &resolved)?;
+        let mut file = secure_open_edit(workspace_root, &resolved)?;
+        started();
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).map_err(file_io)?;
         let content = String::from_utf8(bytes).map_err(|_| {
             ToolError::Io(format!("file is not valid UTF-8, cannot edit: '{path}'"))
         })?;
@@ -406,10 +439,11 @@ impl ToolRegistry {
             }
         };
 
-        // Re-verify just before the write that follows the (possibly linked)
-        // path, so a swap between read and write cannot redirect the edit.
-        verify_existing_within(workspace_root, &canon_ws, &resolved, path)?;
-        secure_write(workspace_root, &resolved, updated.as_bytes())?;
+        // Read and write use the same no-follow handle acquired while the
+        // consent/policy reader was held. Later alias swaps cannot redirect it.
+        file.seek(SeekFrom::Start(0)).map_err(file_io)?;
+        file.set_len(0).map_err(file_io)?;
+        file.write_all(updated.as_bytes()).map_err(file_io)?;
 
         Ok(truncate_output(unified_diff(path, &content, &updated)))
     }
@@ -420,7 +454,12 @@ impl ToolRegistry {
     /// Binary files (NUL-byte heuristic), files over 5 MiB, unreadable files,
     /// and symbolic links are skipped; the walk never leaves the workspace.
     /// Long lines are middle-truncated with an edge-kept notice.
-    fn search_files(args: &Value, workspace_root: &Path) -> Result<String, ToolError> {
+    fn search_files(
+        args: &Value,
+        workspace_root: &Path,
+        bound: Option<&Path>,
+        started: &mut dyn FnMut(),
+    ) -> Result<String, ToolError> {
         let pattern = args.get("pattern").and_then(Value::as_str).ok_or_else(|| {
             ToolError::InvalidArguments("missing required field 'pattern'".to_string())
         })?;
@@ -435,14 +474,12 @@ impl ToolRegistry {
             )));
         }
         let regex = LiteRegex::compile(pattern);
-        let scope_arg = args
-            .get("directory")
-            .and_then(Value::as_str)
-            .or_else(|| args.get("path").and_then(Value::as_str));
-        let scope = match scope_arg {
-            Some(dir) if !dir.trim().is_empty() => resolve_path(workspace_root, dir)?,
-            _ => workspace_root.to_path_buf(),
-        };
+        let scope_arg = search_scope_arg(args);
+        let scope = execution_target(
+            workspace_root,
+            scope_arg.filter(|s| !s.trim().is_empty()).unwrap_or("."),
+            bound,
+        )?;
         if super::path_safety::policy_target(&scope)
             || scope_arg.is_some_and(|path| super::path_safety::policy_target(Path::new(path)))
         {
@@ -498,8 +535,10 @@ impl ToolRegistry {
 
         let mut hits: Vec<String> = Vec::new();
         let mut capped = false;
+        let directory = secure_dir(workspace_root, &scope, false)?;
+        started();
         walk_search(
-            &scope,
+            (&scope, directory),
             workspace_root,
             &ignore,
             &regex,
@@ -520,22 +559,23 @@ impl ToolRegistry {
         Ok(truncate_output(out))
     }
 
-    fn list_directory(args: &Value, workspace_root: &Path) -> Result<String, ToolError> {
+    fn list_directory(
+        args: &Value,
+        workspace_root: &Path,
+        bound: Option<&Path>,
+        started: &mut dyn FnMut(),
+    ) -> Result<String, ToolError> {
         let path_opt = args.get("path").and_then(Value::as_str);
         let recursive = args
             .get("recursive")
             .and_then(Value::as_bool)
             .unwrap_or(false);
 
-        let target = if let Some(p) = path_opt {
-            if p.trim().is_empty() {
-                workspace_root.to_path_buf()
-            } else {
-                resolve_path(workspace_root, p)?
-            }
-        } else {
-            workspace_root.to_path_buf()
-        };
+        let target = execution_target(
+            workspace_root,
+            path_opt.filter(|s| !s.trim().is_empty()).unwrap_or("."),
+            bound,
+        )?;
 
         if super::path_safety::policy_target(&target)
             || path_opt.is_some_and(|path| super::path_safety::policy_target(Path::new(path)))
@@ -577,11 +617,13 @@ impl ToolRegistry {
             ));
         }
 
+        let directory = secure_dir(workspace_root, &target, false)?;
+        started();
         let mut entries = Vec::new();
         if recursive {
-            walk_recursive(&target, workspace_root, &ignore, &mut entries)?;
+            walk_recursive(&target, &directory, workspace_root, &ignore, &mut entries)?;
         } else {
-            let read = secure_dir(workspace_root, &target, false)?
+            let read = directory
                 .entries()
                 .map_err(|e| ToolError::Io(format!("failed to read directory: {e}")))?;
             for entry in read {
@@ -607,7 +649,7 @@ impl ToolRegistry {
                 let kind = if ft.is_dir() { "dir" } else { "file" };
                 // Show relative to workspace for LLM clarity
                 let rel = entry_path
-                    .strip_prefix(workspace_root)
+                    .strip_prefix(canonical_root(workspace_root))
                     .unwrap_or(entry_path.as_path())
                     .to_string_lossy()
                     .to_string();
@@ -622,6 +664,11 @@ impl ToolRegistry {
         }
     }
 }
+#[allow(clippy::needless_pass_by_value)] // Adapter is passed directly to Result::map_err.
+fn file_io(error: std::io::Error) -> ToolError {
+    ToolError::Io(format!("file operation failed: {error}"))
+}
+
 /// Edit mode selected by which anchor argument was supplied.
 #[derive(Debug, Clone, Copy)]
 enum EditAnchor<'a> {
@@ -638,11 +685,13 @@ impl<'a> EditAnchor<'a> {
 }
 fn walk_recursive(
     dir: &Path,
+    directory: &cap_std::fs::Dir,
     workspace_root: &Path,
     ignore: &crate::application::project_dir::IgnoreRules,
     out: &mut Vec<String>,
 ) -> Result<(), ToolError> {
-    let entries = secure_dir(workspace_root, dir, false)?
+    use cap_fs_ext::DirExt;
+    let entries = directory
         .entries()
         .map_err(|e| ToolError::Io(format!("failed to read directory: {e}")))?;
     for entry in entries {
@@ -664,7 +713,7 @@ fn walk_recursive(
             .file_type()
             .map_err(|e| ToolError::Io(format!("failed to get file type: {e}")))?;
         let rel = path
-            .strip_prefix(workspace_root)
+            .strip_prefix(canonical_root(workspace_root))
             .unwrap_or(path.as_path())
             .to_string_lossy()
             .to_string();
@@ -682,7 +731,10 @@ fn walk_recursive(
                     continue;
                 }
             }
-            walk_recursive(&path, workspace_root, ignore, out)?;
+            let child = directory
+                .open_dir_nofollow(entry.file_name())
+                .map_err(file_io)?;
+            walk_recursive(&path, &child, workspace_root, ignore, out)?;
         }
     }
     Ok(())
@@ -694,6 +746,79 @@ mod tests {
     use crate::application::agent::tools::test_support::*;
     use std::fs;
     use std::time::{Duration, Instant};
+    #[test]
+    fn every_file_tool_releases_policy_at_its_open_handle_boundary() {
+        use crate::application::agent::access::{AccessContext, PROFILE_KEY};
+        use crate::application::agent::approval::{ApprovalDecision, ApprovalGate, AutonomyMode};
+        use crate::application::settings::SettingsService;
+        use crate::infrastructure::database::in_memory_database;
+        use std::sync::mpsc;
+        for request in [
+            call("read_file", serde_json::json!({"path":"file.txt"})),
+            call(
+                "write_file",
+                serde_json::json!({"path":"file.txt","content":"updated"}),
+            ),
+            call(
+                "edit_file",
+                serde_json::json!({"path":"file.txt","old_text":"needle","new_text":"updated"}),
+            ),
+            call("list_directory", serde_json::json!({"recursive":true})),
+            call("search_files", serde_json::json!({"pattern":"needle"})),
+        ] {
+            let db = in_memory_database();
+            let ws = temp_workspace();
+            fs::write(ws.join("file.txt"), "needle").unwrap();
+            let gate =
+                ApprovalGate::new(AutonomyMode::Supervised).with_access(AccessContext::root(&db));
+            gate.bind_workspace(&ws);
+            let approval = gate.prepare_pending(&request);
+            assert!(gate.respond(&approval, ApprovalDecision::Approved));
+            assert_eq!(
+                gate.park_until_resolved(&request),
+                Ok(ApprovalDecision::Approved)
+            );
+            let worker_ws = ws.clone();
+            let (open_tx, open_rx) = mpsc::channel();
+            let (resume_tx, resume_rx) = mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                gate.execute_authorized(&request, &worker_ws, |target, release| {
+                    ToolRegistry::execute_raw(
+                        &request,
+                        &worker_ws,
+                        &CancellationToken::new(),
+                        Some(target),
+                        &mut || {
+                            release();
+                            open_tx.send(()).unwrap();
+                            resume_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                        },
+                    )
+                })
+            });
+            open_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            let profile_db = db.clone();
+            let (changed_tx, changed_rx) = mpsc::channel();
+            let profile = std::thread::spawn(move || {
+                changed_tx
+                    .send(SettingsService::new(&profile_db).write(PROFILE_KEY, Some("read_only")))
+                    .unwrap();
+            });
+            let changed = changed_rx.recv_timeout(Duration::from_secs(1));
+            resume_tx.send(()).unwrap();
+            assert!(
+                worker.join().unwrap().is_ok(),
+                "already-opened operation may finish"
+            );
+            profile.join().unwrap();
+            assert!(
+                changed.unwrap().is_ok(),
+                "profile must not wait for IO/traversal"
+            );
+            fs::remove_dir_all(ws).unwrap();
+        }
+    }
+
     #[test]
     fn execute_command_echo_captures_stdout() {
         let ws = temp_workspace();

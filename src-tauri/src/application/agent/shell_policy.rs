@@ -336,12 +336,35 @@ fn classify_wrapper(
             "powershell" | "pwsh" => Shell::Pwsh,
             _ => Shell::Sh,
         };
-        if let Some(index) = lower
-            .iter()
-            .position(|arg| matches!(arg.as_str(), "-c" | "/c" | "-command"))
-        {
+        if let Some(index) = lower.iter().position(|arg| match nested {
+            Shell::Cmd => arg == "/c",
+            Shell::Pwsh => matches!(arg.as_str(), "-c" | "-command"),
+            Shell::Sh => arg == "-c",
+        }) {
             if let Some(body) = args.get(index + 1) {
-                result.merge(analyze_inner(body, nested, depth + 1));
+                let tail = &args[index + 1..];
+                if nested == Shell::Sh || tail.len() == 1 {
+                    // POSIX -c executes one argv element; later argv are positional.
+                    result.merge(analyze_inner(body, nested, depth + 1));
+                } else {
+                    // CMD /C and PowerShell -Command consume the remaining tail.
+                    // Literal bare words reconstruct exactly. Quotes/expansions
+                    // can lose syntax in outer tokenization: still inspect the
+                    // whole tail, but never claim certain analysis/packages.
+                    let exact = tail.iter().all(|word| {
+                        !word.is_empty()
+                            && word.chars().all(|ch| {
+                                ch.is_ascii_alphanumeric()
+                                    || matches!(
+                                        ch,
+                                        '_' | '-' | '.' | '/' | '\\' | ':' | '@' | '+' | '='
+                                    )
+                            })
+                    });
+                    result.merge(analyze_inner(&tail.join(" "), nested, depth + 1));
+                    result.uncertain |= !exact;
+                    result.packages_exact &= exact;
+                }
             } else {
                 result.uncertain = true;
             }
@@ -688,6 +711,42 @@ mod tests {
         assert_eq!(
             analyze(r#"bash -c "git reset --hard""#, Shell::Cmd).category,
             ShellCategory::DestructiveGit
+        );
+    }
+    #[test]
+    fn windows_interpreter_wrappers_classify_the_complete_unquoted_tail() {
+        for (command, category) in [
+            ("cmd /C git reset --hard", ShellCategory::DestructiveGit),
+            (
+                "powershell -Command Remove-Item -Recurse tmp",
+                ShellCategory::MassDelete,
+            ),
+            (
+                "pwsh -c Remove-Item -Recurse tmp",
+                ShellCategory::MassDelete,
+            ),
+            (
+                "cmd /C cmd /C git reset --hard",
+                ShellCategory::DestructiveGit,
+            ),
+        ] {
+            let result = analyze(command, Shell::Cmd);
+            assert_eq!(result.category, category, "{command}");
+            assert!(!result.uncertain, "{command}");
+        }
+        let result = analyze("cmd /C npm install alpha@1 @scope/beta@2", Shell::Cmd);
+        assert_eq!(result.category, ShellCategory::DependencyInstall);
+        assert_eq!(result.packages, ["@scope/beta@2", "alpha@1"]);
+        assert!(result.packages_exact);
+        assert!(!result.uncertain);
+        // Lost quoting/expansion boundaries cannot claim exact reconstruction.
+        let result = analyze(r#"cmd /C "npm install alpha" "%PACKAGE%""#, Shell::Cmd);
+        assert!(result.uncertain);
+        assert!(!result.packages_exact);
+        // POSIX -c's additional argv do not become executable command text.
+        assert_eq!(
+            analyze(r#"sh -c "echo ok" git reset --hard"#, Shell::Cmd).category,
+            ShellCategory::GeneralShell
         );
     }
     #[test]

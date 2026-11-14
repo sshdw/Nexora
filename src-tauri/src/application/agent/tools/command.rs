@@ -1,7 +1,7 @@
 //! Tool command execution: spawn, bounded capture, and drain.
 //!
 //! Split from `executor.rs` (AC-207): the shell-command plumbing — argument
-//! validation, `ToolRegistry::execute_command_with_limits`, the stream
+//! validation, `ToolRegistry::execute_command_at_boundary`, the stream
 //! readers, and the limits/drain constants — lives here; the registry's
 //! dispatch stays in [`super::executor`].
 
@@ -54,19 +54,34 @@ impl ToolRegistry {
     /// inject shorter timeout / drain-grace values so they exercise the *real*
     /// bounded-timeout and bounded-drain paths quickly instead of simulating
     /// them. Behavior is identical in both cases.
+    #[cfg(test)]
     pub(super) fn execute_command_with_limits(
         args: &Value,
         workspace_root: &Path,
         limits: &CommandLimits,
         token: &CancellationToken,
     ) -> Result<String, ToolError> {
+        Self::execute_command_at_boundary(args, workspace_root, limits, token, None, &mut || {})
+    }
+    pub(super) fn execute_command_at_boundary(
+        args: &Value,
+        workspace_root: &Path,
+        limits: &CommandLimits,
+        token: &CancellationToken,
+        bound: Option<&Path>,
+        started: &mut dyn FnMut(),
+    ) -> Result<String, ToolError> {
         let (command, resolved_cwd) = validated_command_args(args, workspace_root)?;
 
+        if bound.is_some_and(|target| target != resolved_cwd) {
+            return Err(ToolError::ConsentInvalidated);
+        }
         Self::run_command_with_limits(
             platform_shell(&command, &["/D", "/C"]),
             &resolved_cwd,
             limits,
             token,
+            started,
         )
     }
     pub(super) fn execute_terminal_command(
@@ -80,6 +95,7 @@ impl ToolRegistry {
             &cwd,
             &CommandLimits::default(),
             token,
+            &mut || {},
         )
     }
     fn run_command_with_limits(
@@ -87,6 +103,7 @@ impl ToolRegistry {
         resolved_cwd: &Path,
         limits: &CommandLimits,
         token: &CancellationToken,
+        started: &mut dyn FnMut(),
     ) -> Result<String, ToolError> {
         if token.is_cancelled() {
             return Err(ToolError::Cancelled);
@@ -99,6 +116,7 @@ impl ToolRegistry {
         let mut child = cmd
             .spawn()
             .map_err(|e| ToolError::Io(format!("failed to spawn command: {e}")))?;
+        started();
 
         // Take pipes and move each into a reader thread that accumulates at
         // most `capture_cap` bytes (discarding anything beyond) and hands its
@@ -278,7 +296,7 @@ fn platform_shell(command: &str, windows_flags: &[&str]) -> Command {
 }
 
 /// Execution limits injected into
-/// [`ToolRegistry::execute_command_with_limits`].
+/// [`ToolRegistry::execute_command_at_boundary`].
 ///
 /// Unit tests construct this directly to exercise the real bounded-timeout /
 /// bounded-drain / bounded-capture code paths quickly; production always uses

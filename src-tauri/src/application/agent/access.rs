@@ -1,6 +1,6 @@
 //! Server-owned, live security ceilings and secret-free execution identity.
 use super::permissions::PermissionStore;
-use super::tools::path_safety::{canonical_root, path_to_comparable_string, resolve_path};
+use super::tools::path_safety::{canonical_root, path_to_comparable_string, tool_scope};
 use crate::application::execution::ToolCall;
 use crate::application::settings::SettingsService;
 use crate::infrastructure::database::Database;
@@ -228,13 +228,13 @@ impl AccessContext {
         workspace: &Path,
         call: &ToolCall,
     ) -> Result<String, super::tools::ToolError> {
-        self.with_identity(workspace, call, |identity| Ok(identity.to_owned()))
+        self.with_identity(workspace, call, |identity, _, _| Ok(identity.to_owned()))
     }
     pub(crate) fn with_identity<T>(
         &self,
         workspace: &Path,
         call: &ToolCall,
-        action: impl FnOnce(&str) -> Result<T, super::tools::ToolError>,
+        action: impl FnOnce(&str, &Path, &mut dyn FnMut()) -> Result<T, super::tools::ToolError>,
     ) -> Result<T, super::tools::ToolError> {
         let epoch = self
             .0
@@ -243,20 +243,7 @@ impl AccessContext {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let args: serde_json::Value = serde_json::from_str(&call.arguments)
             .map_err(|_| super::tools::ToolError::InvalidArguments("invalid JSON".into()))?;
-        let target = if call.name == "execute_command" {
-            let cwd = args
-                .get("cwd")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or(".");
-            resolve_path(workspace, cwd)?
-        } else {
-            let path = args
-                .get("path")
-                .or_else(|| args.get("directory"))
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or(".");
-            resolve_path(workspace, path)?
-        };
+        let target = tool_scope(workspace, &call.name, &args)?;
         let mut hash = Sha256::new();
         for value in [
             &path_to_comparable_string(&canonical_root(workspace)),
@@ -271,7 +258,13 @@ impl AccessContext {
             hash.update(value.len().to_le_bytes());
             hash.update(value.as_bytes());
         }
-        action(&format!("{:x}", hash.finalize()))
+        let mut epoch = Some(epoch);
+        // The reader serializes validation through the actual handle-open/spawn.
+        // The tool releases it once started; IO, traversal and process waits must
+        // never prevent a live policy update or Stop. Errors drop it here too.
+        action(&format!("{:x}", hash.finalize()), &target, &mut || {
+            drop(epoch.take());
+        })
     }
 }
 /// Values are hashed in process only. Neither environment names nor raw values
@@ -703,5 +696,106 @@ mod tests {
         )
         .is_err());
         std::fs::remove_dir_all(workspace).unwrap();
+    }
+    fn link_directory(target: &Path, alias: &Path) {
+        #[cfg(windows)]
+        {
+            let output = std::process::Command::new("cmd")
+                .args(["/D", "/C", "mklink", "/J"])
+                .arg(alias)
+                .arg(target)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "synthetic junction creation");
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, alias).unwrap();
+    }
+    #[test]
+    fn search_directory_alias_retarget_invalidates_pending_and_reusable_consent() {
+        let workspace = temp_workspace();
+        let a = workspace.join("a");
+        let b = workspace.join("b");
+        let alias = workspace.join("alias");
+        std::fs::create_dir(&a).unwrap();
+        std::fs::create_dir(&b).unwrap();
+        std::fs::write(a.join("file.txt"), "needle A").unwrap();
+        std::fs::write(b.join("file.txt"), "needle B").unwrap();
+        link_directory(&a, &alias);
+        let gate = ApprovalGate::new(AutonomyMode::Supervised);
+        gate.bind_workspace(&workspace);
+        let request = call(
+            "search_files",
+            json!({"pattern":"needle","path":".","directory":"alias"}),
+        );
+        let handle = gate.prepare_pending(&request);
+        std::fs::remove_dir(&alias).unwrap();
+        link_directory(&b, &alias);
+        assert!(!gate.respond(&handle, ApprovalDecision::Approved));
+        assert_eq!(
+            gate.park_until_resolved(&request),
+            Ok(ApprovalDecision::Invalidated)
+        );
+        std::fs::remove_dir(&alias).unwrap();
+        link_directory(&a, &alias);
+        approve(&gate, &request, true);
+        let execute = || {
+            ToolRegistry::execute_agent(
+                &request,
+                &workspace,
+                &CancellationToken::new(),
+                Some(&gate),
+            )
+        };
+        assert!(execute().unwrap().contains("needle A"));
+        assert!(
+            execute().unwrap().contains("needle A"),
+            "same canonical scope reuses exact consent"
+        );
+        std::fs::remove_dir(&alias).unwrap();
+        link_directory(&b, &alias);
+        assert!(!gate.has_current_consent(&request));
+        assert_eq!(
+            execute(),
+            Err(super::super::tools::ToolError::ConsentInvalidated)
+        );
+        approve(&gate, &request, false);
+        let result = execute().unwrap();
+        assert!(result.contains("needle B"));
+        assert!(!result.contains("needle A"));
+        std::fs::remove_dir(&alias).unwrap();
+        std::fs::remove_dir_all(&workspace).unwrap();
+    }
+    #[test]
+    fn changed_alias_between_identity_and_open_is_rejected_before_observation() {
+        let workspace = temp_workspace();
+        let a = workspace.join("a");
+        let b = workspace.join("b");
+        let alias = workspace.join("alias");
+        std::fs::create_dir(&a).unwrap();
+        std::fs::create_dir(&b).unwrap();
+        link_directory(&a, &alias);
+        let request = call(
+            "search_files",
+            json!({"pattern":"needle","path":".","directory":"alias"}),
+        );
+        let access = AccessContext::fixed(AccessProfile::Standard);
+        access
+            .with_identity(&workspace, &request, |_, bound, _| {
+                std::fs::remove_dir(&alias).unwrap();
+                link_directory(&b, &alias);
+                assert_eq!(
+                    super::super::tools::path_safety::execution_target(
+                        &workspace,
+                        "alias",
+                        Some(bound)
+                    ),
+                    Err(super::super::tools::ToolError::ConsentInvalidated)
+                );
+                Ok(())
+            })
+            .unwrap();
+        std::fs::remove_dir(&alias).unwrap();
+        std::fs::remove_dir_all(&workspace).unwrap();
     }
 }

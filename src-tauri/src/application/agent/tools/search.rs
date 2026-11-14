@@ -8,7 +8,9 @@
 use std::path::Path;
 
 use super::executor::ToolError;
-use super::path_safety::{check_private, is_within_workspace, secure_dir, secure_read_limited};
+use super::path_safety::{
+    canonical_root, check_private, is_within_workspace, secure_read_limited_at,
+};
 
 // ---------------------------------------------------------------------------
 // Regex-lite search (`search_files`)
@@ -231,7 +233,7 @@ impl LiteRegex {
 }
 
 pub(super) fn walk_search(
-    dir: &Path,
+    directory: (&Path, cap_std::fs::Dir),
     workspace_root: &Path,
     ignore: &crate::application::project_dir::IgnoreRules,
     regex: &LiteRegex,
@@ -239,7 +241,9 @@ pub(super) fn walk_search(
     hits: &mut Vec<String>,
     capped: &mut bool,
 ) -> Result<(), ToolError> {
-    let entries = secure_dir(workspace_root, dir, false)?
+    use cap_fs_ext::DirExt;
+    let (dir, capability) = directory;
+    let entries = capability
         .entries()
         .map_err(|e| ToolError::Io(format!("failed to read directory: {e}")))?;
     let mut paths: Vec<std::path::PathBuf> = Vec::new();
@@ -285,7 +289,12 @@ pub(super) fn walk_search(
         }
         if path.is_dir() {
             walk_search(
-                &path,
+                (
+                    &path,
+                    capability
+                        .open_dir_nofollow(path.file_name().expect("entry name"))
+                        .map_err(|e| ToolError::Io(format!("failed to open directory: {e}")))?,
+                ),
                 workspace_root,
                 ignore,
                 regex,
@@ -294,21 +303,33 @@ pub(super) fn walk_search(
                 capped,
             )?;
         } else if path.is_file() {
-            search_one_file(&path, workspace_root, regex, max_matches, hits, capped);
+            search_one_file(
+                &path,
+                &capability,
+                workspace_root,
+                regex,
+                max_matches,
+                hits,
+                capped,
+            );
         }
     }
     Ok(())
 }
 
-pub(super) fn search_one_file(
+fn search_one_file(
     path: &Path,
+    directory: &cap_std::fs::Dir,
     workspace_root: &Path,
     regex: &LiteRegex,
     max_matches: usize,
     hits: &mut Vec<String>,
     capped: &mut bool,
 ) {
-    let Ok(bytes) = secure_read_limited(workspace_root, path, MAX_SEARCH_FILE_BYTES) else {
+    let Some(name) = path.file_name() else {
+        return;
+    };
+    let Ok(bytes) = secure_read_limited_at(directory, name, MAX_SEARCH_FILE_BYTES) else {
         // Unreadable, oversized or raced paths contribute no observations.
         return;
     };
@@ -317,7 +338,7 @@ pub(super) fn search_one_file(
     }
     let text = String::from_utf8_lossy(&bytes);
     let relative = path
-        .strip_prefix(workspace_root)
+        .strip_prefix(canonical_root(workspace_root))
         .unwrap_or(path)
         .to_string_lossy()
         .replace('\\', "/");

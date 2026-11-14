@@ -152,14 +152,18 @@ impl PermissionStore {
             let mut args: serde_json::Value = serde_json::from_str(&call.arguments).ok()?;
             let field = match call.name.as_str() {
                 "execute_command" => "cwd",
-                "search_files" if args.get("directory").is_some() => "directory",
+                "search_files"
+                    if args
+                        .get("directory")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some() =>
+                {
+                    "directory"
+                }
                 _ => "path",
             };
-            let requested = args
-                .get(field)
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or(".");
-            let target = super::tools::path_safety::resolve_path(workspace, requested).ok()?;
+            let target =
+                super::tools::path_safety::tool_scope(workspace, &call.name, &args).ok()?;
             let root = super::tools::path_safety::canonical_root(workspace);
             let relative: std::path::PathBuf = target
                 .components()
