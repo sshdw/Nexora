@@ -61,7 +61,7 @@
        re-renders from the prop when the write lands.
    ============================================================ */
 
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { formatBytes } from "../lib/format";
 import type {
@@ -93,9 +93,12 @@ import {
   ArrowUpIcon,
   ChevronDownIcon,
   CloseIcon,
+  FolderIcon,
   PaperclipIcon,
   PlusIcon,
+  SettingsIcon,
   StopIcon,
+  TaskIcon,
 } from "./icons";
 
 export interface ComposerProps {
@@ -119,6 +122,9 @@ export interface ComposerProps {
   /** Agent mode is on: messages start an agent run. */
   agentMode: boolean;
   onAgentModeChange: (agentMode: boolean) => void;
+  /** Agent-only Plan toggle: visible and enabled only when `agentMode` is true. */
+  planMode?: boolean;
+  onPlanModeChange?: (planMode: boolean) => void;
   /** Lifted autonomy store — the only source for the mode pills. */
   autonomy: AutonomyStore;
   onAutonomyChange: (mode: AutonomyMode) => void;
@@ -172,6 +178,8 @@ export default function Composer({
   onRemoveAttachment,
   agentMode,
   onAgentModeChange,
+  planMode,
+  onPlanModeChange,
   autonomy,
   onAutonomyChange,
   selectedModel,
@@ -199,6 +207,231 @@ export default function Composer({
   const live = liveRunId !== null;
   const fieldRef = useRef<HTMLTextAreaElement>(null);
   const autoFocusedRef = useRef(false);
+  const [localPlanMode, setLocalPlanMode] = useState(false);
+  const effectivePlan = agentMode && (planMode ?? localPlanMode);
+
+  const [slashOpen, setSlashOpen] = useState(false);
+  const [mentionOpen, setMentionOpen] = useState(false);
+  const [slashHighlight, setSlashHighlight] = useState(0);
+  const [mentionHighlight, setMentionHighlight] = useState(0);
+
+  const togglePlanMode = useCallback(() => {
+    if (!agentMode) return;
+    const next = !effectivePlan;
+    if (onPlanModeChange) onPlanModeChange(next);
+    else setLocalPlanMode(next);
+  }, [agentMode, effectivePlan, onPlanModeChange]);
+
+  const setPlanEnabled = useCallback(
+    (next: boolean) => {
+      if (onPlanModeChange) onPlanModeChange(next);
+      else setLocalPlanMode(next);
+    },
+    [onPlanModeChange]
+  );
+
+  // Active slash/mention query extracted from the current draft.
+  const slashMatch = /^\/([^\s]*)$/.exec(draft);
+  const slashQuery = slashMatch ? slashMatch[1].toLowerCase() : "";
+  const mentionMatch = /(?:^|\s)@([^\s]*)$/.exec(draft);
+  const mentionQuery = mentionMatch ? mentionMatch[1].toLowerCase() : "";
+
+  const slashItems = useMemo(() => {
+    const items = [
+      {
+        id: "agent",
+        command: "/agent",
+        description: t("conv.slashAgentDesc"),
+        disabled: agentMode,
+        run: () => onAgentModeChange(true),
+      },
+      {
+        id: "chat",
+        command: "/chat",
+        description: t("conv.slashChatDesc"),
+        disabled: !agentMode,
+        run: () => onAgentModeChange(false),
+      },
+      {
+        id: "plan",
+        command: "/plan",
+        description: t("conv.slashPlanDesc"),
+        disabled: false,
+        run: () => {
+          if (!agentMode) {
+            onAgentModeChange(true);
+            setPlanEnabled(true);
+          } else {
+            togglePlanMode();
+          }
+        },
+      },
+      ...(!agentMode
+        ? [
+            {
+              id: "attach",
+              command: "/attach",
+              description: t("conv.slashAttachDesc"),
+              disabled: busy || attachmentsBusy,
+              run: () => onPickFiles(),
+            },
+          ]
+        : []),
+      {
+        id: "clear",
+        command: "/clear",
+        description: t("conv.slashClearDesc"),
+        disabled: draft.length === 0,
+        run: () => onDraftChange(""),
+      },
+      {
+        id: "settings",
+        command: "/settings",
+        description: t("conv.slashSettingsDesc"),
+        disabled: false,
+        run: () => onOpenSettings(),
+      },
+    ];
+    if (!slashQuery) return items;
+    return items.filter(
+      (item) =>
+        item.command.slice(1).includes(slashQuery) ||
+        item.description.toLowerCase().includes(slashQuery)
+    );
+  }, [
+    agentMode,
+    attachmentsBusy,
+    busy,
+    draft.length,
+    onAgentModeChange,
+    onDraftChange,
+    onOpenSettings,
+    onPickFiles,
+    setPlanEnabled,
+    slashQuery,
+    t,
+    togglePlanMode,
+  ]);
+
+  const mentionItems = useMemo(() => {
+    const baseName = (fullPath: string): string => {
+      const normalized = fullPath.replace(/\\/g, "/").replace(/\/+$/, "");
+      const idx = normalized.lastIndexOf("/");
+      return idx >= 0 ? normalized.slice(idx + 1) || normalized : normalized;
+    };
+    const items: Array<{
+      id: string;
+      label: string;
+      detail: string;
+      kind: "workspace" | "attachment" | "action";
+      token?: string;
+      run?: () => void;
+    }> = [];
+    if (workspace.root) {
+      const name = baseName(workspace.root);
+      items.push({
+        id: `ws:${workspace.root}`,
+        label: `@${name}`,
+        detail: `${t("conv.mentionWorkspace")} · ${workspace.root}`,
+        kind: "workspace",
+        token: `@${name}`,
+      });
+    }
+    for (const recent of workspace.recent) {
+      if (recent === workspace.root) continue;
+      const name = baseName(recent);
+      items.push({
+        id: `recent:${recent}`,
+        label: `@${name}`,
+        detail: `${t("conv.mentionRecentFolder")} · ${recent}`,
+        kind: "workspace",
+        token: `@${name}`,
+      });
+    }
+    if (!agentMode) {
+      for (const att of attachments) {
+        items.push({
+          id: `att:${att.id}`,
+          label: `@${att.file_name}`,
+          detail: t("conv.mentionAttachment"),
+          kind: "attachment",
+          token: `@${att.file_name}`,
+        });
+      }
+    }
+    items.push({
+      id: "pick-folder",
+      label: t("conv.mentionChooseFolder"),
+      detail: workspace.root ?? t("workspace.none"),
+      kind: "action",
+      run: () => {
+        void workspace.pickFolder();
+      },
+    });
+    if (!mentionQuery) return items;
+    return items.filter(
+      (item) =>
+        item.label.toLowerCase().includes(mentionQuery) ||
+        item.detail.toLowerCase().includes(mentionQuery)
+    );
+  }, [agentMode, attachments, mentionQuery, t, workspace]);
+
+  const runSlashItem = useCallback(
+    (item: (typeof slashItems)[number]) => {
+      if (item.disabled) return;
+      if (item.id !== "clear" && /^\/[^\s]*$/.test(draft)) {
+        onDraftChange("");
+      }
+      item.run();
+      setSlashOpen(false);
+      fieldRef.current?.focus();
+    },
+    [draft, onDraftChange]
+  );
+
+  const runMentionItem = useCallback(
+    (item: (typeof mentionItems)[number]) => {
+      if (item.run) {
+        item.run();
+        setMentionOpen(false);
+        return;
+      }
+      if (!item.token) return;
+      const replacement = `${item.token} `;
+      let next: string;
+      if (/(?:^|\s)@([^\s]*)$/.test(draft)) {
+        next = draft.replace(/@([^\s]*)$/, replacement);
+      } else if (draft.length === 0 || /\s$/.test(draft)) {
+        next = draft + replacement;
+      } else {
+        next = `${draft} ${replacement}`;
+      }
+      onDraftChange(next);
+      setMentionOpen(false);
+      fieldRef.current?.focus();
+    },
+    [draft, onDraftChange]
+  );
+
+  const handleDraftInput = useCallback(
+    (value: string) => {
+      onDraftChange(value);
+      if (/^\/[^\s]*$/.test(value)) {
+        setSlashOpen(true);
+        setSlashHighlight(0);
+        setMentionOpen(false);
+      } else {
+        if (slashOpen) setSlashOpen(false);
+        if (/(?:^|\s)@([^\s]*)$/.test(value)) {
+          setMentionOpen(true);
+          setMentionHighlight(0);
+        } else if (mentionOpen) {
+          setMentionOpen(false);
+        }
+      }
+    },
+    [mentionOpen, onDraftChange, slashOpen]
+  );
 
   // D1: an empty conversation is the composer, so the caret belongs in the
   // field. The guard is the whole contract: only a body/no-focus state (or
@@ -273,8 +506,62 @@ export default function Composer({
               aria-label={t("conv.messageAria")}
               value={draft}
               disabled={busy}
-              onChange={(event) => onDraftChange(event.target.value)}
+              onChange={(event) => handleDraftInput(event.target.value)}
               onKeyDown={(event) => {
+                if (slashOpen) {
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    setSlashOpen(false);
+                    return;
+                  }
+                  if (event.key === "ArrowDown" && slashItems.length > 0) {
+                    event.preventDefault();
+                    setSlashHighlight((i) => (i + 1) % slashItems.length);
+                    return;
+                  }
+                  if (event.key === "ArrowUp" && slashItems.length > 0) {
+                    event.preventDefault();
+                    setSlashHighlight(
+                      (i) => (i - 1 + slashItems.length) % slashItems.length
+                    );
+                    return;
+                  }
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    const target = slashItems[slashHighlight];
+                    if (target && !target.disabled) {
+                      event.preventDefault();
+                      runSlashItem(target);
+                      return;
+                    }
+                  }
+                }
+                if (mentionOpen) {
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    setMentionOpen(false);
+                    return;
+                  }
+                  if (event.key === "ArrowDown" && mentionItems.length > 0) {
+                    event.preventDefault();
+                    setMentionHighlight((i) => (i + 1) % mentionItems.length);
+                    return;
+                  }
+                  if (event.key === "ArrowUp" && mentionItems.length > 0) {
+                    event.preventDefault();
+                    setMentionHighlight(
+                      (i) => (i - 1 + mentionItems.length) % mentionItems.length
+                    );
+                    return;
+                  }
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    const target = mentionItems[mentionHighlight];
+                    if (target) {
+                      event.preventDefault();
+                      runMentionItem(target);
+                      return;
+                    }
+                  }
+                }
                 // shortcut:composer.send (Shift+Enter = shortcut:composer.newline).
                 // D2: Enter never sends while a run is live — the one button is
                 // a stop in that state, and typing a second message mid-run is
@@ -286,6 +573,13 @@ export default function Composer({
               }}
             />
           </div>
+
+          {effectivePlan && (
+            <div className="nex-composer-plan-banner" role="status">
+              <TaskIcon />
+              <span>{t("conv.planActiveHint")}</span>
+            </div>
+          )}
 
           <div className="nex-composer-bar">
             {/* Chat only: absent (not disabled) in Agent mode — see the
@@ -343,6 +637,177 @@ export default function Composer({
                 ]}
               />
             </span>
+
+            {agentMode && (
+              <Tooltip label={t("conv.planToggleTitle")}>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className={
+                    "nex-composer-plan-toggle" +
+                    (effectivePlan ? " is-active" : "")
+                  }
+                  aria-pressed={effectivePlan}
+                  aria-label={t("conv.planToggleAria")}
+                  title={t("conv.planToggleTitle")}
+                  data-state={effectivePlan ? "on" : "off"}
+                  disabled={busy}
+                  onClick={togglePlanMode}
+                >
+                  <TaskIcon />
+                  <span>{t("conv.planLabel")}</span>
+                </Button>
+              </Tooltip>
+            )}
+
+            <Popover
+              open={slashOpen}
+              onOpenChange={(next) => {
+                setSlashOpen(next);
+                if (next) {
+                  setMentionOpen(false);
+                  setSlashHighlight(0);
+                }
+              }}
+            >
+              <PopoverTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="nex-composer-trigger-btn"
+                  aria-label={t("conv.slashTriggerAria")}
+                  title={t("conv.slashTriggerTitle")}
+                  disabled={busy}
+                >
+                  <span aria-hidden="true">/</span>
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent
+                align="start"
+                side="top"
+                sideOffset={8}
+                className="nex-composer-trigger-menu"
+                onOpenAutoFocus={(event) => event.preventDefault()}
+              >
+                <PopoverHeader>
+                  <PopoverTitle>{t("conv.slashMenuTitle")}</PopoverTitle>
+                </PopoverHeader>
+                {slashItems.length === 0 ? (
+                  <p className="nex-composer-trigger-empty">
+                    {t("conv.slashEmpty")}
+                  </p>
+                ) : (
+                  <ul
+                    role="listbox"
+                    aria-label={t("conv.slashMenuAria")}
+                    className="nex-composer-trigger-list"
+                  >
+                    {slashItems.map((item, idx) => (
+                      <li key={item.id}>
+                        <button
+                          type="button"
+                          role="option"
+                          aria-selected={idx === slashHighlight}
+                          disabled={item.disabled}
+                          className={
+                            "nex-composer-trigger-option" +
+                            (idx === slashHighlight ? " is-highlighted" : "")
+                          }
+                          onClick={() => runSlashItem(item)}
+                        >
+                          <code className="nex-composer-trigger-cmd">
+                            {item.command}
+                          </code>
+                          <span className="nex-composer-trigger-desc">
+                            {item.description}
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </PopoverContent>
+            </Popover>
+
+            <Popover
+              open={mentionOpen}
+              onOpenChange={(next) => {
+                setMentionOpen(next);
+                if (next) {
+                  setSlashOpen(false);
+                  setMentionHighlight(0);
+                }
+              }}
+            >
+              <PopoverTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="nex-composer-trigger-btn"
+                  aria-label={t("conv.mentionTriggerAria")}
+                  title={t("conv.mentionTriggerTitle")}
+                  disabled={busy}
+                >
+                  <span aria-hidden="true">@</span>
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent
+                align="start"
+                side="top"
+                sideOffset={8}
+                className="nex-composer-trigger-menu"
+                onOpenAutoFocus={(event) => event.preventDefault()}
+              >
+                <PopoverHeader>
+                  <PopoverTitle>{t("conv.mentionMenuTitle")}</PopoverTitle>
+                </PopoverHeader>
+                {mentionItems.length === 0 ? (
+                  <p className="nex-composer-trigger-empty">
+                    {t("conv.mentionEmpty")}
+                  </p>
+                ) : (
+                  <ul
+                    role="listbox"
+                    aria-label={t("conv.mentionMenuAria")}
+                    className="nex-composer-trigger-list"
+                  >
+                    {mentionItems.map((item, idx) => (
+                      <li key={item.id}>
+                        <button
+                          type="button"
+                          role="option"
+                          aria-selected={idx === mentionHighlight}
+                          className={
+                            "nex-composer-trigger-option" +
+                            (idx === mentionHighlight ? " is-highlighted" : "")
+                          }
+                          onClick={() => runMentionItem(item)}
+                        >
+                          <span className="nex-composer-trigger-icon">
+                            {item.kind === "attachment" ? (
+                              <PaperclipIcon />
+                            ) : item.kind === "action" ? (
+                              <SettingsIcon />
+                            ) : (
+                              <FolderIcon />
+                            )}
+                          </span>
+                          <span className="nex-composer-trigger-cmd">
+                            {item.label}
+                          </span>
+                          <span className="nex-composer-trigger-desc">
+                            {item.detail}
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </PopoverContent>
+            </Popover>
 
             <span className="nex-composer-bar-spacer" />
 

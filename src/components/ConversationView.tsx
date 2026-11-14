@@ -48,6 +48,7 @@ import type { WorkspaceStore } from "../lib/useWorkspace";
 import AgentRunSteps from "./AgentRunSteps";
 import Composer from "./Composer";
 import MessageMarkdown from "./MessageMarkdown";
+import ThinkingBlock from "./ThinkingBlock";
 import type { ModelConnectionGroup } from "./ModelPicker";
 import { useStrings } from "../lib/useLocale";
 import M3LoadingIndicator from "./M3LoadingIndicator";
@@ -119,6 +120,7 @@ export default function ConversationView({
     sending,
     streamingText,
     streamingThinking,
+    thinkingByMessageId = {},
     send,
   } = useConversation(conversationId);
   const {
@@ -142,6 +144,7 @@ export default function ConversationView({
   // R4-02: the pane opens in Agent mode. Chat is still one click away on
   // the composer's pills, and the choice is pane state for the session.
   const [agentMode, setAgentMode] = useState<boolean>(true);
+  const [planMode, setPlanMode] = useState<boolean>(false);
   const [agentBusy, setAgentBusy] = useState<boolean>(false);
   const [agentError, setAgentError] = useState<string | null>(null);
   const threadRef = useRef<HTMLDivElement>(null);
@@ -509,10 +512,23 @@ export default function ConversationView({
           threadItems.map((item) => {
             if (item.kind === "run") {
               prevThreadRole = null;
+              const runFinal = item.run.final_content?.trim() ?? "";
+              const hasPersistedAssistant =
+                runFinal.length > 0 &&
+                messages.some(
+                  (m) =>
+                    m.role === "assistant" &&
+                    m.created_at >= item.run.started_at &&
+                    m.content.trim() === runFinal
+                );
               return (
                 <AgentRunSteps
                   key={`run-${item.run.run_id}`}
                   run={item.run}
+                  supportsThinking={
+                    selectedCapabilities?.supports_thinking ?? null
+                  }
+                  showFinalResult={!hasPersistedAssistant}
                   onResolveApproval={dispatchAgentApprove}
                   onCancel={dispatchAgentCancel}
                   onContinue={dispatchAgentContinue}
@@ -575,6 +591,15 @@ export default function ConversationView({
                   </time>
                 </div>
                 <div className="nex-message-body">
+                  {item.message.role === "assistant" &&
+                    thinkingByMessageId[item.message.id] && (
+                      <ThinkingBlock
+                        thinking={thinkingByMessageId[item.message.id]}
+                        supportsThinking={
+                          selectedCapabilities?.supports_thinking ?? null
+                        }
+                      />
+                    )}
                   {/* ADD-01: only model-authored bodies are markdown-
                       interpreted (05-ADD §3.1); user text is data, not
                       formatting, and stays plain escaped text. */}
@@ -605,12 +630,13 @@ export default function ConversationView({
               )}
             </div>
             {streamingThinking && (
-              <details className="nex-streaming-thinking" open>
-                <summary>{t("conv.streamingThinking")}</summary>
-                <pre className="nex-streaming-thinking-body">
-                  {streamingThinking}
-                </pre>
-              </details>
+              <ThinkingBlock
+                thinking={streamingThinking}
+                streaming
+                supportsThinking={
+                  selectedCapabilities?.supports_thinking ?? null
+                }
+              />
             )}
             {streamingText && (
               <div className="nex-message-body">{streamingText}</div>
@@ -622,27 +648,14 @@ export default function ConversationView({
             <M3LoadingIndicator label={t("conv.responding")} size="sm" />
           </div>
         )}
-        {activeRun &&
-          (activeRun.streaming_text || activeRun.streaming_thinking) && (
-            <article
-              className="nex-message nex-message-assistant nex-message-streaming"
-              aria-live="polite"
-            >
-              {activeRun.streaming_thinking && (
-                <details className="nex-streaming-thinking" open>
-                  <summary>{t("conv.streamingThinking")}</summary>
-                  <pre className="nex-streaming-thinking-body">
-                    {activeRun.streaming_thinking}
-                  </pre>
-                </details>
-              )}
-              {activeRun.streaming_text && (
-                <div className="nex-message-body">
-                  {activeRun.streaming_text}
-                </div>
-              )}
-            </article>
-          )}
+        {activeRun && activeRun.streaming_text && (
+          <article
+            className="nex-message nex-message-assistant nex-message-streaming"
+            aria-live="polite"
+          >
+            <div className="nex-message-body">{activeRun.streaming_text}</div>
+          </article>
+        )}
         {agentBusy && (
           <div className="nex-thread-waiting">
             <M3LoadingIndicator label={t("conv.agentWorking")} size="sm" />
@@ -686,6 +699,8 @@ export default function ConversationView({
         onRemoveAttachment={(id) => void remove(id)}
         agentMode={agentMode}
         onAgentModeChange={setAgentMode}
+        planMode={agentMode ? planMode : false}
+        onPlanModeChange={setPlanMode}
         autonomy={autonomy}
         onAutonomyChange={(mode) => void handleAutonomyChange(mode)}
         selectedModel={selectedModel}

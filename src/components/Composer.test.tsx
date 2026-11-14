@@ -1856,3 +1856,99 @@ describe("composer — empty-screen focus (D1)", () => {
     expect(field).not.toHaveFocus();
   });
 });
+
+describe("composer — Stage 5 PR 5B: Plan toggle and / + @ triggers", () => {
+  it("shows the Plan toggle in Agent mode only and reflects honest UI state", () => {
+    const onPlanModeChange = vi.fn();
+    const { rerender, props } = renderComposer({
+      agentMode: true,
+      planMode: false,
+      onPlanModeChange,
+    });
+
+    const planBtn = screen.getByRole("button", { name: "Plan mode" });
+    expect(planBtn).toBeEnabled();
+    expect(planBtn).toHaveAttribute("aria-pressed", "false");
+    expect(screen.queryByRole("status")).toBeNull();
+
+    fireEvent.click(planBtn);
+    expect(onPlanModeChange).toHaveBeenCalledWith(true);
+
+    rerender(
+      <LocaleProvider>
+        <Composer {...props} agentMode={true} planMode={true} onPlanModeChange={onPlanModeChange} />
+      </LocaleProvider>
+    );
+    expect(screen.getByRole("button", { name: "Plan mode" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
+    expect(
+      screen.getByText(/Plan mode active — read-only planning/)
+    ).toBeInTheDocument();
+
+    // Switching to Chat removes the Plan toggle and its banner.
+    rerender(
+      <LocaleProvider>
+        <Composer {...props} agentMode={false} planMode={true} onPlanModeChange={onPlanModeChange} />
+      </LocaleProvider>
+    );
+    expect(screen.queryByRole("button", { name: "Plan mode" })).toBeNull();
+    expect(
+      screen.queryByText(/Plan mode active — read-only planning/)
+    ).toBeNull();
+  });
+
+  it("opens slash command menu from the / trigger and runs real composer actions", () => {
+    const onAgentModeChange = vi.fn();
+    const onDraftChange = vi.fn();
+    const onOpenSettings = vi.fn();
+    renderComposer({
+      agentMode: true,
+      draft: "/ch",
+      onAgentModeChange,
+      onDraftChange,
+      onOpenSettings,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Slash commands" }));
+    const listbox = screen.getByRole("listbox", {
+      name: "Available slash commands",
+    });
+    const chatOpt = within(listbox).getByRole("option", { name: /\/chat/ });
+    fireEvent.click(chatOpt);
+
+    expect(onAgentModeChange).toHaveBeenCalledWith(false);
+    expect(onDraftChange).toHaveBeenCalledWith("");
+  });
+
+  it("opens context mention menu from the @ trigger and inserts workspace or folder actions", () => {
+    const onDraftChange = vi.fn();
+    const pickFolder = vi.fn(async () => null);
+    renderComposer({
+      agentMode: true,
+      draft: "Check ",
+      onDraftChange,
+      workspace: workspaceStub({
+        root: "/repos/nexora",
+        recent: ["/repos/nexora", "/repos/docs"],
+        pickFolder,
+      }),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Mention context" }));
+    const listbox = screen.getByRole("listbox", {
+      name: "Available context references",
+    });
+    fireEvent.click(within(listbox).getByRole("option", { name: /@nexora/ }));
+    expect(onDraftChange).toHaveBeenCalledWith("Check @nexora ");
+
+    fireEvent.click(screen.getByRole("button", { name: "Mention context" }));
+    fireEvent.click(
+      within(
+        screen.getByRole("listbox", { name: "Available context references" })
+      ).getByRole("option", { name: /Choose workspace folder/ })
+    );
+    expect(pickFolder).toHaveBeenCalledTimes(1);
+  });
+});

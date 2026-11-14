@@ -289,3 +289,21 @@ describe("message bodies (ADD-01)", () => {
     ).toBeNull();
   });
 });
+
+describe("Stage 5 PR 5B: ConversationView Plan toggle & Thinking integration", () => {
+  it("shows Agent-only Plan toggle and toggles cleanly between Agent and Chat", () => {
+    render(pane());
+
+    const planBtn = screen.getByRole("button", { name: "Plan mode" });
+    expect(planBtn).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(planBtn);
+    expect(planBtn).toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.click(
+      within(modeGroup()).getByRole("radio", {
+        name: "Chat mode — one answer per message",
+      })
+    );
+    expect(screen.queryByRole("button", { name: "Plan mode" })).toBeNull();
+  });
+});

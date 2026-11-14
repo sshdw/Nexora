@@ -5,6 +5,7 @@
 
 import { memo, useState } from "react";
 
+import type { FileCheckpoint } from "../../lib/tauri";
 import type { AgentStepView } from "../../lib/useAgentRun";
 import { tp } from "../../lib/strings";
 import { useStrings } from "../../lib/useLocale";
@@ -33,6 +34,9 @@ export const StepGroupSection = memo(function StepGroupSection({
   timelineId,
   onExpandStep,
   onCollapseStep,
+  checkpointForStep,
+  onRevertCheckpoint,
+  revertingKey,
 }: {
   group: StepGroup;
   defaultOpen: boolean;
@@ -42,6 +46,9 @@ export const StepGroupSection = memo(function StepGroupSection({
   timelineId: string;
   onExpandStep?: (runId: number, seq: number) => void;
   onCollapseStep?: (runId: number, seq: number) => void;
+  checkpointForStep?: (step: AgentStepView) => FileCheckpoint | null;
+  onRevertCheckpoint?: (checkpointId: number) => void;
+  revertingKey?: string | null;
 }) {
   const { locale, t } = useStrings();
   const head: AgentStepView = group.steps[0];
@@ -81,21 +88,27 @@ export const StepGroupSection = memo(function StepGroupSection({
           while collapsed resolves to nothing for a screen reader, which is
           the relationship the attribute exists to declare. */}
       <div className="nex-agent-step-group" id={timelineId} hidden={!open}>
-        {group.steps.map((step) => (
-          <StepSection
-            key={`${runId}-${step.seq}`}
-            step={step}
-            // A repeat's members are never auto-opened: the group line
-            // already said what happened, and opening all six buries the
-            // rest of the timeline.
-            defaultOpen={false}
-            fade=""
-            live={live}
-            runId={runId}
-            onExpandStep={onExpandStep}
-            onCollapseStep={onCollapseStep}
-          />
-        ))}
+        {group.steps.map((step) => {
+          const cp = checkpointForStep ? checkpointForStep(step) : null;
+          return (
+            <StepSection
+              key={`${runId}-${step.seq}`}
+              step={step}
+              // A repeat's members are never auto-opened: the group line
+              // already said what happened, and opening all six buries the
+              // rest of the timeline.
+              defaultOpen={false}
+              fade=""
+              live={live}
+              runId={runId}
+              onExpandStep={onExpandStep}
+              onCollapseStep={onCollapseStep}
+              checkpoint={cp}
+              onRevertCheckpoint={onRevertCheckpoint}
+              reverting={cp !== null && revertingKey === `file:${cp.id}`}
+            />
+          );
+        })}
       </div>
     </div>
   );

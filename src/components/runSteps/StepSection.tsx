@@ -4,6 +4,7 @@
 
 import { memo, useCallback, useState } from "react";
 
+import type { FileCheckpoint } from "../../lib/tauri";
 import type { AgentStepView } from "../../lib/useAgentRun";
 import { tr, type Locale } from "../../lib/strings";
 import { useStrings } from "../../lib/useLocale";
@@ -282,6 +283,9 @@ export const StepSection = memo(function StepSection({
   runId,
   onExpandStep,
   onCollapseStep,
+  checkpoint = null,
+  onRevertCheckpoint,
+  reverting = false,
 }: {
   step: AgentStepView;
   defaultOpen: boolean;
@@ -294,6 +298,9 @@ export const StepSection = memo(function StepSection({
   runId: number;
   onExpandStep?: (runId: number, seq: number) => void;
   onCollapseStep?: (runId: number, seq: number) => void;
+  checkpoint?: FileCheckpoint | null;
+  onRevertCheckpoint?: (checkpointId: number) => void;
+  reverting?: boolean;
 }) {
   const { locale, t } = useStrings();
   const [open, setOpen] = useState<boolean>(defaultOpen);
@@ -342,7 +349,41 @@ export const StepSection = memo(function StepSection({
           {isTerminal ? (
             <TerminalView step={{ ...step, observation: displayObservation }} />
           ) : isDiff ? (
-            <DiffView observation={displayObservation} />
+            <>
+              {checkpoint && (
+                <div className="nex-agent-step-diff-bar">
+                  <div className="nex-agent-checkpoint-info">
+                    <span className="nex-tag nex-agent-checkpoint-kind">
+                      {checkpoint.pre_existed
+                        ? t("agent.checkpointModified")
+                        : t("agent.checkpointCreated")}
+                    </span>
+                    <code className="nex-agent-checkpoint-path">
+                      {checkpoint.relative_path}
+                    </code>
+                  </div>
+                  {checkpoint.reverted_at !== null ? (
+                    <span className="nex-tag nex-agent-checkpoint-reverted">
+                      {t("agent.checkpointReverted")}
+                    </span>
+                  ) : (
+                    onRevertCheckpoint && (
+                      <M3Button
+                        variant="quiet"
+                        size="sm"
+                        disabled={reverting}
+                        onClick={() => onRevertCheckpoint(checkpoint.id)}
+                      >
+                        {reverting
+                          ? t("agent.checkpointReverting")
+                          : t("agent.checkpointRevertFile")}
+                      </M3Button>
+                    )
+                  )}
+                </div>
+              )}
+              <DiffView observation={displayObservation} />
+            </>
           ) : (
             <>
               {step.arguments && (

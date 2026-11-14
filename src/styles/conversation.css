@@ -1792,3 +1792,132 @@
   font-family: var(--type-family-mono);
   font-size: var(--type-size-body-small);
 }
+
+/* ---- Stage 5 PR 5B: Thinking block, Plan vs Result cards, Checkpoint diffs ---- */
+
+.nex-thinking-block {
+  margin-bottom: var(--space-xs);
+  border: 1px solid var(--color-outline-variant);
+  border-radius: var(--shape-small);
+  background: var(--color-surface-container-low);
+}
+
+.nex-thinking-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-xs);
+  width: 100%;
+  padding: var(--space-xs) var(--space-sm);
+  font-size: var(--type-size-body-small);
+  font-weight: var(--type-weight-medium);
+  color: var(--color-on-surface-variant);
+  cursor: pointer;
+}
+
+.nex-thinking-toggle:hover {
+  color: var(--color-on-surface);
+}
+
+.nex-thinking-chevron {
+  flex: none;
+  transition: transform var(--nex-sys-motion-duration-fast)
+    var(--nex-sys-motion-easing-standard);
+}
+
+.nex-thinking-block.is-open .nex-thinking-chevron {
+  transform: rotate(180deg);
+}
+
+.nex-thinking-body {
+  margin: 0;
+  padding: 0 var(--space-sm) var(--space-xs);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--type-family-mono);
+  font-size: var(--type-size-body-small);
+  color: var(--color-on-surface-variant);
+}
+
+.nex-thinking-empty {
+  margin: 0 0 var(--space-xs);
+  font-size: var(--type-size-body-small);
+  color: var(--color-on-surface-tertiary);
+}
+
+.nex-agent-empty-state,
+.nex-agent-checkpoints-empty {
+  margin: var(--space-xs) 0 0;
+  font-size: var(--type-size-body-small);
+  color: var(--color-on-surface-tertiary);
+}
+
+.nex-agent-step-diff-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-xs);
+  margin-bottom: var(--space-xs);
+}
+
+.nex-agent-checkpoint-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xxs);
+}
+
+.nex-agent-checkpoint-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xxs);
+  flex-shrink: 0;
+}
+
+.nex-agent-checkpoint-diff {
+  padding-top: var(--space-xxs);
+}
+
+.nex-agent-checkpoint-nodiff {
+  margin: 0;
+  padding: var(--space-xs);
+  font-size: var(--type-size-body-small);
+  color: var(--color-on-surface-tertiary);
+}
+
+.nex-agent-card {
+  margin-top: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--shape-medium);
+  border: 1px solid var(--color-outline-variant);
+}
+
+.nex-agent-card-plan {
+  background: var(--color-surface-container-low);
+  border-style: dashed;
+}
+
+.nex-agent-card-result {
+  background: var(--color-surface-container);
+  border-color: var(--color-outline);
+}
+
+.nex-agent-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-bottom: var(--space-xs);
+  font-size: var(--type-size-body-small);
+  font-weight: var(--type-weight-medium);
+  color: var(--color-on-surface);
+}
+
+.nex-agent-card-body {
+  font-size: var(--type-size-body-medium);
+  color: var(--color-on-surface);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nex-thinking-chevron {
+    transition: none;
+  }
+}

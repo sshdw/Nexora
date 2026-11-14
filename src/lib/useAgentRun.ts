@@ -75,6 +75,14 @@ export interface AgentRunView {
   streaming_text?: string;
   /** Ephemeral live-streamed provider-native thinking while the run turn is executing. */
   streaming_thinking?: string;
+  /** Retained provider-native thinking emitted during the run (never fabricated). */
+  thinking?: string | null;
+  /** Persisted or terminal final assistant result for this run. */
+  final_content?: string | null;
+  /** Optional plan outline content when the run produced or carries a plan. */
+  plan_content?: string | null;
+  /** True when the run itself is a read-only plan run. */
+  is_plan?: boolean;
   pending_approval: {
     metadata?: ApprovalMetadata;
     call_id: string;
@@ -451,6 +459,9 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
           status: preserve ? old.status : status,
           finished_at: preserve ? old.finished_at : row.finished_at,
           error: preserve ? old.error : row.error,
+          final_content: preserve
+            ? old.final_content
+            : (row.final_content ?? old?.final_content ?? null),
           total_steps: Math.max(
             row.total_steps,
             old?.total_steps ?? 0,
@@ -765,6 +776,8 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
           ...old,
           status: payload.event.status,
           error: payload.event.error,
+          final_content:
+            payload.event.final_content ?? old.final_content ?? null,
           finished_at: old.finished_at ?? Date.now() / 1000,
           pending_approval: null,
           streaming_text: undefined,
@@ -784,9 +797,14 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
               };
             }
             if (gov.kind === "thinking") {
+              const turnSeparator =
+                run.streaming_thinking === undefined && run.thinking
+                  ? "\n\n"
+                  : "";
               return {
                 ...run,
                 streaming_thinking: (run.streaming_thinking ?? "") + gov.delta,
+                thinking: (run.thinking ?? "") + turnSeparator + gov.delta,
               };
             }
             return run;
