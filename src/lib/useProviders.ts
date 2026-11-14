@@ -12,12 +12,16 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
   type CommandError,
+  type CompatConfig,
+  type CompatStatus,
   type ConnectionModelCapabilities,
   type ModelCapabilityOverride,
   type ProviderDef,
   type SupportedProvider,
   addProviderCredential,
+  compatStatus as fetchCompatStatus,
   createProvider,
+  getCompatConfig,
   getModelCapabilities,
   getSetting,
   hasProviderCredential,
@@ -26,6 +30,7 @@ import {
   refreshProviderModelMetadata,
   removeProvider,
   removeProviderCredential,
+  setCompatConfig as persistCompatConfig,
   setModelCapabilityOverride,
   setSetting,
   supportedProviders,
@@ -38,6 +43,102 @@ const SELECTED_PROVIDER_KEY = "provider.selected";
 const SELECTED_MODEL_KEY = "provider.model";
 const SELECTED_EFFORT_KEY = "provider.effort";
 const VALID_EFFORTS = ["low", "medium", "high", "xhigh"] as const;
+const OPENAI_COMPAT_PROVIDER = "openai_compat";
+
+export type CompatUrlErrorKey =
+  | "settings.compatErrMissingUrl"
+  | "settings.compatErrCredentials"
+  | "settings.compatErrInsecureHttp"
+  | "settings.compatErrInvalidUrl";
+
+function hasControlOrWhitespace(value: string): boolean {
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    if (code <= 0x1f || code === 0x7f || /\s/.test(value[i]!)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Mirror backend strict HTTPS endpoint validation for instant UI feedback. */
+export function validateCompatBaseUrl(url: string): CompatUrlErrorKey | null {
+  const trimmed = url.trim();
+  if (!trimmed) return "settings.compatErrMissingUrl";
+  if (hasControlOrWhitespace(trimmed)) return "settings.compatErrInvalidUrl";
+  const match = /^([a-zA-Z][a-zA-Z0-9+.-]*):\/\//.exec(trimmed);
+  if (!match) return "settings.compatErrInvalidUrl";
+  const scheme = match[1].toLowerCase();
+  if (scheme !== "https" && scheme !== "http") {
+    return "settings.compatErrInvalidUrl";
+  }
+  const afterScheme = trimmed.slice(match[0].length);
+  const authority = afterScheme.split(/[/?#]/, 1)[0] ?? "";
+  if (!authority) return "settings.compatErrInvalidUrl";
+  if (authority.includes("@")) return "settings.compatErrCredentials";
+
+  let host = "";
+  if (authority.startsWith("[")) {
+    const close = authority.indexOf("]");
+    if (close <= 1) return "settings.compatErrInvalidUrl";
+    host = authority.slice(1, close);
+    const rest = authority.slice(close + 1);
+    if (rest) {
+      if (!rest.startsWith(":") || !isValidPort(rest.slice(1))) {
+        return "settings.compatErrInvalidUrl";
+      }
+    }
+  } else {
+    const colon = authority.lastIndexOf(":");
+    if (colon !== -1) {
+      const port = authority.slice(colon + 1);
+      host = authority.slice(0, colon);
+      if (!host || !isValidPort(port)) return "settings.compatErrInvalidUrl";
+    } else {
+      host = authority;
+    }
+  }
+  if (!host) return "settings.compatErrInvalidUrl";
+  const isLocalhost =
+    host.toLowerCase() === "localhost" ||
+    host === "127.0.0.1" ||
+    host === "::1";
+  if (scheme === "http" && !isLocalhost) {
+    return "settings.compatErrInsecureHttp";
+  }
+  return null;
+}
+
+function isValidPort(port: string): boolean {
+  if (!/^\d{1,5}$/.test(port)) return false;
+  const parsed = Number.parseInt(port, 10);
+  return parsed >= 1 && parsed <= 65535;
+}
+
+/** Merge static provider models with metadata-discovered capability models. */
+export function mergeConnectionModels(
+  staticModels: readonly string[],
+  connectionId: string,
+  capabilities: readonly ConnectionModelCapabilities[],
+  extraModel?: string | null
+): string[] {
+  const merged: string[] = [];
+  const seen = new Set<string>();
+  const pushUnique = (model: string | null | undefined) => {
+    if (!model) return;
+    const trimmed = model.trim();
+    if (trimmed !== "" && !seen.has(trimmed)) {
+      seen.add(trimmed);
+      merged.push(trimmed);
+    }
+  };
+  for (const model of staticModels) pushUnique(model);
+  pushUnique(extraModel);
+  for (const cap of capabilities) {
+    if (cap.connection_id === connectionId) pushUnique(cap.model_id);
+  }
+  return merged;
+}
 
 function capabilityKey(connectionId: string, modelId: string): string {
   return `${connectionId}::${modelId}`;
@@ -96,6 +197,14 @@ export interface ProvidersStore {
   ) => Promise<ConnectionModelCapabilities | null>;
   /** Refresh zero-token `/models` metadata from the provider API. */
   refreshModelMetadata: (connectionId: string) => Promise<void>;
+  /** Configured `openai_compat` endpoint settings, when loaded. */
+  compatConfig?: CompatConfig | null;
+  /** Readiness & presence flags for `openai_compat`, when loaded. */
+  compatStatus?: CompatStatus | null;
+  /** True while saving `openai_compat` endpoint settings. */
+  compatSaving?: boolean;
+  /** Persist and validate `openai_compat` endpoint settings. */
+  saveCompatConfig?: (config: CompatConfig) => Promise<boolean>;
   /** Register the provider definition (if needed) and store its credential.
    * Resolves `true` only when the operation succeeded, so the caller can
    * safely discard transient input; failures surface through `error`. */
@@ -122,9 +231,21 @@ export function useProviders(): ProvidersStore {
   const [capabilities, setCapabilities] = useState<
     ConnectionModelCapabilities[]
   >([]);
+  const [compatConfig, setCompatConfig] = useState<CompatConfig | null>(null);
+  const [compatStatus, setCompatStatus] = useState<CompatStatus | null>(null);
+  const [compatSaving, setCompatSaving] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<CommandError | null>(null);
   const [working, setWorking] = useState<boolean>(false);
+
+  const loadCompatState = useCallback(async (): Promise<void> => {
+    const [cfg, status] = await Promise.all([
+      getCompatConfig().catch(() => null),
+      fetchCompatStatus().catch(() => null),
+    ]);
+    setCompatConfig(cfg);
+    setCompatStatus(status);
+  }, []);
 
   const reload = useCallback(async (): Promise<void> => {
     setLoading(true);
@@ -212,6 +333,12 @@ export function useProviders(): ProvidersStore {
   useEffect(() => {
     reload();
   }, [reload]);
+
+  useEffect(() => {
+    if (selectedProvider === OPENAI_COMPAT_PROVIDER) {
+      void loadCompatState();
+    }
+  }, [selectedProvider, loadCompatState]);
 
   const selectProvider = useCallback(
     async (name: string): Promise<void> => {
@@ -364,6 +491,50 @@ export function useProviders(): ProvidersStore {
     },
     []
   );
+
+  const saveCompatConfig = useCallback(
+    async (config: CompatConfig): Promise<boolean> => {
+      setCompatSaving(true);
+      setError(null);
+      try {
+        await persistCompatConfig(config);
+        const [savedCfg, nextStatus] = await Promise.all([
+          getCompatConfig().catch(() => config),
+          fetchCompatStatus().catch(() => null),
+        ]);
+        setCompatConfig(savedCfg);
+        setCompatStatus(nextStatus);
+        const nextModel = config.model.trim();
+        if (nextModel && selectedProvider === OPENAI_COMPAT_PROVIDER) {
+          await setSetting(SELECTED_MODEL_KEY, nextModel);
+          setSelectedModel(nextModel);
+          const single = await getModelCapabilities(
+            OPENAI_COMPAT_PROVIDER,
+            nextModel
+          ).catch(() => null);
+          if (single) {
+            setCapabilities((prev) => {
+              const byKey = new Map(
+                prev.map((c) => [capabilityKey(c.connection_id, c.model_id), c])
+              );
+              byKey.set(
+                capabilityKey(single.connection_id, single.model_id),
+                single
+              );
+              return Array.from(byKey.values());
+            });
+          }
+        }
+        return true;
+      } catch (e) {
+        setError(toCommandError(e));
+        return false;
+      } finally {
+        setCompatSaving(false);
+      }
+    },
+    [selectedProvider]
+  );
   const connect = useCallback(
     async (
       name: string,
@@ -463,6 +634,9 @@ export function useProviders(): ProvidersStore {
       selectedEffort,
       capabilities,
       selectedCapabilities,
+      compatConfig,
+      compatStatus,
+      compatSaving,
       loading,
       error,
       working,
@@ -473,6 +647,7 @@ export function useProviders(): ProvidersStore {
       selectEffort,
       setCapabilityOverride,
       refreshModelMetadata,
+      saveCompatConfig,
       connect,
       disconnect,
     }),
@@ -483,6 +658,9 @@ export function useProviders(): ProvidersStore {
       selectedEffort,
       capabilities,
       selectedCapabilities,
+      compatConfig,
+      compatStatus,
+      compatSaving,
       loading,
       error,
       working,
@@ -493,6 +671,7 @@ export function useProviders(): ProvidersStore {
       selectEffort,
       setCapabilityOverride,
       refreshModelMetadata,
+      saveCompatConfig,
       connect,
       disconnect,
     ]

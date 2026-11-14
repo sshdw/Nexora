@@ -282,4 +282,56 @@ describe("ModelPicker — connection grouping and effort capabilities", () => {
       within(effortGroup).queryByRole("button", { name: "Low" })
     ).toBeNull();
   });
+
+  it("groups models across multiple new preset connections and switches Effort per model", () => {
+    const onSelectConnectionModel = vi.fn();
+    renderPicker({
+      selectedConnectionId: "deepseek",
+      selectedModel: "deepseek-reasoner",
+      connectionGroups: [
+        {
+          connectionId: "deepseek",
+          connectionName: "DeepSeek",
+          models: ["deepseek-chat", "deepseek-reasoner"],
+        },
+        {
+          connectionId: "xai",
+          connectionName: "xAI",
+          models: ["grok-3", "grok-3-mini"],
+        },
+        {
+          connectionId: "mistral",
+          connectionName: "Mistral",
+          models: ["mistral-large-latest", "codestral-latest"],
+        },
+      ],
+      capabilities: {
+        connection_id: "deepseek",
+        model_id: "deepseek-reasoner",
+        context_window: 128000,
+        supported_efforts: ["low", "medium", "high"],
+        supports_thinking: true,
+        supports_attachments: false,
+        supports_tools: true,
+        provenance: "built_in_catalog",
+        has_manual_override: false,
+      },
+      selectedEffort: "high",
+      onSelectEffort: vi.fn(),
+      onSelectConnectionModel,
+    });
+    openPicker();
+
+    expect(screen.getByText("DeepSeek")).toBeInTheDocument();
+    expect(screen.getByText("xAI")).toBeInTheDocument();
+    expect(screen.getByText("Mistral")).toBeInTheDocument();
+
+    const effortGroup = screen.getByRole("group", { name: "Effort" });
+    expect(within(effortGroup).getByRole("button", { name: "Low" })).toBeInTheDocument();
+    expect(within(effortGroup).getByRole("button", { name: "High" })).toBeInTheDocument();
+    expect(within(effortGroup).queryByRole("button", { name: "Max" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("option", { name: "grok-3-mini" }));
+    expect(onSelectConnectionModel).toHaveBeenCalledWith("xai", "grok-3-mini");
+  });
 });

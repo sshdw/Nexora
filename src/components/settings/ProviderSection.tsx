@@ -9,7 +9,10 @@ import type {
   ConnectionModelCapabilities,
   SupportedProvider,
 } from "../../lib/tauri";
-import type { ProvidersStore } from "../../lib/useProviders";
+import {
+  validateCompatBaseUrl,
+  type ProvidersStore,
+} from "../../lib/useProviders";
 import { useStrings } from "../../lib/useLocale";
 import M3Button from "../M3Button";
 
@@ -56,6 +59,52 @@ export default function ProviderSection({
   const [thinkingDraft, setThinkingDraft] = useState(false);
   const [toolsDraft, setToolsDraft] = useState(false);
   const [attachmentsDraft, setAttachmentsDraft] = useState(false);
+
+  const isCompat = selectedDefinition?.name === "openai_compat";
+  const [compatBaseUrl, setCompatBaseUrl] = useState("");
+  const [compatModel, setCompatModel] = useState("");
+  const [compatOrg, setCompatOrg] = useState("");
+  const [compatSupportsTools, setCompatSupportsTools] = useState(true);
+  const [compatSubmitted, setCompatSubmitted] = useState(false);
+  const [compatDirty, setCompatDirty] = useState(false);
+
+  useEffect(() => {
+    setCompatDirty(false);
+    setCompatSubmitted(false);
+  }, [selectedDefinition?.name]);
+
+  useEffect(() => {
+    if (!store.compatConfig || compatDirty) return;
+    setCompatBaseUrl(store.compatConfig.base_url);
+    setCompatModel(store.compatConfig.model);
+    setCompatOrg(store.compatConfig.organization ?? "");
+    setCompatSupportsTools(store.compatConfig.supports_tools);
+    setCompatSubmitted(false);
+  }, [store.compatConfig, compatDirty]);
+
+  const compatUrlError = isCompat ? validateCompatBaseUrl(compatBaseUrl) : null;
+  const compatModelError =
+    isCompat && compatModel.trim() === ""
+      ? ("settings.compatErrMissingModel" as const)
+      : null;
+  const showCompatUrlError =
+    compatUrlError !== null &&
+    (compatSubmitted || compatBaseUrl.trim() !== "");
+
+  const handleSaveCompat = () => {
+    setCompatSubmitted(true);
+    if (compatUrlError || compatModelError || !store.saveCompatConfig) {
+      return;
+    }
+    setCompatDirty(false);
+    void store.saveCompatConfig({
+      base_url: compatBaseUrl.trim(),
+      model: compatModel.trim(),
+      organization: compatOrg.trim() || null,
+      headers: store.compatConfig?.headers ?? [],
+      supports_tools: compatSupportsTools,
+    });
+  };
 
   useEffect(() => {
     if (!activeCapabilities) return;
@@ -147,6 +196,117 @@ export default function ProviderSection({
         </select>
       </div>
 
+      {isCompat && (
+        <div className="nex-settings-details">
+          <div className="nex-capabilities-panel">
+            <h4 className="nex-settings-label">
+              {t("settings.compatHeading")}
+            </h4>
+            {store.compatStatus && (
+              <p className="nex-settings-hint">
+                {store.compatStatus.ready
+                  ? t("settings.compatReady")
+                  : t("settings.compatNotReady")}
+              </p>
+            )}
+            <div className="nex-settings-field">
+              <label className="nex-settings-label" htmlFor="compat-base-url">
+                {t("settings.compatBaseUrl")}
+              </label>
+              <input
+                id="compat-base-url"
+                className="nex-input"
+                type="url"
+                value={compatBaseUrl}
+                placeholder={t("settings.compatBaseUrlPh")}
+                onChange={(event) => {
+                  setCompatDirty(true);
+                  setCompatBaseUrl(event.target.value);
+                }}
+              />
+              {showCompatUrlError ? (
+                <p className="nex-settings-error" role="alert">
+                  {t(compatUrlError)}
+                </p>
+              ) : (
+                <p className="nex-settings-hint">
+                  {t("settings.compatBaseUrlHint")}
+                </p>
+              )}
+            </div>
+
+            <div className="nex-settings-field">
+              <label className="nex-settings-label" htmlFor="compat-model">
+                {t("settings.compatModel")}
+              </label>
+              <input
+                id="compat-model"
+                className="nex-input"
+                type="text"
+                value={compatModel}
+                placeholder={t("settings.compatModelPh")}
+                onChange={(event) => {
+                  setCompatDirty(true);
+                  setCompatModel(event.target.value);
+                }}
+              />
+              {compatSubmitted && compatModelError && (
+                <p className="nex-settings-error" role="alert">
+                  {t(compatModelError)}
+                </p>
+              )}
+            </div>
+
+            <div className="nex-settings-field">
+              <label
+                className="nex-settings-label"
+                htmlFor="compat-organization"
+              >
+                {t("settings.compatOrganization")}
+              </label>
+              <input
+                id="compat-organization"
+                className="nex-input"
+                type="text"
+                value={compatOrg}
+                placeholder={t("settings.compatOrganizationPh")}
+                onChange={(event) => {
+                  setCompatDirty(true);
+                  setCompatOrg(event.target.value);
+                }}
+              />
+            </div>
+
+            <div className="nex-settings-field">
+              <label className="nex-capabilities-check">
+                <input
+                  id="compat-supports-tools"
+                  type="checkbox"
+                  checked={compatSupportsTools}
+                  onChange={(event) => {
+                    setCompatDirty(true);
+                    setCompatSupportsTools(event.target.checked);
+                  }}
+                />
+                <span>{t("settings.compatSupportsTools")}</span>
+              </label>
+            </div>
+
+            <div className="nex-capabilities-actions">
+              <M3Button
+                variant="secondary"
+                disabled={store.compatSaving}
+                onClick={handleSaveCompat}
+              >
+                {store.compatSaving
+                  ? t("settings.compatSaving")
+                  : t("settings.compatSave")}
+              </M3Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="nex-settings-field">
         <label className="nex-settings-label" htmlFor="model-select">
           {t("settings.modelLabel")}
@@ -159,7 +319,11 @@ export default function ProviderSection({
           onChange={(event) => onModelSelect(event.target.value)}
         >
           {selectedModels.length === 0 && (
-            <option value="">{t("settings.selectProviderFirst")}</option>
+            <option value="">
+              {isCompat
+                ? t("settings.compatNoModelsYet")
+                : t("settings.selectProviderFirst")}
+            </option>
           )}
           {selectedModels.map((model) => (
             <option key={model} value={model}>
@@ -170,6 +334,20 @@ export default function ProviderSection({
             <option value="__custom__">{t("settings.customOpt")}</option>
           )}
         </select>
+        {selectedDefinition &&
+          store.refreshModelMetadata &&
+          !(activeModelId && activeCapabilities) && (
+            <div className="nex-capabilities-actions">
+              <M3Button
+                variant="quiet"
+                onClick={() =>
+                  void store.refreshModelMetadata(selectedDefinition.name)
+                }
+              >
+                {t("settings.capabilitiesRefreshMeta")}
+              </M3Button>
+            </div>
+          )}
       </div>
 
       {customActive && selectedModels.length > 0 && (

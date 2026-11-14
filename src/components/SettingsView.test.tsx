@@ -105,6 +105,63 @@ const { mockInvoke, failNext, confirmFail, state } = vi.hoisted(() => {
           return "confirm-id-1";
         case "clear_application_data":
           return null;
+        case "get_compat_config":
+          return {
+            base_url: state.settings.get("openai_compat.base_url") ?? "",
+            model: state.settings.get("openai_compat.model") ?? "",
+            organization: state.settings.get("openai_compat.organization") ?? null,
+            headers: [],
+            supports_tools: true,
+          };
+        case "set_compat_config": {
+          const cfg = (args as {
+            config: { base_url: string; model: string; organization: string | null };
+          }).config;
+          state.settings.set("openai_compat.base_url", cfg.base_url);
+          state.settings.set("openai_compat.model", cfg.model);
+          if (cfg.organization) {
+            state.settings.set("openai_compat.organization", cfg.organization);
+          }
+          return null;
+        }
+        case "compat_status": {
+          const baseUrl = state.settings.get("openai_compat.base_url") ?? "";
+          const model = state.settings.get("openai_compat.model") ?? "";
+          return {
+            has_base_url: baseUrl.length > 0,
+            base_url_valid: baseUrl.startsWith("https://"),
+            has_model: model.length > 0,
+            has_organization: false,
+            header_count: 0,
+            supports_tools: true,
+            has_credential: state.credentialed.has("openai_compat"),
+            ready:
+              baseUrl.startsWith("https://") &&
+              model.length > 0 &&
+              state.credentialed.has("openai_compat"),
+          };
+        }
+        case "list_model_capabilities":
+          return [];
+        case "get_model_capabilities": {
+          const { connectionId, modelId } = args as {
+            connectionId: string;
+            modelId: string;
+          };
+          return {
+            connection_id: connectionId,
+            model_id: modelId,
+            context_window: 128_000,
+            supported_efforts: ["low", "medium", "high"],
+            supports_thinking: true,
+            supports_attachments: false,
+            supports_tools: true,
+            provenance: "built_in_catalog",
+            has_manual_override: false,
+          };
+        }
+        case "refresh_provider_model_metadata":
+          return [];
         default:
           throw new Error(`unexpected command ${command}`);
       }
@@ -370,6 +427,101 @@ describe("SettingsView — in-page search", () => {
       expect(
         screen.getByRole("heading", { name: "Agent & budgets" })
       ).toBeInTheDocument()
+    );
+  });
+});
+
+describe("SettingsView — 16 provider presets & openai_compat endpoint validation", () => {
+  it("lists all 16 connections and enforces strict HTTPS endpoint validation for openai_compat", async () => {
+    state.supported = [
+      { name: "openai", display_name: "OpenAI", models: ["gpt-5.6-terra"] },
+      { name: "anthropic", display_name: "Anthropic", models: ["claude-sonnet-5"] },
+      { name: "gemini", display_name: "Gemini", models: ["gemini-3.6-flash"] },
+      { name: "xkiro", display_name: "xKiro", models: ["deepseek/deepseek-v4-flash"] },
+      { name: "openrouter", display_name: "OpenRouter", models: ["inclusionai/ling-3.0-flash-fin:free"] },
+      { name: "nvidia", display_name: "NVIDIA NIM", models: ["nvidia/nemotron-3-super-120b-a12b"] },
+      { name: "opencode_zen", display_name: "OpenCode Zen", models: ["ling-3.0-flash-fin-free"] },
+      { name: "deepseek", display_name: "DeepSeek", models: ["deepseek-chat", "deepseek-reasoner"] },
+      { name: "qwen", display_name: "Alibaba / Qwen", models: ["qwen-max"] },
+      { name: "zai", display_name: "ZAI", models: ["glm-4.5"] },
+      { name: "minimax", display_name: "MiniMax", models: ["MiniMax-M1"] },
+      { name: "moonshot", display_name: "Moonshot / Kimi", models: ["kimi-k2-0711-preview"] },
+      { name: "groq", display_name: "Groq", models: ["llama-3.3-70b-versatile"] },
+      { name: "xai", display_name: "xAI", models: ["grok-3"] },
+      { name: "mistral", display_name: "Mistral", models: ["mistral-large-latest"] },
+      { name: "openai_compat", display_name: "OpenAI Compatible", models: [] },
+    ];
+
+    renderSettings();
+    await waitFor(() =>
+      expect(railButton("Provider & model")).toBeInTheDocument()
+    );
+    fireEvent.click(railButton("Provider & model"));
+    await waitFor(() =>
+      expect(screen.getByLabelText("Provider")).toBeInTheDocument()
+    );
+
+    const providerSelect = screen.getByLabelText("Provider") as HTMLSelectElement;
+    // 1 placeholder + 16 connections = 17 options.
+    expect(providerSelect.options.length).toBe(17);
+    for (const label of [
+      "DeepSeek",
+      "Alibaba / Qwen",
+      "ZAI",
+      "MiniMax",
+      "Moonshot / Kimi",
+      "Groq",
+      "xAI",
+      "Mistral",
+      "OpenAI Compatible",
+    ]) {
+      expect(
+        Array.from(providerSelect.options).some((opt) =>
+          opt.text.includes(label)
+        )
+      ).toBe(true);
+    }
+
+    fireEvent.change(providerSelect, { target: { value: "openai_compat" } });
+    await waitFor(() =>
+      expect(
+        screen.getByText("Configure a valid URL, model ID, and API key.")
+      ).toBeInTheDocument()
+    );
+
+    // Remote http:// is rejected inline before any IPC write.
+    const urlInput = screen.getByLabelText("Endpoint URL") as HTMLInputElement;
+    fireEvent.change(urlInput, {
+      target: { value: "http://remote.example.com/v1/chat/completions" },
+    });
+    expect(urlInput.value).toBe("http://remote.example.com/v1/chat/completions");
+    fireEvent.change(screen.getByLabelText("Default model ID"), {
+      target: { value: "custom-model" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save endpoint" }));
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Remote endpoints must use https://"
+    );
+    expect(
+      mockInvoke.mock.calls.some(([cmd]) => cmd === "set_compat_config")
+    ).toBe(false);
+
+    // Valid https:// saves through set_compat_config and unlocks model selector.
+    fireEvent.change(screen.getByLabelText("Endpoint URL"), {
+      target: { value: "https://proxy.example.com/v1/chat/completions" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save endpoint" }));
+
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("set_compat_config", {
+        config: {
+          base_url: "https://proxy.example.com/v1/chat/completions",
+          model: "custom-model",
+          organization: null,
+          headers: [],
+          supports_tools: true,
+        },
+      })
     );
   });
 });

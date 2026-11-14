@@ -15,7 +15,11 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { isCustomModelId, useProviders } from "./useProviders";
+import {
+  isCustomModelId,
+  useProviders,
+  validateCompatBaseUrl,
+} from "./useProviders";
 
 const { mockInvoke, failNext, state } = vi.hoisted(() => {
   const failNext = { command: "" };
@@ -135,6 +139,58 @@ const { mockInvoke, failNext, state } = vi.hoisted(() => {
           return JSON.parse(
             JSON.stringify(state.refreshedByConnection.get(connectionId) ?? [])
           );
+        }
+        case "get_compat_config":
+          return {
+            base_url: state.settings.get("openai_compat.base_url") ?? "",
+            model: state.settings.get("openai_compat.model") ?? "",
+            organization: state.settings.get("openai_compat.organization") ?? null,
+            headers: [],
+            supports_tools:
+              (state.settings.get("openai_compat.supports_tools") ?? "true") !==
+              "false",
+          };
+        case "set_compat_config": {
+          const cfg = (args as {
+            config: {
+              base_url: string;
+              model: string;
+              organization: string | null;
+              supports_tools: boolean;
+            };
+          }).config;
+          state.settings.set("openai_compat.base_url", cfg.base_url);
+          state.settings.set("openai_compat.model", cfg.model);
+          if (cfg.organization) {
+            state.settings.set("openai_compat.organization", cfg.organization);
+          } else {
+            state.settings.delete("openai_compat.organization");
+          }
+          state.settings.set(
+            "openai_compat.supports_tools",
+            String(cfg.supports_tools)
+          );
+          return null;
+        }
+        case "compat_status": {
+          const baseUrl = state.settings.get("openai_compat.base_url") ?? "";
+          const model = state.settings.get("openai_compat.model") ?? "";
+          const baseValid = validateCompatBaseUrl(baseUrl) === null;
+          const hasCred = state.credentialed.has("openai_compat");
+          return {
+            has_base_url: baseUrl.length > 0,
+            base_url_valid: baseValid,
+            has_model: model.length > 0,
+            has_organization: Boolean(
+              state.settings.get("openai_compat.organization")
+            ),
+            header_count: 0,
+            supports_tools:
+              (state.settings.get("openai_compat.supports_tools") ?? "true") !==
+              "false",
+            has_credential: hasCred,
+            ready: baseValid && model.length > 0 && hasCred,
+          };
         }
         default:
           throw new Error(`unexpected command ${command}`);
@@ -526,5 +582,58 @@ describe("useProviders — connect / disconnect (credential lifecycle)", () => {
       )
     ).toBe(false);
     expect(result.current.selectedProvider).toBe("openai");
+  });
+});
+
+describe("useProviders — OpenAI-compatible validation & config", () => {
+  it("enforces strict HTTPS except explicit localhost and rejects embedded credentials", () => {
+    expect(validateCompatBaseUrl("https://api.deepseek.com/v1/chat/completions")).toBeNull();
+    expect(validateCompatBaseUrl("http://localhost:11434/v1/chat/completions")).toBeNull();
+    expect(validateCompatBaseUrl("http://127.0.0.1:8080/v1/chat/completions")).toBeNull();
+    expect(validateCompatBaseUrl("http://[::1]:8080/v1/chat/completions")).toBeNull();
+
+    expect(validateCompatBaseUrl("")).toBe("settings.compatErrMissingUrl");
+    expect(validateCompatBaseUrl("http://remote.example.com/v1")).toBe(
+      "settings.compatErrInsecureHttp"
+    );
+    expect(validateCompatBaseUrl("https://user:pass@remote.example.com/v1")).toBe(
+      "settings.compatErrCredentials"
+    );
+    expect(validateCompatBaseUrl("ftp://remote.example.com/v1")).toBe(
+      "settings.compatErrInvalidUrl"
+    );
+  });
+
+  it("loads and saves openai_compat config, updates readiness, and selects its model", async () => {
+    state.supported.push({
+      name: "openai_compat",
+      display_name: "OpenAI Compatible",
+      models: [],
+    });
+    state.credentialed.add("openai_compat");
+    const { result } = renderHook(() => useProviders());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      await result.current.selectProvider("openai_compat");
+    });
+
+    await waitFor(() => expect(result.current.compatStatus?.ready).toBe(false));
+
+    let saved = false;
+    await act(async () => {
+      saved = (await result.current.saveCompatConfig?.({
+        base_url: "https://proxy.example.com/v1/chat/completions",
+        model: "custom-deepseek-v4",
+        organization: "org-1",
+        headers: [],
+        supports_tools: true,
+      })) ?? false;
+    });
+
+    expect(saved).toBe(true);
+    expect(result.current.compatConfig?.model).toBe("custom-deepseek-v4");
+    expect(result.current.compatStatus?.ready).toBe(true);
+    expect(result.current.selectedModel).toBe("custom-deepseek-v4");
   });
 });

@@ -54,32 +54,15 @@ import { useOnboarding } from "./lib/useOnboarding";
 import { readLastSession, rememberSession } from "./lib/lastSession";
 import { useOverlayRouter } from "./lib/useOverlayRouter";
 import type { ConnectionModelCapabilities } from "./lib/tauri";
-import { useProviders, type ProviderStatus } from "./lib/useProviders";
+import {
+  mergeConnectionModels,
+  useProviders,
+  type ProviderStatus,
+} from "./lib/useProviders";
 import { useSpendLimit } from "./lib/useSpendLimit";
 import { useWorkspace } from "./lib/useWorkspace";
 
-export function mergeConnectionModels(
-  staticModels: readonly string[],
-  connectionId: string,
-  capabilities: readonly ConnectionModelCapabilities[]
-): string[] {
-  const merged: string[] = [];
-  const seen = new Set<string>();
-  for (const model of staticModels) {
-    if (model.trim() !== "" && !seen.has(model)) {
-      seen.add(model);
-      merged.push(model);
-    }
-  }
-  for (const cap of capabilities) {
-    if (cap.connection_id !== connectionId) continue;
-    if (cap.model_id.trim() !== "" && !seen.has(cap.model_id)) {
-      seen.add(cap.model_id);
-      merged.push(cap.model_id);
-    }
-  }
-  return merged;
-}
+export { mergeConnectionModels };
 
 export function buildConnectionGroups(
   providers: readonly ProviderStatus[],

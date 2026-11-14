@@ -12,9 +12,7 @@ use std::time::Duration;
 use nexora_core::provider::{CancellationToken, ExecutorError};
 use serde::{Deserialize, Serialize};
 
-use super::catalog::openai::{
-    NVIDIA_ENDPOINT, OPENCODE_ZEN_ENDPOINT, OPENROUTER_ENDPOINT, XKIRO_ENDPOINT,
-};
+use super::catalog::openai::find_preset;
 use super::transport::{Credential, HttpClient, PostOutcome};
 
 const METADATA_TIMEOUT: Duration = Duration::from_secs(10);
@@ -90,23 +88,22 @@ pub(crate) fn fetch_connection_metadata(
             handle_get_outcome(outcome, parse_gemini_models_metadata)
         }
         _ => {
-            let endpoint = match connection_id {
-                "openai" => "https://api.openai.com/v1/models".to_string(),
-                "xkiro" => openai_models_url(XKIRO_ENDPOINT),
-                "openrouter" => openai_models_url(OPENROUTER_ENDPOINT),
-                "nvidia" => openai_models_url(NVIDIA_ENDPOINT),
-                "opencode_zen" => openai_models_url(OPENCODE_ZEN_ENDPOINT),
+            let (endpoint, preset_headers): (String, &[(&str, &str)]) = match connection_id {
+                "openai" => ("https://api.openai.com/v1/models".to_string(), &[]),
                 "openai_compat" => match compat_chat_url {
-                    Some(url) if !url.trim().is_empty() => openai_models_url(url),
+                    Some(url) if !url.trim().is_empty() => (openai_models_url(url), &[]),
                     _ => return Err(ExecutorError::InvalidRequest),
                 },
-                _ => return Err(ExecutorError::InvalidRequest),
+                other => match find_preset(other) {
+                    Some(preset) => (openai_models_url(preset.endpoint), preset.extra_headers),
+                    None => return Err(ExecutorError::InvalidRequest),
+                },
             };
             let outcome = client.get_json(
                 &token,
                 &endpoint,
                 Some(Credential::Bearer(credential)),
-                &[],
+                preset_headers,
                 compat_headers,
                 Some(METADATA_TIMEOUT),
             )?;
@@ -424,5 +421,22 @@ mod tests {
         assert_eq!(g_items[1].model_id, "gemini-2.5-flash-lite");
         assert_eq!(g_items[1].supports_thinking, Some(false));
         assert_eq!(g_items[1].supported_efforts.as_deref(), Some(&[][..]));
+    }
+
+    #[test]
+    fn openai_models_url_maps_all_preset_endpoints() {
+        for preset in super::super::catalog::openai::OPENAI_COMPAT_PRESETS {
+            assert!(
+                preset.endpoint.starts_with("https://"),
+                "preset {} endpoint must use https",
+                preset.name
+            );
+            let models_url = openai_models_url(preset.endpoint);
+            assert!(
+                models_url.starts_with("https://") && models_url.ends_with("/models"),
+                "preset {} models url invalid: {models_url}",
+                preset.name
+            );
+        }
     }
 }

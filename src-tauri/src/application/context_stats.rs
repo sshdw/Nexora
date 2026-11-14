@@ -92,13 +92,12 @@ pub(crate) fn context_limit_for(provider: Option<&str>, model: Option<&str>) -> 
 /// to the provider fallback.
 #[must_use]
 fn model_context_limit(model: &str) -> Option<u64> {
-    if openai::SUPPORTED_MODELS.contains(&model)
-        || openai::XKIRO_MODELS.contains(&model)
-        || openai::OPENROUTER_MODELS.contains(&model)
-        || openai::NVIDIA_MODELS.contains(&model)
-        || openai::OPENCODE_ZEN_MODELS.contains(&model)
-    {
+    if openai::SUPPORTED_MODELS.contains(&model) {
         Some(OPENAI_CONTEXT_LIMIT)
+    } else if let Some(limit) =
+        crate::infrastructure::providers::catalog::openai::preset_model_context_limit(model)
+    {
+        Some(limit)
     } else if anthropic::SUPPORTED_MODELS.contains(&model) {
         Some(ANTHROPIC_CONTEXT_LIMIT)
     } else if gemini::SUPPORTED_MODELS.contains(&model) {

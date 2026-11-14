@@ -21,13 +21,10 @@ use nexora_core::provider::{
 };
 
 use super::anthropic::{AnthropicExecutor, PROVIDER_NAME as ANTHROPIC_PROVIDER_NAME};
+use super::catalog::openai::OPENAI_COMPAT_PRESETS;
 use super::credentials::CredentialStore;
 use super::gemini::{GeminiExecutor, PROVIDER_NAME as GEMINI_PROVIDER_NAME};
-use super::openai::{
-    CompatConfig, OpenAiExecutor, COMPAT_NAME, NVIDIA_ENDPOINT, NVIDIA_NAME, OPENCODE_ZEN_ENDPOINT,
-    OPENCODE_ZEN_NAME, OPENROUTER_ENDPOINT, OPENROUTER_NAME, PROVIDER_NAME, XKIRO_ENDPOINT,
-    XKIRO_NAME,
-};
+use super::openai::{CompatConfig, OpenAiExecutor, COMPAT_NAME, PROVIDER_NAME};
 
 /// The concrete resolver installed by the composition root: the built-in
 /// provider registry plus the user-configured-endpoint executor builder.
@@ -38,49 +35,27 @@ pub(crate) struct NexoraProviderExecutors {
 impl NexoraProviderExecutors {
     /// Build a resolver with every supported concrete provider registered.
     ///
-    /// The `openai`, `anthropic`, and `gemini` provider executors are
-    /// registered here, each under its internal provider name. Additional
-    /// providers are registered here as they ship.
+    /// Native (`openai`, `anthropic`, `gemini`) and all curated presets in
+    /// [`OPENAI_COMPAT_PRESETS`] are registered here under their internal
+    /// provider names.
     pub(crate) fn new() -> Self {
-        Self {
-            registry: ExecutorRegistry::new()
-                .with_executor(PROVIDER_NAME, Arc::new(OpenAiExecutor::new()))
-                .with_executor(ANTHROPIC_PROVIDER_NAME, Arc::new(AnthropicExecutor::new()))
-                .with_executor(GEMINI_PROVIDER_NAME, Arc::new(GeminiExecutor::new()))
-                // Additional OpenAI-compatible providers share `OpenAiExecutor`.
-                .with_executor(
-                    XKIRO_NAME,
-                    Arc::new(OpenAiExecutor::compatible(
-                        XKIRO_NAME,
-                        XKIRO_ENDPOINT.to_string(),
-                    )),
+        let mut registry = ExecutorRegistry::new()
+            .with_executor(PROVIDER_NAME, Arc::new(OpenAiExecutor::new()))
+            .with_executor(ANTHROPIC_PROVIDER_NAME, Arc::new(AnthropicExecutor::new()))
+            .with_executor(GEMINI_PROVIDER_NAME, Arc::new(GeminiExecutor::new()));
+        for preset in OPENAI_COMPAT_PRESETS {
+            let executor = if preset.extra_headers.is_empty() {
+                OpenAiExecutor::compatible(preset.name, preset.endpoint.to_string())
+            } else {
+                OpenAiExecutor::compatible_with_headers(
+                    preset.name,
+                    preset.endpoint.to_string(),
+                    preset.extra_headers,
                 )
-                .with_executor(
-                    OPENROUTER_NAME,
-                    Arc::new(OpenAiExecutor::compatible_with_headers(
-                        OPENROUTER_NAME,
-                        OPENROUTER_ENDPOINT.to_string(),
-                        &[
-                            ("HTTP-Referer", "https://github.com/sshdw/Nexora"),
-                            ("X-Title", "Nexora"),
-                        ],
-                    )),
-                )
-                .with_executor(
-                    NVIDIA_NAME,
-                    Arc::new(OpenAiExecutor::compatible(
-                        NVIDIA_NAME,
-                        NVIDIA_ENDPOINT.to_string(),
-                    )),
-                )
-                .with_executor(
-                    OPENCODE_ZEN_NAME,
-                    Arc::new(OpenAiExecutor::compatible(
-                        OPENCODE_ZEN_NAME,
-                        OPENCODE_ZEN_ENDPOINT.to_string(),
-                    )),
-                ),
+            };
+            registry = registry.with_executor(preset.name, Arc::new(executor));
         }
+        Self { registry }
     }
 }
 
@@ -203,5 +178,22 @@ mod tests {
         // silently tries another provider's executor (the catalog-side half
         // of this pin lives in the application model-catalog module).
         assert!(registry().resolve("ghost-provider").is_none());
+    }
+
+    #[test]
+    fn registry_resolves_all_eight_new_presets() {
+        let r = registry();
+        for name in [
+            "deepseek", "qwen", "zai", "minimax", "moonshot", "groq", "xai", "mistral",
+        ] {
+            assert!(r.resolve(name).is_some(), "preset '{name}' must resolve");
+        }
+        for preset in OPENAI_COMPAT_PRESETS {
+            assert!(
+                r.resolve(preset.name).is_some(),
+                "catalog preset '{}' must be registered",
+                preset.name
+            );
+        }
     }
 }

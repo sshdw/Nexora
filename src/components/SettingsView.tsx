@@ -25,7 +25,11 @@ import {
 import { useStrings } from "../lib/useLocale";
 import type { AppearanceStore } from "../lib/useAppearance";
 import type { AutonomyStore } from "../lib/useAutonomy";
-import { isCustomModelId, type ProvidersStore } from "../lib/useProviders";
+import {
+  isCustomModelId,
+  mergeConnectionModels,
+  type ProvidersStore,
+} from "../lib/useProviders";
 import type { SpendLimitStore } from "../lib/useSpendLimit";
 import M3Button from "./M3Button";
 import M3RailItem from "./M3RailItem";
@@ -353,7 +357,16 @@ export default function SettingsView({
   const selectedDefinition: SupportedProvider | null = selected
     ? selected.supported
     : null;
-  const selectedModels = selectedDefinition ? selectedDefinition.models : [];
+  const selectedModels = selectedDefinition
+    ? mergeConnectionModels(
+        selectedDefinition.models,
+        selectedDefinition.name,
+        store.capabilities ?? [],
+        selectedDefinition.name === "openai_compat"
+          ? (store.compatConfig?.model ?? null)
+          : null
+      )
+    : [];
 
   /** The model to display: the persisted selection, or the provider default. */
   const effectiveModel =

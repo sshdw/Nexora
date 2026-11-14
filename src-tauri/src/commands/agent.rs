@@ -44,7 +44,7 @@ use crate::application::agent::service::{
 };
 use crate::application::agent::spend::SpendDashboard;
 use crate::application::conversations::ConversationService;
-use crate::application::execution::{resolve_executor, RequestError, RequestExecutionService};
+use crate::application::execution::RequestExecutionService;
 use crate::infrastructure::database::Database;
 use crate::infrastructure::repository::agent_runs::AgentRun;
 use crate::infrastructure::repository::file_checkpoints::FileCheckpoint;
@@ -201,13 +201,11 @@ pub(crate) async fn start_agent_run(
             .resolve_credential(&provider)
             .map_err(CommandError::from)?;
 
-        // 2. Resolve the provider executor (no fallback; same registry plain
-        //    chat uses).
-        let executor = resolve_executor(&provider).ok_or_else(|| {
-            CommandError::from(RequestError::ExecutorUnavailable {
-                name: provider.clone(),
-            })
-        })?;
+        // 2. Resolve the provider executor (no fallback; same registry &
+        //    validated `openai_compat` path plain chat uses).
+        let executor = RequestExecutionService::new(db_ref)
+            .resolve_executor_for(&provider)
+            .map_err(CommandError::from)?;
 
         let root = workspace_root(&handle, db_ref)?;
         let host: Arc<dyn AgentRunHost> = Arc::new(TauriAgentHost::new(handle, db_client.clone()));
@@ -840,6 +838,7 @@ impl From<AgentRunError> for CommandError {
 mod tests {
     use super::*;
     use crate::application::agent::service::AgentRunError as ServiceError;
+    use crate::application::execution::RequestError;
 
     fn safe_message(err: &CommandError) -> bool {
         const SECRET_SENTINELS: [&str; 4] = ["sk-", "secret", "credential", "api_key"];

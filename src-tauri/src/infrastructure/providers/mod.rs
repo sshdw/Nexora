@@ -58,20 +58,21 @@ pub(crate) fn supported_providers() -> Vec<SupportedProvider> {
 /// micro-USD per 1M tokens from the provider's hardcoded `MODEL_RATES`
 /// table (abstract units matching `RunBudget`; estimates, never live pricing).
 ///
-/// The OpenAI-compatible providers (`xkiro`, `openrouter`, `nvidia`,
-/// `opencode_zen`, `openai_compat`) ride the shared OpenAI-compatible path,
-/// so they resolve through the native `OpenAI` table. Unknown providers and
-/// unknown model IDs yield `None` — never a guessed rate; callers fall back
-/// to their own policy default (the application pricing policy).
+/// The OpenAI-compatible providers (all presets in
+/// [`catalog::openai::OPENAI_COMPAT_PRESETS`] plus `openai_compat`) ride the
+/// shared OpenAI-compatible path, so they resolve through the native `OpenAI`
+/// table. Unknown providers and unknown model IDs yield `None` — never a
+/// guessed rate; callers fall back to their own policy default (the
+/// application pricing policy).
 #[must_use]
 pub(crate) fn rate_for_model(provider: &str, model: &str) -> Option<(u64, u64)> {
+    if provider == openai::PROVIDER_NAME
+        || provider == openai::COMPAT_NAME
+        || catalog::openai::find_preset(provider).is_some()
+    {
+        return openai::rate_for_model(model);
+    }
     match provider {
-        openai::PROVIDER_NAME
-        | openai::XKIRO_NAME
-        | openai::OPENROUTER_NAME
-        | openai::NVIDIA_NAME
-        | openai::OPENCODE_ZEN_NAME
-        | openai::COMPAT_NAME => openai::rate_for_model(model),
         anthropic::PROVIDER_NAME => anthropic::rate_for_model(model),
         gemini::PROVIDER_NAME => gemini::rate_for_model(model),
         _ => None,
@@ -93,9 +94,10 @@ pub(crate) fn rate_for_model_id(model: &str) -> Option<(u64, u64)> {
 }
 
 /// Collect `(name, display_name, supported_models)` for each registered
-/// provider. Kept as a small tuple helper so the list stays a single table.
+/// provider. Built from the native providers plus the data-driven
+/// [`catalog::openai::OPENAI_COMPAT_PRESETS`] table and `openai_compat`.
 fn provider_schemas() -> Vec<(&'static str, &'static str, &'static [&'static str])> {
-    vec![
+    let mut schemas = vec![
         (
             openai::PROVIDER_NAME,
             openai::PROVIDER_DISPLAY_NAME,
@@ -111,32 +113,16 @@ fn provider_schemas() -> Vec<(&'static str, &'static str, &'static [&'static str
             gemini::PROVIDER_DISPLAY_NAME,
             gemini::SUPPORTED_MODELS,
         ),
-        (
-            openai::XKIRO_NAME,
-            openai::XKIRO_DISPLAY_NAME,
-            openai::XKIRO_MODELS,
-        ),
-        (
-            openai::OPENROUTER_NAME,
-            openai::OPENROUTER_DISPLAY_NAME,
-            openai::OPENROUTER_MODELS,
-        ),
-        (
-            openai::NVIDIA_NAME,
-            openai::NVIDIA_DISPLAY_NAME,
-            openai::NVIDIA_MODELS,
-        ),
-        (
-            openai::OPENCODE_ZEN_NAME,
-            openai::OPENCODE_ZEN_DISPLAY_NAME,
-            openai::OPENCODE_ZEN_MODELS,
-        ),
-        // The user-configured OpenAI-compatible endpoint carries no hardcoded
-        // shortlist: the model identifier comes from the endpoint
-        // configuration, so the list is empty by design (the UI accepts the
-        // configured model identifier for it).
-        (openai::COMPAT_NAME, openai::COMPAT_DISPLAY_NAME, &[]),
-    ]
+    ];
+    for preset in catalog::openai::OPENAI_COMPAT_PRESETS {
+        schemas.push((preset.name, preset.display_name, preset.models));
+    }
+    // The user-configured OpenAI-compatible endpoint carries no hardcoded
+    // shortlist: the model identifier comes from the endpoint
+    // configuration, so the list is empty by design (the UI accepts the
+    // configured model identifier for it).
+    schemas.push((openai::COMPAT_NAME, openai::COMPAT_DISPLAY_NAME, &[]));
+    schemas
 }
 
 #[cfg(test)]
@@ -144,7 +130,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn supported_providers_lists_eight() {
+    fn supported_providers_lists_sixteen() {
         let providers = supported_providers();
         let names: Vec<&str> = providers.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(
@@ -157,24 +143,24 @@ mod tests {
                 "openrouter",
                 "nvidia",
                 "opencode_zen",
+                "deepseek",
+                "qwen",
+                "zai",
+                "minimax",
+                "moonshot",
+                "groq",
+                "xai",
+                "mistral",
                 "openai_compat",
             ]
         );
         for provider in &providers {
-            // Native OpenAI/Anthropic keep their curated 3-model lists; Gemini
-            // carries the live-smoke-gated 1.2.2 keep-list (7: chat 200 keep,
-            // tools 200 agent-usable, 429 stays, 404/503 dropped). The four
-            // OpenAI-compatible providers carry smoke-gated shortlists
-            // (xkiro 8, openrouter 8, nvidia 5, opencode_zen 5): an ID stays
-            // listed iff a live POST to the provider's `chat/completions`
-            // endpoint returns chat 2xx for it, and 429-only IDs stay listed.
-            // The user-configured endpoint (`openai_compat`) carries no
-            // hardcoded shortlist: its model identifier comes from the
-            // endpoint configuration, so the list is empty by design.
             let expected = match provider.name.as_str() {
                 "gemini" => 7,
                 "xkiro" | "openrouter" => 8,
                 "nvidia" | "opencode_zen" => 5,
+                "deepseek" | "minimax" => 2,
+                "qwen" | "moonshot" | "groq" | "mistral" => 4,
                 "openai_compat" => 0,
                 _ => 3,
             };

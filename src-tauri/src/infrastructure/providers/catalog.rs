@@ -145,6 +145,34 @@ pub(crate) mod openai {
         ("gpt-5.6-luna", 500_000, 2_000_000),
         ("gpt-5.6-sol", 5_000_000, 20_000_000),
     ];
+    /// Per-model baseline capability specification for curated presets.
+    ///
+    /// Anchors context windows, reasoning efforts, thinking, attachment, and
+    /// tool support for flagship models until overridden by live `/models`
+    /// metadata or an explicit user override (`ManualOverride > ApiMetadata >
+    /// BuiltInCatalog > Unknown`).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct BaselineModelSpec {
+        pub model: &'static str,
+        pub context_window: u32,
+        pub supported_efforts: &'static [&'static str],
+        pub supports_thinking: bool,
+        pub supports_attachments: bool,
+        pub supports_tools: bool,
+    }
+
+    /// Data-driven descriptor for an OpenAI-compatible provider preset.
+    #[derive(Debug, Clone, Copy)]
+    pub(crate) struct OpenAiPresetDescriptor {
+        pub name: &'static str,
+        pub display_name: &'static str,
+        pub endpoint: &'static str,
+        pub host: &'static str,
+        pub extra_headers: &'static [(&'static str, &'static str)],
+        pub models: &'static [&'static str],
+        pub baseline_specs: &'static [BaselineModelSpec],
+    }
+
     /// OpenAI-compatible provider identities sharing [`crate::infrastructure::providers::openai::OpenAiExecutor`].
     ///
     /// Curated hardcoded model shortlists (DATABASE.md §7.5); `MODELS[0]` is the
@@ -177,6 +205,10 @@ pub(crate) mod openai {
     pub(crate) const OPENROUTER_NAME: &str = "openrouter";
     pub(crate) const OPENROUTER_DISPLAY_NAME: &str = "OpenRouter";
     pub(crate) const OPENROUTER_ENDPOINT: &str = "https://openrouter.ai/api/v1/chat/completions";
+    pub(crate) const OPENROUTER_HEADERS: &[(&str, &str)] = &[
+        ("HTTP-Referer", "https://github.com/sshdw/Nexora"),
+        ("X-Title", "Nexora"),
+    ];
     pub(crate) const OPENROUTER_MODELS: &[&str] = &[
         "inclusionai/ling-3.0-flash-fin:free",
         "nvidia/nemotron-3.5-lightning:free",
@@ -207,6 +239,433 @@ pub(crate) mod openai {
         "big-pickle",
         "mimo-v2.5-free",
     ];
+
+    pub(crate) const DEEPSEEK_NAME: &str = "deepseek";
+    pub(crate) const DEEPSEEK_DISPLAY_NAME: &str = "DeepSeek";
+    pub(crate) const DEEPSEEK_ENDPOINT: &str = "https://api.deepseek.com/v1/chat/completions";
+    pub(crate) const DEEPSEEK_MODELS: &[&str] = &["deepseek-chat", "deepseek-reasoner"];
+    const DEEPSEEK_SPECS: &[BaselineModelSpec] = &[
+        BaselineModelSpec {
+            model: "deepseek-chat",
+            context_window: 128_000,
+            supported_efforts: &[],
+            supports_thinking: false,
+            supports_attachments: false,
+            supports_tools: true,
+        },
+        BaselineModelSpec {
+            model: "deepseek-reasoner",
+            context_window: 128_000,
+            supported_efforts: &["low", "medium", "high"],
+            supports_thinking: true,
+            supports_attachments: false,
+            supports_tools: true,
+        },
+    ];
+
+    pub(crate) const QWEN_NAME: &str = "qwen";
+    pub(crate) const QWEN_DISPLAY_NAME: &str = "Alibaba / Qwen";
+    pub(crate) const QWEN_ENDPOINT: &str =
+        "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
+    pub(crate) const QWEN_MODELS: &[&str] = &["qwen-max", "qwen-plus", "qwq-plus", "qwen-vl-max"];
+    const QWEN_SPECS: &[BaselineModelSpec] = &[
+        BaselineModelSpec {
+            model: "qwen-max",
+            context_window: 128_000,
+            supported_efforts: &[],
+            supports_thinking: false,
+            supports_attachments: false,
+            supports_tools: true,
+        },
+        BaselineModelSpec {
+            model: "qwen-plus",
+            context_window: 131_072,
+            supported_efforts: &["low", "medium", "high"],
+            supports_thinking: true,
+            supports_attachments: false,
+            supports_tools: true,
+        },
+        BaselineModelSpec {
+            model: "qwq-plus",
+            context_window: 131_072,
+            supported_efforts: &["low", "medium", "high"],
+            supports_thinking: true,
+            supports_attachments: false,
+            supports_tools: true,
+        },
+        BaselineModelSpec {
+            model: "qwen-vl-max",
+            context_window: 128_000,
+            supported_efforts: &[],
+            supports_thinking: false,
+            supports_attachments: true,
+            supports_tools: true,
+        },
+    ];
+
+    pub(crate) const ZAI_NAME: &str = "zai";
+    pub(crate) const ZAI_DISPLAY_NAME: &str = "ZAI";
+    pub(crate) const ZAI_ENDPOINT: &str = "https://api.z.ai/api/paas/v4/chat/completions";
+    pub(crate) const ZAI_MODELS: &[&str] = &["glm-4.5", "glm-4.5-air", "glm-4-plus"];
+    const ZAI_SPECS: &[BaselineModelSpec] = &[
+        BaselineModelSpec {
+            model: "glm-4.5",
+            context_window: 128_000,
+            supported_efforts: &["low", "medium", "high"],
+            supports_thinking: true,
+            supports_attachments: false,
+            supports_tools: true,
+        },
+        BaselineModelSpec {
+            model: "glm-4.5-air",
+            context_window: 128_000,
+            supported_efforts: &["low", "medium", "high"],
+            supports_thinking: true,
+            supports_attachments: false,
+            supports_tools: true,
+        },
+        BaselineModelSpec {
+            model: "glm-4-plus",
+            context_window: 128_000,
+            supported_efforts: &[],
+            supports_thinking: false,
+            supports_attachments: false,
+            supports_tools: true,
+        },
+    ];
+
+    pub(crate) const MINIMAX_NAME: &str = "minimax";
+    pub(crate) const MINIMAX_DISPLAY_NAME: &str = "MiniMax";
+    pub(crate) const MINIMAX_ENDPOINT: &str = "https://api.minimax.io/v1/chat/completions";
+    pub(crate) const MINIMAX_MODELS: &[&str] = &["MiniMax-M1", "MiniMax-Text-01"];
+    const MINIMAX_SPECS: &[BaselineModelSpec] = &[
+        BaselineModelSpec {
+            model: "MiniMax-M1",
+            context_window: 1_000_000,
+            supported_efforts: &["low", "medium", "high"],
+            supports_thinking: true,
+            supports_attachments: false,
+            supports_tools: true,
+        },
+        BaselineModelSpec {
+            model: "MiniMax-Text-01",
+            context_window: 1_000_000,
+            supported_efforts: &[],
+            supports_thinking: false,
+            supports_attachments: false,
+            supports_tools: true,
+        },
+    ];
+
+    pub(crate) const MOONSHOT_NAME: &str = "moonshot";
+    pub(crate) const MOONSHOT_DISPLAY_NAME: &str = "Moonshot / Kimi";
+    pub(crate) const MOONSHOT_ENDPOINT: &str = "https://api.moonshot.ai/v1/chat/completions";
+    pub(crate) const MOONSHOT_MODELS: &[&str] = &[
+        "kimi-k2-0711-preview",
+        "kimi-thinking-preview",
+        "moonshot-v1-128k",
+        "moonshot-v1-128k-vision-preview",
+    ];
+    const MOONSHOT_SPECS: &[BaselineModelSpec] = &[
+        BaselineModelSpec {
+            model: "kimi-k2-0711-preview",
+            context_window: 128_000,
+            supported_efforts: &[],
+            supports_thinking: false,
+            supports_attachments: false,
+            supports_tools: true,
+        },
+        BaselineModelSpec {
+            model: "kimi-thinking-preview",
+            context_window: 128_000,
+            supported_efforts: &["low", "medium", "high"],
+            supports_thinking: true,
+            supports_attachments: false,
+            supports_tools: true,
+        },
+        BaselineModelSpec {
+            model: "moonshot-v1-128k",
+            context_window: 128_000,
+            supported_efforts: &[],
+            supports_thinking: false,
+            supports_attachments: false,
+            supports_tools: true,
+        },
+        BaselineModelSpec {
+            model: "moonshot-v1-128k-vision-preview",
+            context_window: 128_000,
+            supported_efforts: &[],
+            supports_thinking: false,
+            supports_attachments: true,
+            supports_tools: true,
+        },
+    ];
+
+    pub(crate) const GROQ_NAME: &str = "groq";
+    pub(crate) const GROQ_DISPLAY_NAME: &str = "Groq";
+    pub(crate) const GROQ_ENDPOINT: &str = "https://api.groq.com/openai/v1/chat/completions";
+    pub(crate) const GROQ_MODELS: &[&str] = &[
+        "llama-3.3-70b-versatile",
+        "deepseek-r1-distill-llama-70b",
+        "meta-llama/llama-4-scout-17b-16e-instruct",
+        "qwen-qwq-32b",
+    ];
+    const GROQ_SPECS: &[BaselineModelSpec] = &[
+        BaselineModelSpec {
+            model: "llama-3.3-70b-versatile",
+            context_window: 131_072,
+            supported_efforts: &[],
+            supports_thinking: false,
+            supports_attachments: false,
+            supports_tools: true,
+        },
+        BaselineModelSpec {
+            model: "deepseek-r1-distill-llama-70b",
+            context_window: 131_072,
+            supported_efforts: &["low", "medium", "high"],
+            supports_thinking: true,
+            supports_attachments: false,
+            supports_tools: true,
+        },
+        BaselineModelSpec {
+            model: "meta-llama/llama-4-scout-17b-16e-instruct",
+            context_window: 131_072,
+            supported_efforts: &[],
+            supports_thinking: false,
+            supports_attachments: true,
+            supports_tools: true,
+        },
+        BaselineModelSpec {
+            model: "qwen-qwq-32b",
+            context_window: 131_072,
+            supported_efforts: &["low", "medium", "high"],
+            supports_thinking: true,
+            supports_attachments: false,
+            supports_tools: true,
+        },
+    ];
+
+    pub(crate) const XAI_NAME: &str = "xai";
+    pub(crate) const XAI_DISPLAY_NAME: &str = "xAI";
+    pub(crate) const XAI_ENDPOINT: &str = "https://api.x.ai/v1/chat/completions";
+    pub(crate) const XAI_MODELS: &[&str] = &["grok-3", "grok-3-mini", "grok-2-vision-1212"];
+    const XAI_SPECS: &[BaselineModelSpec] = &[
+        BaselineModelSpec {
+            model: "grok-3",
+            context_window: 131_072,
+            supported_efforts: &[],
+            supports_thinking: false,
+            supports_attachments: false,
+            supports_tools: true,
+        },
+        BaselineModelSpec {
+            model: "grok-3-mini",
+            context_window: 131_072,
+            supported_efforts: &["low", "high"],
+            supports_thinking: true,
+            supports_attachments: false,
+            supports_tools: true,
+        },
+        BaselineModelSpec {
+            model: "grok-2-vision-1212",
+            context_window: 32_768,
+            supported_efforts: &[],
+            supports_thinking: false,
+            supports_attachments: true,
+            supports_tools: true,
+        },
+    ];
+
+    pub(crate) const MISTRAL_NAME: &str = "mistral";
+    pub(crate) const MISTRAL_DISPLAY_NAME: &str = "Mistral";
+    pub(crate) const MISTRAL_ENDPOINT: &str = "https://api.mistral.ai/v1/chat/completions";
+    pub(crate) const MISTRAL_MODELS: &[&str] = &[
+        "mistral-large-latest",
+        "magistral-medium-latest",
+        "codestral-latest",
+        "pixtral-large-latest",
+    ];
+    const MISTRAL_SPECS: &[BaselineModelSpec] = &[
+        BaselineModelSpec {
+            model: "mistral-large-latest",
+            context_window: 131_072,
+            supported_efforts: &[],
+            supports_thinking: false,
+            supports_attachments: false,
+            supports_tools: true,
+        },
+        BaselineModelSpec {
+            model: "magistral-medium-latest",
+            context_window: 128_000,
+            supported_efforts: &["low", "medium", "high"],
+            supports_thinking: true,
+            supports_attachments: false,
+            supports_tools: true,
+        },
+        BaselineModelSpec {
+            model: "codestral-latest",
+            context_window: 256_000,
+            supported_efforts: &[],
+            supports_thinking: false,
+            supports_attachments: false,
+            supports_tools: true,
+        },
+        BaselineModelSpec {
+            model: "pixtral-large-latest",
+            context_window: 131_072,
+            supported_efforts: &[],
+            supports_thinking: false,
+            supports_attachments: true,
+            supports_tools: true,
+        },
+    ];
+
+    /// Single data-driven descriptor table for all curated OpenAI-compatible presets.
+    pub(crate) const OPENAI_COMPAT_PRESETS: &[OpenAiPresetDescriptor] = &[
+        OpenAiPresetDescriptor {
+            name: XKIRO_NAME,
+            display_name: XKIRO_DISPLAY_NAME,
+            endpoint: XKIRO_ENDPOINT,
+            host: "api.xkiro.com",
+            extra_headers: &[],
+            models: XKIRO_MODELS,
+            baseline_specs: &[],
+        },
+        OpenAiPresetDescriptor {
+            name: OPENROUTER_NAME,
+            display_name: OPENROUTER_DISPLAY_NAME,
+            endpoint: OPENROUTER_ENDPOINT,
+            host: "openrouter.ai",
+            extra_headers: OPENROUTER_HEADERS,
+            models: OPENROUTER_MODELS,
+            baseline_specs: &[],
+        },
+        OpenAiPresetDescriptor {
+            name: NVIDIA_NAME,
+            display_name: NVIDIA_DISPLAY_NAME,
+            endpoint: NVIDIA_ENDPOINT,
+            host: "integrate.api.nvidia.com",
+            extra_headers: &[],
+            models: NVIDIA_MODELS,
+            baseline_specs: &[],
+        },
+        OpenAiPresetDescriptor {
+            name: OPENCODE_ZEN_NAME,
+            display_name: OPENCODE_ZEN_DISPLAY_NAME,
+            endpoint: OPENCODE_ZEN_ENDPOINT,
+            host: "opencode.ai",
+            extra_headers: &[],
+            models: OPENCODE_ZEN_MODELS,
+            baseline_specs: &[],
+        },
+        OpenAiPresetDescriptor {
+            name: DEEPSEEK_NAME,
+            display_name: DEEPSEEK_DISPLAY_NAME,
+            endpoint: DEEPSEEK_ENDPOINT,
+            host: "api.deepseek.com",
+            extra_headers: &[],
+            models: DEEPSEEK_MODELS,
+            baseline_specs: DEEPSEEK_SPECS,
+        },
+        OpenAiPresetDescriptor {
+            name: QWEN_NAME,
+            display_name: QWEN_DISPLAY_NAME,
+            endpoint: QWEN_ENDPOINT,
+            host: "dashscope.aliyuncs.com",
+            extra_headers: &[],
+            models: QWEN_MODELS,
+            baseline_specs: QWEN_SPECS,
+        },
+        OpenAiPresetDescriptor {
+            name: ZAI_NAME,
+            display_name: ZAI_DISPLAY_NAME,
+            endpoint: ZAI_ENDPOINT,
+            host: "api.z.ai",
+            extra_headers: &[],
+            models: ZAI_MODELS,
+            baseline_specs: ZAI_SPECS,
+        },
+        OpenAiPresetDescriptor {
+            name: MINIMAX_NAME,
+            display_name: MINIMAX_DISPLAY_NAME,
+            endpoint: MINIMAX_ENDPOINT,
+            host: "api.minimax.io",
+            extra_headers: &[],
+            models: MINIMAX_MODELS,
+            baseline_specs: MINIMAX_SPECS,
+        },
+        OpenAiPresetDescriptor {
+            name: MOONSHOT_NAME,
+            display_name: MOONSHOT_DISPLAY_NAME,
+            endpoint: MOONSHOT_ENDPOINT,
+            host: "api.moonshot.ai",
+            extra_headers: &[],
+            models: MOONSHOT_MODELS,
+            baseline_specs: MOONSHOT_SPECS,
+        },
+        OpenAiPresetDescriptor {
+            name: GROQ_NAME,
+            display_name: GROQ_DISPLAY_NAME,
+            endpoint: GROQ_ENDPOINT,
+            host: "api.groq.com",
+            extra_headers: &[],
+            models: GROQ_MODELS,
+            baseline_specs: GROQ_SPECS,
+        },
+        OpenAiPresetDescriptor {
+            name: XAI_NAME,
+            display_name: XAI_DISPLAY_NAME,
+            endpoint: XAI_ENDPOINT,
+            host: "api.x.ai",
+            extra_headers: &[],
+            models: XAI_MODELS,
+            baseline_specs: XAI_SPECS,
+        },
+        OpenAiPresetDescriptor {
+            name: MISTRAL_NAME,
+            display_name: MISTRAL_DISPLAY_NAME,
+            endpoint: MISTRAL_ENDPOINT,
+            host: "api.mistral.ai",
+            extra_headers: &[],
+            models: MISTRAL_MODELS,
+            baseline_specs: MISTRAL_SPECS,
+        },
+    ];
+
+    /// Look up a curated OpenAI-compatible preset descriptor by internal name.
+    #[must_use]
+    pub(crate) fn find_preset(name: &str) -> Option<&'static OpenAiPresetDescriptor> {
+        OPENAI_COMPAT_PRESETS
+            .iter()
+            .find(|preset| preset.name == name)
+    }
+
+    /// Look up a baseline capability spec for `(connection_id, model_id)`.
+    #[must_use]
+    pub(crate) fn find_preset_model_spec(
+        connection_id: &str,
+        model_id: &str,
+    ) -> Option<&'static BaselineModelSpec> {
+        find_preset(connection_id)?
+            .baseline_specs
+            .iter()
+            .find(|spec| spec.model == model_id)
+    }
+
+    /// Look up a baseline context window by model ID across all presets.
+    #[must_use]
+    pub(crate) fn preset_model_context_limit(model_id: &str) -> Option<u64> {
+        for preset in OPENAI_COMPAT_PRESETS {
+            if let Some(spec) = preset.baseline_specs.iter().find(|s| s.model == model_id) {
+                return Some(u64::from(spec.context_window));
+            }
+            if preset.models.contains(&model_id) {
+                return Some(128_000);
+            }
+        }
+        None
+    }
+
     /// User-configured OpenAI-compatible endpoint identity (DATABASE.md §7.5).
     ///
     /// Unlike the curated providers above, this entry carries no hardcoded model
