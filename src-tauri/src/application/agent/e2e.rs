@@ -1569,6 +1569,7 @@ fn e2e_duplicate_run_rejected_parallel_ok() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // Keep the legacy mode plus mandatory consent end-to-end proof together.
 fn e2e_autonomy_setting_respected() {
     let (db, db_path) = e2e_db("autonomy");
     let ws = e2e_workspace("autonomy");
@@ -1622,7 +1623,27 @@ fn e2e_autonomy_setting_respected() {
     )
     .expect("start");
 
-    let frames = collect_until_finished(&rx);
+    let mut frames = Vec::new();
+    loop {
+        let frame = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("bounded completion");
+        if let RunFrame::Governance {
+            event: AgentRunEvent::ApprovalRequested { ref call_id, .. },
+            ..
+        } = frame
+        {
+            assert_eq!(
+                registry.resolve(run_id, call_id, true),
+                crate::application::agent::registry::ResolveOutcome::Resolved
+            );
+        }
+        let finished = matches!(frame, RunFrame::Finished { .. });
+        frames.push(frame);
+        if finished {
+            break;
+        }
+    }
 
     // No approval should have been requested in full_autonomous
     let approval_requested_in_stream = frames.iter().any(|f| {
@@ -1635,8 +1656,8 @@ fn e2e_autonomy_setting_respected() {
         )
     });
     assert!(
-        !approval_requested_in_stream,
-        "full_autonomous must not park on write_file, got approvals in {frames:?}"
+        approval_requested_in_stream,
+        "full_autonomous must retain the Standard checkpoint consent floor, got frames in {frames:?}"
     );
 
     let last = frames.last().expect("frames");
@@ -1659,18 +1680,18 @@ fn e2e_autonomy_setting_respected() {
         run.mode
     );
 
-    // File must exist (write executed without park)
+    // Legacy autonomy persists, while the access ceiling still requires consent.
     let content = std::fs::read_to_string(ws.join("auto.txt")).expect("file exists");
     assert_eq!(content, "full auto");
 
-    // Steps contain tool_call but no approval
+    // The actual consent and tool execution are both recorded.
     let steps = AgentRunRepository::new(&db)
         .list_steps(run_id)
         .expect("steps");
     let has_approval_step = steps.iter().any(|s| s.kind == "approval");
     assert!(
-        !has_approval_step,
-        "full autonomous must have no approval steps, got {steps:?}"
+        has_approval_step,
+        "the Standard checkpoint floor must record user consent, got {steps:?}"
     );
     let has_tool = steps
         .iter()

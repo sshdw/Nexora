@@ -438,7 +438,7 @@ pub(crate) struct IgnoreRules {
 /// trailing spaces are trimmed, and only the first
 /// [`MAX_IGNORE_PATTERNS`] patterns are kept.
 #[must_use]
-fn parse_ignore_rules(text: &str) -> IgnoreRules {
+pub(crate) fn parse_ignore_rules(text: &str) -> IgnoreRules {
     let mut patterns = Vec::new();
     for raw_line in text.lines() {
         let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);

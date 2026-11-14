@@ -415,7 +415,11 @@ mod tests {
             }),
             Ok(text_response("recovered")),
         ]);
-        let runner = AgentRunner::new(&fake, &ws).with_role(AgentRole::Observer);
+        let runner = AgentRunner::new(&fake, &ws)
+            .with_approval_gate(crate::application::agent::approval::ApprovalGate::new(
+                crate::application::agent::approval::AutonomyMode::FullAutonomous,
+            ))
+            .with_role(AgentRole::Observer);
 
         let answer = runner
             .run("openai", "m", "cred", "q")

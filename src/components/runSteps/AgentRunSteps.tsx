@@ -34,7 +34,12 @@ export interface AgentRunStepsProps {
    * the props stay referentially stable across renders. An inline arrow per
    * row (one per run, rebuilt on every message frame) would defeat the memo
    * below and re-render every run in the thread each time any run advances. */
-  onResolveApproval: (runId: number, callId: string, approved: boolean) => void;
+  onResolveApproval: (
+    runId: number,
+    callId: string,
+    approved: boolean,
+    scope?: "single" | "group"
+  ) => void;
   onCancel: (runId: number) => void;
   onContinue: (runId: number) => void;
   onPause?: (runId: number) => void;
@@ -495,6 +500,25 @@ function AgentRunSteps({
         >
           <div className="nex-agent-approval-text">
             <strong>{pending.name}</strong> {t("agent.approvalSuffix")}
+            {pending.metadata?.shell && (
+              <>
+                <p>{t(`agent.category.${pending.metadata.shell.category}`)}</p>
+                <p>{t("agent.shellFallback")}</p>
+                {pending.metadata.shell.packages.length > 0 && (
+                  <p>{pending.metadata.shell.packages.join(", ")}</p>
+                )}
+                {pending.metadata.shell.category === "DependencyInstall" &&
+                  !pending.metadata.shell.packages_exact && (
+                    <p>{t("agent.packagesUnknown")}</p>
+                  )}
+                {pending.metadata.shell.uncertain && (
+                  <p>{t("agent.shellUncertain")}</p>
+                )}
+              </>
+            )}
+            {pending.metadata?.sensitive_write && (
+              <p>{t("agent.sensitiveWrite")}</p>
+            )}
             <pre className="nex-agent-step-args nex-tag-mono">
               {pending.arguments}
             </pre>
@@ -508,8 +532,25 @@ function AgentRunSteps({
                   onResolveApproval(run.run_id, pending.call_id, true)
                 }
               >
-                {t("agent.approve")}
+                {t("agent.allowOnce")}
               </M3Button>
+              {pending.name !== "execute_command" &&
+                pending.metadata?.allow_for_run && (
+                  <M3Button
+                    variant="quiet"
+                    size="sm"
+                    onClick={() =>
+                      onResolveApproval(
+                        run.run_id,
+                        pending.call_id,
+                        true,
+                        "group"
+                      )
+                    }
+                  >
+                    {t("agent.allowRun")}
+                  </M3Button>
+                )}
               {/* Deny is a GHOST, not a red button (O-02: "Approve primary,
                   Deny ghost"). Declining is the safe answer, so it must not
                   wear the error colour that the brief reserves for states;

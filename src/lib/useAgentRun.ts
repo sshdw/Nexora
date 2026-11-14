@@ -8,10 +8,12 @@ import { listen } from "@tauri-apps/api/event";
 
 import {
   type AgentRunEventPayload,
+  type ApprovalMetadata,
   type AgentStep,
   type DurableRunEvent,
   type StepEventFrame,
   getAgentStepObservation,
+  inspectRunLive,
   listAgentRuns,
   listAgentSteps,
   listConversationRunEvents,
@@ -66,6 +68,7 @@ export interface AgentRunView {
    *  reload lands). Lets the run line stay honest while steps are unloaded. */
   total_steps: number | null;
   pending_approval: {
+    metadata?: ApprovalMetadata;
     call_id: string;
     name: string;
     arguments: string;
@@ -375,6 +378,10 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
         session.historyFloor = owned.length
           ? Math.min(...owned.map((run) => run.id))
           : 0;
+      const live = owned.some((run) => run.status === "running")
+        ? await inspectRunLive(session.conversationId).catch(() => undefined)
+        : undefined;
+      if (!current(session) || request !== session.request) return;
       const views = owned.map((row): AgentRunView => {
         const old = session.runs.find((run) => run.run_id === row.id);
         const status = row.interrupted ? "interrupted" : row.status;
@@ -398,8 +405,14 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
             old?.steps.length ?? 0
           ),
         };
+        // Only the live server snapshot can restore a parked consent UI.
+        // Persisted history never creates executable or pending approvals.
         merged.pending_approval = isActive(merged.status)
-          ? (old?.pending_approval ?? null)
+          ? !changed && live !== undefined
+            ? live?.run_id === row.id
+              ? live.pending_approval
+              : null
+            : (old?.pending_approval ?? null)
           : null;
         if (
           old &&
@@ -627,6 +640,7 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
             return {
               ...run,
               pending_approval: {
+                metadata: gov.metadata,
                 call_id: gov.call_id,
                 name: gov.name,
                 arguments: gov.arguments,

@@ -548,3 +548,14 @@ Backward compatibility should be preserved whenever practical.
 
 Architecture changes require explicit review before implementation.
 
+## M04 defense-in-depth permission boundary (Stage 2 PR 2A)
+
+Application-level permission enforcement remains behind the typed IPC layer. The dispatcher computes an effective access ceiling from the persisted selected profile, Plan restriction, parent ceiling, workspace boundary, sensitive-path classification, shell analysis, active policy and verified sandbox posture. Rules and approval caches can narrow this result; they cannot override hard denies or mandatory per-command consent. Revalidate execution-relevant identity and posture before dispatch so stale approvals cannot execute a changed call.
+
+A native shell parser/classifier inspects all executable segments and nested expansions for the selected platform shell. The aggregate classification is the maximum risk; unsupported syntax, ambiguity and parse failure route to explicit approval. DependencyInstall reports the packages, DestructiveGit covers destructive Git operations, PublishOrRemote covers publishing/remote mutation, MassDelete covers recursive or greater-than-three-file deletion, and GeneralShell covers other shell execution. Shell consent is command-specific, including when native OS isolation is unavailable.
+
+Canonical workspace/path validation must account for symbolic links and platform-specific path semantics. Private credential/home deny-read stores and agent self-modification protection are non-overridable ceilings. Sensitive writes cannot use the Standard automatic-write path. File/tool group reuse is permitted only for an unchanged identity tuple (workspace, tool, canonical command/path, environment fingerprint, sandbox posture, profile, policy fingerprint). Fingerprints and diagnostics must not expose credentials or environment secrets. Profile/policy/posture changes invalidate existing grants immediately.
+
+Persist the selected profile through the existing app_settings repository; expose typed profile/classification/approval data through thin commands and IPC wrappers. Composer and Settings reflect the same profile. Existing autonomy/preset APIs remain compatibility controls subject to the effective access ceiling. Historical event reconstruction is presentation-only and cannot restore executable grants.
+
+Standard automatic writes depend on the Stage 2 PR 2B disk-backed pre-write checkpoint service; absent that capability, fail closed to explicit approval instead of silently writing automatically. Native verified GeneralShell isolation is a separate Stage 7 dependency; until then the execution posture is PerCommandConsent. Do not imply either dependency is satisfied from a path/cwd check or an in-memory snapshot.

@@ -160,6 +160,7 @@ pub(crate) fn spawn_task_run_with_deadline(
 /// Owned context for one loop pass: every borrow the step executor needs,
 /// bundled so the per-step helpers stay within the argument-count lint.
 pub(super) struct LoopCtx<'a> {
+    pub(super) access: crate::application::agent::access::AccessContext,
     pub(super) db: &'a Database,
     pub(super) agent_registry: &'a Arc<AgentRunRegistry>,
     pub(super) task_registry: &'a Arc<TaskRegistry>,
@@ -217,7 +218,7 @@ impl LoopCtx<'_> {
             total,
             prior,
         );
-        let Ok(run_id) = service::start_run(
+        let Ok(run_id) = service::start_run_with_parent(
             self.db,
             Arc::clone(self.agent_registry),
             Arc::clone(self.host),
@@ -234,6 +235,7 @@ impl LoopCtx<'_> {
             },
             self.config.mode,
             self.config.preset,
+            &self.access,
         ) else {
             // `start_run` failures are pre-spawn only (unknown conversation,
             // busy conversation, provider/credential, persistence, thread
@@ -487,6 +489,7 @@ fn run_task_loop_with_deadline(
     emit(TaskEvent::Started { task_id });
 
     let ctx = LoopCtx {
+        access: crate::application::agent::access::AccessContext::root(db),
         db,
         agent_registry,
         task_registry,

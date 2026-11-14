@@ -1053,6 +1053,14 @@ mod tests {
                 timeout_secs: 600,
                 requested_at: 1_700_000_000,
                 expires_at: 1_700_000_600,
+                metadata: ApprovalGate::new(AutonomyMode::Supervised).metadata(
+                    &crate::application::execution::ToolCall {
+                        id: "call-1".into(),
+                        name: "write_file".into(),
+                        arguments: "{}".into(),
+                        thought_signature: None,
+                    },
+                ),
             }),
             started_at: Some(1_699_999_000),
             finished_at: None,
@@ -1204,7 +1212,7 @@ mod tests {
         assert_eq!(view.status, "running");
         assert_eq!(view.parked_reason, "awaiting_approval");
         let pending = view.pending_approval.expect("park is reported");
-        assert_eq!(pending.call_id, "live-1");
+        assert!(gate.request_matches_for_test(&pending.call_id, "live-1"));
         assert_eq!(pending.name, "write_file");
         assert_eq!(pending.arguments, r#"{"path":"notes.md"}"#);
         assert_eq!(view.current_step_seq, Some(2));

@@ -108,7 +108,7 @@ fn single_tool_call_executes_and_observation_feeds_back_to_final_answer() {
         }),
         Ok(text_response("wrote notes.txt")),
     ]);
-    let runner = AgentRunner::new(&fake, &ws);
+    let runner = with_explicit_consent(AgentRunner::new(&fake, &ws));
 
     let answer = runner
         .run("openai", "m", "cred", "create notes")
@@ -190,7 +190,7 @@ fn multiple_tool_calls_in_one_response_are_all_handled() {
         }),
         Ok(text_response("did everything")),
     ]);
-    let runner = AgentRunner::new(&fake, &ws);
+    let runner = with_explicit_consent(AgentRunner::new(&fake, &ws));
 
     let answer = runner.run("openai", "m", "cred", "go").expect("finish");
     assert_eq!(answer, "did everything");
@@ -264,7 +264,7 @@ fn per_turn_tool_batch_is_bounded_and_every_call_stays_observed() {
         }),
         Ok(text_response("did everything")),
     ]);
-    let runner = AgentRunner::new(&fake, &ws);
+    let runner = with_explicit_consent(AgentRunner::new(&fake, &ws));
 
     let answer = runner.run("openai", "m", "cred", "go").expect("finish");
     assert_eq!(answer, "did everything");
@@ -325,7 +325,7 @@ fn unknown_tool_becomes_controlled_observation_and_loop_continues() {
         }),
         Ok(text_response("recovered")),
     ]);
-    let runner = AgentRunner::new(&fake, &ws);
+    let runner = with_explicit_consent(AgentRunner::new(&fake, &ws));
 
     let answer = runner.run("openai", "m", "cred", "try").expect("finish");
     assert_eq!(answer, "recovered");
@@ -365,7 +365,7 @@ fn malformed_arguments_become_error_observation_without_panic() {
         }),
         Ok(text_response("handled")),
     ]);
-    let runner = AgentRunner::new(&fake, &ws);
+    let runner = with_explicit_consent(AgentRunner::new(&fake, &ws));
 
     let answer = runner.run("openai", "m", "cred", "x").expect("finish");
     assert_eq!(answer, "handled");
@@ -403,7 +403,7 @@ fn tool_execution_failure_is_an_observation_and_run_stays_controlled() {
         }),
         Ok(text_response("kept going")),
     ]);
-    let runner = AgentRunner::new(&fake, &ws);
+    let runner = with_explicit_consent(AgentRunner::new(&fake, &ws));
 
     let answer = runner.run("openai", "m", "cred", "sneak").expect("finish");
     assert_eq!(answer, "kept going");
@@ -456,14 +456,15 @@ fn approval_matrix_supervised_read_requires_approval() {
             .recv_timeout(Duration::from_secs(5))
             .expect("ApprovalRequested");
         assert!(
-            matches!(ev, AgentRunEvent::ApprovalRequested { call_id, name, .. } if call_id=="r1" && name=="read_file")
+            matches!(ev, AgentRunEvent::ApprovalRequested { call_id, name, .. } if gate_for_driver.request_matches_for_test(call_id.as_str(), "r1") && name=="read_file")
         );
-        assert!(gate_for_driver.respond("r1", ApprovalDecision::Approved));
+        let request_id = gate_for_driver.request_id_for_test("r1").unwrap();
+        assert!(gate_for_driver.respond(&request_id, ApprovalDecision::Approved));
         let ev2 = rx
             .recv_timeout(Duration::from_secs(5))
             .expect("ApprovalResolved");
         assert!(
-            matches!(ev2, AgentRunEvent::ApprovalResolved { call_id, approved } if call_id=="r1" && approved)
+            matches!(ev2, AgentRunEvent::ApprovalResolved { call_id, approved } if call_id == request_id && approved)
         );
         rx.recv_timeout(Duration::from_secs(5)).expect("Completed")
     });
@@ -499,8 +500,10 @@ fn approval_matrix_supervised_mutating_requires_approval() {
     let gate_for_driver = gate.clone();
     let driver = thread::spawn(move || {
         let ev = rx.recv_timeout(Duration::from_secs(5)).expect("requested");
-        assert!(matches!(ev, AgentRunEvent::ApprovalRequested { call_id, .. } if call_id=="w1"));
-        gate_for_driver.respond("w1", ApprovalDecision::Approved);
+        assert!(
+            matches!(ev, AgentRunEvent::ApprovalRequested { call_id, .. } if gate_for_driver.request_matches_for_test(call_id.as_str(), "w1"))
+        );
+        gate_for_driver.respond_for_test("w1", ApprovalDecision::Approved);
         let ev2 = rx.recv_timeout(Duration::from_secs(5)).expect("resolved");
         assert!(matches!(
             ev2,
@@ -583,7 +586,7 @@ fn approval_matrix_semi_mutating_requires_approval() {
         assert!(
             matches!(ev, AgentRunEvent::ApprovalRequested { name, .. } if name=="execute_command")
         );
-        gate_for_driver.respond("w1", ApprovalDecision::Approved);
+        gate_for_driver.respond_for_test("w1", ApprovalDecision::Approved);
         rx.recv_timeout(Duration::from_secs(5)).expect("resolved");
         rx.recv_timeout(Duration::from_secs(5)).expect("completed")
     });
@@ -612,9 +615,8 @@ fn approval_matrix_full_read_auto() {
 }
 
 #[test]
-fn approval_matrix_full_mutating_auto() {
+fn approval_matrix_full_mutating_still_requires_consent_without_checkpoints() {
     let ws = temp_workspace();
-    let gate = ApprovalGate::new(AutonomyMode::FullAutonomous);
     let fake = FakeExecutor::new(vec![
         Ok(AiResponse {
             content: String::new(),
@@ -628,7 +630,7 @@ fn approval_matrix_full_mutating_auto() {
         }),
         Ok(text_response("ok")),
     ]);
-    let runner = AgentRunner::new(&fake, &ws).with_approval_gate(gate);
+    let runner = with_explicit_consent(AgentRunner::new(&fake, &ws));
     runner.run("openai", "m", "cred", "q").expect("auto");
     assert_eq!(fs::read_to_string(ws.join("auto.txt")).unwrap(), "x");
     let _ = fs::remove_dir_all(&ws);
@@ -660,7 +662,7 @@ fn denied_call_becomes_observation_and_loop_continues() {
     let driver = thread::spawn(move || {
         let ev = rx.recv_timeout(Duration::from_secs(5)).expect("requested");
         assert!(matches!(ev, AgentRunEvent::ApprovalRequested { .. }));
-        gate_for_driver.respond("w1", ApprovalDecision::Denied);
+        gate_for_driver.respond_for_test("w1", ApprovalDecision::Denied);
         let ev2 = rx.recv_timeout(Duration::from_secs(5)).expect("resolved");
         assert!(matches!(
             ev2,
@@ -824,8 +826,7 @@ fn runtime_mode_switch_mid_run_changes_next_decision() {
             gate_for_driver.cancel();
             panic!("first requested: timed out");
         };
-        let w1_requested =
-            matches!(&ev1, AgentRunEvent::ApprovalRequested { call_id, .. } if call_id == "w1");
+        let w1_requested = matches!(&ev1, AgentRunEvent::ApprovalRequested { call_id, .. } if gate_for_driver.request_matches_for_test(call_id.as_str(), "w1"));
         if !w1_requested {
             gate_for_driver.cancel();
             panic!("first event must request approval for w1, got {ev1:?}");
@@ -837,7 +838,7 @@ fn runtime_mode_switch_mid_run_changes_next_decision() {
         // even if the runner executes w1 and evaluates w2 before this
         // driver thread is rescheduled. Parked w1 still requires its
         // own `respond`, so w1 semantics are unchanged.
-        gate_for_driver.respond("w1", ApprovalDecision::Approved);
+        gate_for_driver.respond_for_test("w1", ApprovalDecision::Approved);
         // Do not assume the next event is Completed: drain until
         // `Completed { steps: 3 }`, skipping ApprovalResolved / step /
         // tool events. Cap the drain so a flood cannot loop.
@@ -852,10 +853,12 @@ fn runtime_mode_switch_mid_run_changes_next_decision() {
                     assert_eq!(steps, 3);
                     break;
                 }
-                Ok(AgentRunEvent::ApprovalRequested { call_id, .. }) if call_id == "w2" => {
+                Ok(AgentRunEvent::ApprovalRequested { call_id, .. })
+                    if gate_for_driver.request_matches_for_test(call_id.as_str(), "w2") =>
+                {
                     // Race relic on loaded CI: w2 parked before observing
                     // the mode switch. Approve it and keep draining.
-                    gate_for_driver.respond("w2", ApprovalDecision::Approved);
+                    gate_for_driver.respond_for_test("w2", ApprovalDecision::Approved);
                     seen += 1;
                 }
                 Ok(AgentRunEvent::Cancelled) => {
@@ -879,13 +882,16 @@ fn runtime_mode_switch_mid_run_changes_next_decision() {
     let answer = result.expect("completes");
     assert_eq!(answer, "done");
     driver.join().expect("driver");
-    assert_eq!(fs::read_to_string(ws.join("first.txt")).unwrap(), "1");
+    assert!(
+        !ws.join("first.txt").exists(),
+        "mode change invalidates the parked consent"
+    );
     assert_eq!(fs::read_to_string(ws.join("second.txt")).unwrap(), "2");
     let _ = fs::remove_dir_all(&ws);
 }
 
 #[test]
-fn no_gate_default_path_unchanged() {
+fn no_gate_mutation_fails_closed() {
     let ws = temp_workspace();
     let fake = FakeExecutor::new(vec![
         Ok(AiResponse {
@@ -903,7 +909,7 @@ fn no_gate_default_path_unchanged() {
     let runner = AgentRunner::new(&fake, &ws);
     let answer = runner.run("openai", "m", "cred", "q").expect("completes");
     assert_eq!(answer, "done");
-    assert_eq!(fs::read_to_string(ws.join("no_gate.txt")).unwrap(), "ok");
+    assert!(!ws.join("no_gate.txt").exists());
     let _ = fs::remove_dir_all(&ws);
 }
 
@@ -967,11 +973,11 @@ fn approval_immediate_resolve_after_requested_proceeds_without_race() {
             .recv_timeout(Duration::from_secs(5))
             .expect("ApprovalRequested");
         assert!(
-            matches!(ev, AgentRunEvent::ApprovalRequested { call_id, .. } if call_id == "race-1")
+            matches!(ev, AgentRunEvent::ApprovalRequested { call_id, .. } if gate_for_driver.request_matches_for_test(call_id.as_str(), "race-1"))
         );
         // Immediate resolve вЂ” must succeed; the race is closed by construction
         // because prepare_pending ran before the emit.
-        let resolved = gate_for_driver.respond("race-1", ApprovalDecision::Approved);
+        let resolved = gate_for_driver.respond_for_test("race-1", ApprovalDecision::Approved);
         assert!(
             resolved,
             "immediate respond must succeed вЂ” race closed by construction"
@@ -1047,7 +1053,7 @@ fn supervised_ignores_allow_rules() {
             matches!(ev, AgentRunEvent::ApprovalRequested { .. }),
             "Allow + Supervised still parks, got {ev:?}"
         );
-        assert!(gate_for_driver.respond("w1", ApprovalDecision::Approved));
+        assert!(gate_for_driver.respond_for_test("w1", ApprovalDecision::Approved));
         rx.recv_timeout(Duration::from_secs(5))
             .expect("ApprovalResolved");
         rx.recv_timeout(Duration::from_secs(5)).expect("Completed")
@@ -1244,10 +1250,10 @@ fn allow_rule_does_not_bypass_ladder_park() {
             .recv_timeout(Duration::from_secs(5))
             .expect("ApprovalRequested");
         assert!(
-            matches!(ev, AgentRunEvent::ApprovalRequested { ref call_id, .. } if call_id == "w1"),
+            matches!(ev, AgentRunEvent::ApprovalRequested { ref call_id, .. } if gate_for_driver.request_matches_for_test(call_id.as_str(), "w1")),
             "Allow + SemiAutonomous mutating call still parks, got {ev:?}"
         );
-        assert!(gate_for_driver.respond("w1", ApprovalDecision::Approved));
+        assert!(gate_for_driver.respond_for_test("w1", ApprovalDecision::Approved));
         rx.recv_timeout(Duration::from_secs(5))
             .expect("ApprovalResolved");
         rx.recv_timeout(Duration::from_secs(5)).expect("Completed")
@@ -1314,7 +1320,7 @@ fn allow_rule_never_authorizes_shell() {
             matches!(ev, AgentRunEvent::ApprovalRequested { ref name, .. } if name=="execute_command"),
             "shell Allow must park even in FullAutonomous, got {ev:?}"
         );
-        gate_for_driver.respond("s1", ApprovalDecision::Denied);
+        gate_for_driver.respond_for_test("s1", ApprovalDecision::Denied);
         let ev2 = rx.recv_timeout(Duration::from_secs(5)).expect("resolved");
         assert!(matches!(
             ev2,
@@ -1568,7 +1574,7 @@ fn ask_rule_parks_under_full_autonomous() {
             matches!(ev, AgentRunEvent::ApprovalRequested { ref name, .. } if name=="search_files"),
             "Ask + FullAutonomous must park, got {ev:?}"
         );
-        gate_for_driver.respond("s1", ApprovalDecision::Denied);
+        gate_for_driver.respond_for_test("s1", ApprovalDecision::Denied);
         let ev2 = rx.recv_timeout(Duration::from_secs(5)).expect("resolved");
         assert!(matches!(
             ev2,
@@ -1650,7 +1656,7 @@ fn ask_rule_parks_in_every_mode_for_ladder_auto_tools() {
                 matches!(ev, AgentRunEvent::ApprovalRequested { .. }),
                 "mode={mode:?}: non-shell Ask must park, got {ev:?}"
             );
-            gate_for_driver.respond("r1", ApprovalDecision::Denied);
+            gate_for_driver.respond_for_test("r1", ApprovalDecision::Denied);
             rx.recv_timeout(Duration::from_secs(5)).expect("resolved");
             rx.recv_timeout(Duration::from_secs(5)).expect("completed")
         });
@@ -1694,7 +1700,7 @@ fn group_scope_second_call_auto_resolves_with_shared_group_key() {
                 approval_call(
                     "w2",
                     "write_file",
-                    serde_json::json!({"path": "g/b.txt", "content": "2"}),
+                    serde_json::json!({"path": "g/a.txt", "content": "1"}),
                 ),
             ],
             usage: None,
@@ -1713,9 +1719,12 @@ fn group_scope_second_call_auto_resolves_with_shared_group_key() {
             match rx.recv_timeout(Duration::from_secs(5)).expect("event") {
                 AgentRunEvent::ApprovalRequested { call_id, .. } => {
                     requested += 1;
-                    assert_eq!(call_id, "w1", "only the first call may park");
+                    assert!(
+                        gate_for_driver.request_matches_for_test(&call_id, "w1"),
+                        "only the first call may park"
+                    );
                     assert!(gate_for_driver.respond_with_scope(
-                        "w1",
+                        &call_id,
                         ApprovalDecision::Approved,
                         Some("group")
                     ));
@@ -1731,7 +1740,7 @@ fn group_scope_second_call_auto_resolves_with_shared_group_key() {
     assert_eq!(answer, "done");
     driver.join().expect("driver joins");
     assert_eq!(fs::read_to_string(ws.join("g/a.txt")).unwrap(), "1");
-    assert_eq!(fs::read_to_string(ws.join("g/b.txt")).unwrap(), "2");
+    assert!(!ws.join("g/b.txt").exists());
     let runs = AgentRunRepository::new(&db);
     let run = &runs.list_runs_by_started_at_desc().expect("list")[0];
     let steps = runs.list_steps(run.id).expect("steps");
@@ -1760,7 +1769,8 @@ fn seed_shell_group(gate: &ApprovalGate, decision: ApprovalDecision, preset: Run
     let path = permissions::extract_path(&previous.name, &previous.arguments);
     let key = permissions::group_key(preset.as_str(), &previous.name, path.as_deref());
     gate.prepare_pending_with_group(&previous, Some(key));
-    assert!(gate.respond_with_scope("previous", decision, Some("group")));
+    assert!(!gate.respond_with_scope_for_test("previous", decision, Some("group")));
+    assert!(gate.respond_for_test("previous", decision));
     assert_eq!(gate.park_until_resolved(&previous), Ok(decision));
 }
 
@@ -1811,11 +1821,11 @@ fn shell_group_approval_cannot_bypass_modes_or_rules() {
                     .recv_timeout(Duration::from_secs(5))
                     .expect("per-call prompt");
                 assert!(
-                    matches!(event, AgentRunEvent::ApprovalRequested { ref call_id, .. } if call_id == "current"),
+                    matches!(event, AgentRunEvent::ApprovalRequested { ref call_id, .. } if driver_gate.request_matches_for_test(call_id.as_str(), "current")),
                     "mode={mode:?}, rule={effect:?}: {event:?}"
                 );
                 assert!(!marker.exists(), "shell must not dispatch before consent");
-                assert!(driver_gate.respond("current", ApprovalDecision::Denied));
+                assert!(driver_gate.respond_for_test("current", ApprovalDecision::Denied));
             });
             AgentRunner::new(&fake, &ws)
                 .with_approval_gate(gate)
@@ -1832,7 +1842,6 @@ fn shell_group_approval_cannot_bypass_modes_or_rules() {
 #[test]
 fn shell_group_denial_and_document_floor_remain_denials() {
     for (decision, preset, effect) in [
-        (ApprovalDecision::Denied, RunPreset::Coding, None),
         (
             ApprovalDecision::Approved,
             RunPreset::Coding,
@@ -1927,12 +1936,13 @@ fn shell_group_injection_hold_approval_is_current_call_consent() {
         while let Ok(event) = rx.recv_timeout(Duration::from_secs(5)) {
             if let AgentRunEvent::ApprovalRequested { call_id, .. } = event {
                 prompts += 1;
-                assert_eq!(call_id, "held");
-                assert!(driver_gate.respond_with_scope(
+                assert!(driver_gate.request_matches_for_test(&call_id, "held"));
+                assert!(!driver_gate.respond_with_scope(
                     &call_id,
                     ApprovalDecision::Approved,
                     Some("group")
                 ));
+                assert!(driver_gate.respond(&call_id, ApprovalDecision::Approved));
             }
         }
         prompts
@@ -2136,7 +2146,7 @@ fn coding_preset_shell_still_parks_per_ladder() {
         assert!(
             matches!(ev, AgentRunEvent::ApprovalRequested { name, .. } if name=="execute_command")
         );
-        gate_for_driver.respond("s1", ApprovalDecision::Approved);
+        gate_for_driver.respond_for_test("s1", ApprovalDecision::Approved);
         rx.recv_timeout(Duration::from_secs(5)).expect("resolved");
         rx.recv_timeout(Duration::from_secs(5)).expect("completed")
     });
@@ -2177,7 +2187,7 @@ fn full_autonomous_shell_parks_for_approval_without_rule() {
             matches!(ev, AgentRunEvent::ApprovalRequested { ref name, .. } if name=="execute_command"),
             "FullAutonomous shell must park, got {ev:?}"
         );
-        gate_for_driver.respond("s1", ApprovalDecision::Approved);
+        gate_for_driver.respond_for_test("s1", ApprovalDecision::Approved);
         rx.recv_timeout(Duration::from_secs(5)).expect("resolved");
         rx.recv_timeout(Duration::from_secs(5)).expect("completed")
     });
@@ -2234,7 +2244,7 @@ fn shell_ask_rule_parks_in_every_mode() {
                 matches!(ev, AgentRunEvent::ApprovalRequested { ref name, .. } if name=="execute_command"),
                 "mode={mode:?}: shell Ask must park, got {ev:?}"
             );
-            gate_for_driver.respond("s1", ApprovalDecision::Denied);
+            gate_for_driver.respond_for_test("s1", ApprovalDecision::Denied);
             let ev2 = rx.recv_timeout(Duration::from_secs(5)).expect("resolved");
             assert!(matches!(
                 ev2,
@@ -2382,10 +2392,10 @@ fn injection_hold_parks_next_call_even_when_ladder_auto_executes() {
     let driver = thread::spawn(move || {
         let ev = rx.recv_timeout(Duration::from_secs(5)).expect("requested");
         assert!(
-            matches!(ev, AgentRunEvent::ApprovalRequested { ref call_id, ref name, .. } if call_id=="w1" && name=="write_file"),
+            matches!(ev, AgentRunEvent::ApprovalRequested { ref call_id, ref name, .. } if gate_for_driver.request_matches_for_test(call_id.as_str(), "w1") && name=="write_file"),
             "injection hold must park the post-injection call, got {ev:?}"
         );
-        gate_for_driver.respond("w1", ApprovalDecision::Approved);
+        gate_for_driver.respond_for_test("w1", ApprovalDecision::Approved);
         let ev2 = rx.recv_timeout(Duration::from_secs(5)).expect("resolved");
         assert!(matches!(
             ev2,
@@ -2466,8 +2476,10 @@ fn mimicry_sample_parks_and_denial_continues_without_execute() {
     let gate_for_driver = gate.clone();
     let driver = thread::spawn(move || {
         let ev = rx.recv_timeout(Duration::from_secs(5)).expect("requested");
-        assert!(matches!(ev, AgentRunEvent::ApprovalRequested { call_id, .. } if call_id=="w1"));
-        gate_for_driver.respond("w1", ApprovalDecision::Denied);
+        assert!(
+            matches!(ev, AgentRunEvent::ApprovalRequested { call_id, .. } if gate_for_driver.request_matches_for_test(call_id.as_str(), "w1"))
+        );
+        gate_for_driver.respond_for_test("w1", ApprovalDecision::Denied);
         let ev2 = rx.recv_timeout(Duration::from_secs(5)).expect("resolved");
         assert!(matches!(
             ev2,
@@ -2552,10 +2564,10 @@ fn injection_hold_prompts_once_under_supervised() {
             .recv_timeout(Duration::from_secs(5))
             .expect("requested r1");
         assert!(
-            matches!(ev, AgentRunEvent::ApprovalRequested { ref call_id, .. } if call_id=="r1"),
+            matches!(ev, AgentRunEvent::ApprovalRequested { ref call_id, .. } if gate_for_driver.request_matches_for_test(call_id.as_str(), "r1")),
             "ladder must park r1, got {ev:?}"
         );
-        gate_for_driver.respond("r1", ApprovalDecision::Approved);
+        gate_for_driver.respond_for_test("r1", ApprovalDecision::Approved);
         let ev = rx
             .recv_timeout(Duration::from_secs(5))
             .expect("resolved r1");
@@ -2568,10 +2580,10 @@ fn injection_hold_prompts_once_under_supervised() {
             .recv_timeout(Duration::from_secs(5))
             .expect("requested w1");
         assert!(
-            matches!(ev, AgentRunEvent::ApprovalRequested { ref call_id, .. } if call_id=="w1"),
+            matches!(ev, AgentRunEvent::ApprovalRequested { ref call_id, .. } if gate_for_driver.request_matches_for_test(call_id.as_str(), "w1")),
             "hold must park w1, got {ev:?}"
         );
-        gate_for_driver.respond("w1", ApprovalDecision::Approved);
+        gate_for_driver.respond_for_test("w1", ApprovalDecision::Approved);
         let ev = rx
             .recv_timeout(Duration::from_secs(5))
             .expect("resolved w1");
@@ -2661,10 +2673,10 @@ fn injection_hold_approval_still_reaches_ask_rule() {
             .recv_timeout(Duration::from_secs(5))
             .expect("hold requested");
         assert!(
-            matches!(ev, AgentRunEvent::ApprovalRequested { ref call_id, .. } if call_id=="w1"),
+            matches!(ev, AgentRunEvent::ApprovalRequested { ref call_id, .. } if gate_for_driver.request_matches_for_test(call_id.as_str(), "w1")),
             "hold must park w1, got {ev:?}"
         );
-        gate_for_driver.respond("w1", ApprovalDecision::Approved);
+        gate_for_driver.respond_for_test("w1", ApprovalDecision::Approved);
         let ev = rx
             .recv_timeout(Duration::from_secs(5))
             .expect("hold resolved");
@@ -2677,10 +2689,10 @@ fn injection_hold_approval_still_reaches_ask_rule() {
             .recv_timeout(Duration::from_secs(5))
             .expect("ask requested");
         assert!(
-            matches!(ev, AgentRunEvent::ApprovalRequested { ref call_id, .. } if call_id=="w1"),
+            matches!(ev, AgentRunEvent::ApprovalRequested { ref call_id, .. } if gate_for_driver.request_matches_for_test(call_id.as_str(), "w1")),
             "ask rule must still park w1, got {ev:?}"
         );
-        gate_for_driver.respond("w1", ApprovalDecision::Approved);
+        gate_for_driver.respond_for_test("w1", ApprovalDecision::Approved);
         let ev = rx
             .recv_timeout(Duration::from_secs(5))
             .expect("ask resolved");
@@ -2750,8 +2762,8 @@ fn injection_hold_denies_without_a_gate_to_park_on() {
         .expect("tool result present");
     assert_eq!(denied.call_id, "w1");
     assert_eq!(
-        denied.content, "Error: tool execution was denied by the user",
-        "gateless hold reuses the frozen denial verbatim"
+        denied.content, "Error: tool is blocked by the effective access profile",
+        "gateless mutations fail at the stronger access ceiling"
     );
     let _ = fs::remove_dir_all(&ws);
 }
@@ -2779,9 +2791,9 @@ fn benign_output_never_triggers_the_hold() {
             content: String::new(),
             model: "m".to_string(),
             tool_calls: vec![approval_call(
-                "w1",
-                "write_file",
-                serde_json::json!({"path": "out.txt", "content": "fine"}),
+                "r2",
+                "read_file",
+                serde_json::json!({"path": "note.txt"}),
             )],
             usage: None,
         }),
@@ -2792,7 +2804,7 @@ fn benign_output_never_triggers_the_hold() {
         .with_event_sender(tx);
     let answer = runner.run("openai", "m", "cred", "q").expect("auto");
     assert_eq!(answer, "ok");
-    assert_eq!(fs::read_to_string(ws.join("out.txt")).unwrap(), "fine");
+    assert!(!ws.join("out.txt").exists());
     let mut saw_approval = false;
     while let Ok(ev) = rx.try_recv() {
         if matches!(
@@ -2804,4 +2816,153 @@ fn benign_output_never_triggers_the_hold() {
     }
     assert!(!saw_approval, "benign output must not park");
     let _ = fs::remove_dir_all(&ws);
+}
+
+#[test]
+fn final_rule_refresh_rejects_stale_allow_snapshot_without_obsolete_provenance() {
+    use crate::application::agent::access::AccessContext;
+    let db = in_memory_database();
+    let ws = temp_workspace();
+    fs::write(ws.join("file.txt"), "synthetic-body-never-read").unwrap();
+    permissions::insert_rule(
+        &db,
+        "coding",
+        "read_file",
+        None,
+        permissions::RuleEffect::Allow,
+        100,
+    )
+    .unwrap();
+    let stale = PermissionStore::load(&db);
+    let gate =
+        ApprovalGate::new(AutonomyMode::FullAutonomous).with_access(AccessContext::root(&db));
+    gate.bind_workspace(&ws);
+    gate.bind_policy(RunPreset::Coding, Some(&stale));
+    let replacement = permissions::insert_rule(
+        &db,
+        "coding",
+        "read_file",
+        None,
+        permissions::RuleEffect::Allow,
+        0,
+    )
+    .unwrap();
+    let call = approval_call(
+        "fresh-rule",
+        "read_file",
+        serde_json::json!({"path":"file.txt"}),
+    );
+    let token = CancellationToken::new();
+    let ctx = DispatchCtx {
+        workspace_root: &ws,
+        token: &token,
+        control: None,
+        approval_gate: Some(&gate),
+        permission_store: Some(&stale),
+        preset: RunPreset::Coding,
+        sender: None,
+        audit: None,
+        role: None,
+        injection_enabled: true,
+    };
+    let mut active = ActiveRunRecord::start(RunRecorder::new(&db), "m", "full_autonomous");
+    let mut messages = Vec::new();
+    {
+        let mut record = Some(&mut active);
+        assert_eq!(
+            handle_permission_store_decision(&ctx, &call, &mut messages, &mut record, Some("*")),
+            StoreAction::Done
+        );
+    }
+    let repo = AgentRunRepository::new(&db);
+    let run = repo.list_runs_by_started_at_desc().unwrap().remove(0);
+    let steps = repo.list_steps(run.id).unwrap();
+    let step = steps.iter().find(|step| step.kind == "tool_call").unwrap();
+    assert_eq!(step.status.as_deref(), Some("failed"));
+    assert_eq!(step.decided_by.as_deref(), Some("system"));
+    assert_eq!(step.rule_id, None);
+    assert!(step
+        .observation
+        .as_ref()
+        .unwrap()
+        .contains("consent or access context is no longer valid"));
+    assert!(!step
+        .observation
+        .as_ref()
+        .unwrap()
+        .contains("synthetic-body-never-read"));
+    assert!(
+        matches!(PermissionStore::load(&db).decide_call("coding",&call,&ws),Some(PermissionOutcome::Allow {rule_id:Some(id)}) if id==replacement)
+    );
+    fs::remove_dir_all(ws).unwrap();
+}
+
+#[test]
+fn repeated_provider_id_uses_distinct_approval_handles_and_rejects_delayed_response() {
+    let ws = temp_workspace();
+    let gate = ApprovalGate::new(AutonomyMode::FullAutonomous).with_timeout(Duration::from_secs(5));
+    let responder = gate.clone();
+    let (tx, rx) = channel();
+    let fake = FakeExecutor::new(vec![
+        Ok(AiResponse {
+            tool_calls: vec![approval_call(
+                "call_0",
+                "write_file",
+                serde_json::json!({"path":"a.txt","content":"a"}),
+            )],
+            ..text_response("")
+        }),
+        Ok(AiResponse {
+            tool_calls: vec![approval_call(
+                "call_0",
+                "write_file",
+                serde_json::json!({"path":"b.txt","content":"b"}),
+            )],
+            ..text_response("")
+        }),
+        Ok(text_response("done")),
+    ]);
+    let driver = thread::spawn(move || {
+        let mut previous: Option<String> = None;
+        let mut requests = 0;
+        while let Ok(event) = rx.recv_timeout(Duration::from_secs(5)) {
+            match event {
+                AgentRunEvent::ApprovalRequested { call_id, .. } => {
+                    assert_ne!(call_id, "call_0");
+                    assert!(!responder.respond("call_0", ApprovalDecision::Approved));
+                    if let Some(old) = previous.as_ref() {
+                        assert_ne!(old, &call_id);
+                        assert!(!responder.respond(old, ApprovalDecision::Approved));
+                        assert!(!responder.respond(old, ApprovalDecision::Denied));
+                        assert_eq!(responder.pending_snapshot().unwrap().call_id, call_id);
+                    }
+                    assert!(responder.respond(&call_id, ApprovalDecision::Approved));
+                    previous = Some(call_id);
+                    requests += 1;
+                }
+                AgentRunEvent::Completed { .. } => break,
+                _ => {}
+            }
+        }
+        assert_eq!(requests, 2);
+    });
+    assert_eq!(
+        AgentRunner::new(&fake, &ws)
+            .with_approval_gate(gate)
+            .with_event_sender(tx)
+            .run("openai", "m", "cred", "q")
+            .unwrap(),
+        "done"
+    );
+    driver.join().unwrap();
+    assert_eq!(fs::read_to_string(ws.join("a.txt")).unwrap(), "a");
+    assert_eq!(fs::read_to_string(ws.join("b.txt")).unwrap(), "b");
+    for request in fake.requests.borrow().iter().skip(1) {
+        assert!(request
+            .messages
+            .iter()
+            .filter_map(|message| message.tool_result.as_ref())
+            .all(|result| result.call_id == "call_0"));
+    }
+    fs::remove_dir_all(ws).unwrap();
 }

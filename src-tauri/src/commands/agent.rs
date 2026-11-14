@@ -746,6 +746,10 @@ pub(crate) fn list_permission_rules(
 impl From<AgentRunError> for CommandError {
     fn from(err: AgentRunError) -> Self {
         match err {
+            AgentRunError::WorkspaceProtected => Self::new(
+                ErrorKind::InvalidInput,
+                "the selected workspace is a protected private store",
+            ),
             AgentRunError::ConversationNotFound { id } => Self::new(
                 ErrorKind::NotFound,
                 format!("conversation {id} does not exist"),

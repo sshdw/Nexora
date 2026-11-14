@@ -6,6 +6,7 @@
 import type { AutonomyStore } from "../../lib/useAutonomy";
 import type { SpendLimitStore } from "../../lib/useSpendLimit";
 import { useStrings } from "../../lib/useLocale";
+import AccessProfileControl from "../AccessProfileControl";
 import M3SegmentedGroup from "../M3SegmentedGroup";
 import { AUTONOMY_LABELS, AUTONOMY_MODES } from "./model";
 
@@ -35,6 +36,7 @@ export default function AgentSection({
         {t("settings.sectionAgent")}
       </h3>
       <p className="nex-settings-hint">{t("settings.agentHint")}</p>
+      <AccessProfileControl store={autonomy.access} />
       <div className="nex-settings-field">
         <span className="nex-settings-label" id="autonomy-label">
           {t("settings.autonomyLabel")}

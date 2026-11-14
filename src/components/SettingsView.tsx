@@ -93,12 +93,25 @@ const STATIC_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
   {
     group: "agent",
     title: "Agent & budgets",
-    keywords: ["agent", "budget", "autonomy", "spend", "cost"],
+    keywords: [
+      "agent",
+      "budget",
+      "autonomy",
+      "access",
+      "profile",
+      "spend",
+      "cost",
+    ],
   },
   {
     group: "agent",
-    title: "Autonomy mode",
+    title: "Access profile",
     keywords: [
+      "access",
+      "profile",
+      "read only",
+      "standard",
+      "supervised",
       "autonomy",
       "supervised",
       "semi-autonomous",

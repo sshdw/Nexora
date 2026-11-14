@@ -228,10 +228,15 @@ export default function ConversationView({
   }, []);
 
   const handleAgentApprove = useCallback(
-    async (runId: number, callId: string, approved: boolean) => {
+    async (
+      runId: number,
+      callId: string,
+      approved: boolean,
+      scope?: "single" | "group"
+    ) => {
       setAgentError(null);
       try {
-        await resolveAgentApproval(runId, callId, approved);
+        await resolveAgentApproval(runId, callId, approved, scope);
       } catch (e) {
         setAgentError(e instanceof Error ? e.message : String(e));
       }
@@ -255,8 +260,13 @@ export default function ConversationView({
   // memoized per AC-203, so a re-render no longer rebuilds the whole thread
   // array either.)
   const dispatchAgentApprove = useCallback(
-    (runId: number, callId: string, approved: boolean) => {
-      void handleAgentApprove(runId, callId, approved);
+    (
+      runId: number,
+      callId: string,
+      approved: boolean,
+      scope?: "single" | "group"
+    ) => {
+      void handleAgentApprove(runId, callId, approved, scope);
     },
     [handleAgentApprove]
   );

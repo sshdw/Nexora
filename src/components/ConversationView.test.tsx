@@ -71,6 +71,14 @@ vi.mock("../lib/useAgentRun", () => ({
 
 function autonomyStub(overrides: Partial<AutonomyStore> = {}): AutonomyStore {
   return {
+    access: {
+      profile: "standard",
+      loading: false,
+      saving: false,
+      error: null,
+      reload: vi.fn(async () => {}),
+      setProfile: vi.fn(async () => null),
+    },
     mode: "semi_autonomous",
     loading: false,
     error: null,

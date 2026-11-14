@@ -687,7 +687,7 @@ mod tests {
                     );
                     thread::yield_now();
                 }
-                assert!(driver_gate.respond(id, ApprovalDecision::Approved));
+                assert!(driver_gate.respond_for_test(id, ApprovalDecision::Approved));
             }
         });
 
@@ -745,7 +745,7 @@ mod tests {
                 );
                 thread::yield_now();
             }
-            assert!(driver_gate.respond("d1", ApprovalDecision::Denied));
+            assert!(driver_gate.respond_for_test("d1", ApprovalDecision::Denied));
         });
 
         let answer = runner
@@ -886,7 +886,7 @@ mod tests {
 
         let hostile_id = "sk-live-hostile-id SELECT * FROM users WHERE '1'='1";
         let hostile_args =
-            r#"{"path":"../../etc/passwd","content":"credential=sk-admin-secret; api_key=XXX"}"#;
+            r#"{"path":"synthetic.txt","content":"credential=sk-admin-secret; api_key=XXX"}"#;
         let ws = temp_workspace();
         let log = Arc::new(AuditLog::new());
         let gate = ApprovalGate::new(AutonomyMode::Supervised);
@@ -920,7 +920,7 @@ mod tests {
                 );
                 thread::yield_now();
             }
-            assert!(driver_gate.respond(hostile_id, ApprovalDecision::Denied));
+            assert!(driver_gate.respond_for_test(hostile_id, ApprovalDecision::Denied));
         });
         let answer = runner
             .run("openai", "m", "cred", "q")

@@ -11,7 +11,7 @@ mod command;
 mod definitions;
 mod executor;
 mod output;
-mod path_safety;
+pub(crate) mod path_safety;
 mod search;
 
 pub(crate) use executor::ToolError;

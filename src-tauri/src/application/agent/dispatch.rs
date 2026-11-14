@@ -37,6 +37,7 @@ fn observation_message(ctx: &DispatchCtx<'_>, call: &ToolCall, observation: &str
 ///
 /// Assembled by the run loop; the pipeline never mutates runner state
 /// through it (message and step sinks travel as explicit `&mut` params).
+#[derive(Clone, Copy)]
 pub(crate) struct DispatchCtx<'a> {
     pub workspace_root: &'a Path,
     pub token: &'a CancellationToken,
@@ -139,12 +140,17 @@ pub(crate) fn dispatch_tool_calls(
     // calls dispatch; the rest become fixed-vocabulary denial observations
     // below, so execution per turn is capped while every call stays observed.
     let (dispatchable, over_cap) = calls.split_at(calls.len().min(MAX_TOOL_CALLS_PER_TURN));
+    if let Some(gate) = ctx.approval_gate {
+        gate.bind_workspace(ctx.workspace_root);
+    }
     let preset = ctx.preset.as_str();
     let batch_groups: Vec<String> = dispatchable
         .iter()
         .map(|call| {
             let path = permissions::extract_path(&call.name, &call.arguments);
-            permissions::group_key(preset, &call.name, path.as_deref())
+            let fallback = permissions::group_key(preset, &call.name, path.as_deref());
+            ctx.approval_gate
+                .map_or(fallback.clone(), |gate| gate.group_key(call, &fallback))
         })
         .collect();
     for call in dispatchable {
@@ -186,6 +192,7 @@ pub(crate) fn dispatch_tool_calls(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)] // Keep the ordered hard ceilings and three execution branches reviewable together.
 fn dispatch_one(
     ctx: &DispatchCtx<'_>,
     call: &ToolCall,
@@ -193,6 +200,71 @@ fn dispatch_one(
     record: &mut Option<&mut ActiveRunRecord<'_>>,
     batch_groups: &[String],
 ) -> Result<(), AgentError> {
+    if !permissions::is_known_tool(&call.name) {
+        let observation = super::tools::ToolError::UnknownTool(call.name.clone()).to_string();
+        messages.push(observation_message(ctx, call, &observation));
+        if let Some(rec) = record.as_mut() {
+            rec.tool_call_with_provenance(
+                call,
+                &observation,
+                "failed",
+                None,
+                StepProvenance::system(),
+            );
+        }
+        return Ok(());
+    }
+    // Every execution branch below shares this live server-owned ceiling.
+    let refreshed_store = ctx.approval_gate.and_then(|gate| gate.access().store());
+    let refreshed = DispatchCtx {
+        permission_store: refreshed_store.as_ref().or(ctx.permission_store),
+        ..*ctx
+    };
+    let ctx = &refreshed;
+    if let Some(gate) = ctx.approval_gate {
+        gate.bind_policy(ctx.preset, ctx.permission_store);
+    }
+    let allowed = ctx.approval_gate.map_or_else(
+        || matches!(RiskClass::classify(&call.name), RiskClass::ReadOnly),
+        |gate| gate.access().allows(call),
+    );
+    if !allowed {
+        let observation = "Error: tool is blocked by the effective access profile";
+        messages.push(trusted_denial_message(call, observation));
+        if let Some(rec) = record.as_mut() {
+            rec.tool_call_with_provenance(
+                call,
+                observation,
+                "denied",
+                None,
+                StepProvenance::system(),
+            );
+        }
+        return Ok(());
+    }
+    if permissions::is_known_tool(&call.name) {
+        let boundary = ctx.approval_gate.map_or_else(
+            || {
+                super::access::AccessContext::fixed(super::access::AccessProfile::ReadOnly)
+                    .identity(ctx.workspace_root, call)
+            },
+            |gate| gate.access().identity(ctx.workspace_root, call),
+        );
+        if let Err(error) = boundary {
+            let observation = error.to_string();
+            messages.push(trusted_denial_message(call, &observation));
+            if let Some(rec) = record.as_mut() {
+                rec.tool_call_with_provenance(
+                    call,
+                    &observation,
+                    "denied",
+                    None,
+                    StepProvenance::system(),
+                );
+            }
+            return Ok(());
+        }
+    }
     // T5 structural shell ban (deny-floor): a document run never exposes
     // `execute_command`, so it is denied deterministically here — before the
     // sticky-group path, the permission store (even an `allow` rule must not
@@ -241,8 +313,10 @@ fn dispatch_one(
         }
     }
     let request_path = permissions::extract_path(&call.name, &call.arguments);
-    let call_group_key =
-        permissions::group_key(ctx.preset.as_str(), &call.name, request_path.as_deref());
+    let fallback = permissions::group_key(ctx.preset.as_str(), &call.name, request_path.as_deref());
+    let call_group_key = ctx
+        .approval_gate
+        .map_or(fallback.clone(), |gate| gate.group_key(call, &fallback));
     let call_group_size = batch_groups
         .iter()
         .filter(|key| *key == &call_group_key)
@@ -293,10 +367,14 @@ fn dispatch_one(
             return Ok(());
         }
     }
-    if handle_sticky_group_decision(ctx, call, messages, record, &call_group_key) {
+    let store_action =
+        handle_permission_store_decision(ctx, call, messages, record, request_path.as_deref());
+    if matches!(store_action, StoreAction::Continue { .. })
+        && handle_sticky_group_decision(ctx, call, messages, record, &call_group_key)
+    {
         return Ok(());
     }
-    match handle_permission_store_decision(ctx, call, messages, record, request_path.as_deref()) {
+    match store_action {
         StoreAction::Done => return Ok(()),
         // NEX-AGENT-006 single prompt path: the hold already prompted for
         // this exact call and the user approved it, so the ladder must not
@@ -391,10 +469,10 @@ fn handle_sticky_group_decision(
                 return true;
             }
             let dispatch_started = Instant::now();
-            let outcome =
-                ToolRegistry::execute_with_cancellation(call, ctx.workspace_root, ctx.token);
+            let outcome = execute_bound(ctx, call);
             let dispatch_ms =
                 i64::try_from(dispatch_started.elapsed().as_millis()).unwrap_or(i64::MAX);
+            let invalidated = matches!(outcome, Err(super::tools::ToolError::ConsentInvalidated));
             let (observation, tool_status) = classify_outcome(outcome, ctx.token);
             messages.push(observation_message(ctx, call, &observation));
             if let Some(rec) = record.as_mut() {
@@ -403,7 +481,11 @@ fn handle_sticky_group_decision(
                     &observation,
                     tool_status,
                     Some(dispatch_ms),
-                    StepProvenance::user(Some(group_key)),
+                    if invalidated {
+                        StepProvenance::system()
+                    } else {
+                        StepProvenance::user(Some(group_key))
+                    },
                 );
             }
             return true;
@@ -434,17 +516,13 @@ fn handle_permission_store_decision(
     call: &ToolCall,
     messages: &mut Vec<AiMessage>,
     record: &mut Option<&mut ActiveRunRecord<'_>>,
-    request_path: Option<&str>,
+    _request_path: Option<&str>,
 ) -> StoreAction {
     // M1-core: persistent rules before the gate. Unknown tools skip the store.
     if permissions::is_known_tool(&call.name) {
         if let Some(store) = ctx.permission_store {
-            if let Some(outcome) = store.decide(
-                ctx.preset.as_str(),
-                &call.name,
-                request_path,
-                RiskClass::classify(&call.name),
-            ) {
+            if let Some(outcome) = store.decide_call(ctx.preset.as_str(), call, ctx.workspace_root)
+            {
                 match outcome {
                     PermissionOutcome::Deny { rule_id, .. } => {
                         if let Some(rec) = record.as_mut() {
@@ -471,15 +549,18 @@ fn handle_permission_store_decision(
                             .is_some_and(|gate| !gate.needs_approval(call));
                         let shell =
                             matches!(RiskClass::classify(&call.name), RiskClass::DangerousShell);
-                        if ladder_auto && !shell {
+                        if ladder_auto
+                            && !shell
+                            && !ctx
+                                .approval_gate
+                                .is_some_and(|gate| gate.has_current_consent(call))
+                        {
                             let dispatch_started = Instant::now();
-                            let outcome = ToolRegistry::execute_with_cancellation(
-                                call,
-                                ctx.workspace_root,
-                                ctx.token,
-                            );
+                            let outcome = execute_bound(ctx, call);
                             let dispatch_ms = i64::try_from(dispatch_started.elapsed().as_millis())
                                 .unwrap_or(i64::MAX);
+                            let invalidated =
+                                matches!(outcome, Err(super::tools::ToolError::ConsentInvalidated));
                             let (observation, tool_status) = classify_outcome(outcome, ctx.token);
                             messages.push(observation_message(ctx, call, &observation));
                             if let Some(rec) = record.as_mut() {
@@ -488,7 +569,11 @@ fn handle_permission_store_decision(
                                     &observation,
                                     tool_status,
                                     Some(dispatch_ms),
-                                    StepProvenance::rule(rule_id),
+                                    if invalidated {
+                                        StepProvenance::system()
+                                    } else {
+                                        StepProvenance::rule(rule_id)
+                                    },
                                 );
                             }
                             return StoreAction::Done;
@@ -654,6 +739,8 @@ fn park_call(
     considered_rule: Option<i64>,
 ) -> Result<bool, AgentError> {
     if let Some(gate) = ctx.approval_gate {
+        let parked_identity = gate.identity(call);
+        let request_id = gate.prepare_pending_with_group(call, Some(group_key.to_owned()));
         // INVARIANT: once ApprovalRequested is emitted, a pending entry for that call_id exists,
         // so a concurrent resolve cannot hit NoPendingApproval вЂ” the race is closed by construction.
         super::lifecycle::observe_transition(
@@ -668,11 +755,11 @@ fn park_call(
             super::lifecycle::RunState::AwaitingApproval,
             AuditEvent::ApprovalParked,
         );
-        gate.prepare_pending_with_group(call, Some(group_key.to_owned()));
         emit(
             ctx.sender,
             AgentRunEvent::ApprovalRequested {
-                call_id: call.id.clone(),
+                metadata: gate.metadata(call),
+                call_id: request_id.clone(),
                 name: call.name.clone(),
                 arguments: call.arguments.clone(),
                 group_key: Some(group_key.to_owned()),
@@ -691,7 +778,10 @@ fn park_call(
             // as a user denial); see `abort_parked_call`.
             Err(end) => return Err(abort_parked_call(ctx, record, call, end, gate.timeout())),
         };
-        let approved = matches!(decision, ApprovalDecision::Approved);
+        let invalidated = decision == ApprovalDecision::Invalidated
+            || !gate.access().allows(call)
+            || gate.identity(call) != parked_identity;
+        let approved = decision == ApprovalDecision::Approved && !invalidated;
         // Task 4.2: record the parked approval decision (D12). A rule that
         // matched but did not authorize execution stays named on the step
         // (NEX-AGENT-012 honest surfacing: the user decided, the rule caused
@@ -700,7 +790,11 @@ fn park_call(
             rec.approval_with_provenance(
                 call,
                 approved,
-                StepProvenance::user_with_rule(Some(group_key), considered_rule),
+                if invalidated {
+                    StepProvenance::system()
+                } else {
+                    StepProvenance::user_with_rule(Some(group_key), considered_rule)
+                },
             );
         }
         if let Some(rec) = record.as_ref() {
@@ -730,7 +824,7 @@ fn park_call(
         emit(
             ctx.sender,
             AgentRunEvent::ApprovalResolved {
-                call_id: call.id.clone(),
+                call_id: request_id.clone(),
                 approved,
             },
         );
@@ -743,7 +837,12 @@ fn park_call(
                 tool_result: Some(crate::application::execution::AiToolResult {
                     call_id: call.id.clone(),
                     name: call.name.clone(),
-                    content: "Error: tool execution was denied by the user".to_string(),
+                    content: if invalidated {
+                        "Error: approval was invalidated by an execution-context change"
+                    } else {
+                        "Error: tool execution was denied by the user"
+                    }
+                    .to_string(),
                 }),
             });
             return Ok(false);
@@ -771,6 +870,13 @@ fn latest_tool_observation(messages: &[AiMessage]) -> Option<&str> {
     })
 }
 
+fn execute_bound(
+    ctx: &DispatchCtx<'_>,
+    call: &ToolCall,
+) -> Result<String, super::tools::ToolError> {
+    ToolRegistry::execute_agent(call, ctx.workspace_root, ctx.token, ctx.approval_gate)
+}
+
 fn execute_tool_call(
     ctx: &DispatchCtx<'_>,
     call: &ToolCall,
@@ -782,8 +888,12 @@ fn execute_tool_call(
     // recorded with its raw arguments, observation, and outcome
     // (D12). A cancellation observed by the tool records as
     // `cancelled`; everything else is `succeeded` or `failed`.
+    let user_approved = ctx
+        .approval_gate
+        .is_some_and(|gate| gate.has_current_consent(call));
     let dispatch_started = Instant::now();
-    let outcome = ToolRegistry::execute_with_cancellation(call, ctx.workspace_root, ctx.token);
+    let outcome = execute_bound(ctx, call);
+    let invalidated = matches!(outcome, Err(super::tools::ToolError::ConsentInvalidated));
     let dispatch_ms = i64::try_from(dispatch_started.elapsed().as_millis()).unwrap_or(i64::MAX);
     let (observation, tool_status) = match outcome {
         Ok(output) if ctx.token.is_cancelled() => (output, "cancelled"),
@@ -795,10 +905,9 @@ fn execute_tool_call(
     if let Some(rec) = record.as_mut() {
         // M1-core provenance: parked-then-approved tool calls inherit
         // `user`; ladder-auto executions are `system`.
-        let provenance = if ctx
-            .approval_gate
-            .is_some_and(|gate| gate.needs_approval(call))
-        {
+        let provenance = if invalidated {
+            StepProvenance::system()
+        } else if user_approved {
             StepProvenance::user(Some(group_key))
         } else {
             StepProvenance::system()

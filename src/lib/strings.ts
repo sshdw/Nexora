@@ -222,6 +222,7 @@ const SETTINGS_SEARCH_TITLE_KEY: Record<string, StringKey> = {
   "Custom model ID": "settings.searchCustomModel",
   "Agent & budgets": "settings.sectionAgent",
   "Autonomy mode": "settings.searchAutonomy",
+  "Access profile": "access.label",
   "Run cost limit": "settings.searchSpend",
   "Workspace folder": "settings.sectionWorkspace",
   "Current root": "settings.searchCurrentRoot",

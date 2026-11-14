@@ -1,6 +1,8 @@
 //! DEV-ONLY visual-QA mock backend — never active in production.
 //! Updated for Task 5.1 with agent run parity.
 
+import type { ApprovalMetadata } from "./ipc/agent";
+
 interface MockMessage {
   id: number;
   conversation_id: number;
@@ -192,6 +194,7 @@ const settings = new Map<string, string>([
   ["provider.model", MOCK_DEFAULT_MODEL],
   ["appearance.theme", "dark"],
   ["agent.autonomy", "semi_autonomous"],
+  ["agent.access_profile", "standard"],
   ["agent.spend_limit_micro_usd", "1000000"],
 ]);
 
@@ -368,7 +371,13 @@ function mockObsLen(observation: string | null): number | null {
 type ActiveMockRun = {
   status: string;
   timers: number[];
-  pendingApproval: { call_id: string; name: string; arguments: string } | null;
+  pendingApproval: {
+    call_id: string;
+    name: string;
+    arguments: string;
+    requested_at: number;
+    metadata: ApprovalMetadata;
+  } | null;
   budgetExhausted: boolean;
   paused: boolean;
 };
@@ -1061,7 +1070,24 @@ async function invoke(
             path: "output.txt",
             content: "hello world\nsecond line",
           });
+          const rawProfile = settings.get("agent.access_profile");
+          const profile =
+            rawProfile === undefined || rawProfile === "standard"
+              ? "standard"
+              : rawProfile === "supervised"
+                ? "supervised"
+                : "read_only";
+          const metadata: ApprovalMetadata = {
+            access_profile: profile,
+            sandbox_posture: "PerCommandConsent",
+            checkpoints_available: false,
+            allow_for_run: profile === "standard",
+            sensitive_write: false,
+            shell: null,
+          };
           active.pendingApproval = {
+            requested_at: now(),
+            metadata,
             call_id: callId,
             name: "write_file",
             arguments: writeArgs,
@@ -1073,6 +1099,7 @@ async function invoke(
             run_id: runId,
             event: {
               type: "approval_requested",
+              metadata,
               call_id: callId,
               name: "write_file",
               arguments: writeArgs,
@@ -1664,6 +1691,41 @@ async function invoke(
         other_step_count: otherStepCount,
         created_at: conv.created_at,
         updated_at: conv.updated_at,
+      };
+    }
+    case "inspect_run_live": {
+      const conversationId = Number(
+        requireArg(args, "inspect_run_live", "conversationId")
+      );
+      const run = [...agentRuns]
+        .filter((row) => row.conversation_id === conversationId)
+        .sort((a, b) => b.id - a.id)[0];
+      if (!run) return null;
+      const active = activeRuns.get(run.id);
+      const pending = active?.pendingApproval;
+      const steps = agentSteps.get(run.id) ?? [];
+      const last = steps[steps.length - 1];
+      return {
+        run_id: run.id,
+        status: run.status,
+        parked_reason: pending
+          ? "awaiting_approval"
+          : active?.budgetExhausted
+            ? "awaiting_budget"
+            : active?.paused
+              ? "paused"
+              : "none",
+        pending_approval: pending
+          ? {
+              ...pending,
+              timeout_secs: 600,
+              expires_at: pending.requested_at + 600,
+            }
+          : null,
+        started_at: run.started_at,
+        finished_at: run.finished_at,
+        current_step_seq: last?.seq ?? null,
+        current_step_tool: last?.tool_name ?? null,
       };
     }
     case "list_agent_runs": {

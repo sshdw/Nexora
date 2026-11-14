@@ -331,7 +331,7 @@ mod tests {
             );
         }
         assert!(
-            SERVICE.contains("execute_with_cancellation("),
+            SERVICE.contains("execute_terminal("),
             "the terminal service must dispatch through the tool registry"
         );
         assert!(

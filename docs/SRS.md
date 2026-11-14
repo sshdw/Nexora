@@ -581,3 +581,18 @@ The following capabilities may be considered for future releases but are not par
 - Workspace management
 - Custom extensions
 - Additional productivity features
+
+# 17. Nexora 2.0 M04 permission contracts (Stage 2)
+
+These requirements extend the shipped user-initiated agent subsystem. Security ceilings take precedence over autonomy, permission rules and reusable approvals.
+
+- Provide persisted access profiles ReadOnly, Standard (WorkspaceAuto; default), and Supervised (AskEveryEdit), selectable from Composer and Settings. ReadOnly permits safe workspace reads/search only and blocks file mutations and shell. Plan always imposes ReadOnly; children cannot exceed their parent's effective ceiling. Unknown or invalid profiles fail closed.
+- Standard permits ordinary workspace file writes/edits automatically only with the mandatory pre-mutation checkpoint facility specified for Stage 2 PR 2B. Sensitive paths and outside-workspace mutations require explicit approval. Supervised requires approval for every edit/write and shell command. Until verified native sandboxing is available, every shell command requires separate consent under every execution-capable profile.
+- Reject agent reads outside the workspace and reads of private credential/home stores (including .ssh, .aws, .gnupg, .kube, .config/gh, browser profiles and OS keychain files). Resolve canonical paths and links before evaluating boundaries. These deny-read boundaries cannot be widened by rules, approval scope, project configuration or children.
+- Treat .env*, *.pem, *.key, id_rsa*, .git/hooks/**, .git/config, and .nexora/** as sensitive workspace write targets. They never auto-write in Standard. Agent self-modification of .nexora policy/instructions remains protected.
+- Classify all shell segments and nested expansions, including chaining, pipelines, subshells, backticks, redirection, heredocs and loops. Use the highest risk of all segments; ambiguous/unparseable commands require explicit approval. Never grant shell access using a command-prefix check alone. Surface DependencyInstall (with exact package names), DestructiveGit, PublishOrRemote, MassDelete, or GeneralShell in the approval. Recursive deletion or deletion of more than three files is MassDelete.
+- File/tool approvals offer Allow once, Allow for run, and Deny where reusable consent is permitted. Shell and dangerous categories offer only Allow once and Deny. A rule or cached group must never bypass the effective profile, hard deny boundaries, or mandatory command-specific consent.
+- Bind reusable approvals to workspace root, tool, canonical command/path, environment fingerprint, sandbox posture, access profile and policy fingerprint. Any change invalidates the approval. Preserve truthful per-call approval provenance.
+- GeneralShell may run automatically in Standard only after the separately delivered native OS sandbox passes its runtime boundary probes. Otherwise show the actual isolation/fallback status and require per-command consent. This requirement does not authorize a simulated sandbox or describe cwd checks as isolation.
+
+Stage 2 PR 2A delivers the profiles, deny-read/sensitive-write boundaries, classifier, cache identity and approval presentation. Stage 2 PR 2B supplies mandatory durable pre-mutation checkpoints and one-click file/turn undo. PR 2A must not enable an automatic-write path whose required checkpoint dependency is unavailable. This section does not authorize automatic continuation or restoration of executable approvals from recorded history.

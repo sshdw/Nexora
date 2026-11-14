@@ -81,6 +81,7 @@ pub(crate) type Result<T> = std::result::Result<T, DataManagementError>;
 /// constraints and cascade behavior remain in the repositories and the
 /// database.
 pub(crate) struct DataManagementService<'a> {
+    db: &'a Database,
     conversations: ConversationRepository<'a>,
     prompts: PromptRepository<'a>,
     providers: ProviderRepository<'a>,
@@ -91,6 +92,7 @@ impl<'a> DataManagementService<'a> {
     /// Create a service over the shared application [`Database`].
     pub(crate) fn new(db: &'a Database) -> Self {
         Self {
+            db,
             conversations: ConversationRepository::new(db),
             prompts: PromptRepository::new(db),
             providers: ProviderRepository::new(db),
@@ -202,6 +204,11 @@ impl<'a> DataManagementService<'a> {
             confirmation_id,
             &ConfirmationTarget::new(OP_CLEAR_ALL_DATA),
         )?;
+        let clock = crate::application::agent::access::policy_clock(self.db);
+        let mut epoch = clock
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *epoch = epoch.saturating_add(1);
         // `conversations` is cleared first; the ON DELETE CASCADE foreign keys
         // remove its messages and attachments, and the FTS triggers remove them
         // from search. The standalone tables follow.

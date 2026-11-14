@@ -239,6 +239,10 @@ jobs:
         with:
           components: clippy
 
+      - name: sccache
+        if: steps.changes.outputs.affected == 'true'
+        uses: mozilla-actions/sccache-action@v0.0.9
+
       - name: Resolve pinned toolchain (rust-toolchain.toml)
         if: steps.changes.outputs.affected == 'true'
         run: |
@@ -259,10 +263,6 @@ jobs:
           fi
           echo "nexora-core dependency tree is clean"
           cargo tree -p nexora-core --edges normal
-
-      - name: sccache
-        if: steps.changes.outputs.affected == 'true'
-        uses: mozilla-actions/sccache-action@v0.0.9
 
       - name: Cache
         if: steps.changes.outputs.affected == 'true'

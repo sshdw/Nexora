@@ -113,6 +113,7 @@ function AppShell() {
   // Agent-autonomy default (NEX-FE-003): single source shared by Settings
   // and the conversation header, so either surface's change reflects in the
   // other immediately (no mirrors, no focus-resync).
+  // The lifted store also owns the live persisted access profile shared by both panes and Settings.
   const autonomy = useAutonomy();
   // Command palette (Ctrl+K): launcher over the registry in lib/commands.ts.
   const [paletteOpen, setPaletteOpen] = useState(false);

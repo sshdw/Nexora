@@ -688,3 +688,11 @@ The schema supports future evolution through:
 - **App settings key-value structure:** New user preferences can be added without modifying the `app_settings` table schema.
 
 No tables, columns, or indexes are reserved for speculative future features.
+
+## M04 access-profile persistence (Stage 2 PR 2A)
+
+Use the existing app_settings key-value repository for the selected agent access profile; this increment requires no table/column migration. Store only a validated non-secret enum representing ReadOnly, Standard (WorkspaceAuto), or Supervised (AskEveryEdit). Standard is the default for a missing preference; invalid values fail closed. Do not rewrite existing autonomy/preset values into broader permission grants.
+
+Approval identity includes workspace, tool, canonical command/path, environment fingerprint, sandbox posture, access profile and policy fingerprint. Existing persisted permission rules do not replace effective-ceiling evaluation; old or incompletely identified approvals cannot be reused as if they had the stronger identity contract. No raw environment secrets, credential material or keyring payloads may be persisted as fingerprints, approval metadata or diagnostics. History remains read-only and cannot restore executable approvals.
+
+Disk-backed checkpoint/blob persistence and retention contracts for Stage 2 PR 2B require their own exact reviewed database amendment before any schema/storage change; this PR 2A amendment does not introduce or approve a speculative checkpoint schema.

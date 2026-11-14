@@ -148,6 +148,14 @@ const step: AgentStepView = {
 
 function autonomyStub(): AutonomyStore {
   return {
+    access: {
+      profile: "standard",
+      loading: false,
+      saving: false,
+      error: null,
+      reload: vi.fn(async () => {}),
+      setProfile: vi.fn(async () => null),
+    },
     mode: "semi_autonomous",
     loading: false,
     error: null,

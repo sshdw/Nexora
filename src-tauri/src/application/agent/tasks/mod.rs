@@ -956,6 +956,7 @@ mod tests {
             .expect("finalize");
         let config = harness.config(None);
         let ctx = LoopCtx {
+            access: crate::application::agent::access::AccessContext::root(&harness.db),
             db: &harness.db,
             agent_registry: &harness.agent_registry,
             task_registry: &harness.task_registry,
@@ -1241,7 +1242,7 @@ mod tests {
         // AC-207 split: the guard scans `run_loop.rs` (the loop's home file),
         // so this assertion's own literal no longer self-counts — the needle
         // is built with `concat!` and the one real bridge call must remain.
-        let bridge_needle = concat!("service::start", "_run(");
+        let bridge_needle = concat!("service::start", "_run_with_parent(");
         let bridge_calls = SOURCE.matches(bridge_needle).count();
         assert!(
             bridge_calls >= 1,
