@@ -257,6 +257,133 @@ const settings = new Map<string, string>([
   ["agent.access_profile", "standard"],
   ["agent.spend_limit_micro_usd", "1000000"],
 ]);
+const projectSettings = new Map<string, string>();
+const MOCK_LAYERED_DEFAULTS: Record<string, string | null> = {
+  "appearance.theme": "dark",
+  "provider.selected": null,
+  "provider.model": null,
+  "provider.effort": null,
+  "provider.capability_overrides": null,
+  "agent.access_profile": "standard",
+  "agent.autonomy": "semi_autonomous",
+  "agent.spend_limit_micro_usd": null,
+  "agent.approval_timeout_secs": "600",
+  "agent.preset": "coding",
+  "flags.snapshots": "true",
+  "flags.self_audit": "true",
+  "flags.injection": "true",
+  "flags.assembly": "true",
+  "routing.profile.chat": null,
+  "routing.profile.agent": null,
+  "mcp.servers": null,
+};
+
+function mockAccessRank(v: string | undefined): number {
+  if (v === "read_only") return 2;
+  if (v === "supervised") return 1;
+  return 0;
+}
+
+function mockAutonomyRank(v: string | undefined): number {
+  if (v === "supervised") return 2;
+  if (v === "full_autonomous") return 0;
+  return 1;
+}
+
+function buildMockResolvedSettings(
+  sessionOverrides?: Record<string, string> | null
+) {
+  const entries: Record<
+    string,
+    {
+      key: string;
+      value: string | null;
+      source: "session" | "project" | "personal" | "default";
+      blocked_project_value: boolean;
+      blocked_reason: string | null;
+    }
+  > = {};
+  const blocked: { key: string; reason: string; detail: string }[] = [];
+  const personalAccess = settings.get("agent.access_profile") ?? "standard";
+  const personalAutonomy = settings.get("agent.autonomy") ?? "semi_autonomous";
+
+  for (const [key, defVal] of Object.entries(MOCK_LAYERED_DEFAULTS)) {
+    const sessVal = sessionOverrides?.[key];
+    let projVal = projectSettings.get(key);
+    const persVal = settings.get(key);
+    let blockedProject = false;
+    let blockedReason: string | null = null;
+
+    if (
+      key === "agent.access_profile" &&
+      projVal !== undefined &&
+      mockAccessRank(projVal) < mockAccessRank(personalAccess)
+    ) {
+      projVal = undefined;
+      blockedProject = true;
+      blockedReason = "cannot_elevate_access_profile";
+      blocked.push({
+        key,
+        reason: blockedReason,
+        detail:
+          "project config cannot elevate access profile above personal or session ceiling",
+      });
+    } else if (
+      key === "agent.autonomy" &&
+      projVal !== undefined &&
+      mockAutonomyRank(projVal) < mockAutonomyRank(personalAutonomy)
+    ) {
+      projVal = undefined;
+      blockedProject = true;
+      blockedReason = "cannot_widen_autonomy";
+      blocked.push({
+        key,
+        reason: blockedReason,
+        detail:
+          "project config cannot widen autonomy above personal or session ceiling",
+      });
+    } else if (key === "flags.injection" && projVal === "false") {
+      projVal = undefined;
+      blockedProject = true;
+      blockedReason = "cannot_weaken_sandbox";
+      blocked.push({
+        key,
+        reason: blockedReason,
+        detail:
+          "project config cannot weaken sandbox rules or deny-read/sensitive-write guards",
+      });
+    }
+
+    let value: string | null = defVal;
+    let source: "session" | "project" | "personal" | "default" = "default";
+    if (sessVal !== undefined && sessVal !== "") {
+      value = sessVal;
+      source = "session";
+    } else if (projVal !== undefined) {
+      value = projVal;
+      source = "project";
+    } else if (persVal !== undefined) {
+      value = persVal;
+      source = "personal";
+    }
+
+    entries[key] = {
+      key,
+      value,
+      source,
+      blocked_project_value: blockedProject,
+      blocked_reason: blockedReason,
+    };
+  }
+
+  return {
+    workspace_root: mockWorkspaceRoot || null,
+    has_project_config: projectSettings.size > 0,
+    entries,
+    blocked,
+    config_notice: null,
+  };
+}
 
 // ---- Agent workspace folder mock state (1.3.0) ----
 let mockWorkspaceRoot = "C:\\mock\\workspace";
@@ -652,8 +779,16 @@ async function invoke(
     case "get_model_capabilities":
     case "list_model_capabilities":
     case "set_model_capability_override":
+    case "clear_model_capability_override":
     case "refresh_provider_model_metadata": {
-      const rawOverrides = settings.get("provider.capability_overrides");
+      const rawPersonal = settings.get("provider.capability_overrides");
+      const rawProject = projectSettings.get("provider.capability_overrides");
+      const personalMap: Record<string, Record<string, unknown>> = rawPersonal
+        ? JSON.parse(rawPersonal)
+        : {};
+      const projectMap: Record<string, Record<string, unknown>> = rawProject
+        ? JSON.parse(rawProject)
+        : {};
       const overrideMap: Record<
         string,
         {
@@ -663,7 +798,7 @@ async function invoke(
           supports_attachments?: boolean | null;
           supports_tools?: boolean | null;
         }
-      > = rawOverrides ? JSON.parse(rawOverrides) : {};
+      > = { ...personalMap, ...projectMap };
       const resolveMockCaps = (connId: string, modelId: string) => {
         const listed = supported.some(
           (p) => p.name === connId && p.models.includes(modelId)
@@ -733,16 +868,46 @@ async function invoke(
           String(args.modelId ?? args.model_id ?? "")
         );
       }
-      if (command === "set_model_capability_override") {
+      if (
+        command === "set_model_capability_override" ||
+        command === "clear_model_capability_override"
+      ) {
         const connId = String(args.connectionId ?? args.connection_id ?? "");
         const modelId = String(args.modelId ?? args.model_id ?? "");
-        const spec = args.overrideSpec ?? args.override_spec ?? null;
-        if (spec) overrideMap[`${connId}::${modelId}`] = spec as never;
-        else delete overrideMap[`${connId}::${modelId}`];
-        settings.set(
-          "provider.capability_overrides",
-          JSON.stringify(overrideMap)
-        );
+        const scope = String(args.scope ?? "personal");
+        const spec =
+          command === "clear_model_capability_override"
+            ? null
+            : (args.overrideSpec ?? args.override_spec ?? null);
+        if (scope === "project" && !mockWorkspaceRoot) {
+          throw {
+            kind: "invalidInput",
+            message: "an active project workspace is required to save project settings",
+          };
+        }
+        const targetStore = scope === "project" ? projectSettings : settings;
+        const targetMap = scope === "project" ? projectMap : personalMap;
+        if (spec) {
+          targetMap[`${connId}::${modelId}`] = spec as Record<string, unknown>;
+          overrideMap[`${connId}::${modelId}`] = spec as never;
+        } else {
+          delete targetMap[`${connId}::${modelId}`];
+          if (scope === "project") {
+            const fallback = personalMap[`${connId}::${modelId}`];
+            if (fallback) overrideMap[`${connId}::${modelId}`] = fallback as never;
+            else delete overrideMap[`${connId}::${modelId}`];
+          } else if (!projectMap[`${connId}::${modelId}`]) {
+            delete overrideMap[`${connId}::${modelId}`];
+          }
+        }
+        if (Object.keys(targetMap).length === 0) {
+          targetStore.delete("provider.capability_overrides");
+        } else {
+          targetStore.set(
+            "provider.capability_overrides",
+            JSON.stringify(targetMap)
+          );
+        }
         return resolveMockCaps(connId, modelId);
       }
       if (command === "refresh_provider_model_metadata") {
@@ -758,6 +923,87 @@ async function invoke(
         p.models.map((m) => resolveMockCaps(p.name, m))
       );
     }
+    case "get_resolved_settings":
+      return buildMockResolvedSettings(
+        (args.sessionOverrides ?? args.session_overrides) as
+          | Record<string, string>
+          | null
+      );
+    case "save_scoped_setting": {
+      const scope = String(args.scope ?? "personal");
+      const key = String(args.key ?? "").trim();
+      const val = args.value as string | null | undefined;
+      const sessionOverrides = (args.sessionOverrides ??
+        args.session_overrides) as Record<string, string> | null;
+      if (scope !== "personal" && scope !== "project") {
+        throw {
+          kind: "invalidInput",
+          message: "setting scope must be 'personal' or 'project'",
+        };
+      }
+      if (scope === "project" && !mockWorkspaceRoot) {
+        throw {
+          kind: "invalidInput",
+          message: "an active project workspace is required to save project settings",
+        };
+      }
+      if (
+        val !== null &&
+        val !== undefined &&
+        /sk-[A-Za-z0-9]{16,}/.test(String(val))
+      ) {
+        throw {
+          kind: "permissionDenied",
+          message: "settings cannot store raw credentials or API keys",
+        };
+      }
+      if (scope === "project") {
+        const strVal = val === null || val === undefined ? null : String(val);
+        const personalAccess = settings.get("agent.access_profile") ?? "standard";
+        const personalAutonomy = settings.get("agent.autonomy") ?? "semi_autonomous";
+        if (
+          key === "agent.access_profile" &&
+          strVal !== null &&
+          mockAccessRank(strVal) < mockAccessRank(personalAccess)
+        ) {
+          throw {
+            kind: "permissionDenied",
+            message:
+              "project config cannot elevate access profile above personal or session ceiling",
+          };
+        }
+        if (
+          key === "agent.autonomy" &&
+          strVal !== null &&
+          mockAutonomyRank(strVal) < mockAutonomyRank(personalAutonomy)
+        ) {
+          throw {
+            kind: "permissionDenied",
+            message:
+              "project config cannot widen autonomy above personal or session ceiling",
+          };
+        }
+        if (key === "flags.injection" && strVal === "false") {
+          throw {
+            kind: "permissionDenied",
+            message: "project config cannot disable prompt-injection protection",
+          };
+        }
+        if (strVal === null) projectSettings.delete(key);
+        else projectSettings.set(key, strVal);
+      } else {
+        if (val === null || val === undefined) settings.delete(key);
+        else settings.set(key, String(val));
+      }
+      return buildMockResolvedSettings(sessionOverrides);
+    }
+    case "discover_project_instructions":
+      return {
+        files: [],
+        combined: "",
+        skipped_escapes: [],
+        truncated: false,
+      };
     case "get_setting":
       return settings.get(String(args.key)) ?? null;
     case "set_setting": {

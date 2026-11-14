@@ -10,11 +10,23 @@
 //! credentials, clear-all error) behave exactly as before the split, which
 //! is why the state did not move with the sections.
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { scoreCommand } from "../lib/commands";
-import type { AutonomyMode, SupportedProvider } from "../lib/tauri";
-import { clearApplicationData, getSetting, setSetting } from "../lib/tauri";
+import type {
+  AccessProfile,
+  AutonomyMode,
+  ResolvedSettingsPayload,
+  SettingScope,
+  SupportedProvider,
+} from "../lib/tauri";
+import {
+  clearApplicationData,
+  getResolvedSettings,
+  getSetting,
+  saveScopedSetting,
+  setSetting,
+} from "../lib/tauri";
 import {
   getLocale,
   settingsSearchTitle,
@@ -23,16 +35,17 @@ import {
   type Locale,
 } from "../lib/strings";
 import { useStrings } from "../lib/useLocale";
-import type { AppearanceStore } from "../lib/useAppearance";
-import type { AutonomyStore } from "../lib/useAutonomy";
+import type { AppearanceStore, Theme } from "../lib/useAppearance";
+import { AUTONOMY_KEY, isAutonomyMode, type AutonomyStore } from "../lib/useAutonomy";
 import {
   isCustomModelId,
   mergeConnectionModels,
   type ProvidersStore,
 } from "../lib/useProviders";
-import type { SpendLimitStore } from "../lib/useSpendLimit";
+import { SPEND_LIMIT_KEY, type SpendLimitStore } from "../lib/useSpendLimit";
 import M3Button from "./M3Button";
 import M3RailItem from "./M3RailItem";
+import M3SegmentedGroup from "./M3SegmentedGroup";
 import AppearanceSection from "./settings/AppearanceSection";
 import ProviderSection from "./settings/ProviderSection";
 import AgentSection from "./settings/AgentSection";
@@ -304,6 +317,33 @@ export default function SettingsView({
   const [flagValues, setFlagValues] = useState<Record<string, boolean>>({});
   const [flagsSaving, setFlagsSaving] = useState<string | null>(null);
   const [flagsError, setFlagsError] = useState<string | null>(null);
+  const [saveScope, setSaveScope] = useState<SettingScope>("personal");
+  const [resolvedSettings, setResolvedSettings] =
+    useState<ResolvedSettingsPayload | null>(null);
+  const [scopedSaveError, setScopedSaveError] = useState<string | null>(null);
+
+  const refreshResolvedSettings = useCallback(async () => {
+    try {
+      const payload = await getResolvedSettings();
+      if (payload) setResolvedSettings(payload);
+    } catch {
+      // Optional in standalone harnesses that do not mount layered settings IPC.
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshResolvedSettings();
+  }, [refreshResolvedSettings, workspaceRoot]);
+
+  const hasProjectWorkspace =
+    Boolean(workspaceRoot?.trim()) &&
+    (resolvedSettings === null || resolvedSettings.workspace_root !== null);
+
+  useEffect(() => {
+    if (!hasProjectWorkspace && saveScope === "project") {
+      setSaveScope("personal");
+    }
+  }, [hasProjectWorkspace, saveScope]);
 
   // Power-key values (recent folders, flags, routing profiles, MCP
   // servers, agent preset) load once on mount. The old focus/visibility
@@ -351,9 +391,23 @@ export default function SettingsView({
     };
   }, []);
 
+  const resolvedEntries = resolvedSettings?.entries ?? null;
+  const projectOverrideValue = (key: string): string | null | undefined => {
+    const entry = resolvedEntries?.[key];
+    if (!entry) return undefined;
+    if (entry.source === "project" || entry.source === "session") {
+      return entry.value;
+    }
+    return undefined;
+  };
+
+  const activeProviderName =
+    projectOverrideValue("provider.selected") ?? store.selectedProvider;
+  const activeSelectedModel =
+    projectOverrideValue("provider.model") ?? store.selectedModel;
+
   const selected =
-    store.providers.find((p) => p.supported.name === store.selectedProvider) ??
-    null;
+    store.providers.find((p) => p.supported.name === activeProviderName) ?? null;
   const selectedDefinition: SupportedProvider | null = selected
     ? selected.supported
     : null;
@@ -370,14 +424,14 @@ export default function SettingsView({
 
   /** The model to display: the persisted selection, or the provider default. */
   const effectiveModel =
-    store.selectedModel && selectedModels.includes(store.selectedModel)
-      ? store.selectedModel
+    activeSelectedModel && selectedModels.includes(activeSelectedModel)
+      ? activeSelectedModel
       : (selectedModels[0] ?? null);
 
   /** A persisted custom model ID (valid but outside the shortlist). */
   const persistedCustom =
-    store.selectedModel && !selectedModels.includes(store.selectedModel)
-      ? store.selectedModel
+    activeSelectedModel && !selectedModels.includes(activeSelectedModel)
+      ? activeSelectedModel
       : null;
   /** Local custom draft; non-null means the Custom… option is active. */
   const [customDraft, setCustomDraft] = useState<string | null>(null);
@@ -457,22 +511,88 @@ export default function SettingsView({
     setQuery("");
   };
 
+  const handleScopeChange = (nextScope: SettingScope) => {
+    setScopedSaveError(null);
+    if (nextScope === "project" && !hasProjectWorkspace) {
+      setScopedSaveError(t("settings.scopeWorkspaceRequired"));
+      return;
+    }
+    setSaveScope(nextScope);
+  };
+
+  const persistProjectKey = async (
+    key: string,
+    value: string | null
+  ): Promise<boolean> => {
+    if (!hasProjectWorkspace) {
+      setScopedSaveError(t("settings.scopeWorkspaceRequired"));
+      return false;
+    }
+    setScopedSaveError(null);
+    try {
+      const updated = await saveScopedSetting("project", key, value);
+      if (updated) setResolvedSettings(updated);
+      return true;
+    } catch (e) {
+      const msg =
+        typeof e === "object" && e !== null && "message" in e
+          ? String((e as { message: unknown }).message)
+          : tr(getLocale(), "settings.scopeWorkspaceRequired");
+      setScopedSaveError(msg);
+      return false;
+    }
+  };
+
+  const handleThemeChange = async (theme: Theme) => {
+    setScopedSaveError(null);
+    if (saveScope === "project") {
+      await persistProjectKey("appearance.theme", theme);
+      return;
+    }
+    await appearance.setTheme(theme);
+    await refreshResolvedSettings();
+  };
+
+  const handleAccessProfileChange = async (profile: AccessProfile) => {
+    setScopedSaveError(null);
+    if (saveScope === "project") {
+      await persistProjectKey("agent.access_profile", profile);
+      return;
+    }
+    await autonomy.access.setProfile(profile);
+    await refreshResolvedSettings();
+  };
+
   const handleProviderChange = async (name: string) => {
     // A custom model ID is provider-independent: keep it across the switch.
-    const keepCustom = store.selectedModel
-      ? isCustomModelId(store.selectedModel)
+    const keepCustom = activeSelectedModel
+      ? isCustomModelId(activeSelectedModel)
       : false;
     setCustomDraft(null);
-    await store.selectProvider(name);
-    if (keepCustom) return;
-    // Persist the default model for the newly selected provider so the
-    // selection is never left without a model.
-    const def = store.providers.find(
-      (p) => p.supported.name === name
-    )?.supported;
-    if (def && def.models.length > 0) {
-      await store.selectModel(def.models[0]);
+    setScopedSaveError(null);
+    if (saveScope === "project") {
+      const ok = await persistProjectKey("provider.selected", name);
+      if (!ok || keepCustom) return;
+      const def = store.providers.find(
+        (p) => p.supported.name === name
+      )?.supported;
+      if (def && def.models.length > 0) {
+        await persistProjectKey("provider.model", def.models[0]);
+      }
+      return;
     }
+    await store.selectProvider(name);
+    if (!keepCustom) {
+      // Persist the default model for the newly selected provider so the
+      // selection is never left without a model.
+      const def = store.providers.find(
+        (p) => p.supported.name === name
+      )?.supported;
+      if (def && def.models.length > 0) {
+        await store.selectModel(def.models[0]);
+      }
+    }
+    await refreshResolvedSettings();
   };
 
   const handleModelSelect = (value: string) => {
@@ -482,32 +602,71 @@ export default function SettingsView({
       return;
     }
     setCustomDraft(null);
-    void store.selectModel(value);
+    setScopedSaveError(null);
+    if (saveScope === "project") {
+      void persistProjectKey("provider.model", value);
+      return;
+    }
+    void store.selectModel(value).then(() => void refreshResolvedSettings());
   };
 
   const commitCustom = () => {
     const value = customDraft ?? persistedCustom ?? "";
     if (!value || value === "__custom__") return;
-    void store.selectModel(value);
+    setScopedSaveError(null);
+    if (saveScope === "project") {
+      void persistProjectKey("provider.model", value);
+      return;
+    }
+    void store.selectModel(value).then(() => void refreshResolvedSettings());
   };
 
   /** Local spend-limit draft; null means the persisted value is shown. */
   const [spendDraft, setSpendDraft] = useState<string | null>(null);
+  const projectSpend = projectOverrideValue(SPEND_LIMIT_KEY);
   const spendValue =
     spendDraft ??
-    (spendLimit.limitMicroUsd !== null ? String(spendLimit.limitMicroUsd) : "");
+    (projectSpend !== undefined
+      ? (projectSpend ?? "")
+      : spendLimit.limitMicroUsd !== null
+        ? String(spendLimit.limitMicroUsd)
+        : "");
   const commitSpendLimit = () => {
     if (spendDraft === null) return;
     const trimmed = spendDraft.trim();
+    setScopedSaveError(null);
+    if (saveScope === "project") {
+      if (trimmed === "") {
+        void persistProjectKey(SPEND_LIMIT_KEY, null).then((ok) => {
+          if (ok) setSpendDraft(null);
+        });
+        return;
+      }
+      const parsed = Number(trimmed);
+      if (!Number.isInteger(parsed) || parsed < 0) {
+        setScopedSaveError(tr(getLocale(), "common.spendInvalid"));
+        return;
+      }
+      void persistProjectKey(SPEND_LIMIT_KEY, String(parsed)).then((ok) => {
+        if (ok) setSpendDraft(null);
+      });
+      return;
+    }
     if (trimmed === "") {
       void spendLimit.setLimit(null).then((ok) => {
-        if (ok) setSpendDraft(null);
+        if (ok) {
+          setSpendDraft(null);
+          void refreshResolvedSettings();
+        }
       });
       return;
     }
     const parsed = Number(trimmed);
     void spendLimit.setLimit(parsed).then((ok) => {
-      if (ok) setSpendDraft(null);
+      if (ok) {
+        setSpendDraft(null);
+        void refreshResolvedSettings();
+      }
     });
   };
 
@@ -516,16 +675,32 @@ export default function SettingsView({
   // (or its rollback) immediately. Live runs keep their gate here — the
   // conversation header owns the live-switch (ConversationView).
   const handleAutonomyChange = async (mode: AutonomyMode) => {
+    setScopedSaveError(null);
+    if (saveScope === "project") {
+      await persistProjectKey(AUTONOMY_KEY, mode);
+      return;
+    }
     await autonomy.setMode(mode);
+    await refreshResolvedSettings();
   };
 
   const handleFlagToggle = async (name: string, next: boolean) => {
     setFlagsSaving(name);
     setFlagsError(null);
+    setScopedSaveError(null);
     try {
-      // The command gate accepts only true/false (parse_global_bool domain).
-      await setSetting(`flags.${name}`, next ? "true" : "false");
-      setFlagValues((prev) => ({ ...prev, [name]: next }));
+      if (saveScope === "project") {
+        const ok = await persistProjectKey(
+          `flags.${name}`,
+          next ? "true" : "false"
+        );
+        if (ok) setFlagValues((prev) => ({ ...prev, [name]: next }));
+      } else {
+        // The command gate accepts only true/false (parse_global_bool domain).
+        await setSetting(`flags.${name}`, next ? "true" : "false");
+        setFlagValues((prev) => ({ ...prev, [name]: next }));
+        await refreshResolvedSettings();
+      }
     } catch (e) {
       setFlagsError(
         typeof e === "object" && e !== null && "message" in e
@@ -585,6 +760,40 @@ export default function SettingsView({
     }
   };
 
+  const projectTheme = projectOverrideValue("appearance.theme");
+  const effectiveTheme: Theme =
+    projectTheme === "light" || projectTheme === "dark"
+      ? projectTheme
+      : appearance.theme;
+
+  const projectAutonomy = projectOverrideValue(AUTONOMY_KEY);
+  const effectiveAutonomy =
+    projectAutonomy !== undefined && isAutonomyMode(projectAutonomy)
+      ? projectAutonomy
+      : autonomy.mode;
+
+  const projectAccess = projectOverrideValue("agent.access_profile");
+  const effectiveAccessProfile: AccessProfile =
+    projectAccess === "read_only" ||
+    projectAccess === "standard" ||
+    projectAccess === "supervised"
+      ? projectAccess
+      : autonomy.access.profile;
+
+  const displayedFlagValues = useMemo(() => {
+    const merged = { ...flagValues };
+    for (const flag of FLAG_DEFS) {
+      const override = resolvedEntries?.[`flags.${flag.name}`];
+      if (
+        override &&
+        (override.source === "project" || override.source === "session")
+      ) {
+        merged[flag.name] = parseFlagValue(override.value);
+      }
+    }
+    return merged;
+  }, [flagValues, resolvedEntries]);
+
   const renderSection = (id: SettingsSectionId) => {
     switch (id) {
       case "appearance":
@@ -594,6 +803,9 @@ export default function SettingsView({
             appearance={appearance}
             locale={locale}
             onLocaleChange={onLocaleChange}
+            effectiveTheme={effectiveTheme}
+            onThemeChange={(theme) => void handleThemeChange(theme)}
+            resolvedEntries={resolvedEntries}
           />
         );
       case "provider":
@@ -610,6 +822,11 @@ export default function SettingsView({
             onModelSelect={handleModelSelect}
             onCustomDraftChange={setCustomDraft}
             onCustomCommit={commitCustom}
+            saveScope={saveScope}
+            hasProjectWorkspace={hasProjectWorkspace}
+            resolvedEntries={resolvedEntries}
+            onCapabilitySaved={() => void refreshResolvedSettings()}
+            onScopeBlockedError={setScopedSaveError}
           />
         );
       case "agent":
@@ -622,6 +839,12 @@ export default function SettingsView({
             onSpendDraftChange={setSpendDraft}
             onSpendCommit={commitSpendLimit}
             onAutonomyChange={(mode) => void handleAutonomyChange(mode)}
+            effectiveAccessProfile={effectiveAccessProfile}
+            onAccessProfileChange={(profile) =>
+              void handleAccessProfileChange(profile)
+            }
+            effectiveAutonomy={effectiveAutonomy}
+            resolvedEntries={resolvedEntries}
           />
         );
       case "workspace":
@@ -664,10 +887,11 @@ export default function SettingsView({
             locale={locale}
             advancedValues={advancedValues}
             advancedError={advancedError}
-            flagValues={flagValues}
+            flagValues={displayedFlagValues}
             flagsSaving={flagsSaving}
             flagsError={flagsError}
             onFlagToggle={(name, next) => void handleFlagToggle(name, next)}
+            resolvedEntries={resolvedEntries}
           />
         );
     }
@@ -736,6 +960,69 @@ export default function SettingsView({
 
         <div className="nex-settings-body">
           <div className="nex-settings-inner">
+            <div className="nex-settings-scope-bar">
+              <div className="nex-settings-scope-row">
+                <span className="nex-settings-label" id="save-scope-label">
+                  {t("settings.saveScopeLabel")}
+                </span>
+                <M3SegmentedGroup
+                  labelledBy="save-scope-label"
+                  indicator={false}
+                  value={saveScope}
+                  onChange={handleScopeChange}
+                  options={[
+                    { value: "personal", label: t("settings.scopePersonal") },
+                    {
+                      value: "project",
+                      label: t("settings.scopeProject"),
+                      disabled: !hasProjectWorkspace,
+                    },
+                  ]}
+                />
+              </div>
+              <p className="nex-settings-hint">
+                {!hasProjectWorkspace
+                  ? t("settings.scopeWorkspaceRequired")
+                  : saveScope === "project"
+                    ? t("settings.scopeHintProject")
+                    : t("settings.scopeHintPersonal")}
+              </p>
+              {scopedSaveError && (
+                <p className="nex-settings-error nex-fade-in" role="alert">
+                  {scopedSaveError}
+                </p>
+              )}
+            </div>
+            {resolvedSettings &&
+              (resolvedSettings.blocked.length > 0 ||
+                resolvedSettings.config_notice) && (
+                <div className="nex-settings-blocked-banner" role="status">
+                  <strong className="nex-settings-label">
+                    {t("settings.blockedBannerTitle")}
+                  </strong>
+                  {resolvedSettings.config_notice && (
+                    <p className="nex-settings-hint">
+                      {resolvedSettings.config_notice}
+                    </p>
+                  )}
+                  {resolvedSettings.blocked.length > 0 && (
+                    <>
+                      <p className="nex-settings-hint">
+                        {t("settings.blockedBannerHint", {
+                          n: resolvedSettings.blocked.length,
+                        })}
+                      </p>
+                      <ul className="nex-settings-blocked-list">
+                        {resolvedSettings.blocked.map((item) => (
+                          <li key={`${item.key}:${item.reason}`}>
+                            <code>{item.key}</code>: {item.detail}
+                          </li>
+                        ))}
+                      </ul>
+                    </>
+                  )}
+                </div>
+              )}
             {store.error && (
               <p
                 id="nex-settings-store-error"

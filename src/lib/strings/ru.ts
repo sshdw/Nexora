@@ -566,6 +566,25 @@ export const ru: Record<StringKey, string> = {
   "settings.searchRouting": "Профили роутинга",
   "settings.searchMcp": "MCP-серверы",
   "settings.searchPreset": "Пресет агента",
+  "settings.sourceSession": "Сеанс",
+  "settings.sourceProject": "Проект",
+  "settings.sourcePersonal": "Личные",
+  "settings.sourceDefault": "По умолчанию",
+  "settings.sourceBlocked": "Отклонено",
+  "settings.saveScopeLabel": "Сохранять в",
+  "settings.scopePersonal": "Личные",
+  "settings.scopeProject": "Проект (.nexora)",
+  "settings.scopeHintPersonal":
+    "Сохраняет в ваш личный профиль SQLite (действует во всех проектах без переопределений).",
+  "settings.scopeHintProject":
+    "Сохраняет в .nexora/config.json текущего проекта (с фильтром доверия; без секретов).",
+  "settings.scopeWorkspaceRequired":
+    "Откройте папку проекта, чтобы сохранять настройки в Проект (.nexora).",
+  "settings.blockedBannerTitle": "Отклонённые настройки недоверенного проекта",
+  "settings.blockedBannerHint":
+    "Политика безопасности отклонила переопределений в .nexora/: {n}",
+  "settings.capabilitiesScopeMissingWorkspace":
+    "Откройте папку проекта для сохранения возможностей модели в Проект (.nexora).",
 
   "onboarding.title": "Добро пожаловать в Nexora",
   "onboarding.progress": "Прогресс вводного тура",

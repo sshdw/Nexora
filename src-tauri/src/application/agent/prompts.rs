@@ -147,6 +147,8 @@ pub(crate) struct AssemblyBudget<'a> {
     pub state: RunState,
     /// Current pipeline stage (`None` omits the stage section).
     pub stage: Option<PipelineStage>,
+    /// Discovered hierarchical workspace instructions (`None` omits).
+    pub project_instructions: Option<&'a str>,
 }
 
 impl AssemblyBudget<'_> {
@@ -160,6 +162,7 @@ impl AssemblyBudget<'_> {
             context_limit: Some(0),
             state: RunState::Running,
             stage: None,
+            project_instructions: None,
         }
     }
 }
@@ -191,6 +194,16 @@ fn system_content_for(
             }
             task_role.push_str(&injection::envelope_prior_actions(&note));
         }
+    }
+    if let Some(inst) = budget
+        .project_instructions
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if !task_role.is_empty() {
+            task_role.push_str("\n\n");
+        }
+        task_role.push_str(inst);
     }
     let input = assembly::AssemblyInput {
         provider: budget.provider,
@@ -230,12 +243,19 @@ pub(crate) fn build_initial_messages(
     action_summary: Option<&ActionSummary>,
     user_request: &str,
 ) -> Vec<AiMessage> {
-    build_initial_messages_budgeted(
-        prior_messages,
-        action_summary,
-        user_request,
-        &AssemblyBudget::unbounded(),
-    )
+    build_initial_messages_with_instructions(prior_messages, action_summary, None, user_request)
+}
+
+/// Legacy unbounded opening message builder accepting optional workspace instructions.
+pub(crate) fn build_initial_messages_with_instructions(
+    prior_messages: &[AiMessage],
+    action_summary: Option<&ActionSummary>,
+    project_instructions: Option<&str>,
+    user_request: &str,
+) -> Vec<AiMessage> {
+    let mut budget = AssemblyBudget::unbounded();
+    budget.project_instructions = project_instructions;
+    build_initial_messages_budgeted(prior_messages, action_summary, user_request, &budget)
 }
 
 /// Assemble the opening message sequence under a model window.
@@ -673,6 +693,7 @@ mod tests {
             context_limit: Some(28_000),
             state: RunState::Running,
             stage: None,
+            project_instructions: None,
         };
         let messages = build_initial_messages_budgeted(&history, None, "current question", &budget);
 
@@ -722,6 +743,7 @@ mod tests {
             context_limit: Some(0),
             state: RunState::Running,
             stage: Some(crate::application::agent::pipeline::PipelineStage::Act),
+            project_instructions: None,
         };
         let messages = build_initial_messages_budgeted(&history, None, "current question", &budget);
 
@@ -743,5 +765,28 @@ mod tests {
         assert!(messages[0].content.contains("act"));
         assert!(messages[0].content.contains("executor"));
         assert!(messages[0].content.contains("running"));
+    }
+
+    #[test]
+    fn budgeted_with_project_instructions_wires_workspace_guidance() {
+        let history = vec![user_message("hello")];
+        let legacy = build_initial_messages(&history, None, "run checks");
+
+        let without = build_initial_messages_with_instructions(&history, None, None, "run checks");
+        assert_eq!(without, legacy);
+
+        let with = build_initial_messages_with_instructions(
+            &history,
+            None,
+            Some("Follow repository test naming rules."),
+            "run checks",
+        );
+        assert_eq!(with.len(), legacy.len());
+        assert_eq!(with[0].role, AiRole::System);
+        assert!(with[0].content.starts_with(AGENT_SYSTEM_PROMPT));
+        assert!(with[0].content.len() > legacy[0].content.len());
+        assert!(with[0]
+            .content
+            .contains("Follow repository test naming rules."));
     }
 }

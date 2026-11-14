@@ -7,6 +7,8 @@ import { useEffect, useState } from "react";
 
 import type {
   ConnectionModelCapabilities,
+  ResolvedSettingEntry,
+  SettingScope,
   SupportedProvider,
 } from "../../lib/tauri";
 import {
@@ -15,6 +17,7 @@ import {
 } from "../../lib/useProviders";
 import { useStrings } from "../../lib/useLocale";
 import M3Button from "../M3Button";
+import SettingSourceBadge from "./SettingSourceBadge";
 
 export interface ProviderSectionProps {
   store: ProvidersStore;
@@ -29,6 +32,11 @@ export interface ProviderSectionProps {
   onModelSelect: (value: string) => void;
   onCustomDraftChange: (value: string) => void;
   onCustomCommit: () => void;
+  saveScope?: SettingScope;
+  hasProjectWorkspace?: boolean;
+  resolvedEntries?: Record<string, ResolvedSettingEntry> | null;
+  onCapabilitySaved?: () => void;
+  onScopeBlockedError?: (message: string) => void;
 }
 
 export default function ProviderSection({
@@ -42,6 +50,11 @@ export default function ProviderSection({
   onModelSelect,
   onCustomDraftChange,
   onCustomCommit,
+  saveScope = "personal",
+  hasProjectWorkspace = true,
+  resolvedEntries,
+  onCapabilitySaved,
+  onScopeBlockedError,
 }: ProviderSectionProps) {
   const { t } = useStrings();
   const activeModelId = customActive ? customValue.trim() : (effectiveModel ?? "");
@@ -125,26 +138,52 @@ export default function ProviderSection({
     );
   };
 
-  const handleSaveOverride = () => {
+  const handleSaveOverride = async () => {
     if (!selectedDefinition || !activeModelId || !store.setCapabilityOverride) {
+      return;
+    }
+    if (saveScope === "project" && !hasProjectWorkspace) {
+      onScopeBlockedError?.(t("settings.capabilitiesScopeMissingWorkspace"));
       return;
     }
     const parsedCtx = Number.parseInt(ctxDraft.trim(), 10);
-    void store.setCapabilityOverride(selectedDefinition.name, activeModelId, {
-      context_window:
-        Number.isFinite(parsedCtx) && parsedCtx > 0 ? parsedCtx : null,
-      supported_efforts: effortsDraft,
-      supports_thinking: thinkingDraft,
-      supports_tools: toolsDraft,
-      supports_attachments: attachmentsDraft,
-    });
+    const updated = await store.setCapabilityOverride(
+      selectedDefinition.name,
+      activeModelId,
+      {
+        context_window:
+          Number.isFinite(parsedCtx) && parsedCtx > 0 ? parsedCtx : null,
+        supported_efforts: effortsDraft,
+        supports_thinking: thinkingDraft,
+        supports_tools: toolsDraft,
+        supports_attachments: attachmentsDraft,
+      },
+      saveScope
+    );
+    if (updated) onCapabilitySaved?.();
   };
 
-  const handleClearOverride = () => {
-    if (!selectedDefinition || !activeModelId || !store.setCapabilityOverride) {
+  const handleClearOverride = async () => {
+    if (!selectedDefinition || !activeModelId) {
       return;
     }
-    void store.setCapabilityOverride(selectedDefinition.name, activeModelId, null);
+    if (saveScope === "project" && !hasProjectWorkspace) {
+      onScopeBlockedError?.(t("settings.capabilitiesScopeMissingWorkspace"));
+      return;
+    }
+    const clearFn =
+      store.clearCapabilityOverride ??
+      (store.setCapabilityOverride
+        ? (conn: string, mod: string, scope?: SettingScope) =>
+            store.setCapabilityOverride(conn, mod, null, scope)
+        : null);
+    if (!clearFn) return;
+    const updated = await clearFn(
+      selectedDefinition.name,
+      activeModelId,
+      saveScope
+    );
+    if (updated) onCapabilitySaved?.();
   };
 
   const provenanceLabel = (
@@ -173,9 +212,12 @@ export default function ProviderSection({
       <p className="nex-settings-hint">{t("settings.providerStaleHint")}</p>
 
       <div className="nex-settings-field">
-        <label className="nex-settings-label" htmlFor="provider-select">
-          {t("settings.providerLabel")}
-        </label>
+        <div className="nex-settings-label-row">
+          <label className="nex-settings-label" htmlFor="provider-select">
+            {t("settings.providerLabel")}
+          </label>
+          <SettingSourceBadge entry={resolvedEntries?.["provider.selected"]} />
+        </div>
         <select
           id="provider-select"
           className="nex-select"
@@ -308,9 +350,12 @@ export default function ProviderSection({
       )}
 
       <div className="nex-settings-field">
-        <label className="nex-settings-label" htmlFor="model-select">
-          {t("settings.modelLabel")}
-        </label>
+        <div className="nex-settings-label-row">
+          <label className="nex-settings-label" htmlFor="model-select">
+            {t("settings.modelLabel")}
+          </label>
+          <SettingSourceBadge entry={resolvedEntries?.["provider.model"]} />
+        </div>
         <select
           id="model-select"
           className="nex-select"
@@ -382,6 +427,9 @@ export default function ProviderSection({
                   source: provenanceLabel(activeCapabilities.provenance),
                 })}
               </span>
+              <SettingSourceBadge
+                entry={resolvedEntries?.["provider.capability_overrides"]}
+              />
               {store.refreshModelMetadata && (
                 <M3Button
                   variant="quiet"
@@ -457,11 +505,17 @@ export default function ProviderSection({
             </div>
 
             <div className="nex-capabilities-actions">
-              <M3Button variant="secondary" onClick={handleSaveOverride}>
+              <M3Button
+                variant="secondary"
+                onClick={() => void handleSaveOverride()}
+              >
                 {t("settings.capabilitiesSaveOverride")}
               </M3Button>
               {activeCapabilities.has_manual_override && (
-                <M3Button variant="quiet" onClick={handleClearOverride}>
+                <M3Button
+                  variant="quiet"
+                  onClick={() => void handleClearOverride()}
+                >
                   {t("settings.capabilitiesClearOverride")}
                 </M3Button>
               )}

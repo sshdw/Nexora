@@ -2,12 +2,12 @@
 use super::permissions::PermissionStore;
 use super::tools::path_safety::{canonical_root, path_to_comparable_string, tool_scope};
 use crate::application::execution::ToolCall;
-use crate::application::settings::SettingsService;
+use crate::application::settings::resolve_effective_setting;
 use crate::infrastructure::database::Database;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 
@@ -55,6 +55,7 @@ struct ContextState {
     selected: AccessProfile,
     parent: Option<AccessContext>,
     child_ceiling: AccessProfile,
+    workspace_root: Option<PathBuf>,
     plan: AtomicBool,
     checkpoints_enabled: AtomicBool,
     revision: AtomicU64,
@@ -77,6 +78,7 @@ impl AccessContext {
             selected: AccessProfile::ReadOnly,
             parent: None,
             child_ceiling: AccessProfile::Standard,
+            workspace_root: None,
             plan: AtomicBool::new(false),
             checkpoints_enabled: AtomicBool::new(false),
             revision: AtomicU64::new(0),
@@ -92,12 +94,31 @@ impl AccessContext {
             selected: profile,
             parent: None,
             child_ceiling: AccessProfile::Standard,
+            workspace_root: None,
             plan: AtomicBool::new(false),
             checkpoints_enabled: AtomicBool::new(false),
             revision: AtomicU64::new(0),
             environment: Arc::new(Mutex::new((String::new(), 0))),
             #[cfg(test)]
             environment_override: Arc::new(Mutex::new(None)),
+        }))
+    }
+    /// Bind an explicit workspace root so `.nexora/` project restrictions can
+    /// tighten (never elevate) this access context.
+    pub(crate) fn with_workspace(&self, workspace_root: &Path) -> Self {
+        Self(Arc::new(ContextState {
+            db: self.0.db.clone(),
+            clock: self.0.clock.clone(),
+            selected: self.0.selected,
+            parent: self.0.parent.clone(),
+            child_ceiling: self.0.child_ceiling,
+            workspace_root: Some(workspace_root.to_path_buf()),
+            plan: AtomicBool::new(self.0.plan.load(Ordering::SeqCst)),
+            checkpoints_enabled: AtomicBool::new(self.checkpoints_enabled()),
+            revision: AtomicU64::new(self.0.revision.load(Ordering::SeqCst)),
+            environment: self.0.environment.clone(),
+            #[cfg(test)]
+            environment_override: self.0.environment_override.clone(),
         }))
     }
     /// Only server code can derive children; no parent/profile assertions in IPC.
@@ -108,6 +129,7 @@ impl AccessContext {
             selected,
             parent: Some(self.clone()),
             child_ceiling: selected.max(self.profile()),
+            workspace_root: self.0.workspace_root.clone(),
             plan: AtomicBool::new(false),
             checkpoints_enabled: AtomicBool::new(self.checkpoints_enabled()),
             revision: AtomicU64::new(0),
@@ -156,13 +178,16 @@ impl AccessContext {
         if self.0.plan.load(Ordering::SeqCst) {
             return AccessProfile::ReadOnly;
         }
-        let selected =
-            self.0.db.as_ref().map_or(self.0.selected, |db| {
-                match SettingsService::new(db).read(PROFILE_KEY) {
-                    Ok(value) => AccessProfile::resolve(value.as_deref()),
-                    Err(_) => AccessProfile::ReadOnly,
-                }
-            });
+        let selected = self.0.db.as_ref().map_or(self.0.selected, |db| {
+            let personal =
+                match crate::application::settings::SettingsService::new(db).read(PROFILE_KEY) {
+                    Ok(raw) => AccessProfile::resolve(raw.as_deref()),
+                    Err(_) => return AccessProfile::ReadOnly,
+                };
+            let resolved =
+                resolve_effective_setting(db, self.0.workspace_root.as_deref(), PROFILE_KEY, None);
+            personal.max(AccessProfile::resolve(resolved.as_deref()))
+        });
         selected.max(self.0.child_ceiling).max(
             self.0
                 .parent
@@ -319,6 +344,7 @@ mod tests {
         test_support::{call, temp_workspace},
         ToolRegistry,
     };
+    use crate::application::settings::SettingsService;
     use crate::infrastructure::database::in_memory_database;
     use serde_json::json;
     fn approve(gate: &ApprovalGate, call: &ToolCall, group: bool) {

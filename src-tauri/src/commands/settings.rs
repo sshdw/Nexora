@@ -20,9 +20,14 @@
 // value here is a framework requirement, not a review defect.
 #![allow(clippy::needless_pass_by_value)]
 
+use std::collections::BTreeMap;
+
 use tauri::State;
 
-use crate::application::settings::SettingsService;
+use crate::application::settings::{
+    desktop_config_registry, resolve_settings, save_scoped_setting as app_save_scoped_setting,
+    ResolvedSettingsSnapshot, SettingScope, SettingsService,
+};
 use crate::infrastructure::database::Database;
 
 use super::error::{CommandError, ErrorKind};
@@ -66,29 +71,8 @@ use super::error::{CommandError, ErrorKind};
 /// - [`MCP_SERVERS_KEY`] funnels through `McpServerList::from_json`, shared
 ///   with the setup import. Its rejection is value-free, because MCP
 ///   environment values may carry secrets.
-fn desktop_config_registry() -> nexora_core::config::ConfigRegistry<'static> {
-    use nexora_core::config::ConfigRegistry;
-
-    ConfigRegistry {
-        is_provider: &|name| {
-            crate::infrastructure::providers::supported_providers()
-                .iter()
-                .any(|p| p.name == name)
-        },
-        is_listed_model: &|model| {
-            crate::infrastructure::providers::supported_providers()
-                .iter()
-                .any(|p| p.models.iter().any(|m| m == model))
-        },
-        is_custom_model_id: &|model| crate::application::routing::is_valid_custom_model_id(model),
-        is_routing_profile: &|raw| {
-            crate::application::routing::RoutingProfile::from_json(raw).is_ok()
-        },
-        is_mcp_server_list: &|raw| {
-            crate::application::import::McpServerList::from_json(raw).is_ok()
-        },
-        is_known_flag: &|name| crate::application::flags::is_known_flag(name),
-    }
+fn desktop_config_registry_impl() -> nexora_core::config::ConfigRegistry<'static> {
+    desktop_config_registry()
 }
 
 /// Validate one setting write against the domains defined by the existing
@@ -151,7 +135,7 @@ fn validate_setting(key: &str, value: Option<&str>) -> Result<(), CommandError> 
         }
     }
 
-    nexora_core::config::validate_setting(&desktop_config_registry(), key, value)
+    nexora_core::config::validate_setting(&desktop_config_registry_impl(), key, value)
         .map_err(|rejection| CommandError::new(rejection.kind(), rejection.message()))
 }
 
@@ -226,6 +210,44 @@ pub(crate) fn list_settings(
     db: State<'_, Database>,
 ) -> Result<Vec<(String, Option<String>)>, CommandError> {
     SettingsService::new(db.inner()).list().map_err(Into::into)
+}
+
+/// Resolve every layered setting following
+/// `Session > Project (.nexora/) > Personal (SQLite) > Default` with
+/// untrusted-repo security filtering and per-setting source provenance.
+#[tauri::command]
+pub(crate) fn get_resolved_settings(
+    session_overrides: Option<BTreeMap<String, String>>,
+    db: State<'_, Database>,
+) -> ResolvedSettingsSnapshot {
+    resolve_settings(db.inner(), None, session_overrides.as_ref())
+}
+
+/// Persist or clear a setting in `scope` (`"personal"` or `"project"`),
+/// enforcing validation and untrusted-repo / non-secret rules on save.
+#[tauri::command]
+pub(crate) fn save_scoped_setting(
+    scope: String,
+    key: String,
+    value: Option<String>,
+    session_overrides: Option<BTreeMap<String, String>>,
+    db: State<'_, Database>,
+) -> Result<ResolvedSettingsSnapshot, CommandError> {
+    let parsed_scope = SettingScope::parse(&scope).ok_or_else(|| {
+        CommandError::new(
+            ErrorKind::InvalidInput,
+            "setting scope must be 'personal' or 'project'",
+        )
+    })?;
+    app_save_scoped_setting(
+        db.inner(),
+        None,
+        parsed_scope,
+        &key,
+        value.as_deref(),
+        session_overrides.as_ref(),
+    )
+    .map_err(Into::into)
 }
 
 #[cfg(test)]

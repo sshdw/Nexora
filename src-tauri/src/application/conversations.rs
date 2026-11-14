@@ -125,6 +125,7 @@ impl AiRequestExecutor for RequestExecutionService<'_> {
 /// persistence behavior and schema constraints remain in the repositories and
 /// the database.
 pub(crate) struct ConversationService<'a> {
+    db: &'a Database,
     conversations: ConversationRepository<'a>,
     messages: MessageRepository<'a>,
     providers: ProviderRepository<'a>,
@@ -138,6 +139,7 @@ impl<'a> ConversationService<'a> {
     pub(crate) fn new(db: &'a Database) -> Self {
         let execution: Box<dyn AiRequestExecutor + 'a> = Box::new(RequestExecutionService::new(db));
         Self {
+            db,
             conversations: ConversationRepository::new(db),
             messages: MessageRepository::new(db),
             providers: ProviderRepository::new(db),
@@ -154,6 +156,7 @@ impl<'a> ConversationService<'a> {
         execution: Box<dyn AiRequestExecutor + 'a>,
     ) -> Self {
         Self {
+            db,
             conversations: ConversationRepository::new(db),
             messages: MessageRepository::new(db),
             providers: ProviderRepository::new(db),
@@ -399,12 +402,31 @@ impl<'a> ConversationService<'a> {
         current_attachments: &[AiAttachment],
     ) -> Result<Vec<AiMessage>> {
         let history = self.messages.list_by_conversation(conversation_id)?;
-        self.build_history(
+        let mut messages = self.build_history(
             &history,
             provider,
             Some((current_message_id, current_attachments)),
             AttachmentFailure::Fail,
-        )
+        )?;
+        if let Some(ws) = crate::application::settings::configured_workspace_root(self.db) {
+            if let Ok(instructions) =
+                crate::application::project_dir::discover_instructions(&ws, None)
+            {
+                if !instructions.combined.is_empty() {
+                    messages.insert(
+                        0,
+                        AiMessage {
+                            role: AiRole::System,
+                            content: instructions.combined,
+                            attachments: Vec::new(),
+                            tool_calls: Vec::new(),
+                            tool_result: None,
+                        },
+                    );
+                }
+            }
+        }
+        Ok(messages)
     }
 
     /// Build the provider-independent history for an agent run in
@@ -2119,5 +2141,68 @@ mod tests {
             .list_by_conversation(conversation_id)
             .expect("list messages")
             .is_empty());
+    }
+
+    #[test]
+    fn chat_send_injects_workspace_instructions_when_workspace_configured() {
+        let db = test_db();
+        db.lock()
+            .expect("lock test db")
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS app_settings (
+                     key TEXT PRIMARY KEY CHECK (length(key) > 0 AND length(key) <= 200),
+                     value TEXT CHECK (length(value) <= 10000)
+                 );",
+            )
+            .expect("create app_settings table");
+        let scratch_base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("nexora-test-tmp");
+        std::fs::create_dir_all(&scratch_base).expect("mkdir scratch");
+        let ws = scratch_base.join(format!("stage4-chat-inst-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&ws);
+        std::fs::create_dir_all(&ws).expect("mkdir ws");
+        let canon_ws =
+            crate::application::workspace::validate_workspace_root(&ws.to_string_lossy())
+                .expect("valid test workspace root");
+
+        std::fs::write(
+            canon_ws.join("AGENTS.md"),
+            "Always respond concisely in repository context.\n",
+        )
+        .expect("write AGENTS.md");
+
+        crate::application::settings::SettingsService::new(&db)
+            .write(
+                nexora_core::config::WORKSPACE_ROOT_KEY,
+                Some(&canon_ws.to_string_lossy()),
+            )
+            .expect("persist workspace root");
+
+        let (service, captured) = succeeding_service(
+            &db,
+            AiResponse {
+                content: "ok".to_string(),
+                model: "gpt-4o-mini".to_string(),
+                tool_calls: Vec::new(),
+                usage: None,
+            },
+        );
+        let conversation_id = service.create("Chat").expect("conversation created");
+        service
+            .send_message(conversation_id, "hello", "openai", "gpt-4o-mini", &[])
+            .expect("send succeeds");
+
+        let req = captured.borrow();
+        let req = req.as_ref().expect("captured request");
+        assert!(
+            req.messages.iter().any(|m| m.role == AiRole::System
+                && m.content
+                    .contains("Always respond concisely in repository context.")),
+            "workspace AGENTS.md instructions should be passed as a System message: {:?}",
+            req.messages
+        );
+
+        let _ = std::fs::remove_dir_all(&ws);
     }
 }

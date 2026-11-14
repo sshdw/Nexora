@@ -185,6 +185,8 @@ pub(crate) struct AgentRunner<'a> {
     /// Default `false` preserves historical governance-only streams for unit
     /// callers unless explicitly enabled via [`Self::with_stream_deltas`].
     emit_stream_deltas: bool,
+    /// Discovered hierarchical workspace instructions (`None` omits).
+    project_instructions: Option<String>,
 }
 
 /// Outcome of one in-place compaction attempt (Task T4).
@@ -242,7 +244,19 @@ impl<'a> AgentRunner<'a> {
             run_flags: RunFlags::default(),
             checkpoint_ctx: None,
             emit_stream_deltas: false,
+            project_instructions: None,
         }
+    }
+
+    /// Attach hierarchical workspace instructions (`AGENTS.md` /
+    /// `.nexora/instructions.md`) to the opening system context.
+    #[must_use]
+    pub(crate) fn with_project_instructions(mut self, instructions: impl Into<String>) -> Self {
+        let text = instructions.into();
+        if !text.trim().is_empty() {
+            self.project_instructions = Some(text);
+        }
+        self
     }
 
     /// Enable forwarding real-time [`AgentRunEvent::StreamDelta`] chunks onto
@@ -635,6 +649,7 @@ impl<'a> AgentRunner<'a> {
             context_limit: self.context_limit_tokens,
             state: RunState::Running,
             stage: self.assembly_stage,
+            project_instructions: self.project_instructions.as_deref(),
         };
         let mut messages = if self.run_flags.assembly {
             prompts::build_initial_messages_budgeted(
@@ -644,9 +659,10 @@ impl<'a> AgentRunner<'a> {
                 &budget,
             )
         } else {
-            prompts::build_initial_messages(
+            prompts::build_initial_messages_with_instructions(
                 &self.prior_messages,
                 self.action_summary.as_ref(),
+                self.project_instructions.as_deref(),
                 user_request,
             )
         };

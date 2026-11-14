@@ -43,6 +43,7 @@ use crate::application::providers::ProviderError;
 use crate::application::refactor_apply::RefactorApplyError;
 use crate::application::repo_audit::RepoAuditError;
 use crate::application::search::SearchError;
+use crate::application::settings::ScopedSaveError;
 use crate::application::system::SystemError;
 use crate::application::version_control::{CommitMessageError, VersionControlError};
 
@@ -495,10 +496,30 @@ impl From<ProjectDirError> for CommandError {
                 ErrorKind::InvalidData,
                 "the workspace flags file is invalid",
             ),
+            ProjectDirError::InvalidConfig => Self::new(
+                ErrorKind::InvalidData,
+                "the workspace configuration file is invalid",
+            ),
             ProjectDirError::Io => Self::new(
                 ErrorKind::Io,
                 "a workspace project directory operation failed",
             ),
+        }
+    }
+}
+
+impl From<ScopedSaveError> for CommandError {
+    fn from(err: ScopedSaveError) -> Self {
+        match err {
+            ScopedSaveError::InvalidInput(msg) | ScopedSaveError::SecurityBlocked(msg) => {
+                Self::new(ErrorKind::InvalidInput, msg)
+            }
+            ScopedSaveError::WorkspaceRequired => Self::new(
+                ErrorKind::InvalidInput,
+                "select a project workspace folder before saving project settings",
+            ),
+            ScopedSaveError::Database(e) => Self::from(e),
+            ScopedSaveError::ProjectDir(e) => Self::from(e),
         }
     }
 }

@@ -16,10 +16,12 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::application::capabilities::{
     list_all_model_capabilities, refresh_connection_metadata, resolve_model_capabilities,
-    set_manual_override, ConnectionModelCapabilities, ModelCapabilityOverride,
+    set_manual_override, set_scoped_manual_override, ConnectionModelCapabilities,
+    ModelCapabilityOverride,
 };
 use crate::application::providers::ProviderHealth;
 use crate::application::providers::ProviderService;
+use crate::application::settings::SettingScope;
 use crate::infrastructure::database::Database;
 use crate::infrastructure::providers::SupportedProvider;
 use crate::infrastructure::repository::providers::Provider;
@@ -131,6 +133,7 @@ pub(crate) fn set_model_capability_override(
     connection_id: String,
     model_id: String,
     override_spec: Option<ModelCapabilityOverride>,
+    scope: Option<String>,
     db: State<'_, Database>,
 ) -> Result<ConnectionModelCapabilities, CommandError> {
     if connection_id.trim().is_empty() || model_id.trim().is_empty() {
@@ -139,6 +142,22 @@ pub(crate) fn set_model_capability_override(
             "connection_id and model_id are required",
         ));
     }
+    if let Some(raw_scope) = scope {
+        let parsed = SettingScope::parse(&raw_scope).ok_or_else(|| {
+            CommandError::new(
+                ErrorKind::InvalidInput,
+                "setting scope must be 'personal' or 'project'",
+            )
+        })?;
+        return set_scoped_manual_override(
+            db.inner(),
+            parsed,
+            connection_id.trim(),
+            model_id.trim(),
+            override_spec,
+        )
+        .map_err(Into::into);
+    }
     set_manual_override(
         db.inner(),
         connection_id.trim(),
@@ -146,6 +165,18 @@ pub(crate) fn set_model_capability_override(
         override_spec,
     )
     .map_err(Into::into)
+}
+
+/// Clear a manual capability override for `(connection_id, model_id)` from
+/// Personal `app_settings` or active Project `.nexora/config.json`.
+#[tauri::command]
+pub(crate) fn clear_model_capability_override(
+    connection_id: String,
+    model_id: String,
+    scope: Option<String>,
+    db: State<'_, Database>,
+) -> Result<ConnectionModelCapabilities, CommandError> {
+    set_model_capability_override(connection_id, model_id, None, scope, db)
 }
 
 /// Refresh zero-token `/models` metadata from the provider API for `connection_id`.

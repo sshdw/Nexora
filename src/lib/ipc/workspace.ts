@@ -83,3 +83,30 @@ export function saveWorkspaceProfile(
 ): Promise<string> {
   return invoke<string>("save_workspace_profile", { task, document });
 }
+
+export type InstructionSourceKind = "agents_md" | "nexora_instructions";
+
+export interface DiscoveredInstruction {
+  relative_path: string;
+  source_kind: InstructionSourceKind;
+  content: string;
+  bytes: number;
+  truncated: boolean;
+}
+
+export interface DiscoveredInstructions {
+  files: DiscoveredInstruction[];
+  combined: string;
+  skipped_escapes: string[];
+  truncated: boolean;
+}
+
+/** Discover hierarchical `AGENTS.md` and `.nexora/instructions.md` files within
+ * the active workspace, strictly bounded to `workspace_root`. */
+export function discoverProjectInstructions(
+  targetDir?: string
+): Promise<DiscoveredInstructions> {
+  return invoke<DiscoveredInstructions>("discover_project_instructions", {
+    targetDir: targetDir ?? null,
+  });
+}
