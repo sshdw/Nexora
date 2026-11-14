@@ -84,6 +84,13 @@ export interface AiResponse {
   usage?: TokenUsage | null;
 }
 
+/** Live streaming delta emitted on `chat-stream-event` during `send_message`. */
+export interface ChatStreamEventFrame {
+  conversation_id: number;
+  kind: "text_delta" | "thinking_delta" | "finished";
+  delta?: string | null;
+}
+
 /** Send a user message and return/ persist the AI response.
  * `attachmentIds` names the draft attachments to link to the created user
  * message; they become part of the AI request context (FR-008).
@@ -94,7 +101,8 @@ export function sendMessage(
   content: string,
   provider: string,
   model: string,
-  attachmentIds: number[]
+  attachmentIds: number[],
+  effort?: string | null
 ): Promise<AiResponse> {
   return invoke<AiResponse>("send_message", {
     conversationId,
@@ -102,6 +110,7 @@ export function sendMessage(
     provider,
     model,
     attachmentIds,
+    effort: effort ?? null,
   });
 }
 

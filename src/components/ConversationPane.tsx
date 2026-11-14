@@ -20,10 +20,14 @@ import ErrorBoundary from "./ErrorBoundary";
 import M3IconButton from "./M3IconButton";
 import M3Toolbar from "./M3Toolbar";
 import { ExportIcon } from "./icons";
-import type { Conversation } from "../lib/tauri";
+import type {
+  ConnectionModelCapabilities,
+  Conversation,
+} from "../lib/tauri";
 import type { AutonomyStore } from "../lib/useAutonomy";
 import type { WorkspaceStore } from "../lib/useWorkspace";
 import { useStrings } from "../lib/useLocale";
+import type { ModelConnectionGroup } from "./ModelPicker";
 
 export interface ConversationPaneProps {
   conversation: Conversation;
@@ -35,6 +39,12 @@ export interface ConversationPaneProps {
   models: readonly string[];
   /** Persist a model choice (the app's provider store). */
   onSelectModel: (model: string) => void;
+  connectionGroups?: readonly ModelConnectionGroup[];
+  onSelectConnectionModel?: (connectionId: string, model: string) => void;
+  selectedCapabilities?: ConnectionModelCapabilities | null;
+  capabilitiesByKey?: ReadonlyMap<string, ConnectionModelCapabilities>;
+  selectedEffort?: string | null;
+  onSelectEffort?: (effort: string | null) => void;
   /** Last model-selection failure, surfaced in the composer. */
   modelError: string | null;
   /** Agent-autonomy default store lifted in App (single source, NEX-FE-003). */
@@ -65,6 +75,12 @@ export type PaneSlot = Pick<
   | "selectedModel"
   | "models"
   | "onSelectModel"
+  | "connectionGroups"
+  | "onSelectConnectionModel"
+  | "selectedCapabilities"
+  | "capabilitiesByKey"
+  | "selectedEffort"
+  | "onSelectEffort"
   | "modelError"
   | "autonomy"
   | "onOpenSettings"
@@ -79,6 +95,12 @@ export default function ConversationPane({
   selectedModel,
   models,
   onSelectModel,
+  connectionGroups,
+  onSelectConnectionModel,
+  selectedCapabilities = null,
+  capabilitiesByKey,
+  selectedEffort = null,
+  onSelectEffort,
   modelError,
   autonomy,
   draft,
@@ -147,6 +169,12 @@ export default function ConversationPane({
             selectedModel={selectedModel}
             models={models}
             onSelectModel={onSelectModel}
+            connectionGroups={connectionGroups}
+            onSelectConnectionModel={onSelectConnectionModel}
+            selectedCapabilities={selectedCapabilities}
+            capabilitiesByKey={capabilitiesByKey}
+            selectedEffort={selectedEffort}
+            onSelectEffort={onSelectEffort}
             modelError={modelError}
             autonomy={autonomy}
             onOpenSettings={onOpenSettings}

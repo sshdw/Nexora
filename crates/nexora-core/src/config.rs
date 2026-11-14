@@ -47,6 +47,10 @@ pub const APPEARANCE_THEME_KEY: &str = "appearance.theme";
 pub const SELECTED_PROVIDER_KEY: &str = "provider.selected";
 /// Settings key holding the selected model identifier.
 pub const SELECTED_MODEL_KEY: &str = "provider.model";
+/// Settings key holding the selected reasoning/thinking effort (`low`, `medium`, `high`, `xhigh`).
+pub const SELECTED_EFFORT_KEY: &str = "provider.effort";
+/// Settings key holding per-`(connection_id, model_id)` manual capability overrides (JSON object).
+pub const MODEL_CAPABILITY_OVERRIDES_KEY: &str = "provider.capability_overrides";
 /// Settings key holding the validated agent access profile.
 pub const ACCESS_PROFILE_KEY: &str = "agent.access_profile";
 /// Settings key holding the agent autonomy mode.
@@ -77,6 +81,12 @@ pub const VALID_THEMES: [&str; 2] = ["dark", "light"];
 /// Autonomy modes the current implementation defines.
 pub const VALID_AUTONOMY: [&str; 3] = ["supervised", "semi_autonomous", "full_autonomous"];
 
+/// Effort levels accepted for [`SELECTED_EFFORT_KEY`].
+pub const VALID_EFFORTS: [&str; 4] = ["low", "medium", "high", "xhigh"];
+
+/// Maximum byte length of [`MODEL_CAPABILITY_OVERRIDES_KEY`].
+pub const MAX_CAPABILITY_OVERRIDES_BYTES: usize = 64 * 1024;
+
 /// Longest workspace root accepted (mirrors the `conversations.workspace_root`
 /// `CHECK (length <= 1024)` bound).
 pub const WORKSPACE_ROOT_MAX_LEN: usize = 1024;
@@ -96,10 +106,12 @@ pub const MAX_APPROVAL_TIMEOUT_SECS: u64 = 24 * 60 * 60;
 pub const MAX_MODEL_LEN: usize = 200;
 
 /// Every writable setting key that is not a `flags.*` flag.
-pub const BASE_KEYS: [&str; 13] = [
+pub const BASE_KEYS: [&str; 15] = [
     APPEARANCE_THEME_KEY,
     SELECTED_PROVIDER_KEY,
     SELECTED_MODEL_KEY,
+    SELECTED_EFFORT_KEY,
+    MODEL_CAPABILITY_OVERRIDES_KEY,
     AUTONOMY_KEY,
     ACCESS_PROFILE_KEY,
     SPEND_LIMIT_KEY,
@@ -136,6 +148,10 @@ pub enum ConfigKey {
     SelectedProvider,
     /// [`SELECTED_MODEL_KEY`]
     SelectedModel,
+    /// [`SELECTED_EFFORT_KEY`]
+    SelectedEffort,
+    /// [`MODEL_CAPABILITY_OVERRIDES_KEY`]
+    ModelCapabilityOverrides,
     /// [`AUTONOMY_KEY`]
     Autonomy,
     /// Persisted security ceiling.
@@ -176,6 +192,8 @@ impl ConfigKey {
             Self::Theme => Some(APPEARANCE_THEME_KEY),
             Self::SelectedProvider => Some(SELECTED_PROVIDER_KEY),
             Self::SelectedModel => Some(SELECTED_MODEL_KEY),
+            Self::SelectedEffort => Some(SELECTED_EFFORT_KEY),
+            Self::ModelCapabilityOverrides => Some(MODEL_CAPABILITY_OVERRIDES_KEY),
             Self::AccessProfile => Some(ACCESS_PROFILE_KEY),
             Self::Autonomy => Some(AUTONOMY_KEY),
             Self::SpendLimit => Some(SPEND_LIMIT_KEY),
@@ -227,6 +245,8 @@ pub fn classify_key(key: &str) -> Option<ConfigKey> {
         APPEARANCE_THEME_KEY => Some(ConfigKey::Theme),
         SELECTED_PROVIDER_KEY => Some(ConfigKey::SelectedProvider),
         SELECTED_MODEL_KEY => Some(ConfigKey::SelectedModel),
+        SELECTED_EFFORT_KEY => Some(ConfigKey::SelectedEffort),
+        MODEL_CAPABILITY_OVERRIDES_KEY => Some(ConfigKey::ModelCapabilityOverrides),
         ACCESS_PROFILE_KEY => Some(ConfigKey::AccessProfile),
         AUTONOMY_KEY => Some(ConfigKey::Autonomy),
         SPEND_LIMIT_KEY => Some(ConfigKey::SpendLimit),
@@ -387,6 +407,29 @@ pub fn is_valid_custom_model_id(value: &str) -> bool {
         .all(|byte| matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'/' | b':' | b'-' | b'+'))
 }
 
+/// Domain check for [`SELECTED_EFFORT_KEY`].
+#[must_use]
+pub fn is_valid_effort(value: &str) -> bool {
+    VALID_EFFORTS.contains(&value)
+}
+
+/// Domain check for [`MODEL_CAPABILITY_OVERRIDES_KEY`]: a JSON object within
+/// [`MAX_CAPABILITY_OVERRIDES_BYTES`] whose entries do not use secret-adjacent keys.
+#[must_use]
+pub fn is_valid_capability_overrides(value: &str) -> bool {
+    if value.len() > MAX_CAPABILITY_OVERRIDES_BYTES {
+        return false;
+    }
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(value) else {
+        return false;
+    };
+    let Some(map) = parsed.as_object() else {
+        return false;
+    };
+    map.iter()
+        .all(|(k, v)| !k.trim().is_empty() && !is_secret_adjacent_key(k) && v.is_object())
+}
+
 /// Domain check for [`SPEND_LIMIT_KEY`]: a trimmed `u64` greater than zero.
 #[must_use]
 pub fn is_valid_spend_limit(value: &str) -> bool {
@@ -476,6 +519,12 @@ pub fn validate_setting(
                 Err(invalid_value(key, value))
             }
         }
+        Some(ConfigKey::SelectedEffort) => is_valid_effort(value)
+            .then_some(())
+            .ok_or_else(|| invalid_value(key, value)),
+        Some(ConfigKey::ModelCapabilityOverrides) => is_valid_capability_overrides(value)
+            .then_some(())
+            .ok_or_else(|| invalid_value(key, value)),
         Some(ConfigKey::AccessProfile) => ["read_only", "standard", "supervised"]
             .contains(&value)
             .then_some(())
@@ -592,7 +641,7 @@ mod tests {
         }
         assert_eq!(
             BASE_KEYS.len(),
-            13,
+            15,
             "the allowlist is closed; keep it in sync"
         );
     }

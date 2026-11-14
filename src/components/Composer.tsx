@@ -64,7 +64,11 @@
 import { useEffect, useRef } from "react";
 
 import { formatBytes } from "../lib/format";
-import type { Attachment, AutonomyMode } from "../lib/tauri";
+import type {
+  Attachment,
+  AutonomyMode,
+  ConnectionModelCapabilities,
+} from "../lib/tauri";
 import type { AutonomyStore } from "../lib/useAutonomy";
 import type { WorkspaceStore } from "../lib/useWorkspace";
 import { useStrings } from "../lib/useLocale";
@@ -74,7 +78,7 @@ import ContextRing from "./ContextRing";
 import M3Button from "./M3Button";
 import M3IconButton from "./M3IconButton";
 import M3SegmentedGroup from "./M3SegmentedGroup";
-import ModelPicker from "./ModelPicker";
+import ModelPicker, { type ModelConnectionGroup } from "./ModelPicker";
 import Tooltip from "./Tooltip";
 import WorkspaceContextRow from "./WorkspaceContextRow";
 import { Button } from "./ui/button";
@@ -125,6 +129,14 @@ export interface ComposerProps {
   models: readonly string[];
   /** Persist a model choice. The provider store owns the result. */
   onSelectModel: (model: string) => void;
+  /** Optional connection-grouped models across configured connections. */
+  connectionGroups?: readonly ModelConnectionGroup[];
+  selectedConnectionId?: string | null;
+  onSelectConnectionModel?: (connectionId: string, model: string) => void;
+  selectedCapabilities?: ConnectionModelCapabilities | null;
+  capabilitiesByKey?: ReadonlyMap<string, ConnectionModelCapabilities>;
+  selectedEffort?: string | null;
+  onSelectEffort?: (effort: string | null) => void;
   /** Last model-selection failure, surfaced in the composer's strip. */
   modelError?: string | null;
   /** Provider + model are configured, so the composer can send. */
@@ -165,6 +177,13 @@ export default function Composer({
   selectedModel,
   models,
   onSelectModel,
+  connectionGroups,
+  selectedConnectionId = null,
+  onSelectConnectionModel,
+  selectedCapabilities = null,
+  capabilitiesByKey,
+  selectedEffort = null,
+  onSelectEffort,
   modelError = null,
   ready,
   onOpenSettings,
@@ -433,6 +452,13 @@ export default function Composer({
                 selectedModel={selectedModel}
                 models={models}
                 onSelectModel={onSelectModel}
+                connectionGroups={connectionGroups}
+                selectedConnectionId={selectedConnectionId}
+                onSelectConnectionModel={onSelectConnectionModel}
+                capabilities={selectedCapabilities}
+                capabilitiesByKey={capabilitiesByKey}
+                selectedEffort={selectedEffort}
+                onSelectEffort={onSelectEffort}
                 modelError={modelError}
                 onOpenSettings={onOpenSettings}
               />

@@ -160,6 +160,7 @@ pub(crate) async fn start_agent_run(
     content: String,
     provider: String,
     model: String,
+    effort: Option<String>,
 ) -> Result<StartAgentRunResponse, CommandError> {
     if content.trim().is_empty() {
         return Err(CommandError::new(
@@ -182,6 +183,15 @@ pub(crate) async fn start_agent_run(
         let registry = handle.state::<ManagedRegistry>();
         let db_client = db.inner().clone();
         let db_ref = &db_client;
+        if let Some(raw_effort) = effort.as_deref() {
+            if let Some(parsed) = crate::application::execution::ReasoningEffort::parse(raw_effort)
+            {
+                let _ = crate::application::settings::SettingsService::new(db_ref).write(
+                    nexora_core::config::SELECTED_EFFORT_KEY,
+                    Some(parsed.as_str()),
+                );
+            }
+        }
         // Materialize the registry handle before `handle` moves below.
         let registry_arc = Arc::clone(registry.inner());
 
@@ -1193,7 +1203,7 @@ mod tests {
         const AGENT_COMMANDS: [(&str, &[&str]); 21] = [
             (
                 "start_agent_run",
-                &["conversationId", "content", "provider", "model"],
+                &["conversationId", "content", "provider", "model", "effort"],
             ),
             ("cancel_agent_run", &["runId"]),
             (

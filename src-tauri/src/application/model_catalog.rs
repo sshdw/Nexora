@@ -99,7 +99,7 @@ pub(crate) fn model_info_for(provider: &str, model: &str) -> ModelInfo {
         supports_tools: listed,
         supports_vision: listed,
         supports_json: listed,
-        supports_streaming: false,
+        supports_streaming: listed,
     }
 }
 
@@ -235,8 +235,7 @@ mod tests {
         assert!(info.supports_tools);
         assert!(info.supports_vision);
         assert!(info.supports_json);
-        // Sync-only runtime: streaming stays false until a streaming task lands.
-        assert!(!info.supports_streaming);
+        assert!(info.supports_streaming);
     }
 
     #[test]

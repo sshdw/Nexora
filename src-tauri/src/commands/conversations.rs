@@ -11,10 +11,12 @@
 // value here is a framework requirement, not a review defect.
 #![allow(clippy::needless_pass_by_value)]
 
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::application::agent::service::resolve_effective_effort;
+use crate::application::capabilities::resolve_model_capabilities;
 use crate::application::conversations::ConversationService;
-use crate::application::execution::AiResponse;
+use crate::application::execution::{AiResponse, ReasoningEffort, StreamEvent};
 use crate::infrastructure::database::Database;
 use crate::infrastructure::repository::conversations::Conversation;
 use crate::infrastructure::repository::messages::Message;
@@ -108,6 +110,15 @@ pub(crate) fn restore_conversation(id: i64, db: State<'_, Database>) -> Result<(
 /// exactly as on any other thread. The UI stays responsive, no async worker
 /// is occupied, and the frontend contract is unchanged вЂ” `invoke` still
 /// resolves with the response or rejects with a classified error.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+struct ChatStreamEventFrame {
+    conversation_id: i64,
+    kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    delta: Option<String>,
+}
+
 #[tauri::command]
 pub(crate) async fn send_message(
     app: AppHandle,
@@ -116,21 +127,62 @@ pub(crate) async fn send_message(
     provider: String,
     model: String,
     attachment_ids: Vec<i64>,
+    effort: Option<String>,
 ) -> Result<AiResponse, CommandError> {
     // Owned handle so the managed state can be reached from the blocking
     // thread (borrowed `State<'_, _>` cannot cross into `'static` work).
     let handle = app.clone();
     let outcome = tauri::async_runtime::spawn_blocking(move || {
         let db = handle.state::<Database>();
+        let effective_effort = effort
+            .as_deref()
+            .and_then(ReasoningEffort::parse)
+            .and_then(|parsed| {
+                let candidate = parsed.as_str();
+                let caps = resolve_model_capabilities(db.inner(), &provider, &model);
+                caps.supported_efforts
+                    .iter()
+                    .any(|e| e == candidate)
+                    .then(|| candidate.to_string())
+            })
+            .or_else(|| resolve_effective_effort(db.inner(), &provider, &model));
+        let emit_handle = handle.clone();
         let result: Result<AiResponse, CommandError> = ConversationService::new(db.inner())
-            .send_message(
+            .send_message_with_effort_stream(
                 conversation_id,
                 &content,
                 &provider,
                 &model,
                 &attachment_ids,
+                effective_effort.as_deref(),
+                &|ev| {
+                    let frame = match ev {
+                        StreamEvent::TextDelta(delta) => Some(ChatStreamEventFrame {
+                            conversation_id,
+                            kind: "text_delta",
+                            delta: Some(delta),
+                        }),
+                        StreamEvent::ThinkingDelta(delta) => Some(ChatStreamEventFrame {
+                            conversation_id,
+                            kind: "thinking_delta",
+                            delta: Some(delta),
+                        }),
+                        StreamEvent::ToolCallDelta { .. } => None,
+                    };
+                    if let Some(payload) = frame {
+                        let _ = emit_handle.emit("chat-stream-event", payload);
+                    }
+                },
             )
             .map_err(Into::into);
+        let _ = handle.emit(
+            "chat-stream-event",
+            ChatStreamEventFrame {
+                conversation_id,
+                kind: "finished",
+                delta: None,
+            },
+        );
         if result.is_ok() {
             // Local usage ledger (counts only): one best-effort tick per
             // sent message — a ledger failure never fails the send.

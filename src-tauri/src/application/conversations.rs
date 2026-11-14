@@ -56,8 +56,8 @@ use std::fs;
 
 use super::agent::runner::DEFAULT_REQUEST_TIMEOUT;
 use super::execution::{
-    self, AiAttachment, AiAttachmentPayload, AiMessage, AiRequest, AiResponse, AiRole,
-    RequestError, RequestExecutionService,
+    self, AiAttachment, AiAttachmentPayload, AiMessage, AiRequest, AiResponse, AiRole, ModelConfig,
+    ReasoningEffort, RequestError, RequestExecutionService, StreamEvent,
 };
 
 /// Application-layer result shared by conversation operations, unifying
@@ -88,11 +88,30 @@ const STATUS_ARCHIVED: &str = "archived";
 pub(crate) trait AiRequestExecutor {
     /// Execute `request`.
     fn execute(&self, request: &AiRequest) -> execution::Result<AiResponse>;
+
+    /// Execute `request` streaming incremental events to `on_event`.
+    fn execute_stream(
+        &self,
+        request: &AiRequest,
+        on_event: &dyn Fn(StreamEvent),
+    ) -> execution::Result<AiResponse> {
+        let response = self.execute(request)?;
+        on_event(StreamEvent::TextDelta(response.content.clone()));
+        Ok(response)
+    }
 }
 
 impl AiRequestExecutor for RequestExecutionService<'_> {
     fn execute(&self, request: &AiRequest) -> execution::Result<AiResponse> {
         RequestExecutionService::execute(self, request)
+    }
+
+    fn execute_stream(
+        &self,
+        request: &AiRequest,
+        on_event: &dyn Fn(StreamEvent),
+    ) -> execution::Result<AiResponse> {
+        RequestExecutionService::execute_stream(self, request, on_event)
     }
 }
 
@@ -209,6 +228,29 @@ impl<'a> ConversationService<'a> {
         model: &str,
         attachment_ids: &[i64],
     ) -> Result<AiResponse> {
+        self.send_message_with_effort_stream(
+            conversation_id,
+            content,
+            provider,
+            model,
+            attachment_ids,
+            None,
+            &|_| {},
+        )
+    }
+
+    /// Streaming + effort-aware send flow used by the desktop IPC command.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn send_message_with_effort_stream(
+        &self,
+        conversation_id: i64,
+        content: &str,
+        provider: &str,
+        model: &str,
+        attachment_ids: &[i64],
+        effort: Option<&str>,
+        on_event: &dyn Fn(StreamEvent),
+    ) -> Result<AiResponse> {
         if !self.conversations.exists(conversation_id)? {
             return Err(ConversationError::NotFound {
                 id: conversation_id,
@@ -246,6 +288,9 @@ impl<'a> ConversationService<'a> {
 
         let current_attachments: Vec<AiAttachment> =
             prepared.into_iter().map(|(_, payload)| payload).collect();
+        let model_config = effort
+            .and_then(ReasoningEffort::parse)
+            .map(|parsed| ModelConfig::new(model).with_effort(Some(parsed.as_str().to_string())));
         let request = AiRequest {
             provider: provider.to_string(),
             model: model.to_string(),
@@ -260,11 +305,11 @@ impl<'a> ConversationService<'a> {
             // the existing network/timeout error instead of hanging the send.
             // This reuses the agent runner's default (120s); the agent path
             // itself is unchanged.
-            model_config: None,
+            model_config,
             request_timeout: Some(DEFAULT_REQUEST_TIMEOUT),
         };
 
-        let response = self.execution.execute(&request)?;
+        let response = self.execution.execute_stream(&request, on_event)?;
 
         // Shared assistant-turn persistence (Task 5.1, DP-7): records the
         // provider row id and the responding model exactly as before.

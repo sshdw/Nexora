@@ -38,6 +38,7 @@ import {
   resumeAgentRun,
   startAgentRun,
   type AutonomyMode,
+  type ConnectionModelCapabilities,
 } from "../lib/tauri";
 import type { AutonomyStore } from "../lib/useAutonomy";
 import { useAgentRun } from "../lib/useAgentRun";
@@ -47,6 +48,7 @@ import type { WorkspaceStore } from "../lib/useWorkspace";
 import AgentRunSteps from "./AgentRunSteps";
 import Composer from "./Composer";
 import MessageMarkdown from "./MessageMarkdown";
+import type { ModelConnectionGroup } from "./ModelPicker";
 import { useStrings } from "../lib/useLocale";
 import M3LoadingIndicator from "./M3LoadingIndicator";
 
@@ -63,6 +65,12 @@ export interface ConversationViewProps {
   /** Persist a model choice through the app's provider store (the
    * single source of truth, FR-012). */
   onSelectModel: (model: string) => void;
+  connectionGroups?: readonly ModelConnectionGroup[];
+  onSelectConnectionModel?: (connectionId: string, model: string) => void;
+  selectedCapabilities?: ConnectionModelCapabilities | null;
+  capabilitiesByKey?: ReadonlyMap<string, ConnectionModelCapabilities>;
+  selectedEffort?: string | null;
+  onSelectEffort?: (effort: string | null) => void;
   /** Last model-selection failure, surfaced in the composer's strip. */
   modelError: string | null;
   /** Agent-autonomy default store lifted in App (single source, NEX-FE-003):
@@ -89,6 +97,12 @@ export default function ConversationView({
   selectedModel,
   models,
   onSelectModel,
+  connectionGroups,
+  onSelectConnectionModel,
+  selectedCapabilities = null,
+  capabilitiesByKey,
+  selectedEffort = null,
+  onSelectEffort,
   modelError,
   autonomy,
   onOpenSettings,
@@ -98,8 +112,15 @@ export default function ConversationView({
   workspace,
 }: ConversationViewProps) {
   const { locale, t } = useStrings();
-  const { messages, loading, error, sending, send } =
-    useConversation(conversationId);
+  const {
+    messages,
+    loading,
+    error,
+    sending,
+    streamingText,
+    streamingThinking,
+    send,
+  } = useConversation(conversationId);
   const {
     attachments,
     error: attachmentError,
@@ -350,6 +371,16 @@ export default function ConversationView({
     [autonomy, runs]
   );
 
+  const effectiveEffort = useMemo(() => {
+    if (!selectedEffort) return null;
+    if (selectedCapabilities) {
+      return selectedCapabilities.supported_efforts.includes(selectedEffort)
+        ? selectedEffort
+        : null;
+    }
+    return selectedEffort;
+  }, [selectedEffort, selectedCapabilities]);
+
   const handleSubmit = async () => {
     const content = draft.trim();
     if (!canSend || !content || !selectedProvider || !selectedModel) return;
@@ -364,7 +395,8 @@ export default function ConversationView({
           conversationId,
           content,
           selectedProvider,
-          selectedModel
+          selectedModel,
+          effectiveEffort
         );
         // User message persisted before spawn; refresh both histories.
         await Promise.all([refreshAttachments(), reloadAgent()]);
@@ -390,7 +422,8 @@ export default function ConversationView({
       content,
       selectedProvider,
       selectedModel,
-      attachmentIds
+      attachmentIds,
+      effectiveEffort
     );
     // A failed AI request keeps the persisted user message and creates no
     // assistant message (DATABASE.md §7.2). Offline/network failures arrive
@@ -558,11 +591,58 @@ export default function ConversationView({
             );
           })
         )}
-        {sending && !agentMode && (
+        {sending && !agentMode && (streamingText || streamingThinking) && (
+          <article
+            className="nex-message nex-message-assistant nex-message-streaming"
+            aria-live="polite"
+          >
+            <div className="nex-message-meta">
+              <span className="nex-message-author">
+                {t("conv.authorAssistant")}
+              </span>
+              {selectedModel && (
+                <span className="nex-message-origin">{selectedModel}</span>
+              )}
+            </div>
+            {streamingThinking && (
+              <details className="nex-streaming-thinking" open>
+                <summary>{t("conv.streamingThinking")}</summary>
+                <pre className="nex-streaming-thinking-body">
+                  {streamingThinking}
+                </pre>
+              </details>
+            )}
+            {streamingText && (
+              <div className="nex-message-body">{streamingText}</div>
+            )}
+          </article>
+        )}
+        {sending && !agentMode && !streamingText && (
           <div className="nex-thread-waiting">
             <M3LoadingIndicator label={t("conv.responding")} size="sm" />
           </div>
         )}
+        {activeRun &&
+          (activeRun.streaming_text || activeRun.streaming_thinking) && (
+            <article
+              className="nex-message nex-message-assistant nex-message-streaming"
+              aria-live="polite"
+            >
+              {activeRun.streaming_thinking && (
+                <details className="nex-streaming-thinking" open>
+                  <summary>{t("conv.streamingThinking")}</summary>
+                  <pre className="nex-streaming-thinking-body">
+                    {activeRun.streaming_thinking}
+                  </pre>
+                </details>
+              )}
+              {activeRun.streaming_text && (
+                <div className="nex-message-body">
+                  {activeRun.streaming_text}
+                </div>
+              )}
+            </article>
+          )}
         {agentBusy && (
           <div className="nex-thread-waiting">
             <M3LoadingIndicator label={t("conv.agentWorking")} size="sm" />
@@ -611,6 +691,13 @@ export default function ConversationView({
         selectedModel={selectedModel}
         models={models}
         onSelectModel={onSelectModel}
+        connectionGroups={connectionGroups}
+        selectedConnectionId={selectedProvider}
+        onSelectConnectionModel={onSelectConnectionModel}
+        selectedCapabilities={selectedCapabilities}
+        capabilitiesByKey={capabilitiesByKey}
+        selectedEffort={selectedEffort}
+        onSelectEffort={onSelectEffort}
         modelError={modelError}
         ready={ready}
         onOpenSettings={onOpenSettings}

@@ -50,14 +50,16 @@
 
 use nexora_core::provider::{
     AiAttachmentPayload, AiMessage, AiRequest, AiResponse, AiRole, CancellationToken,
-    ExecutorError, ProviderExecutor, TokenUsage, ToolCall,
+    ExecutorError, ProviderExecutor, ReasoningEffort, StreamEvent, TokenUsage, ToolCall,
 };
 // `AiAttachment`, `ToolDefinition`, and `AiToolResult` are referenced only by
 // this module's unit tests.
 #[cfg(test)]
-use nexora_core::provider::{AiAttachment, AiToolResult, ToolDefinition};
+use nexora_core::provider::{AiAttachment, AiToolResult, ModelConfig, ToolDefinition};
 
-use super::transport::{Credential, HttpClient, PostOutcome, PostRequest};
+use super::transport::{
+    Credential, HttpClient, PostOutcome, PostRequest, StreamOutcome, StreamPostError,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -161,6 +163,76 @@ impl GeminiExecutor {
             }
         }
     }
+
+    fn run_stream(
+        &self,
+        request: &AiRequest,
+        credential: &str,
+        token: &CancellationToken,
+        on_event: &dyn Fn(StreamEvent),
+    ) -> Result<AiResponse, GeminiError> {
+        let body = generate_content_request(request);
+        let wire = serde_json::to_vec(&body).map_err(|_| GeminiError::UnexpectedResponse)?;
+        let mut acc = GeminiStreamAccumulator::new(&request.model);
+        let outcome = self.client.post_stream(
+            token,
+            &PostRequest {
+                url: stream_generate_content_url(&self.endpoint, &request.model),
+                credential: Credential::Header {
+                    name: "x-goog-api-key",
+                    value: credential,
+                },
+                extra_headers: &[],
+                extra_headers_owned: &[],
+                body: &wire,
+                timeout: request.request_timeout,
+            },
+            &mut |frame| {
+                let data = frame.data.trim();
+                if data.is_empty() || data == "[DONE]" {
+                    return Ok(());
+                }
+                let chunk: GenerateContentResponse =
+                    serde_json::from_str(data).map_err(|_| GeminiError::UnexpectedResponse)?;
+                acc.apply_chunk(chunk, on_event)
+            },
+        );
+        match outcome {
+            Ok(StreamOutcome::Completed) => acc.finish(),
+            Ok(StreamOutcome::Failure(snapshot)) => {
+                if snapshot.is_context_length_exceeded {
+                    Err(GeminiError::ContextLengthExceeded)
+                } else {
+                    Err(classify_status(snapshot.status, snapshot.retry_after_secs))
+                }
+            }
+            Err(StreamPostError::Transport(ExecutorError::Cancelled)) => {
+                Err(GeminiError::Cancelled)
+            }
+            Err(StreamPostError::Transport(_)) => Err(GeminiError::Network),
+            Err(StreamPostError::Handler(err)) => Err(err),
+        }
+    }
+
+    fn map_error(error: GeminiError) -> ExecutorError {
+        // Record only the classification category; never the credential
+        // or request payload (ARCHITECTURE.md §9, §11).
+        log::warn!("gemini request failed: {error}");
+        match error {
+            GeminiError::InvalidRequest => ExecutorError::InvalidRequest,
+            GeminiError::ContextLengthExceeded => ExecutorError::ContextLengthExceeded,
+            GeminiError::Authentication => ExecutorError::Authentication,
+            GeminiError::PaymentRequired => ExecutorError::PaymentRequired,
+            GeminiError::Network => ExecutorError::Network,
+            GeminiError::RateLimited { retry_after_secs } => {
+                ExecutorError::RateLimited { retry_after_secs }
+            }
+            GeminiError::ProviderUnavailable => ExecutorError::ProviderUnavailable,
+            GeminiError::UnexpectedResponse => ExecutorError::UnexpectedResponse,
+            GeminiError::Provider => ExecutorError::Failure,
+            GeminiError::Cancelled => ExecutorError::Cancelled,
+        }
+    }
 }
 
 impl ProviderExecutor for GeminiExecutor {
@@ -170,28 +242,19 @@ impl ProviderExecutor for GeminiExecutor {
         credential: &str,
         token: &CancellationToken,
     ) -> Result<AiResponse, ExecutorError> {
-        match self.run(request, credential, token) {
-            Ok(response) => Ok(response),
-            Err(error) => {
-                // Record only the classification category; never the credential
-                // or request payload (ARCHITECTURE.md В§9, В§11).
-                log::warn!("gemini request failed: {error}");
-                Err(match error {
-                    GeminiError::InvalidRequest => ExecutorError::InvalidRequest,
-                    GeminiError::ContextLengthExceeded => ExecutorError::ContextLengthExceeded,
-                    GeminiError::Authentication => ExecutorError::Authentication,
-                    GeminiError::PaymentRequired => ExecutorError::PaymentRequired,
-                    GeminiError::Network => ExecutorError::Network,
-                    GeminiError::RateLimited { retry_after_secs } => {
-                        ExecutorError::RateLimited { retry_after_secs }
-                    }
-                    GeminiError::ProviderUnavailable => ExecutorError::ProviderUnavailable,
-                    GeminiError::UnexpectedResponse => ExecutorError::UnexpectedResponse,
-                    GeminiError::Provider => ExecutorError::Failure,
-                    GeminiError::Cancelled => ExecutorError::Cancelled,
-                })
-            }
-        }
+        self.run(request, credential, token)
+            .map_err(Self::map_error)
+    }
+
+    fn execute_stream_events(
+        &self,
+        request: &AiRequest,
+        credential: &str,
+        token: &CancellationToken,
+        on_event: &dyn Fn(StreamEvent),
+    ) -> Result<AiResponse, ExecutorError> {
+        self.run_stream(request, credential, token, on_event)
+            .map_err(Self::map_error)
     }
 }
 
@@ -216,6 +279,30 @@ pub(crate) struct GenerateContentRequest {
     system_instruction: Option<SystemInstruction>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     tools: Vec<GeminiTool>,
+    #[serde(
+        rename = "generationConfig",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    generation_config: Option<GeminiGenerationConfig>,
+}
+
+#[derive(Debug, Serialize)]
+struct GeminiGenerationConfig {
+    #[serde(
+        rename = "thinkingConfig",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    thinking_config: Option<GeminiThinkingConfig>,
+}
+
+#[derive(Debug, Serialize)]
+struct GeminiThinkingConfig {
+    #[serde(rename = "thinkingLevel")]
+    thinking_level: &'static str,
+    #[serde(rename = "includeThoughts")]
+    include_thoughts: bool,
 }
 
 /// Gemini-native tool container (`tools` array element).
@@ -358,6 +445,21 @@ pub(crate) fn generate_content_request(request: &AiRequest) -> GenerateContentRe
                 .collect(),
         }]
     };
+    let generation_config = request
+        .model_config
+        .as_ref()
+        .and_then(|cfg| cfg.effort.as_deref())
+        .and_then(ReasoningEffort::parse)
+        .map(|effort| GeminiGenerationConfig {
+            thinking_config: Some(GeminiThinkingConfig {
+                thinking_level: match effort {
+                    ReasoningEffort::Low => "LOW",
+                    ReasoningEffort::Medium => "MEDIUM",
+                    ReasoningEffort::High | ReasoningEffort::XHigh => "HIGH",
+                },
+                include_thoughts: true,
+            }),
+        });
     GenerateContentRequest {
         contents,
         system_instruction: system.map(|text| SystemInstruction {
@@ -370,6 +472,7 @@ pub(crate) fn generate_content_request(request: &AiRequest) -> GenerateContentRe
             }],
         }),
         tools,
+        generation_config,
     }
 }
 
@@ -620,6 +723,8 @@ struct CandidateContent {
 #[derive(Debug, Deserialize)]
 struct ResponsePart {
     text: Option<String>,
+    #[serde(default)]
+    thought: Option<bool>,
     #[serde(rename = "functionCall")]
     function_call: Option<GeminiFunctionCall>,
     #[serde(rename = "thoughtSignature", default)]
@@ -669,7 +774,9 @@ fn to_ai_response(
     let mut tool_calls: Vec<ToolCall> = Vec::new();
     for part in candidate.content.parts {
         if let Some(text) = part.text {
-            text_parts.push(text);
+            if part.thought != Some(true) {
+                text_parts.push(text);
+            }
         }
         if let Some(call) = part.function_call {
             let index = tool_calls.len();
@@ -734,6 +841,99 @@ fn generate_content_url(endpoint: &str, model: &str) -> String {
     format!("{endpoint}/models/{model}:generateContent")
 }
 
+/// Build the streaming SSE `streamGenerateContent` endpoint URL for `model`.
+fn stream_generate_content_url(endpoint: &str, model: &str) -> String {
+    format!("{endpoint}/models/{model}:streamGenerateContent?alt=sse")
+}
+
+struct GeminiStreamAccumulator {
+    model: String,
+    text: String,
+    saw_text_or_tool: bool,
+    tool_calls: Vec<ToolCall>,
+    usage: Option<TokenUsage>,
+}
+
+impl GeminiStreamAccumulator {
+    fn new(requested_model: &str) -> Self {
+        Self {
+            model: requested_model.to_string(),
+            text: String::new(),
+            saw_text_or_tool: false,
+            tool_calls: Vec::new(),
+            usage: None,
+        }
+    }
+
+    fn apply_chunk(
+        &mut self,
+        chunk: GenerateContentResponse,
+        on_event: &dyn Fn(StreamEvent),
+    ) -> Result<(), GeminiError> {
+        if let Some(model_version) = chunk.model_version.filter(|m| !m.is_empty()) {
+            self.model = model_version;
+        }
+        if let Some(u) = chunk.usage_metadata {
+            if u.prompt_token_count > 0 || u.candidates_token_count > 0 {
+                self.usage = Some(TokenUsage {
+                    input_tokens: u.prompt_token_count,
+                    output_tokens: u.candidates_token_count,
+                });
+            }
+        }
+        for candidate in chunk.candidates {
+            for part in candidate.content.parts {
+                if let Some(text) = part.text {
+                    if !text.is_empty() {
+                        if part.thought == Some(true) {
+                            on_event(StreamEvent::ThinkingDelta(text));
+                        } else {
+                            self.saw_text_or_tool = true;
+                            self.text.push_str(&text);
+                            on_event(StreamEvent::TextDelta(text));
+                        }
+                    }
+                }
+                if let Some(call) = part.function_call {
+                    self.saw_text_or_tool = true;
+                    let index = self.tool_calls.len();
+                    let id = format!("call_{index}");
+                    let args_value = call
+                        .args
+                        .unwrap_or(serde_json::Value::Object(serde_json::Map::default()));
+                    let arguments = serde_json::to_string(&args_value)
+                        .map_err(|_| GeminiError::UnexpectedResponse)?;
+                    on_event(StreamEvent::ToolCallDelta {
+                        index,
+                        id: Some(id.clone()),
+                        name: Some(call.name.clone()),
+                        arguments_delta: Some(arguments.clone()),
+                    });
+                    self.tool_calls.push(ToolCall {
+                        id,
+                        name: call.name,
+                        arguments,
+                        thought_signature: part.thought_signature,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> Result<AiResponse, GeminiError> {
+        if !self.saw_text_or_tool && self.tool_calls.is_empty() && self.text.is_empty() {
+            return Err(GeminiError::UnexpectedResponse);
+        }
+        Ok(AiResponse {
+            content: self.text,
+            model: self.model,
+            tool_calls: self.tool_calls,
+            usage: self.usage,
+        })
+    }
+}
+
 /// Classify a non-success HTTP status into a secret-free failure category.
 ///
 /// Mirrors the unified [`super::transport::map_http_error`] table so every
@@ -775,7 +975,7 @@ fn classify_status(status: u16, retry_after_secs: Option<u64>) -> GeminiError {
 /// header, or request payload is ever stored. The provider-independent boundary
 /// exposes only [`ExecutorError::Failure`] вЂ” this richer classification exists
 /// so diagnostics can distinguish failure classes in the logs.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 enum GeminiError {
     /// The Gemini endpoint rejected the request as malformed (HTTP 400) or
     /// addressed an unknown model/route (HTTP 404).
@@ -1047,6 +1247,7 @@ mod tests {
                 content: CandidateContent {
                     parts: vec![ResponsePart {
                         text: Some("pong".to_string()),
+                        thought: None,
                         function_call: None,
                         thought_signature: None,
                     }],
@@ -1067,6 +1268,7 @@ mod tests {
                 content: CandidateContent {
                     parts: vec![ResponsePart {
                         text: Some("pong".to_string()),
+                        thought: None,
                         function_call: None,
                         thought_signature: None,
                     }],
@@ -1100,6 +1302,7 @@ mod tests {
                 content: CandidateContent {
                     parts: vec![ResponsePart {
                         text: None,
+                        thought: None,
                         function_call: None,
                         thought_signature: None,
                     }],
@@ -1551,6 +1754,7 @@ mod tests {
                 content: CandidateContent {
                     parts: vec![ResponsePart {
                         text: None,
+                        thought: None,
                         function_call: Some(GeminiFunctionCall {
                             name: "get_weather".to_string(),
                             args: Some(serde_json::json!({"location":"Paris"})),
@@ -1580,11 +1784,13 @@ mod tests {
                     parts: vec![
                         ResponsePart {
                             text: Some("I will call the tool ".to_string()),
+                            thought: None,
                             function_call: None,
                             thought_signature: None,
                         },
                         ResponsePart {
                             text: None,
+                            thought: None,
                             function_call: Some(GeminiFunctionCall {
                                 name: "search".to_string(),
                                 args: Some(serde_json::json!({"query":"test"})),
@@ -1611,6 +1817,7 @@ mod tests {
                 content: CandidateContent {
                     parts: vec![ResponsePart {
                         text: Some("Hello to you too.".to_string()),
+                        thought: None,
                         function_call: None,
                         thought_signature: None,
                     }],
@@ -1633,6 +1840,7 @@ mod tests {
                     parts: vec![
                         ResponsePart {
                             text: None,
+                            thought: None,
                             function_call: Some(GeminiFunctionCall {
                                 name: "get_weather".to_string(),
                                 args: Some(serde_json::json!({"location":"Paris"})),
@@ -1641,6 +1849,7 @@ mod tests {
                         },
                         ResponsePart {
                             text: None,
+                            thought: None,
                             function_call: Some(GeminiFunctionCall {
                                 name: "get_time".to_string(),
                                 args: Some(serde_json::json!({})),
@@ -1671,11 +1880,13 @@ mod tests {
                     parts: vec![
                         ResponsePart {
                             text: Some("Hello ".to_string()),
+                            thought: None,
                             function_call: None,
                             thought_signature: None,
                         },
                         ResponsePart {
                             text: Some("world".to_string()),
+                            thought: None,
                             function_call: None,
                             thought_signature: None,
                         },
@@ -1766,6 +1977,7 @@ mod tests {
                 content: CandidateContent {
                     parts: vec![ResponsePart {
                         text: None,
+                        thought: None,
                         function_call: Some(GeminiFunctionCall {
                             name: "no_args_tool".to_string(),
                             args: None,
@@ -1896,11 +2108,13 @@ mod tests {
                     parts: vec![
                         ResponsePart {
                             text: Some("Working".to_string()),
+                            thought: None,
                             function_call: None,
                             thought_signature: Some("sig-on-text".to_string()),
                         },
                         ResponsePart {
                             text: None,
+                            thought: None,
                             function_call: Some(GeminiFunctionCall {
                                 name: "list_directory".to_string(),
                                 args: Some(serde_json::json!({ "path": "." })),
@@ -2223,5 +2437,112 @@ mod tests {
         server.join().expect("server thread joins");
         assert!(matches!(result, Err(ExecutorError::ProviderUnavailable)));
         assert_eq!(count.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn execute_stream_events_emits_gemini_text_thought_and_tool_calls() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let captured_path = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let captured_body = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let path_srv = std::sync::Arc::clone(&captured_path);
+        let body_srv = std::sync::Arc::clone(&captured_body);
+
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 1024];
+            let mut header_end = None;
+            while let Ok(n) = stream.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                raw.extend_from_slice(&buf[..n]);
+                if header_end.is_none() {
+                    if let Some(pos) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+                        header_end = Some(pos + 4);
+                    }
+                }
+                if let Some(end) = header_end {
+                    let hdrs = String::from_utf8_lossy(&raw[..end]);
+                    *path_srv.lock().expect("lock") =
+                        hdrs.lines().next().unwrap_or_default().to_string();
+                    let len = hdrs
+                        .lines()
+                        .find_map(|l| {
+                            let (k, v) = l.split_once(':')?;
+                            k.eq_ignore_ascii_case("content-length")
+                                .then(|| v.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    if raw.len() >= end + len {
+                        *body_srv.lock().expect("lock") =
+                            String::from_utf8_lossy(&raw[end..end + len]).to_string();
+                        break;
+                    }
+                }
+            }
+            let sse = concat!(
+                "data: {\"modelVersion\":\"gemini-3.1-pro-preview\",\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"thinking...\",\"thought\":true}]}}]}\n\n",
+                "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hi \"}]}}]}\n\n",
+                "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"there\"},{\"functionCall\":{\"name\":\"read_file\",\"args\":{\"path\":\"lib.rs\"}},\"thoughtSignature\":\"sig-1\"}]}}],\"usageMetadata\":{\"promptTokenCount\":14,\"candidatesTokenCount\":6}}\n\n"
+            );
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                sse.len(),
+                sse
+            );
+            stream.write_all(resp.as_bytes()).expect("write");
+        });
+
+        let executor = GeminiExecutor::with_endpoint(format!("http://{addr}/v1beta"));
+        let mut req = sample_request();
+        req.model = "gemini-3.1-pro-preview".to_string();
+        req.model_config = Some(
+            ModelConfig::new("gemini-3.1-pro-preview").with_effort(Some("medium".to_string())),
+        );
+        let events = std::sync::Mutex::new(Vec::new());
+        let resp = executor
+            .execute_stream_events(&req, "sk-secret", &CancellationToken::new(), &|ev| {
+                events.lock().expect("lock").push(ev);
+            })
+            .expect("gemini stream ok");
+        server.join().expect("join");
+
+        assert!(captured_path
+            .lock()
+            .expect("lock")
+            .contains("/models/gemini-3.1-pro-preview:streamGenerateContent?alt=sse"));
+        let sent: serde_json::Value =
+            serde_json::from_str(&captured_body.lock().expect("lock")).expect("json");
+        assert_eq!(
+            sent["generationConfig"]["thinkingConfig"]["thinkingLevel"],
+            "MEDIUM"
+        );
+        assert_eq!(
+            sent["generationConfig"]["thinkingConfig"]["includeThoughts"],
+            true
+        );
+        assert_eq!(resp.content, "Hi there");
+        assert_eq!(resp.tool_calls.len(), 1);
+        assert_eq!(
+            resp.tool_calls[0].thought_signature.as_deref(),
+            Some("sig-1")
+        );
+        assert_eq!(
+            resp.usage,
+            Some(TokenUsage {
+                input_tokens: 14,
+                output_tokens: 6
+            })
+        );
+        let evs = events.into_inner().expect("lock");
+        assert!(evs.contains(&StreamEvent::ThinkingDelta("thinking...".to_string())));
+        assert!(evs.contains(&StreamEvent::TextDelta("Hi ".to_string())));
+        assert!(evs.contains(&StreamEvent::TextDelta("there".to_string())));
     }
 }

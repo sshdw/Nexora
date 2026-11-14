@@ -35,14 +35,17 @@
 
 use nexora_core::provider::{
     AiAttachmentPayload, AiMessage, AiRequest, AiResponse, AiRole, CancellationToken,
-    ExecutorError, ModelConfig, ProviderExecutor, TokenUsage, ToolCall,
+    ExecutorError, ModelConfig, ProviderExecutor, ReasoningEffort, StreamEvent, TokenUsage,
+    ToolCall,
 };
 // `AiAttachment`, `ToolDefinition`, and `AiToolResult` are referenced only by
 // this module's unit tests.
 #[cfg(test)]
 use nexora_core::provider::{AiAttachment, AiToolResult, ToolDefinition};
 
-use super::transport::{Credential, HttpClient, PostOutcome, PostRequest};
+use super::transport::{
+    Credential, HttpClient, PostOutcome, PostRequest, StreamOutcome, StreamPostError,
+};
 use serde::{Deserialize, Serialize};
 
 /// OpenAI's Chat Completions endpoint.
@@ -620,6 +623,105 @@ impl OpenAiExecutor {
             }
         }
     }
+
+    fn run_stream(
+        &self,
+        request: &AiRequest,
+        credential: &str,
+        token: &CancellationToken,
+        on_event: &dyn Fn(StreamEvent),
+    ) -> Result<AiResponse, OpenAiError> {
+        if validate_base_url(&self.endpoint).is_err() {
+            let safe_endpoint = super::transport::sanitize_url(&self.endpoint);
+            log::warn!(
+                "{name} request failed: invalid endpoint {safe_endpoint}",
+                name = self.name
+            );
+            return Err(OpenAiError::InvalidRequest);
+        }
+        let tools_supported = self
+            .tools_supported
+            .unwrap_or_else(|| is_listed_model(self.name, &request.model));
+        let mut body = chat_completion_request(request, tools_supported);
+        body.stream = Some(true);
+        if self.name == PROVIDER_NAME {
+            body.stream_options = Some(OpenAiStreamOptions {
+                include_usage: true,
+            });
+        }
+        let wire = serde_json::to_vec(&body).map_err(|_| OpenAiError::UnexpectedResponse)?;
+        let mut owned_headers = self.owned_headers.clone();
+        if let Some(organization) = self.organization.as_deref() {
+            owned_headers.push(("OpenAI-Organization".to_string(), organization.to_string()));
+        }
+
+        let mut acc = OpenAiStreamAccumulator::new(&request.model);
+        let outcome = self.client.post_stream(
+            token,
+            &PostRequest {
+                url: self.endpoint.clone(),
+                credential: Credential::Bearer(credential),
+                extra_headers: &self.extra_headers,
+                extra_headers_owned: &owned_headers,
+                body: &wire,
+                timeout: request.request_timeout,
+            },
+            &mut |frame| {
+                let data = frame.data.trim();
+                if data.is_empty() || data == "[DONE]" {
+                    return Ok(());
+                }
+                if let Ok(err_env) = serde_json::from_str::<OpenAiStreamErrorEnvelope>(data) {
+                    if let Some(err_obj) = err_env.error {
+                        let code = err_obj.code.as_deref().unwrap_or_default();
+                        if code.eq_ignore_ascii_case("context_length_exceeded") {
+                            return Err(OpenAiError::ContextLengthExceeded);
+                        }
+                        return Err(OpenAiError::Provider);
+                    }
+                }
+                let chunk: OpenAiStreamChunk =
+                    serde_json::from_str(data).map_err(|_| OpenAiError::UnexpectedResponse)?;
+                acc.apply_chunk(chunk, on_event);
+                Ok(())
+            },
+        );
+        match outcome {
+            Ok(StreamOutcome::Completed) => acc.finish(),
+            Ok(StreamOutcome::Failure(snapshot)) => {
+                if snapshot.is_context_length_exceeded {
+                    Err(OpenAiError::ContextLengthExceeded)
+                } else {
+                    Err(classify_status(snapshot.status, snapshot.retry_after_secs))
+                }
+            }
+            Err(StreamPostError::Transport(ExecutorError::Cancelled)) => {
+                Err(OpenAiError::Cancelled)
+            }
+            Err(StreamPostError::Transport(_)) => Err(OpenAiError::Network),
+            Err(StreamPostError::Handler(err)) => Err(err),
+        }
+    }
+
+    fn map_error(&self, error: OpenAiError) -> ExecutorError {
+        // Record only the classification category; never the credential
+        // or request payload (ARCHITECTURE.md §9, §11).
+        log::warn!("{name} request failed: {error}", name = self.name);
+        match error {
+            OpenAiError::InvalidRequest => ExecutorError::InvalidRequest,
+            OpenAiError::ContextLengthExceeded => ExecutorError::ContextLengthExceeded,
+            OpenAiError::Authentication => ExecutorError::Authentication,
+            OpenAiError::Network => ExecutorError::Network,
+            OpenAiError::PaymentRequired => ExecutorError::PaymentRequired,
+            OpenAiError::RateLimited { retry_after_secs } => {
+                ExecutorError::RateLimited { retry_after_secs }
+            }
+            OpenAiError::ProviderUnavailable => ExecutorError::ProviderUnavailable,
+            OpenAiError::UnexpectedResponse => ExecutorError::UnexpectedResponse,
+            OpenAiError::Provider => ExecutorError::Failure,
+            OpenAiError::Cancelled => ExecutorError::Cancelled,
+        }
+    }
 }
 
 impl ProviderExecutor for OpenAiExecutor {
@@ -629,28 +731,19 @@ impl ProviderExecutor for OpenAiExecutor {
         credential: &str,
         token: &CancellationToken,
     ) -> Result<AiResponse, ExecutorError> {
-        match self.run(request, credential, token) {
-            Ok(response) => Ok(response),
-            Err(error) => {
-                // Record only the classification category; never the credential
-                // or request payload (ARCHITECTURE.md В§9, В§11).
-                log::warn!("{name} request failed: {error}", name = self.name);
-                Err(match error {
-                    OpenAiError::InvalidRequest => ExecutorError::InvalidRequest,
-                    OpenAiError::ContextLengthExceeded => ExecutorError::ContextLengthExceeded,
-                    OpenAiError::Authentication => ExecutorError::Authentication,
-                    OpenAiError::Network => ExecutorError::Network,
-                    OpenAiError::PaymentRequired => ExecutorError::PaymentRequired,
-                    OpenAiError::RateLimited { retry_after_secs } => {
-                        ExecutorError::RateLimited { retry_after_secs }
-                    }
-                    OpenAiError::ProviderUnavailable => ExecutorError::ProviderUnavailable,
-                    OpenAiError::UnexpectedResponse => ExecutorError::UnexpectedResponse,
-                    OpenAiError::Provider => ExecutorError::Failure,
-                    OpenAiError::Cancelled => ExecutorError::Cancelled,
-                })
-            }
-        }
+        self.run(request, credential, token)
+            .map_err(|error| self.map_error(error))
+    }
+
+    fn execute_stream_events(
+        &self,
+        request: &AiRequest,
+        credential: &str,
+        token: &CancellationToken,
+        on_event: &dyn Fn(StreamEvent),
+    ) -> Result<AiResponse, ExecutorError> {
+        self.run_stream(request, credential, token, on_event)
+            .map_err(|error| self.map_error(error))
     }
 }
 /// OpenAI request body mapped from the provider-independent [`AiRequest`].
@@ -667,6 +760,20 @@ struct ChatCompletionRequest {
     /// Output-token cap from [`ModelConfig`], sent only when positive.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     max_tokens: Option<u32>,
+    /// Reasoning effort from [`ModelConfig`], sent only when configured.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    reasoning_effort: Option<String>,
+    /// Enable SSE streaming when `Some(true)`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    stream: Option<bool>,
+    /// Streaming usage options when streaming is active on native OpenAI.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    stream_options: Option<OpenAiStreamOptions>,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAiStreamOptions {
+    include_usage: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -751,12 +858,21 @@ struct OpenAiImageUrl {
 /// corresponding OpenAI `role`.
 fn chat_completion_request(request: &AiRequest, tools_supported: bool) -> ChatCompletionRequest {
     let (temperature, max_tokens) = sampling_params(request.model_config.as_ref());
+    let reasoning_effort = request
+        .model_config
+        .as_ref()
+        .and_then(|cfg| cfg.effort.as_deref())
+        .and_then(ReasoningEffort::parse)
+        .map(|effort| effort.as_str().to_string());
     ChatCompletionRequest {
         model: request.model.clone(),
         messages: request.messages.iter().map(openai_message).collect(),
         tools: wire_tools(request, tools_supported),
         temperature,
         max_tokens,
+        reasoning_effort,
+        stream: None,
+        stream_options: None,
     }
 }
 
@@ -971,6 +1087,184 @@ fn to_ai_response(response: ChatCompletionResponse) -> Result<AiResponse, OpenAi
     })
 }
 
+#[derive(Debug, Deserialize)]
+struct OpenAiStreamErrorEnvelope {
+    error: Option<OpenAiStreamErrorBody>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiStreamErrorBody {
+    code: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiStreamChunk {
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    choices: Vec<OpenAiStreamChoice>,
+    #[serde(default)]
+    usage: Option<OpenAiUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiStreamChoice {
+    #[serde(default)]
+    delta: OpenAiStreamDelta,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct OpenAiStreamDelta {
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    reasoning_content: Option<String>,
+    #[serde(default)]
+    reasoning: Option<String>,
+    #[serde(default)]
+    tool_calls: Option<Vec<OpenAiStreamToolCall>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiStreamToolCall {
+    #[serde(default)]
+    index: usize,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    function: Option<OpenAiStreamFunction>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiStreamFunction {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    arguments: Option<String>,
+}
+
+#[derive(Debug, Default)]
+struct PendingToolCall {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+struct OpenAiStreamAccumulator {
+    model: String,
+    content: String,
+    saw_any_content_or_tool: bool,
+    tool_calls: std::collections::BTreeMap<usize, PendingToolCall>,
+    usage: Option<TokenUsage>,
+}
+
+impl OpenAiStreamAccumulator {
+    fn new(requested_model: &str) -> Self {
+        Self {
+            model: requested_model.to_string(),
+            content: String::new(),
+            saw_any_content_or_tool: false,
+            tool_calls: std::collections::BTreeMap::new(),
+            usage: None,
+        }
+    }
+
+    fn apply_chunk(&mut self, chunk: OpenAiStreamChunk, on_event: &dyn Fn(StreamEvent)) {
+        if let Some(model) = chunk.model.filter(|m| !m.is_empty()) {
+            self.model = model;
+        }
+        if let Some(u) = chunk.usage {
+            if u.prompt_tokens > 0 || u.completion_tokens > 0 {
+                self.usage = Some(TokenUsage {
+                    input_tokens: u.prompt_tokens,
+                    output_tokens: u.completion_tokens,
+                });
+            }
+        }
+        for choice in chunk.choices {
+            if let Some(thinking) = choice
+                .delta
+                .reasoning_content
+                .or(choice.delta.reasoning)
+                .filter(|s| !s.is_empty())
+            {
+                on_event(StreamEvent::ThinkingDelta(thinking));
+            }
+            if let Some(text) = choice.delta.content {
+                if !text.is_empty() {
+                    self.saw_any_content_or_tool = true;
+                    self.content.push_str(&text);
+                    on_event(StreamEvent::TextDelta(text));
+                }
+            }
+            if let Some(calls) = choice.delta.tool_calls {
+                for call in calls {
+                    self.saw_any_content_or_tool = true;
+                    let entry = self.tool_calls.entry(call.index).or_default();
+                    let mut delta_id = None;
+                    if let Some(id) = call.id.filter(|s| !s.is_empty()) {
+                        entry.id.clone_from(&id);
+                        delta_id = Some(id);
+                    }
+                    let mut delta_name = None;
+                    let mut delta_args = None;
+                    if let Some(func) = call.function {
+                        if let Some(name) = func.name.filter(|s| !s.is_empty()) {
+                            entry.name.push_str(&name);
+                            delta_name = Some(name);
+                        }
+                        if let Some(args) = func.arguments {
+                            if !args.is_empty() {
+                                entry.arguments.push_str(&args);
+                                delta_args = Some(args);
+                            }
+                        }
+                    }
+                    if delta_id.is_some() || delta_name.is_some() || delta_args.is_some() {
+                        on_event(StreamEvent::ToolCallDelta {
+                            index: call.index,
+                            id: delta_id,
+                            name: delta_name,
+                            arguments_delta: delta_args,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    fn finish(self) -> Result<AiResponse, OpenAiError> {
+        let tool_calls: Vec<ToolCall> = self
+            .tool_calls
+            .into_iter()
+            .enumerate()
+            .map(|(fallback_idx, (_, pending))| ToolCall {
+                id: if pending.id.is_empty() {
+                    format!("call_{fallback_idx}")
+                } else {
+                    pending.id
+                },
+                name: pending.name,
+                arguments: if pending.arguments.is_empty() {
+                    "{}".to_string()
+                } else {
+                    pending.arguments
+                },
+                thought_signature: None,
+            })
+            .collect();
+        if !self.saw_any_content_or_tool && tool_calls.is_empty() && self.content.is_empty() {
+            return Err(OpenAiError::UnexpectedResponse);
+        }
+        Ok(AiResponse {
+            content: self.content,
+            model: self.model,
+            tool_calls,
+            usage: self.usage,
+        })
+    }
+}
+
 /// Classify a non-success HTTP status into a secret-free failure category.
 ///
 /// Mirrors the unified [`super::transport::map_http_error`] table so every
@@ -1007,7 +1301,7 @@ fn classify_status(status: u16, retry_after_secs: Option<u64>) -> OpenAiError {
 /// header, or request payload is ever stored. The provider-independent boundary
 /// exposes only [`ExecutorError::Failure`] вЂ” this richer classification exists
 /// so diagnostics can distinguish failure classes in the logs.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 enum OpenAiError {
     /// The OpenAI endpoint rejected the request as malformed (HTTP 400).
     InvalidRequest,
@@ -2924,5 +3218,103 @@ mod tests {
                 "validation message must not echo secrets: {message:?}"
             );
         }
+    }
+
+    #[test]
+    fn execute_stream_events_emits_text_native_thinking_and_tool_call_deltas() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let captured_body = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let captured_server = std::sync::Arc::clone(&captured_body);
+
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 1024];
+            let mut header_end = None;
+            while let Ok(n) = stream.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                raw.extend_from_slice(&buf[..n]);
+                if header_end.is_none() {
+                    if let Some(pos) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+                        header_end = Some(pos + 4);
+                    }
+                }
+                if let Some(end) = header_end {
+                    let headers_str = String::from_utf8_lossy(&raw[..end]);
+                    let content_len = headers_str
+                        .lines()
+                        .find_map(|l| {
+                            let (k, v) = l.split_once(':')?;
+                            k.eq_ignore_ascii_case("content-length")
+                                .then(|| v.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    if raw.len() >= end + content_len {
+                        *captured_server.lock().expect("lock") =
+                            String::from_utf8_lossy(&raw[end..end + content_len]).to_string();
+                        break;
+                    }
+                }
+            }
+            let sse = concat!(
+                "data: {\"model\":\"gpt-5.6-terra\",\"choices\":[{\"delta\":{\"reasoning_content\":\"plan \"}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"lo\"}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\"}}]}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"a.rs\\\"}\"}}]}}]}\n\n",
+                "data: {\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5},\"choices\":[]}\n\n",
+                "data: [DONE]\n\n"
+            );
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                sse.len(),
+                sse
+            );
+            stream.write_all(resp.as_bytes()).expect("write");
+        });
+
+        let executor = OpenAiExecutor::with_endpoint(format!("http://{addr}/v1/chat/completions"));
+        let mut req = sample_request();
+        req.model_config =
+            Some(ModelConfig::new("gpt-5.6-terra").with_effort(Some("high".to_string())));
+        let events = std::sync::Mutex::new(Vec::new());
+        let response = executor
+            .execute_stream_events(&req, "sk-secret", &CancellationToken::new(), &|ev| {
+                events.lock().expect("lock").push(ev);
+            })
+            .expect("stream succeeds");
+        server.join().expect("join");
+
+        let sent: serde_json::Value =
+            serde_json::from_str(&captured_body.lock().expect("lock")).expect("valid json");
+        assert_eq!(sent["stream"], true);
+        assert_eq!(sent["reasoning_effort"], "high");
+
+        assert_eq!(response.content, "Hello");
+        assert_eq!(response.tool_calls.len(), 1);
+        assert_eq!(response.tool_calls[0].id, "call_1");
+        assert_eq!(response.tool_calls[0].name, "read_file");
+        assert_eq!(response.tool_calls[0].arguments, "{\"path\":\"a.rs\"}");
+        assert_eq!(
+            response.usage,
+            Some(TokenUsage {
+                input_tokens: 10,
+                output_tokens: 5
+            })
+        );
+        let evs = events.into_inner().expect("lock");
+        assert!(evs.contains(&StreamEvent::ThinkingDelta("plan ".to_string())));
+        assert!(evs.contains(&StreamEvent::TextDelta("Hel".to_string())));
+        assert!(evs.contains(&StreamEvent::TextDelta("lo".to_string())));
+        assert!(evs
+            .iter()
+            .any(|e| matches!(e, StreamEvent::ToolCallDelta { index: 0, .. })));
     }
 }

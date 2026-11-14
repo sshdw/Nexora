@@ -83,8 +83,8 @@ use crate::application::agent::persistence::{
 use crate::application::agent::roles::AgentRole;
 use crate::application::agent::tools::ToolRegistry;
 use crate::application::execution::{
-    AiMessage, AiRequest, AiRole, ExecutorError, ModelConfig, ProviderExecutor, TokenUsage,
-    ToolDefinition,
+    AiMessage, AiRequest, AiRole, ExecutorError, ModelConfig, ProviderExecutor, StreamEvent,
+    TokenUsage, ToolDefinition,
 };
 
 use super::budget;
@@ -181,6 +181,10 @@ pub(crate) struct AgentRunner<'a> {
     run_flags: RunFlags,
     /// Optional disk-backed pre/post file checkpoint context (Stage 2 PR 2B).
     checkpoint_ctx: Option<CheckpointRunContext>,
+    /// Opt-in live stream delta emission (`StreamDelta`) on `event_sender`.
+    /// Default `false` preserves historical governance-only streams for unit
+    /// callers unless explicitly enabled via [`Self::with_stream_deltas`].
+    emit_stream_deltas: bool,
 }
 
 /// Outcome of one in-place compaction attempt (Task T4).
@@ -237,7 +241,16 @@ impl<'a> AgentRunner<'a> {
             model_config: None,
             run_flags: RunFlags::default(),
             checkpoint_ctx: None,
+            emit_stream_deltas: false,
         }
+    }
+
+    /// Enable forwarding real-time [`AgentRunEvent::StreamDelta`] chunks onto
+    /// `event_sender` during provider streaming turns.
+    #[must_use]
+    pub(crate) fn with_stream_deltas(mut self, enabled: bool) -> Self {
+        self.emit_stream_deltas = enabled;
+        self
     }
 
     /// Override the fixed per-run iteration bound (AC-9). A bound of zero
@@ -767,7 +780,37 @@ impl<'a> AgentRunner<'a> {
             // without recording a model turn or dispatching any tool call вЂ”
             // an abandoned call must never dispatch.
             let token: &CancellationToken = control.map_or(&idle_token, RunControl::token);
-            let outcome = self.executor.execute(&request, credential, token);
+            let event_sender = self
+                .emit_stream_deltas
+                .then_some(self.event_sender.as_ref())
+                .flatten();
+            let outcome = self
+                .executor
+                .execute_stream_events(&request, credential, token, &|ev| match ev {
+                    StreamEvent::TextDelta(delta) => {
+                        if !delta.is_empty() {
+                            dispatch::emit(
+                                event_sender,
+                                AgentRunEvent::StreamDelta {
+                                    kind: "text".to_string(),
+                                    delta,
+                                },
+                            );
+                        }
+                    }
+                    StreamEvent::ThinkingDelta(delta) => {
+                        if !delta.is_empty() {
+                            dispatch::emit(
+                                event_sender,
+                                AgentRunEvent::StreamDelta {
+                                    kind: "thinking".to_string(),
+                                    delta,
+                                },
+                            );
+                        }
+                    }
+                    StreamEvent::ToolCallDelta { .. } => {}
+                });
             // The provider call is done: release the request's shares and
             // take the history back before matching on the outcome (whose
             // arms `return`/`continue`).

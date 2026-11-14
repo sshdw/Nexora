@@ -152,6 +152,128 @@ pub(crate) enum PostOutcome {
     Failure(ErrorSnapshot),
 }
 
+/// One parsed Server-Sent Event frame (`event:` optional + joined `data:` lines).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SseFrame {
+    /// Optional `event:` field value for this frame.
+    pub event: Option<String>,
+    /// Payload lines joined with `\n`.
+    pub data: String,
+}
+
+/// Outcome of [`HttpClient::post_stream`].
+#[derive(Debug)]
+pub(crate) enum StreamOutcome {
+    /// HTTP 2xx stream ran to EOF.
+    Completed,
+    /// Non-2xx response after pre-stream retries (never leaks raw body).
+    Failure(ErrorSnapshot),
+}
+
+/// Error returned by [`HttpClient::post_stream`], preserving caller callback errors.
+#[derive(Debug)]
+pub(crate) enum StreamPostError<E> {
+    /// Transport/cancellation error.
+    Transport(ExecutorError),
+    /// Frame consumer rejected or terminated the stream with provider error `E`.
+    Handler(E),
+}
+
+/// Incremental UTF-8 Server-Sent Events parser handling partial TCP chunk boundaries.
+#[derive(Debug, Default)]
+pub(crate) struct SseParser {
+    buffer: Vec<u8>,
+    event: Option<String>,
+    data_lines: Vec<String>,
+}
+
+impl SseParser {
+    /// Create a fresh SSE parser.
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Feed a chunk of raw bytes and emit any complete SSE frames.
+    pub(crate) fn feed<E>(
+        &mut self,
+        chunk: &[u8],
+        on_frame: &mut dyn FnMut(SseFrame) -> Result<(), E>,
+    ) -> Result<(), E> {
+        self.buffer.extend_from_slice(chunk);
+        while let Some(pos) = self.buffer.iter().position(|&b| b == b'\n') {
+            let mut line_bytes = self.buffer.drain(..=pos).collect::<Vec<u8>>();
+            // Drop trailing '\n' and optional '\r'.
+            if matches!(line_bytes.last(), Some(b'\n')) {
+                line_bytes.pop();
+            }
+            if matches!(line_bytes.last(), Some(b'\r')) {
+                line_bytes.pop();
+            }
+            let line = String::from_utf8_lossy(&line_bytes);
+            self.process_line(&line, on_frame)?;
+        }
+        Ok(())
+    }
+
+    /// Flush any buffered final line/frame at stream EOF.
+    pub(crate) fn finish<E>(
+        &mut self,
+        on_frame: &mut dyn FnMut(SseFrame) -> Result<(), E>,
+    ) -> Result<(), E> {
+        if !self.buffer.is_empty() {
+            let mut line_bytes = std::mem::take(&mut self.buffer);
+            if matches!(line_bytes.last(), Some(b'\r')) {
+                line_bytes.pop();
+            }
+            let line = String::from_utf8_lossy(&line_bytes);
+            self.process_line(&line, on_frame)?;
+        }
+        self.flush_frame(on_frame)
+    }
+
+    fn process_line<E>(
+        &mut self,
+        line: &str,
+        on_frame: &mut dyn FnMut(SseFrame) -> Result<(), E>,
+    ) -> Result<(), E> {
+        if line.is_empty() {
+            return self.flush_frame(on_frame);
+        }
+        if line.starts_with(':') {
+            return Ok(());
+        }
+        let (field, value) = match line.split_once(':') {
+            Some((f, rest)) => (f, rest.strip_prefix(' ').unwrap_or(rest)),
+            None => (line, ""),
+        };
+        match field {
+            "event" => {
+                self.event = Some(value.to_string());
+            }
+            "data" => {
+                self.data_lines.push(value.to_string());
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn flush_frame<E>(
+        &mut self,
+        on_frame: &mut dyn FnMut(SseFrame) -> Result<(), E>,
+    ) -> Result<(), E> {
+        if self.data_lines.is_empty() {
+            self.event = None;
+            return Ok(());
+        }
+        let frame = SseFrame {
+            event: self.event.take(),
+            data: std::mem::take(&mut self.data_lines).join("\n"),
+        };
+        on_frame(frame)
+    }
+}
+
 /// Shared async HTTP client (one per executor, reused across requests).
 pub(crate) struct HttpClient {
     inner: reqwest::Client,
@@ -276,6 +398,253 @@ impl HttpClient {
             }
         }
     }
+
+    /// Perform a cancellable GET request for zero-token metadata endpoints.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExecutorError::Network`] on transport failures or
+    /// [`ExecutorError::Cancelled`] when `token` fires.
+    pub(crate) fn get_json(
+        &self,
+        token: &CancellationToken,
+        url: &str,
+        credential: Option<Credential<'_>>,
+        extra_headers: &[(&'static str, &'static str)],
+        extra_headers_owned: &[(String, String)],
+        timeout: Option<Duration>,
+    ) -> Result<PostOutcome, ExecutorError> {
+        if token.is_cancelled() {
+            return Err(ExecutorError::Cancelled);
+        }
+        let client = self.inner.clone();
+        let url_owned = url.to_string();
+        let owned_cred = credential.map(OwnedCredential::from);
+        let extra = extra_headers.to_vec();
+        let extra_owned = extra_headers_owned.to_vec();
+        let (tx, rx) = mpsc::channel();
+        let handle = tauri::async_runtime::spawn(async move {
+            let outcome = get_once(
+                &client,
+                &url_owned,
+                owned_cred,
+                &extra,
+                &extra_owned,
+                timeout,
+            )
+            .await;
+            let _ = tx.send(outcome);
+        });
+        loop {
+            match rx.recv_timeout(FLIGHT_POLL_INTERVAL) {
+                Ok(outcome) => {
+                    if token.is_cancelled() {
+                        return Err(ExecutorError::Cancelled);
+                    }
+                    return match outcome {
+                        AttemptResult::Cancelled => Err(ExecutorError::Cancelled),
+                        AttemptResult::Network { .. } => Err(ExecutorError::Network),
+                        AttemptResult::Success(body) => Ok(PostOutcome::Success(body)),
+                        AttemptResult::FailureStatus {
+                            status,
+                            header_retry_after,
+                            body,
+                        } => Ok(PostOutcome::Failure(ErrorSnapshot {
+                            status,
+                            retry_after_secs: header_retry_after
+                                .or_else(|| extract_retry_after(&body)),
+                            is_context_length_exceeded: body_signals_context_length(status, &body),
+                        })),
+                    };
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    if token.is_cancelled() {
+                        handle.abort();
+                        return Err(ExecutorError::Cancelled);
+                    }
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    if token.is_cancelled() {
+                        return Err(ExecutorError::Cancelled);
+                    }
+                    return Err(ExecutorError::Network);
+                }
+            }
+        }
+    }
+
+    /// Send an SSE streaming `POST` request with deterministic retry/backoff on
+    /// pre-stream errors (`429`/`5xx`/network) and immediate cancellation drop.
+    ///
+    /// Once HTTP 2xx headers arrive and streaming starts, no further retries are
+    /// attempted so partial deltas are never duplicated.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StreamPostError::Transport`] on network/cancellation failure,
+    /// or [`StreamPostError::Handler`] if `on_frame` returns `Err(E)`.
+    pub(crate) fn post_stream<E>(
+        &self,
+        token: &CancellationToken,
+        request: &PostRequest<'_>,
+        on_frame: &mut dyn FnMut(SseFrame) -> Result<(), E>,
+    ) -> Result<StreamOutcome, StreamPostError<E>> {
+        if token.is_cancelled() {
+            return Err(StreamPostError::Transport(ExecutorError::Cancelled));
+        }
+        let mut completed: u32 = 0;
+        loop {
+            match self.stream_one_attempt(token, request, on_frame) {
+                StreamAttemptOutcome::Cancelled => {
+                    return Err(StreamPostError::Transport(ExecutorError::Cancelled));
+                }
+                StreamAttemptOutcome::Handler(err) => {
+                    return Err(StreamPostError::Handler(err));
+                }
+                StreamAttemptOutcome::PreNetwork { retryable } => {
+                    if retryable && completed + 1 < MAX_SEND_ATTEMPTS {
+                        completed += 1;
+                        if !sleep_cancellable(token, retry_delay(None, completed - 1)) {
+                            return Err(StreamPostError::Transport(ExecutorError::Cancelled));
+                        }
+                        continue;
+                    }
+                    return Err(StreamPostError::Transport(ExecutorError::Network));
+                }
+                StreamAttemptOutcome::PreFailureStatus {
+                    status,
+                    header_retry_after,
+                    body,
+                } => {
+                    let merged = header_retry_after.or_else(|| extract_retry_after(&body));
+                    if is_retryable_status(status) && completed + 1 < MAX_SEND_ATTEMPTS {
+                        completed += 1;
+                        if !sleep_cancellable(token, retry_delay(merged, completed - 1)) {
+                            return Err(StreamPostError::Transport(ExecutorError::Cancelled));
+                        }
+                        continue;
+                    }
+                    return Ok(StreamOutcome::Failure(ErrorSnapshot {
+                        status,
+                        retry_after_secs: merged,
+                        is_context_length_exceeded: body_signals_context_length(status, &body),
+                    }));
+                }
+                StreamAttemptOutcome::StreamNetwork => {
+                    return Err(StreamPostError::Transport(ExecutorError::Network));
+                }
+                StreamAttemptOutcome::Completed => return Ok(StreamOutcome::Completed),
+            }
+        }
+    }
+
+    fn stream_one_attempt<E>(
+        &self,
+        token: &CancellationToken,
+        request: &PostRequest<'_>,
+        on_frame: &mut dyn FnMut(SseFrame) -> Result<(), E>,
+    ) -> StreamAttemptOutcome<E> {
+        let client = self.inner.clone();
+        let url = request.url.clone();
+        let credential = OwnedCredential::from(request.credential);
+        let extra: Vec<(&'static str, &'static str)> = request.extra_headers.to_vec();
+        let extra_owned: Vec<(String, String)> = request.extra_headers_owned.to_vec();
+        let body: Vec<u8> = request.body.to_vec();
+        let timeout = request.timeout;
+        let (tx, rx) = mpsc::channel();
+        let handle = tauri::async_runtime::spawn(async move {
+            stream_attempt_task(
+                &client,
+                &url,
+                credential,
+                &extra,
+                &extra_owned,
+                body,
+                timeout,
+                &tx,
+            )
+            .await;
+        });
+
+        let mut parser = SseParser::new();
+        let mut started = false;
+        loop {
+            match rx.recv_timeout(FLIGHT_POLL_INTERVAL) {
+                Ok(StreamChunkMsg::Started) => {
+                    if token.is_cancelled() {
+                        handle.abort();
+                        return StreamAttemptOutcome::Cancelled;
+                    }
+                    started = true;
+                }
+                Ok(StreamChunkMsg::Chunk(bytes)) => {
+                    if token.is_cancelled() {
+                        handle.abort();
+                        return StreamAttemptOutcome::Cancelled;
+                    }
+                    if let Err(err) = parser.feed(&bytes, on_frame) {
+                        handle.abort();
+                        return StreamAttemptOutcome::Handler(err);
+                    }
+                }
+                Ok(StreamChunkMsg::Eof) => {
+                    if token.is_cancelled() {
+                        return StreamAttemptOutcome::Cancelled;
+                    }
+                    if let Err(err) = parser.finish(on_frame) {
+                        return StreamAttemptOutcome::Handler(err);
+                    }
+                    return StreamAttemptOutcome::Completed;
+                }
+                Ok(StreamChunkMsg::PreNetwork { retryable }) => {
+                    if token.is_cancelled() {
+                        return StreamAttemptOutcome::Cancelled;
+                    }
+                    return StreamAttemptOutcome::PreNetwork { retryable };
+                }
+                Ok(StreamChunkMsg::PreFailureStatus {
+                    status,
+                    header_retry_after,
+                    body,
+                }) => {
+                    if token.is_cancelled() {
+                        return StreamAttemptOutcome::Cancelled;
+                    }
+                    return StreamAttemptOutcome::PreFailureStatus {
+                        status,
+                        header_retry_after,
+                        body,
+                    };
+                }
+                Ok(StreamChunkMsg::StreamNetwork) => {
+                    if token.is_cancelled() {
+                        return StreamAttemptOutcome::Cancelled;
+                    }
+                    return if started {
+                        StreamAttemptOutcome::StreamNetwork
+                    } else {
+                        StreamAttemptOutcome::PreNetwork { retryable: true }
+                    };
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    if token.is_cancelled() {
+                        handle.abort();
+                        return StreamAttemptOutcome::Cancelled;
+                    }
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    if token.is_cancelled() {
+                        return StreamAttemptOutcome::Cancelled;
+                    }
+                    return if started {
+                        StreamAttemptOutcome::StreamNetwork
+                    } else {
+                        StreamAttemptOutcome::PreNetwork { retryable: false }
+                    };
+                }
+            }
+        }
+    }
 }
 
 impl Default for HttpClient {
@@ -307,6 +676,181 @@ enum AttemptResult {
     },
 }
 
+/// Messages sent from a streaming runtime task to the driver thread.
+#[derive(Debug)]
+enum StreamChunkMsg {
+    Started,
+    Chunk(Vec<u8>),
+    Eof,
+    PreNetwork {
+        retryable: bool,
+    },
+    PreFailureStatus {
+        status: u16,
+        header_retry_after: Option<u64>,
+        body: Vec<u8>,
+    },
+    StreamNetwork,
+}
+
+/// Internal per-attempt outcome for [`HttpClient::post_stream`].
+enum StreamAttemptOutcome<E> {
+    Cancelled,
+    Completed,
+    Handler(E),
+    PreNetwork {
+        retryable: bool,
+    },
+    PreFailureStatus {
+        status: u16,
+        header_retry_after: Option<u64>,
+        body: Vec<u8>,
+    },
+    StreamNetwork,
+}
+
+fn apply_request_auth_headers(
+    mut builder: reqwest::RequestBuilder,
+    credential: Option<&OwnedCredential>,
+    extra_headers: &[(&'static str, &'static str)],
+    extra_headers_owned: &[(String, String)],
+    timeout: Option<Duration>,
+) -> reqwest::RequestBuilder {
+    if let Some(cred) = credential {
+        builder = match cred {
+            OwnedCredential::Bearer(value) => builder.bearer_auth(value),
+            OwnedCredential::Header { name, value } => builder.header(*name, value.as_str()),
+        };
+    }
+    for (name, value) in extra_headers {
+        builder = builder.header(*name, *value);
+    }
+    for (name, value) in extra_headers_owned {
+        builder = builder.header(name.as_str(), value.as_str());
+    }
+    if let Some(bound) = timeout {
+        builder = builder.timeout(bound);
+    }
+    builder
+}
+
+fn parse_retry_after_header(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+    headers
+        .get("retry-after")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(|secs| secs.min(MAX_RETRY_DELAY_SECS))
+}
+
+async fn get_once(
+    client: &reqwest::Client,
+    url: &str,
+    credential: Option<OwnedCredential>,
+    extra_headers: &[(&'static str, &'static str)],
+    extra_headers_owned: &[(String, String)],
+    timeout: Option<Duration>,
+) -> AttemptResult {
+    let builder = apply_request_auth_headers(
+        client.get(url).header("accept", "application/json"),
+        credential.as_ref(),
+        extra_headers,
+        extra_headers_owned,
+        timeout,
+    );
+    let response = match builder.send().await {
+        Ok(response) => response,
+        Err(err) => {
+            return AttemptResult::Network {
+                retryable: is_retryable_network_error(&err),
+            };
+        }
+    };
+    let status = response.status().as_u16();
+    if response.status().is_success() {
+        return match response.bytes().await {
+            Ok(bytes) => AttemptResult::Success(bytes.to_vec()),
+            Err(_) => AttemptResult::Network { retryable: true },
+        };
+    }
+    let header_retry_after = parse_retry_after_header(response.headers());
+    let body = match response.bytes().await {
+        Ok(bytes) => bounded_body(bytes.as_ref()),
+        Err(_) => Vec::new(),
+    };
+    AttemptResult::FailureStatus {
+        status,
+        header_retry_after,
+        body,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn stream_attempt_task(
+    client: &reqwest::Client,
+    url: &str,
+    credential: OwnedCredential,
+    extra_headers: &[(&'static str, &'static str)],
+    extra_headers_owned: &[(String, String)],
+    body: Vec<u8>,
+    timeout: Option<Duration>,
+    tx: &mpsc::Sender<StreamChunkMsg>,
+) {
+    let builder = apply_request_auth_headers(
+        client
+            .post(url)
+            .header("content-type", "application/json")
+            .header("accept", "text/event-stream")
+            .body(body),
+        Some(&credential),
+        extra_headers,
+        extra_headers_owned,
+        timeout,
+    );
+    let mut response = match builder.send().await {
+        Ok(response) => response,
+        Err(err) => {
+            let _ = tx.send(StreamChunkMsg::PreNetwork {
+                retryable: is_retryable_network_error(&err),
+            });
+            return;
+        }
+    };
+    let status = response.status().as_u16();
+    if !response.status().is_success() {
+        let header_retry_after = parse_retry_after_header(response.headers());
+        let body = match response.bytes().await {
+            Ok(bytes) => bounded_body(bytes.as_ref()),
+            Err(_) => Vec::new(),
+        };
+        let _ = tx.send(StreamChunkMsg::PreFailureStatus {
+            status,
+            header_retry_after,
+            body,
+        });
+        return;
+    }
+    if tx.send(StreamChunkMsg::Started).is_err() {
+        return;
+    }
+    loop {
+        match response.chunk().await {
+            Ok(Some(bytes)) => {
+                if tx.send(StreamChunkMsg::Chunk(bytes.to_vec())).is_err() {
+                    return;
+                }
+            }
+            Ok(None) => {
+                let _ = tx.send(StreamChunkMsg::Eof);
+                return;
+            }
+            Err(_) => {
+                let _ = tx.send(StreamChunkMsg::StreamNetwork);
+                return;
+            }
+        }
+    }
+}
+
 /// One HTTP round trip on the runtime: build, send, read.
 /// Never touches the token (the driver owns cancellation).
 async fn attempt_once(
@@ -318,25 +862,18 @@ async fn attempt_once(
     body: Vec<u8>,
     timeout: Option<Duration>,
 ) -> AttemptResult {
-    let mut builder = client.post(url);
-    builder = match &credential {
-        OwnedCredential::Bearer(value) => builder.bearer_auth(value),
-        OwnedCredential::Header { name, value } => builder.header(*name, value.as_str()),
-    };
-    for (name, value) in extra_headers {
-        builder = builder.header(*name, *value);
-    }
-    for (name, value) in extra_headers_owned {
-        builder = builder.header(name.as_str(), value.as_str());
-    }
     // Pre-serialized JSON wire bytes; `.json()` would serialize identically,
     // but the bytes are built once per request and cloned per attempt.
-    builder = builder
-        .header("content-type", "application/json")
-        .body(body);
-    if let Some(bound) = timeout {
-        builder = builder.timeout(bound);
-    }
+    let builder = apply_request_auth_headers(
+        client
+            .post(url)
+            .header("content-type", "application/json")
+            .body(body),
+        Some(&credential),
+        extra_headers,
+        extra_headers_owned,
+        timeout,
+    );
     let response = match builder.send().await {
         Ok(response) => response,
         Err(err) => {
@@ -353,12 +890,7 @@ async fn attempt_once(
             Err(_) => return AttemptResult::Network { retryable: true },
         }
     }
-    let header_retry_after = response
-        .headers()
-        .get("retry-after")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .map(|secs| secs.min(MAX_RETRY_DELAY_SECS));
+    let header_retry_after = parse_retry_after_header(response.headers());
     let body = match response.bytes().await {
         Ok(bytes) => bounded_body(bytes.as_ref()),
         // An unreadable error body still classifies by status; the header
@@ -1056,5 +1588,102 @@ mod tests {
                 "category text plus sanitized URL must stay secret-free: {message:?}"
             );
         }
+    }
+
+    #[test]
+    fn sse_parser_handles_split_chunks_crlf_comments_and_multiline_data() {
+        let mut parser = SseParser::new();
+        let mut frames = Vec::new();
+        let part1 = b": keepalive\r\nevent: content_block_de";
+        let part2 = b"lta\r\ndata: {\"a\":1}\r\ndata: {\"b\":2}\r\n\r\ndata: tail";
+        parser
+            .feed::<()>(part1, &mut |frame| {
+                frames.push(frame);
+                Ok(())
+            })
+            .expect("part1 parses");
+        assert!(frames.is_empty());
+        parser
+            .feed::<()>(part2, &mut |frame| {
+                frames.push(frame);
+                Ok(())
+            })
+            .expect("part2 parses");
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].event.as_deref(), Some("content_block_delta"));
+        assert_eq!(frames[0].data, "{\"a\":1}\n{\"b\":2}");
+        parser
+            .finish::<()>(&mut |frame| {
+                frames.push(frame);
+                Ok(())
+            })
+            .expect("finish flushes tail");
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[1].event, None);
+        assert_eq!(frames[1].data, "tail");
+    }
+
+    #[test]
+    fn post_stream_retries_pre_stream_429_and_aborts_mid_stream_on_cancel() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
+        let addr = listener.local_addr().expect("addr");
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_server = Arc::clone(&attempts);
+        let server = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().expect("accept");
+                let mut raw = Vec::new();
+                let mut buf = [0u8; 512];
+                while let Ok(n) = stream.read(&mut buf) {
+                    if n == 0 {
+                        break;
+                    }
+                    raw.extend_from_slice(&buf[..n]);
+                    if raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let n = attempts_server.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    let body = r#"{"error":"rate limit"}"#;
+                    let resp = format!(
+                        "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 0\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = stream.write_all(resp.as_bytes());
+                } else {
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n",
+                    );
+                    let _ = stream.write_all(b"data: first\n\n");
+                    let _ = stream.flush();
+                    // Hold socket open until client cancels and closes.
+                    std::thread::sleep(Duration::from_millis(600));
+                }
+            }
+        });
+
+        let client = HttpClient::new();
+        let token = CancellationToken::new();
+        let token_cancel = token.clone();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen_cb = Arc::clone(&seen);
+        let outcome = client.post_stream::<()>(
+            &token,
+            &post_to(format!("http://{addr}/stream"), b"{}"),
+            &mut |frame| {
+                seen_cb.lock().expect("lock").push(frame.data);
+                token_cancel.cancel();
+                Ok(())
+            },
+        );
+        assert!(matches!(
+            outcome,
+            Err(StreamPostError::Transport(ExecutorError::Cancelled))
+        ));
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(seen.lock().expect("lock").as_slice(), ["first"]);
+        server.join().expect("join server");
     }
 }

@@ -45,14 +45,16 @@
 
 use nexora_core::provider::{
     AiAttachmentPayload, AiMessage, AiRequest, AiResponse, AiRole, CancellationToken,
-    ExecutorError, ProviderExecutor, TokenUsage, ToolCall,
+    ExecutorError, ProviderExecutor, ReasoningEffort, StreamEvent, TokenUsage, ToolCall,
 };
 // `AiAttachment`, `ToolDefinition`, and `AiToolResult` are referenced only by
 // this module's unit tests.
 #[cfg(test)]
-use nexora_core::provider::{AiAttachment, AiToolResult, ToolDefinition};
+use nexora_core::provider::{AiAttachment, AiToolResult, ModelConfig, ToolDefinition};
 
-use super::transport::{Credential, HttpClient, PostOutcome, PostRequest};
+use super::transport::{
+    Credential, HttpClient, PostOutcome, PostRequest, StreamOutcome, StreamPostError,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -200,6 +202,77 @@ impl AnthropicExecutor {
             }
         }
     }
+
+    fn run_stream(
+        &self,
+        request: &AiRequest,
+        credential: &str,
+        token: &CancellationToken,
+        on_event: &dyn Fn(StreamEvent),
+    ) -> Result<AiResponse, AnthropicError> {
+        let mut body = anthropic_request(request);
+        body.stream = Some(true);
+        let wire = serde_json::to_vec(&body).map_err(|_| AnthropicError::UnexpectedResponse)?;
+        let mut acc = AnthropicStreamAccumulator::new(&request.model);
+        let outcome = self.client.post_stream(
+            token,
+            &PostRequest {
+                url: self.endpoint.clone(),
+                credential: Credential::Header {
+                    name: "x-api-key",
+                    value: credential,
+                },
+                extra_headers: &[("anthropic-version", ANTHROPIC_VERSION)],
+                extra_headers_owned: &[],
+                body: &wire,
+                timeout: request.request_timeout,
+            },
+            &mut |frame| {
+                let data = frame.data.trim();
+                if data.is_empty() {
+                    return Ok(());
+                }
+                let ev: AnthropicSsePayload =
+                    serde_json::from_str(data).map_err(|_| AnthropicError::UnexpectedResponse)?;
+                acc.apply_event(frame.event.as_deref(), ev, on_event)
+            },
+        );
+        match outcome {
+            Ok(StreamOutcome::Completed) => acc.finish(),
+            Ok(StreamOutcome::Failure(snapshot)) => {
+                if snapshot.is_context_length_exceeded {
+                    Err(AnthropicError::ContextLengthExceeded)
+                } else {
+                    Err(classify_status(snapshot.status, snapshot.retry_after_secs))
+                }
+            }
+            Err(StreamPostError::Transport(ExecutorError::Cancelled)) => {
+                Err(AnthropicError::Cancelled)
+            }
+            Err(StreamPostError::Transport(_)) => Err(AnthropicError::Network),
+            Err(StreamPostError::Handler(err)) => Err(err),
+        }
+    }
+
+    fn map_error(error: AnthropicError) -> ExecutorError {
+        // Record only the classification category; never the credential
+        // or request payload (ARCHITECTURE.md §9, §11).
+        log::warn!("anthropic request failed: {error}");
+        match error {
+            AnthropicError::InvalidRequest => ExecutorError::InvalidRequest,
+            AnthropicError::ContextLengthExceeded => ExecutorError::ContextLengthExceeded,
+            AnthropicError::Authentication => ExecutorError::Authentication,
+            AnthropicError::PaymentRequired => ExecutorError::PaymentRequired,
+            AnthropicError::Network => ExecutorError::Network,
+            AnthropicError::RateLimited { retry_after_secs } => {
+                ExecutorError::RateLimited { retry_after_secs }
+            }
+            AnthropicError::ProviderUnavailable => ExecutorError::ProviderUnavailable,
+            AnthropicError::UnexpectedResponse => ExecutorError::UnexpectedResponse,
+            AnthropicError::Provider => ExecutorError::Failure,
+            AnthropicError::Cancelled => ExecutorError::Cancelled,
+        }
+    }
 }
 
 impl ProviderExecutor for AnthropicExecutor {
@@ -209,28 +282,19 @@ impl ProviderExecutor for AnthropicExecutor {
         credential: &str,
         token: &CancellationToken,
     ) -> Result<AiResponse, ExecutorError> {
-        match self.run(request, credential, token) {
-            Ok(response) => Ok(response),
-            Err(error) => {
-                // Record only the classification category; never the credential
-                // or request payload (ARCHITECTURE.md В§9, В§11).
-                log::warn!("anthropic request failed: {error}");
-                Err(match error {
-                    AnthropicError::InvalidRequest => ExecutorError::InvalidRequest,
-                    AnthropicError::ContextLengthExceeded => ExecutorError::ContextLengthExceeded,
-                    AnthropicError::Authentication => ExecutorError::Authentication,
-                    AnthropicError::PaymentRequired => ExecutorError::PaymentRequired,
-                    AnthropicError::Network => ExecutorError::Network,
-                    AnthropicError::RateLimited { retry_after_secs } => {
-                        ExecutorError::RateLimited { retry_after_secs }
-                    }
-                    AnthropicError::ProviderUnavailable => ExecutorError::ProviderUnavailable,
-                    AnthropicError::UnexpectedResponse => ExecutorError::UnexpectedResponse,
-                    AnthropicError::Provider => ExecutorError::Failure,
-                    AnthropicError::Cancelled => ExecutorError::Cancelled,
-                })
-            }
-        }
+        self.run(request, credential, token)
+            .map_err(Self::map_error)
+    }
+
+    fn execute_stream_events(
+        &self,
+        request: &AiRequest,
+        credential: &str,
+        token: &CancellationToken,
+        on_event: &dyn Fn(StreamEvent),
+    ) -> Result<AiResponse, ExecutorError> {
+        self.run_stream(request, credential, token, on_event)
+            .map_err(Self::map_error)
     }
 }
 
@@ -253,6 +317,15 @@ struct AnthropicRequest {
     system: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     tools: Vec<AnthropicWireTool>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    output_config: Option<AnthropicOutputConfig>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    stream: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+struct AnthropicOutputConfig {
+    effort: &'static str,
 }
 
 /// Anthropic-native tool definition (Messages `tools` array).
@@ -361,12 +434,33 @@ fn anthropic_request(request: &AiRequest) -> AnthropicRequest {
             input_schema: tool.parameters.clone(),
         })
         .collect();
+    let max_tokens = request
+        .model_config
+        .as_ref()
+        .and_then(|cfg| cfg.max_tokens)
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_MAX_TOKENS);
+    let output_config = request
+        .model_config
+        .as_ref()
+        .and_then(|cfg| cfg.effort.as_deref())
+        .and_then(ReasoningEffort::parse)
+        .map(|effort| AnthropicOutputConfig {
+            effort: match effort {
+                ReasoningEffort::Low => "low",
+                ReasoningEffort::Medium => "medium",
+                ReasoningEffort::High => "high",
+                ReasoningEffort::XHigh => "max",
+            },
+        });
     AnthropicRequest {
         model: request.model.clone(),
-        max_tokens: DEFAULT_MAX_TOKENS,
+        max_tokens,
         messages,
         system,
         tools,
+        output_config,
+        stream: None,
     }
 }
 
@@ -558,6 +652,278 @@ fn to_ai_response(response: AnthropicResponse) -> Result<AiResponse, AnthropicEr
     })
 }
 
+#[derive(Debug, Deserialize)]
+struct AnthropicSsePayload {
+    #[serde(rename = "type", default)]
+    kind: Option<String>,
+    #[serde(default)]
+    index: Option<usize>,
+    #[serde(default)]
+    message: Option<AnthropicSseMessage>,
+    #[serde(default)]
+    content_block: Option<AnthropicSseContentBlock>,
+    #[serde(default)]
+    delta: Option<AnthropicSseDelta>,
+    #[serde(default)]
+    usage: Option<AnthropicUsage>,
+    #[serde(default)]
+    error: Option<AnthropicSseError>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnthropicSseMessage {
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    usage: Option<AnthropicUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnthropicSseContentBlock {
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    thinking: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnthropicSseDelta {
+    #[serde(rename = "type", default)]
+    kind: Option<String>,
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    thinking: Option<String>,
+    #[serde(default)]
+    partial_json: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnthropicSseError {
+    #[serde(rename = "type", default)]
+    kind: Option<String>,
+}
+
+#[derive(Debug)]
+struct PendingAnthropicTool {
+    tool_index: usize,
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+struct AnthropicStreamAccumulator {
+    model: String,
+    text: String,
+    saw_text_or_tool: bool,
+    input_tokens: u64,
+    output_tokens: u64,
+    next_tool_index: usize,
+    active_tools: std::collections::BTreeMap<usize, PendingAnthropicTool>,
+    finished_tools: Vec<PendingAnthropicTool>,
+}
+
+impl AnthropicStreamAccumulator {
+    fn new(requested_model: &str) -> Self {
+        Self {
+            model: requested_model.to_string(),
+            text: String::new(),
+            saw_text_or_tool: false,
+            input_tokens: 0,
+            output_tokens: 0,
+            next_tool_index: 0,
+            active_tools: std::collections::BTreeMap::new(),
+            finished_tools: Vec::new(),
+        }
+    }
+
+    fn apply_content_block_start(
+        &mut self,
+        block_idx: usize,
+        block: AnthropicSseContentBlock,
+        on_event: &dyn Fn(StreamEvent),
+    ) -> Result<(), AnthropicError> {
+        match block.kind.as_str() {
+            "text" => {
+                if let Some(t) = block.text.filter(|s| !s.is_empty()) {
+                    self.saw_text_or_tool = true;
+                    self.text.push_str(&t);
+                    on_event(StreamEvent::TextDelta(t));
+                }
+            }
+            "thinking" => {
+                if let Some(t) = block.thinking.filter(|s| !s.is_empty()) {
+                    on_event(StreamEvent::ThinkingDelta(t));
+                }
+            }
+            "tool_use" => {
+                self.saw_text_or_tool = true;
+                let id = block.id.ok_or(AnthropicError::UnexpectedResponse)?;
+                let name = block.name.ok_or(AnthropicError::UnexpectedResponse)?;
+                let tool_index = self.next_tool_index;
+                self.next_tool_index += 1;
+                on_event(StreamEvent::ToolCallDelta {
+                    index: tool_index,
+                    id: Some(id.clone()),
+                    name: Some(name.clone()),
+                    arguments_delta: None,
+                });
+                self.active_tools.insert(
+                    block_idx,
+                    PendingAnthropicTool {
+                        tool_index,
+                        id,
+                        name,
+                        arguments: String::new(),
+                    },
+                );
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn apply_content_block_delta(
+        &mut self,
+        block_idx: usize,
+        delta: AnthropicSseDelta,
+        on_event: &dyn Fn(StreamEvent),
+    ) {
+        match delta.kind.as_deref().unwrap_or_default() {
+            "text_delta" => {
+                if let Some(t) = delta.text.filter(|s| !s.is_empty()) {
+                    self.saw_text_or_tool = true;
+                    self.text.push_str(&t);
+                    on_event(StreamEvent::TextDelta(t));
+                }
+            }
+            "thinking_delta" => {
+                if let Some(t) = delta.thinking.filter(|s| !s.is_empty()) {
+                    on_event(StreamEvent::ThinkingDelta(t));
+                }
+            }
+            "input_json_delta" => {
+                if let Some(partial) = delta.partial_json {
+                    if let Some(pending) = self.active_tools.get_mut(&block_idx) {
+                        pending.arguments.push_str(&partial);
+                        if !partial.is_empty() {
+                            on_event(StreamEvent::ToolCallDelta {
+                                index: pending.tool_index,
+                                id: None,
+                                name: None,
+                                arguments_delta: Some(partial),
+                            });
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn apply_event(
+        &mut self,
+        sse_event: Option<&str>,
+        payload: AnthropicSsePayload,
+        on_event: &dyn Fn(StreamEvent),
+    ) -> Result<(), AnthropicError> {
+        let kind = payload.kind.as_deref().or(sse_event).unwrap_or_default();
+        match kind {
+            "error" => {
+                if payload
+                    .error
+                    .as_ref()
+                    .and_then(|e| e.kind.as_deref())
+                    .is_some_and(|k| k == "overloaded_error")
+                {
+                    return Err(AnthropicError::ProviderUnavailable);
+                }
+                return Err(AnthropicError::Provider);
+            }
+            "message_start" => {
+                if let Some(msg) = payload.message {
+                    if let Some(model) = msg.model.filter(|m| !m.is_empty()) {
+                        self.model = model;
+                    }
+                    if let Some(usage) = msg.usage {
+                        self.input_tokens = self.input_tokens.max(usage.input_tokens);
+                        self.output_tokens = self.output_tokens.max(usage.output_tokens);
+                    }
+                }
+            }
+            "content_block_start" => {
+                if let (Some(block_idx), Some(block)) = (payload.index, payload.content_block) {
+                    self.apply_content_block_start(block_idx, block, on_event)?;
+                }
+            }
+            "content_block_delta" => {
+                if let (Some(block_idx), Some(delta)) = (payload.index, payload.delta) {
+                    self.apply_content_block_delta(block_idx, delta, on_event);
+                }
+            }
+            "content_block_stop" => {
+                if let Some(block_idx) = payload.index {
+                    if let Some(pending) = self.active_tools.remove(&block_idx) {
+                        self.finished_tools.push(pending);
+                    }
+                }
+            }
+            "message_delta" => {
+                if let Some(usage) = payload.usage {
+                    self.input_tokens = self.input_tokens.max(usage.input_tokens);
+                    self.output_tokens = self.output_tokens.max(usage.output_tokens);
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<AiResponse, AnthropicError> {
+        for (_, pending) in self.active_tools {
+            self.finished_tools.push(pending);
+        }
+        self.finished_tools.sort_by_key(|t| t.tool_index);
+        let tool_calls: Vec<ToolCall> = self
+            .finished_tools
+            .into_iter()
+            .map(|t| ToolCall {
+                id: t.id,
+                name: t.name,
+                arguments: if t.arguments.is_empty() {
+                    "{}".to_string()
+                } else {
+                    t.arguments
+                },
+                thought_signature: None,
+            })
+            .collect();
+        if !self.saw_text_or_tool && tool_calls.is_empty() && self.text.is_empty() {
+            return Err(AnthropicError::UnexpectedResponse);
+        }
+        let usage = if self.input_tokens == 0 && self.output_tokens == 0 {
+            None
+        } else {
+            Some(TokenUsage {
+                input_tokens: self.input_tokens,
+                output_tokens: self.output_tokens,
+            })
+        };
+        Ok(AiResponse {
+            content: self.text,
+            model: self.model,
+            tool_calls,
+            usage,
+        })
+    }
+}
+
 /// Classify a non-success HTTP status into a secret-free failure category.
 ///
 /// Mirrors the unified [`super::transport::map_http_error`] table so every
@@ -592,7 +958,7 @@ fn classify_status(status: u16, retry_after_secs: Option<u64>) -> AnthropicError
 /// header, or request payload is ever stored. The provider-independent boundary
 /// exposes only [`ExecutorError::Failure`] вЂ” this richer classification exists
 /// so diagnostics can distinguish failure classes in the logs.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 enum AnthropicError {
     /// The Anthropic endpoint rejected the request as malformed (HTTP 400) or
     /// addressed an unknown model/route (HTTP 404).
@@ -1847,5 +2213,105 @@ mod tests {
         server.join().expect("server thread joins");
         assert!(matches!(result, Err(ExecutorError::ProviderUnavailable)));
         assert_eq!(count.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn execute_stream_events_emits_anthropic_text_thinking_and_tool_deltas() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let captured_srv = std::sync::Arc::clone(&captured);
+
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 1024];
+            let mut header_end = None;
+            while let Ok(n) = stream.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                raw.extend_from_slice(&buf[..n]);
+                if header_end.is_none() {
+                    if let Some(pos) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+                        header_end = Some(pos + 4);
+                    }
+                }
+                if let Some(end) = header_end {
+                    let hdrs = String::from_utf8_lossy(&raw[..end]);
+                    let len = hdrs
+                        .lines()
+                        .find_map(|l| {
+                            let (k, v) = l.split_once(':')?;
+                            k.eq_ignore_ascii_case("content-length")
+                                .then(|| v.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    if raw.len() >= end + len {
+                        *captured_srv.lock().expect("lock") =
+                            String::from_utf8_lossy(&raw[end..end + len]).to_string();
+                        break;
+                    }
+                }
+            }
+            let sse = concat!(
+                "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-sonnet-5\",\"usage\":{\"input_tokens\":12,\"output_tokens\":0}}}\n\n",
+                "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n",
+                "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"step 1\"}}\n\n",
+                "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+                "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+                "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"Done.\"}}\n\n",
+                "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+                "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":2,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"list_dir\"}}\n\n",
+                "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":2,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"path\\\":\\\".\\\"}\"}}\n\n",
+                "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":2}\n\n",
+                "event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":9}}\n\n",
+                "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+            );
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                sse.len(),
+                sse
+            );
+            stream.write_all(resp.as_bytes()).expect("write");
+        });
+
+        let endpoint = format!("http://{addr}/v1/messages");
+        let executor = AnthropicExecutor::with_endpoint(endpoint);
+        let mut req = sample_request();
+        req.model_config =
+            Some(ModelConfig::new("claude-sonnet-5").with_effort(Some("xhigh".to_string())));
+        let events = std::sync::Mutex::new(Vec::new());
+        let resp = executor
+            .execute_stream_events(&req, "sk-secret", &CancellationToken::new(), &|ev| {
+                events.lock().expect("lock").push(ev);
+            })
+            .expect("anthropic stream ok");
+        server.join().expect("join");
+
+        let sent: serde_json::Value =
+            serde_json::from_str(&captured.lock().expect("lock")).expect("json");
+        assert_eq!(sent["stream"], true);
+        assert_eq!(sent["output_config"]["effort"], "max");
+
+        assert_eq!(resp.content, "Done.");
+        assert_eq!(resp.tool_calls.len(), 1);
+        assert_eq!(resp.tool_calls[0].id, "toolu_1");
+        assert_eq!(resp.tool_calls[0].name, "list_dir");
+        assert_eq!(resp.tool_calls[0].arguments, "{\"path\":\".\"}");
+        assert_eq!(
+            resp.usage,
+            Some(TokenUsage {
+                input_tokens: 12,
+                output_tokens: 9
+            })
+        );
+        let evs = events.into_inner().expect("lock");
+        assert!(evs.contains(&StreamEvent::ThinkingDelta("step 1".to_string())));
+        assert!(evs.contains(&StreamEvent::TextDelta("Done.".to_string())));
     }
 }

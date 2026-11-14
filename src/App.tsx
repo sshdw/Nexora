@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import CommandPalette from "./components/CommandPalette";
 import ConversationPane, { type PaneSlot } from "./components/ConversationPane";
+import type { ModelConnectionGroup } from "./components/ModelPicker";
 import ConversationTabs, { type TabEntry } from "./components/ConversationTabs";
 import ActivityHealthPanel from "./components/ActivityHealthPanel";
 import ActivityPanel from "./components/ActivityPanel";
@@ -152,9 +153,50 @@ function AppShell() {
     );
     return match ? match.supported.models : [];
   }, [providers.providers, providers.selectedProvider]);
+  const connectionGroups = useMemo<ModelConnectionGroup[]>(
+    () =>
+      providers.providers
+        .filter(
+          (entry) =>
+            entry.available || entry.supported.name === providers.selectedProvider
+        )
+        .map((entry) => ({
+          connectionId: entry.supported.name,
+          connectionName: entry.supported.display_name,
+          models: entry.supported.models,
+        })),
+    [providers.providers, providers.selectedProvider]
+  );
+  const capabilitiesByKey = useMemo(
+    () =>
+      new Map(
+        providers.capabilities.map((cap) => [
+          `${cap.connection_id}::${cap.model_id}`,
+          cap,
+        ])
+      ),
+    [providers.capabilities]
+  );
   const selectModel = useCallback(
     (model: string) => {
       void providers.selectModel(model);
+    },
+    [providers]
+  );
+  const selectConnectionModel = useCallback(
+    (connectionId: string, model: string) => {
+      void (async () => {
+        if (connectionId !== providers.selectedProvider) {
+          await providers.selectProvider(connectionId);
+        }
+        await providers.selectModel(model);
+      })();
+    },
+    [providers]
+  );
+  const selectEffort = useCallback(
+    (effort: string | null) => {
+      void providers.selectEffort(effort);
     },
     [providers]
   );
@@ -632,6 +674,12 @@ function AppShell() {
     selectedModel: providers.selectedModel,
     models: providerModels,
     onSelectModel: selectModel,
+    connectionGroups,
+    onSelectConnectionModel: selectConnectionModel,
+    selectedCapabilities: providers.selectedCapabilities,
+    capabilitiesByKey,
+    selectedEffort: providers.selectedEffort,
+    onSelectEffort: selectEffort,
     modelError,
     autonomy,
     onOpenSettings: openDefaultSettings,

@@ -349,3 +349,40 @@
   color: var(--color-error);
   background: var(--color-error-container);
 }
+
+.nex-capabilities-details {
+  margin-top: var(--space-md);
+}
+
+.nex-capabilities-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  margin-top: var(--space-sm);
+}
+
+.nex-capabilities-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.nex-capabilities-efforts,
+.nex-capabilities-toggles,
+.nex-capabilities-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.nex-capabilities-check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xxs);
+  font-size: var(--type-size-body-small);
+  color: var(--color-on-surface);
+  cursor: pointer;
+}

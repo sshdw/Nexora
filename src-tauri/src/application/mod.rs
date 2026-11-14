@@ -23,6 +23,7 @@
 
 pub mod agent;
 pub mod attachments;
+pub mod capabilities;
 pub mod compat;
 pub mod confirmations;
 pub mod context_stats;

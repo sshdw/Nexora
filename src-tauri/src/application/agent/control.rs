@@ -131,6 +131,14 @@ pub(crate) enum AgentRunEvent {
     /// A user cancellation was observed; the run aborted with
     /// `AgentError::Cancelled`.
     Cancelled,
+    /// Ephemeral incremental streaming delta from the active model turn
+    /// (`kind` is `"text"` or `"thinking"`). Never triggers durable journal writes.
+    StreamDelta {
+        /// `"text"` or `"thinking"`.
+        kind: String,
+        /// Incremental token/text chunk.
+        delta: String,
+    },
     /// The run produced a final answer after `steps` accounted model turns.
     Completed { steps: usize },
     /// One successfully persisted agent step, streamed to the UI (Task 5.1).

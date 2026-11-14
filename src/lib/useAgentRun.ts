@@ -71,6 +71,10 @@ export interface AgentRunView {
   /** Persisted `agent_runs.total_steps` (0 for live placeholders until a
    *  reload lands). Lets the run line stay honest while steps are unloaded. */
   total_steps: number | null;
+  /** Ephemeral live-streamed assistant text while the run turn is executing. */
+  streaming_text?: string;
+  /** Ephemeral live-streamed provider-native thinking while the run turn is executing. */
+  streaming_thinking?: string;
   pending_approval: {
     metadata?: ApprovalMetadata;
     call_id: string;
@@ -748,6 +752,8 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
           steps: mergeSteps(run.steps, [
             toStepViewFromFrame(payload.run_id, payload.event),
           ]),
+          streaming_text: undefined,
+          streaming_thinking: undefined,
           steps_loaded:
             run.steps_loaded ||
             !session.runs.some((item) => item.run_id === payload.run_id),
@@ -761,6 +767,8 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
           error: payload.event.error,
           finished_at: old.finished_at ?? Date.now() / 1000,
           pending_approval: null,
+          streaming_text: undefined,
+          streaming_thinking: undefined,
           checkpoints_loaded: false,
         }));
         if (!run || run.steps.length === 0) void loadRunSteps(payload.run_id);
@@ -768,6 +776,21 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
         const gov = payload.event;
         patch(session, payload.run_id, (run) => {
           if (!isActive(run.status)) return run;
+          if (gov.type === "stream_delta") {
+            if (gov.kind === "text") {
+              return {
+                ...run,
+                streaming_text: (run.streaming_text ?? "") + gov.delta,
+              };
+            }
+            if (gov.kind === "thinking") {
+              return {
+                ...run,
+                streaming_thinking: (run.streaming_thinking ?? "") + gov.delta,
+              };
+            }
+            return run;
+          }
           if (gov.type === "approval_requested")
             return {
               ...run,

@@ -133,7 +133,12 @@ export type GovernanceEventPayload =
       summarized: number;
       retained: number;
     }
-  | { type: "compaction_failed"; reason: string };
+  | { type: "compaction_failed"; reason: string }
+  | {
+      type: "stream_delta";
+      kind: "text" | "thinking" | "tool_call";
+      delta: string;
+    };
 
 /** One `agent-run-event` frame (Task 5.1 design §2.4). */
 export type AgentRunEventPayload =
@@ -166,13 +171,15 @@ export function startAgentRun(
   conversationId: number,
   content: string,
   provider: string,
-  model: string
+  model: string,
+  effort?: string | null
 ): Promise<{ run_id: number }> {
   return invoke<{ run_id: number }>("start_agent_run", {
     conversationId,
     content,
     provider,
     model,
+    effort: effort ?? null,
   });
 }
 
