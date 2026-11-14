@@ -105,15 +105,21 @@ fn analyze_inner(command: &str, shell: Shell, depth: usize) -> ShellAnalysis {
             break;
         }
         if node.kind() == "command" {
-            let text = command_text(node, command, shell);
+            let (text, omitted_dynamic) = command_text(node, command, shell);
             let (words, uncertain) = literal_words(&text, shell);
+            let uncertain = uncertain || omitted_dynamic;
             result.uncertain |= uncertain;
             result.packages_exact &= !uncertain;
             classify_words(&words, shell, depth, &mut result);
         }
         if matches!(
             node.kind(),
-            "expansion" | "simple_expansion" | "variable" | "command_name_expr" | "ERROR"
+            "expansion"
+                | "simple_expansion"
+                | "variable"
+                | "sub_expression"
+                | "command_name_expr"
+                | "ERROR"
         ) {
             result.uncertain = true;
             result.packages_exact = false;
@@ -126,28 +132,37 @@ fn analyze_inner(command: &str, shell: Shell, depth: usize) -> ShellAnalysis {
     result
 }
 /// PowerShell redirections are syntax nodes, not process argv. Keep the
-/// other elements in their original order and visit nested commands separately.
-fn command_text(node: Node<'_>, source: &str, shell: Shell) -> String {
+/// static elements in their original order and visit nested commands separately.
+/// Omitting a dynamic argv element must invalidate certainty even when the
+/// remaining text looks like a complete literal command.
+fn command_text(node: Node<'_>, source: &str, shell: Shell) -> (String, bool) {
     if shell != Shell::Pwsh {
-        return node
-            .utf8_text(source.as_bytes())
-            .unwrap_or_default()
-            .to_owned();
+        return (
+            node.utf8_text(source.as_bytes())
+                .unwrap_or_default()
+                .to_owned(),
+            false,
+        );
     }
     let mut pieces = Vec::new();
+    let mut omitted_dynamic = false;
     if let Some(name) = node.child_by_field_name("command_name") {
         pieces.push(name.utf8_text(source.as_bytes()).unwrap_or_default());
     }
     if let Some(elements) = node.child_by_field_name("command_elements") {
         let mut cursor = elements.walk();
-        pieces.extend(
-            elements
-                .named_children(&mut cursor)
-                .filter(|child| child.kind() != "redirection" && static_element(*child))
-                .map(|child| child.utf8_text(source.as_bytes()).unwrap_or_default()),
-        );
+        for child in elements.named_children(&mut cursor) {
+            if child.kind() == "redirection" {
+                continue;
+            }
+            if static_element(child) {
+                pieces.push(child.utf8_text(source.as_bytes()).unwrap_or_default());
+            } else {
+                omitted_dynamic = true;
+            }
+        }
     }
-    pieces.join(" ")
+    (pieces.join(" "), omitted_dynamic)
 }
 fn static_element(node: Node<'_>) -> bool {
     let mut stack = vec![node];
@@ -870,6 +885,105 @@ mod tests {
             assert!(analyze(command, shell).uncertain);
         }
         assert!(analyze_inner("npm install foo", Shell::Sh, MAX_DEPTH + 1).uncertain);
+    }
+    #[test]
+    fn unresolved_powershell_arguments_never_claim_complete_literal_argv() {
+        for command in [
+            "npm install alpha $(Write-Output beta)",
+            "npm install alpha $packages",
+            r#"npm install alpha "$(Write-Output beta)""#,
+            "npm install alpha prefix$(Write-Output beta)",
+            r#"git reset $(Write-Output "--hard")"#,
+            "git reset $flags",
+            r#"git reset "$(Write-Output '--hard')""#,
+        ] {
+            let result = analyze(command, Shell::Pwsh);
+            assert!(result.uncertain, "{command}: {result:?}");
+            assert!(!result.packages_exact, "{command}: {result:?}");
+            assert!(
+                !result.packages.iter().any(|package| package == "beta"),
+                "unresolved expression output must not be invented"
+            );
+        }
+    }
+    #[test]
+    fn selected_shell_nested_powershell_propagates_dynamic_argument_uncertainty() {
+        for (command, shell) in [
+            (
+                "pwsh -Command 'npm install alpha $(Write-Output beta)'",
+                Shell::Sh,
+            ),
+            (
+                r#"pwsh -Command 'git reset $(Write-Output "--hard")'"#,
+                Shell::Sh,
+            ),
+            (
+                "pwsh -Command 'npm install alpha $(Write-Output beta)'",
+                Shell::Pwsh,
+            ),
+            (
+                r#"pwsh -Command "npm install alpha $(Write-Output beta)""#,
+                Shell::Cmd,
+            ),
+            (
+                r#"powershell -Command "git reset $(Write-Output '--hard')""#,
+                Shell::Cmd,
+            ),
+        ] {
+            let result = analyze(command, shell);
+            assert!(result.uncertain, "{shell:?}: {command}: {result:?}");
+            assert!(!result.packages_exact, "{shell:?}: {command}: {result:?}");
+            if command.contains("npm install") {
+                assert_eq!(result.category, ShellCategory::DependencyInstall);
+                assert_eq!(result.packages, ["alpha"]);
+            }
+            let metadata = serde_json::to_value(&result).unwrap();
+            assert_eq!(metadata["uncertain"], true);
+            assert_eq!(metadata["packages_exact"], false);
+            assert_eq!(metadata["sandbox_posture"], "PerCommandConsent");
+        }
+    }
+    #[test]
+    fn powershell_dynamic_arguments_preserve_detectable_maximum_nested_risk() {
+        for (body, category) in [
+            (
+                "npm install alpha $(git reset --hard)",
+                ShellCategory::DestructiveGit,
+            ),
+            (
+                "git reset $(Remove-Item -Recurse tmp)",
+                ShellCategory::MassDelete,
+            ),
+            (
+                "npm install alpha $(Write-Output $(git push))",
+                ShellCategory::PublishOrRemote,
+            ),
+        ] {
+            for (command, shell) in [
+                (body.to_owned(), Shell::Pwsh),
+                (format!("pwsh -Command '{body}'"), Shell::Sh),
+            ] {
+                let result = analyze(&command, shell);
+                assert_eq!(result.category, category, "{command}: {result:?}");
+                assert!(result.uncertain, "{command}: {result:?}");
+                assert!(!result.packages_exact, "{command}: {result:?}");
+            }
+        }
+    }
+    #[test]
+    fn static_powershell_arguments_keep_exact_direct_and_nested_packages() {
+        for (command, shell) in [
+            ("npm install alpha beta@2", Shell::Pwsh),
+            ("pwsh -Command 'npm install alpha beta@2'", Shell::Sh),
+            ("pwsh -Command 'npm install alpha beta@2'", Shell::Pwsh),
+            (r#"pwsh -Command "npm install alpha beta@2""#, Shell::Cmd),
+        ] {
+            let result = analyze(command, shell);
+            assert_eq!(result.category, ShellCategory::DependencyInstall);
+            assert_eq!(result.packages, ["alpha", "beta@2"]);
+            assert!(result.packages_exact, "{command}: {result:?}");
+            assert!(!result.uncertain, "{command}: {result:?}");
+        }
     }
     #[test]
     fn valid_native_powershell_scoped_package_remains_visible_with_grammar_uncertainty() {
