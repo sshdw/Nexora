@@ -267,6 +267,11 @@ export const en = {
     "Plan mode — outline steps before editing (Agent only)",
   "conv.planActiveHint":
     "Plan mode active — read-only planning before executing edits",
+  "conv.plusMenuAria": "Add",
+  "conv.plusMenuTitle": "Attach files, commands, or context",
+  "conv.plusMenuAttach": "Attach files",
+  "conv.plusMenuCommands": "Commands",
+  "conv.plusMenuMentions": "Mentions",
   "conv.slashTriggerAria": "Slash commands",
   "conv.slashTriggerTitle": "Insert or run a slash command (/)",
   "conv.slashMenuTitle": "Commands",

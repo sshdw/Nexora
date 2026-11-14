@@ -179,8 +179,9 @@ describe("pane default mode (R4-02)", () => {
         name: "Chat mode — one answer per message",
       })
     ).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
     expect(
-      screen.getByRole("button", { name: "Add file" })
+      screen.getByRole("menuitem", { name: "Attach files" })
     ).toBeInTheDocument();
 
     // The mode is pane state, not a per-render constant: a re-render of the
@@ -188,7 +189,7 @@ describe("pane default mode (R4-02)", () => {
     // Agent, and nothing is persisted to the database.
     rerender(pane("half-typed"));
     expect(
-      screen.getByRole("button", { name: "Add file" })
+      screen.getByRole("menuitem", { name: "Attach files" })
     ).toBeInTheDocument();
   });
 

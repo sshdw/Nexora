@@ -302,14 +302,19 @@ describe("composer — send flow", () => {
       sending: true,
       agentMode: false,
     });
-    expect(screen.getByRole("button", { name: "Add file" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Add" })).toBeDisabled();
 
     rerender(
       <LocaleProvider>
         <Composer {...props} sending={false} attachmentsBusy />
       </LocaleProvider>
     );
-    expect(screen.getByRole("button", { name: "Add file" })).toBeDisabled();
+    const plusBtn = screen.getByRole("button", { name: "Add" });
+    expect(plusBtn).toBeEnabled();
+    fireEvent.click(plusBtn);
+    expect(
+      screen.getByRole("menuitem", { name: "Attach files" })
+    ).toBeDisabled();
 
     rerender(
       <LocaleProvider>
@@ -321,7 +326,7 @@ describe("composer — send flow", () => {
         />
       </LocaleProvider>
     );
-    expect(screen.getByRole("button", { name: "Add file" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Add" })).toBeDisabled();
   });
 
   it("dispatches attach and removal with no arguments the caller does not own", () => {
@@ -336,7 +341,8 @@ describe("composer — send flow", () => {
       agentMode: false,
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Add file" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Attach files" }));
     expect(onPickFiles).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByRole("button", { name: "Remove notes.md" }));
@@ -680,10 +686,18 @@ describe("composer — modes", () => {
 describe("composer — attachment policy (R4-02 / G-20)", () => {
   it("renders the attach control in Chat mode only", () => {
     const { rerender, props } = renderComposer();
+    const plusBtn = screen.getByRole("button", { name: "Add" });
+    expect(plusBtn).toBeInTheDocument();
+    fireEvent.click(plusBtn);
     expect(
-      screen.queryByRole("button", { name: "Add file" })
+      screen.queryByRole("menuitem", { name: "Attach files" })
     ).not.toBeInTheDocument();
-    expect(screen.queryByTitle("Add file")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("menuitem", { name: /Commands/ })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("menuitem", { name: /Mentions/ })
+    ).toBeInTheDocument();
 
     rerender(
       <LocaleProvider>
@@ -691,7 +705,7 @@ describe("composer — attachment policy (R4-02 / G-20)", () => {
       </LocaleProvider>
     );
     expect(
-      screen.getByRole("button", { name: "Add file" })
+      screen.getByRole("menuitem", { name: "Attach files" })
     ).toBeInTheDocument();
   });
 
@@ -706,6 +720,11 @@ describe("composer — attachment policy (R4-02 / G-20)", () => {
     ).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Attached files")).not.toBeInTheDocument();
     expect(screen.queryByText("notes.md")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    expect(
+      screen.queryByRole("menuitem", { name: "Attach files" })
+    ).not.toBeInTheDocument();
 
     // …and there is no teaching line left to advertise it: the chip row was
     // the rejected "teach chips" pattern (D-03) and is gone in both modes.
@@ -1899,7 +1918,7 @@ describe("composer — Stage 5 PR 5B: Plan toggle and / + @ triggers", () => {
     ).toBeNull();
   });
 
-  it("opens slash command menu from the / trigger and runs real composer actions", () => {
+  it("omits separate / and @ toolbar buttons and opens slash commands from the + menu", () => {
     const onAgentModeChange = vi.fn();
     const onDraftChange = vi.fn();
     const onOpenSettings = vi.fn();
@@ -1911,7 +1930,15 @@ describe("composer — Stage 5 PR 5B: Plan toggle and / + @ triggers", () => {
       onOpenSettings,
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Slash commands" }));
+    expect(
+      screen.queryByRole("button", { name: "Slash commands" })
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Mention context" })
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Commands/ }));
     const listbox = screen.getByRole("listbox", {
       name: "Available slash commands",
     });
@@ -1922,7 +1949,7 @@ describe("composer — Stage 5 PR 5B: Plan toggle and / + @ triggers", () => {
     expect(onDraftChange).toHaveBeenCalledWith("");
   });
 
-  it("opens context mention menu from the @ trigger and inserts workspace or folder actions", () => {
+  it("opens context mention menu from the + menu and inserts workspace or folder actions", () => {
     const onDraftChange = vi.fn();
     const pickFolder = vi.fn(async () => null);
     renderComposer({
@@ -1936,19 +1963,46 @@ describe("composer — Stage 5 PR 5B: Plan toggle and / + @ triggers", () => {
       }),
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Mention context" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Mentions/ }));
     const listbox = screen.getByRole("listbox", {
       name: "Available context references",
     });
     fireEvent.click(within(listbox).getByRole("option", { name: /@nexora/ }));
     expect(onDraftChange).toHaveBeenCalledWith("Check @nexora ");
 
-    fireEvent.click(screen.getByRole("button", { name: "Mention context" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Mentions/ }));
     fireEvent.click(
       within(
         screen.getByRole("listbox", { name: "Available context references" })
       ).getByRole("option", { name: /Choose workspace folder/ })
     );
     expect(pickFolder).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens / and @ popovers when typing in the textarea without stealing focus", () => {
+    const onDraftChange = vi.fn();
+    renderComposer({
+      agentMode: true,
+      draft: "",
+      onDraftChange,
+    });
+
+    const field = screen.getByLabelText("Message");
+    (field as HTMLTextAreaElement).focus();
+    expect(field).toHaveFocus();
+
+    fireEvent.change(field, { target: { value: "/" } });
+    expect(
+      screen.getByRole("listbox", { name: "Available slash commands" })
+    ).toBeInTheDocument();
+    expect(field).toHaveFocus();
+
+    fireEvent.change(field, { target: { value: "Check @" } });
+    expect(
+      screen.getByRole("listbox", { name: "Available context references" })
+    ).toBeInTheDocument();
+    expect(field).toHaveFocus();
   });
 });

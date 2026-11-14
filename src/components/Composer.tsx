@@ -84,6 +84,7 @@ import WorkspaceContextRow from "./WorkspaceContextRow";
 import { Button } from "./ui/button";
 import {
   Popover,
+  PopoverAnchor,
   PopoverContent,
   PopoverHeader,
   PopoverTitle,
@@ -210,10 +211,12 @@ export default function Composer({
   const [localPlanMode, setLocalPlanMode] = useState(false);
   const effectivePlan = agentMode && (planMode ?? localPlanMode);
 
+  const [plusOpen, setPlusOpen] = useState(false);
   const [slashOpen, setSlashOpen] = useState(false);
   const [mentionOpen, setMentionOpen] = useState(false);
   const [slashHighlight, setSlashHighlight] = useState(0);
   const [mentionHighlight, setMentionHighlight] = useState(0);
+  const returnFocusToFieldRef = useRef(false);
 
   const togglePlanMode = useCallback(() => {
     if (!agentMode) return;
@@ -417,12 +420,14 @@ export default function Composer({
     (value: string) => {
       onDraftChange(value);
       if (/^\/[^\s]*$/.test(value)) {
+        setPlusOpen(false);
         setSlashOpen(true);
         setSlashHighlight(0);
         setMentionOpen(false);
       } else {
         if (slashOpen) setSlashOpen(false);
         if (/(?:^|\s)@([^\s]*)$/.test(value)) {
+          setPlusOpen(false);
           setMentionOpen(true);
           setMentionHighlight(0);
         } else if (mentionOpen) {
@@ -582,23 +587,237 @@ export default function Composer({
           )}
 
           <div className="nex-composer-bar">
-            {/* Chat only: absent (not disabled) in Agent mode — see the
-                attachment note at the top of this file. */}
-            {!agentMode && (
-              <Tooltip label={t("conv.addFile")}>
-                <Button
-                  variant="ghost"
-                  size="icon-lg"
-                  className="nex-composer-attach rounded-full"
-                  aria-label={t("conv.addFile")}
-                  title={t("conv.addFile")}
-                  disabled={busy || attachmentsBusy}
-                  onClick={onPickFiles}
+            {/* "+" consolidated action menu (available in both Chat and Agent
+                modes). Attach files is Chat-only (`!agentMode`, R4-02 / G-20);
+                typing `/` or `@` in the field also opens the anchored menus
+                below. */}
+            <div className="nex-composer-plus-anchor">
+              <Popover
+                open={plusOpen}
+                onOpenChange={(next) => {
+                  setPlusOpen(next);
+                  if (next) {
+                    setSlashOpen(false);
+                    setMentionOpen(false);
+                  }
+                }}
+              >
+                <PopoverTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-lg"
+                    className="nex-composer-attach rounded-full"
+                    aria-label={t("conv.plusMenuAria")}
+                    title={t("conv.plusMenuTitle")}
+                    disabled={busy}
+                  >
+                    <PlusIcon />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent
+                  align="start"
+                  side="top"
+                  sideOffset={8}
+                  className="nex-composer-plus-menu"
+                  onCloseAutoFocus={(event) => {
+                    if (returnFocusToFieldRef.current) {
+                      event.preventDefault();
+                      returnFocusToFieldRef.current = false;
+                      fieldRef.current?.focus();
+                    }
+                  }}
                 >
-                  <PlusIcon />
-                </Button>
-              </Tooltip>
-            )}
+                  <div
+                    role="menu"
+                    aria-label={t("conv.plusMenuTitle")}
+                    className="nex-composer-plus-list"
+                  >
+                    {!agentMode && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="nex-composer-trigger-option"
+                        disabled={busy || attachmentsBusy}
+                        onClick={() => {
+                          setPlusOpen(false);
+                          onPickFiles();
+                        }}
+                      >
+                        <span className="nex-composer-trigger-icon">
+                          <PaperclipIcon />
+                        </span>
+                        <span className="nex-composer-plus-label">
+                          {t("conv.plusMenuAttach")}
+                        </span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="nex-composer-trigger-option"
+                      disabled={busy}
+                      onClick={() => {
+                        returnFocusToFieldRef.current = true;
+                        setPlusOpen(false);
+                        setMentionOpen(false);
+                        setSlashHighlight(0);
+                        setSlashOpen(true);
+                      }}
+                    >
+                      <code className="nex-composer-trigger-cmd">/</code>
+                      <span className="nex-composer-plus-label">
+                        {t("conv.plusMenuCommands")}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="nex-composer-trigger-option"
+                      disabled={busy}
+                      onClick={() => {
+                        returnFocusToFieldRef.current = true;
+                        setPlusOpen(false);
+                        setSlashOpen(false);
+                        setMentionHighlight(0);
+                        setMentionOpen(true);
+                      }}
+                    >
+                      <code className="nex-composer-trigger-cmd">@</code>
+                      <span className="nex-composer-plus-label">
+                        {t("conv.plusMenuMentions")}
+                      </span>
+                    </button>
+                  </div>
+                </PopoverContent>
+              </Popover>
+
+              <Popover
+                open={slashOpen}
+                onOpenChange={(next) => {
+                  setSlashOpen(next);
+                  if (next) {
+                    setPlusOpen(false);
+                    setMentionOpen(false);
+                    setSlashHighlight(0);
+                  }
+                }}
+              >
+                <PopoverAnchor className="nex-composer-popover-anchor" />
+                <PopoverContent
+                  align="start"
+                  side="top"
+                  sideOffset={8}
+                  className="nex-composer-trigger-menu"
+                  onOpenAutoFocus={(event) => event.preventDefault()}
+                >
+                  <PopoverHeader>
+                    <PopoverTitle>{t("conv.slashMenuTitle")}</PopoverTitle>
+                  </PopoverHeader>
+                  {slashItems.length === 0 ? (
+                    <p className="nex-composer-trigger-empty">
+                      {t("conv.slashEmpty")}
+                    </p>
+                  ) : (
+                    <ul
+                      role="listbox"
+                      aria-label={t("conv.slashMenuAria")}
+                      className="nex-composer-trigger-list"
+                    >
+                      {slashItems.map((item, idx) => (
+                        <li key={item.id}>
+                          <button
+                            type="button"
+                            role="option"
+                            aria-selected={idx === slashHighlight}
+                            disabled={item.disabled}
+                            className={
+                              "nex-composer-trigger-option" +
+                              (idx === slashHighlight ? " is-highlighted" : "")
+                            }
+                            onClick={() => runSlashItem(item)}
+                          >
+                            <code className="nex-composer-trigger-cmd">
+                              {item.command}
+                            </code>
+                            <span className="nex-composer-trigger-desc">
+                              {item.description}
+                            </span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </PopoverContent>
+              </Popover>
+
+              <Popover
+                open={mentionOpen}
+                onOpenChange={(next) => {
+                  setMentionOpen(next);
+                  if (next) {
+                    setPlusOpen(false);
+                    setSlashOpen(false);
+                    setMentionHighlight(0);
+                  }
+                }}
+              >
+                <PopoverAnchor className="nex-composer-popover-anchor" />
+                <PopoverContent
+                  align="start"
+                  side="top"
+                  sideOffset={8}
+                  className="nex-composer-trigger-menu"
+                  onOpenAutoFocus={(event) => event.preventDefault()}
+                >
+                  <PopoverHeader>
+                    <PopoverTitle>{t("conv.mentionMenuTitle")}</PopoverTitle>
+                  </PopoverHeader>
+                  {mentionItems.length === 0 ? (
+                    <p className="nex-composer-trigger-empty">
+                      {t("conv.mentionEmpty")}
+                    </p>
+                  ) : (
+                    <ul
+                      role="listbox"
+                      aria-label={t("conv.mentionMenuAria")}
+                      className="nex-composer-trigger-list"
+                    >
+                      {mentionItems.map((item, idx) => (
+                        <li key={item.id}>
+                          <button
+                            type="button"
+                            role="option"
+                            aria-selected={idx === mentionHighlight}
+                            className={
+                              "nex-composer-trigger-option" +
+                              (idx === mentionHighlight ? " is-highlighted" : "")
+                            }
+                            onClick={() => runMentionItem(item)}
+                          >
+                            <span className="nex-composer-trigger-icon">
+                              {item.kind === "attachment" ? (
+                                <PaperclipIcon />
+                              ) : item.kind === "action" ? (
+                                <SettingsIcon />
+                              ) : (
+                                <FolderIcon />
+                              )}
+                            </span>
+                            <span className="nex-composer-trigger-cmd">
+                              {item.label}
+                            </span>
+                            <span className="nex-composer-trigger-desc">
+                              {item.detail}
+                            </span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </PopoverContent>
+              </Popover>
+            </div>
 
             {/* The two primary modes, as pills: same segmented
                 primitive and the same radio semantics as every
@@ -660,154 +879,6 @@ export default function Composer({
                 </Button>
               </Tooltip>
             )}
-
-            <Popover
-              open={slashOpen}
-              onOpenChange={(next) => {
-                setSlashOpen(next);
-                if (next) {
-                  setMentionOpen(false);
-                  setSlashHighlight(0);
-                }
-              }}
-            >
-              <PopoverTrigger asChild>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="nex-composer-trigger-btn"
-                  aria-label={t("conv.slashTriggerAria")}
-                  title={t("conv.slashTriggerTitle")}
-                  disabled={busy}
-                >
-                  <span aria-hidden="true">/</span>
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent
-                align="start"
-                side="top"
-                sideOffset={8}
-                className="nex-composer-trigger-menu"
-                onOpenAutoFocus={(event) => event.preventDefault()}
-              >
-                <PopoverHeader>
-                  <PopoverTitle>{t("conv.slashMenuTitle")}</PopoverTitle>
-                </PopoverHeader>
-                {slashItems.length === 0 ? (
-                  <p className="nex-composer-trigger-empty">
-                    {t("conv.slashEmpty")}
-                  </p>
-                ) : (
-                  <ul
-                    role="listbox"
-                    aria-label={t("conv.slashMenuAria")}
-                    className="nex-composer-trigger-list"
-                  >
-                    {slashItems.map((item, idx) => (
-                      <li key={item.id}>
-                        <button
-                          type="button"
-                          role="option"
-                          aria-selected={idx === slashHighlight}
-                          disabled={item.disabled}
-                          className={
-                            "nex-composer-trigger-option" +
-                            (idx === slashHighlight ? " is-highlighted" : "")
-                          }
-                          onClick={() => runSlashItem(item)}
-                        >
-                          <code className="nex-composer-trigger-cmd">
-                            {item.command}
-                          </code>
-                          <span className="nex-composer-trigger-desc">
-                            {item.description}
-                          </span>
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </PopoverContent>
-            </Popover>
-
-            <Popover
-              open={mentionOpen}
-              onOpenChange={(next) => {
-                setMentionOpen(next);
-                if (next) {
-                  setSlashOpen(false);
-                  setMentionHighlight(0);
-                }
-              }}
-            >
-              <PopoverTrigger asChild>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="nex-composer-trigger-btn"
-                  aria-label={t("conv.mentionTriggerAria")}
-                  title={t("conv.mentionTriggerTitle")}
-                  disabled={busy}
-                >
-                  <span aria-hidden="true">@</span>
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent
-                align="start"
-                side="top"
-                sideOffset={8}
-                className="nex-composer-trigger-menu"
-                onOpenAutoFocus={(event) => event.preventDefault()}
-              >
-                <PopoverHeader>
-                  <PopoverTitle>{t("conv.mentionMenuTitle")}</PopoverTitle>
-                </PopoverHeader>
-                {mentionItems.length === 0 ? (
-                  <p className="nex-composer-trigger-empty">
-                    {t("conv.mentionEmpty")}
-                  </p>
-                ) : (
-                  <ul
-                    role="listbox"
-                    aria-label={t("conv.mentionMenuAria")}
-                    className="nex-composer-trigger-list"
-                  >
-                    {mentionItems.map((item, idx) => (
-                      <li key={item.id}>
-                        <button
-                          type="button"
-                          role="option"
-                          aria-selected={idx === mentionHighlight}
-                          className={
-                            "nex-composer-trigger-option" +
-                            (idx === mentionHighlight ? " is-highlighted" : "")
-                          }
-                          onClick={() => runMentionItem(item)}
-                        >
-                          <span className="nex-composer-trigger-icon">
-                            {item.kind === "attachment" ? (
-                              <PaperclipIcon />
-                            ) : item.kind === "action" ? (
-                              <SettingsIcon />
-                            ) : (
-                              <FolderIcon />
-                            )}
-                          </span>
-                          <span className="nex-composer-trigger-cmd">
-                            {item.label}
-                          </span>
-                          <span className="nex-composer-trigger-desc">
-                            {item.detail}
-                          </span>
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </PopoverContent>
-            </Popover>
 
             <span className="nex-composer-bar-spacer" />
 

@@ -1434,28 +1434,42 @@
   color: var(--foreground);
 }
 
-.nex-composer-trigger-btn {
+.nex-composer-plus-anchor {
+  position: relative;
   display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 28px;
-  height: 28px;
-  padding: 0 var(--space-xs);
-  border-radius: var(--radius-4xl);
-  color: var(--muted-foreground);
-  font-family: var(--font-mono);
-  font-size: var(--type-size-body-small);
-  font-weight: var(--type-weight-medium);
-  transition:
-    background-color var(--nex-sys-motion-duration-fast)
-      var(--nex-sys-motion-easing-standard),
-    color var(--nex-sys-motion-duration-fast)
-      var(--nex-sys-motion-easing-standard);
+  flex-shrink: 0;
 }
 
-.nex-composer-trigger-btn:hover:not(:disabled) {
-  background: var(--secondary);
+.nex-composer-popover-anchor {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.nex-composer-plus-menu {
+  width: 210px;
+  max-width: calc(100vw - var(--space-lg));
+  padding: var(--space-xs);
+  background: var(--popover);
+  color: var(--popover-foreground);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+.nex-composer-plus-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xxs);
+}
+
+.nex-composer-plus-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--foreground);
+  font-size: var(--type-size-body-small);
 }
 
 .nex-composer-trigger-menu {

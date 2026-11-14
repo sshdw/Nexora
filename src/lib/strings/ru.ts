@@ -246,6 +246,11 @@ export const ru: Record<StringKey, string> = {
     "Режим плана — наметить шаги до правок (только Агент)",
   "conv.planActiveHint":
     "Режим плана активен — планирование без выполнения правок",
+  "conv.plusMenuAria": "Добавить",
+  "conv.plusMenuTitle": "Прикрепить файлы, команды или контекст",
+  "conv.plusMenuAttach": "Прикрепить файлы",
+  "conv.plusMenuCommands": "Команды",
+  "conv.plusMenuMentions": "Упоминания",
   "conv.slashTriggerAria": "Слэш-команды",
   "conv.slashTriggerTitle": "Вставить или выполнить слэш-команду (/)",
   "conv.slashMenuTitle": "Команды",
