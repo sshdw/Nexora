@@ -415,6 +415,7 @@ fn command_args(
     Ok((command.to_owned(), resolved))
 }
 
+#[cfg_attr(not(windows), allow(clippy::unnecessary_wraps))]
 fn platform_shell(command: &str, windows_flags: &[&str]) -> Result<Command, ToolError> {
     #[cfg(windows)]
     {

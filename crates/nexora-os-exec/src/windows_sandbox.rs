@@ -1305,7 +1305,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = std::env::temp_dir().join(format!(
+        let root = crate::test_workspace_parent().join(format!(
             "nexora-native-namespace-{}-{stamp}",
             std::process::id()
         ));
@@ -1437,7 +1437,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let ws = std::env::temp_dir().join(format!("nx-win-ac-{stamp}"));
+        let ws = crate::test_workspace_parent().join(format!("nx-win-ac-{stamp}"));
         std::fs::create_dir(&ws).unwrap();
         let _guard = Fixture(ws.clone());
 
@@ -1487,9 +1487,9 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let ws = std::env::temp_dir().join(format!("nx-win-lpac-ws-{stamp}"));
-        let priv_dir = std::env::temp_dir().join(format!("nx-win-lpac-priv-{stamp}"));
-        let out_dir = std::env::temp_dir().join(format!("nx-win-lpac-out-{stamp}"));
+        let ws = crate::test_workspace_parent().join(format!("nx-win-lpac-ws-{stamp}"));
+        let priv_dir = crate::test_workspace_parent().join(format!("nx-win-lpac-priv-{stamp}"));
+        let out_dir = crate::test_workspace_parent().join(format!("nx-win-lpac-out-{stamp}"));
         std::fs::create_dir(&ws).unwrap();
         std::fs::create_dir(&priv_dir).unwrap();
         std::fs::create_dir(&out_dir).unwrap();
@@ -1542,8 +1542,8 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let ws = std::env::temp_dir().join(format!("nx-win-alias-ws-{stamp}"));
-        let out_dir = std::env::temp_dir().join(format!("nx-win-alias-out-{stamp}"));
+        let ws = crate::test_workspace_parent().join(format!("nx-win-alias-ws-{stamp}"));
+        let out_dir = crate::test_workspace_parent().join(format!("nx-win-alias-out-{stamp}"));
         std::fs::create_dir(&ws).unwrap();
         std::fs::create_dir(&out_dir).unwrap();
         let _g1 = Fixture(ws.clone());
@@ -1561,7 +1561,15 @@ mod tests {
             &SandboxSpawnConfig::for_workspace(&ws),
         )
         .unwrap_err();
-        assert!(err.to_string().contains("alias"));
+        if err.to_string().contains("AppContainer profile unavailable") {
+            assert!(
+                std::env::var_os("NEXORA_REQUIRE_NATIVE_SANDBOX").is_none(),
+                "required native sandbox alias check unavailable: {err}"
+            );
+            assert_eq!(std::fs::read_to_string(&outside_file).unwrap(), "untouched");
+            return;
+        }
+        assert!(err.to_string().contains("alias"), "unexpected error: {err}");
         assert_eq!(std::fs::read_to_string(&outside_file).unwrap(), "untouched");
         std::fs::remove_file(&ws_hardlink).unwrap();
 
@@ -1598,7 +1606,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let ws = std::env::temp_dir().join(format!("nx-win-prot-{stamp}"));
+        let ws = crate::test_workspace_parent().join(format!("nx-win-prot-{stamp}"));
         let src = ws.join("src");
         std::fs::create_dir_all(&src).unwrap();
         let _guard = Fixture(ws.clone());

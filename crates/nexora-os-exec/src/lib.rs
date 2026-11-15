@@ -299,6 +299,33 @@ pub(crate) fn native_test_lock() -> std::sync::MutexGuard<'static, ()> {
 }
 
 #[cfg(test)]
+pub(crate) fn test_workspace_parent() -> std::path::PathBuf {
+    let private = sandbox::canonical_prefixes(&default_private_user_dirs());
+    let is_non_private_dir = |candidate: &Path| -> bool {
+        if !candidate.is_dir() {
+            return false;
+        }
+        let Ok(canon) = sandbox::canonicalize_clean(candidate) else {
+            return false;
+        };
+        !private.iter().any(|p| canon.starts_with(p))
+    };
+    let candidates = [
+        Some(std::env::temp_dir()),
+        std::env::var_os("RUNNER_TEMP").map(std::path::PathBuf::from),
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(Path::to_path_buf)),
+    ];
+    for candidate in candidates.into_iter().flatten() {
+        if is_non_private_dir(&candidate) {
+            return candidate;
+        }
+    }
+    std::env::temp_dir()
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Read;
@@ -317,7 +344,7 @@ mod tests {
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_or(0, |d| d.as_nanos())
             );
-            let dir = std::env::temp_dir().join(unique);
+            let dir = crate::test_workspace_parent().join(unique);
             std::fs::create_dir(&dir).expect("reserve temp test dir");
             Self(dir)
         }
