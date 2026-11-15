@@ -1631,6 +1631,21 @@ export const en = {
   "docs.newRootsT": "Workspace roots",
   "docs.newRootsB":
     "Multiple registered workspace roots with a switcher; conversations remember their root (migration v6).",
+  "plan.promptTitle": "Start implementation?",
+  "plan.yes": "Yes",
+  "plan.no": "No",
+  "plan.customReply": "Custom reply",
+  "plan.customPlaceholder": "Describe adjustments or custom instructions...",
+  "plan.sendReply": "Send",
+  "plan.cancelReply": "Cancel",
+  "plan.submitting": "Submitting...",
+  "plan.emptyReplyError": "Enter instructions before sending.",
+  "plan.statusPending": "Awaiting decision",
+  "plan.statusAccepted": "Accepted",
+  "plan.statusRejected": "Dismissed",
+  "plan.statusCustomReply": "Implemented with reply",
+  "agent.continueHint": "Resumes without re-running completed tools.",
+  "agent.continuedBadge": "Continued",
 } as const;
 
 export type StringKey = keyof typeof en;

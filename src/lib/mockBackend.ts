@@ -1,7 +1,13 @@
 //! DEV-ONLY visual-QA mock backend — never active in production.
 //! Updated for Task 5.1 with agent run parity.
 
-import type { ApprovalMetadata } from "./ipc/agent";
+import type {
+  ApprovalMetadata,
+  PlanDecisionKind,
+  PlanDecisionResult,
+  PlanDecisionStatus,
+  RunPlan,
+} from "./ipc/agent";
 
 interface MockMessage {
   id: number;
@@ -527,6 +533,12 @@ interface MockAgentRun {
   error: string | null;
   spent_micro_usd: number | null;
   limit_micro_usd: number | null;
+  is_plan?: boolean;
+  plan_content?: string | null;
+  plan_decision_status?: PlanDecisionStatus | null;
+  plan_decision_reply?: string | null;
+  plan_implemented_run_id?: number | null;
+  continued_from_run_id?: number | null;
 }
 interface MockAgentStep {
   id: number;
@@ -597,6 +609,112 @@ type MockRunQuestion = {
   answered_at: number | null;
 };
 const mockRunQuestions: MockRunQuestion[] = [];
+const mockRunPlans: RunPlan[] = [];
+let mockNextPlanId = 1;
+
+function spawnSimpleMockContinuationOrImpl(params: {
+  convId: number;
+  model: string;
+  summaryText: string;
+  continuedFromRunId: number | null;
+}): number {
+  const runId = nextAgentRunId++;
+  const run: MockAgentRun = {
+    interrupted: false,
+    id: runId,
+    conversation_id: params.convId,
+    model: params.model,
+    mode: "semi_autonomous",
+    status: "running",
+    started_at: now(),
+    finished_at: null,
+    total_steps: 0,
+    final_content: null,
+    error: null,
+    spent_micro_usd: null,
+    limit_micro_usd: null,
+    is_plan: false,
+    plan_content: null,
+    plan_decision_status: null,
+    plan_decision_reply: null,
+    plan_implemented_run_id: null,
+    continued_from_run_id: params.continuedFromRunId,
+  };
+  agentRuns.push(run);
+  agentSteps.set(runId, []);
+  const active: ActiveMockRun = {
+    status: "running",
+    timers: [],
+    pendingApproval: null,
+    pendingQuestion: null,
+    budgetExhausted: false,
+    paused: false,
+  };
+  activeRuns.set(runId, active);
+  active.timers.push(
+    window.setTimeout(() => {
+      if (!activeRuns.has(runId)) return;
+      const steps = agentSteps.get(runId)!;
+      const stepId = mockNextStepId++;
+      const step: MockAgentStep = {
+        id: stepId,
+        run_id: runId,
+        seq: steps.length + 1,
+        kind: "model_turn",
+        tool_name: null,
+        arguments: null,
+        observation: params.summaryText,
+        observation_len: mockObsLen(params.summaryText),
+        observation_truncated: false,
+        status: null,
+        started_at: now(),
+        duration_ms: 80,
+      };
+      steps.push(step);
+      run.total_steps = steps.length;
+      emitAgentEvent({
+        type: "step",
+        conversation_id: params.convId,
+        run_id: runId,
+        event: {
+          seq: step.seq,
+          kind: step.kind,
+          tool_name: null,
+          arguments: null,
+          observation: step.observation,
+          observation_len: step.observation_len,
+          observation_truncated: false,
+          status: null,
+          duration_ms: 80,
+        },
+      });
+      run.status = "completed";
+      run.finished_at = now();
+      run.final_content = params.summaryText;
+      activeRuns.delete(runId);
+      messages.push({
+        id: nextMessageId++,
+        conversation_id: params.convId,
+        role: "assistant",
+        content: params.summaryText,
+        provider_id: 1,
+        model_name: params.model,
+        created_at: now(),
+      });
+      emitAgentEvent({
+        type: "finished",
+        run_id: runId,
+        event: {
+          conversation_id: params.convId,
+          status: "completed",
+          final_content: params.summaryText,
+          error: null,
+        },
+      });
+    }, 300) as unknown as number
+  );
+  return runId;
+}
 
 type MockWorkQueueItem = {
   id: number;
@@ -1397,6 +1515,7 @@ async function invoke(
       const content = String(requireArg(args, "start_agent_run", "content"));
       const provider = String(requireArg(args, "start_agent_run", "provider"));
       const model = String(requireArg(args, "start_agent_run", "model"));
+      const isPlan = Boolean(args.isPlan);
       const convId = conversationId;
       if (!conversations.some((c) => c.id === convId)) {
         throw {
@@ -1447,7 +1566,7 @@ async function invoke(
         id: runId,
         conversation_id: convId,
         model,
-        mode: resolvedMode,
+        mode: isPlan ? "read_only" : resolvedMode,
         status: "running",
         started_at: now(),
         finished_at: null,
@@ -1456,6 +1575,12 @@ async function invoke(
         error: null,
         spent_micro_usd: null,
         limit_micro_usd: null,
+        is_plan: isPlan,
+        plan_content: null,
+        plan_decision_status: isPlan ? "pending" : null,
+        plan_decision_reply: null,
+        plan_implemented_run_id: null,
+        continued_from_run_id: null,
       };
       agentRuns.push(run);
       agentSteps.set(runId, []);
@@ -1537,8 +1662,31 @@ async function invoke(
         run.final_content = finalContent;
         run.error = error;
         activeRuns.delete(runId);
-        // If completed, persist assistant message
-        if (status === "completed" && finalContent) {
+        // If completed cleanly and NOT a Plan run, persist assistant message
+        // (Plan runs live in the Plan card + decision prompt rather than duplicating a bubble).
+        if (isPlan && status === "completed" && finalContent) {
+          const ts = now();
+          const planRow: RunPlan = {
+            id: mockNextPlanId++,
+            run_id: runId,
+            conversation_id: convId,
+            plan_content: finalContent,
+            decision_status: "pending",
+            decision_reply: null,
+            implemented_run_id: null,
+            decided_at: null,
+            created_at: ts,
+          };
+          mockRunPlans.push(planRow);
+          run.plan_content = finalContent;
+          run.plan_decision_status = "pending";
+          emitAgentEvent({
+            type: "governance",
+            conversation_id: convId,
+            run_id: runId,
+            event: { type: "plan_ready", plan: planRow },
+          });
+        } else if (status === "completed" && finalContent) {
           messages.push({
             id: nextMessageId++,
             conversation_id: convId,
@@ -1562,6 +1710,32 @@ async function invoke(
           },
         });
       };
+
+      if (isPlan) {
+        active.timers.push(
+          window.setTimeout(() => {
+            if (!activeRuns.has(runId)) return;
+            appendStep(
+              "tool_call",
+              "read_file",
+              JSON.stringify({ path: "README.md" }),
+              "# Read-only inspection complete",
+              "succeeded",
+              40
+            );
+          }, 250) as unknown as number
+        );
+        active.timers.push(
+          window.setTimeout(() => {
+            if (!activeRuns.has(runId)) return;
+            const planText = `# Implementation Plan\n\n1. Inspect affected modules in read-only mode.\n2. Apply changes for: ${content}\n3. Verify with targeted tests.`;
+            appendStep("model_turn", null, null, planText, null, 90);
+            finishRun("completed", planText, null);
+          }, 600) as unknown as number
+        );
+        void provider;
+        return { run_id: runId };
+      }
 
       // Synthetic stream: terminal (execute_command) + diff (write_file) + approval park
       // Step 1: model_turn thinking (400ms)
@@ -2299,6 +2473,113 @@ async function invoke(
       void Number(requireArg(args, "revert_turn_checkpoints", "runId"));
       void Number(requireArg(args, "revert_turn_checkpoints", "turnIndex"));
       return [];
+    }
+    case "list_run_plans": {
+      const conversationId = Number(
+        requireArg(args, "list_run_plans", "conversationId")
+      );
+      return mockRunPlans.filter((p) => p.conversation_id === conversationId);
+    }
+    case "decide_run_plan": {
+      const runId = Number(requireArg(args, "decide_run_plan", "runId"));
+      const rawDecision = String(requireArg(args, "decide_run_plan", "decision"));
+      const normalizedDecision: PlanDecisionKind =
+        rawDecision === "yes" || rawDecision === "accepted"
+          ? "accepted"
+          : rawDecision === "no" || rawDecision === "rejected"
+            ? "rejected"
+            : rawDecision === "custom_reply"
+              ? "custom_reply"
+              : (() => {
+                  throw {
+                    kind: "invalidInput",
+                    message: `invalid plan decision: ${rawDecision}`,
+                  };
+                })();
+      const reply =
+        typeof args.reply === "string" && args.reply.trim()
+          ? args.reply.trim()
+          : null;
+      const plan = mockRunPlans.find((p) => p.run_id === runId);
+      if (!plan) {
+        throw { kind: "notFound", message: `no plan found for run ${runId}` };
+      }
+      if (plan.decision_status !== "pending") {
+        throw { kind: "invalidInput", message: "plan decision already recorded" };
+      }
+      if (normalizedDecision === "custom_reply" && !reply) {
+        throw {
+          kind: "invalidInput",
+          message: "custom reply text must not be empty",
+        };
+      }
+      const nextStatus: PlanDecisionStatus = normalizedDecision;
+      let launchedRunId: number | null = null;
+      if (
+        normalizedDecision === "accepted" ||
+        normalizedDecision === "custom_reply"
+      ) {
+        const model =
+          typeof args.model === "string" && args.model.trim()
+            ? args.model
+            : "gpt-5.6-terra";
+        const instruction =
+          normalizedDecision === "custom_reply" && reply
+            ? reply
+            : "Proceed with implementation of the approved plan.";
+        launchedRunId = spawnSimpleMockContinuationOrImpl({
+          convId: plan.conversation_id,
+          model,
+          summaryText: `Mock implementation complete (${instruction}).`,
+          continuedFromRunId: null,
+        });
+      }
+      const ts = now();
+      plan.decision_status = nextStatus;
+      plan.decision_reply = normalizedDecision === "custom_reply" ? reply : null;
+      plan.implemented_run_id = launchedRunId;
+      plan.decided_at = ts;
+      const run = agentRuns.find((r) => r.id === runId);
+      if (run) {
+        run.plan_decision_status = nextStatus;
+        run.plan_decision_reply = plan.decision_reply;
+        run.plan_implemented_run_id = launchedRunId;
+      }
+      const result: PlanDecisionResult = {
+        plan: { ...plan },
+        launched_run_id: launchedRunId,
+      };
+      return result;
+    }
+    case "continue_agent_run": {
+      const runId = Number(requireArg(args, "continue_agent_run", "runId"));
+      const model = String(requireArg(args, "continue_agent_run", "model"));
+      const parent = agentRuns.find((r) => r.id === runId);
+      if (!parent || parent.conversation_id === null) {
+        throw { kind: "notFound", message: `no agent run with id ${runId}` };
+      }
+      if (!parent.interrupted && parent.status !== "interrupted") {
+        throw {
+          kind: "invalidInput",
+          message: `agent run ${runId} is not interrupted`,
+        };
+      }
+      for (const [rid] of activeRuns) {
+        const ar = agentRuns.find((x) => x.id === rid);
+        if (ar && ar.conversation_id === parent.conversation_id) {
+          throw {
+            kind: "invalidInput",
+            message: `an agent run is already active for conversation ${parent.conversation_id}`,
+          };
+        }
+      }
+      const newRunId = spawnSimpleMockContinuationOrImpl({
+        convId: parent.conversation_id,
+        model,
+        summaryText: `Continued safely from interrupted run #${runId}.`,
+        continuedFromRunId: runId,
+      });
+      return { run_id: newRunId };
     }
     case "list_run_questions": {
       const conversationId = Number(

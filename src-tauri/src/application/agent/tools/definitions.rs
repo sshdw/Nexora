@@ -35,6 +35,28 @@ impl ToolRegistry {
                 .collect(),
         }
     }
+
+    /// Read-only tool subset permitted when a Plan run (`is_plan`) is active.
+    pub(crate) fn definitions_for_read_only() -> Vec<ToolDefinition> {
+        Self::definitions()
+            .into_iter()
+            .filter(|def| {
+                def.name == "read_file"
+                    || def.name == "list_directory"
+                    || def.name == "search_files"
+                    || def.name == "ask_user_question"
+            })
+            .collect()
+    }
+
+    /// Tool definitions exposed to the model for a specific run preset and plan mode.
+    pub(crate) fn definitions_for_run(preset: RunPreset, is_plan: bool) -> Vec<ToolDefinition> {
+        if is_plan {
+            Self::definitions_for_read_only()
+        } else {
+            Self::definitions_for_preset(preset)
+        }
+    }
 }
 
 fn execute_command_definition() -> ToolDefinition {

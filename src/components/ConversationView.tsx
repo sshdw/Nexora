@@ -32,6 +32,8 @@ import { formatRelativeTime } from "../lib/format";
 import {
   agentSetMode,
   cancelAgentRun,
+  continueAgentRun,
+  decideRunPlan,
   extendAgentRun,
   pauseAgentRun,
   resolveAgentApproval,
@@ -39,6 +41,7 @@ import {
   startAgentRun,
   type AutonomyMode,
   type ConnectionModelCapabilities,
+  type PlanDecisionKind,
 } from "../lib/tauri";
 import type { AutonomyStore } from "../lib/useAutonomy";
 import { useAgentRun } from "../lib/useAgentRun";
@@ -48,6 +51,7 @@ import { useWorkQueue } from "../lib/useWorkQueue";
 import type { WorkspaceStore } from "../lib/useWorkspace";
 import AgentRunSteps from "./AgentRunSteps";
 import Composer from "./Composer";
+import PlanDecisionPanel from "./PlanDecisionPanel";
 import QuestionPanel from "./QuestionPanel";
 import WorkQueueStrip from "./WorkQueueStrip";
 import MessageMarkdown from "./MessageMarkdown";
@@ -145,6 +149,7 @@ export default function ConversationView({
     revertTurn,
     answerQuestion,
     clarifyRun,
+    applyPlanDecision,
   } = useAgentRun(conversationId);
   const {
     items: queueItems,
@@ -201,6 +206,22 @@ export default function ConversationView({
   const liveRunId = activeRun?.run_id ?? null;
   const hasActiveRun = activeRun !== null;
   const pendingQuestion = activeRun?.pending_question ?? null;
+  const pendingPlanRun = useMemo(() => {
+    const candidates = runs.filter(
+      (r) =>
+        r.is_plan === true &&
+        r.status === "completed" &&
+        r.plan_decision_status === "pending" &&
+        Boolean((r.plan_content ?? r.final_content ?? "").trim())
+    );
+    if (candidates.length === 0) return null;
+    return candidates.reduce((best, run) =>
+      run.started_at > best.started_at ||
+      (run.started_at === best.started_at && run.run_id > best.run_id)
+        ? run
+        : best
+    );
+  }, [runs]);
   const latestRun = useMemo(
     () =>
       runs.reduce<(typeof runs)[number] | null>(
@@ -304,14 +325,69 @@ export default function ConversationView({
     []
   );
 
-  const handleAgentContinue = useCallback(async (runId: number) => {
-    setAgentError(null);
-    try {
-      await extendAgentRun(runId, 10);
-    } catch (e) {
-      setAgentError(e instanceof Error ? e.message : String(e));
+  const effectiveEffort = useMemo(() => {
+    if (!selectedEffort) return null;
+    if (selectedCapabilities) {
+      return selectedCapabilities.supported_efforts.includes(selectedEffort)
+        ? selectedEffort
+        : null;
     }
-  }, []);
+    return selectedEffort;
+  }, [selectedEffort, selectedCapabilities]);
+
+  const handleAgentContinue = useCallback(
+    async (runId: number) => {
+      setAgentError(null);
+      try {
+        const target = runs.find((r) => r.run_id === runId);
+        const isInterrupted =
+          target?.interrupted === true || target?.status === "interrupted";
+        if (isInterrupted) {
+          if (!selectedProvider || !selectedModel) return;
+          await continueAgentRun(
+            runId,
+            selectedProvider,
+            selectedModel,
+            effectiveEffort
+          );
+          await reloadAgent();
+        } else {
+          await extendAgentRun(runId, 10);
+        }
+      } catch (e) {
+        setAgentError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [runs, selectedProvider, selectedModel, effectiveEffort, reloadAgent]
+  );
+
+  const handlePlanDecision = useCallback(
+    async (runId: number, decision: PlanDecisionKind, reply?: string) => {
+      setAgentError(null);
+      const wantsImplementation =
+        decision === "accepted" || decision === "custom_reply";
+      const res = await decideRunPlan(
+        runId,
+        decision,
+        reply ?? null,
+        wantsImplementation ? selectedProvider : null,
+        wantsImplementation ? selectedModel : null,
+        wantsImplementation ? effectiveEffort : null
+      );
+      applyPlanDecision?.(runId, res.plan);
+      if (wantsImplementation) {
+        setPlanMode(false);
+      }
+      await reloadAgent();
+    },
+    [
+      selectedProvider,
+      selectedModel,
+      effectiveEffort,
+      applyPlanDecision,
+      reloadAgent,
+    ]
+  );
 
   // Dispatchers handed to `AgentRunSteps` (#148/#153): the run id travels in
   // the callback instead of being captured by a fresh inline arrow per run,
@@ -407,16 +483,6 @@ export default function ConversationView({
     [autonomy, runs]
   );
 
-  const effectiveEffort = useMemo(() => {
-    if (!selectedEffort) return null;
-    if (selectedCapabilities) {
-      return selectedCapabilities.supported_efforts.includes(selectedEffort)
-        ? selectedEffort
-        : null;
-    }
-    return selectedEffort;
-  }, [selectedEffort, selectedCapabilities]);
-
   const handleSubmit = async () => {
     const content = draft.trim();
     if (!canSend || !content || !selectedProvider || !selectedModel) return;
@@ -432,7 +498,8 @@ export default function ConversationView({
           content,
           selectedProvider,
           selectedModel,
-          effectiveEffort
+          effectiveEffort,
+          agentMode && planMode
         );
         // User message persisted before spawn; refresh both histories.
         await Promise.all([refreshAttachments(), reloadAgent()]);
@@ -648,6 +715,7 @@ export default function ConversationView({
                     selectedCapabilities?.supports_thinking ?? null
                   }
                   showFinalResult={!hasPersistedAssistant}
+                  hasActiveRun={hasActiveRun}
                   onResolveApproval={dispatchAgentApprove}
                   onCancel={dispatchAgentCancel}
                   onContinue={dispatchAgentContinue}
@@ -805,12 +873,19 @@ export default function ConversationView({
         </div>
       )}
 
-      {(pendingQuestion || queueItems.length > 0) && (
+      {(pendingQuestion || pendingPlanRun || queueItems.length > 0) && (
         <div className="nex-composer-adjacent">
           {pendingQuestion && (
             <QuestionPanel
               question={pendingQuestion}
               onSubmit={handleAnswerQuestion}
+            />
+          )}
+          {!pendingQuestion && pendingPlanRun && (
+            <PlanDecisionPanel
+              runId={pendingPlanRun.run_id}
+              disabled={hasActiveRun || agentBusy}
+              onDecide={handlePlanDecision}
             />
           )}
           {queueItems.length > 0 && (

@@ -78,6 +78,8 @@ export interface AgentRunStepsProps {
   supportsThinking?: boolean | null;
   /** Render the Final Result card inside the run block (default true). */
   showFinalResult?: boolean;
+  /** Whether any agent run in this conversation is currently active. */
+  hasActiveRun?: boolean;
 }
 
 type RevertTarget =
@@ -163,6 +165,7 @@ function AgentRunSteps({
   onRevertTurn,
   supportsThinking = null,
   showFinalResult = true,
+  hasActiveRun = false,
 }: AgentRunStepsProps) {
   const { locale, t } = useStrings();
   const sorted = useMemo(
@@ -530,8 +533,12 @@ function AgentRunSteps({
   // the run for a state that is waiting on a decision the user is being
   // offered. `error` and `spend_limit_exceeded` stopped on their own and
   // get the block.
+  const isInterrupted =
+    run.interrupted === true || run.status === "interrupted";
+  const effectiveStatus = isInterrupted ? "interrupted" : run.status;
   const isErrorRun =
-    run.status === "error" || run.status === "spend_limit_exceeded";
+    !isInterrupted &&
+    (effectiveStatus === "error" || effectiveStatus === "spend_limit_exceeded");
   const survived =
     ranCalls > 0 || sorted.length > 0
       ? [
@@ -542,7 +549,7 @@ function AgentRunSteps({
         ].join(" · ")
       : tr(locale, "agent.errorSurvivedNone");
   const nextAction =
-    run.status === "spend_limit_exceeded"
+    effectiveStatus === "spend_limit_exceeded"
       ? t("agent.errorNextSpend")
       : t("agent.errorNextGeneric");
 
@@ -550,7 +557,7 @@ function AgentRunSteps({
     <section
       className={
         "nex-agent-run " +
-        runStateClass(run.status) +
+        runStateClass(effectiveStatus) +
         (parked ? " nex-agent-run-parked" : "")
       }
       aria-label={t("agent.runAria", { id: run.run_id })}
@@ -631,10 +638,12 @@ function AgentRunSteps({
               {t("agent.cancel")}
             </M3Button>
           )}
-          {run.status === "budget_exhausted" && (
+          {(run.status === "budget_exhausted" || isInterrupted) && (
             <M3Button
               variant="secondary"
               size="sm"
+              disabled={isInterrupted && hasActiveRun}
+              title={isInterrupted ? t("agent.continueHint") : undefined}
               onClick={() => onContinue(run.run_id)}
             >
               {t("agent.continue")}
@@ -647,7 +656,7 @@ function AgentRunSteps({
           that order, in words. Outside the timeline, so it is never
           collapsed by the run fold nor dimmed by the temporal fade
           (SYSTEM §8: errors persist, findable, never faded). */}
-      {run.status === "interrupted" && (
+      {isInterrupted && (
         <p className="nex-agent-run-summary">{t("agent.interruptedHistory")}</p>
       )}
       {isErrorRun && (
@@ -1132,6 +1141,17 @@ function AgentRunSteps({
             <span className="nex-agent-card-title">
               {t("agent.planCardTitle")}
             </span>
+            {run.plan_decision_status && (
+              <span className="nex-agent-card-badge">
+                {run.plan_decision_status === "accepted"
+                  ? t("plan.statusAccepted")
+                  : run.plan_decision_status === "rejected"
+                    ? t("plan.statusRejected")
+                    : run.plan_decision_status === "custom_reply"
+                      ? t("plan.statusCustomReply")
+                      : t("plan.statusPending")}
+              </span>
+            )}
           </header>
           <div className="nex-agent-card-body">
             <MessageMarkdown

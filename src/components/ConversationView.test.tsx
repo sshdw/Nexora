@@ -17,16 +17,55 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
   within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { tr } from "../lib/strings";
 import type { Message } from "../lib/tauri";
+import type { AgentRunView } from "../lib/useAgentRun";
 import type { AutonomyStore } from "../lib/useAutonomy";
 import type { WorkspaceStore } from "../lib/useWorkspace";
 import { LOCALE_KEY, LocaleProvider } from "../lib/useLocale";
 import ConversationView from "./ConversationView";
+
+const {
+  startAgentRunMock,
+  decideRunPlanMock,
+  continueAgentRunMock,
+  extendAgentRunMock,
+  reloadAgentMock,
+  applyPlanDecisionMock,
+} = vi.hoisted(() => ({
+  startAgentRunMock: vi.fn(async () => ({ run_id: 99 })),
+  decideRunPlanMock: vi.fn(async () => ({
+    plan: {
+      id: 1,
+      run_id: 42,
+      conversation_id: 1,
+      plan_content: "1. Plan step",
+      decision_status: "accepted" as const,
+      decision_reply: null,
+      implemented_run_id: 100,
+      created_at: 1000,
+      decided_at: 1005,
+    },
+    launched_run_id: 100,
+  })),
+  continueAgentRunMock: vi.fn(async () => ({ run_id: 101 })),
+  extendAgentRunMock: vi.fn(async () => {}),
+  reloadAgentMock: vi.fn(async () => {}),
+  applyPlanDecisionMock: vi.fn(),
+}));
+
+vi.mock("../lib/tauri", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/tauri")>()),
+  startAgentRun: startAgentRunMock,
+  decideRunPlan: decideRunPlanMock,
+  continueAgentRun: continueAgentRunMock,
+  extendAgentRun: extendAgentRunMock,
+}));
 
 // The pane owns three hooks that all reach the backend. They are replaced
 // wholesale: this file is about the mode the pane STARTS in, not about
@@ -56,16 +95,18 @@ vi.mock("../lib/useAttachments", () => ({
   }),
 }));
 
+let agentRuns: AgentRunView[] = [];
 vi.mock("../lib/useAgentRun", () => ({
   useAgentRun: () => ({
-    runs: [],
+    runs: agentRuns,
     loading: false,
     error: null,
-    reload: vi.fn(async () => {}),
+    reload: reloadAgentMock,
     // AC-102/ADD-08 lazy-steps seam added to the store.
     loadRunSteps: vi.fn(async () => {}),
     expandStep: vi.fn(),
     collapseStep: vi.fn(),
+    applyPlanDecision: applyPlanDecisionMock,
   }),
 }));
 
@@ -134,6 +175,13 @@ function modeGroup(): HTMLElement {
 
 beforeEach(() => {
   conversationMessages = [];
+  agentRuns = [];
+  startAgentRunMock.mockClear();
+  decideRunPlanMock.mockClear();
+  continueAgentRunMock.mockClear();
+  extendAgentRunMock.mockClear();
+  reloadAgentMock.mockClear();
+  applyPlanDecisionMock.mockClear();
   window.localStorage.setItem(LOCALE_KEY, "en");
 });
 
@@ -306,5 +354,158 @@ describe("Stage 5 PR 5B: ConversationView Plan toggle & Thinking integration", (
       })
     );
     expect(screen.queryByRole("button", { name: "Plan mode" })).toBeNull();
+  });
+});
+
+describe("Stage 6 PR 6B: Plan decision flow and safe Continue", () => {
+  it("submits with isPlan=true when Plan toggle is active", async () => {
+    render(pane("Design the migration"));
+
+    const planBtn = screen.getByRole("button", { name: "Plan mode" });
+    fireEvent.click(planBtn);
+    expect(planBtn).toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() => {
+      expect(startAgentRunMock).toHaveBeenCalledWith(
+        1,
+        "Design the migration",
+        "gemini",
+        "gemini-3.6-flash",
+        null,
+        true
+      );
+    });
+  });
+
+  it("renders composer-adjacent Plan decision prompt on reload, exits Plan mode on Yes/Custom reply, and records No cleanly", async () => {
+    agentRuns = [
+      {
+        run_id: 42,
+        conversation_id: 1,
+        status: "completed",
+        model: "gemini-3.6-flash",
+        started_at: 1000,
+        finished_at: 1002,
+        error: null,
+        steps: [],
+        steps_loaded: true,
+        total_steps: 1,
+        pending_approval: null,
+        pending_question: null,
+        is_plan: true,
+        plan_content: "1. Read files\n2. Plan diff",
+        plan_decision_status: "pending",
+      },
+    ];
+
+    const { rerender } = render(pane());
+
+    const planBtn = screen.getByRole("button", { name: "Plan mode" });
+    fireEvent.click(planBtn);
+    expect(planBtn).toHaveAttribute("aria-pressed", "true");
+
+    expect(screen.getByText("Start implementation?")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Yes" }));
+
+    await waitFor(() => {
+      expect(decideRunPlanMock).toHaveBeenCalledWith(
+        42,
+        "accepted",
+        null,
+        "gemini",
+        "gemini-3.6-flash",
+        null
+      );
+    });
+    expect(screen.getByRole("button", { name: "Plan mode" })).toHaveAttribute(
+      "aria-pressed",
+      "false"
+    );
+    expect(applyPlanDecisionMock).toHaveBeenCalled();
+
+    decideRunPlanMock.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "No" }));
+    await waitFor(() => {
+      expect(decideRunPlanMock).toHaveBeenCalledWith(
+        42,
+        "rejected",
+        null,
+        null,
+        null,
+        null
+      );
+    });
+
+    decideRunPlanMock.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Plan mode" }));
+    fireEvent.click(screen.getByRole("button", { name: "Custom reply" }));
+    fireEvent.change(screen.getByLabelText("Custom reply"), {
+      target: { value: "Implement step 1 only" },
+    });
+    fireEvent.click(
+      within(
+        screen.getByRole("region", { name: "Start implementation?" })
+      ).getByRole("button", { name: "Send" })
+    );
+    await waitFor(() => {
+      expect(decideRunPlanMock).toHaveBeenCalledWith(
+        42,
+        "custom_reply",
+        "Implement step 1 only",
+        "gemini",
+        "gemini-3.6-flash",
+        null
+      );
+    });
+    expect(screen.getByRole("button", { name: "Plan mode" })).toHaveAttribute(
+      "aria-pressed",
+      "false"
+    );
+
+    agentRuns = [
+      {
+        ...agentRuns[0]!,
+        plan_decision_status: "accepted",
+      },
+    ];
+    rerender(pane());
+    expect(screen.queryByText("Start implementation?")).toBeNull();
+  });
+
+  it("wires Continue button on interrupted run to continueAgentRun rather than extendAgentRun", async () => {
+    agentRuns = [
+      {
+        run_id: 77,
+        conversation_id: 1,
+        status: "interrupted",
+        interrupted: true,
+        model: "gemini-3.6-flash",
+        started_at: 1000,
+        finished_at: 1002,
+        error: "app shutdown",
+        steps: [],
+        steps_loaded: true,
+        total_steps: 2,
+        pending_approval: null,
+        pending_question: null,
+      },
+    ];
+
+    render(pane());
+
+    expect(continueAgentRunMock).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    await waitFor(() => {
+      expect(continueAgentRunMock).toHaveBeenCalledWith(
+        77,
+        "gemini",
+        "gemini-3.6-flash",
+        null
+      );
+    });
+    expect(extendAgentRunMock).not.toHaveBeenCalled();
   });
 });

@@ -1065,6 +1065,29 @@ CREATE TABLE work_queue_items (
 );
 CREATE INDEX idx_work_queue_conv_status_pos ON work_queue_items(conversation_id, status, position, id);",
     ),
+    (
+        19,
+        "CREATE TABLE run_plans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL UNIQUE REFERENCES agent_runs(id) ON DELETE CASCADE,
+    conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    plan_content TEXT NULL,
+    decision_status TEXT NOT NULL DEFAULT 'none' CHECK (decision_status IN ('none', 'pending', 'accepted', 'rejected', 'custom_reply')),
+    decision_reply TEXT NULL,
+    implemented_run_id INTEGER NULL REFERENCES agent_runs(id) ON DELETE SET NULL,
+    created_at INTEGER NOT NULL,
+    decided_at INTEGER NULL
+);
+CREATE INDEX idx_run_plans_conv_status ON run_plans(conversation_id, decision_status, id);
+
+CREATE TABLE run_continuations (
+    run_id INTEGER PRIMARY KEY REFERENCES agent_runs(id) ON DELETE CASCADE,
+    parent_run_id INTEGER NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+    conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX idx_run_continuations_parent ON run_continuations(parent_run_id);",
+    ),
 ];
 
 /// Open the `SQLite` database at `path`, apply connection pragmas, and run any

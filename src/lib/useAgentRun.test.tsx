@@ -2175,4 +2175,106 @@ describe("useAgentRun — Stage 5 PR 5B: retained thinking and final_content", (
     });
     expect(result.current.runs[0]?.pending_question).toBeNull();
   });
+
+  it("handles live plan_ready event, applyPlanDecision, and reload restoration for plans & continuations", async () => {
+    mockInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "list_agent_runs") {
+        return [
+          runRow({
+            id: 7,
+            status: "completed",
+            is_plan: true,
+            plan_content: null,
+            plan_decision_status: "pending",
+          }),
+          runRow({
+            id: 8,
+            status: "completed",
+            continued_from_run_id: 5,
+          }),
+        ];
+      }
+      if (cmd === "list_run_plans") {
+        return [
+          {
+            id: 101,
+            run_id: 7,
+            conversation_id: 1,
+            plan_content: "1. Read\n2. Edit",
+            decision_status: "pending",
+            decision_reply: null,
+            implemented_run_id: null,
+            created_at: 1000,
+            decided_at: null,
+          },
+        ];
+      }
+      if (cmd === "list_conversation_run_events") {
+        return {
+          events: [],
+          next_cursor: 0,
+          high_water_event_id: 0,
+          has_more: false,
+        };
+      }
+      if (cmd === "list_agent_steps") return [];
+      return null;
+    });
+
+    const { result } = renderHook(() => useAgentRun(1));
+    await waitFor(() => expect(result.current.runs).toHaveLength(2));
+
+    const planRun = result.current.runs.find((r) => r.run_id === 7);
+    expect(planRun?.is_plan).toBe(true);
+    expect(planRun?.plan_content).toBe("1. Read\n2. Edit");
+    expect(planRun?.plan_decision_status).toBe("pending");
+
+    const contRun = result.current.runs.find((r) => r.run_id === 8);
+    expect(contRun?.continued_from_run_id).toBe(5);
+
+    act(() => {
+      emitAgentEvent({
+        type: "governance",
+        conversation_id: 1,
+        run_id: 9,
+        event: {
+          type: "plan_ready",
+          plan: {
+            id: 102,
+            run_id: 9,
+            conversation_id: 1,
+            plan_content: "1. Fresh live plan",
+            decision_status: "pending",
+            decision_reply: null,
+            implemented_run_id: null,
+            created_at: 1005,
+            decided_at: null,
+          },
+        },
+      });
+    });
+
+    const livePlan = result.current.runs.find((r) => r.run_id === 9);
+    expect(livePlan?.is_plan).toBe(true);
+    expect(livePlan?.plan_content).toBe("1. Fresh live plan");
+    expect(livePlan?.plan_decision_status).toBe("pending");
+
+    act(() => {
+      result.current.applyPlanDecision(9, {
+        id: 102,
+        run_id: 9,
+        conversation_id: 1,
+        plan_content: "1. Fresh live plan",
+        decision_status: "accepted",
+        decision_reply: null,
+        implemented_run_id: 10,
+        created_at: 1005,
+        decided_at: 1006,
+      });
+    });
+
+    const acceptedPlan = result.current.runs.find((r) => r.run_id === 9);
+    expect(acceptedPlan?.plan_decision_status).toBe("accepted");
+    expect(acceptedPlan?.plan_implemented_run_id).toBe(10);
+  });
 });

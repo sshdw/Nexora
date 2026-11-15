@@ -198,6 +198,10 @@ pub(crate) enum AgentRunEvent {
         /// Step duration in milliseconds, when known.
         duration_ms: Option<i64>,
     },
+    /// A Plan run finished and persisted its structured plan for user decision.
+    PlanReady {
+        plan: crate::infrastructure::repository::run_plans::RunPlan,
+    },
 }
 
 // ---------------------------------------------------------------------------
