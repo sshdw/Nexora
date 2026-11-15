@@ -128,7 +128,16 @@ const { mockInvoke, mockListen, state } = vi.hoisted(() => {
         case "list_tasks":
         case "list_permission_rules":
         case "list_run_checkpoints":
+        case "list_run_questions":
+        case "list_work_queue":
           return [];
+        case "list_conversation_run_events":
+          return {
+            events: [],
+            next_cursor: 0,
+            high_water_event_id: 0,
+            has_more: false,
+          };
         case "get_workspace_root":
           return "D:\\projects\\nx";
         case "roots_list":

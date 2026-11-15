@@ -426,6 +426,13 @@ describe("stage sweep — no surface may be left ending at the inset", () => {
       kind: "content",
       note: "centred card above the composer, not a full-width band",
     },
+    {
+      root: "nex-composer-adjacent",
+      sheet: composerSheet,
+      selector: ".nex-composer-adjacent",
+      kind: "content",
+      note: "centred question/queue stack above the composer, not a full-width band",
+    },
   ];
 
   /** Root classes of the stage's DIRECT children, read from the component
@@ -551,6 +558,13 @@ describe("stage sweep — no surface may be left ending at the inset", () => {
     const strip = ruleBody(composerSheet, ".nex-composer-strip-error");
     expect(declaration(strip, "max-width")).toBe("760px");
     expect(declaration(strip, "margin")).toBe("0 auto");
+
+    const adjacent = ruleBody(composerSheet, ".nex-composer-adjacent");
+    expect(declaration(adjacent, "background")).toBeUndefined();
+    expect(declaration(adjacent, "border-top")).toBeUndefined();
+    expect(declaration(adjacent, "border-bottom")).toBeUndefined();
+    expect(declaration(adjacent, "max-width")).toBe("760px");
+    expect(declaration(adjacent, "margin-inline")).toBe("auto");
   });
 });
 
