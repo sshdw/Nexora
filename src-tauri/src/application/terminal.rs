@@ -653,7 +653,7 @@ mod tests {
         let registry = TerminalRegistry::new();
         let confirmations = ConfirmationRegistry::new();
         let cmd = if cfg!(windows) {
-            "ping -n 30 127.0.0.1 >nul"
+            "ping -n 30 127.0.0.1 >nul || cmd /c \"for /L %i in (1,1,10000000) do @cd >nul\""
         } else {
             "sleep 30"
         };

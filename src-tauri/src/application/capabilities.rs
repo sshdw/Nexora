@@ -825,6 +825,9 @@ mod tests {
 
     #[test]
     fn all_eight_new_presets_have_verified_baseline_capabilities() {
+        let _guard = TEST_CACHE_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         clear_api_metadata_cache();
         let db = in_memory_db();
 
@@ -906,6 +909,9 @@ mod tests {
 
     #[test]
     fn new_preset_respects_manual_override_gt_api_metadata_gt_builtin() {
+        let _guard = TEST_CACHE_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         clear_api_metadata_cache();
         let db = in_memory_db();
 
@@ -950,6 +956,9 @@ mod tests {
 
     #[test]
     fn project_capability_override_precedes_personal_and_scoped_clear_falls_back() {
+        let _guard = TEST_CACHE_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         clear_api_metadata_cache();
         let db = in_memory_db();
         let scratch_base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))

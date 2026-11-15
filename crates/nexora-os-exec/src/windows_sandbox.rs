@@ -13,7 +13,8 @@ use crate::sandbox::{
     collect_sanitized_env, ProbeSpec, SandboxPolicy, SandboxSpawnConfig, SandboxVerificationStatus,
 };
 use crate::windows::PlatformHandle;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::MutexGuard;
 use windows_sys::Win32::Foundation::{
     LocalFree, SetHandleInformation, ERROR_SUCCESS, HANDLE, HANDLE_FLAG_INHERIT, HLOCAL,
     INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
@@ -33,8 +34,9 @@ use windows_sys::Win32::Security::{
 };
 use windows_sys::Win32::Storage::FileSystem::{
     GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
-    FILE_SHARE_READ, FILE_SHARE_WRITE, READ_CONTROL, WRITE_DAC,
+    FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_OVERLAPPED,
+    FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    PIPE_ACCESS_INBOUND, READ_CONTROL, WRITE_DAC,
 };
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicUIRestrictions,
@@ -45,7 +47,10 @@ use windows_sys::Win32::System::JobObjects::{
     JOB_OBJECT_UILIMIT_GLOBALATOMS, JOB_OBJECT_UILIMIT_HANDLES, JOB_OBJECT_UILIMIT_READCLIPBOARD,
     JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS, JOB_OBJECT_UILIMIT_WRITECLIPBOARD,
 };
-use windows_sys::Win32::System::Pipes::CreatePipe;
+use windows_sys::Win32::System::Pipes::{
+    CreateNamedPipeW, CreatePipe, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE,
+    PIPE_WAIT,
+};
 use windows_sys::Win32::System::Threading::{
     CreateProcessAsUserW, DeleteProcThreadAttributeList, GetCurrentProcess, GetExitCodeProcess,
     InitializeProcThreadAttributeList, OpenProcessToken, ResumeThread, TerminateProcess,
@@ -70,22 +75,18 @@ const SYSTEM_READ_SID: &str = "S-1-1-0";
 const STILL_ACTIVE_CODE: u32 = 259;
 const WORKSPACE_ALLOW_MASK: u32 = FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE;
 static WIN_SPAWN_LOCK: Mutex<()> = Mutex::new(());
-static SANDBOX_ACTIVE: AtomicBool = AtomicBool::new(false);
-struct ExclusiveLease;
+static SANDBOX_LEASE: Mutex<()> = Mutex::new(());
+struct ExclusiveLease(#[allow(dead_code)] MutexGuard<'static, ()>);
 impl ExclusiveLease {
-    fn acquire() -> io::Result<Self> {
-        SANDBOX_ACTIVE
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .map_err(|_| io::Error::other("another Windows sandbox is active"))?;
-        Ok(Self)
-    }
-}
-impl Drop for ExclusiveLease {
-    fn drop(&mut self) {
-        SANDBOX_ACTIVE.store(false, Ordering::SeqCst);
+    fn acquire() -> Self {
+        let guard = SANDBOX_LEASE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Self(guard)
     }
 }
 static CONTAINER_SEQ: AtomicU64 = AtomicU64::new(1);
+static PIPE_SEQ: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) struct RestrictedChild {
     process: OwnedHandle,
@@ -295,7 +296,7 @@ pub(crate) fn spawn_sandboxed(
         io::Error::new(err.kind(), format!("windows sandbox {step} failed: {err}"))
     }
 
-    let lease = ExclusiveLease::acquire()?;
+    let lease = ExclusiveLease::acquire();
     let policy = &config.policy;
     let workspace_canon =
         canonicalize_no_prefix(&policy.workspace_root).map_err(|e| tag("canonicalize", &e))?;
@@ -365,8 +366,10 @@ pub(crate) fn spawn_sandboxed(
     let (stdin_read, stdin_write) = create_pipe_pair().map_err(|e| tag("stdin_pipe", &e))?;
     // Close the write side immediately so child stdin hits immediate EOF.
     drop(stdin_write);
-    let (stdout_read, stdout_write) = create_pipe_pair().map_err(|e| tag("stdout_pipe", &e))?;
-    let (stderr_read, stderr_write) = create_pipe_pair().map_err(|e| tag("stderr_pipe", &e))?;
+    let (stdout_read, stdout_write) =
+        create_output_pipe_pair().map_err(|e| tag("stdout_pipe", &e))?;
+    let (stderr_read, stderr_write) =
+        create_output_pipe_pair().map_err(|e| tag("stderr_pipe", &e))?;
 
     let child_stdin_raw = stdin_read.as_raw_handle().cast::<c_void>();
     let child_stdout_raw = stdout_write.as_raw_handle().cast::<c_void>();
@@ -600,6 +603,45 @@ fn create_pipe_pair() -> io::Result<(OwnedHandle, OwnedHandle)> {
             OwnedHandle::from_raw_handle(write_h.cast()),
         ))
     }
+}
+
+/// Creates a pipe pair matching Rust `std::process::Command`'s `AnonPipe` contract:
+/// parent read end opened with `FILE_FLAG_OVERLAPPED` (required by `ChildStdout`/`ChildStderr`)
+/// and child write end opened synchronously (required by console tools calling `WriteFile`).
+fn create_output_pipe_pair() -> io::Result<(OwnedHandle, OwnedHandle)> {
+    let seq = PIPE_SEQ.fetch_add(1, Ordering::Relaxed);
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(io::Error::other)?
+        .as_nanos();
+    let name = format!(
+        r"\\.\pipe\nexora-sandbox-pipe-{}-{stamp}-{seq}",
+        std::process::id()
+    );
+    let name_wide = to_wide(&name);
+    let open_mode = PIPE_ACCESS_INBOUND | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE;
+    let pipe_mode = PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS;
+    // SAFETY: `name_wide` is a valid NUL-terminated UTF-16 pipe name; null security attributes
+    // keep the parent read end non-inheritable.
+    let read_h = unsafe {
+        CreateNamedPipeW(
+            name_wide.as_ptr(),
+            open_mode,
+            pipe_mode,
+            1,
+            65536,
+            65536,
+            0,
+            std::ptr::null(),
+        )
+    };
+    if read_h.is_null() || read_h == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `read_h` is a newly created pipe server handle.
+    let read_owned = unsafe { OwnedHandle::from_raw_handle(read_h.cast()) };
+    let write_file = OpenOptions::new().write(true).open(&name)?;
+    Ok((read_owned, OwnedHandle::from(write_file)))
 }
 
 fn open_current_token_for_restriction() -> io::Result<OwnedHandle> {
