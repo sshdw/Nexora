@@ -442,24 +442,27 @@ fn record_scrubbed_segment(
     capture_cap: usize,
     shared: &Arc<Mutex<CapturedStream>>,
     chunk_tx: Option<&Sender<StreamChunkMsg>>,
-) {
+) -> bool {
     if scrubbed.is_empty() {
-        return;
+        return shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .truncated;
     }
 
-    let emit_slice: Option<String> = {
+    let (emit_slice, truncated_now): (Option<String>, bool) = {
         let mut state = shared
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.truncated {
             state.dropped_bytes = state.dropped_bytes.saturating_add(scrubbed.len());
-            None
+            (None, true)
         } else {
             let room = capture_cap.saturating_sub(state.text.len());
             if room == 0 {
                 state.truncated = true;
                 state.dropped_bytes = state.dropped_bytes.saturating_add(scrubbed.len());
-                None
+                (None, true)
             } else {
                 let mut take = scrubbed.len().min(room);
                 while take > 0 && !scrubbed.is_char_boundary(take) {
@@ -473,7 +476,10 @@ fn record_scrubbed_segment(
                     state.truncated = true;
                     state.dropped_bytes = state.dropped_bytes.saturating_add(scrubbed.len() - take);
                 }
-                (!accepted.is_empty()).then(|| accepted.to_string())
+                (
+                    (!accepted.is_empty()).then(|| accepted.to_string()),
+                    state.truncated,
+                )
             }
         }
     };
@@ -481,6 +487,7 @@ fn record_scrubbed_segment(
     if let (Some(tx), Some(chunk)) = (chunk_tx, emit_slice) {
         let _ = tx.send((stream_name, chunk));
     }
+    truncated_now
 }
 
 /// Move `stream` into a reader thread that UTF-8 decodes and secret-redacts in
@@ -499,12 +506,20 @@ pub(super) fn spawn_stream_reader(
     let handle = std::thread::spawn(move || {
         let mut redactor = StreamRedactor::for_command();
         let mut buf = [0_u8; 8192];
+        let mut capped = false;
         loop {
             match stream.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
+                    if capped {
+                        let mut state = shared_cloned
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        state.dropped_bytes = state.dropped_bytes.saturating_add(n);
+                        continue;
+                    }
                     let scrubbed = redactor.push_bytes(&buf[..n]);
-                    record_scrubbed_segment(
+                    capped = record_scrubbed_segment(
                         stream_name,
                         &scrubbed,
                         capture_cap,
@@ -514,14 +529,16 @@ pub(super) fn spawn_stream_reader(
                 }
             }
         }
-        let (tail, _) = redactor.finish();
-        record_scrubbed_segment(
-            stream_name,
-            &tail,
-            capture_cap,
-            &shared_cloned,
-            chunk_tx.as_ref(),
-        );
+        if !capped {
+            let (tail, _) = redactor.finish();
+            let _ = record_scrubbed_segment(
+                stream_name,
+                &tail,
+                capture_cap,
+                &shared_cloned,
+                chunk_tx.as_ref(),
+            );
+        }
         drop(chunk_tx);
         let _ = eof_tx.send(());
     });

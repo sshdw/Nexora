@@ -1324,7 +1324,15 @@ mod tests {
         } else {
             "cat big.bin"
         };
-        let out = run_cmd(read_cmd, &ws).expect("read big file back");
+        let args = serde_json::json!({ "command": read_cmd });
+        let token = CancellationToken::new();
+        let out = ToolRegistry::execute_command_with_limits(
+            &args,
+            &ws,
+            &hardening_limits(15, 500),
+            &token,
+        )
+        .expect("read big file back");
         assert!(
             out.len() < 100 * 1024,
             "capture leaked past bounds: {} bytes",
