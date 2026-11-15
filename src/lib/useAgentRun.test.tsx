@@ -2064,4 +2064,115 @@ describe("useAgentRun — Stage 5 PR 5B: retained thinking and final_content", (
     expect(result.current.runs[0]?.thinking).toBe("Reasoning step 1");
     expect(result.current.runs[0]?.final_content).toBe("All done.");
   });
+
+  it("tracks pending_question lifecycle across events, inspectRunLive, answerQuestion, and clarifyRun", async () => {
+    const question = {
+      question_id: 99,
+      run_id: 7,
+      conversation_id: 1,
+      call_id: "call_q99",
+      question: "Which env?",
+      options: ["dev", "prod"],
+      multi_select: false,
+      allow_free_text: true,
+      created_at: 1005,
+    };
+
+    mockInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "list_agent_runs") return [runRow()];
+      if (cmd === "inspect_run_live") {
+        return {
+          run_id: 7,
+          status: "running",
+          parked_reason: "awaiting_question",
+          pending_approval: null,
+          pending_question: question,
+          started_at: 1000,
+          finished_at: null,
+          current_step_seq: 1,
+          current_step_tool: "ask_user_question",
+        } satisfies LiveRunState;
+      }
+      if (cmd === "list_conversation_run_events") {
+        return {
+          events: [],
+          next_cursor: 0,
+          high_water_event_id: 0,
+          has_more: false,
+        };
+      }
+      if (cmd === "list_agent_steps") return [];
+      if (cmd === "answer_run_question") {
+        return {
+          id: 99,
+          run_id: 7,
+          conversation_id: 1,
+          call_id: "call_q99",
+          question: "Which env?",
+          options: ["dev", "prod"],
+          multi_select: false,
+          allow_free_text: true,
+          status: "answered",
+          selected_options: ["dev"],
+          free_text: null,
+          created_at: 1005,
+          answered_at: 1009,
+        };
+      }
+      return null;
+    });
+
+    const { result } = renderHook(() => useAgentRun(1));
+    await waitFor(() =>
+      expect(result.current.runs[0]?.pending_question?.question_id).toBe(99)
+    );
+
+    await act(async () => {
+      await result.current.answerQuestion(7, 99, ["dev"]);
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith("answer_run_question", {
+      runId: 7,
+      questionId: 99,
+      selectedOptions: ["dev"],
+      freeText: null,
+    });
+    expect(result.current.runs[0]?.pending_question).toBeNull();
+
+    act(() => {
+      emitAgentEvent({
+        type: "governance",
+        conversation_id: 1,
+        run_id: 7,
+        event: {
+          type: "question_requested",
+          question: { ...question, question_id: 100 },
+        },
+      });
+    });
+    expect(result.current.runs[0]?.pending_question?.question_id).toBe(100);
+
+    await act(async () => {
+      await result.current.clarifyRun(7, "also check staging");
+    });
+    expect(mockInvoke).toHaveBeenCalledWith("clarify_agent_run", {
+      runId: 7,
+      content: "also check staging",
+    });
+
+    act(() => {
+      emitAgentEvent({
+        type: "governance",
+        conversation_id: 1,
+        run_id: 7,
+        event: {
+          type: "question_resolved",
+          question_id: 100,
+          call_id: "call_q99",
+          status: "answered",
+        },
+      });
+    });
+    expect(result.current.runs[0]?.pending_question).toBeNull();
+  });
 });

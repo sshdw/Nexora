@@ -159,6 +159,12 @@ export interface ComposerProps {
   liveRunId: number | null;
   /** Stop the live run. The same button becomes Square while it is set. */
   onStop: () => void;
+  /** Send a live `Clarify now` steering message while a run is active. */
+  onClarifyNow?: () => void;
+  /** Enqueue the draft onto the persistent FIFO queue while a run is active. */
+  onQueuePrompt?: () => void;
+  /** True while a live clarification or queue enqueue call is in flight. */
+  liveActionBusy?: boolean;
   /** Workspace store for the control row above the card (D3 / R6-03). */
   workspace: WorkspaceStore;
   /** Focus the field when an empty conversation opens (D1). The effect
@@ -200,6 +206,9 @@ export default function Composer({
   contextRevision,
   liveRunId,
   onStop,
+  onClarifyNow,
+  onQueuePrompt,
+  liveActionBusy = false,
   workspace,
   autoFocusField = false,
 }: ComposerProps) {
@@ -507,7 +516,9 @@ export default function Composer({
               ref={fieldRef}
               className="nex-composer-input"
               rows={1}
-              placeholder={t("conv.messagePlaceholder")}
+              placeholder={
+                live ? t("composer.livePlaceholder") : t("conv.messagePlaceholder")
+              }
               aria-label={t("conv.messageAria")}
               value={draft}
               disabled={busy}
@@ -998,6 +1009,33 @@ export default function Composer({
                 modelError={modelError}
                 onOpenSettings={onOpenSettings}
               />
+
+              {live && agentMode && (onClarifyNow || onQueuePrompt) && (
+                <span className="nex-composer-live-actions">
+                  {onClarifyNow && (
+                    <Button
+                      type="button"
+                      size="xs"
+                      variant="outline"
+                      disabled={liveActionBusy || draft.trim() === ""}
+                      onClick={onClarifyNow}
+                    >
+                      {t("composer.clarifyNow")}
+                    </Button>
+                  )}
+                  {onQueuePrompt && (
+                    <Button
+                      type="button"
+                      size="xs"
+                      variant="ghost"
+                      disabled={!ready || liveActionBusy || draft.trim() === ""}
+                      onClick={onQueuePrompt}
+                    >
+                      {t("composer.queuePrompt")}
+                    </Button>
+                  )}
+                </span>
+              )}
 
               {/* Send. ONE button, ONE geometry, three states (R6-01):
                   idle   muted plate + arrow (no draft, no run)

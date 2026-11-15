@@ -12,13 +12,18 @@ import {
   type AgentStep,
   type DurableRunEvent,
   type FileCheckpoint,
+  type PendingQuestionView,
+  type RunQuestion,
   type StepEventFrame,
+  answerRunQuestion,
+  clarifyAgentRun,
   getAgentStepObservation,
   inspectRunLive,
   listAgentRuns,
   listAgentSteps,
   listConversationRunEvents,
   listRunCheckpoints,
+  listRunQuestions,
   revertFileCheckpoint,
   revertTurnCheckpoints,
 } from "./tauri";
@@ -91,6 +96,10 @@ export interface AgentRunView {
     timeout_secs: number;
     requested_at: number;
   } | null;
+  /** Active `ask_user_question` prompt while the run is parked awaiting input. */
+  pending_question?: PendingQuestionView | null;
+  /** Latest `Clarify now` steering message delivered to the active run. */
+  last_steering?: string | null;
   /** Disk-backed pre-mutation file checkpoints for this run, lazy-loaded. */
   checkpoints?: FileCheckpoint[];
   /** True after `listRunCheckpoints` has completed for the current run view. */
@@ -196,6 +205,15 @@ export interface AgentRunStore {
     turnIndex: number,
     force?: boolean
   ) => Promise<RevertOutcome>;
+  /** Submit the user's answer to a pending `ask_user_question` prompt. */
+  answerQuestion: (
+    runId: number,
+    questionId: number,
+    selectedOptions: string[],
+    freeText?: string
+  ) => Promise<RunQuestion>;
+  /** Inject a live `Clarify now` steering message into an active run. */
+  clarifyRun: (runId: number, content: string) => Promise<void>;
 }
 
 /** Merge previews by durable identity first, with seq as the legacy fallback.
@@ -244,6 +262,7 @@ function placeholder(runId: number, conversationId: number): AgentRunView {
     steps_loaded: false,
     total_steps: null,
     pending_approval: null,
+    pending_question: null,
   };
 }
 
@@ -409,6 +428,7 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
               error: event.terminal.error,
               finished_at: run.finished_at ?? event.created_at,
               pending_approval: null,
+              pending_question: null,
             };
           return run;
         });
@@ -438,9 +458,16 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
         session.historyFloor = owned.length
           ? Math.min(...owned.map((run) => run.id))
           : 0;
-      const live = owned.some((run) => run.status === "running")
+      const hasRunning = owned.some((run) => run.status === "running");
+      const live = hasRunning
         ? await inspectRunLive(session.conversationId).catch(() => undefined)
         : undefined;
+      const persistedPendingQuestions =
+        hasRunning &&
+        live?.parked_reason === "awaiting_question" &&
+        !live?.pending_question
+          ? await listRunQuestions(session.conversationId).catch(() => [])
+          : [];
       if (!current(session) || request !== session.request) return;
       const views = owned.map((row): AgentRunView => {
         const old = session.runs.find((run) => run.run_id === row.id);
@@ -477,6 +504,34 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
               : null
             : (old?.pending_approval ?? null)
           : null;
+        if (isActive(merged.status)) {
+          if (!changed && live !== undefined) {
+            if (live?.run_id === row.id && live.pending_question) {
+              merged.pending_question = live.pending_question;
+            } else {
+              const fallback = persistedPendingQuestions.find(
+                (q) => q.run_id === row.id && q.status === "pending"
+              );
+              merged.pending_question = fallback
+                ? {
+                    question_id: fallback.id,
+                    run_id: fallback.run_id,
+                    conversation_id: fallback.conversation_id,
+                    call_id: fallback.call_id,
+                    question: fallback.question,
+                    options: fallback.options,
+                    multi_select: fallback.multi_select,
+                    allow_free_text: fallback.allow_free_text,
+                    created_at: fallback.created_at,
+                  }
+                : null;
+            }
+          } else {
+            merged.pending_question = old?.pending_question ?? null;
+          }
+        } else {
+          merged.pending_question = null;
+        }
         if (
           old &&
           (merged.status !== old.status ||
@@ -780,6 +835,7 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
             payload.event.final_content ?? old.final_content ?? null,
           finished_at: old.finished_at ?? Date.now() / 1000,
           pending_approval: null,
+          pending_question: null,
           streaming_text: undefined,
           streaming_thinking: undefined,
           checkpoints_loaded: false,
@@ -829,8 +885,31 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
                   ? null
                   : run.pending_approval,
             };
+          if (gov.type === "question_requested")
+            return {
+              ...run,
+              pending_question: gov.question,
+            };
+          if (gov.type === "question_resolved")
+            return {
+              ...run,
+              pending_question:
+                run.pending_question?.question_id === gov.question_id
+                  ? null
+                  : run.pending_question,
+            };
+          if (gov.type === "steering_injected")
+            return {
+              ...run,
+              last_steering: gov.content,
+            };
           if (gov.type === "cancelled")
-            return { ...run, status: "cancelled", pending_approval: null };
+            return {
+              ...run,
+              status: "cancelled",
+              pending_approval: null,
+              pending_question: null,
+            };
           if (
             gov.type === "paused" ||
             gov.type === "budget_exhausted" ||
@@ -860,6 +939,41 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
     };
   }, [conversationId, reload, current, patch, catchUp, loadRunSteps]);
 
+  const answerQuestion = useCallback(
+    async (
+      runId: number,
+      questionId: number,
+      selectedOptions: string[],
+      freeText?: string
+    ): Promise<RunQuestion> => {
+      const answered = await answerRunQuestion(
+        runId,
+        questionId,
+        selectedOptions,
+        freeText
+      );
+      const session = sessionRef.current;
+      if (session && session.conversationId === conversationId) {
+        patch(session, runId, (run) => ({
+          ...run,
+          pending_question:
+            run.pending_question?.question_id === questionId
+              ? null
+              : run.pending_question,
+        }));
+      }
+      return answered;
+    },
+    [conversationId, patch]
+  );
+
+  const clarifyRun = useCallback(
+    async (runId: number, content: string): Promise<void> => {
+      await clarifyAgentRun(runId, content);
+    },
+    []
+  );
+
   return {
     runs,
     loading,
@@ -871,5 +985,7 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
     loadRunCheckpoints,
     revertCheckpoint,
     revertTurn,
+    answerQuestion,
+    clarifyRun,
   };
 }

@@ -8,6 +8,9 @@ use std::sync::Mutex;
 
 use super::approval::{ApprovalDecision, ApprovalGate, AutonomyMode, PendingApprovalSnapshot};
 use super::control::RunControl;
+use super::question::{PendingQuestionSnapshot, QuestionResolveError};
+use crate::infrastructure::database::Database;
+use crate::infrastructure::repository::run_questions::RunQuestion;
 
 // ---------------------------------------------------------------------------
 // Active-run registry (managed Tauri state)
@@ -69,11 +72,13 @@ pub(crate) struct LiveRunSnapshot {
     pub run_id: i64,
     /// The conversation the active run belongs to.
     pub conversation_id: i64,
-    /// Why the run is not progressing: `"awaiting_approval"`,
+    /// Why the run is not progressing: `"awaiting_approval"`, `"awaiting_question"`,
     /// `"awaiting_budget"`, `"paused"`, or `"none"` (fixed vocabulary).
     pub parked_reason: &'static str,
     /// The parked approval, when the gate has one that is not yet resolved.
     pub pending_approval: Option<PendingApprovalSnapshot>,
+    /// The parked clarifying question, when `ask_user_question` is awaiting user input.
+    pub pending_question: Option<PendingQuestionSnapshot>,
 }
 
 impl AgentRunRegistry {
@@ -356,8 +361,11 @@ impl AgentRunRegistry {
             (*run_id, entry.clone())
         };
         let pending_approval = entry.gate.pending_snapshot();
+        let pending_question = entry.control.question_gate().pending_snapshot();
         let parked_reason = if pending_approval.is_some() {
             "awaiting_approval"
+        } else if pending_question.is_some() {
+            "awaiting_question"
         } else if entry.control.is_budget_parked() {
             "awaiting_budget"
         } else if entry.control.pause_pending() {
@@ -370,7 +378,43 @@ impl AgentRunRegistry {
             conversation_id,
             parked_reason,
             pending_approval,
+            pending_question,
         })
+    }
+
+    /// Resolve a parked `ask_user_question` prompt for an active run.
+    pub(crate) fn resolve_question(
+        &self,
+        db: &Database,
+        run_id: i64,
+        question_id: i64,
+        selected_options: Vec<String>,
+        free_text: Option<String>,
+    ) -> Result<RunQuestion, QuestionResolveError> {
+        let entry = self
+            .runs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&run_id)
+            .cloned()
+            .ok_or(QuestionResolveError::RunNotActive)?;
+        entry
+            .control
+            .question_gate()
+            .resolve(db, question_id, selected_options, free_text)
+    }
+
+    /// Push a live `Clarify now` steering message onto an active run and return its `conversation_id`.
+    #[must_use]
+    pub(crate) fn push_steering(&self, run_id: i64, content: String) -> Option<i64> {
+        let entry = self
+            .runs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&run_id)
+            .cloned()?;
+        entry.control.push_steering(content);
+        Some(entry.conversation_id)
     }
 
     /// Grant additional iterations to a budget-parked (or running) run.

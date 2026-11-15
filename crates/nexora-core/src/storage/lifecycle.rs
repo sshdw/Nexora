@@ -28,6 +28,8 @@ use std::path::{Path, PathBuf};
 use super::database::{Database, DatabaseError};
 use super::repository::agent_runs::AgentRunRepository;
 use super::repository::agent_tasks::AgentTaskRepository;
+use super::repository::run_questions::RunQuestionRepository;
+use super::repository::work_queue::WorkQueueRepository;
 
 /// Fixed reason stored on a run swept by startup (the exact string the UI
 /// already shows; do not reword without a migration plan).
@@ -136,6 +138,8 @@ pub fn sweep_orphans(db: &Database, lease: &InstanceLease) -> Result<OrphanSweep
     }
     let runs = AgentRunRepository::new(db).fail_orphaned_running_runs(ORPHAN_RUN_MESSAGE)?;
     let tasks = AgentTaskRepository::new(db).fail_orphaned_running_tasks(ORPHAN_TASK_MESSAGE)?;
+    let _ = RunQuestionRepository::new(db).cancel_orphaned_pending_questions()?;
+    let _ = WorkQueueRepository::new(db).cancel_orphaned_running_items()?;
     Ok(OrphanSweep {
         runs,
         tasks,

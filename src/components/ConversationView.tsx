@@ -44,9 +44,12 @@ import type { AutonomyStore } from "../lib/useAutonomy";
 import { useAgentRun } from "../lib/useAgentRun";
 import { useAttachments } from "../lib/useAttachments";
 import { useConversation } from "../lib/useConversation";
+import { useWorkQueue } from "../lib/useWorkQueue";
 import type { WorkspaceStore } from "../lib/useWorkspace";
 import AgentRunSteps from "./AgentRunSteps";
 import Composer from "./Composer";
+import QuestionPanel from "./QuestionPanel";
+import WorkQueueStrip from "./WorkQueueStrip";
 import MessageMarkdown from "./MessageMarkdown";
 import ThinkingBlock from "./ThinkingBlock";
 import type { ModelConnectionGroup } from "./ModelPicker";
@@ -140,12 +143,23 @@ export default function ConversationView({
     loadRunCheckpoints,
     revertCheckpoint,
     revertTurn,
+    answerQuestion,
+    clarifyRun,
   } = useAgentRun(conversationId);
+  const {
+    items: queueItems,
+    enqueue: enqueueQueueItem,
+    updateItem: updateQueueItem,
+    moveItem: moveQueueItem,
+    cancelItem: cancelQueueItem,
+    runNext: runNextQueueItem,
+  } = useWorkQueue(conversationId);
   // R4-02: the pane opens in Agent mode. Chat is still one click away on
   // the composer's pills, and the choice is pane state for the session.
   const [agentMode, setAgentMode] = useState<boolean>(true);
   const [planMode, setPlanMode] = useState<boolean>(false);
   const [agentBusy, setAgentBusy] = useState<boolean>(false);
+  const [liveActionBusy, setLiveActionBusy] = useState<boolean>(false);
   const [agentError, setAgentError] = useState<string | null>(null);
   const threadRef = useRef<HTMLDivElement>(null);
 
@@ -186,6 +200,25 @@ export default function ConversationView({
     ) ?? null;
   const liveRunId = activeRun?.run_id ?? null;
   const hasActiveRun = activeRun !== null;
+  const pendingQuestion = activeRun?.pending_question ?? null;
+  const latestRun = useMemo(
+    () =>
+      runs.reduce<(typeof runs)[number] | null>(
+        (best, run) =>
+          !best ||
+          run.started_at > best.started_at ||
+          (run.started_at === best.started_at && run.run_id > best.run_id)
+            ? run
+            : best,
+        null
+      ),
+    [runs]
+  );
+  const queuePaused =
+    !hasActiveRun &&
+    queueItems.length > 0 &&
+    latestRun !== null &&
+    latestRun.status !== "completed";
   const canSend =
     ready &&
     draft.trim() !== "" &&
@@ -446,6 +479,92 @@ export default function ConversationView({
     onMessageSent?.();
   };
 
+  const handleClarifyNow = useCallback(async () => {
+    const content = draft.trim();
+    if (!content || liveRunId === null || liveActionBusy) return;
+    setAgentError(null);
+    setLiveActionBusy(true);
+    try {
+      await clarifyRun(liveRunId, content);
+      setDraft("");
+    } catch (e) {
+      const msg =
+        e instanceof Error
+          ? e.message
+          : typeof e === "object" && e !== null && "message" in e
+            ? String((e as { message: unknown }).message)
+            : String(e);
+      setAgentError(msg);
+    } finally {
+      setLiveActionBusy(false);
+    }
+  }, [draft, liveRunId, liveActionBusy, clarifyRun, setDraft]);
+
+  const handleQueuePrompt = useCallback(async () => {
+    const content = draft.trim();
+    if (!content || !selectedProvider || !selectedModel || liveActionBusy) return;
+    setAgentError(null);
+    setLiveActionBusy(true);
+    try {
+      await enqueueQueueItem(
+        content,
+        selectedProvider,
+        selectedModel,
+        effectiveEffort
+      );
+      setDraft("");
+    } catch (e) {
+      const msg =
+        e instanceof Error
+          ? e.message
+          : typeof e === "object" && e !== null && "message" in e
+            ? String((e as { message: unknown }).message)
+            : String(e);
+      setAgentError(msg);
+    } finally {
+      setLiveActionBusy(false);
+    }
+  }, [
+    draft,
+    selectedProvider,
+    selectedModel,
+    effectiveEffort,
+    liveActionBusy,
+    enqueueQueueItem,
+    setDraft,
+  ]);
+
+  const handleAnswerQuestion = useCallback(
+    async (selectedOptions: string[], freeText?: string) => {
+      if (!activeRun || !pendingQuestion) return;
+      setAgentError(null);
+      await answerQuestion(
+        activeRun.run_id,
+        pendingQuestion.question_id,
+        selectedOptions,
+        freeText
+      );
+      await reloadAgent();
+    },
+    [activeRun, pendingQuestion, answerQuestion, reloadAgent]
+  );
+
+  const handleRunNextQueued = useCallback(async () => {
+    setAgentError(null);
+    try {
+      await runNextQueueItem();
+      await reloadAgent();
+    } catch (e) {
+      const msg =
+        e instanceof Error
+          ? e.message
+          : typeof e === "object" && e !== null && "message" in e
+            ? String((e as { message: unknown }).message)
+            : String(e);
+      setAgentError(msg);
+    }
+  }, [runNextQueueItem, reloadAgent]);
+
   // Chronological thread: messages and agent runs interleaved by timestamp
   // (Task 5.1 DP-6). Memoized per AC-203 (review 03 §2): the array identity
   // is stable across renders that touch neither `messages` nor `runs`, so a
@@ -686,6 +805,30 @@ export default function ConversationView({
         </div>
       )}
 
+      {(pendingQuestion || queueItems.length > 0) && (
+        <div className="nex-composer-adjacent">
+          {pendingQuestion && (
+            <QuestionPanel
+              question={pendingQuestion}
+              onSubmit={handleAnswerQuestion}
+            />
+          )}
+          {queueItems.length > 0 && (
+            <WorkQueueStrip
+              items={queueItems}
+              paused={queuePaused}
+              hasActiveRun={hasActiveRun}
+              onMove={moveQueueItem}
+              onEdit={async (id, content) => {
+                await updateQueueItem(id, content);
+              }}
+              onCancel={cancelQueueItem}
+              onRunNext={handleRunNextQueued}
+            />
+          )}
+        </div>
+      )}
+
       <Composer
         draft={draft}
         onDraftChange={setDraft}
@@ -720,6 +863,9 @@ export default function ConversationView({
         contextRevision={contextRevision}
         liveRunId={liveRunId}
         onStop={handleStop}
+        onClarifyNow={() => void handleClarifyNow()}
+        onQueuePrompt={() => void handleQueuePrompt()}
+        liveActionBusy={liveActionBusy}
         workspace={workspace}
         autoFocusField={emptyStage}
       />

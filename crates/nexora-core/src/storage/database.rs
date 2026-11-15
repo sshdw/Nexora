@@ -1030,6 +1030,41 @@ CREATE INDEX idx_file_checkpoints_run_turn ON file_checkpoints(run_id, turn_inde
 CREATE INDEX idx_file_checkpoints_conv ON file_checkpoints(conversation_id, created_at);
 CREATE INDEX idx_file_checkpoints_blob ON file_checkpoints(pre_blob_sha256);",
     ),
+    (
+        18,
+        "CREATE TABLE run_questions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+    conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    call_id TEXT NOT NULL CHECK (length(trim(call_id)) > 0),
+    question TEXT NOT NULL CHECK (length(trim(question)) > 0),
+    options_json TEXT NOT NULL DEFAULT '[]',
+    multi_select INTEGER NOT NULL DEFAULT 0 CHECK (multi_select IN (0, 1)),
+    allow_free_text INTEGER NOT NULL DEFAULT 1 CHECK (allow_free_text IN (0, 1)),
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'answered', 'cancelled')),
+    selected_options_json TEXT NULL,
+    free_text TEXT NULL,
+    created_at INTEGER NOT NULL,
+    answered_at INTEGER NULL,
+    UNIQUE(run_id, call_id)
+);
+CREATE INDEX idx_run_questions_run_status ON run_questions(run_id, status, id);
+CREATE INDEX idx_run_questions_conv_status ON run_questions(conversation_id, status, id);
+
+CREATE TABLE work_queue_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    content TEXT NOT NULL CHECK (length(trim(content)) > 0),
+    provider TEXT NOT NULL CHECK (length(trim(provider)) > 0),
+    model TEXT NOT NULL CHECK (length(trim(model)) > 0),
+    effort TEXT NULL,
+    position INTEGER NOT NULL CHECK (position >= 0),
+    status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'running', 'completed', 'cancelled')),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX idx_work_queue_conv_status_pos ON work_queue_items(conversation_id, status, position, id);",
+    ),
 ];
 
 /// Open the `SQLite` database at `path`, apply connection pragmas, and run any

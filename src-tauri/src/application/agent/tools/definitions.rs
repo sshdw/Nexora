@@ -18,6 +18,7 @@ impl ToolRegistry {
             list_directory_definition(),
             edit_file_definition(),
             search_files_definition(),
+            ask_user_question_definition(),
         ]
     }
 
@@ -195,13 +196,44 @@ fn search_files_definition() -> ToolDefinition {
     }
 }
 
+fn ask_user_question_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "ask_user_question".to_string(),
+        description: "Ask the user a structured clarifying question and pause this run until they answer. Supports single-select options, multi-select options, and optional free-text input. Use when requirements are genuinely ambiguous and user input is needed to proceed accurately.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": "Clear, concise question prompt to present to the user"
+                },
+                "options": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Optional list of selectable choices for the user"
+                },
+                "multi_select": {
+                    "type": "boolean",
+                    "description": "Whether the user may select more than one option (default false)"
+                },
+                "allow_free_text": {
+                    "type": "boolean",
+                    "description": "Whether the user may enter a free-text answer (default true)"
+                }
+            },
+            "required": ["question"],
+            "additionalProperties": false
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
     fn definitions_produce_valid_objects() {
         let defs = ToolRegistry::definitions();
-        assert_eq!(defs.len(), 6);
+        assert_eq!(defs.len(), 7);
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
         assert!(names.contains(&"execute_command"));
         assert!(names.contains(&"read_file"));
@@ -209,6 +241,7 @@ mod tests {
         assert!(names.contains(&"list_directory"));
         assert!(names.contains(&"edit_file"));
         assert!(names.contains(&"search_files"));
+        assert!(names.contains(&"ask_user_question"));
         for def in &defs {
             assert!(!def.name.is_empty());
             assert!(!def.description.is_empty());
@@ -298,12 +331,12 @@ mod tests {
         let document = ToolRegistry::definitions_for_preset(RunPreset::Document);
         let coding_names: Vec<&str> = coding.iter().map(|d| d.name.as_str()).collect();
         let document_names: Vec<&str> = document.iter().map(|d| d.name.as_str()).collect();
-        assert_eq!(coding.len(), 6, "coding exposes all six tools");
+        assert_eq!(coding.len(), 7, "coding exposes all seven tools");
         assert!(
             coding_names.contains(&"execute_command"),
             "coding keeps the shell, got {coding_names:?}"
         );
-        assert_eq!(document.len(), 5, "document drops exactly the shell");
+        assert_eq!(document.len(), 6, "document drops exactly the shell");
         assert!(
             !document_names.contains(&"execute_command"),
             "document must not expose the shell, got {document_names:?}"
@@ -314,6 +347,7 @@ mod tests {
             "list_directory",
             "edit_file",
             "search_files",
+            "ask_user_question",
         ] {
             assert!(
                 coding_names.contains(&tool),
@@ -383,8 +417,8 @@ mod tests {
             serde_json::from_str(&serde_json::to_string(&body).expect("serialize")).expect("parse");
         let declarations = value["tools"][0]["functionDeclarations"]
             .as_array()
-            .expect("six function declarations");
-        assert_eq!(declarations.len(), 6, "all six tools are declared");
+            .expect("seven function declarations");
+        assert_eq!(declarations.len(), 7, "all seven tools are declared");
 
         for declaration in declarations {
             let parameters = &declaration["parameters"];

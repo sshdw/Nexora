@@ -16,6 +16,8 @@ use super::database::{Database, DatabaseError};
 pub mod agent_runs;
 pub mod agent_tasks;
 pub mod file_checkpoints;
+pub mod run_questions;
+pub mod work_queue;
 
 /// Result type shared by all repositories, centralizing propagation of
 /// [`DatabaseError`].

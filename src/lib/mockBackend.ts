@@ -565,10 +565,69 @@ type ActiveMockRun = {
     requested_at: number;
     metadata: ApprovalMetadata;
   } | null;
+  pendingQuestion: {
+    question_id: number;
+    run_id: number;
+    conversation_id: number;
+    call_id: string;
+    question: string;
+    options: string[];
+    multi_select: boolean;
+    allow_free_text: boolean;
+    created_at: number;
+  } | null;
   budgetExhausted: boolean;
   paused: boolean;
 };
 const activeRuns = new Map<number, ActiveMockRun>();
+
+type MockRunQuestion = {
+  id: number;
+  run_id: number;
+  conversation_id: number;
+  call_id: string;
+  question: string;
+  options: string[];
+  multi_select: boolean;
+  allow_free_text: boolean;
+  status: "pending" | "answered" | "cancelled";
+  selected_options: string[];
+  free_text: string | null;
+  created_at: number;
+  answered_at: number | null;
+};
+const mockRunQuestions: MockRunQuestion[] = [];
+
+type MockWorkQueueItem = {
+  id: number;
+  conversation_id: number;
+  content: string;
+  provider: string;
+  model: string;
+  effort: string | null;
+  position: number;
+  status: "queued" | "running" | "completed" | "cancelled";
+  created_at: number;
+  updated_at: number;
+};
+const mockWorkQueue: MockWorkQueueItem[] = [];
+let nextWorkQueueId = 1;
+
+function emitWorkQueueUpdated(conversationId: number) {
+  const listeners = eventListeners.get("work-queue-updated");
+  if (!listeners) return;
+  for (const [, cb] of listeners) {
+    try {
+      (cb as (v: unknown) => void)({
+        event: "work-queue-updated",
+        id: 0,
+        payload: { conversation_id: conversationId },
+      });
+    } catch {
+      // ignore handler errors
+    }
+  }
+}
 
 // Event channel mock
 let nextEventId = 1;
@@ -1404,6 +1463,7 @@ async function invoke(
         status: "running",
         timers: [],
         pendingApproval: null,
+        pendingQuestion: null,
         budgetExhausted: false,
         paused: false,
       };
@@ -2191,13 +2251,15 @@ async function invoke(
       return {
         run_id: run.id,
         status: run.status,
-        parked_reason: pending
-          ? "awaiting_approval"
-          : active?.budgetExhausted
-            ? "awaiting_budget"
-            : active?.paused
-              ? "paused"
-              : "none",
+        parked_reason: active?.pendingQuestion
+          ? "awaiting_question"
+          : pending
+            ? "awaiting_approval"
+            : active?.budgetExhausted
+              ? "awaiting_budget"
+              : active?.paused
+                ? "paused"
+                : "none",
         pending_approval: pending
           ? {
               ...pending,
@@ -2205,6 +2267,7 @@ async function invoke(
               expires_at: pending.requested_at + 600,
             }
           : null,
+        pending_question: active?.pendingQuestion ?? null,
         started_at: run.started_at,
         finished_at: run.finished_at,
         current_step_seq: last?.seq ?? null,
@@ -2236,6 +2299,162 @@ async function invoke(
       void Number(requireArg(args, "revert_turn_checkpoints", "runId"));
       void Number(requireArg(args, "revert_turn_checkpoints", "turnIndex"));
       return [];
+    }
+    case "list_run_questions": {
+      const conversationId = Number(
+        requireArg(args, "list_run_questions", "conversationId")
+      );
+      return mockRunQuestions.filter(
+        (q) => q.conversation_id === conversationId
+      );
+    }
+    case "answer_run_question": {
+      const runId = Number(requireArg(args, "answer_run_question", "runId"));
+      const questionId = Number(
+        requireArg(args, "answer_run_question", "questionId")
+      );
+      const selectedOptions = Array.isArray(args.selectedOptions)
+        ? args.selectedOptions.map(String)
+        : [];
+      const freeText =
+        typeof args.freeText === "string" && args.freeText.trim()
+          ? args.freeText.trim()
+          : null;
+      const row = mockRunQuestions.find(
+        (q) => q.id === questionId && q.run_id === runId && q.status === "pending"
+      );
+      if (!row) {
+        throw { kind: "notFound", message: "question is not pending" };
+      }
+      row.status = "answered";
+      row.selected_options = selectedOptions;
+      row.free_text = freeText;
+      row.answered_at = Math.floor(Date.now() / 1000);
+      const active = activeRuns.get(runId);
+      if (active) active.pendingQuestion = null;
+      emitAgentEvent({
+        type: "governance",
+        run_id: runId,
+        conversation_id: row.conversation_id,
+        event: {
+          type: "question_resolved",
+          question_id: row.id,
+          call_id: row.call_id,
+          status: "answered",
+        },
+      });
+      return { ...row };
+    }
+    case "clarify_agent_run": {
+      const runId = Number(requireArg(args, "clarify_agent_run", "runId"));
+      const content = String(requireArg(args, "clarify_agent_run", "content"));
+      const run = agentRuns.find((r) => r.id === runId);
+      if (!run) {
+        throw { kind: "notFound", message: `no active agent run with id ${runId}` };
+      }
+      emitAgentEvent({
+        type: "governance",
+        run_id: runId,
+        conversation_id: run.conversation_id,
+        event: {
+          type: "steering_injected",
+          content,
+        },
+      });
+      return null;
+    }
+    case "enqueue_work_item": {
+      const conversationId = Number(
+        requireArg(args, "enqueue_work_item", "conversationId")
+      );
+      const content = String(requireArg(args, "enqueue_work_item", "content")).trim();
+      const provider = String(requireArg(args, "enqueue_work_item", "provider"));
+      const model = String(requireArg(args, "enqueue_work_item", "model"));
+      const effort = typeof args.effort === "string" ? args.effort : null;
+      const existing = mockWorkQueue.filter(
+        (w) => w.conversation_id === conversationId && w.status === "queued"
+      );
+      const now = Math.floor(Date.now() / 1000);
+      const item: MockWorkQueueItem = {
+        id: nextWorkQueueId++,
+        conversation_id: conversationId,
+        content,
+        provider,
+        model,
+        effort,
+        position: existing.length,
+        status: "queued",
+        created_at: now,
+        updated_at: now,
+      };
+      mockWorkQueue.push(item);
+      emitWorkQueueUpdated(conversationId);
+      return { ...item };
+    }
+    case "list_work_queue": {
+      const conversationId = Number(
+        requireArg(args, "list_work_queue", "conversationId")
+      );
+      return mockWorkQueue
+        .filter((w) => w.conversation_id === conversationId && w.status === "queued")
+        .sort((a, b) => a.position - b.position || a.id - b.id);
+    }
+    case "update_work_queue_item": {
+      const itemId = Number(requireArg(args, "update_work_queue_item", "itemId"));
+      const content = String(
+        requireArg(args, "update_work_queue_item", "content")
+      ).trim();
+      const item = mockWorkQueue.find((w) => w.id === itemId && w.status === "queued");
+      if (!item) {
+        throw { kind: "notFound", message: "queued item not found" };
+      }
+      item.content = content;
+      item.updated_at = Math.floor(Date.now() / 1000);
+      emitWorkQueueUpdated(item.conversation_id);
+      return { ...item };
+    }
+    case "reorder_work_queue": {
+      const conversationId = Number(
+        requireArg(args, "reorder_work_queue", "conversationId")
+      );
+      const orderedIds = Array.isArray(args.orderedIds)
+        ? args.orderedIds.map(Number)
+        : [];
+      const queued = mockWorkQueue.filter(
+        (w) => w.conversation_id === conversationId && w.status === "queued"
+      );
+      let pos = 0;
+      for (const id of orderedIds) {
+        const found = queued.find((w) => w.id === id);
+        if (found) found.position = pos++;
+      }
+      for (const w of queued) {
+        if (!orderedIds.includes(w.id)) w.position = pos++;
+      }
+      emitWorkQueueUpdated(conversationId);
+      return queued.sort((a, b) => a.position - b.position || a.id - b.id);
+    }
+    case "cancel_work_queue_item": {
+      const itemId = Number(requireArg(args, "cancel_work_queue_item", "itemId"));
+      const item = mockWorkQueue.find((w) => w.id === itemId && w.status === "queued");
+      if (!item) {
+        throw { kind: "notFound", message: "queued item not found" };
+      }
+      item.status = "cancelled";
+      emitWorkQueueUpdated(item.conversation_id);
+      return null;
+    }
+    case "run_next_work_item": {
+      const conversationId = Number(
+        requireArg(args, "run_next_work_item", "conversationId")
+      );
+      const next = mockWorkQueue
+        .filter((w) => w.conversation_id === conversationId && w.status === "queued")
+        .sort((a, b) => a.position - b.position || a.id - b.id)[0];
+      if (!next) return null;
+      next.status = "completed";
+      emitWorkQueueUpdated(conversationId);
+      return { run_id: Date.now() };
     }
     // The visual mock predates the journal; its existing run/step history
     // stays readable through the legacy APIs without inventing chronology.

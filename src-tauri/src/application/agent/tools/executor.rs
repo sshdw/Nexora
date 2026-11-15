@@ -174,6 +174,9 @@ impl ToolRegistry {
             "edit_file" => Self::edit_file(&args, workspace_root, bound, checkpoints, started),
             "search_files" => Self::search_files(&args, workspace_root, bound, started),
             "list_directory" => Self::list_directory(&args, workspace_root, bound, started),
+            "ask_user_question" => Err(ToolError::Io(
+                "ask_user_question requires an active interactive run context".into(),
+            )),
             other => Err(ToolError::UnknownTool(other.to_string())),
         }
     }

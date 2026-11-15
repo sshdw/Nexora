@@ -32,5 +32,7 @@ pub mod messages;
 pub mod permission_rules;
 pub mod prompts;
 pub mod providers;
+pub mod run_questions;
 pub mod search;
 pub mod settings;
+pub mod work_queue;

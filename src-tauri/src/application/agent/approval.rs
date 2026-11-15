@@ -55,7 +55,7 @@ impl RiskClass {
     #[must_use]
     pub(crate) fn classify(name: &str) -> Self {
         match name {
-            "read_file" | "list_directory" | "search_files" => Self::ReadOnly,
+            "read_file" | "list_directory" | "search_files" | "ask_user_question" => Self::ReadOnly,
             "execute_command" => Self::DangerousShell,
             _ => Self::Mutating,
         }
