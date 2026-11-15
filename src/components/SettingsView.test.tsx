@@ -587,7 +587,7 @@ describe("SettingsView — in-page search", () => {
 
     const search = screen.getByLabelText("Search settings");
     fireEvent.change(search, { target: { value: "spend" } });
-    expect(screen.getByRole("status")).toBeInTheDocument();
+    expect(within(screen.getByRole("search")).getByRole("status")).toBeInTheDocument();
     fireEvent.keyDown(search, { key: "Enter" });
 
     await waitFor(() =>
