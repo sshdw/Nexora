@@ -9,7 +9,7 @@ import { useEffect, useRef } from "react";
 import M3Button from "./M3Button";
 import M3IconButton from "./M3IconButton";
 import { useStrings } from "../lib/useLocale";
-import { CloseIcon } from "./icons";
+import { CloseIcon, TerminalIcon } from "./icons";
 
 export interface TabEntry {
   id: number;
@@ -25,6 +25,8 @@ export interface ConversationTabsProps {
   onClose: (id: number) => void;
   splitOpen: boolean;
   onToggleSplit: () => void;
+  terminalOpen?: boolean;
+  onToggleTerminal?: () => void;
 }
 
 export default function ConversationTabs({
@@ -35,6 +37,8 @@ export default function ConversationTabs({
   onClose,
   splitOpen,
   onToggleSplit,
+  terminalOpen = false,
+  onToggleTerminal,
 }: ConversationTabsProps) {
   const { t } = useStrings();
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -156,6 +160,18 @@ export default function ConversationTabs({
         })}
       </div>
       <div className="nex-tabstrip-actions">
+        {onToggleTerminal && (
+          <M3Button
+            variant="quiet"
+            size="sm"
+            onClick={onToggleTerminal}
+            aria-pressed={terminalOpen}
+            title={t("term.title")}
+          >
+            <TerminalIcon size={16} />
+            {t("term.toggleLabel")}
+          </M3Button>
+        )}
         <M3Button
           variant="quiet"
           size="sm"

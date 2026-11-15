@@ -39,10 +39,11 @@
 
 use std::sync::Arc;
 
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::application::agent::tools::CommandStreamUpdate;
 use crate::application::confirmations::ManagedConfirmations;
-use crate::application::terminal::{ErrorExplanation, TerminalExecuted, TerminalRegistry};
+use crate::application::terminal::{ErrorExplanation, TerminalRegistry};
 use crate::application::workspace::resolve_workspace_root;
 use crate::infrastructure::database::Database;
 
@@ -52,6 +53,22 @@ use super::workspace::default_root;
 /// Managed terminal registry state is an [`Arc`] so commands can clone an
 /// owned handle into `spawn_blocking` without borrowing the managed value.
 pub(crate) type ManagedTerminal = Arc<TerminalRegistry>;
+
+/// Live event channel emitted while a workspace terminal command executes.
+pub(crate) const TERMINAL_OUTPUT_EVENT: &str = "terminal-output";
+
+/// Incremental live event payload emitted on [`TERMINAL_OUTPUT_EVENT`].
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) struct TerminalOutputEvent {
+    pub run_id: u64,
+    pub stream: String,
+    pub chunk: String,
+    pub done: bool,
+    pub truncated: bool,
+    pub killed: bool,
+    pub success: Option<bool>,
+}
 
 /// Combined output of one finished terminal run, plus the display flags the
 /// panel needs. Payloads stay `snake_case` (serde `rename_all`); command args
@@ -63,6 +80,47 @@ pub(crate) struct TerminalRunResponse {
     pub output: String,
     pub truncated: bool,
     pub success: bool,
+}
+
+fn emit_terminal_update(app: &AppHandle, run_id: u64, update: CommandStreamUpdate) {
+    let payload = match update {
+        CommandStreamUpdate::Started { .. } => TerminalOutputEvent {
+            run_id,
+            stream: "status".to_string(),
+            chunk: String::new(),
+            done: false,
+            truncated: false,
+            killed: false,
+            success: None,
+        },
+        CommandStreamUpdate::Chunk { stream, text } => TerminalOutputEvent {
+            run_id,
+            stream: stream.to_string(),
+            chunk: text,
+            done: false,
+            truncated: false,
+            killed: false,
+            success: None,
+        },
+        // Final completion metadata is emitted once on return with the authoritative `success`.
+        CommandStreamUpdate::Done { .. } => return,
+    };
+    let _ = app.emit(TERMINAL_OUTPUT_EVENT, payload);
+}
+
+fn emit_terminal_done(app: &AppHandle, run_id: u64, truncated: bool, killed: bool, success: bool) {
+    let _ = app.emit(
+        TERMINAL_OUTPUT_EVENT,
+        TerminalOutputEvent {
+            run_id,
+            stream: "status".to_string(),
+            chunk: String::new(),
+            done: true,
+            truncated,
+            killed,
+            success: Some(success),
+        },
+    );
 }
 
 /// Run one user-authored workspace command through the existing agent
@@ -121,7 +179,9 @@ pub(crate) async fn terminal_run(
     })?;
     let registry_arc = Arc::clone(registry.inner());
     let confirmations_arc = Arc::clone(confirmations.inner());
+    let app_for_stream = app.clone();
     let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let mut emit_stream = |update| emit_terminal_update(&app_for_stream, run_id, update);
         crate::application::terminal::execute_terminal(
             &root,
             command.as_str(),
@@ -129,6 +189,7 @@ pub(crate) async fn terminal_run(
             confirmation_id.as_str(),
             &confirmations_arc,
             &token,
+            Some(&mut emit_stream),
         )
     })
     .await;
@@ -137,15 +198,29 @@ pub(crate) async fn terminal_run(
         // Only reachable if the blocking task panicked: report a safe,
         // classified failure instead of leaving the promise dangling.
         log::error!("terminal_run blocking task failed: {err}");
+        emit_terminal_done(&app, run_id, false, false, false);
         CommandError::new(ErrorKind::Request, "the terminal command could not be run")
     })?;
-    let executed: TerminalExecuted = outcome.map_err(CommandError::from)?;
-    Ok(TerminalRunResponse {
-        run_id,
-        output: executed.output,
-        truncated: executed.truncated,
-        success: executed.success,
-    })
+    match outcome {
+        Ok(executed) => {
+            emit_terminal_done(&app, run_id, executed.truncated, false, executed.success);
+            Ok(TerminalRunResponse {
+                run_id,
+                output: executed.output,
+                truncated: executed.truncated,
+                success: executed.success,
+            })
+        }
+        Err(err) => {
+            let killed = matches!(
+                err,
+                crate::application::terminal::TerminalError::Cancelled
+                    | crate::application::terminal::TerminalError::Timeout
+            );
+            emit_terminal_done(&app, run_id, false, killed, false);
+            Err(CommandError::from(err))
+        }
+    }
 }
 
 /// Stop the active terminal run, if any: cancels its token so the executor

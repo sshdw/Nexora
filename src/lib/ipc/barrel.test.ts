@@ -122,6 +122,7 @@ const SNAPSHOT: readonly string[] = [
   "privacyWipe",
   "providerHealth",
   "refactorApply",
+  "onTerminalOutput",
   "refreshProviderModelMetadata",
   "releaseStatus",
   "releaseTaskLock",

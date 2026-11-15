@@ -152,6 +152,26 @@ pub(crate) enum AgentRunEvent {
         /// Incremental token/text chunk.
         delta: String,
     },
+    /// Ephemeral incremental output chunk emitted by a running `execute_command`
+    /// tool call. Never triggers durable journal writes; final output is
+    /// persisted in [`AgentRunEvent::StepRecorded`].
+    CommandOutput {
+        /// Provider tool call ID (`ToolCall::id`) correlating chunks to one step.
+        call_id: String,
+        /// Redacted command string emitted once when the process tree starts.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        command: Option<String>,
+        /// `"stdout"`, `"stderr"`, or `"status"`.
+        stream: String,
+        /// Secret-redacted, UTF-8-safe incremental chunk.
+        chunk: String,
+        /// Whether `MAX_CAPTURE_BYTES` or context-budget truncation occurred.
+        #[serde(default)]
+        truncated: bool,
+        /// Whether the command process tree was terminated via stop or timeout.
+        #[serde(default)]
+        killed: bool,
+    },
     /// The run produced a final answer after `steps` accounted model turns.
     Completed { steps: usize },
     /// One successfully persisted agent step, streamed to the UI (Task 5.1).

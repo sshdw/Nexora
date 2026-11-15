@@ -92,6 +92,7 @@ pub(crate) mod plan;
 pub mod pricing;
 pub mod prompts;
 pub mod question;
+pub mod redaction;
 pub mod registry;
 pub(crate) mod resume;
 pub mod roles;

@@ -2277,4 +2277,84 @@ describe("useAgentRun — Stage 5 PR 5B: retained thinking and final_content", (
     expect(acceptedPlan?.plan_decision_status).toBe("accepted");
     expect(acceptedPlan?.plan_implemented_run_id).toBe(10);
   });
+
+  it("accumulates command_output chunks on active execute_command and clears when step lands", async () => {
+    mockInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "list_agent_runs") return [runRow({ id: 7, status: "running" })];
+      if (cmd === "list_agent_steps") return [];
+      if (cmd === "inspect_run_live") return { run_id: 7, pending_approval: null };
+      if (cmd === "list_durable_run_events") {
+        return { events: [], next_cursor: 0, high_water_event_id: 0, has_more: false };
+      }
+      return null;
+    });
+
+    const { result } = renderHook(() => useAgentRun(1));
+    await waitFor(() => expect(result.current.runs).toHaveLength(1));
+
+    act(() => {
+      emitAgentEvent({
+        type: "governance",
+        conversation_id: 1,
+        run_id: 7,
+        event: {
+          type: "command_output",
+          call_id: "call_cmd_1",
+          command: "npm test",
+          stream: "status",
+          chunk: "",
+        },
+      });
+      emitAgentEvent({
+        type: "governance",
+        conversation_id: 1,
+        run_id: 7,
+        event: {
+          type: "command_output",
+          call_id: "call_cmd_1",
+          stream: "stdout",
+          chunk: "line 1 [REDACTED]\n",
+        },
+      });
+      emitAgentEvent({
+        type: "governance",
+        conversation_id: 1,
+        run_id: 7,
+        event: {
+          type: "command_output",
+          call_id: "call_cmd_1",
+          stream: "stderr",
+          chunk: "warn\n",
+          truncated: true,
+        },
+      });
+    });
+
+    const activeCmds = result.current.runs[0]?.streaming_commands;
+    expect(activeCmds).toHaveLength(1);
+    expect(activeCmds?.[0]?.command).toBe("npm test");
+    expect(activeCmds?.[0]?.stdout).toBe("line 1 [REDACTED]\n");
+    expect(activeCmds?.[0]?.stderr).toBe("warn\n");
+    expect(activeCmds?.[0]?.truncated).toBe(true);
+
+    act(() => {
+      emitAgentEvent({
+        type: "step",
+        conversation_id: 1,
+        run_id: 7,
+        event: stepFrame({
+          step_id: 22,
+          seq: 1,
+          kind: "tool_call",
+          tool_name: "execute_command",
+          arguments: JSON.stringify({ command: "npm test" }),
+          observation: "line 1 [REDACTED]\n--- stderr ---\nwarn\n",
+          status: "succeeded",
+        }),
+      });
+    });
+
+    expect(result.current.runs[0]?.streaming_commands).toBeUndefined();
+    expect(result.current.runs[0]?.steps[0]?.command_truncated).toBe(true);
+  });
 });

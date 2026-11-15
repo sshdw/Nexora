@@ -1,4 +1,5 @@
-//! Tool command execution: spawn, bounded capture, and drain.
+//! Tool command execution: OS process-tree spawn, streaming secret redaction,
+//! bounded capture, and bounded drain.
 //!
 //! Split from `executor.rs` (AC-207): the shell-command plumbing — argument
 //! validation, `ToolRegistry::execute_command_at_boundary`, the stream
@@ -9,14 +10,16 @@ use std::fmt::Write as _;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use nexora_os_exec::spawn_in_process_tree;
 use serde_json::Value;
 
 use crate::application::agent::control::CancellationToken;
+use crate::application::agent::redaction::{redact_command_output, StreamRedactor};
 
 use super::executor::ToolError;
 use super::output::truncate_output;
@@ -36,24 +39,38 @@ pub(super) const MAX_CAPTURE_BYTES: usize = 1024 * 1024; // 1 MiB per stream
 /// deliberately leaked and the captured output is used as-is.
 pub(super) const DRAIN_GRACE: Duration = Duration::from_secs(2);
 /// Much shorter drain bound used specifically on the cancellation path
-/// (Task 3.2): the child has been killed and the run must return promptly
-/// (acceptance "within ~1s"). Streams that stay open past this are leaked via
-/// the same bounded `drain_reader` mechanism rather than blocking the cancel.
+/// (Task 3.2): the process tree has been killed and the run must return
+/// promptly (acceptance "within ~1s"). Streams that stay open past this are
+/// leaked via the same bounded `drain_reader` mechanism rather than blocking
+/// the cancel.
 pub(super) const CANCEL_DRAIN_GRACE: Duration = Duration::from_millis(250);
+/// Poll / chunk-batch timeout used while waiting on an active child process.
+const POLL_INTERVAL: Duration = Duration::from_millis(25);
+/// Upper bound (in bytes) of a single emitted streaming text batch so live UI
+/// frames stay bounded on UTF-8 char boundaries.
+const STREAM_CHUNK_MAX_BYTES: usize = 16 * 1024;
 /// Marker appended when a stream did not close within [`DRAIN_GRACE`].
 pub(crate) const STREAM_STILL_OPEN_MARKER: &str =
     "[warning: output stream still open after grace period; capture may be partial]";
+
+/// Incremental live updates delivered while a shell command runs.
+///
+/// Every chunk emitted through [`CommandStreamUpdate::Chunk`] and the command
+/// preview in [`CommandStreamUpdate::Started`] are already UTF-8 safe and
+/// scrubbed for secrets (`[REDACTED]`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CommandStreamUpdate {
+    Started { command: String },
+    Chunk { stream: &'static str, text: String },
+    Done { truncated: bool, killed: bool },
+}
+
 impl ToolRegistry {
     // Tool implementations
     // -----------------------------------------------------------------------
 
     /// [`execute_command`](Self::execute) with injectable execution limits
     /// and cooperative cancellation.
-    ///
-    /// The default constructor applies the production constants; unit tests
-    /// inject shorter timeout / drain-grace values so they exercise the *real*
-    /// bounded-timeout and bounded-drain paths quickly instead of simulating
-    /// them. Behavior is identical in both cases.
     #[cfg(test)]
     pub(super) fn execute_command_with_limits(
         args: &Value,
@@ -61,8 +78,36 @@ impl ToolRegistry {
         limits: &CommandLimits,
         token: &CancellationToken,
     ) -> Result<String, ToolError> {
-        Self::execute_command_at_boundary(args, workspace_root, limits, token, None, &mut || {})
+        Self::execute_command_at_boundary(
+            args,
+            workspace_root,
+            limits,
+            token,
+            None,
+            &mut || {},
+            None,
+        )
     }
+
+    #[cfg(test)]
+    pub(super) fn execute_command_with_limits_streaming(
+        args: &Value,
+        workspace_root: &Path,
+        limits: &CommandLimits,
+        token: &CancellationToken,
+        on_stream: &mut dyn FnMut(CommandStreamUpdate),
+    ) -> Result<String, ToolError> {
+        Self::execute_command_at_boundary(
+            args,
+            workspace_root,
+            limits,
+            token,
+            None,
+            &mut || {},
+            Some(on_stream),
+        )
+    }
+
     pub(super) fn execute_command_at_boundary(
         args: &Value,
         workspace_root: &Path,
@@ -70,6 +115,7 @@ impl ToolRegistry {
         token: &CancellationToken,
         bound: Option<&Path>,
         started: &mut dyn FnMut(),
+        on_stream: Option<&mut dyn FnMut(CommandStreamUpdate)>,
     ) -> Result<String, ToolError> {
         let (command, resolved_cwd) = validated_command_args(args, workspace_root)?;
 
@@ -78,32 +124,42 @@ impl ToolRegistry {
         }
         Self::run_command_with_limits(
             platform_shell(&command, &["/D", "/C"]),
+            &command,
             &resolved_cwd,
             limits,
             token,
             started,
+            on_stream,
         )
     }
+
     pub(super) fn execute_terminal_command(
         args: &Value,
         workspace_root: &Path,
         token: &CancellationToken,
+        on_stream: Option<&mut dyn FnMut(CommandStreamUpdate)>,
     ) -> Result<String, ToolError> {
         let (command, cwd) = command_args(args, workspace_root, resolve_terminal_cwd)?;
         Self::run_command_with_limits(
             platform_shell(&command, &["/C"]),
+            &command,
             &cwd,
             &CommandLimits::default(),
             token,
             &mut || {},
+            on_stream,
         )
     }
+
+    #[allow(clippy::too_many_lines)]
     fn run_command_with_limits(
         mut cmd: Command,
+        raw_command: &str,
         resolved_cwd: &Path,
         limits: &CommandLimits,
         token: &CancellationToken,
         started: &mut dyn FnMut(),
+        mut on_stream: Option<&mut dyn FnMut(CommandStreamUpdate)>,
     ) -> Result<String, ToolError> {
         if token.is_cancelled() {
             return Err(ToolError::Cancelled);
@@ -113,29 +169,40 @@ impl ToolRegistry {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        let mut child = cmd
-            .spawn()
+        let mut child = spawn_in_process_tree(&mut cmd)
             .map_err(|e| ToolError::Io(format!("failed to spawn command: {e}")))?;
         started();
 
-        // Take pipes and move each into a reader thread that accumulates at
-        // most `capture_cap` bytes (discarding anything beyond) and hands its
-        // buffer to a channel when EOF is reached. Threads that never reach
-        // EOF (a grandchild still holding the pipe open) simply never send;
-        // they are reaped below through the bounded drain, never through an
-        // unbounded join.
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
+        if let Some(cb) = on_stream.as_deref_mut() {
+            let (scrubbed_cmd, _) = redact_command_output(raw_command);
+            cb(CommandStreamUpdate::Started {
+                command: scrubbed_cmd,
+            });
+        }
 
-        let mut stdout_handle = stdout.map(|out| spawn_stream_reader(out, limits.capture_cap));
-        let mut stderr_handle = stderr.map(|err| spawn_stream_reader(err, limits.capture_cap));
+        // Move both pipes into reader threads that perform UTF-8-safe
+        // streaming secret redaction, emit incremental chunks (when requested),
+        // and bound accumulation at `capture_cap`.
+        let (chunk_tx, chunk_rx) = if on_stream.is_some() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
 
-        // Poll with timeout, honouring cooperative cancellation: a fired
-        // token kills the child promptly (within one poll interval) and
-        // aborts with `ToolError::Cancelled` — this is the "instant cancel"
-        // path that reaches running tool processes (Task 3.2).
+        let mut stdout_handle = child
+            .take_stdout()
+            .map(|out| spawn_stream_reader("stdout", out, limits.capture_cap, chunk_tx.clone()));
+        let mut stderr_handle = child
+            .take_stderr()
+            .map(|err| spawn_stream_reader("stderr", err, limits.capture_cap, chunk_tx));
+
         let start = Instant::now();
         let status = loop {
+            if let Some(rx) = chunk_rx.as_ref() {
+                drain_live_chunks(rx, &mut on_stream);
+            }
+
             if let Some(s) = child
                 .try_wait()
                 .map_err(|e| ToolError::Io(format!("wait failed: {e}")))?
@@ -143,65 +210,80 @@ impl ToolRegistry {
                 break s;
             }
             if token.is_cancelled() {
-                let _ = child.kill();
+                let _ = child.kill_tree();
                 let _ = child.wait();
-                // Cancellation must return promptly (acceptance: "within ~1s"):
-                // drain the just-killed child's pipes only briefly — a
-                // grandchild still holding them is leaked via the bounded
-                // `drain_reader` grace mechanism, never block the cancel.
-                let mut scratch = Vec::new();
-                drain_reader(&mut stdout_handle, CANCEL_DRAIN_GRACE, &mut scratch);
-                drain_reader(&mut stderr_handle, CANCEL_DRAIN_GRACE, &mut scratch);
+                let (stdout_cap, _) = drain_reader(&mut stdout_handle, CANCEL_DRAIN_GRACE);
+                let (stderr_cap, _) = drain_reader(&mut stderr_handle, CANCEL_DRAIN_GRACE);
+                if let Some(rx) = chunk_rx.as_ref() {
+                    drain_live_chunks(rx, &mut on_stream);
+                }
+                if let Some(cb) = on_stream.as_deref_mut() {
+                    cb(CommandStreamUpdate::Done {
+                        truncated: stdout_cap.truncated || stderr_cap.truncated,
+                        killed: true,
+                    });
+                }
                 return Err(ToolError::Cancelled);
             }
             if start.elapsed() > limits.timeout {
-                let _ = child.kill();
+                let _ = child.kill_tree();
                 let _ = child.wait();
-                // Bounded drain on the kill path too: a grandchild still
-                // holding a pipe must not block this error.
-                let mut scratch = Vec::new();
-                drain_reader(&mut stdout_handle, limits.drain_grace, &mut scratch);
-                drain_reader(&mut stderr_handle, limits.drain_grace, &mut scratch);
+                let (stdout_cap, _) = drain_reader(&mut stdout_handle, limits.drain_grace);
+                let (stderr_cap, _) = drain_reader(&mut stderr_handle, limits.drain_grace);
+                if let Some(rx) = chunk_rx.as_ref() {
+                    drain_live_chunks(rx, &mut on_stream);
+                }
+                if let Some(cb) = on_stream.as_deref_mut() {
+                    cb(CommandStreamUpdate::Done {
+                        truncated: stdout_cap.truncated || stderr_cap.truncated,
+                        killed: true,
+                    });
+                }
                 return Err(ToolError::Timeout(format!(
                     "command timed out after {} seconds",
                     limits.timeout.as_secs()
                 )));
             }
-            std::thread::sleep(Duration::from_millis(50));
+
+            if let Some(rx) = chunk_rx.as_ref() {
+                wait_for_live_chunks(rx, &mut on_stream, POLL_INTERVAL);
+            } else {
+                std::thread::sleep(POLL_INTERVAL);
+            }
         };
 
         // Bounded drain of both streams: wait up to the grace period for each
-        // reader to reach EOF. A stream whose pipe stays open past the grace
-        // (orphaned grandchild) has its thread deliberately leaked so the tool
-        // call can complete; the captured bytes so far are used as-is.
-        let mut stdout_bytes = Vec::new();
-        let mut stderr_bytes = Vec::new();
-        let stdout_open = drain_reader(&mut stdout_handle, limits.drain_grace, &mut stdout_bytes);
-        // Wait for stdout EOF first; if it timed out there is little reason to
-        // keep waiting for stderr, but the grace bounds the total anyway.
-        let stderr_open = drain_reader(&mut stderr_handle, limits.drain_grace, &mut stderr_bytes);
+        // reader to reach EOF, then kill any orphaned background descendants
+        // still attached to the OS process tree.
+        let (stdout_cap, stdout_open) = drain_reader(&mut stdout_handle, limits.drain_grace);
+        let (stderr_cap, stderr_open) = drain_reader(&mut stderr_handle, limits.drain_grace);
+        let _ = child.kill_tree();
+        if let Some(rx) = chunk_rx.as_ref() {
+            drain_live_chunks(rx, &mut on_stream);
+        }
 
-        let stdout_str = String::from_utf8_lossy(&stdout_bytes).to_string();
-        let stderr_str = String::from_utf8_lossy(&stderr_bytes).to_string();
+        let capture_truncated = stdout_cap.truncated || stderr_cap.truncated;
+        let dropped_total = stdout_cap
+            .dropped_bytes
+            .saturating_add(stderr_cap.dropped_bytes);
 
         let mut combined = String::new();
-        if !stdout_str.is_empty() {
-            combined.push_str(&stdout_str);
-            if !stdout_str.ends_with('\n') {
+        if !stdout_cap.text.is_empty() {
+            combined.push_str(&stdout_cap.text);
+            if !stdout_cap.text.ends_with('\n') {
                 combined.push('\n');
             }
         }
-        if !stderr_str.is_empty() {
+        if !stderr_cap.text.is_empty() {
             if !combined.is_empty() {
                 combined.push_str("--- stderr ---\n");
             }
-            combined.push_str(&stderr_str);
-            if !stderr_str.ends_with('\n') {
+            combined.push_str(&stderr_cap.text);
+            if !stderr_cap.text.ends_with('\n') {
                 combined.push('\n');
             }
         }
         if combined.is_empty() {
-            // Still report exit status for empty output
             if status.success() {
                 combined = "(no output)\n".to_string();
             } else {
@@ -211,8 +293,17 @@ impl ToolRegistry {
             let _ = writeln!(combined, "\n[command exited with status {status}]");
         }
 
-        // A stream that never closed within the grace period is reported so
-        // the model knows the captured output may be incomplete.
+        if capture_truncated {
+            if !combined.ends_with('\n') {
+                combined.push('\n');
+            }
+            let _ = writeln!(
+                combined,
+                "[warning: command stream capture truncated at {} bytes (MAX_CAPTURE_BYTES); {dropped_total} additional bytes discarded]",
+                limits.capture_cap
+            );
+        }
+
         if stdout_open || stderr_open {
             if !combined.ends_with('\n') {
                 combined.push('\n');
@@ -221,35 +312,38 @@ impl ToolRegistry {
             combined.push('\n');
         }
 
-        let truncated = truncate_output(combined);
-        Ok(truncated)
+        // Defense-in-depth scrub across stream boundaries before context
+        // truncation/spilling or return.
+        let (combined, _) = redact_command_output(&combined);
+        let combined_len = combined.len();
+        let output = truncate_output(combined);
+        let budget_truncated = output.len() != combined_len
+            || output.contains("[output truncated,")
+            || output.contains("[truncated:");
+
+        if let Some(cb) = on_stream {
+            cb(CommandStreamUpdate::Done {
+                truncated: capture_truncated || budget_truncated,
+                killed: false,
+            });
+        }
+
+        Ok(output)
     }
 }
+
 // ---------------------------------------------------------------------------
 // Command execution plumbing: injectable limits, bounded capture, bounded drain
 // ---------------------------------------------------------------------------
 
 /// Validate `execute_command` arguments and resolve the working directory.
-///
-/// Returns the command string and its workspace-confined absolute directory.
-///
-/// Analysis lives in `shell_policy`; it never establishes native isolation.
-/// NOTE (NEX-SEC-001 defence-in-depth): no static
-/// command allowlist/profile is enforced here. A `sh -c` / `cmd /C` string
-/// cannot be authorized by a prefix — quoting, `&&` chains, environment
-/// indirection, and `powershell -EncodedCommand` all defeat prefix matching
-/// — so an allowlist would either break legitimate coding runs or create
-/// false confidence while adding a second policy surface to keep in sync
-/// with the approval ladder. The enforced control is the NEX-SEC-001
-/// deny-floor instead: the shell always parks for explicit user consent
-/// (`RiskClass::DangerousShell` + the dispatch `Ask` non-collapse), and the
-/// child's `cwd` stays workspace-confined with TOCTOU re-verification below.
 pub(super) fn validated_command_args(
     args: &Value,
     workspace_root: &Path,
 ) -> Result<(String, PathBuf), ToolError> {
     command_args(args, workspace_root, resolve_path)
 }
+
 fn command_args(
     args: &Value,
     workspace_root: &Path,
@@ -283,12 +377,23 @@ fn command_args(
     }
     Ok((command.to_owned(), resolved))
 }
+
 fn platform_shell(command: &str, windows_flags: &[&str]) -> Command {
-    if cfg!(windows) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
         let mut shell = Command::new("cmd");
-        shell.args(windows_flags).arg(command);
         shell
-    } else {
+            .args(windows_flags)
+            .arg(command)
+            .creation_flags(CREATE_NO_WINDOW);
+        shell
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = windows_flags;
         let mut shell = Command::new("sh");
         shell.arg("-c").arg(command);
         shell
@@ -297,18 +402,14 @@ fn platform_shell(command: &str, windows_flags: &[&str]) -> Command {
 
 /// Execution limits injected into
 /// [`ToolRegistry::execute_command_at_boundary`].
-///
-/// Unit tests construct this directly to exercise the real bounded-timeout /
-/// bounded-drain / bounded-capture code paths quickly; production always uses
-/// [`Default`].
 #[derive(Debug, Clone, Copy)]
 pub(super) struct CommandLimits {
     /// Hard timeout for the child process.
     pub(super) timeout: Duration,
     /// Grace granted to pipe readers to reach EOF once the process has exited.
     pub(super) drain_grace: Duration,
-    /// Maximum bytes accumulated per output stream before further chunks are
-    /// discarded.
+    /// Maximum redacted bytes accumulated per output stream before further
+    /// output is discarded with an explicit truncation notice.
     pub(super) capture_cap: usize,
 }
 
@@ -322,74 +423,325 @@ impl Default for CommandLimits {
     }
 }
 
-/// Terminal of one output-stream reader thread: the channel delivering the
-/// EOF signal, the shared live capture buffer, plus the thread handle (kept
-/// only so it can be deliberately leaked when the drain grace expires).
-pub(super) type StreamReader = Option<(Receiver<()>, Arc<Mutex<Vec<u8>>>, JoinHandle<()>)>;
+#[derive(Debug, Default)]
+pub(super) struct CapturedStream {
+    pub(super) text: String,
+    pub(super) truncated: bool,
+    pub(super) dropped_bytes: usize,
+}
 
-/// Move `stream` into a reader thread that accumulates at most `capture_cap`
-/// bytes into a shared live buffer and signals EOF through a channel.
-///
-/// Once the cap is reached the thread keeps draining the pipe but discards
-/// everything beyond it: memory stays bounded while the child is never blocked
-/// by a full pipe.
+type StreamChunkMsg = (&'static str, String);
+
+/// Terminal of one output-stream reader thread: the channel delivering the
+/// EOF signal, the shared redacted capture state, plus the thread handle.
+pub(super) type StreamReader = Option<(Receiver<()>, Arc<Mutex<CapturedStream>>, JoinHandle<()>)>;
+
+fn record_scrubbed_segment(
+    stream_name: &'static str,
+    scrubbed: &str,
+    capture_cap: usize,
+    shared: &Arc<Mutex<CapturedStream>>,
+    chunk_tx: Option<&Sender<StreamChunkMsg>>,
+) {
+    if scrubbed.is_empty() {
+        return;
+    }
+
+    let emit_slice: Option<String> = {
+        let mut state = shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.truncated {
+            state.dropped_bytes = state.dropped_bytes.saturating_add(scrubbed.len());
+            None
+        } else {
+            let room = capture_cap.saturating_sub(state.text.len());
+            if room == 0 {
+                state.truncated = true;
+                state.dropped_bytes = state.dropped_bytes.saturating_add(scrubbed.len());
+                None
+            } else {
+                let mut take = scrubbed.len().min(room);
+                while take > 0 && !scrubbed.is_char_boundary(take) {
+                    take -= 1;
+                }
+                let accepted = &scrubbed[..take];
+                if !accepted.is_empty() {
+                    state.text.push_str(accepted);
+                }
+                if take < scrubbed.len() {
+                    state.truncated = true;
+                    state.dropped_bytes = state.dropped_bytes.saturating_add(scrubbed.len() - take);
+                }
+                (!accepted.is_empty()).then(|| accepted.to_string())
+            }
+        }
+    };
+
+    if let (Some(tx), Some(chunk)) = (chunk_tx, emit_slice) {
+        let _ = tx.send((stream_name, chunk));
+    }
+}
+
+/// Move `stream` into a reader thread that UTF-8 decodes and secret-redacts in
+/// flight, emits chunks up to `capture_cap`, and continues draining the OS pipe
+/// until EOF so the child cannot block on a full pipe.
 #[allow(clippy::needless_pass_by_value)] // spawned closure must own the stream
 pub(super) fn spawn_stream_reader(
+    stream_name: &'static str,
     mut stream: impl Read + Send + 'static,
     capture_cap: usize,
-) -> (Receiver<()>, Arc<Mutex<Vec<u8>>>, JoinHandle<()>) {
-    let (tx, rx) = std::sync::mpsc::channel();
-    let shared = Arc::new(Mutex::new(Vec::new()));
+    chunk_tx: Option<Sender<StreamChunkMsg>>,
+) -> (Receiver<()>, Arc<Mutex<CapturedStream>>, JoinHandle<()>) {
+    let (eof_tx, eof_rx) = std::sync::mpsc::channel();
+    let shared = Arc::new(Mutex::new(CapturedStream::default()));
     let shared_cloned = Arc::clone(&shared);
     let handle = std::thread::spawn(move || {
-        let mut chunk = [0_u8; 8192];
+        let mut redactor = StreamRedactor::for_command();
+        let mut buf = [0_u8; 8192];
         loop {
-            match stream.read(&mut chunk) {
+            match stream.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
-                    let mut buf = shared_cloned
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    let room = capture_cap.saturating_sub(buf.len());
-                    if room > 0 {
-                        buf.extend_from_slice(&chunk[..std::cmp::min(n, room)]);
-                    }
+                    let scrubbed = redactor.push_bytes(&buf[..n]);
+                    record_scrubbed_segment(
+                        stream_name,
+                        &scrubbed,
+                        capture_cap,
+                        &shared_cloned,
+                        chunk_tx.as_ref(),
+                    );
                 }
             }
         }
-        let _ = tx.send(()); // the receiving side may already be gone; harmless
+        let (tail, _) = redactor.finish();
+        record_scrubbed_segment(
+            stream_name,
+            &tail,
+            capture_cap,
+            &shared_cloned,
+            chunk_tx.as_ref(),
+        );
+        drop(chunk_tx);
+        let _ = eof_tx.send(());
     });
-    (rx, shared, handle)
+    (eof_rx, shared, handle)
 }
 
-/// Boundedly wait for one reader thread to reach EOF into `out`.
-///
-/// Returns `true` when the stream did **not** close within `grace` (e.g. an
-/// orphaned grandchild holding the pipe): the reader thread is then
-/// *deliberately leaked* (`mem::forget`) so the tool call can complete and no
-/// code path can block indefinitely. Any captured bytes are moved into `out`.
-pub(super) fn drain_reader(stream: &mut StreamReader, grace: Duration, out: &mut Vec<u8>) -> bool {
+/// Wait briefly for a live chunk, then coalesce and flush any pending chunks on
+/// UTF-8 boundaries.
+fn wait_for_live_chunks(
+    rx: &Receiver<StreamChunkMsg>,
+    on_stream: &mut Option<&mut dyn FnMut(CommandStreamUpdate)>,
+    timeout: Duration,
+) {
+    match rx.recv_timeout(timeout) {
+        Ok((first_stream, first_text)) => {
+            let mut pending = vec![(first_stream, first_text)];
+            while let Ok(item) = rx.try_recv() {
+                pending.push(item);
+            }
+            emit_coalesced_chunks(pending, on_stream);
+        }
+        Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => {}
+    }
+}
+
+fn drain_live_chunks(
+    rx: &Receiver<StreamChunkMsg>,
+    on_stream: &mut Option<&mut dyn FnMut(CommandStreamUpdate)>,
+) {
+    let mut pending = Vec::new();
+    while let Ok(item) = rx.try_recv() {
+        pending.push(item);
+    }
+    if !pending.is_empty() {
+        emit_coalesced_chunks(pending, on_stream);
+    }
+}
+
+fn emit_coalesced_chunks(
+    pending: Vec<StreamChunkMsg>,
+    on_stream: &mut Option<&mut dyn FnMut(CommandStreamUpdate)>,
+) {
+    let Some(cb) = on_stream.as_deref_mut() else {
+        return;
+    };
+
+    let mut current_stream: Option<&'static str> = None;
+    let mut buffer = String::new();
+
+    for (stream, text) in pending {
+        if text.is_empty() {
+            continue;
+        }
+        if let Some(active) = current_stream {
+            if active != stream {
+                flush_bounded_utf8_chunks(active, &mut buffer, cb);
+                current_stream = Some(stream);
+            }
+        } else {
+            current_stream = Some(stream);
+        }
+        buffer.push_str(&text);
+        if buffer.len() >= STREAM_CHUNK_MAX_BYTES {
+            if let Some(active) = current_stream {
+                flush_bounded_utf8_chunks(active, &mut buffer, cb);
+            }
+        }
+    }
+
+    if let Some(active) = current_stream {
+        if !buffer.is_empty() {
+            flush_bounded_utf8_chunks(active, &mut buffer, cb);
+        }
+    }
+}
+
+fn flush_bounded_utf8_chunks(
+    stream: &'static str,
+    buffer: &mut String,
+    cb: &mut dyn FnMut(CommandStreamUpdate),
+) {
+    let mut start = 0;
+    while start < buffer.len() {
+        let remaining = buffer.len() - start;
+        let take = if remaining <= STREAM_CHUNK_MAX_BYTES {
+            remaining
+        } else {
+            let mut cut = start + STREAM_CHUNK_MAX_BYTES;
+            while cut > start && !buffer.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            if cut == start {
+                // Single char wider than budget shouldn't happen; advance one char.
+                buffer[start..]
+                    .chars()
+                    .next()
+                    .map_or(remaining, char::len_utf8)
+            } else {
+                cut - start
+            }
+        };
+        let piece = &buffer[start..start + take];
+        cb(CommandStreamUpdate::Chunk {
+            stream,
+            text: piece.to_string(),
+        });
+        start += take;
+    }
+    buffer.clear();
+}
+
+/// Boundedly wait for one reader thread to reach EOF and return the redacted
+/// capture together with whether the grace period expired (`true` = stream still open).
+pub(super) fn drain_reader(stream: &mut StreamReader, grace: Duration) -> (CapturedStream, bool) {
     match stream.take() {
         Some((rx, shared, handle)) => {
             let closed = rx.recv_timeout(grace);
+            let mut state = shared
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let captured = std::mem::take(&mut *state);
             if closed.is_ok() {
-                let mut buf = shared
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                *out = std::mem::take(&mut *buf);
-                false
+                let _ = handle.join();
+                (captured, false)
             } else {
-                // Grace expired (or the sender vanished unread): leak the
-                // thread on purpose rather than blocking or aborting, but
-                // preserve the partial capture accumulated so far.
-                let mut buf = shared
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                *out = std::mem::take(&mut *buf);
                 std::mem::forget(handle);
-                true
+                (captured, true)
             }
         }
-        None => false,
+        None => (CapturedStream::default(), false),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::application::agent::tools::test_support::temp_workspace;
+
+    #[test]
+    fn streaming_execute_command_emits_redacted_utf8_chunks_and_done() {
+        let ws = temp_workspace();
+        let token = CancellationToken::new();
+        let cmd = if cfg!(windows) {
+            "echo first-line & echo Authorization: Bearer super_secret_token_99 & echo err-line 1>&2"
+        } else {
+            "printf 'first-line\\n'; sleep 0.05; printf 'Authorization: Bearer super_secret_token_99\\n'; printf 'err-line\\n' >&2"
+        };
+        let args = serde_json::json!({ "command": cmd });
+        let mut updates = Vec::new();
+        let out = ToolRegistry::execute_command_with_limits_streaming(
+            &args,
+            &ws,
+            &CommandLimits::default(),
+            &token,
+            &mut |u| updates.push(u),
+        )
+        .expect("command succeeds");
+
+        assert!(out.contains("first-line"));
+        assert!(out.contains("Bearer [REDACTED]"));
+        assert!(out.contains("err-line"));
+        assert!(!out.contains("super_secret_token_99"));
+
+        assert!(matches!(
+            updates.first(),
+            Some(CommandStreamUpdate::Started { .. })
+        ));
+        assert!(matches!(
+            updates.last(),
+            Some(CommandStreamUpdate::Done {
+                truncated: false,
+                killed: false
+            })
+        ));
+
+        let streamed: String = updates
+            .iter()
+            .filter_map(|u| match u {
+                CommandStreamUpdate::Chunk { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(streamed.contains("first-line"));
+        assert!(streamed.contains("Bearer [REDACTED]"));
+        assert!(!streamed.contains("super_secret_token_99"));
+
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn command_capture_cap_surfaces_honest_truncation_notice() {
+        let ws = temp_workspace();
+        let token = CancellationToken::new();
+        let cmd = format!("echo {}", "A".repeat(600));
+        let args = serde_json::json!({ "command": cmd });
+        let limits = CommandLimits {
+            timeout: Duration::from_secs(10),
+            drain_grace: Duration::from_millis(500),
+            capture_cap: 128,
+        };
+        let mut saw_truncated_done = false;
+        let out = ToolRegistry::execute_command_with_limits_streaming(
+            &args,
+            &ws,
+            &limits,
+            &token,
+            &mut |u| {
+                if let CommandStreamUpdate::Done { truncated, killed } = u {
+                    assert!(!killed);
+                    saw_truncated_done = truncated;
+                }
+            },
+        )
+        .expect("command finishes within capture cap");
+
+        assert!(saw_truncated_done, "Done update must report truncated=true");
+        assert!(
+            out.contains("MAX_CAPTURE_BYTES") && out.contains("truncated at 128 bytes"),
+            "output must surface honest capture-cap truncation notice, got: {out}"
+        );
+        let _ = std::fs::remove_dir_all(&ws);
     }
 }

@@ -50,7 +50,6 @@ export interface DocsFeature {
  * and with `HIDDEN_PANEL_DOC_IDS` in src/lib/navTrim.test.ts. */
 export const HIDDEN_PANEL_DOC_IDS: readonly string[] = [
   "go.library",
-  "go.terminal",
   "go.audit",
   "go.debt",
   "go.gh",

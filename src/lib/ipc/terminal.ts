@@ -2,8 +2,19 @@
 //! through the agent tool path (commands/terminal.rs). Survives the terminal
 //! UI removal (#219) — see `src/lib/tauri.test.ts`.
 
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { invoke } from "./core";
 import { requestConfirmation } from "./confirmations";
+
+export interface TerminalOutputEvent {
+  run_id: number;
+  stream: "stdout" | "stderr" | "status" | string;
+  chunk: string;
+  done: boolean;
+  truncated: boolean;
+  killed: boolean;
+  success: boolean | null;
+}
 
 // ---- Workspace terminal (user-authored commands via the agent tool path) -
 // One thin command area over the existing `execute_command` tool:
@@ -87,4 +98,13 @@ export function terminalExplain(
     provider,
     model,
   });
+}
+
+/** Subscribe to live redacted stdout/stderr and completion frames from `terminal_run`. */
+export function onTerminalOutput(
+  handler: (event: TerminalOutputEvent) => void
+): Promise<UnlistenFn> {
+  return listen<TerminalOutputEvent>("terminal-output", (event) =>
+    handler(event.payload)
+  );
 }

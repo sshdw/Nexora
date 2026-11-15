@@ -14,6 +14,7 @@ mod output;
 pub(crate) mod path_safety;
 mod search;
 
+pub(crate) use command::CommandStreamUpdate;
 pub(crate) use executor::ToolError;
 pub(crate) use path_safety::is_within_workspace;
 

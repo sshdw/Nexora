@@ -88,7 +88,7 @@ impl ToolRegistry {
         workspace_root: &Path,
         token: &CancellationToken,
     ) -> Result<String, ToolError> {
-        Self::execute_raw(call, workspace_root, token, None, None, &mut || {})
+        Self::execute_raw(call, workspace_root, token, None, None, &mut || {}, None)
     }
     pub(crate) fn execute_agent(
         call: &ToolCall,
@@ -107,6 +107,27 @@ impl ToolRegistry {
         gate: Option<&crate::application::agent::approval::ApprovalGate>,
         checkpoints: Option<&mut CheckpointHook<'_>>,
     ) -> Result<String, ToolError> {
+        Self::execute_agent_with_checkpoints_streaming(
+            call,
+            workspace_root,
+            token,
+            gate,
+            checkpoints,
+            None,
+        )
+    }
+
+    /// Dispatches `call` under `gate`, optionally forwarding incremental
+    /// redacted stdout/stderr updates from `execute_command`.
+    pub(crate) fn execute_agent_with_checkpoints_streaming(
+        call: &ToolCall,
+        workspace_root: &Path,
+        token: &CancellationToken,
+        gate: Option<&crate::application::agent::approval::ApprovalGate>,
+        checkpoints: Option<&mut CheckpointHook<'_>>,
+        on_stream: Option<&mut dyn FnMut(super::CommandStreamUpdate)>,
+    ) -> Result<String, ToolError> {
+        let mut on_stream = on_stream;
         if let Some(gate) = gate {
             return gate.execute_authorized(call, workspace_root, |target, started| {
                 Self::execute_raw(
@@ -116,6 +137,7 @@ impl ToolRegistry {
                     Some(target),
                     checkpoints,
                     started,
+                    on_stream.take(),
                 )
             });
         }
@@ -127,13 +149,31 @@ impl ToolRegistry {
                 "an agent execution context is required".into(),
             ));
         }
-        Self::execute_raw(call, workspace_root, token, None, checkpoints, &mut || {})
+        Self::execute_raw(
+            call,
+            workspace_root,
+            token,
+            None,
+            checkpoints,
+            &mut || {},
+            on_stream,
+        )
     }
     /// Separate human terminal entry: never accepts file/agent tool calls.
     pub(crate) fn execute_terminal(
         call: &ToolCall,
         workspace_root: &Path,
         token: &CancellationToken,
+    ) -> Result<String, ToolError> {
+        Self::execute_terminal_streaming(call, workspace_root, token, None)
+    }
+
+    /// Streaming variant of [`execute_terminal`](Self::execute_terminal).
+    pub(crate) fn execute_terminal_streaming(
+        call: &ToolCall,
+        workspace_root: &Path,
+        token: &CancellationToken,
+        on_stream: Option<&mut dyn FnMut(super::CommandStreamUpdate)>,
     ) -> Result<String, ToolError> {
         if call.name != "execute_command" {
             return Err(ToolError::UnknownTool(call.name.clone()));
@@ -144,7 +184,7 @@ impl ToolRegistry {
         let args: Value = serde_json::from_str(&call.arguments).map_err(|_| {
             ToolError::InvalidArguments("invalid terminal command arguments".into())
         })?;
-        Self::execute_terminal_command(&args, workspace_root, token)
+        Self::execute_terminal_command(&args, workspace_root, token, on_stream)
     }
     fn execute_raw(
         call: &ToolCall,
@@ -153,6 +193,7 @@ impl ToolRegistry {
         bound: Option<&Path>,
         checkpoints: Option<&mut CheckpointHook<'_>>,
         started: &mut dyn FnMut(),
+        on_stream: Option<&mut dyn FnMut(super::CommandStreamUpdate)>,
     ) -> Result<String, ToolError> {
         if token.is_cancelled() {
             return Err(ToolError::Cancelled);
@@ -168,6 +209,7 @@ impl ToolRegistry {
                 token,
                 bound,
                 started,
+                on_stream,
             ),
             "read_file" => Self::read_file(&args, workspace_root, bound, started),
             "write_file" => Self::write_file(&args, workspace_root, bound, checkpoints, started),
@@ -879,6 +921,7 @@ mod tests {
                             open_tx.send(()).unwrap();
                             resume_rx.recv_timeout(Duration::from_secs(5)).unwrap();
                         },
+                        None,
                     )
                 })
             });

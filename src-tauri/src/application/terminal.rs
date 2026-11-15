@@ -42,7 +42,8 @@ use std::sync::{Mutex, PoisonError};
 use serde::Serialize;
 
 use crate::application::agent::control::CancellationToken;
-use crate::application::agent::tools::{ToolError, ToolRegistry};
+use crate::application::agent::redaction::redact_command_output;
+use crate::application::agent::tools::{CommandStreamUpdate, ToolError, ToolRegistry};
 use crate::application::confirmations::{ConfirmationRegistry, ConfirmationTarget, SCOPE_TERMINAL};
 use crate::application::execution::{AiMessage, AiRequest, AiRole, RequestError, ToolCall};
 use crate::infrastructure::database::Database;
@@ -160,6 +161,7 @@ pub(crate) fn execute_terminal(
     confirmation_id: &str,
     confirmations: &ConfirmationRegistry,
     token: &CancellationToken,
+    on_stream: Option<&mut dyn FnMut(CommandStreamUpdate)>,
 ) -> Result<TerminalExecuted, TerminalError> {
     // Validate inputs BEFORE consuming: a rejected command or working
     // directory must leave the user's confirmation id usable, so a typo in
@@ -197,14 +199,18 @@ pub(crate) fn execute_terminal(
         arguments: arguments.to_string(),
         thought_signature: None,
     };
-    match ToolRegistry::execute_terminal(&call, workspace_root, token) {
-        Ok(output) => Ok(TerminalExecuted {
-            truncated: TRUNCATE_MARKERS
-                .iter()
-                .any(|marker| output.contains(marker)),
-            success: !exited_nonzero(&output),
-            output,
-        }),
+    match ToolRegistry::execute_terminal_streaming(&call, workspace_root, token, on_stream) {
+        Ok(output) => {
+            let (scrubbed, _) = redact_command_output(&output);
+            Ok(TerminalExecuted {
+                truncated: TRUNCATE_MARKERS
+                    .iter()
+                    .any(|marker| scrubbed.contains(marker))
+                    || scrubbed.contains("MAX_CAPTURE_BYTES"),
+                success: !exited_nonzero(&scrubbed),
+                output: scrubbed,
+            })
+        }
         Err(err) => Err(map_tool_error(&err)),
     }
 }
@@ -527,15 +533,16 @@ pub(crate) fn explain_terminal_error(
     if output.trim().is_empty() {
         return Err(ExplainError::InvalidInput);
     }
+    let (scrubbed_output, _) = redact_command_output(output);
     let context = truncate_chars(exit_context.trim(), MAX_EXIT_CONTEXT_CHARS);
-    let (excerpt, truncated) = if output.len() > MAX_EXPLAIN_BYTES {
+    let (excerpt, truncated) = if scrubbed_output.len() > MAX_EXPLAIN_BYTES {
         let mut end = MAX_EXPLAIN_BYTES;
-        while !output.is_char_boundary(end) {
+        while !scrubbed_output.is_char_boundary(end) {
             end -= 1;
         }
-        (output[..end].to_string(), true)
+        (scrubbed_output[..end].to_string(), true)
     } else {
-        (output.to_string(), false)
+        (scrubbed_output, false)
     };
     let prompt = build_error_prompt(&excerpt, &context, truncated);
     let request = AiRequest {
@@ -582,6 +589,95 @@ mod tests {
     /// tests share.
     fn mint_id(confirmations: &ConfirmationRegistry) -> String {
         mint_for(confirmations, "echo terminal-ok", None)
+    }
+
+    fn execute_terminal(
+        workspace_root: &Path,
+        command: &str,
+        cwd: Option<&str>,
+        confirmation_id: &str,
+        confirmations: &ConfirmationRegistry,
+        token: &CancellationToken,
+    ) -> Result<TerminalExecuted, TerminalError> {
+        super::execute_terminal(
+            workspace_root,
+            command,
+            cwd,
+            confirmation_id,
+            confirmations,
+            token,
+            None,
+        )
+    }
+
+    #[test]
+    fn streaming_terminal_emits_redacted_chunks() {
+        let ws = temp_workspace();
+        let token = CancellationToken::new();
+        let confirmations = ConfirmationRegistry::new();
+        let cmd = if cfg!(windows) {
+            "echo hello-term & echo tok ghp_0123456789abcdef0123"
+        } else {
+            "echo hello-term; echo tok ghp_0123456789abcdef0123"
+        };
+        let id = mint_for(&confirmations, cmd, None);
+        let mut chunks = Vec::new();
+        let executed = super::execute_terminal(
+            &ws,
+            cmd,
+            None,
+            &id,
+            &confirmations,
+            &token,
+            Some(&mut |update| {
+                if let CommandStreamUpdate::Chunk { text, .. } = update {
+                    chunks.push(text);
+                }
+            }),
+        )
+        .expect("terminal streaming command executes");
+
+        let joined = chunks.concat();
+        assert!(executed.success);
+        assert!(executed.output.contains("ghp_[REDACTED]"));
+        assert!(!executed.output.contains("0123456789abcdef0123"));
+        assert!(joined.contains("hello-term"));
+        assert!(joined.contains("ghp_[REDACTED]"));
+        assert!(!joined.contains("0123456789abcdef0123"));
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn terminal_kill_cancels_active_process_tree() {
+        let ws = temp_workspace();
+        let registry = TerminalRegistry::new();
+        let confirmations = ConfirmationRegistry::new();
+        let cmd = if cfg!(windows) {
+            "ping -n 30 127.0.0.1 >nul"
+        } else {
+            "sleep 30"
+        };
+        let id = mint_for(&confirmations, cmd, None);
+        let (run_id, token) = registry.begin().expect("begin terminal session");
+
+        let handle = std::thread::spawn({
+            let ws = ws.clone();
+            move || super::execute_terminal(&ws, cmd, None, &id, &confirmations, &token, None)
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        let start = std::time::Instant::now();
+        assert!(registry.cancel_active());
+        let res = handle.join().expect("thread finishes");
+        registry.finish(run_id);
+
+        assert_eq!(res, Err(TerminalError::Cancelled));
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(3),
+            "terminal cancel took too long: {:?}",
+            start.elapsed()
+        );
+        let _ = std::fs::remove_dir_all(&ws);
     }
 
     fn assert_secret_free(text: &str) {
