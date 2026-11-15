@@ -3045,3 +3045,91 @@ fn execute_command_streams_redacted_command_output_events() {
     );
     let _ = fs::remove_dir_all(&ws);
 }
+
+#[test]
+fn verified_general_shell_bypasses_seeded_ask_while_custom_ask_still_parks() {
+    use crate::application::agent::access::AccessContext;
+    use crate::application::agent::permissions::{delete_rule, insert_rule};
+    use crate::application::agent::sandbox;
+
+    let _sandbox_lock = sandbox::test_lock();
+    let db = in_memory_database();
+    let ws = temp_workspace();
+    let access = AccessContext::root(&db).with_sandbox_enabled(true);
+    let gate = ApprovalGate::new(AutonomyMode::SemiAutonomous).with_access(access);
+    gate.bind_workspace(&ws);
+    sandbox::set_test_status(&ws, true, Duration::ZERO);
+
+    let token = CancellationToken::new();
+    let store = PermissionStore::load(&db);
+    let safe_call = approval_call(
+        "c1",
+        "execute_command",
+        serde_json::json!({"command": "echo verified-ok", "cwd": "."}),
+    );
+    let install_call = approval_call(
+        "c2",
+        "execute_command",
+        serde_json::json!({"command": "npm install left-pad", "cwd": "."}),
+    );
+    let ctx = DispatchCtx {
+        workspace_root: &ws,
+        token: &token,
+        control: None,
+        approval_gate: Some(&gate),
+        permission_store: Some(&store),
+        preset: RunPreset::Coding,
+        sender: None,
+        audit: None,
+        role: None,
+        injection_enabled: true,
+        checkpoints: None,
+        turn_index: 0,
+        question_ctx: None,
+    };
+    let mut messages = Vec::new();
+    let mut record = None;
+
+    assert_eq!(
+        handle_permission_store_decision(&ctx, &safe_call, &mut messages, &mut record, None),
+        StoreAction::Continue {
+            considered_rule: Some(1),
+        }
+    );
+    assert_eq!(
+        handle_permission_store_decision(&ctx, &install_call, &mut messages, &mut record, None),
+        StoreAction::ParkForAsk { rule_id: Some(1) }
+    );
+
+    sandbox::invalidate(&ws);
+    assert_eq!(
+        handle_permission_store_decision(&ctx, &safe_call, &mut messages, &mut record, None),
+        StoreAction::ParkForAsk { rule_id: Some(1) }
+    );
+
+    sandbox::set_test_status(&ws, true, Duration::ZERO);
+    assert!(delete_rule(&db, 1).expect("delete v7 seed"));
+    let custom_id = insert_rule(
+        &db,
+        "coding",
+        "execute_command",
+        Some("*"),
+        permissions::RuleEffect::Ask,
+        100,
+    )
+    .expect("insert custom ask");
+    let custom_store = PermissionStore::load(&db);
+    let custom_ctx = DispatchCtx {
+        permission_store: Some(&custom_store),
+        ..ctx
+    };
+    assert_eq!(
+        handle_permission_store_decision(&custom_ctx, &safe_call, &mut messages, &mut record, None),
+        StoreAction::ParkForAsk {
+            rule_id: Some(custom_id),
+        }
+    );
+
+    sandbox::clear_test_status(&ws);
+    let _ = fs::remove_dir_all(&ws);
+}

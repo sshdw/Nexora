@@ -135,6 +135,26 @@ impl PermissionStore {
         self.unavailable
     }
 
+    /// Whether `rule_id` identifies the v7 migration baseline default shell `ask`
+    /// rule (`('coding', 'execute_command', '*', 'ask', 50)`). User-added rules
+    /// always use `priority = 100`, so only this baseline default yields when
+    /// `ApprovalGate` allows unprompted `GeneralShell` inside a `Verified`
+    /// native sandbox (`!gate.needs_approval(call)`).
+    #[must_use]
+    pub(crate) fn is_seeded_default_shell_ask(&self, rule_id: Option<i64>) -> bool {
+        let Some(id) = rule_id else {
+            return false;
+        };
+        self.rules.iter().any(|rule| {
+            rule.id == id
+                && rule.preset == "coding"
+                && rule.tool_pattern == "execute_command"
+                && rule.path_pattern.as_deref() == Some("*")
+                && rule.effect == RuleEffect::Ask
+                && rule.priority == 50
+        })
+    }
+
     pub(crate) fn decide_call(
         &self,
         preset: &str,

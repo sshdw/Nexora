@@ -510,14 +510,30 @@ impl ApprovalGate {
                 if current.is_some() && snapshot.is_some() && current != snapshot {
                     return Err(denied());
                 }
-                let policy = current
-                    .or(snapshot)
+                let policy_store = current.or(snapshot);
+                let policy = policy_store
+                    .as_ref()
                     .and_then(|store| store.decide_call(preset.as_str(), call, workspace));
                 if matches!(policy, Some(PermissionOutcome::Deny { .. })) {
                     return Err(denied());
                 }
-                let needs_consent = self.needs_approval(call)
-                    || matches!(policy, Some(PermissionOutcome::Ask { .. }));
+                let needs_approval = self.needs_approval(call);
+                // The v7 migration seeds a baseline `('coding', 'execute_command', '*', 'ask', 50)`
+                // row for unverified shells. Explicit/custom Ask rules (`priority != 50`, different
+                // path/preset, or non-shell tools) still mandate consent even when `needs_approval`
+                // is false, whereas the seeded baseline yields only when `needs_approval` already
+                // permits unprompted `GeneralShell` inside a `Verified` native sandbox.
+                let ask_rule_requires_consent = match policy {
+                    Some(PermissionOutcome::Ask { rule_id }) => {
+                        needs_approval
+                            || call.name != "execute_command"
+                            || !policy_store
+                                .as_ref()
+                                .is_some_and(|store| store.is_seeded_default_shell_ask(rule_id))
+                    }
+                    _ => false,
+                };
+                let needs_consent = needs_approval || ask_rule_requires_consent;
                 let reusable = self.reusable(call);
                 let key = format!("exact:{}:{identity}", call.name);
                 let mut state = self.lock_state();
@@ -533,6 +549,9 @@ impl ApprovalGate {
                 drop(state);
                 if call.name == "execute_command" {
                     let sandboxed = self.access.sandbox_posture(workspace) == "Verified";
+                    if !sandboxed && !once && !group {
+                        return Err(denied());
+                    }
                     super::sandbox::authorized(workspace, sandboxed, || execute(target, started))
                 } else {
                     execute(target, started)
@@ -1853,6 +1872,16 @@ mod tests {
                 "execute_command",
                 json!({"command": format!("echo escaped > \"{}\"", marker.display()), "cwd": "."}),
             );
+            assert!(
+                gate.needs_approval(&marker_call),
+                "shell redirect must still require explicit gate consent"
+            );
+            let request_id = gate.prepare_pending(&marker_call);
+            assert!(gate.respond(&request_id, ApprovalDecision::Approved));
+            assert_eq!(
+                gate.request_approval(&marker_call),
+                Ok(ApprovalDecision::Approved)
+            );
             super::super::sandbox::fail_next_sandboxed_spawn();
             let fail = ToolRegistry::execute_agent(&marker_call, &workspace, &token, Some(&gate));
             assert!(
@@ -1863,6 +1892,88 @@ mod tests {
             assert_eq!(
                 super::super::sandbox::status(&workspace).posture,
                 "PerCommandConsent"
+            );
+        }
+
+        super::super::sandbox::clear_test_status(&workspace);
+        std::fs::remove_dir_all(&workspace).unwrap();
+    }
+
+    #[test]
+    fn seeded_default_shell_ask_yields_only_for_verified_general_shell() {
+        use crate::application::agent::permissions::{
+            delete_rule, insert_rule, PermissionStore, RuleEffect,
+        };
+        use crate::application::agent::tools::{
+            test_support::{call, temp_workspace},
+            ToolError,
+        };
+        use crate::infrastructure::database::in_memory_database;
+        use serde_json::json;
+
+        let _sandbox_lock = super::super::sandbox::test_lock();
+        let db = in_memory_database();
+        let seeded = PermissionStore::load(&db);
+        assert!(seeded.is_seeded_default_shell_ask(Some(1)));
+        assert!(!seeded.is_seeded_default_shell_ask(None));
+
+        let workspace = temp_workspace();
+        let safe_call = call(
+            "execute_command",
+            json!({"command": "echo verified-ok", "cwd": "."}),
+        );
+
+        // When sandbox is disabled (PerCommandConsent), the v7 seed still requires consent.
+        let unverified_gate =
+            ApprovalGate::new(AutonomyMode::SemiAutonomous).with_access(AccessContext::root(&db));
+        unverified_gate.bind_workspace(&workspace);
+        assert_eq!(
+            unverified_gate.execute_authorized(
+                &safe_call,
+                &workspace,
+                |_, _| Ok("ran".to_string())
+            ),
+            Err(ToolError::ConsentInvalidated)
+        );
+
+        if super::super::sandbox::refresh(&workspace).posture == "Verified" {
+            let access = AccessContext::root(&db).with_sandbox_enabled(true);
+            let gate = ApprovalGate::new(AutonomyMode::SemiAutonomous).with_access(access);
+            gate.bind_workspace(&workspace);
+
+            assert!(!gate.needs_approval(&safe_call));
+            assert_eq!(
+                gate.execute_authorized(&safe_call, &workspace, |_, _| Ok("ran".to_string())),
+                Ok("ran".to_string())
+            );
+
+            // An uncertain/non-GeneralShell command still requires consent against the v7 seed.
+            let install_call = call(
+                "execute_command",
+                json!({"command": "npm install left-pad", "cwd": "."}),
+            );
+            assert_eq!(
+                gate.execute_authorized(&install_call, &workspace, |_, _| Ok("ran".to_string())),
+                Err(ToolError::ConsentInvalidated)
+            );
+
+            // Replace the v7 seed (priority 50) with an explicit user-added Ask rule (priority 100);
+            // explicit Ask rules must never be bypassed even for Verified GeneralShell.
+            assert!(delete_rule(&db, 1).expect("delete v7 seed"));
+            let custom_id = insert_rule(
+                &db,
+                "coding",
+                "execute_command",
+                Some("*"),
+                RuleEffect::Ask,
+                100,
+            )
+            .expect("insert custom ask");
+            let custom_store = PermissionStore::load(&db);
+            assert!(!custom_store.is_seeded_default_shell_ask(Some(custom_id)));
+            assert_eq!(
+                gate.execute_authorized(&safe_call, &workspace, |_, _| Ok("ran".to_string())),
+                Err(ToolError::ConsentInvalidated)
             );
         }
 
