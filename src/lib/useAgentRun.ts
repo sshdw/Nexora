@@ -13,6 +13,8 @@ import {
   type DurableRunEvent,
   type FileCheckpoint,
   type PendingQuestionView,
+  type PlanDecisionStatus,
+  type RunPlan,
   type RunQuestion,
   type StepEventFrame,
   answerRunQuestion,
@@ -23,6 +25,7 @@ import {
   listAgentSteps,
   listConversationRunEvents,
   listRunCheckpoints,
+  listRunPlans,
   listRunQuestions,
   revertFileCheckpoint,
   revertTurnCheckpoints,
@@ -88,6 +91,16 @@ export interface AgentRunView {
   plan_content?: string | null;
   /** True when the run itself is a read-only plan run. */
   is_plan?: boolean;
+  /** Persisted decision status for Plan runs (`pending | accepted | rejected | custom_reply`). */
+  plan_decision_status?: PlanDecisionStatus | null;
+  /** Optional custom reply text recorded when `plan_decision_status === "custom_reply"`. */
+  plan_decision_reply?: string | null;
+  /** Follow-up implementation run id launched from this Plan run, if any. */
+  plan_implemented_run_id?: number | null;
+  /** Parent interrupted run id when this run was started via explicit Continue. */
+  continued_from_run_id?: number | null;
+  /** Backend persisted interrupted flag (preserved alongside normalized status). */
+  interrupted?: boolean;
   pending_approval: {
     metadata?: ApprovalMetadata;
     call_id: string;
@@ -214,6 +227,8 @@ export interface AgentRunStore {
   ) => Promise<RunQuestion>;
   /** Inject a live `Clarify now` steering message into an active run. */
   clarifyRun: (runId: number, content: string) => Promise<void>;
+  /** Synchronously merge a recorded Plan decision into the local run view. */
+  applyPlanDecision: (runId: number, plan: RunPlan) => void;
 }
 
 /** Merge previews by durable identity first, with seq as the legacy fallback.
@@ -468,15 +483,23 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
         !live?.pending_question
           ? await listRunQuestions(session.conversationId).catch(() => [])
           : [];
+      const needsPlanFetch = owned.some(
+        (run) => run.is_plan && !run.plan_content
+      );
+      const persistedPlans = needsPlanFetch
+        ? await listRunPlans(session.conversationId).catch(() => [])
+        : [];
+      const plansByRun = new Map(persistedPlans.map((p) => [p.run_id, p]));
       if (!current(session) || request !== session.request) return;
       const views = owned.map((row): AgentRunView => {
         const old = session.runs.find((run) => run.run_id === row.id);
         const status = row.interrupted ? "interrupted" : row.status;
+        const planRow = plansByRun.get(row.id);
         const changed =
           (session.revision.get(row.id) ?? 0) !== (revisions.get(row.id) ?? 0);
         const preserve =
           old && (changed || (!isActive(old.status) && isActive(status)));
-        const merged = {
+        const merged: AgentRunView = {
           ...placeholder(row.id, session.conversationId),
           ...old,
           steps_loaded:
@@ -484,11 +507,35 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
           model: row.model,
           started_at: row.started_at,
           status: preserve ? old.status : status,
+          interrupted: Boolean(row.interrupted),
           finished_at: preserve ? old.finished_at : row.finished_at,
           error: preserve ? old.error : row.error,
           final_content: preserve
             ? old.final_content
             : (row.final_content ?? old?.final_content ?? null),
+          is_plan: row.is_plan ?? old?.is_plan ?? false,
+          plan_content:
+            row.plan_content ??
+            planRow?.plan_content ??
+            old?.plan_content ??
+            (row.is_plan ? (row.final_content ?? old?.final_content ?? null) : null),
+          plan_decision_status:
+            row.plan_decision_status ??
+            planRow?.decision_status ??
+            old?.plan_decision_status ??
+            null,
+          plan_decision_reply:
+            row.plan_decision_reply ??
+            planRow?.decision_reply ??
+            old?.plan_decision_reply ??
+            null,
+          plan_implemented_run_id:
+            row.plan_implemented_run_id ??
+            planRow?.implemented_run_id ??
+            old?.plan_implemented_run_id ??
+            null,
+          continued_from_run_id:
+            row.continued_from_run_id ?? old?.continued_from_run_id ?? null,
           total_steps: Math.max(
             row.total_steps,
             old?.total_steps ?? 0,
@@ -833,6 +880,16 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
           error: payload.event.error,
           final_content:
             payload.event.final_content ?? old.final_content ?? null,
+          plan_content:
+            old.plan_content ??
+            (old.is_plan && payload.event.status === "completed"
+              ? (payload.event.final_content ?? null)
+              : null),
+          plan_decision_status:
+            old.plan_decision_status ??
+            (old.is_plan && payload.event.status === "completed"
+              ? "pending"
+              : null),
           finished_at: old.finished_at ?? Date.now() / 1000,
           pending_approval: null,
           pending_question: null,
@@ -844,6 +901,16 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
       } else {
         const gov = payload.event;
         patch(session, payload.run_id, (run) => {
+          if (gov.type === "plan_ready") {
+            return {
+              ...run,
+              is_plan: true,
+              plan_content: gov.plan.plan_content,
+              plan_decision_status: gov.plan.decision_status,
+              plan_decision_reply: gov.plan.decision_reply,
+              plan_implemented_run_id: gov.plan.implemented_run_id,
+            };
+          }
           if (!isActive(run.status)) return run;
           if (gov.type === "stream_delta") {
             if (gov.kind === "text") {
@@ -974,6 +1041,22 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
     []
   );
 
+  const applyPlanDecision = useCallback(
+    (runId: number, plan: RunPlan): void => {
+      const session = sessionRef.current;
+      if (!session || session.conversationId !== conversationId) return;
+      patch(session, runId, (run) => ({
+        ...run,
+        is_plan: true,
+        plan_content: plan.plan_content,
+        plan_decision_status: plan.decision_status,
+        plan_decision_reply: plan.decision_reply,
+        plan_implemented_run_id: plan.implemented_run_id,
+      }));
+    },
+    [conversationId, patch]
+  );
+
   return {
     runs,
     loading,
@@ -987,5 +1070,6 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
     revertTurn,
     answerQuestion,
     clarifyRun,
+    applyPlanDecision,
   };
 }

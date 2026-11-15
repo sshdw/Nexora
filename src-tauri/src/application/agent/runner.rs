@@ -190,6 +190,8 @@ pub(crate) struct AgentRunner<'a> {
     project_instructions: Option<String>,
     /// Optional interactive question context for `ask_user_question`.
     question_ctx: Option<QuestionRunContext>,
+    /// Whether this run is a user-initiated read-only Plan run (`M09` / `P04`).
+    is_plan: bool,
 }
 
 /// Outcome of one in-place compaction attempt (Task T4).
@@ -249,6 +251,7 @@ impl<'a> AgentRunner<'a> {
             emit_stream_deltas: false,
             project_instructions: None,
             question_ctx: None,
+            is_plan: false,
         }
     }
 
@@ -295,11 +298,26 @@ impl<'a> AgentRunner<'a> {
     /// ladder (Task 4.1). When no gate is attached the loop keeps the exact
     /// pre-4.1 deterministic behaviour. Cloned cheaply; every clone governs
     /// this runner. If a `RunControl` is already attached, the gate is wired
-    /// to share its cancellation token so `cancel()` while parked on an
-    /// approval aborts with `AgentError::Cancelled` without deadlock.
+    /// Attach an approval gate (`with_approval_gate`) below.
+    ///
+    /// Enables or disables user-initiated Plan mode (`AccessProfile::ReadOnly`)
+    /// for this run (`M09` / `P04`).
+    #[must_use]
+    pub(crate) fn with_plan(mut self, is_plan: bool) -> Self {
+        self.is_plan = is_plan;
+        if is_plan {
+            if let Some(gate) = &self.approval_gate {
+                gate.access().set_plan(true);
+            }
+        }
+        self
+    }
+
+    /// Share the run's cancellation token with `gate` so `cancel()` while
+    /// parked on an approval aborts with `AgentError::Cancelled` without deadlock.
     #[must_use]
     pub(crate) fn with_approval_gate(mut self, gate: ApprovalGate) -> Self {
-        if self.role == Some(AgentRole::Planner) {
+        if self.role == Some(AgentRole::Planner) || self.is_plan {
             gate.access().set_plan(true);
         }
         if let Some(control) = &self.control {
@@ -634,7 +652,7 @@ impl<'a> AgentRunner<'a> {
         spent_micro_usd: &mut u64,
     ) -> Result<String, AgentError> {
         let tools: Arc<Vec<ToolDefinition>> =
-            Arc::new(ToolRegistry::definitions_for_preset(self.preset));
+            Arc::new(ToolRegistry::definitions_for_run(self.preset, self.is_plan));
         // A control never cancelled the plan: when the runner has no attached
         // control it dispatches tools through a never-firing token so the
         // undisputed Task 3.1 behaviour is preserved exactly.
@@ -678,6 +696,13 @@ impl<'a> AgentRunner<'a> {
                 user_request,
             )
         };
+        if self.is_plan {
+            if let Some(system_msg) = messages.first_mut() {
+                if system_msg.role == AiRole::System {
+                    system_msg.content.push_str(prompts::PLAN_MODE_INSTRUCTIONS);
+                }
+            }
+        }
         // Size-seed the existing threshold path: when the assembled opening
         // window itself crosses 0.8, the next step boundary compacts through
         // the unchanged governor/decide + compaction-event path (the usage is

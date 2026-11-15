@@ -56,6 +56,7 @@ use crate::application::execution::{
 use crate::application::routing::{RoutingService, TaskKind};
 use crate::infrastructure::database::Database;
 use crate::infrastructure::repository::agent_runs::{AgentRun, AgentRunRepository, AgentStep};
+use crate::infrastructure::repository::run_plans::{RunPlan, RunPlanRepository};
 use crate::infrastructure::repository::run_questions::RunQuestionRepository;
 
 // S3 split: the run registry lives in `super::registry`; re-exported here so
@@ -333,6 +334,47 @@ pub(crate) struct AgentRunRequest {
     pub(crate) spend_limit_micro_usd: Option<u64>,
 }
 
+/// Optional launch customizations shared by normal runs, Plan runs (`M09`),
+/// plan-approved implementation runs, and safe interrupted continuations (`M11`).
+#[derive(Debug, Clone)]
+pub(crate) struct RunLaunchOptions {
+    /// Enforce user-initiated read-only Plan mode (`AccessProfile::ReadOnly`).
+    pub is_plan: bool,
+    /// Optional interrupted parent run id linked via `run_continuations`.
+    pub continued_from_run_id: Option<i64>,
+    /// Additional prior messages injected after persisted conversation history
+    /// (never persisted into `messages`).
+    pub extra_history: Vec<AiMessage>,
+    /// Whether `request.user_request` should be persisted to `messages` (`false`
+    /// for `Yes` plan confirmation and explicit `continue_run`).
+    pub persist_user_message: bool,
+}
+
+impl Default for RunLaunchOptions {
+    fn default() -> Self {
+        Self {
+            is_plan: false,
+            continued_from_run_id: None,
+            extra_history: Vec::new(),
+            persist_user_message: true,
+        }
+    }
+}
+
+/// Enriched `agent_runs` projection returned to UI callers, combining persisted
+/// `AgentRun` columns with `run_plans` (`M09`) and `run_continuations` (`M11`).
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct AgentRunSummary {
+    #[serde(flatten)]
+    pub run: AgentRun,
+    pub is_plan: bool,
+    pub plan_content: Option<String>,
+    pub plan_decision_status: Option<String>,
+    pub plan_decision_reply: Option<String>,
+    pub plan_implemented_run_id: Option<i64>,
+    pub continued_from_run_id: Option<i64>,
+}
+
 /// Classified failures of [`start_run`] (pre-spawn only: once the run thread
 /// is spawned, outcomes flow through the event stream instead).
 #[derive(Debug)]
@@ -348,6 +390,16 @@ pub(crate) enum AgentRunError {
     RunAlreadyActive {
         /// The busy conversation id.
         conversation_id: i64,
+    },
+    /// The requested parent run for continuation does not exist.
+    RunNotFound {
+        /// The missing run id.
+        run_id: i64,
+    },
+    /// A continuation was requested for a run whose status is not `'interrupted'`.
+    RunNotInterrupted {
+        /// Current persisted run status.
+        status: String,
     },
     /// Provider/credential resolution failed (FR-014 classifications).
     Request(RequestError),
@@ -600,8 +652,34 @@ pub(crate) fn start_run(
     mode: AutonomyMode,
     preset: RunPreset,
 ) -> Result<i64, AgentRunError> {
+    start_run_with_options(
+        db,
+        registry,
+        host,
+        executor,
+        workspace_root,
+        request,
+        mode,
+        preset,
+        RunLaunchOptions::default(),
+    )
+}
+
+/// Start one agent run with explicit launch options (`is_plan`, continuation parent, extra history).
+#[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
+pub(crate) fn start_run_with_options(
+    db: &Database,
+    registry: Arc<AgentRunRegistry>,
+    host: Arc<dyn AgentRunHost>,
+    executor: Arc<dyn ProviderExecutor + Send + Sync>,
+    workspace_root: PathBuf,
+    request: AgentRunRequest,
+    mode: AutonomyMode,
+    preset: RunPreset,
+    options: RunLaunchOptions,
+) -> Result<i64, AgentRunError> {
     let access = super::access::AccessContext::root(db).with_workspace(&workspace_root);
-    start_run_scoped(
+    start_run_scoped_with_options(
         db,
         registry,
         host,
@@ -611,6 +689,7 @@ pub(crate) fn start_run(
         mode,
         preset,
         access,
+        options,
     )
 }
 
@@ -639,6 +718,90 @@ pub(crate) fn start_run_with_parent(
     )
 }
 
+/// Explicitly continue an `interrupted` run (`M11` / `P06`) without re-running completed
+/// tool calls or restoring stale approval caches.
+#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+pub(crate) fn continue_run(
+    db: &Database,
+    registry: Arc<AgentRunRegistry>,
+    host: Arc<dyn AgentRunHost>,
+    executor: Arc<dyn ProviderExecutor + Send + Sync>,
+    workspace_root: PathBuf,
+    run_id: i64,
+    provider: String,
+    model: String,
+    credential: String,
+    mode: AutonomyMode,
+    preset: RunPreset,
+) -> Result<i64, AgentRunError> {
+    if super::tools::path_safety::check_private(&workspace_root).is_err() {
+        return Err(AgentRunError::WorkspaceProtected);
+    }
+    let repo = AgentRunRepository::new(db);
+    let parent = repo
+        .read_run(run_id)
+        .map_err(AgentRunError::Database)?
+        .ok_or(AgentRunError::RunNotFound { run_id })?;
+    if !parent.interrupted && parent.status != "interrupted" {
+        return Err(AgentRunError::RunNotInterrupted {
+            status: parent.status,
+        });
+    }
+    let conversation_id = parent
+        .conversation_id
+        .ok_or(AgentRunError::ConversationNotFound { id: 0 })?;
+
+    let prior_steps = repo.list_steps(run_id).map_err(AgentRunError::Database)?;
+    let q_repo = RunQuestionRepository::new(db);
+    let _ = q_repo.cancel_pending_for_run(run_id);
+    let prior_questions: Vec<_> = q_repo
+        .list_for_conversation(conversation_id)
+        .map_err(AgentRunError::Database)?
+        .into_iter()
+        .filter(|q| q.run_id == run_id)
+        .collect();
+    let is_plan = RunPlanRepository::new(db)
+        .read_by_run(run_id)
+        .map_err(AgentRunError::Database)?
+        .is_some();
+    let injection_enabled = crate::application::flags::FlagService::new(db)
+        .resolve_all(Some(&workspace_root))
+        .run_flags()
+        .injection;
+    let plan = super::resume::build_continuation_messages(
+        &prior_steps,
+        &prior_questions,
+        injection_enabled,
+        is_plan,
+    );
+    let spend_limit_micro_usd = resolve_spend_limit_for_workspace(db, Some(&workspace_root));
+
+    start_run_with_options(
+        db,
+        registry,
+        host,
+        executor,
+        workspace_root,
+        AgentRunRequest {
+            conversation_id,
+            user_request: plan.continuation_prompt,
+            provider,
+            model,
+            credential,
+            max_iterations: None,
+            spend_limit_micro_usd,
+        },
+        mode,
+        preset,
+        RunLaunchOptions {
+            is_plan,
+            continued_from_run_id: Some(run_id),
+            extra_history: plan.extra_messages,
+            persist_user_message: false,
+        },
+    )
+}
+
 #[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
 fn start_run_scoped(
     db: &Database,
@@ -651,8 +814,38 @@ fn start_run_scoped(
     preset: RunPreset,
     access: super::access::AccessContext,
 ) -> Result<i64, AgentRunError> {
+    start_run_scoped_with_options(
+        db,
+        registry,
+        host,
+        executor,
+        workspace_root,
+        request,
+        mode,
+        preset,
+        access,
+        RunLaunchOptions::default(),
+    )
+}
+
+#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+fn start_run_scoped_with_options(
+    db: &Database,
+    registry: Arc<AgentRunRegistry>,
+    host: Arc<dyn AgentRunHost>,
+    executor: Arc<dyn ProviderExecutor + Send + Sync>,
+    workspace_root: PathBuf,
+    request: AgentRunRequest,
+    mode: AutonomyMode,
+    preset: RunPreset,
+    access: super::access::AccessContext,
+    options: RunLaunchOptions,
+) -> Result<i64, AgentRunError> {
     if super::tools::path_safety::check_private(&workspace_root).is_err() {
         return Err(AgentRunError::WorkspaceProtected);
+    }
+    if options.is_plan {
+        access.set_plan(true);
     }
     // Executor availability is the caller's contract: every call site resolves
     // the executor through `execution::resolve_executor` first (agent command,
@@ -681,6 +874,7 @@ fn start_run_scoped(
         mode,
         preset,
         access,
+        options,
     );
     if started.is_err() {
         registry.unclaim_conversation(request.conversation_id);
@@ -749,12 +943,13 @@ fn start_run_claimed(
     mode: AutonomyMode,
     preset: RunPreset,
     access: super::access::AccessContext,
+    options: RunLaunchOptions,
 ) -> Result<i64, AgentRunError> {
     // Load the persisted history BEFORE persisting the current user
     // message (agent memory slice): after the persist the current turn is
     // already in the table, so loading first is what makes it appear exactly
     // once in the run's context.
-    let history: Vec<AiMessage> = match ConversationService::new(db)
+    let mut history: Vec<AiMessage> = match ConversationService::new(db)
         .agent_history(request.conversation_id, &request.provider)
     {
         Ok(history) => history,
@@ -766,6 +961,7 @@ fn start_run_claimed(
             Vec::new()
         }
     };
+    history.extend(options.extra_history);
 
     // Load the prior action trace AFTER the text history (which stays first)
     // and BEFORE persisting the current user message. The current run row is
@@ -774,27 +970,26 @@ fn start_run_claimed(
     // going with an empty trace.
     let action_summary = load_action_summary(db, request.conversation_id);
 
-    // Persist the user message BEFORE spawning (design §3.2): a crash can
-    // never lose it, and it appears in the thread immediately. No assistant
-    // message is ever created unless the run later succeeds (plain-chat
-    // doctrine). Empty content is rejected by the `messages` schema CHECK,
-    // exactly as in plain chat.
-    match ConversationService::new(db)
-        .persist_user_message(request.conversation_id, &request.user_request)
-    {
-        Ok(_) => {}
-        Err(crate::application::conversations::ConversationError::NotFound { id }) => {
-            return Err(AgentRunError::ConversationNotFound { id });
-        }
-        Err(crate::application::conversations::ConversationError::Database(err)) => {
-            return Err(AgentRunError::Database(err));
-        }
-        Err(other) => {
-            log::error!("agent run setup: unexpected user-message error: {other}");
-            return Err(AgentRunError::Request(RequestError::Execution {
-                name: request.provider.clone(),
-                message: other.to_string(),
-            }));
+    // Persist the user message BEFORE spawning (design §3.2) when requested:
+    // omitted for `Yes` plan confirmation and explicit `continue_run`.
+    if options.persist_user_message {
+        match ConversationService::new(db)
+            .persist_user_message(request.conversation_id, &request.user_request)
+        {
+            Ok(_) => {}
+            Err(crate::application::conversations::ConversationError::NotFound { id }) => {
+                return Err(AgentRunError::ConversationNotFound { id });
+            }
+            Err(crate::application::conversations::ConversationError::Database(err)) => {
+                return Err(AgentRunError::Database(err));
+            }
+            Err(other) => {
+                log::error!("agent run setup: unexpected user-message error: {other}");
+                return Err(AgentRunError::Request(RequestError::Execution {
+                    name: request.provider.clone(),
+                    message: other.to_string(),
+                }));
+            }
         }
     }
 
@@ -821,6 +1016,21 @@ fn start_run_claimed(
         return Err(AgentRunError::RunNotPersisted);
     };
 
+    if options.is_plan {
+        if let Err(err) = RunPlanRepository::new(db).mark_started(run_id, request.conversation_id) {
+            log::warn!("agent run plan row start failed (run {run_id}): {err}");
+        }
+    }
+    if let Some(parent_run_id) = options.continued_from_run_id {
+        if let Err(err) = AgentRunRepository::new(db).record_continuation(
+            run_id,
+            parent_run_id,
+            request.conversation_id,
+        ) {
+            log::warn!("agent run continuation link failed (run {run_id}): {err}");
+        }
+    }
+
     observe_transition(RunState::Queued, RunState::Running);
     registry.register(
         run_id,
@@ -846,6 +1056,7 @@ fn start_run_claimed(
         history,
         action_summary,
         checkpoint_store,
+        options.is_plan,
     )?;
     Ok(run_id)
 }
@@ -876,6 +1087,7 @@ fn spawn_run(
     history: Vec<AiMessage>,
     action_summary: ActionSummary,
     checkpoint_store: Option<CheckpointStore>,
+    is_plan: bool,
 ) -> Result<(), AgentRunError> {
     let (tx, rx): (Sender<AgentRunEvent>, Receiver<AgentRunEvent>) = mpsc::channel();
     // Terminal-frame channel: the run thread sends the `RunFinished` payload
@@ -939,6 +1151,7 @@ fn spawn_run(
                     Some(run_request.model.as_str()),
                 );
                 let mut runner = AgentRunner::new(executor.as_ref(), &workspace_root)
+                    .with_plan(is_plan)
                     .with_control(control)
                     .with_approval_gate(gate)
                     .with_question_context(qctx)
@@ -1002,14 +1215,31 @@ fn spawn_run(
             };
 
             // Assistant message only on success — never a fake assistant
-            // message on failure (plain-chat doctrine).
+            // message on failure (plain-chat doctrine). Plan runs persist the
+            // structured plan in `run_plans` + `agent_runs.final_content` and emit
+            // `PlanReady` rather than duplicating an assistant bubble below it.
             if let Ok(content) = &outcome {
-                run_host.persist_assistant_message(
-                    run_request.conversation_id,
-                    content,
-                    &run_request.provider,
-                    &run_request.model,
-                );
+                if is_plan {
+                    match RunPlanRepository::new(&db).create(
+                        run_id,
+                        run_request.conversation_id,
+                        content,
+                    ) {
+                        Ok(plan) => {
+                            let _ = tx.send(AgentRunEvent::PlanReady { plan });
+                        }
+                        Err(err) => {
+                            log::warn!("agent run plan persistence failed (run {run_id}): {err}");
+                        }
+                    }
+                } else {
+                    run_host.persist_assistant_message(
+                        run_request.conversation_id,
+                        content,
+                        &run_request.provider,
+                        &run_request.model,
+                    );
+                }
             }
 
             let (status, final_content, error) = terminal_outcome(&outcome);
@@ -1164,6 +1394,46 @@ pub(crate) fn list_runs_for_conversation_paged(
         limit,
         before_run_id,
     )
+}
+
+/// Paged conversation run listing enriched with `run_plans` (`M09`) and
+/// `run_continuations` (`M11`) metadata.
+pub(crate) fn list_runs_for_conversation_summary(
+    db: &Database,
+    conversation_id: i64,
+    limit: Option<i64>,
+    before_run_id: Option<i64>,
+) -> Result<Vec<AgentRunSummary>, crate::infrastructure::database::DatabaseError> {
+    let runs = list_runs_for_conversation_paged(db, conversation_id, limit, before_run_id)?;
+    if runs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let plans_by_run: std::collections::HashMap<i64, RunPlan> = RunPlanRepository::new(db)
+        .list_for_conversation(conversation_id)?
+        .into_iter()
+        .map(|plan| (plan.run_id, plan))
+        .collect();
+    let continuations_by_run: std::collections::HashMap<i64, i64> = AgentRunRepository::new(db)
+        .list_continuations_for_conversation(conversation_id)?
+        .into_iter()
+        .collect();
+
+    Ok(runs
+        .into_iter()
+        .map(|run| {
+            let plan = plans_by_run.get(&run.id);
+            let continued_from_run_id = continuations_by_run.get(&run.id).copied();
+            AgentRunSummary {
+                is_plan: plan.is_some(),
+                plan_content: plan.and_then(|p| p.plan_content.clone()),
+                plan_decision_status: plan.map(|p| p.decision_status.clone()),
+                plan_decision_reply: plan.and_then(|p| p.decision_reply.clone()),
+                plan_implemented_run_id: plan.and_then(|p| p.implemented_run_id),
+                continued_from_run_id,
+                run,
+            }
+        })
+        .collect())
 }
 
 /// Bounded DTO for durable history. Original identities are retained, with
@@ -3401,5 +3671,512 @@ mod tests {
             .unwrap()
             .is_empty());
         std::fs::remove_dir_all(workspace).unwrap();
+    }
+
+    struct CapturingScriptedExecutor {
+        responses: Mutex<VecDeque<Result<AiResponse, ExecutorError>>>,
+        captured: Mutex<Vec<crate::application::execution::AiRequest>>,
+    }
+
+    impl CapturingScriptedExecutor {
+        fn new(responses: Vec<Result<AiResponse, ExecutorError>>) -> Self {
+            Self {
+                responses: Mutex::new(responses.into()),
+                captured: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl ProviderExecutor for CapturingScriptedExecutor {
+        fn execute(
+            &self,
+            request: &crate::application::execution::AiRequest,
+            _credential: &str,
+            _token: &crate::application::agent::control::CancellationToken,
+        ) -> Result<AiResponse, ExecutorError> {
+            self.captured.lock().unwrap().push(request.clone());
+            self.responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("unexpected model turn")
+        }
+    }
+
+    #[test]
+    fn plan_run_enforces_read_only_even_with_allow_rule_and_emits_plan_ready() {
+        use crate::infrastructure::repository::permission_rules::{
+            PermissionRulesRepository, RuleEffect,
+        };
+        let (db, workspace, rx, host) = setup("plan-readonly");
+        let conversation_id = ConversationService::new(&db)
+            .create("plan readonly")
+            .unwrap();
+        PermissionRulesRepository::new(&db)
+            .insert("coding", "write_file", Some("*"), RuleEffect::Allow, 10)
+            .expect("insert allow rule");
+
+        let blocked_write = AiResponse {
+            content: String::new(),
+            model: "test-model".to_string(),
+            tool_calls: vec![ToolCall {
+                id: "pw-1".to_string(),
+                name: "write_file".to_string(),
+                arguments: r#"{"path":"must_not_exist.txt","content":"boom"}"#.to_string(),
+                thought_signature: None,
+            }],
+            usage: None,
+        };
+        let executor = Arc::new(CapturingScriptedExecutor::new(vec![
+            Ok(blocked_write),
+            Ok(text_response("## Plan\n1. Inspect code\n2. Done")),
+        ]));
+        let registry = Arc::new(AgentRunRegistry::default());
+
+        let run_id = start_run_with_options(
+            &db,
+            Arc::clone(&registry),
+            host.clone() as Arc<dyn AgentRunHost>,
+            executor.clone(),
+            workspace.clone(),
+            request(conversation_id, "Make a plan"),
+            AutonomyMode::FullAutonomous,
+            RunPreset::Coding,
+            RunLaunchOptions {
+                is_plan: true,
+                ..RunLaunchOptions::default()
+            },
+        )
+        .expect("plan run starts");
+
+        let frames = collect_frames(&rx);
+        assert!(
+            !workspace.join("must_not_exist.txt").exists(),
+            "Plan run must enforce ReadOnly and block file mutation even under FullAutonomous + Allow rule"
+        );
+        assert!(
+            host.persisted.lock().unwrap().is_empty(),
+            "Plan run must not duplicate assistant bubble via persist_assistant_message"
+        );
+
+        let saw_plan_ready = frames.iter().any(|f| {
+            matches!(
+                f,
+                RunFrame::Governance {
+                    event: AgentRunEvent::PlanReady { plan },
+                    ..
+                } if plan.run_id == run_id && plan.decision_status == "pending"
+            )
+        });
+        assert!(saw_plan_ready, "expected PlanReady frame: {frames:?}");
+
+        let captured = executor.captured.lock().unwrap();
+        assert_eq!(captured.len(), 2);
+        let tool_names: Vec<&str> = captured[0].tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(
+            !tool_names.contains(&"write_file") && !tool_names.contains(&"execute_command"),
+            "Plan run must only advertise read-only tools, got {tool_names:?}"
+        );
+        assert!(captured[0].messages[0].content.contains("Plan Mode"));
+
+        let summaries = list_runs_for_conversation_summary(&db, conversation_id, None, None)
+            .expect("list summary");
+        assert_eq!(summaries.len(), 1);
+        assert!(summaries[0].is_plan);
+        assert_eq!(
+            summaries[0].plan_decision_status.as_deref(),
+            Some("pending")
+        );
+        assert_eq!(
+            summaries[0].plan_content.as_deref(),
+            Some("## Plan\n1. Inspect code\n2. Done")
+        );
+
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    fn launch_test_plan_run(
+        db: &Database,
+        registry: &Arc<AgentRunRegistry>,
+        host: &Arc<FakeHost>,
+        workspace: &Path,
+        conversation_id: i64,
+        rx: &mpsc::Receiver<RunFrame>,
+        plan_markdown: &str,
+    ) -> i64 {
+        let plan_exec = Arc::new(CapturingScriptedExecutor::new(vec![Ok(text_response(
+            plan_markdown,
+        ))]));
+        let plan_run_id = start_run_with_options(
+            db,
+            Arc::clone(registry),
+            host.clone() as Arc<dyn AgentRunHost>,
+            plan_exec,
+            workspace.to_path_buf(),
+            request(conversation_id, plan_markdown),
+            AutonomyMode::FullAutonomous,
+            RunPreset::Coding,
+            RunLaunchOptions {
+                is_plan: true,
+                ..RunLaunchOptions::default()
+            },
+        )
+        .expect("start plan run");
+        let _ = collect_frames(rx);
+        plan_run_id
+    }
+
+    fn test_plan_launch_target(
+        workspace: &Path,
+        executor: Arc<dyn ProviderExecutor + Send + Sync>,
+        host: &Arc<FakeHost>,
+        registry: &Arc<AgentRunRegistry>,
+    ) -> super::super::plan::PlanLaunchTarget {
+        super::super::plan::PlanLaunchTarget {
+            workspace_root: workspace.to_path_buf(),
+            provider: "openai".to_string(),
+            model: "test-model".to_string(),
+            credential: "sk-secret".to_string(),
+            mode: AutonomyMode::FullAutonomous,
+            preset: RunPreset::Coding,
+            spend_limit_micro_usd: None,
+            executor,
+            host: host.clone() as Arc<dyn AgentRunHost>,
+            registry: Arc::clone(registry),
+        }
+    }
+
+    fn drain_approvals_to_finish(
+        rx: &mpsc::Receiver<RunFrame>,
+        registry: &AgentRunRegistry,
+        run_id: i64,
+    ) -> bool {
+        let mut saw_approval_park = false;
+        while let Ok(frame) = rx.recv_timeout(Duration::from_secs(10)) {
+            if let RunFrame::Governance {
+                event: AgentRunEvent::ApprovalRequested { call_id, .. },
+                ..
+            } = &frame
+            {
+                saw_approval_park = true;
+                let _ = registry.resolve(run_id, call_id, true);
+            }
+            if matches!(frame, RunFrame::Finished { .. }) {
+                return saw_approval_park;
+            }
+        }
+        panic!("run {run_id} did not finish before timeout");
+    }
+
+    fn seed_interrupted_parent_run(db: &Database, conversation_id: i64) -> i64 {
+        let repo = AgentRunRepository::new(db);
+        let parent_run_id = repo
+            .create_run(Some(conversation_id), "test-model", "supervised")
+            .expect("create parent run");
+        repo.append_step(
+            parent_run_id,
+            1,
+            "model_turn",
+            None,
+            None,
+            Some("Reading notes.txt"),
+            None,
+            Some(5),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        repo.append_step(
+            parent_run_id,
+            2,
+            "tool_call",
+            Some("read_file"),
+            Some(r#"{"path":"notes.txt"}"#),
+            Some("hello world"),
+            Some("succeeded"),
+            Some(4),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        // Unmatched approval (crashed before write_file ran)
+        repo.append_step(
+            parent_run_id,
+            3,
+            "approval",
+            Some("write_file"),
+            Some(r#"{"path":"resumed.txt","content":"old"}"#),
+            Some("approved"),
+            Some("succeeded"),
+            Some(1),
+            None,
+            None,
+            Some("user"),
+            None,
+            None,
+        )
+        .unwrap();
+        // Interrupted tool_call step
+        repo.append_step(
+            parent_run_id,
+            4,
+            "tool_call",
+            Some("execute_command"),
+            Some(r#"{"command":"echo hi"}"#),
+            None,
+            Some("cancelled"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            repo.fail_orphaned_running_runs("interrupted by shutdown")
+                .unwrap(),
+            1
+        );
+        parent_run_id
+    }
+
+    #[test]
+    fn plan_decision_yes_starts_implementation_without_duplicate_user_msg() {
+        use super::super::plan::{decide_run_plan, PlanDecision};
+        let (db, workspace, rx, host) = setup("plan-decision-yes");
+        let conversation_id = ConversationService::new(&db)
+            .create("plan yes conv")
+            .unwrap();
+        let registry = Arc::new(AgentRunRegistry::default());
+
+        let plan_run_1 = launch_test_plan_run(
+            &db,
+            &registry,
+            &host,
+            &workspace,
+            conversation_id,
+            &rx,
+            "## Plan A\n1. Create out.txt",
+        );
+
+        let write_call = AiResponse {
+            content: String::new(),
+            model: "test-model".to_string(),
+            tool_calls: vec![ToolCall {
+                id: "impl-1".to_string(),
+                name: "write_file".to_string(),
+                arguments: r#"{"path":"out.txt","content":"implemented"}"#.to_string(),
+                thought_signature: None,
+            }],
+            usage: None,
+        };
+        let impl_exec = Arc::new(CapturingScriptedExecutor::new(vec![
+            Ok(write_call),
+            Ok(text_response("Implemented!")),
+        ]));
+        let yes_result = decide_run_plan(
+            &db,
+            plan_run_1,
+            &PlanDecision::Accepted,
+            Some(test_plan_launch_target(
+                &workspace,
+                impl_exec.clone(),
+                &host,
+                &registry,
+            )),
+        )
+        .expect("accept plan");
+        let impl_id_1 = yes_result.launched_run_id.expect("launched run id");
+        assert_eq!(yes_result.plan.decision_status, "accepted");
+        assert_eq!(yes_result.plan.implemented_run_id, Some(impl_id_1));
+        drain_approvals_to_finish(&rx, &registry, impl_id_1);
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("out.txt")).unwrap(),
+            "implemented"
+        );
+        let impl_req = &impl_exec.captured.lock().unwrap()[0];
+        assert!(
+            impl_req.messages.iter().any(|m| m.role
+                == crate::application::execution::AiRole::Assistant
+                && m.content.contains("Plan A")),
+            "accepted implementation run must receive plan content in history"
+        );
+        // `Yes` button must not add a fake user message to `messages` table.
+        let persisted_msgs = ConversationService::new(&db)
+            .history(conversation_id)
+            .unwrap();
+        assert_eq!(
+            persisted_msgs.iter().filter(|m| m.role == "user").count(),
+            1
+        );
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn plan_decision_custom_reply_starts_implementation_with_instructions() {
+        use super::super::plan::{decide_run_plan, PlanDecision};
+        let (db, workspace, rx, host) = setup("plan-decision-reply");
+        let conversation_id = ConversationService::new(&db)
+            .create("plan reply conv")
+            .unwrap();
+        let registry = Arc::new(AgentRunRegistry::default());
+
+        let plan_run_2 = launch_test_plan_run(
+            &db,
+            &registry,
+            &host,
+            &workspace,
+            conversation_id,
+            &rx,
+            "## Plan B\n1. Alt approach",
+        );
+        let custom_exec = Arc::new(CapturingScriptedExecutor::new(vec![Ok(text_response(
+            "Followed custom reply",
+        ))]));
+        let reply_result = decide_run_plan(
+            &db,
+            plan_run_2,
+            &PlanDecision::CustomReply("Use strict mocks instead".to_string()),
+            Some(test_plan_launch_target(
+                &workspace,
+                custom_exec.clone(),
+                &host,
+                &registry,
+            )),
+        )
+        .expect("custom reply");
+        assert!(reply_result.launched_run_id.is_some());
+        assert_eq!(reply_result.plan.decision_status, "custom_reply");
+        assert_eq!(
+            reply_result.plan.decision_reply.as_deref(),
+            Some("Use strict mocks instead")
+        );
+        let _ = collect_frames(&rx);
+        let reply_request = &custom_exec.captured.lock().unwrap()[0];
+        assert!(reply_request
+            .messages
+            .iter()
+            .any(|m| m.content.contains("Plan B")));
+        assert!(reply_request
+            .messages
+            .iter()
+            .any(|m| m.role == crate::application::execution::AiRole::User
+                && m.content.contains("Use strict mocks instead")));
+
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn continue_run_skips_completed_tools_marks_incomplete_interrupted_and_revalidates_m04() {
+        let (db, workspace, rx, host) = setup("continue-interrupted");
+        std::fs::write(workspace.join("notes.txt"), "hello world").unwrap();
+        let conversation_id = ConversationService::new(&db)
+            .create("continue interrupted")
+            .unwrap();
+        ConversationService::new(&db)
+            .persist_user_message(conversation_id, "Update repo")
+            .unwrap();
+        let parent_run_id = seed_interrupted_parent_run(&db, conversation_id);
+
+        let new_write = AiResponse {
+            content: String::new(),
+            model: "test-model".to_string(),
+            tool_calls: vec![ToolCall {
+                id: "res-w1".to_string(),
+                name: "write_file".to_string(),
+                arguments: r#"{"path":"resumed.txt","content":"fresh"}"#.to_string(),
+                thought_signature: None,
+            }],
+            usage: None,
+        };
+        let executor = Arc::new(CapturingScriptedExecutor::new(vec![
+            Ok(new_write),
+            Ok(text_response("Continued cleanly")),
+        ]));
+        let registry = Arc::new(AgentRunRegistry::default());
+
+        let cont_id = continue_run(
+            &db,
+            Arc::clone(&registry),
+            host.clone() as Arc<dyn AgentRunHost>,
+            executor.clone(),
+            workspace.clone(),
+            parent_run_id,
+            "openai".to_string(),
+            "test-model".to_string(),
+            "sk-secret".to_string(),
+            AutonomyMode::Supervised,
+            RunPreset::Coding,
+        )
+        .expect("continue_run launches");
+
+        // Parent's stale `write_file` approval MUST NOT authorize the resumed `write_file` call:
+        // Supervised mode must park through M04 ApprovalGate and wait for fresh user decision!
+        let saw_approval_park = drain_approvals_to_finish(&rx, &registry, cont_id);
+        assert!(
+            saw_approval_park,
+            "resumed mutating tool call must re-validate through M04 ApprovalGate with zero stale cache"
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("resumed.txt")).unwrap(),
+            "fresh"
+        );
+
+        let captured = executor.captured.lock().unwrap();
+        let first_req = &captured[0];
+        assert!(first_req.messages.iter().any(|m| {
+            m.tool_result
+                .as_ref()
+                .is_some_and(|r| r.name == "read_file" && r.content.contains("hello world"))
+        }));
+        assert!(first_req.messages.iter().any(|m| {
+            m.tool_result
+                .as_ref()
+                .is_some_and(|r| r.name == "write_file" && r.content.contains("[Interrupted]"))
+        }));
+        assert!(first_req.messages.iter().any(|m| {
+            m.tool_result
+                .as_ref()
+                .is_some_and(|r| r.name == "execute_command" && r.content.contains("[Interrupted]"))
+        }));
+        drop(captured);
+
+        let summaries = list_runs_for_conversation_summary(&db, conversation_id, None, None)
+            .expect("summaries");
+        let cont_summary = summaries.iter().find(|r| r.run.id == cont_id).unwrap();
+        assert_eq!(cont_summary.continued_from_run_id, Some(parent_run_id));
+        assert_eq!(
+            AgentRunRepository::new(&db)
+                .list_steps(parent_run_id)
+                .unwrap()
+                .len(),
+            4
+        );
+
+        // Non-interrupted completed run cannot be continued
+        let err = continue_run(
+            &db,
+            Arc::clone(&registry),
+            host as Arc<dyn AgentRunHost>,
+            executor,
+            workspace.clone(),
+            cont_id,
+            "openai".to_string(),
+            "test-model".to_string(),
+            "sk-secret".to_string(),
+            AutonomyMode::Supervised,
+            RunPreset::Coding,
+        )
+        .expect_err("completed run cannot continue");
+        assert!(matches!(err, AgentRunError::RunNotInterrupted { .. }));
+
+        let _ = std::fs::remove_dir_all(workspace);
     }
 }

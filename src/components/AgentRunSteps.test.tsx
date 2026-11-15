@@ -167,16 +167,17 @@ afterEach(() => {
 
 describe("Agent Activity Spine", () => {
   it.each([
-    ["en", "Interrupted", "Recorded steps remain available."],
-    ["ru", "Прерван", "Записанные шаги сохранены и доступны."],
+    ["en", "Interrupted", "Recorded steps remain available.", "Continue"],
+    ["ru", "Прерван", "Записанные шаги сохранены и доступны.", "Продолжить"],
   ])(
-    "keeps interrupted history quiet and expandable in %s without execution controls",
-    (locale, label, note) => {
+    "renders manual Continue on interrupted history in %s without auto-running or reviving stale approvals",
+    (locale, label, note, continueLabel) => {
       localStorage.setItem(LOCALE_KEY, locale);
       const callbacks = noopProps();
-      const { container } = renderRun(
+      const { container, rerender } = renderRun(
         runView({
           status: "interrupted",
+          interrupted: true,
           finished_at: 1001,
           error: "run interrupted by application shutdown",
           steps: mixedSteps(),
@@ -199,11 +200,10 @@ describe("Agent Activity Spine", () => {
       expect(container.querySelector(".nex-agent-failure")).toBeNull();
       expect(container.querySelector(".nex-agent-approval")).toBeNull();
       expect(pulse(container)).toBeNull();
-      expect(
-        screen.queryByRole("button", {
-          name: /continue|продолжить|retry|повторить|resume|возобновить/i,
-        })
-      ).toBeNull();
+
+      const continueBtn = screen.getByRole("button", { name: continueLabel });
+      expect(continueBtn).toBeEnabled();
+
       const line = disclosure(container);
       expect(line).not.toBeNull();
       fireEvent.click(line!);
@@ -211,6 +211,23 @@ describe("Agent Activity Spine", () => {
       expect(rows(container)).toHaveLength(5);
       for (const callback of Object.values(callbacks))
         expect(callback).not.toHaveBeenCalled();
+
+      fireEvent.click(continueBtn);
+      expect(callbacks.onContinue).toHaveBeenCalledTimes(1);
+      expect(callbacks.onContinue).toHaveBeenCalledWith(7);
+
+      rerender(
+        <LocaleProvider>
+          <AgentRunSteps
+            run={runView({ status: "interrupted", interrupted: true })}
+            hasActiveRun
+            {...callbacks}
+          />
+        </LocaleProvider>
+      );
+      expect(
+        screen.getByRole("button", { name: continueLabel })
+      ).toBeDisabled();
     }
   );
 
@@ -1625,5 +1642,24 @@ describe("AgentRunSteps — Stage 5 PR 5B: Thinking, Plan/Result cards, Diffs & 
       screen.getByRole("button", { name: /Done in 1 step/ })
     ).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByText("No file changes recorded.")).toBeInTheDocument();
+  });
+
+  it("renders Plan card decision status badge without duplicating Final Result card", () => {
+    localStorage.setItem(LOCALE_KEY, "en");
+    const { container } = renderRun(
+      runView({
+        is_plan: true,
+        status: "completed",
+        plan_content: "1. Audit\n2. Refactor",
+        final_content: "1. Audit\n2. Refactor",
+        plan_decision_status: "accepted",
+      })
+    );
+    const planCard = container.querySelector('[data-card-kind="plan"]');
+    expect(planCard).not.toBeNull();
+    expect(
+      within(planCard as HTMLElement).getByText("Accepted")
+    ).toBeInTheDocument();
+    expect(container.querySelector('[data-card-kind="result"]')).toBeNull();
   });
 });

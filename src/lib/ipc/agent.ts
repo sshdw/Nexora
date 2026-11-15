@@ -56,6 +56,44 @@ export interface AgentRun {
   error: string | null;
   spent_micro_usd: number | null;
   limit_micro_usd: number | null;
+  /** Whether this run executed as an agent-only read-only Plan run (`M09`). */
+  is_plan?: boolean;
+  /** Completed Plan markdown persisted in `run_plans` (`M09`). */
+  plan_content?: string | null;
+  /** User decision state on a Plan run: `none | pending | accepted | rejected | custom_reply`. */
+  plan_decision_status?: PlanDecisionStatus | null;
+  /** User's custom reply instructions when `plan_decision_status === "custom_reply"`. */
+  plan_decision_reply?: string | null;
+  /** Launched implementation run id when `Yes` or `Custom reply` started implementation. */
+  plan_implemented_run_id?: number | null;
+  /** Parent interrupted run id when created via manual `Continue` (`M11`). */
+  continued_from_run_id?: number | null;
+}
+
+export type PlanDecisionStatus =
+  | "none"
+  | "pending"
+  | "accepted"
+  | "rejected"
+  | "custom_reply";
+
+export type PlanDecisionKind = "accepted" | "rejected" | "custom_reply";
+
+export interface RunPlan {
+  id: number;
+  run_id: number;
+  conversation_id: number;
+  plan_content: string | null;
+  decision_status: PlanDecisionStatus;
+  decision_reply: string | null;
+  implemented_run_id: number | null;
+  created_at: number;
+  decided_at: number | null;
+}
+
+export interface PlanDecisionResult {
+  plan: RunPlan;
+  launched_run_id: number | null;
 }
 
 /** One `agent_steps` row as served for rehydration (DATABASE.md §7.9).
@@ -146,7 +184,8 @@ export type GovernanceEventPayload =
       call_id: string;
       status: string;
     }
-  | { type: "steering_injected"; content: string };
+  | { type: "steering_injected"; content: string }
+  | { type: "plan_ready"; plan: RunPlan };
 
 /** One `agent-run-event` frame (Task 5.1 design §2.4). */
 export type AgentRunEventPayload =
@@ -180,13 +219,54 @@ export function startAgentRun(
   content: string,
   provider: string,
   model: string,
-  effort?: string | null
+  effort?: string | null,
+  isPlan?: boolean | null
 ): Promise<{ run_id: number }> {
   return invoke<{ run_id: number }>("start_agent_run", {
     conversationId,
     content,
     provider,
     model,
+    effort: effort ?? null,
+    isPlan: isPlan ?? null,
+  });
+}
+
+/** Explicitly resume an interrupted run from its preserved state without re-running completed tools. */
+export function continueAgentRun(
+  runId: number,
+  provider: string,
+  model: string,
+  effort?: string | null
+): Promise<{ run_id: number }> {
+  return invoke<{ run_id: number }>("continue_agent_run", {
+    runId,
+    provider,
+    model,
+    effort: effort ?? null,
+  });
+}
+
+/** List persisted Plan records for a conversation (M09 / P04). */
+export function listRunPlans(conversationId: number): Promise<RunPlan[]> {
+  return invoke<RunPlan[]>("list_run_plans", { conversationId });
+}
+
+/** Record user decision ("Yes" / "No" / "Custom reply") on a completed Plan run. */
+export function decideRunPlan(
+  runId: number,
+  decision: PlanDecisionKind,
+  reply?: string | null,
+  provider?: string | null,
+  model?: string | null,
+  effort?: string | null
+): Promise<PlanDecisionResult> {
+  return invoke<PlanDecisionResult>("decide_run_plan", {
+    runId,
+    decision,
+    reply: reply ?? null,
+    provider: provider ?? null,
+    model: model ?? null,
     effort: effort ?? null,
   });
 }

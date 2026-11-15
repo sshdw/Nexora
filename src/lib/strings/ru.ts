@@ -1564,4 +1564,20 @@ export const ru: Record<StringKey, string> = {
   "docs.newRootsT": "Рабочие папки",
   "docs.newRootsB":
     "Несколько зарегистрированных рабочих папок с переключателем; разговоры помнят свою папку (миграция v6).",
+  "plan.promptTitle": "Начать реализацию?",
+  "plan.yes": "Да",
+  "plan.no": "Нет",
+  "plan.customReply": "Свой ответ",
+  "plan.customPlaceholder": "Опишите уточнения или свои инструкции...",
+  "plan.sendReply": "Отправить",
+  "plan.cancelReply": "Отмена",
+  "plan.submitting": "Отправка...",
+  "plan.emptyReplyError": "Введите инструкции перед отправкой.",
+  "plan.statusPending": "Ожидает решения",
+  "plan.statusAccepted": "Одобрен",
+  "plan.statusRejected": "Отклонён",
+  "plan.statusCustomReply": "Выполнен с уточнением",
+  "agent.continueHint":
+    "Продолжит без повторного запуска завершённых инструментов.",
+  "agent.continuedBadge": "Продолжен",
 };

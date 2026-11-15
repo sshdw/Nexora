@@ -38,18 +38,22 @@ use crate::application::agent::activity::ActivityFeed;
 use crate::application::agent::approval::AutonomyMode;
 use crate::application::agent::checkpoints::{self, CheckpointStore};
 use crate::application::agent::inspect::RunInspection;
-use crate::application::agent::permissions::{self, PermissionRule, RuleEffect};
+use crate::application::agent::permissions::{self, PermissionRule, RuleEffect, RunPreset};
+use crate::application::agent::plan::{
+    self, DecidePlanResult, PlanDecision, PlanDecisionError, PlanLaunchTarget,
+};
 use crate::application::agent::question::{self, QuestionResolveError};
 use crate::application::agent::service::{
-    self, AgentRunError, AgentRunHost, AgentRunRegistry, AgentRunRequest, ClarifyRunError, RunFrame,
+    self, AgentRunError, AgentRunHost, AgentRunRegistry, AgentRunRequest, AgentRunSummary,
+    ClarifyRunError, RunFrame, RunLaunchOptions,
 };
 use crate::application::agent::spend::SpendDashboard;
 use crate::application::agent::work_queue::{self, WorkQueueError};
 use crate::application::conversations::ConversationService;
-use crate::application::execution::RequestExecutionService;
+use crate::application::execution::{ProviderExecutor, RequestExecutionService};
 use crate::infrastructure::database::Database;
-use crate::infrastructure::repository::agent_runs::AgentRun;
 use crate::infrastructure::repository::file_checkpoints::FileCheckpoint;
+use crate::infrastructure::repository::run_plans::RunPlan;
 use crate::infrastructure::repository::run_questions::RunQuestion;
 use crate::infrastructure::repository::work_queue::WorkQueueItem;
 
@@ -130,6 +134,55 @@ struct ShellLaunchParams {
     provider: String,
     model: String,
     effort: Option<String>,
+    is_plan: bool,
+}
+
+struct ResolvedShellTarget {
+    root: PathBuf,
+    credential: String,
+    executor: Arc<dyn ProviderExecutor + Send + Sync>,
+    host: Arc<dyn AgentRunHost>,
+    mode: AutonomyMode,
+    preset: RunPreset,
+    spend_limit_micro_usd: Option<u64>,
+}
+
+fn resolve_shell_target(
+    app: &AppHandle,
+    db_ref: &Database,
+    provider: &str,
+    effort: Option<&str>,
+) -> Result<ResolvedShellTarget, CommandError> {
+    if let Some(raw_effort) = effort {
+        if let Some(parsed) = crate::application::execution::ReasoningEffort::parse(raw_effort) {
+            let _ = crate::application::settings::SettingsService::new(db_ref).write(
+                nexora_core::config::SELECTED_EFFORT_KEY,
+                Some(parsed.as_str()),
+            );
+        }
+    }
+
+    let credential = RequestExecutionService::new(db_ref)
+        .resolve_credential(provider)
+        .map_err(CommandError::from)?;
+    let executor = RequestExecutionService::new(db_ref)
+        .resolve_executor_for(provider)
+        .map_err(CommandError::from)?;
+
+    let root = workspace_root(app, db_ref)?;
+    let host: Arc<dyn AgentRunHost> = Arc::new(TauriAgentHost::new(app.clone(), db_ref.clone()));
+    let mode = service::resolve_autonomy_mode_for_workspace(db_ref, Some(&root));
+    let preset = service::resolve_preset_for_workspace(db_ref, Some(&root));
+    let spend_limit_micro_usd = service::resolve_spend_limit_for_workspace(db_ref, Some(&root));
+    Ok(ResolvedShellTarget {
+        root,
+        credential,
+        executor,
+        host,
+        mode,
+        preset,
+        spend_limit_micro_usd,
+    })
 }
 
 fn launch_run_from_shell(
@@ -144,6 +197,7 @@ fn launch_run_from_shell(
         provider,
         model,
         effort,
+        is_plan,
     } = params;
     if content.trim().is_empty() {
         return Err(CommandError::new(
@@ -157,47 +211,46 @@ fn launch_run_from_shell(
             "a provider and model are required",
         ));
     }
-    if let Some(raw_effort) = effort.as_deref() {
-        if let Some(parsed) = crate::application::execution::ReasoningEffort::parse(raw_effort) {
-            let _ = crate::application::settings::SettingsService::new(db_ref).write(
-                nexora_core::config::SELECTED_EFFORT_KEY,
-                Some(parsed.as_str()),
-            );
-        }
+    let target = resolve_shell_target(app, db_ref, &provider, effort.as_deref())?;
+    let request = AgentRunRequest {
+        conversation_id,
+        user_request: content,
+        provider,
+        model,
+        credential: target.credential,
+        max_iterations: None,
+        spend_limit_micro_usd: target.spend_limit_micro_usd,
+    };
+
+    if is_plan {
+        service::start_run_with_options(
+            db_ref,
+            registry_arc,
+            target.host,
+            target.executor,
+            target.root,
+            request,
+            target.mode,
+            target.preset,
+            RunLaunchOptions {
+                is_plan: true,
+                ..RunLaunchOptions::default()
+            },
+        )
+        .map_err(CommandError::from)
+    } else {
+        service::start_run(
+            db_ref,
+            registry_arc,
+            target.host,
+            target.executor,
+            target.root,
+            request,
+            target.mode,
+            target.preset,
+        )
+        .map_err(CommandError::from)
     }
-
-    let credential = RequestExecutionService::new(db_ref)
-        .resolve_credential(&provider)
-        .map_err(CommandError::from)?;
-    let executor = RequestExecutionService::new(db_ref)
-        .resolve_executor_for(&provider)
-        .map_err(CommandError::from)?;
-
-    let root = workspace_root(app, db_ref)?;
-    let host: Arc<dyn AgentRunHost> = Arc::new(TauriAgentHost::new(app.clone(), db_ref.clone()));
-    let mode = service::resolve_autonomy_mode_for_workspace(db_ref, Some(&root));
-    let preset = service::resolve_preset_for_workspace(db_ref, Some(&root));
-    let spend_limit_micro_usd = service::resolve_spend_limit_for_workspace(db_ref, Some(&root));
-
-    service::start_run(
-        db_ref,
-        registry_arc,
-        host,
-        executor,
-        root,
-        AgentRunRequest {
-            conversation_id,
-            user_request: content,
-            provider,
-            model,
-            credential,
-            max_iterations: None,
-            spend_limit_micro_usd,
-        },
-        mode,
-        preset,
-    )
-    .map_err(CommandError::from)
 }
 
 fn advance_work_queue_on_completion(
@@ -219,6 +272,7 @@ fn advance_work_queue_on_completion(
             provider: item.provider,
             model: item.model,
             effort: item.effort,
+            is_plan: false,
         },
     ) {
         Ok(_) => {
@@ -292,6 +346,7 @@ pub(crate) async fn start_agent_run(
     provider: String,
     model: String,
     effort: Option<String>,
+    is_plan: Option<bool>,
 ) -> Result<StartAgentRunResponse, CommandError> {
     if content.trim().is_empty() {
         return Err(CommandError::new(
@@ -324,6 +379,7 @@ pub(crate) async fn start_agent_run(
                 provider,
                 model,
                 effort,
+                is_plan: is_plan.unwrap_or(false),
             },
         )?;
         Ok::<StartAgentRunResponse, CommandError>(StartAgentRunResponse { run_id })
@@ -339,6 +395,121 @@ pub(crate) async fn start_agent_run(
             Err(CommandError::new(
                 ErrorKind::Request,
                 "the agent run could not be started",
+            ))
+        }
+    }
+}
+
+/// Resolve the user's decision on a pending Plan run (`accepted` / `rejected` / `custom_reply`).
+#[tauri::command]
+pub(crate) async fn decide_run_plan(
+    app: AppHandle,
+    run_id: i64,
+    decision: String,
+    reply: Option<String>,
+    provider: Option<String>,
+    model: Option<String>,
+    effort: Option<String>,
+) -> Result<DecidePlanResult, CommandError> {
+    let parsed = PlanDecision::parse(&decision, reply).map_err(CommandError::from)?;
+    let handle = app.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let db = handle.state::<Database>();
+        let registry = handle.state::<ManagedRegistry>();
+        let db_client = db.inner().clone();
+        let registry_arc = Arc::clone(registry.inner());
+        let launch_target = match &parsed {
+            PlanDecision::Rejected => None,
+            PlanDecision::Accepted | PlanDecision::CustomReply(_) => {
+                let prov = provider.unwrap_or_default();
+                let mod_name = model.unwrap_or_default();
+                if prov.trim().is_empty() || mod_name.trim().is_empty() {
+                    return Err(CommandError::new(
+                        ErrorKind::InvalidInput,
+                        "a provider and model are required to start implementation",
+                    ));
+                }
+                let resolved = resolve_shell_target(&handle, &db_client, &prov, effort.as_deref())?;
+                Some(PlanLaunchTarget {
+                    workspace_root: resolved.root,
+                    provider: prov,
+                    model: mod_name,
+                    credential: resolved.credential,
+                    mode: resolved.mode,
+                    preset: resolved.preset,
+                    spend_limit_micro_usd: resolved.spend_limit_micro_usd,
+                    executor: resolved.executor,
+                    host: resolved.host,
+                    registry: registry_arc,
+                })
+            }
+        };
+        plan::decide_run_plan(&db_client, run_id, &parsed, launch_target)
+            .map_err(CommandError::from)
+    })
+    .await;
+
+    match outcome {
+        Ok(result) => result,
+        Err(err) => {
+            log::error!("decide_run_plan blocking task failed: {err}");
+            Err(CommandError::new(
+                ErrorKind::Request,
+                "the plan decision could not be processed",
+            ))
+        }
+    }
+}
+
+/// Manually continue an `interrupted` run (`M11` / `P06`) without re-running completed tools.
+#[tauri::command]
+pub(crate) async fn continue_agent_run(
+    app: AppHandle,
+    run_id: i64,
+    provider: String,
+    model: String,
+    effort: Option<String>,
+) -> Result<StartAgentRunResponse, CommandError> {
+    if provider.trim().is_empty() || model.trim().is_empty() {
+        return Err(CommandError::new(
+            ErrorKind::InvalidInput,
+            "a provider and model are required",
+        ));
+    }
+    let handle = app.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let db = handle.state::<Database>();
+        let registry = handle.state::<ManagedRegistry>();
+        let db_client = db.inner().clone();
+        let registry_arc = Arc::clone(registry.inner());
+        let resolved = resolve_shell_target(&handle, &db_client, &provider, effort.as_deref())?;
+        let launched_run_id = service::continue_run(
+            &db_client,
+            registry_arc,
+            resolved.host,
+            resolved.executor,
+            resolved.root,
+            run_id,
+            provider,
+            model,
+            resolved.credential,
+            resolved.mode,
+            resolved.preset,
+        )
+        .map_err(CommandError::from)?;
+        Ok::<StartAgentRunResponse, CommandError>(StartAgentRunResponse {
+            run_id: launched_run_id,
+        })
+    })
+    .await;
+
+    match outcome {
+        Ok(result) => result,
+        Err(err) => {
+            log::error!("continue_agent_run blocking task failed: {err}");
+            Err(CommandError::new(
+                ErrorKind::Request,
+                "the interrupted agent run could not be continued",
             ))
         }
     }
@@ -547,9 +718,18 @@ pub(crate) fn list_agent_runs(
     limit: Option<i64>,
     before_run_id: Option<i64>,
     db: State<'_, Database>,
-) -> Result<Vec<AgentRun>, CommandError> {
-    service::list_runs_for_conversation_paged(db.inner(), conversation_id, limit, before_run_id)
+) -> Result<Vec<AgentRunSummary>, CommandError> {
+    service::list_runs_for_conversation_summary(db.inner(), conversation_id, limit, before_run_id)
         .map_err(Into::into)
+}
+
+/// List persisted Plan records (`run_plans`) for a conversation, oldest first.
+#[tauri::command]
+pub(crate) fn list_run_plans(
+    conversation_id: i64,
+    db: State<'_, Database>,
+) -> Result<Vec<RunPlan>, CommandError> {
+    plan::list_run_plans(db.inner(), conversation_id).map_err(Into::into)
 }
 
 /// Conversation-scoped durable history; this read never resumes execution.
@@ -1069,6 +1249,7 @@ pub(crate) async fn run_next_work_item(
                 provider: item.provider,
                 model: item.model,
                 effort: item.effort,
+                is_plan: false,
             },
         ) {
             Ok(run_id) => {
@@ -1112,6 +1293,14 @@ impl From<AgentRunError> for CommandError {
                 ErrorKind::InvalidInput,
                 format!("an agent run is already active for conversation {conversation_id}"),
             ),
+            AgentRunError::RunNotFound { run_id } => Self::new(
+                ErrorKind::NotFound,
+                format!("agent run {run_id} does not exist"),
+            ),
+            AgentRunError::RunNotInterrupted { status } => Self::new(
+                ErrorKind::InvalidInput,
+                format!("only interrupted agent runs can be continued (status: {status})"),
+            ),
             AgentRunError::Request(inner) => Self::from(inner),
             AgentRunError::RunNotPersisted => {
                 Self::new(ErrorKind::Database, "the agent run could not be persisted")
@@ -1120,6 +1309,39 @@ impl From<AgentRunError> for CommandError {
                 Self::new(ErrorKind::Request, "the agent run could not be started")
             }
             AgentRunError::Database(inner) => Self::from(inner),
+        }
+    }
+}
+
+impl From<PlanDecisionError> for CommandError {
+    fn from(err: PlanDecisionError) -> Self {
+        match err {
+            PlanDecisionError::PlanNotFound => Self::new(
+                ErrorKind::NotFound,
+                "the requested plan record does not exist",
+            ),
+            PlanDecisionError::PlanIncomplete => Self::new(
+                ErrorKind::InvalidInput,
+                "the plan run has not produced a completed plan yet",
+            ),
+            PlanDecisionError::AlreadyDecided(status) => Self::new(
+                ErrorKind::InvalidInput,
+                format!("the plan decision has already been recorded ({status})"),
+            ),
+            PlanDecisionError::InvalidDecision => Self::new(
+                ErrorKind::InvalidInput,
+                "invalid plan decision; expected accepted, rejected, or custom_reply",
+            ),
+            PlanDecisionError::EmptyCustomReply => Self::new(
+                ErrorKind::InvalidInput,
+                "a non-empty custom reply is required",
+            ),
+            PlanDecisionError::MissingLaunchTarget => Self::new(
+                ErrorKind::InvalidInput,
+                "a provider and model are required to start implementation",
+            ),
+            PlanDecisionError::StartRun(inner) => Self::from(inner),
+            PlanDecisionError::Database(inner) => Self::from(inner),
         }
     }
 }
@@ -1489,10 +1711,26 @@ mod tests {
     /// — no extra key, no missing key.
     #[test]
     fn agent_command_arg_keys_match_rust_params() {
-        const AGENT_COMMANDS: [(&str, &[&str]); 21] = [
+        const AGENT_COMMANDS: [(&str, &[&str]); 24] = [
             (
                 "start_agent_run",
-                &["conversationId", "content", "provider", "model", "effort"],
+                &[
+                    "conversationId",
+                    "content",
+                    "provider",
+                    "model",
+                    "effort",
+                    "isPlan",
+                ],
+            ),
+            (
+                "continue_agent_run",
+                &["runId", "provider", "model", "effort"],
+            ),
+            ("list_run_plans", &["conversationId"]),
+            (
+                "decide_run_plan",
+                &["runId", "decision", "reply", "provider", "model", "effort"],
             ),
             ("cancel_agent_run", &["runId"]),
             (

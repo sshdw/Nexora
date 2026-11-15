@@ -293,6 +293,61 @@ impl AgentRunRepository<'_> {
         Ok(conn.last_insert_rowid())
     }
 
+    /// Record continuation provenance linking `run_id` to its interrupted `parent_run_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DatabaseError`] if the insert fails.
+    pub fn record_continuation(
+        &self,
+        run_id: i64,
+        parent_run_id: i64,
+        conversation_id: i64,
+    ) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT OR IGNORE INTO run_continuations (run_id, parent_run_id, conversation_id, created_at) \
+             VALUES (?1, ?2, ?3, (unixepoch()))",
+            params![run_id, parent_run_id, conversation_id],
+        )?;
+        Ok(())
+    }
+
+    /// List `(run_id, parent_run_id)` continuation edges for `conversation_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DatabaseError`] if the query fails.
+    pub fn list_continuations_for_conversation(
+        &self,
+        conversation_id: i64,
+    ) -> Result<Vec<(i64, i64)>> {
+        let conn = self.read_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT run_id, parent_run_id FROM run_continuations WHERE conversation_id = ?1",
+        )?;
+        let rows = stmt
+            .query_map([conversation_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Read the interrupted `parent_run_id` for `run_id`, if this run was a continuation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DatabaseError`] if the query fails.
+    pub fn read_continuation_parent(&self, run_id: i64) -> Result<Option<i64>> {
+        let conn = self.read_conn()?;
+        conn.query_row(
+            "SELECT parent_run_id FROM run_continuations WHERE run_id = ?1",
+            [run_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(DatabaseError::Sqlite)
+    }
+
     /// Finalize a run at termination (DATABASE.md §7.8).
     ///
     /// Updates the terminal fields only — `status`, `finished_at` (the

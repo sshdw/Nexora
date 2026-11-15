@@ -352,6 +352,15 @@ pub(crate) fn thought_signature_trace(call_id: &str, signature: Option<&String>)
     format!("agent thought_signature call_id={call_id} present={present} len={len}")
 }
 
+/// System prompt addendum injected when a user-initiated Plan run (`is_plan`) is active.
+pub(crate) const PLAN_MODE_INSTRUCTIONS: &str = "\n\n## Plan Mode (Read-Only)\n\
+You are currently in **Plan mode** (`AccessProfile::ReadOnly`). \
+Inspect the workspace using only read-only tools (`read_file`, `list_directory`, `search_files`) \
+and clarify requirements with `ask_user_question` only if needed.\n\
+Do NOT attempt to edit files, create files, delete files, or run mutating shell commands.\n\
+Produce a clear, concrete, actionable implementation plan (affected files, changes, edge cases, and verification steps) \
+so the user can review and decide whether to start implementation.";
+
 #[cfg(test)]
 mod tests {
     use super::*;

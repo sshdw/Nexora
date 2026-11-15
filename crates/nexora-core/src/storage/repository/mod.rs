@@ -16,6 +16,7 @@ use super::database::{Database, DatabaseError};
 pub mod agent_runs;
 pub mod agent_tasks;
 pub mod file_checkpoints;
+pub mod run_plans;
 pub mod run_questions;
 pub mod work_queue;
 
