@@ -146,6 +146,23 @@ impl AccessContext {
     pub(crate) fn sandbox_enabled(&self) -> bool {
         self.0.sandbox_enabled
     }
+    #[cfg(test)]
+    pub(crate) fn with_sandbox_enabled(&self, enabled: bool) -> Self {
+        Self(Arc::new(ContextState {
+            db: self.0.db.clone(),
+            clock: self.0.clock.clone(),
+            selected: self.0.selected,
+            parent: self.0.parent.clone(),
+            child_ceiling: self.0.child_ceiling,
+            workspace_root: self.0.workspace_root.clone(),
+            plan: AtomicBool::new(self.0.plan.load(Ordering::SeqCst)),
+            checkpoints_enabled: AtomicBool::new(self.checkpoints_enabled()),
+            sandbox_enabled: enabled,
+            revision: AtomicU64::new(self.0.revision.load(Ordering::SeqCst)),
+            environment: self.0.environment.clone(),
+            environment_override: self.0.environment_override.clone(),
+        }))
+    }
     pub(crate) fn sandbox_posture(&self, workspace: &Path) -> &'static str {
         if self.0.sandbox_enabled {
             super::sandbox::status(workspace).posture
@@ -882,6 +899,47 @@ mod tests {
             })
             .unwrap();
         unlink_directory(&alias);
+        std::fs::remove_dir_all(&workspace).unwrap();
+    }
+    #[test]
+    fn verified_posture_and_invalidations_update_access_identity_and_drop_to_consent() {
+        let db = in_memory_database();
+        let workspace = temp_workspace();
+        let access = AccessContext::root(&db).with_sandbox_enabled(true);
+        let cmd = call("execute_command", json!({"command":"echo ok","cwd":"."}));
+
+        assert_eq!(access.sandbox_posture(&workspace), "PerCommandConsent");
+        let id_unverified = access.identity(&workspace, &cmd).unwrap();
+
+        super::super::sandbox::set_test_status(&workspace, true, std::time::Duration::ZERO);
+        assert_eq!(access.sandbox_posture(&workspace), "Verified");
+        let id_verified = access.identity(&workspace, &cmd).unwrap();
+        assert_ne!(id_unverified, id_verified);
+
+        super::super::sandbox::set_test_status(
+            &workspace,
+            true,
+            std::time::Duration::from_secs(31),
+        );
+        assert_eq!(access.sandbox_posture(&workspace), "PerCommandConsent");
+        let id_expired = access.identity(&workspace, &cmd).unwrap();
+        assert_ne!(id_verified, id_expired);
+
+        super::super::sandbox::set_test_status(&workspace, true, std::time::Duration::ZERO);
+        let id_reverified = access.identity(&workspace, &cmd).unwrap();
+        access.set_test_environment(Some("synthetic-sandbox-env-change"));
+        assert_ne!(id_reverified, access.identity(&workspace, &cmd).unwrap());
+        access.set_test_environment(None);
+
+        super::super::sandbox::set_test_status_with_fingerprint(
+            &workspace,
+            true,
+            Some("stale-policy-fingerprint"),
+            std::time::Duration::ZERO,
+        );
+        assert_eq!(access.sandbox_posture(&workspace), "PerCommandConsent");
+
+        super::super::sandbox::clear_test_status(&workspace);
         std::fs::remove_dir_all(&workspace).unwrap();
     }
 }

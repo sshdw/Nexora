@@ -30,3 +30,19 @@ it("cannot show a previous workspace response as verified after a switch", async
   finish?.(verified);
   await waitFor(() => expect(screen.getByRole("status").textContent).not.toContain("Isolation verified"));
 });
+
+it("matches Windows workspace paths including verbatim prefix and trailing separator", async () => {
+  vi.mocked(getSandboxStatus).mockResolvedValue({
+    ...verified,
+    workspace_root: "\\\\?\\D:\\projects\\nx",
+  });
+  const view = render(<SandboxStatusBadge workspaceRoot={"D:\\projects\\nx\\"} locale="en" />);
+  await waitFor(() => expect(screen.getByRole("status").textContent).toContain("Isolation verified"));
+
+  vi.mocked(getSandboxStatus).mockResolvedValue({
+    ...verified,
+    workspace_root: "D:\\projects\\other",
+  });
+  view.rerender(<SandboxStatusBadge workspaceRoot={"D:\\projects\\nx"} locale="en" />);
+  await waitFor(() => expect(screen.getByRole("status").textContent).toContain("Per-command consent"));
+});

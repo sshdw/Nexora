@@ -31,7 +31,9 @@ fn entries() -> &'static RwLock<HashMap<PathBuf, Entry>> {
     ENTRIES.get_or_init(RwLock::default)
 }
 fn root(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    crate::application::workspace::strip_verbatim(
+        std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()),
+    )
 }
 fn fingerprint(path: &Path) -> String {
     let policy = SandboxPolicy::for_workspace(path);
@@ -151,6 +153,67 @@ struct Permit {
     sandboxed: bool,
 }
 thread_local! { static PERMIT: RefCell<Option<Permit>> = const { RefCell::new(None) }; }
+#[cfg(test)]
+thread_local! {
+    static FORCE_SANDBOX_SPAWN_FAIL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+#[cfg(test)]
+pub(crate) fn has_permit() -> bool {
+    PERMIT.with(|slot| slot.borrow().is_some())
+}
+#[cfg(test)]
+pub(crate) fn fail_next_sandboxed_spawn() {
+    FORCE_SANDBOX_SPAWN_FAIL.with(|flag| flag.set(true));
+}
+#[cfg(test)]
+pub(crate) fn set_test_status(path: &Path, verified: bool, age: Duration) -> PathBuf {
+    set_test_status_with_fingerprint(path, verified, None, age)
+}
+#[cfg(test)]
+pub(crate) fn set_test_status_with_fingerprint(
+    path: &Path,
+    verified: bool,
+    fingerprint_override: Option<&str>,
+    age: Duration,
+) -> PathBuf {
+    let key = root(path);
+    let status = if verified {
+        SandboxStatus {
+            workspace_root: key.to_string_lossy().into_owned(),
+            state: "verified",
+            posture: "Verified",
+            mechanism: Some("test-sandbox".into()),
+            reason: None,
+        }
+    } else {
+        fallback(&key, "test-unverified")
+    };
+    let fp = fingerprint_override.map_or_else(|| fingerprint(&key), str::to_owned);
+    let checked = Instant::now()
+        .checked_sub(age)
+        .expect("system uptime exceeds synthetic test age");
+    let mut map = entries()
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let revision = map.get(&key).map_or(1, |old| old.revision + 1);
+    map.insert(
+        key.clone(),
+        Entry {
+            status,
+            fingerprint: fp,
+            revision,
+            checked,
+        },
+    );
+    key
+}
+#[cfg(test)]
+pub(crate) fn clear_test_status(path: &Path) {
+    entries()
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(&root(path));
+}
 /// Only the authorization gate supplies this execution capability, after exact consent validation.
 pub(crate) fn authorized<T>(path: &Path, sandboxed: bool, action: impl FnOnce() -> T) -> T {
     struct Restore(Option<Permit>);
@@ -196,6 +259,16 @@ pub(crate) fn spawn_authorized(
         if status_unlocked(&entries, &permit.workspace, &permit.fingerprint) != "Verified" {
             return Err(super::tools::ToolError::ConsentInvalidated);
         }
+        #[cfg(test)]
+        if FORCE_SANDBOX_SPAWN_FAIL.with(|flag| flag.replace(false)) {
+            Err(std::io::Error::other("injected sandbox launch failure"))
+        } else {
+            nexora_os_exec::spawn_sandboxed_in_process_tree(
+                command,
+                &SandboxSpawnConfig::for_workspace(path),
+            )
+        }
+        #[cfg(not(test))]
         nexora_os_exec::spawn_sandboxed_in_process_tree(
             command,
             &SandboxSpawnConfig::for_workspace(path),
@@ -261,5 +334,84 @@ mod tests {
             ));
         });
         entries().write().unwrap().remove(&key);
+    }
+    #[test]
+    fn root_strips_windows_verbatim_prefix_to_match_workspace_root() {
+        let ws = super::super::tools::test_support::temp_workspace();
+        let expected = crate::application::workspace::strip_verbatim(
+            std::fs::canonicalize(&ws).expect("canonicalize temp workspace"),
+        );
+        let resolved = root(&ws);
+        assert_eq!(resolved, expected);
+        assert!(
+            !resolved.to_string_lossy().starts_with(r"\\?\"),
+            "sandbox root must strip verbatim prefix: {resolved:?}"
+        );
+        #[cfg(windows)]
+        {
+            let verbatim = PathBuf::from(format!(r"\\?\{}", expected.display()));
+            assert_eq!(root(&verbatim), expected);
+            assert_eq!(
+                status(&verbatim).workspace_root,
+                expected.to_string_lossy().as_ref()
+            );
+        }
+        std::fs::remove_dir_all(&ws).unwrap();
+    }
+    #[test]
+    fn ttl_expiry_and_fingerprint_mismatch_drop_verified_to_per_command_consent() {
+        let ws = super::super::tools::test_support::temp_workspace();
+        set_test_status(&ws, true, Duration::ZERO);
+        let fresh = status(&ws);
+        assert_eq!(fresh.state, "verified");
+        assert_eq!(fresh.posture, "Verified");
+
+        set_test_status(&ws, true, Duration::from_secs(31));
+        let expired = status(&ws);
+        assert_eq!(expired.state, "stale");
+        assert_eq!(expired.posture, "PerCommandConsent");
+
+        set_test_status_with_fingerprint(&ws, true, Some("stale-fingerprint"), Duration::ZERO);
+        let mismatched = status(&ws);
+        assert_eq!(mismatched.state, "stale");
+        assert_eq!(mismatched.posture, "PerCommandConsent");
+
+        clear_test_status(&ws);
+        std::fs::remove_dir_all(&ws).unwrap();
+    }
+    #[test]
+    fn failed_sandboxed_launch_invalidates_verified_posture_and_fails_closed() {
+        let ws = super::super::tools::test_support::temp_workspace();
+        set_test_status(&ws, true, Duration::ZERO);
+        assert_eq!(status(&ws).posture, "Verified");
+
+        let outcome = authorized(&ws, true, || {
+            spawn_authorized(
+                &mut Command::new("nexora-nonexistent-sandboxed-binary-xyz"),
+                &ws,
+            )
+        });
+        assert!(
+            matches!(outcome, Err(super::super::tools::ToolError::Io(_))),
+            "failed sandboxed launch must reject fail-closed: {outcome:?}"
+        );
+        assert_eq!(
+            status(&ws).posture,
+            "PerCommandConsent",
+            "failed sandboxed launch must invalidate Verified posture"
+        );
+
+        set_test_status(&ws, true, Duration::ZERO);
+        let invalidated = authorized(&ws, true, || {
+            invalidate(&ws);
+            spawn_authorized(&mut Command::new("never-executed"), &ws)
+        });
+        assert!(matches!(
+            invalidated,
+            Err(super::super::tools::ToolError::ConsentInvalidated)
+        ));
+
+        clear_test_status(&ws);
+        std::fs::remove_dir_all(&ws).unwrap();
     }
 }

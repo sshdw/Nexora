@@ -202,8 +202,10 @@ impl ToolRegistry {
         let mut child = spawn()?;
         #[cfg(test)]
         let mut child = match spawn() {
-            Err(ToolError::ConsentInvalidated) => spawn_in_process_tree(&mut cmd)
-                .map_err(|_| ToolError::Io("test command launch failed".into()))?,
+            Err(ToolError::ConsentInvalidated) if !super::super::sandbox::has_permit() => {
+                spawn_in_process_tree(&mut cmd)
+                    .map_err(|_| ToolError::Io("test command launch failed".into()))?
+            }
             result => result?,
         };
         started();
