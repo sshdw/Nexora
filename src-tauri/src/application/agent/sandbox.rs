@@ -25,10 +25,21 @@ struct Entry {
     fingerprint: String,
     revision: u64,
     checked: Instant,
+    invalidated: bool,
 }
 fn entries() -> &'static RwLock<HashMap<PathBuf, Entry>> {
     static ENTRIES: OnceLock<RwLock<HashMap<PathBuf, Entry>>> = OnceLock::new();
     ENTRIES.get_or_init(RwLock::default)
+}
+fn probe_lock() -> &'static Mutex<()> {
+    static PROBE_LOCK: Mutex<()> = Mutex::new(());
+    &PROBE_LOCK
+}
+#[cfg(test)]
+fn test_probes() -> &'static RwLock<HashMap<PathBuf, SandboxVerificationStatus>> {
+    static TEST_PROBES: OnceLock<RwLock<HashMap<PathBuf, SandboxVerificationStatus>>> =
+        OnceLock::new();
+    TEST_PROBES.get_or_init(RwLock::default)
 }
 fn root(path: &Path) -> PathBuf {
     crate::application::workspace::strip_verbatim(
@@ -77,15 +88,66 @@ pub(crate) fn identity(path: &Path) -> String {
         .map_or(0, |entry| entry.revision);
     format!("{}:{}:{revision}", fingerprint(&path), status.posture)
 }
-/// Startup, workspace changes, dispatch and final authorization actively verify the same policy.
-pub(crate) fn refresh(path: &Path) -> SandboxStatus {
-    static PROBE_LOCK: Mutex<()> = Mutex::new(());
-    let _probe = PROBE_LOCK
+fn is_ttl_only_expired(path: &Path) -> bool {
+    let fresh = fingerprint(path);
+    entries()
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(path)
+        .is_some_and(|entry| {
+            !entry.invalidated
+                && entry.fingerprint == fresh
+                && entry.checked.elapsed() >= Duration::from_secs(30)
+        })
+}
+/// Re-verifies a cached entry when only its 30s TTL elapsed so parked consents
+/// stay valid unless posture, policy, or environment actually changed.
+pub(crate) fn refresh_if_expired(path: &Path) {
+    let path = root(path);
+    if !is_ttl_only_expired(&path) {
+        return;
+    }
+    let _probe = probe_lock()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if is_ttl_only_expired(&path) {
+        refresh_locked(&path, false);
+    }
+}
+/// Returns `(posture, identity)` atomically after refreshing any TTL-expired entry.
+pub(crate) fn posture_and_identity(path: &Path) -> (&'static str, String) {
     let path = root(path);
-    let before = fingerprint(&path);
-    let verification = nexora_os_exec::verify_platform_sandbox(&path);
+    refresh_if_expired(&path);
+    let fresh = fingerprint(&path);
+    let map = entries()
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (posture, revision) = match map.get(&path) {
+        Some(entry)
+            if entry.fingerprint == fresh && entry.checked.elapsed() < Duration::from_secs(30) =>
+        {
+            (entry.status.posture, entry.revision)
+        }
+        Some(entry) => ("PerCommandConsent", entry.revision),
+        None => ("PerCommandConsent", 0),
+    };
+    (posture, format!("{fresh}:{posture}:{revision}"))
+}
+fn verify_probe(path: &Path) -> SandboxVerificationStatus {
+    #[cfg(test)]
+    if let Some(status) = test_probes()
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(path)
+        .cloned()
+    {
+        return status;
+    }
+    nexora_os_exec::verify_platform_sandbox(path)
+}
+fn refresh_locked(path: &Path, allow_clearing_invalidated: bool) -> SandboxStatus {
+    let before = fingerprint(path);
+    let verification = verify_probe(path);
     let mut status = match verification {
         SandboxVerificationStatus::Verified { mechanism } => SandboxStatus {
             workspace_root: path.to_string_lossy().into_owned(),
@@ -97,52 +159,77 @@ pub(crate) fn refresh(path: &Path) -> SandboxStatus {
         SandboxVerificationStatus::Unavailable { reason } => SandboxStatus {
             state: "unavailable",
             reason: Some(reason),
-            ..fallback(&path, "native sandbox unavailable")
+            ..fallback(path, "native sandbox unavailable")
         },
         SandboxVerificationStatus::Failed { reason } => SandboxStatus {
             state: "failed",
             reason: Some(reason),
-            ..fallback(&path, "native boundary verification failed")
+            ..fallback(path, "native boundary verification failed")
         },
     };
-    let after = fingerprint(&path);
+    let after = fingerprint(path);
     if before != after {
-        status = fallback(&path, "sandbox policy changed during verification");
+        status = fallback(path, "sandbox policy changed during verification");
     }
     let mut entries = entries()
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let revision = entries.get(&path).map_or(1, |old| {
+    if !allow_clearing_invalidated {
+        if let Some(old) = entries.get(path).filter(|old| old.invalidated) {
+            return old.status.clone();
+        }
+    }
+    let revision = entries.get(path).map_or(1, |old| {
         old.revision
-            + u64::from(
-                old.fingerprint != after
-                    || old.status != status
-                    || old.checked.elapsed() >= Duration::from_secs(30),
-            )
+            + u64::from(old.invalidated || old.fingerprint != after || old.status != status)
     });
     entries.insert(
-        path,
+        path.to_path_buf(),
         Entry {
             status: status.clone(),
             fingerprint: after,
             revision,
             checked: Instant::now(),
+            invalidated: false,
         },
     );
     status
 }
+/// Startup, workspace changes, dispatch and final authorization actively verify the same policy.
+pub(crate) fn refresh(path: &Path) -> SandboxStatus {
+    let _probe = probe_lock()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let path = root(path);
+    refresh_locked(&path, true)
+}
 pub(crate) fn invalidate(path: &Path) {
     let path = root(path);
-    if let Some(entry) = entries()
+    let mut map = entries()
         .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get_mut(&path)
-    {
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(entry) = map.get_mut(&path) {
         entry.status = fallback(
             &path,
             "sandbox launch failed; command consent must be renewed",
         );
         entry.revision += 1;
+        entry.checked = Instant::now();
+        entry.invalidated = true;
+    } else {
+        map.insert(
+            path.clone(),
+            Entry {
+                status: fallback(
+                    &path,
+                    "sandbox launch failed; command consent must be renewed",
+                ),
+                fingerprint: fingerprint(&path),
+                revision: 1,
+                checked: Instant::now(),
+                invalidated: true,
+            },
+        );
     }
 }
 #[derive(Clone)]
@@ -170,6 +257,10 @@ impl Drop for TestSandboxGuard {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
+        test_probes()
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
     }
 }
 /// Serializes tests that mutate global `#[cfg(test)]` sandbox overrides and clears them on drop.
@@ -182,6 +273,14 @@ pub(crate) fn test_lock() -> TestSandboxGuard {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     FORCE_SANDBOX_SPAWN_FAIL.with(|flag| flag.set(false));
     PERMIT.with(|slot| *slot.borrow_mut() = None);
+    entries()
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clear();
+    test_probes()
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clear();
     TestSandboxGuard { _guard: guard }
 }
 #[cfg(test)]
@@ -191,6 +290,32 @@ pub(crate) fn has_permit() -> bool {
 #[cfg(test)]
 pub(crate) fn fail_next_sandboxed_spawn() {
     FORCE_SANDBOX_SPAWN_FAIL.with(|flag| flag.set(true));
+}
+#[cfg(test)]
+pub(crate) fn set_test_probe(path: &Path, verification: Option<SandboxVerificationStatus>) {
+    let key = root(path);
+    let mut probes = test_probes()
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(status) = verification {
+        probes.insert(key, status);
+    } else {
+        probes.remove(&key);
+    }
+}
+#[cfg(test)]
+pub(crate) fn age_test_status(path: &Path, age: Duration) {
+    let key = root(path);
+    let checked = Instant::now()
+        .checked_sub(age)
+        .expect("system uptime exceeds synthetic test age");
+    if let Some(entry) = entries()
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get_mut(&key)
+    {
+        entry.checked = checked;
+    }
 }
 #[cfg(test)]
 pub(crate) fn set_test_status(path: &Path, verified: bool, age: Duration) -> PathBuf {
@@ -230,16 +355,22 @@ pub(crate) fn set_test_status_with_fingerprint(
             fingerprint: fp,
             revision,
             checked,
+            invalidated: false,
         },
     );
     key
 }
 #[cfg(test)]
 pub(crate) fn clear_test_status(path: &Path) {
+    let key = root(path);
     entries()
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .remove(&root(path));
+        .remove(&key);
+    test_probes()
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(&key);
 }
 /// Only the authorization gate supplies this execution capability, after exact consent validation.
 pub(crate) fn authorized<T>(path: &Path, sandboxed: bool, action: impl FnOnce() -> T) -> T {
@@ -352,6 +483,7 @@ mod tests {
                 fingerprint: fingerprint(&key),
                 revision: 1,
                 checked: Instant::now(),
+                invalidated: false,
             },
         );
         authorized(&path, false, || {
@@ -440,6 +572,69 @@ mod tests {
             invalidated,
             Err(super::super::tools::ToolError::ConsentInvalidated)
         ));
+
+        clear_test_status(&ws);
+        std::fs::remove_dir_all(&ws).unwrap();
+    }
+    #[test]
+    fn refresh_preserves_revision_across_ttl_expiry_when_probe_and_fingerprint_match() {
+        let _sandbox_lock = test_lock();
+        let ws = super::super::tools::test_support::temp_workspace();
+        set_test_probe(
+            &ws,
+            Some(SandboxVerificationStatus::Verified {
+                mechanism: "test-sandbox".into(),
+            }),
+        );
+        assert_eq!(refresh(&ws).posture, "Verified");
+        let id_verified = identity(&ws);
+
+        // Pure TTL expiry drops read-only status() to PerCommandConsent,
+        // while refresh() / posture_and_identity() re-verify without bumping revision.
+        age_test_status(&ws, Duration::from_secs(31));
+        assert_eq!(status(&ws).posture, "PerCommandConsent");
+        assert_eq!(posture_and_identity(&ws), ("Verified", id_verified.clone()));
+        age_test_status(&ws, Duration::from_secs(31));
+        assert_eq!(refresh(&ws).posture, "Verified");
+        assert_eq!(identity(&ws), id_verified);
+
+        // Real posture/status/reason change must bump revision.
+        set_test_probe(
+            &ws,
+            Some(SandboxVerificationStatus::Unavailable {
+                reason: "reason-a".into(),
+            }),
+        );
+        assert_eq!(refresh(&ws).posture, "PerCommandConsent");
+        let id_unavail_a = identity(&ws);
+        assert_ne!(id_unavail_a, id_verified);
+
+        // TTL expiry under unchanged Unavailable keeps the same revision.
+        age_test_status(&ws, Duration::from_secs(31));
+        assert_eq!(refresh(&ws).posture, "PerCommandConsent");
+        assert_eq!(identity(&ws), id_unavail_a);
+
+        // Changed reason bumps revision.
+        set_test_probe(
+            &ws,
+            Some(SandboxVerificationStatus::Unavailable {
+                reason: "reason-b".into(),
+            }),
+        );
+        assert_eq!(refresh(&ws).posture, "PerCommandConsent");
+        let id_unavail_b = identity(&ws);
+        assert_ne!(id_unavail_b, id_unavail_a);
+
+        // Explicit invalidate() stays invalidated across refresh_if_expired and bumps revision on refresh().
+        invalidate(&ws);
+        let id_invalidated = identity(&ws);
+        assert_ne!(id_invalidated, id_unavail_b);
+        age_test_status(&ws, Duration::from_secs(31));
+        refresh_if_expired(&ws);
+        assert_eq!(identity(&ws), id_invalidated);
+        refresh(&ws);
+        assert_ne!(identity(&ws), id_unavail_b);
+        assert_ne!(identity(&ws), id_invalidated);
 
         clear_test_status(&ws);
         std::fs::remove_dir_all(&ws).unwrap();

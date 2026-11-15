@@ -321,6 +321,9 @@ impl AccessContext {
         call: &ToolCall,
         action: impl FnOnce(&str, &Path, &mut dyn FnMut()) -> Result<T, super::tools::ToolError>,
     ) -> Result<T, super::tools::ToolError> {
+        if self.0.sandbox_enabled {
+            super::sandbox::refresh_if_expired(workspace);
+        }
         let epoch = self
             .0
             .clock
@@ -330,15 +333,14 @@ impl AccessContext {
             .map_err(|_| super::tools::ToolError::InvalidArguments("invalid JSON".into()))?;
         let target = tool_scope(workspace, &call.name, &args)?;
         let mut hash = Sha256::new();
+        let (sandbox_posture, sandbox_id) = if self.0.sandbox_enabled {
+            super::sandbox::posture_and_identity(workspace)
+        } else {
+            ("PerCommandConsent", "sandbox-disabled".into())
+        };
         let posture = format!(
-            "{}:{}:{}",
-            self.sandbox_posture(workspace),
+            "{sandbox_posture}:{}:{sandbox_id}",
             self.checkpoints_enabled(),
-            if self.0.sandbox_enabled {
-                super::sandbox::identity(workspace)
-            } else {
-                "sandbox-disabled".into()
-            }
         );
         for value in [
             &path_to_comparable_string(&canonical_root(workspace)),

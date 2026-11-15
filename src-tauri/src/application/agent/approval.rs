@@ -1980,4 +1980,201 @@ mod tests {
         super::super::sandbox::clear_test_status(&workspace);
         std::fs::remove_dir_all(&workspace).unwrap();
     }
+
+    fn approve_call_once(gate: &ApprovalGate, call: &ToolCall) {
+        let req = gate.prepare_pending(call);
+        assert!(gate.respond(&req, ApprovalDecision::Approved));
+        assert_eq!(
+            gate.park_until_resolved(call),
+            Ok(ApprovalDecision::Approved)
+        );
+    }
+
+    #[test]
+    fn parked_consent_survives_ttl_expiry_across_park_and_execute() {
+        use crate::application::agent::tools::test_support::{call, temp_workspace};
+        use crate::infrastructure::database::in_memory_database;
+        use nexora_os_exec::SandboxVerificationStatus;
+        use serde_json::json;
+
+        let _sandbox_lock = super::super::sandbox::test_lock();
+        let db = in_memory_database();
+        let workspace = temp_workspace();
+        let access = AccessContext::root(&db).with_sandbox_enabled(true);
+        let gate = ApprovalGate::new(AutonomyMode::SemiAutonomous).with_access(access);
+        gate.bind_workspace(&workspace);
+
+        let install_call = call(
+            "execute_command",
+            json!({"command": "npm install left-pad", "cwd": "."}),
+        );
+        let general_call = call("execute_command", json!({"command": "echo ok", "cwd": "."}));
+
+        // 1. Verified posture + parked DependencyInstall: >30s elapsed mid-park and before
+        //    execute_authorized succeeds when the probe still verifies with the same posture/fp.
+        super::super::sandbox::set_test_probe(
+            &workspace,
+            Some(SandboxVerificationStatus::Verified {
+                mechanism: "test-sandbox".into(),
+            }),
+        );
+        assert_eq!(
+            super::super::sandbox::refresh(&workspace).posture,
+            "Verified"
+        );
+        assert!(gate.needs_approval(&install_call));
+        let request_id = gate.prepare_pending(&install_call);
+        let park_gate = gate.clone();
+        let park_call = install_call.clone();
+        let park_thread = std::thread::spawn(move || park_gate.park_until_resolved(&park_call));
+
+        std::thread::sleep(Duration::from_millis(40));
+        super::super::sandbox::age_test_status(&workspace, Duration::from_secs(31));
+        std::thread::sleep(Duration::from_millis(60));
+        assert!(
+            gate.has_any_pending(),
+            "TTL expiry alone must not invalidate a parked Verified consent"
+        );
+        assert!(gate.respond(&request_id, ApprovalDecision::Approved));
+        assert_eq!(park_thread.join().unwrap(), Ok(ApprovalDecision::Approved));
+
+        super::super::sandbox::age_test_status(&workspace, Duration::from_secs(31));
+        assert_eq!(
+            gate.execute_authorized(&install_call, &workspace, |_, _| Ok("ran".to_string())),
+            Ok("ran".to_string())
+        );
+
+        // 2. PerCommandConsent (Unavailable) + parked GeneralShell: >30s elapsed succeeds when unchanged.
+        super::super::sandbox::set_test_probe(
+            &workspace,
+            Some(SandboxVerificationStatus::Unavailable {
+                reason: "test-unavailable".into(),
+            }),
+        );
+        assert_eq!(
+            super::super::sandbox::refresh(&workspace).posture,
+            "PerCommandConsent"
+        );
+        assert!(gate.needs_approval(&general_call));
+        let request_id = gate.prepare_pending(&general_call);
+        super::super::sandbox::age_test_status(&workspace, Duration::from_secs(31));
+        assert!(gate.respond(&request_id, ApprovalDecision::Approved));
+        assert_eq!(
+            gate.park_until_resolved(&general_call),
+            Ok(ApprovalDecision::Approved)
+        );
+        super::super::sandbox::age_test_status(&workspace, Duration::from_secs(31));
+        assert_eq!(
+            gate.execute_authorized(&general_call, &workspace, |_, _| Ok("ran".to_string())),
+            Ok("ran".to_string())
+        );
+
+        // 3. Live host probe path: when host verifies native sandbox, >30s approval still succeeds.
+        super::super::sandbox::set_test_probe(&workspace, None);
+        if super::super::sandbox::refresh(&workspace).posture == "Verified" {
+            let live_req = gate.prepare_pending(&install_call);
+            super::super::sandbox::age_test_status(&workspace, Duration::from_secs(31));
+            assert!(gate.respond(&live_req, ApprovalDecision::Approved));
+            assert_eq!(
+                gate.park_until_resolved(&install_call),
+                Ok(ApprovalDecision::Approved)
+            );
+            super::super::sandbox::age_test_status(&workspace, Duration::from_secs(31));
+            assert_eq!(
+                gate.execute_authorized(&install_call, &workspace, |_, _| Ok("ran".to_string())),
+                Ok("ran".to_string())
+            );
+        }
+
+        super::super::sandbox::clear_test_status(&workspace);
+        std::fs::remove_dir_all(&workspace).unwrap();
+    }
+
+    #[test]
+    fn parked_consent_fails_closed_on_degradation_invalidation_and_fingerprint() {
+        use crate::application::agent::tools::{
+            test_support::{call, temp_workspace},
+            ToolError,
+        };
+        use crate::infrastructure::database::in_memory_database;
+        use nexora_os_exec::SandboxVerificationStatus;
+        use serde_json::json;
+
+        let _sandbox_lock = super::super::sandbox::test_lock();
+        let db = in_memory_database();
+        let workspace = temp_workspace();
+        let access = AccessContext::root(&db).with_sandbox_enabled(true);
+        let gate = ApprovalGate::new(AutonomyMode::SemiAutonomous).with_access(access);
+        gate.bind_workspace(&workspace);
+        let install_call = call(
+            "execute_command",
+            json!({"command": "npm install left-pad", "cwd": "."}),
+        );
+
+        let verified = SandboxVerificationStatus::Verified {
+            mechanism: "test-sandbox".into(),
+        };
+
+        // 1. Real posture degradation during >30s park invalidates fail-closed.
+        super::super::sandbox::set_test_probe(&workspace, Some(verified.clone()));
+        super::super::sandbox::refresh(&workspace);
+        let degrade_req = gate.prepare_pending(&install_call);
+        let park_gate = gate.clone();
+        let park_call = install_call.clone();
+        let park_thread = std::thread::spawn(move || park_gate.park_until_resolved(&park_call));
+        std::thread::sleep(Duration::from_millis(40));
+        super::super::sandbox::set_test_probe(
+            &workspace,
+            Some(SandboxVerificationStatus::Unavailable {
+                reason: "sandbox degraded".into(),
+            }),
+        );
+        super::super::sandbox::age_test_status(&workspace, Duration::from_secs(31));
+        assert_eq!(
+            park_thread.join().unwrap(),
+            Ok(ApprovalDecision::Invalidated)
+        );
+        assert!(!gate.respond(&degrade_req, ApprovalDecision::Approved));
+
+        // 2. Real posture degradation after approval but before execute_authorized fails closed.
+        super::super::sandbox::set_test_probe(&workspace, Some(verified.clone()));
+        super::super::sandbox::refresh(&workspace);
+        approve_call_once(&gate, &install_call);
+        super::super::sandbox::set_test_probe(
+            &workspace,
+            Some(SandboxVerificationStatus::Unavailable {
+                reason: "sandbox degraded before exec".into(),
+            }),
+        );
+        assert_eq!(
+            gate.execute_authorized(&install_call, &workspace, |_, _| Ok("ran".to_string())),
+            Err(ToolError::ConsentInvalidated)
+        );
+
+        // 3. Explicit sandbox::invalidate() or fingerprint mismatch still fails closed.
+        super::super::sandbox::set_test_probe(&workspace, Some(verified));
+        super::super::sandbox::refresh(&workspace);
+        approve_call_once(&gate, &install_call);
+        super::super::sandbox::invalidate(&workspace);
+        assert_eq!(
+            gate.execute_authorized(&install_call, &workspace, |_, _| Ok("ran".to_string())),
+            Err(ToolError::ConsentInvalidated)
+        );
+
+        super::super::sandbox::refresh(&workspace);
+        approve_call_once(&gate, &install_call);
+        super::super::sandbox::set_test_status_with_fingerprint(
+            &workspace,
+            true,
+            Some("changed-fingerprint"),
+            Duration::ZERO,
+        );
+        assert_eq!(
+            gate.execute_authorized(&install_call, &workspace, |_, _| Ok("ran".to_string())),
+            Err(ToolError::ConsentInvalidated)
+        );
+
+        super::super::sandbox::clear_test_status(&workspace);
+        std::fs::remove_dir_all(&workspace).unwrap();
+    }
 }
