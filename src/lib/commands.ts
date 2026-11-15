@@ -96,6 +96,8 @@ export interface PaletteDeps {
   openVcs: (request?: PaletteVcsRequest) => void;
   /** Open the Tasks overlay (task manager + autonomous mode). */
   openTasks: () => void;
+  /** Toggle the workspace terminal drawer. */
+  toggleTerminal: () => void;
   newConversation: () => void;
   openImport: () => void;
   exportActive: () => void;
@@ -161,6 +163,21 @@ export function buildCommands(
         "run tasks",
       ],
       run: () => deps.openTasks(),
+    },
+    {
+      id: "go.terminal",
+      title: tr(locale, "palette.cmd.go_terminal"),
+      section: go,
+      keywords: [
+        "terminal",
+        "console",
+        "shell",
+        "command line",
+        "run command",
+        "bash",
+        "powershell",
+      ],
+      run: deps.toggleTerminal,
     },
     {
       id: "go.settings",

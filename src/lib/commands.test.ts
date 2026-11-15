@@ -28,6 +28,7 @@ function depsStub(overrides: Partial<PaletteDeps> = {}): PaletteDeps {
     openSettings: vi.fn(),
     openVcs: vi.fn(),
     openTasks: vi.fn(),
+    toggleTerminal: vi.fn(),
     newConversation: vi.fn(),
     openImport: vi.fn(),
     exportActive: vi.fn(),
@@ -59,18 +60,18 @@ const HIDDEN_DESTINATION_IDS: readonly string[] = [
   "go.gh",
   "go.docs",
   "go.release",
-  "go.terminal",
   "terminal.focus-input",
   "terminal.clear",
 ];
 
-// The five destinations #219 keeps reachable: Chat (the conversation list +
-// its palette entry), Version Control, Tasks, Settings, and Search (which
+// The destinations kept reachable: Chat (the conversation list +
+// its palette entry), Version Control, Tasks, Terminal drawer, Settings, and Search (which
 // lives in the sidebar, not the palette).
 const KEPT_GO_IDS: readonly string[] = [
   "go.conversations",
   "go.vcs",
   "go.tasks",
+  "go.terminal",
   "go.settings",
 ];
 
@@ -79,10 +80,6 @@ const KEPT_GO_IDS: readonly string[] = [
 // registry — verified, not assumed, so a re-registered command that would
 // answer one of them fails here.
 const UNAMBIGUOUS_HIDDEN_QUERIES: readonly string[] = [
-  "terminal",
-  "console",
-  "shell",
-  "command line",
   "prompt library",
   "templates",
   "tech debt",
@@ -123,9 +120,6 @@ const OVERLAPPING_QUERIES: readonly string[] = [
 // Topic words no kept command's title or keywords may contain, because the
 // fuzzy matcher reads those lists to answer a query.
 const FORBIDDEN_TOPIC_WORDS: readonly string[] = [
-  "terminal",
-  "console",
-  "shell",
   "prompt",
   "library",
   "audit",

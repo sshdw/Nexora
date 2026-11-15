@@ -1,0 +1,23 @@
+[package]
+name = "nexora-os-exec"
+version = "0.1.0"
+description = "Cross-platform OS process-tree spawning and termination (Windows Job Objects, Unix process groups)"
+license = "MIT"
+authors = ["Nexora Team"]
+edition = "2021"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"

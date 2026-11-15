@@ -1662,4 +1662,56 @@ describe("AgentRunSteps — Stage 5 PR 5B: Thinking, Plan/Result cards, Diffs & 
     ).toBeInTheDocument();
     expect(container.querySelector('[data-card-kind="result"]')).toBeNull();
   });
+
+  it("renders active streaming execute_command output with Streaming, Truncated and Killed badges", () => {
+    localStorage.setItem(LOCALE_KEY, "en");
+    renderRun(
+      runView({
+        status: "running",
+        steps: [],
+        steps_loaded: true,
+        streaming_commands: [
+          {
+            call_id: "c1",
+            command: "cargo test",
+            stdout: "running 12 tests [REDACTED]\n",
+            stderr: "warning: unused\n",
+            truncated: true,
+            killed: false,
+            started_at: 1001,
+          },
+        ],
+      })
+    );
+    expect(screen.getAllByText("cargo test").length).toBeGreaterThanOrEqual(1);
+    expect(
+      screen.getByText((text) => text.includes("running 12 tests [REDACTED]"))
+    ).toBeInTheDocument();
+    expect(screen.getByText("Streaming")).toBeInTheDocument();
+    expect(screen.getByText("Truncated")).toBeInTheDocument();
+
+    cleanup();
+    renderRun(
+      runView({
+        run_id: 8,
+        status: "cancelled",
+        finished_at: 1005,
+        steps: [
+          stepView({
+            id: 901,
+            seq: 1,
+            kind: "tool_call",
+            tool_name: "execute_command",
+            arguments: JSON.stringify({ command: "sleep 60" }),
+            observation: "command timed out after 30 seconds",
+            status: "cancelled",
+            command_killed: true,
+          }),
+        ],
+        steps_loaded: true,
+      })
+    );
+    fireEvent.click(screen.getByRole("button", { name: /#1/ }));
+    expect(screen.getByText("Killed")).toBeInTheDocument();
+  });
 });

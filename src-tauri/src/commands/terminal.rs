@@ -39,10 +39,11 @@
 
 use std::sync::Arc;
 
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::application::agent::tools::CommandStreamUpdate;
 use crate::application::confirmations::ManagedConfirmations;
-use crate::application::terminal::{ErrorExplanation, TerminalExecuted, TerminalRegistry};
+use crate::application::terminal::{ErrorExplanation, TerminalRegistry};
 use crate::application::workspace::resolve_workspace_root;
 use crate::infrastructure::database::Database;
 
@@ -52,6 +53,22 @@ use super::workspace::default_root;
 /// Managed terminal registry state is an [`Arc`] so commands can clone an
 /// owned handle into `spawn_blocking` without borrowing the managed value.
 pub(crate) type ManagedTerminal = Arc<TerminalRegistry>;
+
+/// Live event channel emitted while a workspace terminal command executes.
+pub(crate) const TERMINAL_OUTPUT_EVENT: &str = "terminal-output";
+
+/// Incremental live event payload emitted on [`TERMINAL_OUTPUT_EVENT`].
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) struct TerminalOutputEvent {
+    pub run_id: u64,
+    pub stream: String,
+    pub chunk: String,
+    pub done: bool,
+    pub truncated: bool,
+    pub killed: bool,
+    pub success: Option<bool>,
+}
 
 /// Combined output of one finished terminal run, plus the display flags the
 /// panel needs. Payloads stay `snake_case` (serde `rename_all`); command args
@@ -63,6 +80,91 @@ pub(crate) struct TerminalRunResponse {
     pub output: String,
     pub truncated: bool,
     pub success: bool,
+}
+
+fn translate_terminal_update(
+    run_id: u64,
+    update: CommandStreamUpdate,
+    stream_done: &mut Option<(bool, bool)>,
+) -> Option<TerminalOutputEvent> {
+    match update {
+        CommandStreamUpdate::Started { .. } => Some(TerminalOutputEvent {
+            run_id,
+            stream: "status".to_string(),
+            chunk: String::new(),
+            done: false,
+            truncated: false,
+            killed: false,
+            success: None,
+        }),
+        CommandStreamUpdate::Chunk { stream, text } => Some(TerminalOutputEvent {
+            run_id,
+            stream: stream.to_string(),
+            chunk: text,
+            done: false,
+            truncated: false,
+            killed: false,
+            success: None,
+        }),
+        // Final completion metadata is captured here and emitted once on return
+        // with the authoritative `success` flag.
+        CommandStreamUpdate::Done { truncated, killed } => {
+            *stream_done = Some((truncated, killed));
+            None
+        }
+    }
+}
+
+fn emit_terminal_update(
+    app: &AppHandle,
+    run_id: u64,
+    update: CommandStreamUpdate,
+    stream_done: &mut Option<(bool, bool)>,
+) {
+    if let Some(payload) = translate_terminal_update(run_id, update, stream_done) {
+        let _ = app.emit(TERMINAL_OUTPUT_EVENT, payload);
+    }
+}
+
+fn resolve_terminal_done_flags(
+    outcome: &Result<
+        crate::application::terminal::TerminalExecuted,
+        crate::application::terminal::TerminalError,
+    >,
+    stream_done: Option<(bool, bool)>,
+) -> (bool, bool, bool) {
+    let (stream_truncated, stream_killed) = stream_done.unwrap_or((false, false));
+    match outcome {
+        Ok(executed) => (
+            executed.truncated || stream_truncated,
+            stream_killed,
+            executed.success,
+        ),
+        Err(err) => {
+            let killed = stream_killed
+                || matches!(
+                    err,
+                    crate::application::terminal::TerminalError::Cancelled
+                        | crate::application::terminal::TerminalError::Timeout
+                );
+            (stream_truncated, killed, false)
+        }
+    }
+}
+
+fn emit_terminal_done(app: &AppHandle, run_id: u64, truncated: bool, killed: bool, success: bool) {
+    let _ = app.emit(
+        TERMINAL_OUTPUT_EVENT,
+        TerminalOutputEvent {
+            run_id,
+            stream: "status".to_string(),
+            chunk: String::new(),
+            done: true,
+            truncated,
+            killed,
+            success: Some(success),
+        },
+    );
 }
 
 /// Run one user-authored workspace command through the existing agent
@@ -121,31 +223,42 @@ pub(crate) async fn terminal_run(
     })?;
     let registry_arc = Arc::clone(registry.inner());
     let confirmations_arc = Arc::clone(confirmations.inner());
+    let app_for_stream = app.clone();
     let outcome = tauri::async_runtime::spawn_blocking(move || {
-        crate::application::terminal::execute_terminal(
+        let mut stream_done = None;
+        let mut emit_stream =
+            |update| emit_terminal_update(&app_for_stream, run_id, update, &mut stream_done);
+        let result = crate::application::terminal::execute_terminal(
             &root,
             command.as_str(),
             cwd.as_deref(),
             confirmation_id.as_str(),
             &confirmations_arc,
             &token,
-        )
+            Some(&mut emit_stream),
+        );
+        (result, stream_done)
     })
     .await;
     registry_arc.finish(run_id);
-    let outcome = outcome.map_err(|err| {
+    let (outcome, stream_done) = outcome.map_err(|err| {
         // Only reachable if the blocking task panicked: report a safe,
         // classified failure instead of leaving the promise dangling.
         log::error!("terminal_run blocking task failed: {err}");
+        emit_terminal_done(&app, run_id, false, false, false);
         CommandError::new(ErrorKind::Request, "the terminal command could not be run")
     })?;
-    let executed: TerminalExecuted = outcome.map_err(CommandError::from)?;
-    Ok(TerminalRunResponse {
-        run_id,
-        output: executed.output,
-        truncated: executed.truncated,
-        success: executed.success,
-    })
+    let (truncated, killed, success) = resolve_terminal_done_flags(&outcome, stream_done);
+    emit_terminal_done(&app, run_id, truncated, killed, success);
+    match outcome {
+        Ok(executed) => Ok(TerminalRunResponse {
+            run_id,
+            output: executed.output,
+            truncated,
+            success: executed.success,
+        }),
+        Err(err) => Err(CommandError::from(err)),
+    }
 }
 
 /// Stop the active terminal run, if any: cancels its token so the executor
@@ -418,5 +531,46 @@ mod tests {
                 "no auto-apply path may exist, found {needle:?}"
             );
         }
+    }
+
+    #[test]
+    fn terminal_done_flags_preserve_truncated_on_cancel_and_timeout() {
+        use crate::application::terminal::{TerminalError, TerminalExecuted};
+
+        let mut stream_done = None;
+        let payload = translate_terminal_update(
+            7,
+            CommandStreamUpdate::Done {
+                truncated: true,
+                killed: true,
+            },
+            &mut stream_done,
+        );
+        assert!(payload.is_none());
+        assert_eq!(stream_done, Some((true, true)));
+
+        let (truncated, killed, success) =
+            resolve_terminal_done_flags(&Err(TerminalError::Cancelled), stream_done);
+        assert!(truncated, "cancelled run must preserve truncated=true");
+        assert!(killed, "cancelled run must report killed=true");
+        assert!(!success, "cancelled run must report success=false");
+
+        let (truncated, killed, success) =
+            resolve_terminal_done_flags(&Err(TerminalError::Timeout), stream_done);
+        assert!(truncated, "timed-out run must preserve truncated=true");
+        assert!(killed, "timed-out run must report killed=true");
+        assert!(!success, "timed-out run must report success=false");
+
+        let (truncated, killed, success) = resolve_terminal_done_flags(
+            &Ok(TerminalExecuted {
+                output: "ok".to_string(),
+                truncated: false,
+                success: true,
+            }),
+            Some((true, false)),
+        );
+        assert!(truncated);
+        assert!(!killed);
+        assert!(success);
     }
 }

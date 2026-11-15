@@ -27,6 +27,7 @@ import SettingsView from "./components/SettingsView";
 import ShortcutsDialog from "./components/ShortcutsDialog";
 import { SnackbarProvider } from "./components/SnackbarHost";
 import TaskPanel from "./components/TaskPanel";
+import TerminalDrawer from "./components/TerminalDrawer";
 import VersionControlPanel from "./components/VersionControlPanel";
 import { buildCommands, recordUse, type PaletteCommand } from "./lib/commands";
 import {
@@ -147,6 +148,16 @@ function AppShell() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   // Shortcuts help dialog (Ctrl+/): grouped table over lib/shortcuts.ts.
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  // Workspace terminal drawer (Stage 7 M10/P09): bottom drawer below threads.
+  const [terminalOpen, setTerminalOpen] = useState(false);
+  const toggleTerminal = useCallback(() => {
+    if (router.hasOverlay) {
+      router.closeAll();
+      setTerminalOpen(true);
+      return;
+    }
+    setTerminalOpen((prev) => !prev);
+  }, [router]);
   // Simplified first-run onboarding (3-step overlay): auto-shows once on
   // fresh installs (no usable provider AND no workspace root — see
   // useOnboarding for the documented signal). Any dismissal marks
@@ -597,6 +608,7 @@ function AppShell() {
           openSettings: router.openSettings,
           openVcs: router.openVcs,
           openTasks: router.openTasks,
+          toggleTerminal,
           newConversation: () => void handleNewConversation(),
           openImport: () => setImportOpen(true),
           exportActive: exportActiveConversation,
@@ -635,6 +647,7 @@ function AppShell() {
       handleToggleSplit,
       toggleLanguage,
       replayOnboarding,
+      toggleTerminal,
       workspace,
       locale,
     ]
@@ -889,6 +902,8 @@ function AppShell() {
               onClose={tabs.close}
               splitOpen={tabs.splitId !== null}
               onToggleSplit={handleToggleSplit}
+              terminalOpen={terminalOpen}
+              onToggleTerminal={toggleTerminal}
             />
           )}
           {showOverlays ? (
@@ -963,6 +978,14 @@ function AppShell() {
             </>
           ) : (
             conversationContent
+          )}
+          {!showOverlays && (
+            <TerminalDrawer
+              open={terminalOpen}
+              onClose={() => setTerminalOpen(false)}
+              selectedProvider={providers.selectedProvider}
+              selectedModel={providers.selectedModel}
+            />
           )}
         </div>
         {exportTargetId !== null &&

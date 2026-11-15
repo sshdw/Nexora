@@ -35,3 +35,218 @@
   padding: var(--space-md);
   overflow: hidden;
 }
+
+/* ---- Workspace Terminal Drawer (Stage 7 M10/P09) ---------------------- */
+.nex-terminal-drawer {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  max-height: 40vh;
+  min-height: 180px;
+  padding: var(--space-sm) var(--space-md);
+  background: var(--color-surface-container-low);
+  border-top: 1px solid var(--color-outline-variant);
+  color: var(--color-on-surface);
+  overflow: hidden;
+  animation: nex-terminal-drawer-in var(--nex-sys-motion-entrance-duration)
+    var(--nex-sys-motion-entrance-easing);
+}
+
+@keyframes nex-terminal-drawer-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--nex-sys-motion-entrance-travel));
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nex-terminal-drawer {
+    animation: none;
+  }
+}
+
+.nex-terminal-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.nex-terminal-drawer-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-size: var(--type-size-title-small);
+  font-weight: var(--type-weight-emphasized);
+  color: var(--color-on-surface);
+  min-width: 0;
+}
+
+.nex-terminal-drawer-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xxs);
+  padding: 0 var(--space-xs);
+  border-radius: var(--shape-extra-small);
+  border: 1px solid var(--color-outline-variant);
+  background: var(--color-surface-container);
+  color: var(--color-on-surface-variant);
+  font-family: var(--type-family-mono);
+  font-size: var(--type-size-label-small);
+  font-weight: var(--type-weight-regular);
+}
+
+.nex-terminal-drawer-status.is-running {
+  color: var(--color-on-surface);
+  border-color: var(--color-outline);
+}
+
+.nex-terminal-drawer-status.is-failed {
+  color: var(--color-error);
+  border-color: var(--color-error);
+}
+
+.nex-terminal-drawer-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--space-xs);
+  border-radius: var(--shape-extra-small);
+  border: 1px solid var(--color-outline-variant);
+  background: var(--color-surface-container-high);
+  color: var(--color-on-surface-variant);
+  font-family: var(--type-family-mono);
+  font-size: var(--type-size-label-small);
+  font-weight: var(--type-weight-regular);
+}
+
+.nex-terminal-drawer-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xxs);
+  flex-shrink: 0;
+}
+
+.nex-terminal-drawer-form {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  flex-shrink: 0;
+}
+
+.nex-terminal-drawer-cmd {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--type-family-mono);
+  font-size: var(--type-size-body-small);
+}
+
+.nex-terminal-drawer-cwd {
+  flex: 0 0 140px;
+  min-width: 0;
+  font-family: var(--type-family-mono);
+  font-size: var(--type-size-body-small);
+}
+
+.nex-terminal-drawer-error {
+  flex-shrink: 0;
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--shape-extra-small);
+  border: 1px solid var(--color-error);
+  color: var(--color-error);
+  background: var(--color-surface-container);
+  font-size: var(--type-size-body-small);
+}
+
+.nex-terminal-drawer-output {
+  flex: 1 1 auto;
+  min-height: 72px;
+  overflow-y: auto;
+  padding: var(--space-xs) var(--space-sm);
+  background: var(--color-surface-container);
+  border: 1px solid var(--color-outline-variant);
+  border-radius: var(--shape-extra-small);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xxs);
+}
+
+.nex-terminal-drawer-stdout {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--type-family-mono);
+  font-size: var(--type-size-body-small);
+  color: var(--color-on-surface);
+}
+
+.nex-terminal-drawer-stderr {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--type-family-mono);
+  font-size: var(--type-size-body-small);
+  color: var(--color-error);
+}
+
+.nex-terminal-drawer-empty {
+  color: var(--color-on-surface-faint);
+  font-family: var(--type-family-mono);
+  font-size: var(--type-size-body-small);
+}
+
+.nex-terminal-drawer-explain {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xxs);
+  padding: var(--space-xs) var(--space-sm);
+  background: var(--color-surface-container-high);
+  border: 1px solid var(--color-outline-variant);
+  border-radius: var(--shape-extra-small);
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.nex-terminal-drawer-explain-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-xs);
+}
+
+.nex-terminal-drawer-explain-label {
+  font-size: var(--type-size-label-small);
+  font-weight: var(--type-weight-emphasized);
+  color: var(--color-on-surface-variant);
+}
+
+.nex-terminal-drawer-explain-text {
+  margin: 0;
+  font-size: var(--type-size-body-small);
+  color: var(--color-on-surface);
+}
+
+.nex-terminal-drawer-fix-box {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xxxs);
+}
+
+.nex-terminal-drawer-fix {
+  margin: 0;
+  padding: var(--space-xxs) var(--space-xs);
+  background: var(--color-surface-container);
+  border: 1px solid var(--color-outline-variant);
+  border-radius: var(--shape-extra-small);
+  font-family: var(--type-family-mono);
+  font-size: var(--type-size-body-small);
+  color: var(--color-on-surface);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

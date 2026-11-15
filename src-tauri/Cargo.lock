@@ -2415,6 +2415,7 @@ dependencies = [
  "keyring",
  "log",
  "nexora-core",
+ "nexora-os-exec",
  "reqwest",
  "rusqlite",
  "serde",
@@ -2439,6 +2440,14 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "nexora-os-exec"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -177,6 +177,15 @@ export type GovernanceEventPayload =
       kind: "text" | "thinking" | "tool_call";
       delta: string;
     }
+  | {
+      type: "command_output";
+      call_id: string;
+      command?: string | null;
+      stream: "stdout" | "stderr" | "status" | string;
+      chunk: string;
+      truncated?: boolean;
+      killed?: boolean;
+    }
   | { type: "question_requested"; question: PendingQuestionView }
   | {
       type: "question_resolved";

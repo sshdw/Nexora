@@ -60,6 +60,21 @@ export interface AgentStepView {
   status: string | null;
   started_at: number | null;
   duration_ms: number | null;
+  streaming?: boolean;
+  stream_call_id?: string;
+  command_truncated?: boolean;
+  command_killed?: boolean;
+}
+
+/** Active incremental `execute_command` output stream while a tool runs. */
+export interface ActiveCommandView {
+  call_id: string;
+  command: string;
+  stdout: string;
+  stderr: string;
+  truncated: boolean;
+  killed: boolean;
+  started_at: number;
 }
 
 /** One run as rendered by `AgentRunSteps` (Task 5.1 §6.3). */
@@ -83,6 +98,8 @@ export interface AgentRunView {
   streaming_text?: string;
   /** Ephemeral live-streamed provider-native thinking while the run turn is executing. */
   streaming_thinking?: string;
+  /** Ephemeral incremental `execute_command` streams while running. */
+  streaming_commands?: ActiveCommandView[];
   /** Retained provider-native thinking emitted during the run (never fabricated). */
   thinking?: string | null;
   /** Persisted or terminal final assistant result for this run. */
@@ -264,6 +281,48 @@ function isActive(status: string): boolean {
   ].includes(status);
 }
 
+function parseCommandArgument(rawArgs: string | null): string | null {
+  if (!rawArgs) return null;
+  try {
+    const parsed = JSON.parse(rawArgs) as { command?: unknown };
+    return typeof parsed.command === "string" ? parsed.command : null;
+  } catch {
+    return null;
+  }
+}
+
+const MAX_STREAM_BUFFER_CHARS = 262_144;
+
+function appendStreamChunk(prev: string, chunk: string): { text: string; overflowed: boolean } {
+  if (!chunk) return { text: prev, overflowed: false };
+  const combined = prev + chunk;
+  if (combined.length <= MAX_STREAM_BUFFER_CHARS) {
+    return { text: combined, overflowed: false };
+  }
+  return {
+    text: combined.slice(combined.length - MAX_STREAM_BUFFER_CHARS),
+    overflowed: true,
+  };
+}
+
+function consumeCompletedCommand(
+  streaming: ActiveCommandView[] | undefined,
+  argumentsJson: string | null
+): {
+  remaining: ActiveCommandView[] | undefined;
+  matched: ActiveCommandView | undefined;
+} {
+  if (!streaming || streaming.length === 0) {
+    return { remaining: streaming, matched: undefined };
+  }
+  const cmd = parseCommandArgument(argumentsJson);
+  let idx = cmd ? streaming.findIndex((item) => item.command === cmd) : -1;
+  if (idx < 0) idx = 0;
+  const matched = streaming[idx];
+  const rest = streaming.filter((_, i) => i !== idx);
+  return { remaining: rest.length > 0 ? rest : undefined, matched };
+}
+
 function placeholder(runId: number, conversationId: number): AgentRunView {
   return {
     run_id: runId,
@@ -430,6 +489,13 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
             return {
               ...run,
               steps: mergeSteps(run.steps, [toStepView(event.step)]),
+              streaming_commands:
+                event.step.tool_name === "execute_command"
+                  ? consumeCompletedCommand(
+                      run.streaming_commands,
+                      event.step.arguments
+                    ).remaining
+                  : run.streaming_commands,
             };
           }
           // A read issued before a newer terminal live frame or metadata
@@ -444,6 +510,7 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
               finished_at: run.finished_at ?? event.created_at,
               pending_approval: null,
               pending_question: null,
+              streaming_commands: undefined,
             };
           return run;
         });
@@ -536,6 +603,9 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
             null,
           continued_from_run_id:
             row.continued_from_run_id ?? old?.continued_from_run_id ?? null,
+          streaming_commands: isActive(preserve ? old.status : status)
+            ? old?.streaming_commands
+            : undefined,
           total_steps: Math.max(
             row.total_steps,
             old?.total_steps ?? 0,
@@ -860,18 +930,35 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
           payload.event.status === "succeeded" &&
           (payload.event.tool_name === "write_file" ||
             payload.event.tool_name === "edit_file");
-        patch(session, payload.run_id, (run) => ({
-          ...run,
-          steps: mergeSteps(run.steps, [
-            toStepViewFromFrame(payload.run_id, payload.event),
-          ]),
-          streaming_text: undefined,
-          streaming_thinking: undefined,
-          steps_loaded:
-            run.steps_loaded ||
-            !session.runs.some((item) => item.run_id === payload.run_id),
-          checkpoints_loaded: mutatingDone ? false : run.checkpoints_loaded,
-        }));
+        patch(session, payload.run_id, (run) => {
+          const stepView = toStepViewFromFrame(payload.run_id, payload.event);
+          let nextStreamingCommands = run.streaming_commands;
+          if (
+            payload.event.kind === "tool_call" &&
+            payload.event.tool_name === "execute_command"
+          ) {
+            const consumed = consumeCompletedCommand(
+              run.streaming_commands,
+              payload.event.arguments
+            );
+            nextStreamingCommands = consumed.remaining;
+            if (consumed.matched) {
+              stepView.command_truncated = consumed.matched.truncated;
+              stepView.command_killed = consumed.matched.killed;
+            }
+          }
+          return {
+            ...run,
+            steps: mergeSteps(run.steps, [stepView]),
+            streaming_text: undefined,
+            streaming_thinking: undefined,
+            streaming_commands: nextStreamingCommands,
+            steps_loaded:
+              run.steps_loaded ||
+              !session.runs.some((item) => item.run_id === payload.run_id),
+            checkpoints_loaded: mutatingDone ? false : run.checkpoints_loaded,
+          };
+        });
       } else if (payload.type === "finished") {
         const run = session.runs.find((item) => item.run_id === payload.run_id);
         patch(session, payload.run_id, (old) => ({
@@ -895,6 +982,7 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
           pending_question: null,
           streaming_text: undefined,
           streaming_thinking: undefined,
+          streaming_commands: undefined,
           checkpoints_loaded: false,
         }));
         if (!run || run.steps.length === 0) void loadRunSteps(payload.run_id);
@@ -931,6 +1019,50 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
               };
             }
             return run;
+          }
+          if (gov.type === "command_output") {
+            const list = run.streaming_commands ?? [];
+            const idx = list.findIndex((item) => item.call_id === gov.call_id);
+            const existing: ActiveCommandView =
+              idx >= 0
+                ? list[idx]
+                : {
+                    call_id: gov.call_id,
+                    command: gov.command ?? "",
+                    stdout: "",
+                    stderr: "",
+                    truncated: false,
+                    killed: false,
+                    started_at: Date.now() / 1000,
+                  };
+            const stdoutNext =
+              gov.stream === "stdout"
+                ? appendStreamChunk(existing.stdout, gov.chunk)
+                : { text: existing.stdout, overflowed: false };
+            const stderrNext =
+              gov.stream === "stderr"
+                ? appendStreamChunk(existing.stderr, gov.chunk)
+                : { text: existing.stderr, overflowed: false };
+            const updated: ActiveCommandView = {
+              ...existing,
+              command: existing.command || gov.command || "",
+              stdout: stdoutNext.text,
+              stderr: stderrNext.text,
+              truncated:
+                existing.truncated ||
+                Boolean(gov.truncated) ||
+                stdoutNext.overflowed ||
+                stderrNext.overflowed,
+              killed: existing.killed || Boolean(gov.killed),
+            };
+            const nextList =
+              idx >= 0
+                ? list.map((item, i) => (i === idx ? updated : item))
+                : [...list, updated];
+            return {
+              ...run,
+              streaming_commands: nextList,
+            };
           }
           if (gov.type === "approval_requested")
             return {
@@ -976,6 +1108,7 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
               status: "cancelled",
               pending_approval: null,
               pending_question: null,
+              streaming_commands: undefined,
             };
           if (
             gov.type === "paused" ||

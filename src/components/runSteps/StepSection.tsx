@@ -33,22 +33,59 @@ function TerminalView({ step }: { step: AgentStepView }) {
   const stdout = sepIdx >= 0 ? observation.slice(0, sepIdx) : observation;
   const stderr = sepIdx >= 0 ? observation.slice(sepIdx + sep.length) : null;
   const hasStderr = stderr !== null && stderr.length > 0;
+  const isStreaming = Boolean(step.streaming);
+  const isTruncated =
+    Boolean(step.command_truncated || step.observation_truncated) ||
+    observation.includes("MAX_CAPTURE_BYTES") ||
+    observation.includes("[output truncated,") ||
+    observation.includes("[truncated:");
+  const isKilled =
+    Boolean(step.command_killed) ||
+    step.status === "cancelled" ||
+    observation.includes("command timed out") ||
+    observation.includes("execution was cancelled");
+  const showHeader = Boolean(command) || isStreaming || isTruncated || isKilled;
   return (
     <div
       className="nex-agent-terminal"
       role="group"
       aria-label={t("agent.terminalOut")}
     >
-      {command && (
+      {showHeader && (
         <div className="nex-agent-terminal-header">
-          <span className="nex-agent-terminal-prompt" aria-hidden="true">
-            $
-          </span>
-          <span className="nex-agent-terminal-command nex-tag-mono">
-            {command}
-          </span>
-          {cwd && (
-            <span className="nex-agent-terminal-cwd nex-tag-mono">({cwd})</span>
+          {command && (
+            <>
+              <span className="nex-agent-terminal-prompt" aria-hidden="true">
+                $
+              </span>
+              <span className="nex-agent-terminal-command nex-tag-mono">
+                {command}
+              </span>
+              {cwd && (
+                <span className="nex-agent-terminal-cwd nex-tag-mono">
+                  ({cwd})
+                </span>
+              )}
+            </>
+          )}
+          {(isStreaming || isTruncated || isKilled) && (
+            <span className="nex-agent-terminal-badges">
+              {isStreaming && (
+                <span className="nex-agent-terminal-badge">
+                  {t("agent.streaming")}
+                </span>
+              )}
+              {isTruncated && (
+                <span className="nex-agent-terminal-badge">
+                  {t("agent.truncated")}
+                </span>
+              )}
+              {isKilled && (
+                <span className="nex-agent-terminal-badge is-killed">
+                  {t("agent.killed")}
+                </span>
+              )}
+            </span>
           )}
         </div>
       )}
@@ -63,7 +100,9 @@ function TerminalView({ step }: { step: AgentStepView }) {
           </>
         )}
         {!stdout && !hasStderr && (
-          <span className="nex-agent-step-empty">{t("agent.noOutput")}</span>
+          <span className="nex-agent-step-empty">
+            {isStreaming ? t("agent.verifyRunning") : t("agent.noOutput")}
+          </span>
         )}
       </div>
     </div>

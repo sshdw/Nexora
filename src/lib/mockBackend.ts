@@ -767,6 +767,33 @@ function emitAgentEvent(frame: unknown) {
   }
 }
 
+let nextMockTerminalRunId = 1;
+let activeMockTerminalKill: (() => void) | null = null;
+
+function emitTerminalOutput(frame: {
+  run_id: number;
+  stream: string;
+  chunk: string;
+  done: boolean;
+  truncated: boolean;
+  killed: boolean;
+  success: boolean | null;
+}) {
+  const listeners = eventListeners.get("terminal-output");
+  if (!listeners) return;
+  for (const [, cb] of listeners) {
+    try {
+      (cb as (v: unknown) => void)({
+        event: "terminal-output",
+        id: 0,
+        payload: frame,
+      });
+    } catch {
+      // ignore handler errors
+    }
+  }
+}
+
 /** Strict camelCase-only argument reader for the agent commands. Mirrors the
  * Tauri v2 IPC contract (arguments are deserialized by camelCase name) so the
  * mock enforces the same contract instead of forgiving snake_case fallbacks. */
@@ -2890,6 +2917,135 @@ async function invoke(
     }
     case "privacy_wipe":
       return { deleted_rows: 1 };
+    case "terminal_run": {
+      const cmd = String(args.command ?? "").trim();
+      const confirmationId = String(args.confirmationId ?? "");
+      if (!cmd) {
+        throw {
+          kind: "invalidInput",
+          message: "the terminal command must not be empty",
+        };
+      }
+      if (!confirmationId) {
+        throw {
+          kind: "confirmationRequired",
+          message: "explicit confirmation is required before running terminal",
+        };
+      }
+      if (activeMockTerminalKill !== null) {
+        throw {
+          kind: "invalidInput",
+          message: "a terminal command is already running — stop it first",
+        };
+      }
+      const runId = nextMockTerminalRunId++;
+      const cwd = typeof args.cwd === "string" && args.cwd ? args.cwd : ".";
+      const scrubMockSecrets = (text: string) =>
+        text
+          .replace(/sk-(?:ant-|proj-)?[A-Za-z0-9_-]{8,}/g, "[REDACTED]")
+          .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [REDACTED]");
+      const shouldFail =
+        /\bfail\b|\bexit\s+1\b|\berr\b/i.test(cmd);
+      const line1 = scrubMockSecrets(`[${cwd}] $ ${cmd}\n`);
+      const line2 = shouldFail
+        ? "stderr: mock non-zero exit status 1\n"
+        : "mock ok: finished cleanly\n";
+
+      emitTerminalOutput({
+        run_id: runId,
+        stream: "status",
+        chunk: "",
+        done: false,
+        truncated: false,
+        killed: false,
+        success: null,
+      });
+
+      return new Promise((resolve, reject) => {
+        let settled = false;
+        const timer1 = window.setTimeout(() => {
+          if (settled) return;
+          emitTerminalOutput({
+            run_id: runId,
+            stream: "stdout",
+            chunk: line1,
+            done: false,
+            truncated: false,
+            killed: false,
+            success: null,
+          });
+        }, 25);
+        const timer2 = window.setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          activeMockTerminalKill = null;
+          emitTerminalOutput({
+            run_id: runId,
+            stream: shouldFail ? "stderr" : "stdout",
+            chunk: line2,
+            done: false,
+            truncated: false,
+            killed: false,
+            success: null,
+          });
+          const output = shouldFail
+            ? `${line1}--- stderr ---\n${line2}\n[command exited with status 1]`
+            : `${line1}${line2}`;
+          emitTerminalOutput({
+            run_id: runId,
+            stream: "status",
+            chunk: "",
+            done: true,
+            truncated: false,
+            killed: false,
+            success: !shouldFail,
+          });
+          resolve({
+            run_id: runId,
+            output,
+            truncated: false,
+            success: !shouldFail,
+          });
+        }, 75);
+        activeMockTerminalKill = () => {
+          if (settled) return;
+          settled = true;
+          window.clearTimeout(timer1);
+          window.clearTimeout(timer2);
+          activeMockTerminalKill = null;
+          emitTerminalOutput({
+            run_id: runId,
+            stream: "status",
+            chunk: "",
+            done: true,
+            truncated: false,
+            killed: true,
+            success: false,
+          });
+          reject({
+            kind: "cancelled",
+            message: "terminal command cancelled",
+          });
+        };
+      });
+    }
+    case "terminal_kill": {
+      if (activeMockTerminalKill) {
+        activeMockTerminalKill();
+        return true;
+      }
+      return false;
+    }
+    case "terminal_explain": {
+      const out = String(args.output ?? "");
+      return {
+        explanation:
+          "Mock diagnosis: the command returned a non-zero exit status." +
+          (out ? " Review the command path, arguments, and stderr above." : ""),
+        suggested_fix: "echo \"fixed\" && npm test",
+        truncated_input: false,
+      };
+    }
     case "docs_manifest": {
       // Static DEV-ONLY mirror of the backend `docs_manifest` command: the
       // migration spine mirrors MIGRATIONS v1..v11 (database.rs) — update

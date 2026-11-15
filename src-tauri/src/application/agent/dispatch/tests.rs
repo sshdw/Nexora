@@ -2972,3 +2972,76 @@ fn repeated_provider_id_uses_distinct_approval_handles_and_rejects_delayed_respo
     }
     fs::remove_dir_all(ws).unwrap();
 }
+
+#[test]
+fn execute_command_streams_redacted_command_output_events() {
+    let ws = temp_workspace();
+    let gate = ApprovalGate::new(AutonomyMode::FullAutonomous);
+    let gate_clone = gate.clone();
+    let (tx, rx) = channel();
+    let secret = "sk-ant-api03-1234567890abcdefghij";
+    let fake = FakeExecutor::new(vec![
+        Ok(AiResponse {
+            content: String::new(),
+            model: "m".to_string(),
+            tool_calls: vec![approval_call(
+                "s1",
+                "execute_command",
+                serde_json::json!({"command": format!("echo prefix {secret} suffix")}),
+            )],
+            usage: None,
+        }),
+        Ok(text_response("done")),
+    ]);
+    let runner = AgentRunner::new(&fake, &ws)
+        .with_approval_gate(gate_clone)
+        .with_event_sender(tx);
+    let gate_for_driver = gate.clone();
+    let driver = thread::spawn(move || {
+        let mut command_chunks = Vec::new();
+        while let Ok(ev) = rx.recv_timeout(Duration::from_secs(10)) {
+            match ev {
+                AgentRunEvent::ApprovalRequested { call_id, name, .. }
+                    if name == "execute_command" =>
+                {
+                    gate_for_driver.respond_for_test(&call_id, ApprovalDecision::Approved);
+                }
+                AgentRunEvent::CommandOutput { stream, chunk, .. } => {
+                    assert!(
+                        !chunk.contains(secret),
+                        "live command stream leaked secret: {chunk}"
+                    );
+                    if stream == "stdout" {
+                        command_chunks.push(chunk);
+                    }
+                }
+                AgentRunEvent::Completed { .. } => break,
+                _ => {}
+            }
+        }
+        command_chunks
+    });
+
+    assert_eq!(runner.run("openai", "m", "cred", "q").unwrap(), "done");
+    let chunks = driver.join().expect("driver");
+    let joined = chunks.concat();
+    assert!(
+        joined.contains("[REDACTED]"),
+        "expected redacted stdout chunk in AgentRunEvent::CommandOutput, got: {joined}"
+    );
+    assert!(!joined.contains(secret));
+
+    let second_req = &fake.requests.borrow()[1];
+    let tool_contents: Vec<&str> = second_req
+        .messages
+        .iter()
+        .filter_map(|m| m.tool_result.as_ref().map(|tr| tr.content.as_str()))
+        .collect();
+    assert!(
+        tool_contents
+            .iter()
+            .any(|c| c.contains("[REDACTED]") && !c.contains(secret)),
+        "tool observation must redact secrets: {tool_contents:?}"
+    );
+    let _ = fs::remove_dir_all(&ws);
+}

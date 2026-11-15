@@ -18,6 +18,7 @@ tauri-build = { version = "2", features = [] }
 # member of it. The dependency arrow points desktop -> core, never the reverse:
 # `nexora-core` does not know Tauri exists.
 nexora-core = { path = "../crates/nexora-core" }
+nexora-os-exec = { path = "../crates/nexora-os-exec" }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

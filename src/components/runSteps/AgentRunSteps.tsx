@@ -175,6 +175,41 @@ function AgentRunSteps({
   const isRunning = run.status === "running";
   const isPaused = run.status === "paused";
   const isActive = isRunning || isPaused;
+  const streamingSteps = useMemo<AgentStepView[]>(() => {
+    if (!isActive || !run.streaming_commands?.length) return [];
+    const baseSeq = sorted.length > 0 ? sorted[sorted.length - 1].seq : 0;
+    return run.streaming_commands.map((cmd, idx) => {
+      const stderrPart = cmd.stderr
+        ? `${cmd.stdout && !cmd.stdout.endsWith("\n") ? "\n" : ""}--- stderr ---\n${cmd.stderr}`
+        : "";
+      return {
+        id: -(idx + 1),
+        step_id: 0,
+        run_id: run.run_id,
+        seq: baseSeq + idx + 1,
+        kind: "tool_call",
+        tool_name: "execute_command",
+        arguments: JSON.stringify({ command: cmd.command }),
+        observation: `${cmd.stdout}${stderrPart}`,
+        observation_len: null,
+        observation_truncated: false,
+        observation_full: null,
+        observation_loading: false,
+        observation_error: null,
+        status: null,
+        started_at: cmd.started_at,
+        duration_ms: null,
+        streaming: true,
+        stream_call_id: cmd.call_id,
+        command_truncated: cmd.truncated,
+        command_killed: cmd.killed,
+      };
+    });
+  }, [isActive, run.run_id, run.streaming_commands, sorted]);
+  const timelineSteps = useMemo(
+    () => (streamingSteps.length > 0 ? [...sorted, ...streamingSteps] : sorted),
+    [sorted, streamingSteps]
+  );
   const pending = run.status === "interrupted" ? null : run.pending_approval;
   const pendingDeadline = pending && pending.timeout_secs > 0 ? pending : null;
   const pendingId = pending?.call_id ?? null;
@@ -572,7 +607,7 @@ function AgentRunSteps({
             MUST still render as the disclosure — a static line here would
             leave a folded run with no way to expand, so its steps could
             never lazy-load. */}
-        {sorted.length === 0 && !(foldable && !run.steps_loaded) ? (
+        {timelineSteps.length === 0 && !(foldable && !run.steps_loaded) ? (
           <span className="nex-agent-run-disclosure is-static" role="status">
             {isRunning && !parked && (
               <span
@@ -784,7 +819,7 @@ function AgentRunSteps({
         />
       )}
 
-      {!collapsed && sorted.length > 0 && (
+      {!collapsed && timelineSteps.length > 0 && (
         <div className="nex-agent-run-detail">
           <span className="nex-agent-run-summary">{summaryText}</span>
           <span className="nex-agent-run-meta">
@@ -809,7 +844,7 @@ function AgentRunSteps({
           <p className="nex-agent-empty-state">{t("agent.emptyRunState")}</p>
         )}
 
-      {sorted.length > 0 && (
+      {timelineSteps.length > 0 && (
         <>
           {/* `hidden` and never a `display` override here: the attribute keeps
               every row mounted (so expanding restores the same objects, the
@@ -831,7 +866,7 @@ function AgentRunSteps({
                   showEmpty
                 />
               )}
-              {groupSteps(sorted).map((item, idx, all) => {
+              {groupSteps(timelineSteps).map((item, idx, all) => {
                 const isLast = idx === all.length - 1;
                 const protectedRow = isGroup(item)
                   ? item.steps.some(isProtectedRow)
@@ -865,7 +900,11 @@ function AgentRunSteps({
                   const cp = checkpointForStep(item);
                   return (
                     <div
-                      key={`${run.run_id}-${item.seq}`}
+                      key={
+                        item.stream_call_id
+                          ? `${run.run_id}-stream-${item.stream_call_id}`
+                          : `${run.run_id}-${item.seq}`
+                      }
                       className={slotClass}
                     >
                       <StepSection

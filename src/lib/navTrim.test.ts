@@ -27,6 +27,7 @@ const DEPS_STUB = {
   openSettings: () => {},
   openVcs: () => {},
   openTasks: () => {},
+  toggleTerminal: () => {},
   newConversation: () => {},
   openImport: () => {},
   exportActive: () => {},
@@ -163,7 +164,6 @@ describe("hidden panels stay on disk (#219)", () => {
     );
     for (const opener of [
       "openLibrary",
-      "openTerminal",
       "openActivity",
       "openAudit",
       "openDebt",
@@ -175,6 +175,7 @@ describe("hidden panels stay on disk (#219)", () => {
     }
     expect(depsBlock).toContain("openVcs");
     expect(depsBlock).toContain("openTasks");
+    expect(depsBlock).toContain("toggleTerminal");
     expect(depsBlock).toContain("openSettings");
   });
 
@@ -244,11 +245,12 @@ describe("hidden panels stay on disk (#219)", () => {
     const liveRows = DOC_FEATURES.filter((f) => !isExempt(f.paletteId));
 
     it("names only registered palette ids for the rows that are reachable", () => {
-      // chat.new + go.vcs + go.tasks — the three the trim kept reachable.
+      // chat.new + go.terminal + go.vcs + go.tasks — restored Workspace Terminal drawer joins the live set.
       // Pinned so the exemption can never quietly become the whole list.
       expect(liveRows.map((f) => f.paletteId).sort()).toEqual([
         "chat.new",
         "go.tasks",
+        "go.terminal",
         "go.vcs",
       ]);
       for (const feature of liveRows) {
@@ -272,7 +274,6 @@ describe("hidden panels stay on disk (#219)", () => {
         "go.health",
         "go.library",
         "go.privacy",
-        "go.terminal",
       ]);
       for (const id of HIDDEN_PANEL_DOC_IDS) {
         expect(registered.has(id)).toBe(false);

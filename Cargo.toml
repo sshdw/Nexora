@@ -15,6 +15,6 @@
 # package into a workspace member is supported and does not merge the two
 # workspaces: the desktop keeps its own lockfile and target dir.
 [workspace]
-members = ["apps/nexora-cli", "crates/nexora-core"]
+members = ["apps/nexora-cli", "crates/nexora-core", "crates/nexora-os-exec"]
 exclude = ["src-tauri"]
 resolver = "2"

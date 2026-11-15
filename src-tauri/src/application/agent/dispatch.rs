@@ -944,6 +944,52 @@ fn execute_bound(
     call: &ToolCall,
     hook: Option<&mut CheckpointHook<'_>>,
 ) -> Result<String, super::tools::ToolError> {
+    if call.name == "execute_command" && ctx.sender.is_some() {
+        let mut sink = |update: super::tools::CommandStreamUpdate| {
+            let event = match update {
+                super::tools::CommandStreamUpdate::Started { command } => {
+                    AgentRunEvent::CommandOutput {
+                        call_id: call.id.clone(),
+                        command: Some(command),
+                        stream: "stdout".to_string(),
+                        chunk: String::new(),
+                        truncated: false,
+                        killed: false,
+                    }
+                }
+                super::tools::CommandStreamUpdate::Chunk { stream, text } => {
+                    AgentRunEvent::CommandOutput {
+                        call_id: call.id.clone(),
+                        command: None,
+                        stream: stream.to_string(),
+                        chunk: text,
+                        truncated: false,
+                        killed: false,
+                    }
+                }
+                super::tools::CommandStreamUpdate::Done { truncated, killed } => {
+                    AgentRunEvent::CommandOutput {
+                        call_id: call.id.clone(),
+                        command: None,
+                        stream: "status".to_string(),
+                        chunk: String::new(),
+                        truncated,
+                        killed,
+                    }
+                }
+            };
+            emit(ctx.sender, event);
+        };
+        return ToolRegistry::execute_agent_with_checkpoints_streaming(
+            call,
+            ctx.workspace_root,
+            ctx.token,
+            ctx.approval_gate,
+            hook,
+            Some(&mut sink),
+        );
+    }
+
     ToolRegistry::execute_agent_with_checkpoints(
         call,
         ctx.workspace_root,
