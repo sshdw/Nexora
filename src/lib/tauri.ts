@@ -43,3 +43,5 @@ export * from "./ipc/debt";
 export * from "./ipc/docs";
 export * from "./ipc/flags";
 export * from "./ipc/system";
+
+export * from "./ipc/sandbox";

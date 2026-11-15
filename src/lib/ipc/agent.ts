@@ -9,7 +9,7 @@ import { getSetting, setSetting } from "./settings";
 export type AccessProfile = "read_only" | "standard" | "supervised";
 export interface ApprovalMetadata {
   access_profile: AccessProfile;
-  sandbox_posture: "PerCommandConsent";
+  sandbox_posture: "Verified" | "PerCommandConsent";
   checkpoints_available: boolean;
   allow_for_run: boolean;
   sensitive_write: boolean;
@@ -23,7 +23,7 @@ export interface ApprovalMetadata {
     packages: string[];
     packages_exact: boolean;
     uncertain: boolean;
-    sandbox_posture: "PerCommandConsent";
+    sandbox_posture: "Verified" | "PerCommandConsent";
   } | null;
 }
 export async function getAccessProfile(): Promise<AccessProfile> {

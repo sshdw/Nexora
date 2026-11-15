@@ -58,6 +58,7 @@ struct ContextState {
     workspace_root: Option<PathBuf>,
     plan: AtomicBool,
     checkpoints_enabled: AtomicBool,
+    sandbox_enabled: bool,
     revision: AtomicU64,
     environment: Arc<Mutex<(String, u64)>>,
     #[cfg(test)]
@@ -81,6 +82,7 @@ impl AccessContext {
             workspace_root: None,
             plan: AtomicBool::new(false),
             checkpoints_enabled: AtomicBool::new(false),
+            sandbox_enabled: !cfg!(test),
             revision: AtomicU64::new(0),
             environment: Arc::new(Mutex::new((String::new(), 0))),
             #[cfg(test)]
@@ -97,6 +99,7 @@ impl AccessContext {
             workspace_root: None,
             plan: AtomicBool::new(false),
             checkpoints_enabled: AtomicBool::new(false),
+            sandbox_enabled: false,
             revision: AtomicU64::new(0),
             environment: Arc::new(Mutex::new((String::new(), 0))),
             #[cfg(test)]
@@ -115,6 +118,7 @@ impl AccessContext {
             workspace_root: Some(workspace_root.to_path_buf()),
             plan: AtomicBool::new(self.0.plan.load(Ordering::SeqCst)),
             checkpoints_enabled: AtomicBool::new(self.checkpoints_enabled()),
+            sandbox_enabled: self.0.sandbox_enabled,
             revision: AtomicU64::new(self.0.revision.load(Ordering::SeqCst)),
             environment: self.0.environment.clone(),
             #[cfg(test)]
@@ -132,11 +136,39 @@ impl AccessContext {
             workspace_root: self.0.workspace_root.clone(),
             plan: AtomicBool::new(false),
             checkpoints_enabled: AtomicBool::new(self.checkpoints_enabled()),
+            sandbox_enabled: self.0.sandbox_enabled,
             revision: AtomicU64::new(0),
             environment: self.0.environment.clone(),
             #[cfg(test)]
             environment_override: self.0.environment_override.clone(),
         }))
+    }
+    pub(crate) fn sandbox_enabled(&self) -> bool {
+        self.0.sandbox_enabled
+    }
+    #[cfg(test)]
+    pub(crate) fn with_sandbox_enabled(&self, enabled: bool) -> Self {
+        Self(Arc::new(ContextState {
+            db: self.0.db.clone(),
+            clock: self.0.clock.clone(),
+            selected: self.0.selected,
+            parent: self.0.parent.clone(),
+            child_ceiling: self.0.child_ceiling,
+            workspace_root: self.0.workspace_root.clone(),
+            plan: AtomicBool::new(self.0.plan.load(Ordering::SeqCst)),
+            checkpoints_enabled: AtomicBool::new(self.checkpoints_enabled()),
+            sandbox_enabled: enabled,
+            revision: AtomicU64::new(self.0.revision.load(Ordering::SeqCst)),
+            environment: self.0.environment.clone(),
+            environment_override: self.0.environment_override.clone(),
+        }))
+    }
+    pub(crate) fn sandbox_posture(&self, workspace: &Path) -> &'static str {
+        if self.0.sandbox_enabled {
+            super::sandbox::status(workspace).posture
+        } else {
+            "PerCommandConsent"
+        }
     }
     pub(crate) fn set_plan(&self, plan: bool) {
         let _guard = self
@@ -289,6 +321,9 @@ impl AccessContext {
         call: &ToolCall,
         action: impl FnOnce(&str, &Path, &mut dyn FnMut()) -> Result<T, super::tools::ToolError>,
     ) -> Result<T, super::tools::ToolError> {
+        if self.0.sandbox_enabled {
+            super::sandbox::refresh_if_expired(workspace);
+        }
         let epoch = self
             .0
             .clock
@@ -298,18 +333,22 @@ impl AccessContext {
             .map_err(|_| super::tools::ToolError::InvalidArguments("invalid JSON".into()))?;
         let target = tool_scope(workspace, &call.name, &args)?;
         let mut hash = Sha256::new();
-        let posture = if self.checkpoints_enabled() {
-            "PerCommandConsent:checkpoints"
+        let (sandbox_posture, sandbox_id) = if self.0.sandbox_enabled {
+            super::sandbox::posture_and_identity(workspace)
         } else {
-            "PerCommandConsent:no-checkpoints"
+            ("PerCommandConsent", "sandbox-disabled".into())
         };
+        let posture = format!(
+            "{sandbox_posture}:{}:{sandbox_id}",
+            self.checkpoints_enabled(),
+        );
         for value in [
             &path_to_comparable_string(&canonical_root(workspace)),
             &call.name,
             &path_to_comparable_string(&target),
             &call.arguments,
             &self.environment_identity(),
-            posture,
+            &posture,
             &format!("{:?}", self.profile()),
             &self.revision(*epoch),
         ] {
@@ -862,6 +901,48 @@ mod tests {
             })
             .unwrap();
         unlink_directory(&alias);
+        std::fs::remove_dir_all(&workspace).unwrap();
+    }
+    #[test]
+    fn verified_posture_and_invalidations_update_access_identity_and_drop_to_consent() {
+        let _sandbox_lock = super::super::sandbox::test_lock();
+        let db = in_memory_database();
+        let workspace = temp_workspace();
+        let access = AccessContext::root(&db).with_sandbox_enabled(true);
+        let cmd = call("execute_command", json!({"command":"echo ok","cwd":"."}));
+
+        assert_eq!(access.sandbox_posture(&workspace), "PerCommandConsent");
+        let id_unverified = access.identity(&workspace, &cmd).unwrap();
+
+        super::super::sandbox::set_test_status(&workspace, true, std::time::Duration::ZERO);
+        assert_eq!(access.sandbox_posture(&workspace), "Verified");
+        let id_verified = access.identity(&workspace, &cmd).unwrap();
+        assert_ne!(id_unverified, id_verified);
+
+        super::super::sandbox::set_test_status(
+            &workspace,
+            true,
+            std::time::Duration::from_secs(31),
+        );
+        assert_eq!(access.sandbox_posture(&workspace), "PerCommandConsent");
+        let id_expired = access.identity(&workspace, &cmd).unwrap();
+        assert_ne!(id_verified, id_expired);
+
+        super::super::sandbox::set_test_status(&workspace, true, std::time::Duration::ZERO);
+        let id_reverified = access.identity(&workspace, &cmd).unwrap();
+        access.set_test_environment(Some("synthetic-sandbox-env-change"));
+        assert_ne!(id_reverified, access.identity(&workspace, &cmd).unwrap());
+        access.set_test_environment(None);
+
+        super::super::sandbox::set_test_status_with_fingerprint(
+            &workspace,
+            true,
+            Some("stale-policy-fingerprint"),
+            std::time::Duration::ZERO,
+        );
+        assert_eq!(access.sandbox_posture(&workspace), "PerCommandConsent");
+
+        super::super::sandbox::clear_test_status(&workspace);
         std::fs::remove_dir_all(&workspace).unwrap();
     }
 }

@@ -234,6 +234,13 @@ fn dispatch_one(
     if let Some(gate) = ctx.approval_gate {
         gate.bind_policy(ctx.preset, ctx.permission_store);
     }
+    if call.name == "execute_command"
+        && ctx
+            .approval_gate
+            .is_some_and(|gate| gate.access().sandbox_enabled())
+    {
+        super::sandbox::refresh(ctx.workspace_root);
+    }
     let allowed = ctx.approval_gate.map_or_else(
         || matches!(RiskClass::classify(&call.name), RiskClass::ReadOnly),
         |gate| gate.access().allows(call),
@@ -657,6 +664,22 @@ fn handle_permission_store_decision(
                         };
                     }
                     PermissionOutcome::Ask { rule_id } => {
+                        // When the gate itself already permits unprompted
+                        // `GeneralShell` under a `Verified` native sandbox, let
+                        // the v7 baseline seed (`priority = 50`) yield to the
+                        // ladder while preserving unconditional parking for all
+                        // user-created/explicit `Ask` rules.
+                        if call.name == "execute_command"
+                            && store.is_seeded_default_shell_ask(rule_id)
+                            && ctx
+                                .approval_gate
+                                .as_ref()
+                                .is_some_and(|gate| !gate.needs_approval(call))
+                        {
+                            return StoreAction::Continue {
+                                considered_rule: rule_id,
+                            };
+                        }
                         // NEX-AGENT-012: an `Ask` rule records explicit "ask
                         // me" consent for this pattern, so it always parks —
                         // in every mode, including `FullAutonomous` (the

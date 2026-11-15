@@ -421,7 +421,7 @@ impl ApprovalGate {
     }
     pub(crate) fn metadata(&self, call: &ToolCall) -> ApprovalMetadata {
         let args = serde_json::from_str::<serde_json::Value>(&call.arguments).unwrap_or_default();
-        let shell = (call.name == "execute_command").then(|| {
+        let mut shell = (call.name == "execute_command").then(|| {
             super::shell_policy::analyze(
                 args.get("command")
                     .and_then(serde_json::Value::as_str)
@@ -444,9 +444,16 @@ impl ApprovalGate {
                             || super::tools::path_safety::sensitive_write(&workspace.join(path))
                     })
                 });
+        let workspace = self.lock_state().workspace.clone();
+        let posture = workspace.as_ref().map_or("PerCommandConsent", |path| {
+            self.access.sandbox_posture(path)
+        });
+        if let Some(analysis) = shell.as_mut() {
+            analysis.sandbox_posture = posture;
+        }
         ApprovalMetadata {
             access_profile: self.access.profile(),
-            sandbox_posture: "PerCommandConsent",
+            sandbox_posture: posture,
             checkpoints_available: self.has_verified_checkpoints(),
             allow_for_run: self.reusable(call),
             sensitive_write,
@@ -471,6 +478,9 @@ impl ApprovalGate {
         workspace: &Path,
         execute: impl FnOnce(&Path, &mut dyn FnMut()) -> Result<String, super::tools::ToolError>,
     ) -> Result<String, super::tools::ToolError> {
+        if call.name == "execute_command" && self.access.sandbox_enabled() {
+            super::sandbox::refresh(workspace);
+        }
         let mut unavailable = false;
         let result = self
             .access
@@ -500,14 +510,30 @@ impl ApprovalGate {
                 if current.is_some() && snapshot.is_some() && current != snapshot {
                     return Err(denied());
                 }
-                let policy = current
-                    .or(snapshot)
+                let policy_store = current.or(snapshot);
+                let policy = policy_store
+                    .as_ref()
                     .and_then(|store| store.decide_call(preset.as_str(), call, workspace));
                 if matches!(policy, Some(PermissionOutcome::Deny { .. })) {
                     return Err(denied());
                 }
-                let needs_consent = self.needs_approval(call)
-                    || matches!(policy, Some(PermissionOutcome::Ask { .. }));
+                let needs_approval = self.needs_approval(call);
+                // The v7 migration seeds a baseline `('coding', 'execute_command', '*', 'ask', 50)`
+                // row for unverified shells. Explicit/custom Ask rules (`priority != 50`, different
+                // path/preset, or non-shell tools) still mandate consent even when `needs_approval`
+                // is false, whereas the seeded baseline yields only when `needs_approval` already
+                // permits unprompted `GeneralShell` inside a `Verified` native sandbox.
+                let ask_rule_requires_consent = match policy {
+                    Some(PermissionOutcome::Ask { rule_id }) => {
+                        needs_approval
+                            || call.name != "execute_command"
+                            || !policy_store
+                                .as_ref()
+                                .is_some_and(|store| store.is_seeded_default_shell_ask(rule_id))
+                    }
+                    _ => false,
+                };
+                let needs_consent = needs_approval || ask_rule_requires_consent;
                 let reusable = self.reusable(call);
                 let key = format!("exact:{}:{identity}", call.name);
                 let mut state = self.lock_state();
@@ -521,7 +547,15 @@ impl ApprovalGate {
                     return Err(denied());
                 }
                 drop(state);
-                execute(target, started)
+                if call.name == "execute_command" {
+                    let sandboxed = self.access.sandbox_posture(workspace) == "Verified";
+                    if !sandboxed && !once && !group {
+                        return Err(denied());
+                    }
+                    super::sandbox::authorized(workspace, sandboxed, || execute(target, started))
+                } else {
+                    execute(target, started)
+                }
             });
         if unavailable {
             self.access.invalidate();
@@ -627,6 +661,19 @@ impl ApprovalGate {
     pub(crate) fn needs_approval(&self, call: &ToolCall) -> bool {
         let risk = RiskClass::classify(&call.name);
         let mode = self.mode();
+        if call.name == "execute_command"
+            && mode != AutonomyMode::Supervised
+            && self.access.profile() == AccessProfile::Standard
+        {
+            let workspace = self.lock_state().workspace.clone();
+            if workspace
+                .as_ref()
+                .is_some_and(|path| self.access.sandbox_posture(path) == "Verified")
+                && super::shell_policy::automatic_general_shell(&call.arguments)
+            {
+                return false;
+            }
+        }
         match mode {
             AutonomyMode::Supervised => true,
             AutonomyMode::SemiAutonomous => {
@@ -1573,5 +1620,561 @@ mod tests {
             !gate.has_any_pending(),
             "shutdown during park clears pending like every other park end"
         );
+    }
+
+    #[test]
+    fn standard_verified_allows_only_certain_general_shell_without_prompt() {
+        use crate::application::agent::access::PROFILE_KEY;
+        use crate::application::agent::shell_policy::ShellCategory;
+        use crate::application::agent::tools::{
+            test_support::{call, temp_workspace},
+            ToolError, ToolRegistry,
+        };
+        use crate::application::settings::SettingsService;
+        use crate::infrastructure::database::in_memory_database;
+        use serde_json::json;
+
+        let _sandbox_lock = super::super::sandbox::test_lock();
+        let db = in_memory_database();
+        let workspace = temp_workspace();
+        SettingsService::new(&db)
+            .write(PROFILE_KEY, Some("standard"))
+            .unwrap();
+        let access = AccessContext::root(&db).with_sandbox_enabled(true);
+        let gate = ApprovalGate::new(AutonomyMode::SemiAutonomous).with_access(access.clone());
+        gate.bind_workspace(&workspace);
+        super::super::sandbox::set_test_status(&workspace, true, Duration::ZERO);
+
+        let general = call("execute_command", json!({"command": "echo ok", "cwd": "."}));
+        assert!(!gate.needs_approval(&general));
+        assert_eq!(
+            gate.request_approval(&general),
+            Ok(ApprovalDecision::Approved)
+        );
+        assert!(!gate.has_any_pending());
+        let meta = gate.metadata(&general);
+        assert_eq!(meta.sandbox_posture, "Verified");
+        assert_eq!(
+            meta.shell.as_ref().map(|s| s.category),
+            Some(ShellCategory::GeneralShell)
+        );
+
+        gate.set_mode(AutonomyMode::FullAutonomous);
+        assert!(!gate.needs_approval(&general));
+
+        // Supervised autonomy mode still requires consent even under Standard + Verified.
+        gate.set_mode(AutonomyMode::Supervised);
+        assert!(gate.needs_approval(&general));
+        gate.set_mode(AutonomyMode::SemiAutonomous);
+
+        // Supervised profile still requires consent even under SemiAutonomous + Verified.
+        SettingsService::new(&db)
+            .write(PROFILE_KEY, Some("supervised"))
+            .unwrap();
+        assert!(gate.needs_approval(&general));
+        SettingsService::new(&db)
+            .write(PROFILE_KEY, Some("standard"))
+            .unwrap();
+
+        let gated_cases = [
+            (
+                "DependencyInstall",
+                json!({"command": "npm install left-pad", "cwd": "."}),
+            ),
+            (
+                "DestructiveGit",
+                json!({"command": "git reset --hard", "cwd": "."}),
+            ),
+            (
+                "PublishOrRemote",
+                json!({"command": "npm publish", "cwd": "."}),
+            ),
+            ("MassDelete", json!({"command": "rm -rf dist", "cwd": "."})),
+            (
+                "ParseUncertainWrapper",
+                json!({"command": "python -c print(1)", "cwd": "."}),
+            ),
+            (
+                "ParseUncertainExpansion",
+                json!({"command": "echo $HOME %PATH%", "cwd": "."}),
+            ),
+            (
+                "EscalationUnsandboxed",
+                json!({"command": "echo ok", "cwd": ".", "unsandboxed": true}),
+            ),
+            (
+                "EscalationAssertedPosture",
+                json!({"command": "echo ok", "cwd": ".", "sandbox_posture": "Verified"}),
+            ),
+            (
+                "EscalationSudo",
+                json!({"command": "sudo echo ok", "cwd": "."}),
+            ),
+        ];
+        for (label, args) in gated_cases {
+            let req = call("execute_command", args);
+            assert!(gate.needs_approval(&req), "{label} must require consent");
+            assert_eq!(
+                ToolRegistry::execute_agent(
+                    &req,
+                    &workspace,
+                    &CancellationToken::new(),
+                    Some(&gate)
+                ),
+                Err(ToolError::ConsentInvalidated),
+                "{label} must fail closed without explicit consent"
+            );
+        }
+
+        super::super::sandbox::clear_test_status(&workspace);
+        std::fs::remove_dir_all(&workspace).unwrap();
+    }
+
+    #[test]
+    fn verified_posture_drops_to_consent_on_ttl_workspace_or_policy_invalidation() {
+        use crate::application::agent::access::PROFILE_KEY;
+        use crate::application::agent::tools::test_support::{call, temp_workspace};
+        use crate::application::settings::SettingsService;
+        use crate::infrastructure::database::in_memory_database;
+        use serde_json::json;
+
+        let _sandbox_lock = super::super::sandbox::test_lock();
+        let db = in_memory_database();
+        let ws1 = temp_workspace();
+        let ws2 = temp_workspace();
+        let access = AccessContext::root(&db).with_sandbox_enabled(true);
+        let gate = ApprovalGate::new(AutonomyMode::SemiAutonomous).with_access(access.clone());
+        let general = call("execute_command", json!({"command": "echo ok", "cwd": "."}));
+
+        gate.bind_workspace(&ws1);
+        super::super::sandbox::set_test_status(&ws1, true, Duration::ZERO);
+        assert!(!gate.needs_approval(&general));
+        assert_eq!(gate.metadata(&general).sandbox_posture, "Verified");
+
+        // 30s TTL expiry drops Verified back to PerCommandConsent.
+        super::super::sandbox::set_test_status(&ws1, true, Duration::from_secs(31));
+        assert_eq!(gate.metadata(&general).sandbox_posture, "PerCommandConsent");
+        assert!(gate.needs_approval(&general));
+
+        // Workspace switch invalidates pending consent and drops to unverified ws2 posture.
+        super::super::sandbox::set_test_status(&ws1, true, Duration::ZERO);
+        assert!(!gate.needs_approval(&general));
+        let pending_req = call(
+            "execute_command",
+            json!({"command": "npm install foo", "cwd": "."}),
+        );
+        let request_id = gate.prepare_pending(&pending_req);
+        gate.bind_workspace(&ws2);
+        assert_eq!(gate.metadata(&general).sandbox_posture, "PerCommandConsent");
+        assert!(gate.needs_approval(&general));
+        assert!(!gate.respond(&request_id, ApprovalDecision::Approved));
+        assert_eq!(
+            gate.park_until_resolved(&pending_req),
+            Ok(ApprovalDecision::Invalidated)
+        );
+
+        // Policy profile / plan / sandbox invalidation drops Verified automation.
+        gate.bind_workspace(&ws1);
+        assert!(!gate.needs_approval(&general));
+        SettingsService::new(&db)
+            .write(PROFILE_KEY, Some("supervised"))
+            .unwrap();
+        assert!(gate.needs_approval(&general));
+        SettingsService::new(&db)
+            .write(PROFILE_KEY, Some("standard"))
+            .unwrap();
+        assert!(!gate.needs_approval(&general));
+
+        access.set_plan(true);
+        assert!(gate.needs_approval(&general));
+        access.set_plan(false);
+        assert!(!gate.needs_approval(&general));
+
+        super::super::sandbox::invalidate(&ws1);
+        assert_eq!(gate.metadata(&general).sandbox_posture, "PerCommandConsent");
+        assert!(gate.needs_approval(&general));
+
+        super::super::sandbox::clear_test_status(&ws1);
+        std::fs::remove_dir_all(&ws1).unwrap();
+        std::fs::remove_dir_all(&ws2).unwrap();
+    }
+
+    #[test]
+    fn verified_sandbox_launch_failure_rejects_fail_closed_without_unsandboxed_fallback() {
+        use crate::application::agent::tools::{
+            test_support::{call, temp_workspace},
+            ToolError, ToolRegistry,
+        };
+        use crate::infrastructure::database::in_memory_database;
+        use serde_json::json;
+
+        let _sandbox_lock = super::super::sandbox::test_lock();
+        let db = in_memory_database();
+        let workspace = temp_workspace();
+        let marker = workspace.join("unsandboxed-marker.txt");
+        let cmd = if cfg!(windows) {
+            format!("echo escaped > \"{}\"", marker.display())
+        } else {
+            format!("echo escaped > '{}'", marker.display())
+        };
+        let args = json!({"command": cmd, "cwd": "."});
+        let direct_call = call("execute_command", args);
+
+        super::super::sandbox::set_test_status(&workspace, true, Duration::ZERO);
+        let token = CancellationToken::new();
+
+        // 1. Failed sandboxed spawn under an active sandboxed permit must fail closed,
+        // never fall back to unsandboxed spawn_in_process_tree, and invalidate posture.
+        super::super::sandbox::fail_next_sandboxed_spawn();
+        let err = super::super::sandbox::authorized(&workspace, true, || {
+            ToolRegistry::execute(&direct_call, &workspace)
+        });
+        assert!(
+            matches!(err, Err(ToolError::Io(_))),
+            "sandboxed launch failure must return Io error, got: {err:?}"
+        );
+        assert!(!marker.exists(), "command must never run unsandboxed");
+        assert_eq!(
+            super::super::sandbox::status(&workspace).posture,
+            "PerCommandConsent"
+        );
+
+        // 2. Invalidated permit during execute must NOT trigger
+        // the legacy cfg(test) unsandboxed fallback when a permit is active.
+        super::super::sandbox::set_test_status(&workspace, true, Duration::ZERO);
+        let invalidated = super::super::sandbox::authorized(&workspace, true, || {
+            super::super::sandbox::invalidate(&workspace);
+            ToolRegistry::execute(&direct_call, &workspace)
+        });
+        assert_eq!(invalidated, Err(ToolError::ConsentInvalidated));
+        assert!(
+            !marker.exists(),
+            "invalidated permit must never run unsandboxed"
+        );
+
+        // 3. End-to-end through ApprovalGate::execute_authorized when host verifies sandbox.
+        if super::super::sandbox::refresh(&workspace).posture == "Verified" {
+            let access = AccessContext::root(&db).with_sandbox_enabled(true);
+            let gate = ApprovalGate::new(AutonomyMode::SemiAutonomous).with_access(access);
+            gate.bind_workspace(&workspace);
+            let safe_call = call(
+                "execute_command",
+                json!({"command": "echo verified-ok", "cwd": "."}),
+            );
+            assert!(!gate.needs_approval(&safe_call));
+            let ok = ToolRegistry::execute_agent(&safe_call, &workspace, &token, Some(&gate));
+            assert!(
+                ok.as_deref().is_ok_and(|out| out.contains("verified-ok")),
+                "Verified GeneralShell must execute inside native sandbox: {ok:?}"
+            );
+
+            let marker_call = call(
+                "execute_command",
+                json!({"command": format!("echo escaped > \"{}\"", marker.display()), "cwd": "."}),
+            );
+            assert!(
+                gate.needs_approval(&marker_call),
+                "shell redirect must still require explicit gate consent"
+            );
+            let request_id = gate.prepare_pending(&marker_call);
+            assert!(gate.respond(&request_id, ApprovalDecision::Approved));
+            assert_eq!(
+                gate.request_approval(&marker_call),
+                Ok(ApprovalDecision::Approved)
+            );
+            super::super::sandbox::fail_next_sandboxed_spawn();
+            let fail = ToolRegistry::execute_agent(&marker_call, &workspace, &token, Some(&gate));
+            assert!(
+                matches!(fail, Err(ToolError::Io(_))),
+                "gate-authorized sandboxed failure must fail closed: {fail:?}"
+            );
+            assert!(!marker.exists());
+            assert_eq!(
+                super::super::sandbox::status(&workspace).posture,
+                "PerCommandConsent"
+            );
+        }
+
+        super::super::sandbox::clear_test_status(&workspace);
+        std::fs::remove_dir_all(&workspace).unwrap();
+    }
+
+    #[test]
+    fn seeded_default_shell_ask_yields_only_for_verified_general_shell() {
+        use crate::application::agent::permissions::{
+            delete_rule, insert_rule, PermissionStore, RuleEffect,
+        };
+        use crate::application::agent::tools::{
+            test_support::{call, temp_workspace},
+            ToolError,
+        };
+        use crate::infrastructure::database::in_memory_database;
+        use serde_json::json;
+
+        let _sandbox_lock = super::super::sandbox::test_lock();
+        let db = in_memory_database();
+        let seeded = PermissionStore::load(&db);
+        assert!(seeded.is_seeded_default_shell_ask(Some(1)));
+        assert!(!seeded.is_seeded_default_shell_ask(None));
+
+        let workspace = temp_workspace();
+        let safe_call = call(
+            "execute_command",
+            json!({"command": "echo verified-ok", "cwd": "."}),
+        );
+
+        // When sandbox is disabled (PerCommandConsent), the v7 seed still requires consent.
+        let unverified_gate =
+            ApprovalGate::new(AutonomyMode::SemiAutonomous).with_access(AccessContext::root(&db));
+        unverified_gate.bind_workspace(&workspace);
+        assert_eq!(
+            unverified_gate.execute_authorized(
+                &safe_call,
+                &workspace,
+                |_, _| Ok("ran".to_string())
+            ),
+            Err(ToolError::ConsentInvalidated)
+        );
+
+        if super::super::sandbox::refresh(&workspace).posture == "Verified" {
+            let access = AccessContext::root(&db).with_sandbox_enabled(true);
+            let gate = ApprovalGate::new(AutonomyMode::SemiAutonomous).with_access(access);
+            gate.bind_workspace(&workspace);
+
+            assert!(!gate.needs_approval(&safe_call));
+            assert_eq!(
+                gate.execute_authorized(&safe_call, &workspace, |_, _| Ok("ran".to_string())),
+                Ok("ran".to_string())
+            );
+
+            // An uncertain/non-GeneralShell command still requires consent against the v7 seed.
+            let install_call = call(
+                "execute_command",
+                json!({"command": "npm install left-pad", "cwd": "."}),
+            );
+            assert_eq!(
+                gate.execute_authorized(&install_call, &workspace, |_, _| Ok("ran".to_string())),
+                Err(ToolError::ConsentInvalidated)
+            );
+
+            // Replace the v7 seed (priority 50) with an explicit user-added Ask rule (priority 100);
+            // explicit Ask rules must never be bypassed even for Verified GeneralShell.
+            assert!(delete_rule(&db, 1).expect("delete v7 seed"));
+            let custom_id = insert_rule(
+                &db,
+                "coding",
+                "execute_command",
+                Some("*"),
+                RuleEffect::Ask,
+                100,
+            )
+            .expect("insert custom ask");
+            let custom_store = PermissionStore::load(&db);
+            assert!(!custom_store.is_seeded_default_shell_ask(Some(custom_id)));
+            assert_eq!(
+                gate.execute_authorized(&safe_call, &workspace, |_, _| Ok("ran".to_string())),
+                Err(ToolError::ConsentInvalidated)
+            );
+        }
+
+        super::super::sandbox::clear_test_status(&workspace);
+        std::fs::remove_dir_all(&workspace).unwrap();
+    }
+
+    fn approve_call_once(gate: &ApprovalGate, call: &ToolCall) {
+        let req = gate.prepare_pending(call);
+        assert!(gate.respond(&req, ApprovalDecision::Approved));
+        assert_eq!(
+            gate.park_until_resolved(call),
+            Ok(ApprovalDecision::Approved)
+        );
+    }
+
+    #[test]
+    fn parked_consent_survives_ttl_expiry_across_park_and_execute() {
+        use crate::application::agent::tools::test_support::{call, temp_workspace};
+        use crate::infrastructure::database::in_memory_database;
+        use nexora_os_exec::SandboxVerificationStatus;
+        use serde_json::json;
+
+        let _sandbox_lock = super::super::sandbox::test_lock();
+        let db = in_memory_database();
+        let workspace = temp_workspace();
+        let access = AccessContext::root(&db).with_sandbox_enabled(true);
+        let gate = ApprovalGate::new(AutonomyMode::SemiAutonomous).with_access(access);
+        gate.bind_workspace(&workspace);
+
+        let install_call = call(
+            "execute_command",
+            json!({"command": "npm install left-pad", "cwd": "."}),
+        );
+        let general_call = call("execute_command", json!({"command": "echo ok", "cwd": "."}));
+
+        // 1. Verified posture + parked DependencyInstall: >30s elapsed mid-park and before
+        //    execute_authorized succeeds when the probe still verifies with the same posture/fp.
+        super::super::sandbox::set_test_probe(
+            &workspace,
+            Some(SandboxVerificationStatus::Verified {
+                mechanism: "test-sandbox".into(),
+            }),
+        );
+        assert_eq!(
+            super::super::sandbox::refresh(&workspace).posture,
+            "Verified"
+        );
+        assert!(gate.needs_approval(&install_call));
+        let request_id = gate.prepare_pending(&install_call);
+        let park_gate = gate.clone();
+        let park_call = install_call.clone();
+        let park_thread = std::thread::spawn(move || park_gate.park_until_resolved(&park_call));
+
+        std::thread::sleep(Duration::from_millis(40));
+        super::super::sandbox::age_test_status(&workspace, Duration::from_secs(31));
+        std::thread::sleep(Duration::from_millis(60));
+        assert!(
+            gate.has_any_pending(),
+            "TTL expiry alone must not invalidate a parked Verified consent"
+        );
+        assert!(gate.respond(&request_id, ApprovalDecision::Approved));
+        assert_eq!(park_thread.join().unwrap(), Ok(ApprovalDecision::Approved));
+
+        super::super::sandbox::age_test_status(&workspace, Duration::from_secs(31));
+        assert_eq!(
+            gate.execute_authorized(&install_call, &workspace, |_, _| Ok("ran".to_string())),
+            Ok("ran".to_string())
+        );
+
+        // 2. PerCommandConsent (Unavailable) + parked GeneralShell: >30s elapsed succeeds when unchanged.
+        super::super::sandbox::set_test_probe(
+            &workspace,
+            Some(SandboxVerificationStatus::Unavailable {
+                reason: "test-unavailable".into(),
+            }),
+        );
+        assert_eq!(
+            super::super::sandbox::refresh(&workspace).posture,
+            "PerCommandConsent"
+        );
+        assert!(gate.needs_approval(&general_call));
+        let request_id = gate.prepare_pending(&general_call);
+        super::super::sandbox::age_test_status(&workspace, Duration::from_secs(31));
+        assert!(gate.respond(&request_id, ApprovalDecision::Approved));
+        assert_eq!(
+            gate.park_until_resolved(&general_call),
+            Ok(ApprovalDecision::Approved)
+        );
+        super::super::sandbox::age_test_status(&workspace, Duration::from_secs(31));
+        assert_eq!(
+            gate.execute_authorized(&general_call, &workspace, |_, _| Ok("ran".to_string())),
+            Ok("ran".to_string())
+        );
+
+        // 3. Live host probe path: when host verifies native sandbox, >30s approval still succeeds.
+        super::super::sandbox::set_test_probe(&workspace, None);
+        if super::super::sandbox::refresh(&workspace).posture == "Verified" {
+            let live_req = gate.prepare_pending(&install_call);
+            super::super::sandbox::age_test_status(&workspace, Duration::from_secs(31));
+            assert!(gate.respond(&live_req, ApprovalDecision::Approved));
+            assert_eq!(
+                gate.park_until_resolved(&install_call),
+                Ok(ApprovalDecision::Approved)
+            );
+            super::super::sandbox::age_test_status(&workspace, Duration::from_secs(31));
+            assert_eq!(
+                gate.execute_authorized(&install_call, &workspace, |_, _| Ok("ran".to_string())),
+                Ok("ran".to_string())
+            );
+        }
+
+        super::super::sandbox::clear_test_status(&workspace);
+        std::fs::remove_dir_all(&workspace).unwrap();
+    }
+
+    #[test]
+    fn parked_consent_fails_closed_on_degradation_invalidation_and_fingerprint() {
+        use crate::application::agent::tools::{
+            test_support::{call, temp_workspace},
+            ToolError,
+        };
+        use crate::infrastructure::database::in_memory_database;
+        use nexora_os_exec::SandboxVerificationStatus;
+        use serde_json::json;
+
+        let _sandbox_lock = super::super::sandbox::test_lock();
+        let db = in_memory_database();
+        let workspace = temp_workspace();
+        let access = AccessContext::root(&db).with_sandbox_enabled(true);
+        let gate = ApprovalGate::new(AutonomyMode::SemiAutonomous).with_access(access);
+        gate.bind_workspace(&workspace);
+        let install_call = call(
+            "execute_command",
+            json!({"command": "npm install left-pad", "cwd": "."}),
+        );
+
+        let verified = SandboxVerificationStatus::Verified {
+            mechanism: "test-sandbox".into(),
+        };
+
+        // 1. Real posture degradation during >30s park invalidates fail-closed.
+        super::super::sandbox::set_test_probe(&workspace, Some(verified.clone()));
+        super::super::sandbox::refresh(&workspace);
+        let degrade_req = gate.prepare_pending(&install_call);
+        let park_gate = gate.clone();
+        let park_call = install_call.clone();
+        let park_thread = std::thread::spawn(move || park_gate.park_until_resolved(&park_call));
+        std::thread::sleep(Duration::from_millis(40));
+        super::super::sandbox::set_test_probe(
+            &workspace,
+            Some(SandboxVerificationStatus::Unavailable {
+                reason: "sandbox degraded".into(),
+            }),
+        );
+        super::super::sandbox::age_test_status(&workspace, Duration::from_secs(31));
+        assert_eq!(
+            park_thread.join().unwrap(),
+            Ok(ApprovalDecision::Invalidated)
+        );
+        assert!(!gate.respond(&degrade_req, ApprovalDecision::Approved));
+
+        // 2. Real posture degradation after approval but before execute_authorized fails closed.
+        super::super::sandbox::set_test_probe(&workspace, Some(verified.clone()));
+        super::super::sandbox::refresh(&workspace);
+        approve_call_once(&gate, &install_call);
+        super::super::sandbox::set_test_probe(
+            &workspace,
+            Some(SandboxVerificationStatus::Unavailable {
+                reason: "sandbox degraded before exec".into(),
+            }),
+        );
+        assert_eq!(
+            gate.execute_authorized(&install_call, &workspace, |_, _| Ok("ran".to_string())),
+            Err(ToolError::ConsentInvalidated)
+        );
+
+        // 3. Explicit sandbox::invalidate() or fingerprint mismatch still fails closed.
+        super::super::sandbox::set_test_probe(&workspace, Some(verified));
+        super::super::sandbox::refresh(&workspace);
+        approve_call_once(&gate, &install_call);
+        super::super::sandbox::invalidate(&workspace);
+        assert_eq!(
+            gate.execute_authorized(&install_call, &workspace, |_, _| Ok("ran".to_string())),
+            Err(ToolError::ConsentInvalidated)
+        );
+
+        super::super::sandbox::refresh(&workspace);
+        approve_call_once(&gate, &install_call);
+        super::super::sandbox::set_test_status_with_fingerprint(
+            &workspace,
+            true,
+            Some("changed-fingerprint"),
+            Duration::ZERO,
+        );
+        assert_eq!(
+            gate.execute_authorized(&install_call, &workspace, |_, _| Ok("ran".to_string())),
+            Err(ToolError::ConsentInvalidated)
+        );
+
+        super::super::sandbox::clear_test_status(&workspace);
+        std::fs::remove_dir_all(&workspace).unwrap();
     }
 }

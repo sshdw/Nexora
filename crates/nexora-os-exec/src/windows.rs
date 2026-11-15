@@ -31,6 +31,11 @@ pub(crate) struct PlatformHandle {
 }
 
 impl PlatformHandle {
+    pub(crate) fn from_sandbox_job(job: HANDLE) -> Self {
+        Self {
+            job: Mutex::new(Some(RawJob(job))),
+        }
+    }
     pub(crate) fn spawn(command: &mut Command) -> io::Result<(Child, Self)> {
         let job = create_kill_on_close_job()?;
 
@@ -163,7 +168,7 @@ fn create_kill_on_close_job() -> io::Result<HANDLE> {
     Ok(job)
 }
 
-fn resume_process_threads(pid: u32) -> io::Result<()> {
+pub(crate) fn resume_process_threads(pid: u32) -> io::Result<()> {
     // SAFETY: `CreateToolhelp32Snapshot` with `TH32CS_SNAPTHREAD` takes a read-only
     // kernel snapshot of system threads and returns a handle that must be closed.
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };

@@ -1345,6 +1345,35 @@ describe("M04 approval scope and shell posture", () => {
       screen.getByText(/Some shell syntax could not be classified/)
     ).toBeInTheDocument();
   });
+  it("reports verified OS isolation when sandbox_posture is Verified", () => {
+    const shell = {
+      category: "DependencyInstall" as const,
+      packages: ["exact-package@1"],
+      packages_exact: true,
+      uncertain: false,
+      sandbox_posture: "Verified" as const,
+    };
+    renderRun(
+      runView({
+        pending_approval: {
+          call_id: "shell-verified",
+          name: "execute_command",
+          arguments: '{"command":"npm install exact-package@1"}',
+          timeout_secs: 0,
+          requested_at: 0,
+          metadata: {
+            ...metadata,
+            sandbox_posture: "Verified" as const,
+            shell,
+          },
+        },
+      })
+    );
+    expect(screen.getByText("Isolation verified")).toBeInTheDocument();
+    expect(
+      screen.queryByText(/native isolation is unverified/)
+    ).not.toBeInTheDocument();
+  });
 });
 
 function checkpointRow(

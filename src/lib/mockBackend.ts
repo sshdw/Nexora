@@ -1434,6 +1434,8 @@ async function invoke(
       return { content: "ok", model: String(args.model) };
     }
     // ---- Agent workspace folder (1.3.0) ----
+    case "get_sandbox_status":
+      return { workspace_root: mockWorkspaceRoot, state: "unavailable", posture: "PerCommandConsent", mechanism: null, reason: "Native OS verification is unavailable in the visual mock." };
     case "get_workspace_root":
       return mockWorkspaceRoot;
     case "set_workspace_root": {

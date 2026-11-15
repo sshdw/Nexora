@@ -3,6 +3,15 @@
 //! `StringKey`. Pure data - no logic lives here.
 
 export const en = {
+  "sandbox.label": "OS sandbox",
+  "sandbox.checking": "Checking isolation…",
+  "sandbox.verified": "Isolation verified",
+  "sandbox.consent": "Per-command consent",
+  "sandbox.hint": "General shell commands can run automatically in Standard. Dangerous commands still require approval. General shell can update existing ordinary files; creating, deleting or renaming workspace entries is blocked.",
+  "sandbox.failed": "Isolation is unverified. Every shell command requires approval.",
+  "sandbox.unavailable": "Sandbox status is unavailable. Every shell command requires approval.",
+
+
   "access.legacyAutonomy": "Legacy autonomy",
   "access.label": "Access profile",
   "access.read_only": "Read only",
@@ -11,7 +20,7 @@ export const en = {
   "access.hint.read_only":
     "Workspace reads and search only. Edits and shell are blocked.",
   "access.hint.standard":
-    "Workspace writes are checkpointed for 1-click undo. Sensitive paths and shell commands always ask for consent.",
+    "Workspace writes are checkpointed for 1-click undo. Sensitive paths and dangerous commands ask for consent. General shell commands can run automatically only with verified OS isolation.",
   "access.hint.supervised":
     "Every edit and shell command requires your approval.",
   "access.saving": "Saving access profile…",

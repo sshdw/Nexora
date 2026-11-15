@@ -730,7 +730,11 @@ function AgentRunSteps({
             {pending.metadata?.shell && (
               <>
                 <p>{t(`agent.category.${pending.metadata.shell.category}`)}</p>
-                <p>{t("agent.shellFallback")}</p>
+                <p>
+                  {pending.metadata.shell.sandbox_posture === "Verified"
+                    ? t("sandbox.verified")
+                    : t("agent.shellFallback")}
+                </p>
                 {pending.metadata.shell.packages.length > 0 && (
                   <p>{pending.metadata.shell.packages.join(", ")}</p>
                 )}

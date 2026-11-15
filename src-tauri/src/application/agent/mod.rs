@@ -97,6 +97,7 @@ pub mod registry;
 pub(crate) mod resume;
 pub mod roles;
 pub mod runner;
+pub(crate) mod sandbox;
 pub mod self_audit;
 pub mod service;
 pub mod shell_policy;

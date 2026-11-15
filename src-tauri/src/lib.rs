@@ -175,6 +175,7 @@ pub fn run() {
             commands::github::gh_runners,
             commands::release::release_status,
             commands::release::create_issue_for_finding,
+            commands::sandbox::get_sandbox_status,
             commands::system::diagnostics_bundle,
             commands::system::update_check,
             commands::system::snapshot_database,
@@ -228,6 +229,12 @@ pub fn run() {
                 Err(err) => log::warn!("orphaned run sweep failed: {err}"),
             }
             lease.become_shared()?;
+            // Resolve persisted workspace settings, never process cwd. Failed probes
+            // select PerCommandConsent without aborting application startup.
+            let app_data = app.path().app_data_dir()?;
+            let fallback = application::workspace::ensure_workspace_dir(&app_data)?;
+            let workspace = application::workspace::resolve_workspace_root(&db, &fallback);
+            application::agent::sandbox::refresh(&workspace);
             app.manage(db);
             // Keep the shared lease alive for the whole process lifetime.
             app.manage(lease);
