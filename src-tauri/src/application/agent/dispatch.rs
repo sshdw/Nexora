@@ -234,6 +234,13 @@ fn dispatch_one(
     if let Some(gate) = ctx.approval_gate {
         gate.bind_policy(ctx.preset, ctx.permission_store);
     }
+    if call.name == "execute_command"
+        && ctx
+            .approval_gate
+            .is_some_and(|gate| gate.access().sandbox_enabled())
+    {
+        super::sandbox::refresh(ctx.workspace_root);
+    }
     let allowed = ctx.approval_gate.map_or_else(
         || matches!(RiskClass::classify(&call.name), RiskClass::ReadOnly),
         |gate| gate.access().allows(call),

@@ -335,48 +335,7 @@ pub(super) fn normalize_lexically(path: &Path) -> PathBuf {
 /// to derive this policy; tests use synthetic component trees only.
 #[allow(clippy::case_sensitive_file_extension_comparisons)] // Entire path is already ASCII-lowercased.
 pub(crate) fn private_store(path: &Path) -> bool {
-    let value = path_to_comparable_string(path)
-        .replace('\\', "/")
-        .to_ascii_lowercase();
-    let parts: Vec<_> = value.split('/').filter(|part| !part.is_empty()).collect();
-    parts.iter().any(|part| {
-        matches!(
-            *part,
-            ".ssh"
-                | ".aws"
-                | ".gnupg"
-                | ".kube"
-                | ".azure"
-                | ".git-credentials"
-                | ".netrc"
-                | ".npmrc"
-                | ".pypirc"
-                | "keychains"
-                | "keychain"
-                | "credentials"
-                | "vault"
-        ) || part.ends_with(".keychain")
-            || part.ends_with(".keychain-db")
-    }) || parts.windows(2).any(|pair| {
-        matches!(
-            pair,
-            [
-                ".config",
-                "gh" | "gcloud" | "microsoft-edge" | "git" | "google-chrome" | "chromium"
-            ] | [".docker", "config.json"]
-                | ["share", "keyrings"]
-                | [
-                    "microsoft",
-                    "protect" | "crypto" | "tokenbroker" | "identitycache"
-                ]
-                | [".mozilla" | "application support", "firefox"]
-                | ["firefox", "profiles"]
-                | ["chrome" | "edge" | "chromium" | "vivaldi", "user data"]
-                | ["opera software", "opera stable" | "opera gx stable"]
-                | ["bravesoftware", "brave-browser"]
-                | ["application support", "google"]
-        )
-    }) || parts.contains(&"safari")
+    nexora_os_exec::private_store_path(path)
 }
 pub(crate) fn check_private(path: &Path) -> Result<(), ToolError> {
     if private_store(path)
@@ -397,19 +356,7 @@ pub(super) fn policy_target(path: &Path) -> bool {
 }
 #[allow(clippy::case_sensitive_file_extension_comparisons)] // Entire path is already ASCII-lowercased.
 pub(crate) fn sensitive_write(path: &Path) -> bool {
-    let value = path_to_comparable_string(path)
-        .replace('\\', "/")
-        .to_ascii_lowercase();
-    let parts: Vec<_> = value.split('/').collect();
-    parts.iter().any(|part| {
-        part.starts_with(".env")
-            || part.ends_with(".pem")
-            || part.ends_with(".key")
-            || part.starts_with("id_rsa")
-            || *part == ".nexora"
-    }) || parts
-        .windows(2)
-        .any(|pair| matches!(pair, [".git", "hooks" | "config"]))
+    nexora_os_exec::sensitive_write_path(path)
 }
 
 /// Open a directory through no-follow handles from the volume root. Ambient

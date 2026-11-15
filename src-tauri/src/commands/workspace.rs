@@ -71,7 +71,10 @@ pub(crate) fn set_workspace_root(
     db: State<'_, Database>,
 ) -> Result<String, CommandError> {
     register_root(db.inner(), path.as_str())
-        .map(|canonical| canonical.to_string_lossy().to_string())
+        .map(|canonical| {
+            crate::application::agent::sandbox::refresh(&canonical);
+            canonical.to_string_lossy().to_string()
+        })
         .map_err(|err| CommandError::new(ErrorKind::InvalidInput, err.to_string()))
 }
 
@@ -116,6 +119,8 @@ pub(crate) fn roots_add(
     let fallback = default_root(&app)?;
     register_root(db.inner(), path.as_str())
         .map_err(|err| CommandError::new(ErrorKind::InvalidInput, err.to_string()))?;
+    let root = resolve_workspace_root(db.inner(), &fallback);
+    crate::application::agent::sandbox::refresh(&root);
     Ok(list_roots(db.inner(), &fallback))
 }
 
@@ -131,8 +136,11 @@ pub(crate) fn roots_remove(
     db: State<'_, Database>,
 ) -> Result<RootsList, CommandError> {
     let fallback = default_root(&app)?;
-    unregister_root(db.inner(), path.as_str(), &fallback)
-        .map_err(|err| CommandError::new(ErrorKind::InvalidInput, err.to_string()))
+    let roots = unregister_root(db.inner(), path.as_str(), &fallback)
+        .map_err(|err| CommandError::new(ErrorKind::InvalidInput, err.to_string()))?;
+    let root = resolve_workspace_root(db.inner(), &fallback);
+    crate::application::agent::sandbox::refresh(&root);
+    Ok(roots)
 }
 
 /// Initialize the workspace `.nexora/` project directory (idempotent).

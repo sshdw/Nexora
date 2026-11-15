@@ -69,6 +69,7 @@ const SNAPSHOT: readonly string[] = [
   "getModelCapabilities",
   "getResolvedSettings",
   "getSetting",
+  "getSandboxStatus",
   "getWorkspaceRoot",
   "ghActionLog",
   "ghActions",
@@ -195,4 +196,9 @@ describe("tauri barrel parity (AC-205)", () => {
       );
     }
   });
+});
+
+it("reads authoritative sandbox status without arguments", async () => {
+  await barrel.getSandboxStatus();
+  expect(invoke).toHaveBeenLastCalledWith("get_sandbox_status");
 });

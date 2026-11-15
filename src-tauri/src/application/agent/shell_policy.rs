@@ -58,6 +58,27 @@ pub(crate) fn analyze(command: &str, shell: Shell) -> ShellAnalysis {
     result.packages.dedup();
     result
 }
+/// Model-supplied posture, escalation flags and unknown execution options never authorize automation.
+pub(crate) fn automatic_general_shell(arguments: &str) -> bool {
+    let Ok(args) = serde_json::from_str::<serde_json::Value>(arguments) else {
+        return false;
+    };
+    let Some(object) = args.as_object() else {
+        return false;
+    };
+    if object
+        .keys()
+        .any(|key| !matches!(key.as_str(), "command" | "cwd"))
+    {
+        return false;
+    }
+    let Some(command) = args.get("command").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+    let analysis = analyze(command, Shell::platform());
+    analysis.category == ShellCategory::GeneralShell && !analysis.uncertain
+}
+
 fn analyze_inner(command: &str, shell: Shell, depth: usize) -> ShellAnalysis {
     let mut result = ShellAnalysis::new();
     if command.len() > MAX_BYTES || depth > MAX_DEPTH || command.contains('\0') {
@@ -285,6 +306,13 @@ fn classify_words(words: &[String], shell: Shell, depth: usize, result: &mut She
     };
     let name = basename(first);
     let args = &words[1..];
+    if matches!(
+        name.as_str(),
+        "sudo" | "su" | "doas" | "pkexec" | "runas" | "nsenter" | "unshare"
+    ) || (name == "start-process" && args.iter().any(|arg| arg.eq_ignore_ascii_case("runas")))
+    {
+        result.uncertain = true;
+    }
     if classify_wrapper(&name, args, shell, depth, result) {
         return;
     }
@@ -998,5 +1026,36 @@ mod tests {
         );
         assert!(result.uncertain);
         assert!(!result.packages_exact);
+    }
+}
+
+#[cfg(test)]
+mod sandbox_automation_tests {
+    use super::*;
+    #[test]
+    fn automatic_shell_never_accepts_dangerous_uncertain_or_escalated_calls() {
+        assert!(automatic_general_shell(r#"{"command":"echo ordinary"}"#));
+        for command in [
+            "npm install foo",
+            "git reset --hard",
+            "git push",
+            "rm -rf data",
+            "sudo echo x",
+            "runas /user:admin echo",
+            "su root",
+            "pkexec sh",
+        ] {
+            assert!(
+                !automatic_general_shell(&serde_json::json!({"command":command}).to_string()),
+                "{command}"
+            );
+        }
+        assert!(!automatic_general_shell(
+            r#"{"command":"echo ordinary","sandbox_posture":"Verified"}"#
+        ));
+        assert!(!automatic_general_shell(
+            r#"{"command":"echo ordinary","sandbox_permissions":"require_escalated"}"#
+        ));
+        assert!(!automatic_general_shell("invalid"));
     }
 }

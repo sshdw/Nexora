@@ -58,6 +58,7 @@ struct ContextState {
     workspace_root: Option<PathBuf>,
     plan: AtomicBool,
     checkpoints_enabled: AtomicBool,
+    sandbox_enabled: bool,
     revision: AtomicU64,
     environment: Arc<Mutex<(String, u64)>>,
     #[cfg(test)]
@@ -81,6 +82,7 @@ impl AccessContext {
             workspace_root: None,
             plan: AtomicBool::new(false),
             checkpoints_enabled: AtomicBool::new(false),
+            sandbox_enabled: !cfg!(test),
             revision: AtomicU64::new(0),
             environment: Arc::new(Mutex::new((String::new(), 0))),
             #[cfg(test)]
@@ -97,6 +99,7 @@ impl AccessContext {
             workspace_root: None,
             plan: AtomicBool::new(false),
             checkpoints_enabled: AtomicBool::new(false),
+            sandbox_enabled: false,
             revision: AtomicU64::new(0),
             environment: Arc::new(Mutex::new((String::new(), 0))),
             #[cfg(test)]
@@ -115,6 +118,7 @@ impl AccessContext {
             workspace_root: Some(workspace_root.to_path_buf()),
             plan: AtomicBool::new(self.0.plan.load(Ordering::SeqCst)),
             checkpoints_enabled: AtomicBool::new(self.checkpoints_enabled()),
+            sandbox_enabled: self.0.sandbox_enabled,
             revision: AtomicU64::new(self.0.revision.load(Ordering::SeqCst)),
             environment: self.0.environment.clone(),
             #[cfg(test)]
@@ -132,11 +136,22 @@ impl AccessContext {
             workspace_root: self.0.workspace_root.clone(),
             plan: AtomicBool::new(false),
             checkpoints_enabled: AtomicBool::new(self.checkpoints_enabled()),
+            sandbox_enabled: self.0.sandbox_enabled,
             revision: AtomicU64::new(0),
             environment: self.0.environment.clone(),
             #[cfg(test)]
             environment_override: self.0.environment_override.clone(),
         }))
+    }
+    pub(crate) fn sandbox_enabled(&self) -> bool {
+        self.0.sandbox_enabled
+    }
+    pub(crate) fn sandbox_posture(&self, workspace: &Path) -> &'static str {
+        if self.0.sandbox_enabled {
+            super::sandbox::status(workspace).posture
+        } else {
+            "PerCommandConsent"
+        }
     }
     pub(crate) fn set_plan(&self, plan: bool) {
         let _guard = self
@@ -298,18 +313,23 @@ impl AccessContext {
             .map_err(|_| super::tools::ToolError::InvalidArguments("invalid JSON".into()))?;
         let target = tool_scope(workspace, &call.name, &args)?;
         let mut hash = Sha256::new();
-        let posture = if self.checkpoints_enabled() {
-            "PerCommandConsent:checkpoints"
-        } else {
-            "PerCommandConsent:no-checkpoints"
-        };
+        let posture = format!(
+            "{}:{}:{}",
+            self.sandbox_posture(workspace),
+            self.checkpoints_enabled(),
+            if self.0.sandbox_enabled {
+                super::sandbox::identity(workspace)
+            } else {
+                "sandbox-disabled".into()
+            }
+        );
         for value in [
             &path_to_comparable_string(&canonical_root(workspace)),
             &call.name,
             &path_to_comparable_string(&target),
             &call.arguments,
             &self.environment_identity(),
-            posture,
+            &posture,
             &format!("{:?}", self.profile()),
             &self.revision(*epoch),
         ] {

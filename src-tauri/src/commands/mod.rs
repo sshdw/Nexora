@@ -40,3 +40,5 @@ pub mod terminal;
 pub mod testgen;
 pub mod version_control;
 pub mod workspace;
+
+pub(crate) mod sandbox;

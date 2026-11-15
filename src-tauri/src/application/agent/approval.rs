@@ -421,7 +421,7 @@ impl ApprovalGate {
     }
     pub(crate) fn metadata(&self, call: &ToolCall) -> ApprovalMetadata {
         let args = serde_json::from_str::<serde_json::Value>(&call.arguments).unwrap_or_default();
-        let shell = (call.name == "execute_command").then(|| {
+        let mut shell = (call.name == "execute_command").then(|| {
             super::shell_policy::analyze(
                 args.get("command")
                     .and_then(serde_json::Value::as_str)
@@ -444,9 +444,16 @@ impl ApprovalGate {
                             || super::tools::path_safety::sensitive_write(&workspace.join(path))
                     })
                 });
+        let workspace = self.lock_state().workspace.clone();
+        let posture = workspace.as_ref().map_or("PerCommandConsent", |path| {
+            self.access.sandbox_posture(path)
+        });
+        if let Some(analysis) = shell.as_mut() {
+            analysis.sandbox_posture = posture;
+        }
         ApprovalMetadata {
             access_profile: self.access.profile(),
-            sandbox_posture: "PerCommandConsent",
+            sandbox_posture: posture,
             checkpoints_available: self.has_verified_checkpoints(),
             allow_for_run: self.reusable(call),
             sensitive_write,
@@ -471,6 +478,9 @@ impl ApprovalGate {
         workspace: &Path,
         execute: impl FnOnce(&Path, &mut dyn FnMut()) -> Result<String, super::tools::ToolError>,
     ) -> Result<String, super::tools::ToolError> {
+        if call.name == "execute_command" && self.access.sandbox_enabled() {
+            super::sandbox::refresh(workspace);
+        }
         let mut unavailable = false;
         let result = self
             .access
@@ -521,7 +531,12 @@ impl ApprovalGate {
                     return Err(denied());
                 }
                 drop(state);
-                execute(target, started)
+                if call.name == "execute_command" {
+                    let sandboxed = self.access.sandbox_posture(workspace) == "Verified";
+                    super::sandbox::authorized(workspace, sandboxed, || execute(target, started))
+                } else {
+                    execute(target, started)
+                }
             });
         if unavailable {
             self.access.invalidate();
@@ -627,6 +642,19 @@ impl ApprovalGate {
     pub(crate) fn needs_approval(&self, call: &ToolCall) -> bool {
         let risk = RiskClass::classify(&call.name);
         let mode = self.mode();
+        if call.name == "execute_command"
+            && mode != AutonomyMode::Supervised
+            && self.access.profile() == AccessProfile::Standard
+        {
+            let workspace = self.lock_state().workspace.clone();
+            if workspace
+                .as_ref()
+                .is_some_and(|path| self.access.sandbox_posture(path) == "Verified")
+                && super::shell_policy::automatic_general_shell(&call.arguments)
+            {
+                return false;
+            }
+        }
         match mode {
             AutonomyMode::Supervised => true,
             AutonomyMode::SemiAutonomous => {

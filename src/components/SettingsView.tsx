@@ -10,6 +10,8 @@
 //! credentials, clear-all error) behave exactly as before the split, which
 //! is why the state did not move with the sections.
 
+import SandboxStatusBadge from "./SandboxStatusBadge";
+
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { scoreCommand } from "../lib/commands";
@@ -831,6 +833,8 @@ export default function SettingsView({
         );
       case "agent":
         return (
+          <>
+          <SandboxStatusBadge workspaceRoot={workspaceRoot} locale={locale} />
           <AgentSection
             key={id}
             autonomy={autonomy}
@@ -846,6 +850,7 @@ export default function SettingsView({
             effectiveAutonomy={effectiveAutonomy}
             resolvedEntries={resolvedEntries}
           />
+          </>
         );
       case "workspace":
         return (

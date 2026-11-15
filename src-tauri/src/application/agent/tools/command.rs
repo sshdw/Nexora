@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
 use nexora_os_exec::spawn_in_process_tree;
 use serde_json::Value;
 
@@ -123,9 +124,11 @@ impl ToolRegistry {
             return Err(ToolError::ConsentInvalidated);
         }
         Self::run_command_with_limits(
-            platform_shell(&command, &["/D", "/C"]),
+            platform_shell(&command, &["/D", "/C"])?,
             &command,
             &resolved_cwd,
+            workspace_root,
+            false,
             limits,
             token,
             started,
@@ -141,9 +144,11 @@ impl ToolRegistry {
     ) -> Result<String, ToolError> {
         let (command, cwd) = command_args(args, workspace_root, resolve_terminal_cwd)?;
         Self::run_command_with_limits(
-            platform_shell(&command, &["/C"]),
+            platform_shell(&command, &["/D", "/C"])?,
             &command,
             &cwd,
+            workspace_root,
+            true,
             &CommandLimits::default(),
             token,
             &mut || {},
@@ -151,11 +156,13 @@ impl ToolRegistry {
         )
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines, clippy::too_many_arguments)] // Streaming lifecycle plus trusted workspace launch context.
     fn run_command_with_limits(
         mut cmd: Command,
         raw_command: &str,
         resolved_cwd: &Path,
+        workspace_root: &Path,
+        terminal: bool,
         limits: &CommandLimits,
         token: &CancellationToken,
         started: &mut dyn FnMut(),
@@ -169,8 +176,36 @@ impl ToolRegistry {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        let mut child = spawn_in_process_tree(&mut cmd)
-            .map_err(|e| ToolError::Io(format!("failed to spawn command: {e}")))?;
+        // Forward only explicitly selected benign environment entries, including
+        // the per-command path. Shell startup hooks and credential sockets never inherit.
+        let env: Vec<_> = [
+            "PATH",
+            "PATHEXT",
+            "SystemRoot",
+            "WINDIR",
+            "LANG",
+            "LC_ALL",
+            "TERM",
+        ]
+        .into_iter()
+        .filter_map(|key| std::env::var_os(key).map(|value| (key, value)))
+        .collect();
+        cmd.env_clear().envs(env);
+        let mut spawn = || {
+            if terminal {
+                super::super::sandbox::spawn_terminal(&mut cmd, workspace_root)
+            } else {
+                super::super::sandbox::spawn_authorized(&mut cmd, workspace_root)
+            }
+        };
+        #[cfg(not(test))]
+        let mut child = spawn()?;
+        #[cfg(test)]
+        let mut child = match spawn() {
+            Err(ToolError::ConsentInvalidated) => spawn_in_process_tree(&mut cmd)
+                .map_err(|_| ToolError::Io("test command launch failed".into()))?,
+            result => result?,
+        };
         started();
 
         if let Some(cb) = on_stream.as_deref_mut() {
@@ -378,25 +413,28 @@ fn command_args(
     Ok((command.to_owned(), resolved))
 }
 
-fn platform_shell(command: &str, windows_flags: &[&str]) -> Command {
+fn platform_shell(command: &str, windows_flags: &[&str]) -> Result<Command, ToolError> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-        let mut shell = Command::new("cmd");
+        let mut shell = Command::new(
+            nexora_os_exec::platform_shell_path()
+                .map_err(|_| ToolError::Io("trusted system shell unavailable".into()))?,
+        );
         shell
             .args(windows_flags)
             .arg(command)
             .creation_flags(CREATE_NO_WINDOW);
-        shell
+        Ok(shell)
     }
     #[cfg(not(windows))]
     {
         let _ = windows_flags;
-        let mut shell = Command::new("sh");
+        let mut shell = Command::new("/bin/sh");
         shell.arg("-c").arg(command);
-        shell
+        Ok(shell)
     }
 }
 
