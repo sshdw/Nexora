@@ -103,6 +103,7 @@ pub(crate) struct StreamRedactor {
     utf8_tail: [u8; 3],
     utf8_tail_len: usize,
     pending: String,
+    in_pem_block: bool,
     any_redacted: bool,
 }
 
@@ -119,6 +120,7 @@ impl StreamRedactor {
             utf8_tail: [0; 3],
             utf8_tail_len: 0,
             pending: String::new(),
+            in_pem_block: false,
             any_redacted: false,
         }
     }
@@ -133,14 +135,65 @@ impl StreamRedactor {
     /// to emit right now.
     pub(crate) fn push_bytes(&mut self, bytes: &[u8]) -> String {
         self.decode_utf8_into_pending(bytes);
-        let flush_end = safe_flush_end(&self.pending);
-        if flush_end == 0 {
-            return String::new();
+        let mut emitted = String::new();
+
+        loop {
+            if self.in_pem_block {
+                if let Some(end_pos) = find_ascii_ci(self.pending.as_bytes(), b"-----end", 0) {
+                    if let Some(nl_rel) = self.pending[end_pos..].find('\n') {
+                        self.pending.drain(..end_pos + nl_rel);
+                        self.in_pem_block = false;
+                        continue;
+                    }
+                    if end_pos > 0 {
+                        self.pending.drain(..end_pos);
+                    }
+                    if self.pending.len() >= MAX_PARTIAL_LINE_HOLD {
+                        if let Some(dashes) = find_ascii_ci(self.pending.as_bytes(), b"-----", 8) {
+                            self.pending.drain(..dashes + 5);
+                            self.in_pem_block = false;
+                            continue;
+                        }
+                    }
+                    break;
+                }
+                if self.pending.len() > 32 {
+                    let keep_from = floor_char_boundary(&self.pending, self.pending.len() - 32);
+                    self.pending.drain(..keep_from);
+                }
+                break;
+            }
+
+            if self.pending.len() >= MAX_PEM_BLOCK_HOLD
+                && find_ascii_ci(self.pending.as_bytes(), b"-----begin", 0) == Some(0)
+                && !has_closed_pem_at_start(&self.pending)
+            {
+                emitted.push_str("-----BEGIN ");
+                emitted.push_str(self.marker);
+                self.any_redacted = true;
+                self.in_pem_block = true;
+                let keep_from = floor_char_boundary(&self.pending, self.pending.len() - 32).max(10);
+                self.pending.drain(..keep_from);
+                continue;
+            }
+
+            let flush_end = safe_flush_end(&self.pending);
+            if flush_end == 0 {
+                if self.pending.len() >= MAX_PARTIAL_LINE_HOLD
+                    && find_ascii_ci(self.pending.as_bytes(), b"-----begin", 0).is_none()
+                {
+                    compact_oversized_open_secret(&mut self.pending);
+                }
+                break;
+            }
+
+            let prefix: String = self.pending.drain(..flush_end).collect();
+            let (scrubbed, hit) = redact_with_marker(&prefix, self.marker);
+            self.any_redacted |= hit;
+            emitted.push_str(&scrubbed);
         }
-        let prefix: String = self.pending.drain(..flush_end).collect();
-        let (scrubbed, hit) = redact_with_marker(&prefix, self.marker);
-        self.any_redacted |= hit;
-        scrubbed
+
+        emitted
     }
 
     /// Flushes any buffered trailing bytes/lines at EOF and returns the final
@@ -150,6 +203,22 @@ impl StreamRedactor {
         if self.utf8_tail_len > 0 {
             self.pending.push('\u{FFFD}');
             self.utf8_tail_len = 0;
+        }
+        if self.in_pem_block {
+            self.in_pem_block = false;
+            if let Some(end_pos) = find_ascii_ci(self.pending.as_bytes(), b"-----end", 0) {
+                if let Some(nl_rel) = self.pending[end_pos..].find('\n') {
+                    self.pending.drain(..end_pos + nl_rel);
+                } else if let Some(dashes) =
+                    find_ascii_ci(self.pending.as_bytes(), b"-----", end_pos + 8)
+                {
+                    self.pending.drain(..dashes + 5);
+                } else {
+                    self.pending.clear();
+                }
+            } else {
+                self.pending.clear();
+            }
         }
         let rest = std::mem::take(&mut self.pending);
         if rest.is_empty() {
@@ -250,13 +319,21 @@ fn find_ascii_ci(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
         .map(|pos| from + pos)
 }
 
+fn has_closed_pem_at_start(pending: &str) -> bool {
+    let bytes = pending.as_bytes();
+    if let Some(end_pos) = find_ascii_ci(bytes, b"-----end", 10) {
+        return pending[end_pos..].contains('\n');
+    }
+    false
+}
+
 fn safe_flush_end(pending: &str) -> usize {
     if pending.is_empty() {
         return 0;
     }
 
     // Hold back any open PEM block until `-----END ...-----\n` arrives or the
-    // fail-closed hold cap trips.
+    // fail-closed hold cap trips (handled via `in_pem_block` in `StreamRedactor`).
     let bytes = pending.as_bytes();
     let mut scan = 0;
     while let Some(begin) = find_ascii_ci(bytes, b"-----begin", scan) {
@@ -266,10 +343,13 @@ fn safe_flush_end(pending: &str) -> usize {
                 continue;
             }
         }
-        if pending.len() - begin >= MAX_PEM_BLOCK_HOLD {
-            return pending.len();
+        if begin > 0 {
+            if pending.len() - begin >= MAX_PEM_BLOCK_HOLD {
+                return begin;
+            }
+            return safe_flush_end(&pending[..begin]);
         }
-        return begin;
+        return 0;
     }
 
     let baseline = pending.rfind('\n').map_or(0, |nl| nl + 1);
@@ -279,10 +359,7 @@ fn safe_flush_end(pending: &str) -> usize {
     }
 
     if tail.len() >= MAX_PARTIAL_LINE_HOLD {
-        let target = tail.len().saturating_sub(OVERSIZED_LINE_TAIL_KEEP);
-        let safe_in_tail = tail[..target]
-            .rfind([' ', '\t'])
-            .map_or_else(|| floor_char_boundary(tail, target), |ws| ws + 1);
+        let safe_in_tail = safe_flush_in_oversized_tail(tail);
         return baseline + safe_in_tail;
     }
 
@@ -303,6 +380,235 @@ fn safe_flush_end(pending: &str) -> usize {
     }
 
     baseline
+}
+
+fn safe_flush_in_oversized_tail(tail: &str) -> usize {
+    let target = tail.len().saturating_sub(OVERSIZED_LINE_TAIL_KEEP);
+    let spans = find_secret_candidate_spans(tail);
+    let mut cut = tail[..target]
+        .rfind([' ', '\t'])
+        .map_or_else(|| floor_char_boundary(tail, target), |ws| ws + 1);
+
+    loop {
+        let mut adjusted = false;
+        for &(span_start, span_end) in &spans {
+            if span_start < cut && cut < span_end {
+                cut = span_start;
+                adjusted = true;
+            }
+        }
+        if !adjusted {
+            break;
+        }
+    }
+
+    if cut > 0 {
+        return cut;
+    }
+
+    // A secret candidate starting at index 0 crossed `target`. If that candidate
+    // (and any overlapping span) has already terminated before `tail.len()`, flush
+    // through its end so it is redacted as a complete unit right now; otherwise
+    // return 0 so `StreamRedactor::push_bytes` compacts the open secret in place.
+    let mut end_from_zero = 0;
+    for &(span_start, span_end) in &spans {
+        if span_start == 0 && span_end > end_from_zero {
+            end_from_zero = span_end;
+        }
+    }
+    if end_from_zero > 0 {
+        loop {
+            let mut extended = false;
+            for &(span_start, span_end) in &spans {
+                if span_start < end_from_zero && end_from_zero < span_end {
+                    end_from_zero = span_end;
+                    extended = true;
+                }
+            }
+            if !extended {
+                break;
+            }
+        }
+        if end_from_zero < tail.len() {
+            return end_from_zero;
+        }
+    }
+
+    0
+}
+
+fn find_secret_candidate_spans(tail: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    collect_url_spans(tail, &mut spans);
+    collect_scheme_and_prefix_spans(tail, &mut spans);
+    collect_assignment_spans(tail, &mut spans);
+    spans
+}
+
+fn collect_url_spans(tail: &str, spans: &mut Vec<(usize, usize)>) {
+    let bytes = tail.as_bytes();
+    let mut cursor = 0;
+    while let Some(rel) = tail[cursor..].find("://") {
+        let sep = cursor + rel;
+        let mut scheme_start = sep;
+        while scheme_start > 0 && is_scheme_char(bytes[scheme_start - 1]) {
+            scheme_start -= 1;
+        }
+        let mut auth_end = sep + 3;
+        while auth_end < bytes.len()
+            && !matches!(
+                bytes[auth_end],
+                b'/' | b'?' | b'#' | b'"' | b'\'' | b'>' | b')' | b' ' | b'\t' | b'\r' | b'\n'
+            )
+        {
+            auth_end += 1;
+        }
+        spans.push((floor_char_boundary(tail, scheme_start), auth_end));
+        cursor = auth_end.max(sep + 3);
+    }
+}
+
+fn collect_scheme_and_prefix_spans(tail: &str, spans: &mut Vec<(usize, usize)>) {
+    let bytes = tail.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        let scheme_len = if index + 7 <= bytes.len()
+            && bytes[index..index + 7].eq_ignore_ascii_case(b"bearer ")
+            && (index == 0 || !bytes[index - 1].is_ascii_alphanumeric())
+        {
+            Some(7)
+        } else if index + 6 <= bytes.len()
+            && (bytes[index..index + 6].eq_ignore_ascii_case(b"basic ")
+                || bytes[index..index + 6].eq_ignore_ascii_case(b"token "))
+            && (index == 0 || !bytes[index - 1].is_ascii_alphanumeric())
+        {
+            Some(6)
+        } else {
+            None
+        };
+
+        if let Some(len) = scheme_len {
+            let trimmed_before = tail[..index].trim_end_matches([' ', '\t']);
+            let span_start = if trimmed_before
+                .to_ascii_lowercase()
+                .ends_with("authorization:")
+            {
+                floor_char_boundary(tail, trimmed_before.len().saturating_sub(14))
+            } else {
+                index
+            };
+            let mut end = index + len;
+            while end < bytes.len() && matches!(bytes[end], b' ' | b'\t') {
+                end += 1;
+            }
+            while end < bytes.len() && is_token_byte(bytes[end]) {
+                end += 1;
+            }
+            spans.push((span_start, end));
+            index = end.max(index + len);
+            continue;
+        }
+
+        if let Some((prefix_len, _)) = match_secret_prefix(bytes, index) {
+            let span_start = if index > 0 && bytes[index - 1].is_ascii_alphanumeric() {
+                floor_char_boundary(tail, index - 1)
+            } else {
+                index
+            };
+            let mut end = index + prefix_len;
+            while end < bytes.len() && is_token_byte(bytes[end]) {
+                end += 1;
+            }
+            spans.push((span_start, end));
+            index = end.max(index + prefix_len);
+            continue;
+        }
+
+        index += 1;
+    }
+}
+
+fn collect_assignment_spans(tail: &str, spans: &mut Vec<(usize, usize)>) {
+    let lowered = tail.to_ascii_lowercase();
+    let bytes = tail.as_bytes();
+    let low_bytes = lowered.as_bytes();
+    let mut index = 0;
+
+    while index < bytes.len() {
+        let (field_len, require_equals, _) = match_assignment_field(low_bytes, index);
+        if field_len == 0 {
+            index += 1;
+            continue;
+        }
+        let mut span_start = index;
+        while span_start > 0
+            && index - span_start < 32
+            && (bytes[span_start - 1].is_ascii_alphanumeric()
+                || matches!(bytes[span_start - 1], b'_' | b'-'))
+        {
+            span_start -= 1;
+        }
+        span_start = floor_char_boundary(tail, span_start);
+
+        let Some(value_start) =
+            find_assignment_value_start(bytes, index, field_len, require_equals)
+        else {
+            index += field_len;
+            continue;
+        };
+
+        let span_end = if value_start >= bytes.len() {
+            bytes.len()
+        } else if matches!(bytes[value_start], b'"' | b'\'') {
+            let quote = bytes[value_start];
+            let mut end = value_start + 1;
+            while end < bytes.len() && bytes[end] != quote && !matches!(bytes[end], b'\r' | b'\n') {
+                end += 1;
+            }
+            if end < bytes.len() && bytes[end] == quote {
+                end += 1;
+            }
+            end
+        } else {
+            let mut end = value_start;
+            while end < bytes.len()
+                && !matches!(
+                    bytes[end],
+                    b' ' | b'\t' | b'\r' | b'\n' | b'&' | b'"' | b'\''
+                )
+            {
+                end += 1;
+            }
+            end
+        };
+
+        spans.push((span_start, span_end));
+        index = span_end.max(index + field_len);
+    }
+}
+
+fn compact_oversized_open_secret(pending: &mut String) {
+    const KEEP_HEAD: usize = 256;
+    const KEEP_TAIL: usize = 256;
+    if pending.len() <= KEEP_HEAD + KEEP_TAIL {
+        return;
+    }
+    let mut head_target = KEEP_HEAD;
+    if let Some(sep) = pending.find("://") {
+        if let Some(colon_rel) = pending[sep + 3..].find(':') {
+            let pass_start = sep + 3 + colon_rel + 1;
+            head_target = head_target.max(pass_start.saturating_add(64));
+        } else {
+            // URL without `:` in authority has no user:pass password to compact;
+            // drain interior authority bytes safely after `sep + 3 + 64`.
+            head_target = head_target.max(sep + 3 + 64);
+        }
+    }
+    let tail_start = floor_char_boundary(pending, pending.len().saturating_sub(KEEP_TAIL));
+    let head_end = floor_char_boundary(pending, head_target.min(tail_start));
+    if head_end < tail_start {
+        pending.drain(head_end..tail_start);
+    }
 }
 
 fn floor_char_boundary(text: &str, mut index: usize) -> usize {
@@ -810,5 +1116,99 @@ DB_PASSWORD=hunter2password
 
         assert!(!hit, "benign prose should not trigger redaction: {out:?}");
         assert_eq!(out, prose);
+    }
+
+    #[test]
+    fn stream_redactor_scrubs_bearer_and_sk_split_at_max_partial_line_hold() {
+        // Case 1: "Bearer " lands right before `MAX_PARTIAL_LINE_HOLD - OVERSIZED_LINE_TAIL_KEEP` (3072)
+        // on a single un-newlined line, and its token spans across 3072 and 4096 into the next chunk.
+        let prefix_words = "a ".repeat(1532); // 3064 bytes
+        let secret_part1 = "T".repeat(1025); // 3064 + 7 ("Bearer ") + 1025 = 4096 bytes
+        let secret_part2 = "U".repeat(64);
+        let chunk1 = format!("{prefix_words}Bearer {secret_part1}");
+        assert_eq!(chunk1.len(), MAX_PARTIAL_LINE_HOLD);
+        let chunk2 = format!("{secret_part2} done\n");
+
+        let mut redactor = StreamRedactor::for_command();
+        let out1 = redactor.push_bytes(chunk1.as_bytes());
+        let out2 = redactor.push_bytes(chunk2.as_bytes());
+        let (out3, hit) = redactor.finish();
+        let combined = format!("{out1}{out2}{out3}");
+
+        assert!(hit);
+        assert!(
+            !combined.contains("TTTT") && !combined.contains("UUUU"),
+            "Bearer token split at MAX_PARTIAL_LINE_HOLD leaked: {combined:?}"
+        );
+        assert!(combined.contains("Bearer [REDACTED] done\n"));
+
+        // Case 2: Unspaced line where `sk-...` straddles the target cut boundary (3072)
+        // and continues across MAX_PARTIAL_LINE_HOLD (4096) into the next chunk.
+        let unspaced_prefix = "x".repeat(3070);
+        let sk_part1 = format!("sk-{}", "S".repeat(1023)); // 3070 + 1026 = 4096 bytes
+        let chunk1_sk = format!("{unspaced_prefix}{sk_part1}");
+        assert_eq!(chunk1_sk.len(), MAX_PARTIAL_LINE_HOLD);
+        let chunk2_sk = format!("{}\n", "Z".repeat(48));
+
+        let mut redactor_sk = StreamRedactor::for_command();
+        let sk_out1 = redactor_sk.push_bytes(chunk1_sk.as_bytes());
+        let sk_out2 = redactor_sk.push_bytes(chunk2_sk.as_bytes());
+        let (sk_out3, sk_hit) = redactor_sk.finish();
+        let sk_combined = format!("{sk_out1}{sk_out2}{sk_out3}");
+
+        assert!(sk_hit);
+        assert!(
+            !sk_combined.contains("SSSS") && !sk_combined.contains("ZZZZ"),
+            "sk- token split at MAX_PARTIAL_LINE_HOLD leaked: {sk_combined:?}"
+        );
+        assert!(sk_combined.contains("sk-[REDACTED]\n"));
+
+        // Case 3: Single oversized `sk-...` starting at byte 0 that exceeds MAX_PARTIAL_LINE_HOLD.
+        let mut redactor_huge = StreamRedactor::for_command();
+        let huge_chunk1 = format!("sk-{}", "K".repeat(MAX_PARTIAL_LINE_HOLD + 500));
+        let huge_chunk2 = format!("{} tail\n", "M".repeat(200));
+        let h1 = redactor_huge.push_bytes(huge_chunk1.as_bytes());
+        let h2 = redactor_huge.push_bytes(huge_chunk2.as_bytes());
+        let (h3, huge_hit) = redactor_huge.finish();
+        let huge_combined = format!("{h1}{h2}{h3}");
+
+        assert!(huge_hit);
+        assert!(
+            !huge_combined.contains("KKKK") && !huge_combined.contains("MMMM"),
+            "oversized sk- token leaked: {huge_combined:?}"
+        );
+        assert_eq!(huge_combined, "sk-[REDACTED] tail\n");
+    }
+
+    #[test]
+    fn stream_redactor_tracks_in_pem_block_across_max_pem_block_hold() {
+        let header = "before-pem\n-----BEGIN RSA PRIVATE KEY-----\n";
+        let body_line = "MIIEpAIBAAKCAQEA0123456789abcdef0123456789abcdef0123456789abcdef\n";
+        let repeats = (MAX_PEM_BLOCK_HOLD / body_line.len()) + 32;
+        let oversized_body = body_line.repeat(repeats);
+        assert!(oversized_body.len() > MAX_PEM_BLOCK_HOLD);
+        let footer = "SECRET_PEM_TAIL_LINE_999\n-----END RSA PRIVATE KEY-----\nafter-pem\n";
+
+        let full = format!("{header}{oversized_body}{footer}");
+        let mut redactor = StreamRedactor::for_command();
+        let mut collected = String::new();
+
+        for chunk in full.as_bytes().chunks(4096) {
+            let emitted = redactor.push_bytes(chunk);
+            assert!(
+                !emitted.contains("MIIEpAIBAAKCAQEA")
+                    && !emitted.contains("SECRET_PEM_TAIL_LINE_999"),
+                "oversized PEM chunk leaked private key material: {emitted:?}"
+            );
+            collected.push_str(&emitted);
+        }
+        let (tail, hit) = redactor.finish();
+        collected.push_str(&tail);
+
+        assert!(hit);
+        assert!(!collected.contains("MIIEpAIBAAKCAQEA"));
+        assert!(!collected.contains("SECRET_PEM_TAIL_LINE_999"));
+        assert!(!collected.contains("-----END RSA PRIVATE KEY-----"));
+        assert_eq!(collected, "before-pem\n-----BEGIN [REDACTED]\nafter-pem\n");
     }
 }

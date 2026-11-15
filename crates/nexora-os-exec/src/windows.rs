@@ -1,14 +1,21 @@
 use std::ffi::c_void;
 use std::io;
 use std::os::windows::io::AsRawHandle;
+use std::os::windows::process::CommandExt;
 use std::process::{Child, Command};
 use std::sync::Mutex;
 
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+};
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
     SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+};
+use windows_sys::Win32::System::Threading::{
+    OpenThread, ResumeThread, CREATE_NO_WINDOW, CREATE_SUSPENDED, THREAD_SUSPEND_RESUME,
 };
 
 struct RawJob(HANDLE);
@@ -27,6 +34,11 @@ impl PlatformHandle {
     pub(crate) fn spawn(command: &mut Command) -> io::Result<(Child, Self)> {
         let job = create_kill_on_close_job()?;
 
+        // Spawn the primary thread suspended (`CREATE_SUSPENDED`) with `CREATE_NO_WINDOW`
+        // so the child cannot execute or spawn any grandchild before `AssignProcessToJobObject`
+        // binds it to the Job Object.
+        command.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
+
         let mut child = match command.spawn() {
             Ok(child) => child,
             Err(err) => {
@@ -43,20 +55,6 @@ impl PlatformHandle {
         let assigned = unsafe { AssignProcessToJobObject(job, proc_handle) };
         if assigned == 0 {
             let assign_err = io::Error::last_os_error();
-            // If a short-lived child already terminated before assignment, there is
-            // no running process to manage; close the unused Job Object cleanly.
-            if matches!(child.try_wait(), Ok(Some(_))) {
-                // SAFETY: `job` is a valid handle and is discarded cleanly here.
-                unsafe {
-                    CloseHandle(job);
-                }
-                return Ok((
-                    child,
-                    Self {
-                        job: Mutex::new(None),
-                    },
-                ));
-            }
             let _ = child.kill();
             let _ = child.wait();
             // SAFETY: `job` is a valid handle and has not been closed yet.
@@ -64,6 +62,17 @@ impl PlatformHandle {
                 CloseHandle(job);
             }
             return Err(assign_err);
+        }
+
+        if let Err(resume_err) = resume_process_threads(child.id()) {
+            let _ = child.kill();
+            let _ = child.wait();
+            // SAFETY: `job` is a valid Job Object handle and closing it also terminates the job.
+            unsafe {
+                let _ = TerminateJobObject(job, 1);
+                CloseHandle(job);
+            }
+            return Err(resume_err);
         }
 
         Ok((
@@ -152,6 +161,67 @@ fn create_kill_on_close_job() -> io::Result<HANDLE> {
     }
 
     Ok(job)
+}
+
+fn resume_process_threads(pid: u32) -> io::Result<()> {
+    // SAFETY: `CreateToolhelp32Snapshot` with `TH32CS_SNAPTHREAD` takes a read-only
+    // kernel snapshot of system threads and returns a handle that must be closed.
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+    if snapshot.is_null() || snapshot == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+
+    let entry_size = u32::try_from(std::mem::size_of::<THREADENTRY32>())
+        .map_err(|_| io::Error::other("THREADENTRY32 size exceeds u32"))?;
+    // SAFETY: `THREADENTRY32` is a plain C struct where zero-initialization is valid.
+    let mut entry: THREADENTRY32 = unsafe { std::mem::zeroed() };
+    entry.dwSize = entry_size;
+
+    let mut resumed_any = false;
+    let mut last_err: Option<io::Error> = None;
+
+    // SAFETY: `snapshot` is a valid snapshot handle and `entry.dwSize` is initialized.
+    let mut has_thread = unsafe { Thread32First(snapshot, std::ptr::from_mut(&mut entry)) } != 0;
+    while has_thread {
+        if entry.th32OwnerProcessID == pid {
+            // SAFETY: Opening a thread owned by the newly spawned child process for `ResumeThread`;
+            // the returned handle is always closed before continuing.
+            let thread_handle = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
+            if thread_handle.is_null() {
+                last_err = Some(io::Error::last_os_error());
+            } else {
+                // SAFETY: `thread_handle` is a valid open thread handle with `THREAD_SUSPEND_RESUME`.
+                let prev_suspend = unsafe { ResumeThread(thread_handle) };
+                if prev_suspend == u32::MAX {
+                    last_err = Some(io::Error::last_os_error());
+                } else {
+                    resumed_any = true;
+                }
+                // SAFETY: Always close the temporary thread handle.
+                unsafe {
+                    CloseHandle(thread_handle);
+                }
+            }
+        }
+        entry.dwSize = entry_size;
+        // SAFETY: `snapshot` is valid and `entry` points to a properly sized `THREADENTRY32`.
+        has_thread = unsafe { Thread32Next(snapshot, std::ptr::from_mut(&mut entry)) } != 0;
+    }
+
+    // SAFETY: Always close the snapshot handle before returning.
+    unsafe {
+        CloseHandle(snapshot);
+    }
+
+    if resumed_any {
+        Ok(())
+    } else if let Some(err) = last_err {
+        Err(err)
+    } else {
+        Err(io::Error::other(
+            "failed to locate suspended primary thread for spawned child",
+        ))
+    }
 }
 
 #[cfg(test)]

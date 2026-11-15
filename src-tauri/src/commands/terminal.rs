@@ -82,9 +82,13 @@ pub(crate) struct TerminalRunResponse {
     pub success: bool,
 }
 
-fn emit_terminal_update(app: &AppHandle, run_id: u64, update: CommandStreamUpdate) {
-    let payload = match update {
-        CommandStreamUpdate::Started { .. } => TerminalOutputEvent {
+fn translate_terminal_update(
+    run_id: u64,
+    update: CommandStreamUpdate,
+    stream_done: &mut Option<(bool, bool)>,
+) -> Option<TerminalOutputEvent> {
+    match update {
+        CommandStreamUpdate::Started { .. } => Some(TerminalOutputEvent {
             run_id,
             stream: "status".to_string(),
             chunk: String::new(),
@@ -92,8 +96,8 @@ fn emit_terminal_update(app: &AppHandle, run_id: u64, update: CommandStreamUpdat
             truncated: false,
             killed: false,
             success: None,
-        },
-        CommandStreamUpdate::Chunk { stream, text } => TerminalOutputEvent {
+        }),
+        CommandStreamUpdate::Chunk { stream, text } => Some(TerminalOutputEvent {
             run_id,
             stream: stream.to_string(),
             chunk: text,
@@ -101,11 +105,51 @@ fn emit_terminal_update(app: &AppHandle, run_id: u64, update: CommandStreamUpdat
             truncated: false,
             killed: false,
             success: None,
-        },
-        // Final completion metadata is emitted once on return with the authoritative `success`.
-        CommandStreamUpdate::Done { .. } => return,
-    };
-    let _ = app.emit(TERMINAL_OUTPUT_EVENT, payload);
+        }),
+        // Final completion metadata is captured here and emitted once on return
+        // with the authoritative `success` flag.
+        CommandStreamUpdate::Done { truncated, killed } => {
+            *stream_done = Some((truncated, killed));
+            None
+        }
+    }
+}
+
+fn emit_terminal_update(
+    app: &AppHandle,
+    run_id: u64,
+    update: CommandStreamUpdate,
+    stream_done: &mut Option<(bool, bool)>,
+) {
+    if let Some(payload) = translate_terminal_update(run_id, update, stream_done) {
+        let _ = app.emit(TERMINAL_OUTPUT_EVENT, payload);
+    }
+}
+
+fn resolve_terminal_done_flags(
+    outcome: &Result<
+        crate::application::terminal::TerminalExecuted,
+        crate::application::terminal::TerminalError,
+    >,
+    stream_done: Option<(bool, bool)>,
+) -> (bool, bool, bool) {
+    let (stream_truncated, stream_killed) = stream_done.unwrap_or((false, false));
+    match outcome {
+        Ok(executed) => (
+            executed.truncated || stream_truncated,
+            stream_killed,
+            executed.success,
+        ),
+        Err(err) => {
+            let killed = stream_killed
+                || matches!(
+                    err,
+                    crate::application::terminal::TerminalError::Cancelled
+                        | crate::application::terminal::TerminalError::Timeout
+                );
+            (stream_truncated, killed, false)
+        }
+    }
 }
 
 fn emit_terminal_done(app: &AppHandle, run_id: u64, truncated: bool, killed: bool, success: bool) {
@@ -181,8 +225,10 @@ pub(crate) async fn terminal_run(
     let confirmations_arc = Arc::clone(confirmations.inner());
     let app_for_stream = app.clone();
     let outcome = tauri::async_runtime::spawn_blocking(move || {
-        let mut emit_stream = |update| emit_terminal_update(&app_for_stream, run_id, update);
-        crate::application::terminal::execute_terminal(
+        let mut stream_done = None;
+        let mut emit_stream =
+            |update| emit_terminal_update(&app_for_stream, run_id, update, &mut stream_done);
+        let result = crate::application::terminal::execute_terminal(
             &root,
             command.as_str(),
             cwd.as_deref(),
@@ -190,36 +236,28 @@ pub(crate) async fn terminal_run(
             &confirmations_arc,
             &token,
             Some(&mut emit_stream),
-        )
+        );
+        (result, stream_done)
     })
     .await;
     registry_arc.finish(run_id);
-    let outcome = outcome.map_err(|err| {
+    let (outcome, stream_done) = outcome.map_err(|err| {
         // Only reachable if the blocking task panicked: report a safe,
         // classified failure instead of leaving the promise dangling.
         log::error!("terminal_run blocking task failed: {err}");
         emit_terminal_done(&app, run_id, false, false, false);
         CommandError::new(ErrorKind::Request, "the terminal command could not be run")
     })?;
+    let (truncated, killed, success) = resolve_terminal_done_flags(&outcome, stream_done);
+    emit_terminal_done(&app, run_id, truncated, killed, success);
     match outcome {
-        Ok(executed) => {
-            emit_terminal_done(&app, run_id, executed.truncated, false, executed.success);
-            Ok(TerminalRunResponse {
-                run_id,
-                output: executed.output,
-                truncated: executed.truncated,
-                success: executed.success,
-            })
-        }
-        Err(err) => {
-            let killed = matches!(
-                err,
-                crate::application::terminal::TerminalError::Cancelled
-                    | crate::application::terminal::TerminalError::Timeout
-            );
-            emit_terminal_done(&app, run_id, false, killed, false);
-            Err(CommandError::from(err))
-        }
+        Ok(executed) => Ok(TerminalRunResponse {
+            run_id,
+            output: executed.output,
+            truncated,
+            success: executed.success,
+        }),
+        Err(err) => Err(CommandError::from(err)),
     }
 }
 
@@ -493,5 +531,46 @@ mod tests {
                 "no auto-apply path may exist, found {needle:?}"
             );
         }
+    }
+
+    #[test]
+    fn terminal_done_flags_preserve_truncated_on_cancel_and_timeout() {
+        use crate::application::terminal::{TerminalError, TerminalExecuted};
+
+        let mut stream_done = None;
+        let payload = translate_terminal_update(
+            7,
+            CommandStreamUpdate::Done {
+                truncated: true,
+                killed: true,
+            },
+            &mut stream_done,
+        );
+        assert!(payload.is_none());
+        assert_eq!(stream_done, Some((true, true)));
+
+        let (truncated, killed, success) =
+            resolve_terminal_done_flags(&Err(TerminalError::Cancelled), stream_done);
+        assert!(truncated, "cancelled run must preserve truncated=true");
+        assert!(killed, "cancelled run must report killed=true");
+        assert!(!success, "cancelled run must report success=false");
+
+        let (truncated, killed, success) =
+            resolve_terminal_done_flags(&Err(TerminalError::Timeout), stream_done);
+        assert!(truncated, "timed-out run must preserve truncated=true");
+        assert!(killed, "timed-out run must report killed=true");
+        assert!(!success, "timed-out run must report success=false");
+
+        let (truncated, killed, success) = resolve_terminal_done_flags(
+            &Ok(TerminalExecuted {
+                output: "ok".to_string(),
+                truncated: false,
+                success: true,
+            }),
+            Some((true, false)),
+        );
+        assert!(truncated);
+        assert!(!killed);
+        assert!(success);
     }
 }
