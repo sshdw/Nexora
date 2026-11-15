@@ -1615,6 +1615,7 @@ mod tests {
         use crate::infrastructure::database::in_memory_database;
         use serde_json::json;
 
+        let _sandbox_lock = super::super::sandbox::test_lock();
         let db = in_memory_database();
         let workspace = temp_workspace();
         SettingsService::new(&db)
@@ -1718,6 +1719,7 @@ mod tests {
         use crate::infrastructure::database::in_memory_database;
         use serde_json::json;
 
+        let _sandbox_lock = super::super::sandbox::test_lock();
         let db = in_memory_database();
         let ws1 = temp_workspace();
         let ws2 = temp_workspace();
@@ -1787,6 +1789,7 @@ mod tests {
         use crate::infrastructure::database::in_memory_database;
         use serde_json::json;
 
+        let _sandbox_lock = super::super::sandbox::test_lock();
         let db = in_memory_database();
         let workspace = temp_workspace();
         let marker = workspace.join("unsandboxed-marker.txt");

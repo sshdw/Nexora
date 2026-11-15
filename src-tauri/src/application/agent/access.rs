@@ -903,6 +903,7 @@ mod tests {
     }
     #[test]
     fn verified_posture_and_invalidations_update_access_identity_and_drop_to_consent() {
+        let _sandbox_lock = super::super::sandbox::test_lock();
         let db = in_memory_database();
         let workspace = temp_workspace();
         let access = AccessContext::root(&db).with_sandbox_enabled(true);

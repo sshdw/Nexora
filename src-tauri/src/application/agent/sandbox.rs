@@ -158,6 +158,33 @@ thread_local! {
     static FORCE_SANDBOX_SPAWN_FAIL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 #[cfg(test)]
+pub(crate) struct TestSandboxGuard {
+    _guard: std::sync::MutexGuard<'static, ()>,
+}
+#[cfg(test)]
+impl Drop for TestSandboxGuard {
+    fn drop(&mut self) {
+        FORCE_SANDBOX_SPAWN_FAIL.with(|flag| flag.set(false));
+        PERMIT.with(|slot| *slot.borrow_mut() = None);
+        entries()
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+    }
+}
+/// Serializes tests that mutate global `#[cfg(test)]` sandbox overrides and clears them on drop.
+#[cfg(test)]
+#[must_use]
+pub(crate) fn test_lock() -> TestSandboxGuard {
+    static TEST_SANDBOX_LOCK: Mutex<()> = Mutex::new(());
+    let guard = TEST_SANDBOX_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    FORCE_SANDBOX_SPAWN_FAIL.with(|flag| flag.set(false));
+    PERMIT.with(|slot| *slot.borrow_mut() = None);
+    TestSandboxGuard { _guard: guard }
+}
+#[cfg(test)]
 pub(crate) fn has_permit() -> bool {
     PERMIT.with(|slot| slot.borrow().is_some())
 }
@@ -315,6 +342,7 @@ mod tests {
     }
     #[test]
     fn changed_posture_invalidates_trusted_permit() {
+        let _sandbox_lock = test_lock();
         let path = std::env::temp_dir().join("nexora-sandbox-identity-only");
         let key = root(&path);
         entries().write().unwrap().insert(
@@ -360,6 +388,7 @@ mod tests {
     }
     #[test]
     fn ttl_expiry_and_fingerprint_mismatch_drop_verified_to_per_command_consent() {
+        let _sandbox_lock = test_lock();
         let ws = super::super::tools::test_support::temp_workspace();
         set_test_status(&ws, true, Duration::ZERO);
         let fresh = status(&ws);
@@ -381,6 +410,7 @@ mod tests {
     }
     #[test]
     fn failed_sandboxed_launch_invalidates_verified_posture_and_fails_closed() {
+        let _sandbox_lock = test_lock();
         let ws = super::super::tools::test_support::temp_workspace();
         set_test_status(&ws, true, Duration::ZERO);
         assert_eq!(status(&ws).posture, "Verified");
